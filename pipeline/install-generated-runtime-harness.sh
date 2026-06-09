@@ -964,6 +964,7 @@ EOF
 
 write_generated_agentic_docs() {
   local state_num="${STATE_ID%%-*}"
+  state_num="${state_num%%[a-z]*}"
   if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
     return
   fi

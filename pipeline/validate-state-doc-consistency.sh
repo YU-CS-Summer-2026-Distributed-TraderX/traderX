@@ -84,7 +84,7 @@ for id in "${all_ids[@]}"; do
   first_line="$(sed -n '1p' "${readme}")"
   expected_num="${id%%-*}"
 
-  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}): ]]; then
+  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}[a-z]?): ]]; then
     actual_num="${BASH_REMATCH[1]}"
     [[ "${actual_num}" == "${expected_num}" ]] || fail "${readme} heading number ${actual_num} does not match state id ${expected_num}"
     idx=-1

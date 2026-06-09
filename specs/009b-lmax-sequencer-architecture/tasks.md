@@ -9,6 +9,9 @@
 - [x] T09B07 Define contract deltas in `contracts/contract-delta.md`.
 - [x] T09B08 Update `system/architecture.model.json` and regenerate architecture docs.
 - [x] T09B09 Author ADRs 014–017 (input disruptor, single-thread BLP, async read-model, no-GC gate).
+- [x] T09B09A Scaffold pipeline readiness: catalog entry (`status: draft`), generation hook,
+      render stub, lifecycle delegate scripts to `009`, and letter-suffix state-id support in
+      pipeline validators/installers.
 - [ ] T09B10 Establish the P0 latency harness (HdrHistogram/JLBH/jHiccup) against generated `009`.
 - [ ] T09B11 Implement the input disruptor (ring, sequencer, journaler, replicator, un-marshaller,
       sequence barrier) inside `order-matcher`; remove `@Scheduled` poll and `orderMutationLock`.
@@ -29,7 +32,8 @@
 - [ ] T09B20 Add ring/BLP/egress/no-GC observability (metrics wiring, Prometheus targets, Grafana
       dashboards incl. allocation alert and GC-pause panel).
 - [ ] T09B21 Implement smoke tests: `scripts/test-state-009b-lmax-sequencer-architecture.sh`.
-- [ ] T09B22 Validate docs/spec gates, register the state in `catalog/state-catalog.json`, and publish
-      the generated snapshot branch.
+- [ ] T09B22 Validate docs/spec gates, flip the catalog entry from `draft` to `implemented`, replace
+      the `009`-delegating lifecycle scripts with state-native ones, and publish the generated
+      snapshot branch.
 - [ ] T09B23 Extend `C2` build/publish workflow + GHCR run bundle + `runtime/deploy/` bundle for this
       state; validate local dry-run and no embedded secrets.

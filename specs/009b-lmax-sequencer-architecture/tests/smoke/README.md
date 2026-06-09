@@ -20,6 +20,8 @@ Planned smoke checks:
     force-fill with `009`-identical payload shapes
   - trade/position streams update on fills; no polling loops in Angular views
   - API explorer / pub-sub inspector surface from `009` still resolves (re-validates SC-01312/SC-01313)
+  - UI header/About/status render the `009b-lmax-sequencer-architecture` state id (FR-09B42), with the
+    inherited header/System-menu contract otherwise unchanged
 - Hot-path metrics present and sane in `/metrics`:
   - `traderx_disruptor_input_remaining_capacity`, `traderx_input_seq_lag`,
     `traderx_journal_write_latency_seconds`, `traderx_blp_event_latency_seconds`,

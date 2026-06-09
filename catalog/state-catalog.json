@@ -279,6 +279,29 @@
       }
     },
     {
+      "id": "009b-lmax-sequencer-architecture",
+      "title": "LMAX Sequencer Architecture (Trading Hot Path)",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/009b-lmax-sequencer-architecture",
+      "previous": [
+        "009-order-management-matcher"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture",
+        "runtime": "./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh"
+      },
+      "publish": {
+        "branch": "code/generated-state-009b-lmax-sequencer-architecture",
+        "tag": "generated/009b-lmax-sequencer-architecture/v1"
+      }
+    },
+    {
       "id": "010-kubernetes-runtime",
       "title": "Kubernetes Runtime on C2",
       "status": "implemented",

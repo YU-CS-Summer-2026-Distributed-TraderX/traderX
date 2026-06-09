@@ -45,8 +45,8 @@ const emitFile = (filePath, content) => {
 
 const repoWebBase = 'https://github.com/finos/traderX'
 const sourceAuthoringBranch = process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'main'
-const stripNumericPrefix = (stateId) => stateId.replace(/^[0-9]{3}-/, '')
-const stateNumber = (stateId) => stateId.match(/^([0-9]{3})-/)?.[1] ?? stateId
+const stripNumericPrefix = (stateId) => stateId.replace(/^[0-9]{3}[a-z]?-/, '')
+const stateNumber = (stateId) => stateId.match(/^([0-9]{3}[a-z]?)-/)?.[1] ?? stateId
 const specRouteFor = (stateId) => `/specs/${stripNumericPrefix(stateId)}`
 
 const normalizeSiteRoot = (value) => {

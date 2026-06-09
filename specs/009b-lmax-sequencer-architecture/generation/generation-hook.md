@@ -25,10 +25,13 @@ lineage).
    banned-API static check, and `pipeline/validate-no-gc-conformance.sh`.
 7. Materialize run-profile launchers (`demo` default; `perf` and `noGcTest` documented) and the
    journal/snapshot/checkpoint data directories.
-8. Preserve all lineage contracts: external OpenAPI/NATS/UI surfaces, `OrderBook` schema in
+8. Update the inherited state-ui-metadata frontend overlay so the UI title, About page, and status
+   view render this state's id (`009b-lmax-sequencer-architecture`) per FR-09B42, while leaving every
+   other inherited frontend override (`009` Admin tab, blotters, header structure) untouched.
+9. Preserve all lineage contracts: external OpenAPI/NATS/UI surfaces, `OrderBook` schema in
    `database/initialSchema.sql` (publish gate from `009` still applies), `C2` build/publish workflow,
    GHCR run bundle, and `runtime/deploy/` bundle.
-9. Produce deterministic output suitable for branch publishing.
+10. Produce deterministic output suitable for branch publishing.
 
 Runtime scripts:
 

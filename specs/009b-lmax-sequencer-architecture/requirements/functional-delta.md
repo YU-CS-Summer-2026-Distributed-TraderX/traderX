@@ -50,6 +50,9 @@ parity-locked to `009`; the delta is in how that behavior is produced.
   the hot path; `BigDecimal`/`String` only at the edges, with penny parity locked to `009` (FR-09B05).
 - Order ID and timestamp derivation: from the global sequence and event-carried time rather than
   `String.format` counters and `Instant.now()` (FR-09B14); externally rendered shapes are unchanged.
+- State-identity branding: the state-ui-metadata overlay inherited from `009` (FR-01317 header/About/
+  status state-id rendering) is updated to identify `009b-lmax-sequencer-architecture` (FR-09B42).
+  This is a generation-time metadata change only; no component, route, or interaction changes.
 
 ## Removed
 

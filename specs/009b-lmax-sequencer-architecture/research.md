@@ -23,7 +23,13 @@ contracts and observability obligations.
    IDs (`010`–`012`) are already taken by the canonical lineage, and the requested shape is one `009b`
    branch; the staging survives as plan milestones P0–P4 inside this pack.
 2. **Sibling branch, not canonical lineage.** `009b` branches off `009`; the canonical `010+` lineage
-   (Kubernetes/Tilt/C3/FDC3) is unaffected. Catalog registration is deferred to implementation time.
+   (Kubernetes/Tilt/C3/FDC3) is unaffected. The state is registered in `catalog/state-catalog.json`
+   (`status: draft`, `primaryLineageRole: optional`) because the generation pipeline's post-install
+   steps resolve state metadata from the catalog; pipeline scaffolding (generation hook, render stub,
+   lifecycle delegates to `009`) keeps `pipeline/generate-state.sh 009b-lmax-sequencer-architecture`
+   runnable end-to-end, producing `009`-parity output until the overlay patchset lands. Letter-suffixed
+   state ids are supported by the pipeline by treating `009b` as numeric base `009` for lineage
+   thresholds while using the full prefix for script-name resolution.
 3. **Requirement ID namespace `09B` + `NGC`.** The LMAX docs' illustrative `FR-014xx` block collides
    with `014-fdc3-intent-interoperability`, so this pack uses `FR-09Bxx`/`NFR-09Bxx`/`SC-09Bxx`. The
    cross-cutting no-GC profile keeps the `NGC-xx` namespace proposed in `LMAX-NO-GC-JAVA.md` so hot-path

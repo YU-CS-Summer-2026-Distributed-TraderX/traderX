@@ -308,6 +308,7 @@ validate_state_entries() {
   fi
 
   local state_num="${state_id%%-*}"
+  state_num="${state_num%%[a-z]*}"
   if [[ "${state_num}" =~ ^[0-9]+$ ]] && (( 10#${state_num} >= 6 )); then
     if path_in_list "trade-feed" "${entries[@]}"; then
       echo "[fail] decommission invariant violation: trade-feed must not reappear after state 006"

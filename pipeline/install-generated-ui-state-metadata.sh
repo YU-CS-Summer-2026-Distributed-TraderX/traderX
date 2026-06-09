@@ -39,7 +39,8 @@ if (!activeState) {
 }
 
 function stateNumber(value) {
-  const match = /^([0-9]{3})-/.exec(value || '');
+  // Letter-suffixed sibling states (e.g. 009b-*) share their base number.
+  const match = /^([0-9]{3})[a-z]?-/.exec(value || '');
   return match ? Number.parseInt(match[1], 10) : 0;
 }
 

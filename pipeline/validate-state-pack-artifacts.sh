@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 errors=0
 packs=0
 
-for pack_dir in "${ROOT}"/specs/[0-9][0-9][0-9]-*; do
+for pack_dir in "${ROOT}"/specs/[0-9][0-9][0-9]-* "${ROOT}"/specs/[0-9][0-9][0-9][a-z]-*; do
   [[ -d "${pack_dir}" ]] || continue
   packs=$((packs + 1))
   pack_id="$(basename "${pack_dir}")"

@@ -26,10 +26,13 @@ if [[ -z "${STATE_ID}" ]]; then
   exit 1
 fi
 state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${state_num}" =~ ^[0-9]+[a-z]?$ ]]; then
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
 fi
+# Numeric thresholds treat letter-suffixed sibling states (e.g. 009b-*) as
+# their numeric base; script-name lookups use the full STATE_ID prefix.
+state_num="${state_num%%[a-z]*}"
 shift || true
 
 BRANCH_OVERRIDE=""
@@ -3272,6 +3275,7 @@ EOF
 
 write_snapshot_agentic_docs() {
   local state_num="${STATE_ID%%-*}"
+  state_num="${state_num%%[a-z]*}"
   if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
     return
   fi

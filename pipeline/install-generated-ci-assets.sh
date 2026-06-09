@@ -17,11 +17,15 @@ if [[ ! -d "${TARGET_ROOT}" ]]; then
   exit 1
 fi
 
+# State ids are NNN-name, with an optional letter suffix for sibling branch
+# states (e.g. 009b-lmax-sequencer-architecture). Numeric ordering comparisons
+# use the digits only; the suffixed state sorts with its numeric base.
 state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${state_num}" =~ ^[0-9]+[a-z]?$ ]]; then
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
 fi
+state_num="${state_num%%[a-z]*}"
 
 if (( 10#${state_num} < 2 )); then
   echo "[info] skipping generated CI assets for ${STATE_ID} (policy starts at state 002)"
@@ -169,6 +173,9 @@ case "${STATE_ID}" in
     state_allowed_roots=("${PRICING_COMPONENT_DIRS[@]}" "ingress" "pricing-awareness-market-data" "postgres-database-replacement")
     ;;
   009-order-management-matcher)
+    state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
+    ;;
+  009b-lmax-sequencer-architecture)
     state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
     ;;
   010-kubernetes-runtime)

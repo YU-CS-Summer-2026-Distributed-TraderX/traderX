@@ -121,6 +121,10 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
   `traderx_orders_pending_by_side`, `traderx_order_events_total`, `traderx_order_match_latency_seconds`,
   `traderx_order_book_age_seconds`) SHALL be retained, now sourced from in-memory BLP state;
   `traderx_order_match_latency_seconds` becomes a real measurement (no zero-filled placeholder).
+- FR-09B42: The inherited state-aware header contract (`009` FR-01317) SHALL render this state's
+  identity: generated snapshots update the state-ui-metadata overlay so the UI title, About page, and
+  status view identify `009b-lmax-sequencer-architecture` (not the parent state id). This is the only
+  permitted UI-visible change in this state.
 
 ## Non-Functional Requirements
 
