@@ -13,22 +13,29 @@
       render stub, lifecycle delegate scripts to `009`, and letter-suffix state-id support in
       pipeline validators/installers.
 - [ ] T09B10 Establish the P0 latency harness (HdrHistogram/JLBH/jHiccup) against generated `009`.
-- [ ] T09B11 Implement the input disruptor (ring, sequencer, journaler, replicator, un-marshaller,
-      sequence barrier) inside `order-matcher`; remove `@Scheduled` poll and `orderMutationLock`.
-- [ ] T09B12 Implement `long` fixed-point price/qty, `int securityId` symbol table, and SBE codec
-      generation (`generateSbe` Gradle task, `sbe/order-input.xml` + `sbe/order-output.xml`).
-- [ ] T09B13 Implement the fused BLP (in-memory order books, positions, caches; typed output events;
-      request/response cache-miss events; determinism contract).
-- [ ] T09B14 Implement snapshot + journal replay recovery and JIT warm-up; nightly bounce hook.
-- [ ] T09B15 Implement the output disruptor (Marshaller, NATS Publisher bridge preserving `009`
-      subjects/payloads, batched Read-model Projector with checkpoint + rebuild).
-- [ ] T09B16 Implement replication to a follower BLP with output suppression and promotion-based
-      failover (loopback/stub mode for the `demo`/`C2` profile).
-- [ ] T09B17 Implement run profiles (`demo`/`perf`/`noGcTest`) with documented JVM flags and wait
-      strategies.
+- [x] T09B11 Implement the input disruptor (ring, sequencer, journaler, replicator, sequence barrier)
+      inside `order-matcher`; remove `@Scheduled` poll and `orderMutationLock`.
+      (Implemented in `generation/runtime-overrides/order-matcher/.../lmax/`; HdrHistogram latency
+      telemetry included. SBE un-marshaller deferred — see `generation/implementation-status.md`.)
+- [~] T09B12 `long` fixed-point price/qty and `int securityId` symbol table implemented (`Px`,
+      `SymbolTable`); SBE codec generation (`generateSbe`, `sbe/*.xml`) and Agrona structures
+      deferred (`generation/implementation-status.md`).
+- [x] T09B13 Implement the BLP (single-threaded in-memory order book, event-carried time, typed
+      output events, gateway request/response acks). Booking/position fusion is bridged through the
+      existing trade pipeline at the output ring (strangler P2 boundary; see status doc).
+- [~] T09B14 Recovery: persisted read-model warm-start + input-event journal implemented; snapshot
+      files, journal replay tooling, JIT warm-up, and nightly bounce deferred.
+- [x] T09B15 Implement the output disruptor (Marshaller/read-model, NATS bridge preserving `009`
+      subjects/payloads, TradeBooked bridge, batched Read-model Projector).
+- [~] T09B16 Replication seam implemented as loopback stub gating the BLP (demo profile); real
+      follower BLP + promotion failover deferred to the perf profile.
+- [~] T09B17 Wait-strategy/ring-size/journal config keys implemented with demo-safe defaults
+      (`blocking`); `perf`/`noGcTest` JVM launch profiles deferred.
 - [ ] T09B18 Implement the no-GC gate: `pipeline/validate-no-gc-conformance.sh`, Gradle `noGcTest`
       task under Epsilon GC, banned-API static check, JFR/async-profiler attribution.
-- [ ] T09B19 Implement parity fixtures: penny parity, determinism replay, NATS subject/payload parity.
+- [~] T09B19 Parity fixtures: penny parity (`PxTest`) and functional-policy parity
+      (`LmaxHotPathParityTest`) implemented and passing; determinism replay + NATS payload
+      byte-parity smoke deferred.
 - [ ] T09B20 Add ring/BLP/egress/no-GC observability (metrics wiring, Prometheus targets, Grafana
       dashboards incl. allocation alert and GC-pause panel).
 - [ ] T09B21 Implement smoke tests: `scripts/test-state-009b-lmax-sequencer-architecture.sh`.

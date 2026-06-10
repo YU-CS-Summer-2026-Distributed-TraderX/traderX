@@ -486,3 +486,6 @@ website/.docusaurus
 website/npm-debug.log*
 website/yarn-debug.log*
 website/yarn-error.log*
+
+# IDE-only parent-state source snapshots inside spec overlays (derived)
+**/.parent-src/

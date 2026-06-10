@@ -23,7 +23,10 @@ overlay_dir() {
   local label="$3"
   if [[ -d "${src}" ]] && find "${src}" -type f -print -quit | grep -q .; then
     mkdir -p "${dst}"
-    cp -R "${src}/." "${dst}/"
+    # .parent-src is an IDE-only snapshot of parent-state sources for in-place
+    # overlay development; generated trees already contain those files in src/.
+    tar -C "${src}" --exclude='./*/.parent-src' --exclude='./.parent-src' -cf - . \
+      | tar -C "${dst}" -xf -
     echo "[render] overlaid ${label} from ${src}"
   else
     echo "[info] no ${label} overrides present yet (${src}); keeping 009 parity"

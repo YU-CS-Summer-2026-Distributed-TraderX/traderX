@@ -49,6 +49,11 @@ CHILD_SNAPSHOT="${TMP_DIR}/child"
 DIFF_REPO="${TMP_DIR}/diff-repo"
 RSYNC_EXCLUDES=(
   "--exclude=.git"
+  # Harness compat symlinks (generated/code/* inside the target root) are
+  # recreated by install-generated-runtime-harness.sh on every generation and
+  # are identical in parent and child, so they are never patch content. On
+  # Windows they materialize as junctions that snapshot tools cannot copy.
+  "--exclude=/generated"
   "--exclude=.DS_Store"
   "--exclude=node_modules"
   "--exclude=node_modules/**"
@@ -100,6 +105,9 @@ mkdir -p "${DIFF_REPO}"
 rsync -a --delete "${PARENT_SNAPSHOT}/" "${DIFF_REPO}/"
 
 git -C "${DIFF_REPO}" init -q
+# Keep the diff repo byte-faithful regardless of host git defaults (Windows
+# global config often sets autocrlf=true, which would mangle the captured patch).
+git -C "${DIFF_REPO}" config core.autocrlf false
 git -C "${DIFF_REPO}" add -A
 git -C "${DIFF_REPO}" commit --allow-empty -qm "parent-${PARENT_STATE_ID}"
 

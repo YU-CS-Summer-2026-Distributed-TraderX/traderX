@@ -28,6 +28,11 @@ fi
 if git -C "${TARGET_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   CAN_USE_3WAY=1
   APPLY_SCOPE_ROOT="$(git -C "${TARGET_ROOT}" rev-parse --show-toplevel)"
+  if command -v cygpath >/dev/null 2>&1; then
+    # Git for Windows reports a Windows-style toplevel (C:/...); normalize it to
+    # the POSIX form used by TARGET_ROOT so the prefix comparison below works.
+    APPLY_SCOPE_ROOT="$(cygpath -u "${APPLY_SCOPE_ROOT}")"
+  fi
   if [[ "${TARGET_ROOT}" != "${APPLY_SCOPE_ROOT}" ]]; then
     case "${TARGET_ROOT}" in
       "${APPLY_SCOPE_ROOT}"/*)
@@ -64,6 +69,20 @@ apply_patch_with_fallback() {
   local apply_args=(--recount --whitespace=nowarn)
   if [[ -n "${APPLY_DIR_PREFIX}" ]]; then
     apply_args+=(--directory="${APPLY_DIR_PREFIX}")
+  fi
+  if command -v cygpath >/dev/null 2>&1; then
+    # Windows worktrees materialize the harness compat symlinks as junctions,
+    # which git apply cannot rewrite. Skipping them is safe:
+    # install-generated-runtime-harness.sh recreates these links for the
+    # current state immediately after patch application.
+    local link_prefix=""
+    if [[ -n "${APPLY_DIR_PREFIX}" ]]; then
+      link_prefix="${APPLY_DIR_PREFIX}/"
+    fi
+    apply_args+=(
+      --exclude="${link_prefix}generated/code/target-generated"
+      --exclude="${link_prefix}generated/code/components/*"
+    )
   fi
 
   if git -C "${APPLY_SCOPE_ROOT}" apply --check "${apply_args[@]}" "${patch_file}"; then

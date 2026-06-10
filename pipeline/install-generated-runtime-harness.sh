@@ -187,6 +187,18 @@ case "${STATE_ID}" in
     copy_script_if_exists "test-state-009-order-management-matcher.sh"
     copy_script_if_exists "test-messaging-009-order-management-matcher.sh"
     ;;
+  009b-lmax-sequencer-architecture)
+    copy_script_if_exists "start-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "stop-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "status-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "test-state-009-order-management-matcher.sh"
+    copy_script_if_exists "test-messaging-009-order-management-matcher.sh"
+    copy_script_if_exists "start-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "stop-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "status-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "test-state-009b-lmax-sequencer-architecture.sh"
+    copy_script_if_exists "test-messaging-009b-lmax-sequencer-architecture.sh"
+    ;;
   010-kubernetes-runtime)
     copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
     copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
@@ -236,7 +248,7 @@ case "${STATE_ID}" in
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|010-*|011-*|012-*|013-*|014-*)
+  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins
@@ -729,6 +741,36 @@ Smoke test:
 ```
 EOF
       ;;
+    009b-lmax-sequencer-architecture)
+      cat > "${TARGET_ROOT}/RUN_FROM_GENERATED.md" <<'EOF'
+# Run From Generated (State 009b)
+
+Start (choose one):
+
+```bash
+# Full start (build + start)
+./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
+
+# Fast restart (reuse existing artifacts; skips build)
+./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
+```
+
+Status / stop:
+
+```bash
+./scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
+./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
+```
+
+Smoke test:
+
+```bash
+./scripts/test-state-009b-lmax-sequencer-architecture.sh
+./scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
+./scripts/test-messaging-009b-lmax-sequencer-architecture.sh
+```
+EOF
+      ;;
     010-kubernetes-runtime)
       cat > "${TARGET_ROOT}/RUN_FROM_GENERATED.md" <<'EOF'
 # Run From Generated (State 010)
@@ -922,7 +964,7 @@ EOF
 - Tempo: `http://localhost:3200`
 EOF
       ;;
-    009-order-management-matcher)
+    009-order-management-matcher|009b-lmax-sequencer-architecture)
       cat <<'EOF'
 - UI (ingress): `http://localhost:8080`
 - API explorer (ingress): `http://localhost:8080/api/docs`
