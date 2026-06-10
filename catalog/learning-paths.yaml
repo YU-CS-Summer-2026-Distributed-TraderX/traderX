@@ -27,6 +27,7 @@ tracks:
     states:
       - 005-postgres-database-replacement
       - 006-messaging-nats-replacement
+      - 009b-lmax-sequencer-architecture
   functional:
     description: "Functional capability expansion states."
     states:
@@ -40,6 +41,7 @@ tracks:
   optional:
     description: "Optional side branches not in primary publish lineage."
     states:
+      - 009b-lmax-sequencer-architecture
       - 013-radius-kubernetes-platform
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
@@ -112,6 +114,13 @@ stateCatalog:
     isConvergence: true
     lineageRole: canonical
     spec: specs/009-order-management-matcher/spec.md
+  - id: 009b-lmax-sequencer-architecture
+    previous:
+      - 009-order-management-matcher
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/009b-lmax-sequencer-architecture/spec.md
   - id: 010-kubernetes-runtime
     previous:
       - 009-order-management-matcher

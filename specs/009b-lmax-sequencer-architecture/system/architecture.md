@@ -1,11 +1,9 @@
 # LMAX Sequencer Architecture (Trading Hot Path)
 
-State 009 runtime with the trading hot path rebuilt as a sequenced, journaled, single-threaded
-in-memory BLP wired with disruptor rings; external contracts unchanged.
+State 009 runtime with the trading hot path rebuilt as a sequenced, journaled, single-threaded in-memory BLP wired with disruptor rings; external contracts unchanged.
 
 - Generated from: `system/architecture.model.json`
-- Canonical flows: `specs/001-baseline-uncontainerized-parity/system/end-to-end-flows.md` plus
-  F7 (event-sourced recovery) and F8 (failover) from `requirements/functional-delta.md`
+- Canonical flows: `system/end-to-end-flows.md`
 
 ## Architecture Diagram
 
@@ -76,13 +74,3 @@ flowchart LR
 | `loki` | service | Loki | Aggregates runtime logs (hot-path logging is async/off-thread). |
 | `grafana` | service | Grafana | Dashboards for ring headroom, sequence lag, BLP/egress latency, projector lag, allocation rate, GC pauses. |
 
-## Notes
-
-- The `input_disruptor`, `blp`, and `output_disruptor` nodes are threads/rings inside the rebuilt
-  `order-matcher` process (same service identity and port as `009`); they are modeled as nodes because
-  they carry distinct contracts, metrics, and failure modes.
-- `account-service`, `position-service`, `people-service`, and `reference-data` are unchanged and
-  omitted from the diagram for clarity; they feed the Gateway/BLP caches and read the projected
-  read-model exactly as they read `009`'s tables.
-- The user acknowledgement path ends at "durable + replicated" on the input side; everything from the
-  output ring onward (NATS fan-out, projection) is off the acknowledgement path by design.
