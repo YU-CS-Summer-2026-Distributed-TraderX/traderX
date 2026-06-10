@@ -1,8 +1,29 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
-Date: 2026-06-09. Scope of what `generation/runtime-overrides/order-matcher/` implements today
-versus what the spec defers to later milestones. Verified by compiling and running the module's
-test suite (11 tests green) against Java 21 / Gradle 8.14.5.
+Date: 2026-06-09 (updated 2026-06-10). Scope of what
+`generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to
+later milestones. Verified by compiling and running the module's test suite (11 tests green)
+against Java 21 / Gradle 8.14.5.
+
+## Patchset + pipeline integration (2026-06-10)
+
+- `generation/patches/0001-state-overlay.patch` is captured via
+  `pipeline/create-state-patchset.sh 009b-lmax-sequencer-architecture 009-order-management-matcher`
+  (38 entries: the 25-file order-matcher overlay + state-identity files). A from-scratch
+  `pipeline/generate-state.sh 009b-lmax-sequencer-architecture` applies it cleanly (direct apply,
+  no 3-way fallback) and the overrides render is byte-idempotent on top.
+- Capture now excludes top-level-only installer outputs (`/api-explorer`, `/ingress/api-explorer`,
+  `/runtime`, `state-ui.json`): they are absent in nested parent generations, so depth-1 forms
+  would create patch entries whose preimages never exist at apply time. The state's own
+  post-generation installers always rebuild them.
+- 009b-aware pipeline gates added: pubsub-inspector enablement in
+  `install-generated-api-explorer.sh`, a `009b` case (scripts/runbook/URLs/compose normalization)
+  in `install-generated-runtime-harness.sh`, and `/grafana` + `/prometheus` ingress route
+  injection in `render-state-009b-lmax-sequencer-architecture.sh` (the 009 render only injects
+  them at generation depth 1, which a nested parent run skips).
+- IDE support: `order-matcher/.parent-src/` (git-ignored) snapshots the 21 parent-009 classes the
+  overlay does not replace, registered as an optional Gradle source dir so the overlay compiles
+  standalone in `specs/`. The render script excludes it from generated trees.
 
 ## Implemented (demo profile)
 

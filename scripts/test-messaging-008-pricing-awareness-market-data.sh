@@ -125,15 +125,27 @@ let submitted = false;
 const matched = new Set();
 const sidByTopic = new Map(Object.keys(subjectExpectations).map((topic, idx) => [topic, idx + 1]));
 
+let settledExit = false;
+function shutdown(code) {
+  // Close the websocket first and exit on a later tick: process.exit() while
+  // the socket handle is mid-close crashes Node on Windows (libuv assertion).
+  if (settledExit) {
+    return;
+  }
+  settledExit = true;
+  try { ws.close(); } catch (_) {}
+  setTimeout(() => process.exit(code), 100);
+}
+
 function fail(code, message) {
   console.error(`[error] ${code}: ${message}`);
-  process.exit(1);
+  shutdown(1);
 }
 
 function maybeDone() {
   if (matched.size === Object.keys(subjectExpectations).length) {
     console.log(`[info] messaging subjects validated: ${Array.from(matched).sort().join(', ')}`);
-    process.exit(0);
+    shutdown(0);
   }
 }
 
@@ -182,7 +194,16 @@ function parseFrame(text, ws) {
       ws.send('PONG\r\n');
       continue;
     }
-    if (line.startsWith('INFO') || line.startsWith('PONG')) {
+    if (line.startsWith('PONG')) {
+      // The broker answered the PING sent after our SUBs, so the subscriptions
+      // are registered: the one-shot trade flow can no longer race them.
+      submitTrade().catch((err) => {
+        clearTimeout(timer);
+        fail('NO_MESSAGE_RECEIVED_ON_SUBJECT', err.message);
+      });
+      continue;
+    }
+    if (line.startsWith('INFO')) {
       continue;
     }
     if (line.startsWith('MSG ')) {
@@ -220,18 +241,14 @@ const timer = setTimeout(() => {
   fail('NO_MESSAGE_RECEIVED_ON_SUBJECT', `timed out; missing subjects: ${missing.join(', ')}`);
 }, timeoutMs);
 
-ws.onopen = async () => {
+ws.onopen = () => {
   ws.send('CONNECT {"protocol":1,"verbose":false,"pedantic":false,"echo":false}\r\n');
   for (const [topic, sid] of sidByTopic.entries()) {
     ws.send(`SUB ${topic} ${sid}\r\n`);
   }
+  // submitTrade() is triggered by the PONG reply (see parseFrame): publishing
+  // before the broker registers the SUBs would drop the one-shot trade events.
   ws.send('PING\r\n');
-  try {
-    await submitTrade();
-  } catch (err) {
-    clearTimeout(timer);
-    fail('NO_MESSAGE_RECEIVED_ON_SUBJECT', err.message);
-  }
 };
 
 ws.onmessage = async (event) => {

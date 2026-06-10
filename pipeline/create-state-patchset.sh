@@ -54,6 +54,16 @@ RSYNC_EXCLUDES=(
   # are identical in parent and child, so they are never patch content. On
   # Windows they materialize as junctions that snapshot tools cannot copy.
   "--exclude=/generated"
+  # Top-level-only (generation depth 1) installer outputs: the API explorer,
+  # GHCR/deploy runtime bundles, and UI state metadata are produced solely for
+  # the state being generated at the root invocation. A nested parent never has
+  # them, so capturing their depth-1 forms creates patch entries whose
+  # preimages do not exist at apply time. The state's own post-generation
+  # installers always rebuild them, so they are never patch content.
+  "--exclude=/api-explorer"
+  "--exclude=/ingress/api-explorer"
+  "--exclude=/runtime"
+  "--exclude=state-ui.json"
   "--exclude=.DS_Store"
   "--exclude=node_modules"
   "--exclude=node_modules/**"

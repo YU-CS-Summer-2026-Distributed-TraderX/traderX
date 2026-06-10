@@ -40,6 +40,8 @@ let userOrderId = null;
 let adminOrderId = null;
 let buffer = '';
 let pending = null;
+let pongResolve = null;
+let activeWs = null;
 const orderIdsBySubjectStatus = new Map();
 
 const seen = {
@@ -55,7 +57,14 @@ const seen = {
 
 function fail(message) {
   console.error(`[error] ${message}`);
-  process.exit(1);
+  // Close the websocket first and exit on a later tick: process.exit() while
+  // the socket handle is mid-close crashes Node on Windows (libuv assertion).
+  try {
+    if (activeWs) {
+      activeWs.close();
+    }
+  } catch (_) {}
+  setTimeout(() => process.exit(1), 100);
 }
 
 function trackOrderEvent(subject, payload) {
@@ -231,7 +240,15 @@ function parseFrame(text, ws) {
       ws.send('PONG\r\n');
       continue;
     }
-    if (line.startsWith('INFO') || line.startsWith('PONG')) {
+    if (line.startsWith('PONG')) {
+      // Broker acked the PING sent after our SUBs: subscriptions are live.
+      if (pongResolve) {
+        pongResolve();
+        pongResolve = null;
+      }
+      continue;
+    }
+    if (line.startsWith('INFO')) {
       continue;
     }
     if (line.startsWith('MSG ')) {
@@ -251,6 +268,7 @@ function parseFrame(text, ws) {
 
 async function main() {
   const ws = new WebSocket(wsUrl);
+  activeWs = ws;
 
   await Promise.race([
     new Promise((resolve, reject) => {
@@ -282,7 +300,16 @@ async function main() {
   for (const [topic, sid] of sidByTopic.entries()) {
     ws.send(`SUB ${topic} ${sid}\r\n`);
   }
+  // Wait for the broker to ack the SUBs (PING/PONG flush) before triggering
+  // order actions, so their one-shot events cannot race the registration.
+  const subsFlushed = new Promise((resolve) => {
+    pongResolve = resolve;
+  });
   ws.send('PING\r\n');
+  await Promise.race([
+    subsFlushed,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timeout waiting for broker to ack subscriptions')), 8000)),
+  ]);
 
   const userCreate = await requestJson(
     '/order-matcher/orders',

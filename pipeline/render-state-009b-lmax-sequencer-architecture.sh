@@ -36,4 +36,58 @@ overlay_dir() {
 overlay_dir "${RUNTIME_OVERRIDES_DIR}" "${TARGET_ROOT}" "runtime"
 overlay_dir "${FRONTEND_OVERRIDE_SOURCE_DIR}" "${TARGET_FRONTEND_DIR}" "frontend"
 
+# Observability ingress routes (/grafana, /prometheus) are injected by the 009
+# render only at generation depth 1; when 009 runs nested as this state's
+# parent, the injection is skipped. Re-apply it here (same idempotent mutation
+# as render-state-009-order-management-matcher.sh) so 009b keeps 009's ingress
+# observability parity.
+ensure_observability_ingress_routes() {
+  local ingress_file="$1"
+  local tmp_file
+  [[ -f "${ingress_file}" ]] || return 0
+  if rg -q "location /grafana/" "${ingress_file}" && rg -q "location /prometheus/" "${ingress_file}"; then
+    return 0
+  fi
+
+  tmp_file="$(mktemp)"
+  awk '
+    !added && $0 ~ /^[[:space:]]*location \/ \{/ {
+      print "    location = /grafana {"
+      print "        return 301 /grafana/;"
+      print "    }"
+      print ""
+      print "    location /grafana/ {"
+      print "        proxy_pass http://grafana:3000;"
+      print "        proxy_http_version 1.1;"
+      print "        proxy_set_header Host $http_host;"
+      print "        proxy_set_header X-Forwarded-Proto $scheme;"
+      print "        proxy_set_header X-Forwarded-Prefix /grafana;"
+      print "    }"
+      print ""
+      print "    location = /prometheus {"
+      print "        return 301 /prometheus/;"
+      print "    }"
+      print ""
+      print "    location /prometheus/ {"
+      print "        proxy_pass http://prometheus:9090;"
+      print "        proxy_http_version 1.1;"
+      print "        proxy_set_header Host $http_host;"
+      print "        proxy_set_header X-Forwarded-Proto $scheme;"
+      print "        proxy_set_header X-Forwarded-Prefix /prometheus;"
+      print "    }"
+      print ""
+      added = 1
+    }
+    { print }
+  ' "${ingress_file}" > "${tmp_file}"
+  mv "${tmp_file}" "${ingress_file}"
+}
+
+GEN_DEPTH="${TRADERX_GENERATION_DEPTH:-1}"
+if [[ "${GEN_DEPTH}" == "1" ]]; then
+  ensure_observability_ingress_routes "${TARGET_ROOT}/ingress/nginx.traderx.conf.template"
+else
+  echo "[info] nested generation depth=${GEN_DEPTH}; skipping ingress observability route mutation"
+fi
+
 echo "[done] render pass complete for ${STATE_ID}"

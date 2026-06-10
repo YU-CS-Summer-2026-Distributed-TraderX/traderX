@@ -11,7 +11,10 @@
 - [x] T09B09 Author ADRs 014–017 (input disruptor, single-thread BLP, async read-model, no-GC gate).
 - [x] T09B09A Scaffold pipeline readiness: catalog entry (`status: draft`), generation hook,
       render stub, lifecycle delegate scripts to `009`, and letter-suffix state-id support in
-      pipeline validators/installers.
+      pipeline validators/installers. (2026-06-10: added the `009b` runtime-harness case,
+      pubsub-inspector gate, ingress observability route injection in the 009b render, and
+      capture excludes for top-level-only installer outputs; overlay patchset captured and
+      consumer-verified — see `generation/implementation-status.md`.)
 - [ ] T09B10 Establish the P0 latency harness (HdrHistogram/JLBH/jHiccup) against generated `009`.
 - [x] T09B11 Implement the input disruptor (ring, sequencer, journaler, replicator, sequence barrier)
       inside `order-matcher`; remove `@Scheduled` poll and `orderMutationLock`.

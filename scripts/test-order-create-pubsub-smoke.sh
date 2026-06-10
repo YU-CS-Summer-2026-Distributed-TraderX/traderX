@@ -31,6 +31,19 @@ let buffer = '';
 let pending = null;
 let closed = false;
 let settled = false;
+let onSubsFlushed = null;
+let activeWs = null;
+
+function shutdown(code) {
+  // Close the websocket first and exit on a later tick: process.exit() while
+  // the socket handle is mid-close crashes Node on Windows (libuv assertion).
+  try {
+    if (activeWs) {
+      activeWs.close();
+    }
+  } catch (_) {}
+  setTimeout(() => process.exit(code), 100);
+}
 
 function fail(message) {
   if (settled) {
@@ -38,7 +51,7 @@ function fail(message) {
   }
   settled = true;
   console.error(`[error] ${message}`);
-  process.exit(1);
+  shutdown(1);
 }
 
 function pass(message) {
@@ -47,7 +60,7 @@ function pass(message) {
   }
   settled = true;
   console.log(`[info] ${message}`);
-  process.exit(0);
+  shutdown(0);
 }
 
 function maybeDone() {
@@ -136,7 +149,18 @@ function parseFrameChunk(chunk, ws) {
       continue;
     }
 
-    if (line.startsWith('INFO') || line.startsWith('PONG')) {
+    if (line.startsWith('PONG')) {
+      // Broker has registered our SUBs (PING/PONG flush): the action queued
+      // behind the flush can no longer race the subscription registration.
+      if (onSubsFlushed) {
+        const callback = onSubsFlushed;
+        onSubsFlushed = null;
+        callback();
+      }
+      continue;
+    }
+
+    if (line.startsWith('INFO')) {
       continue;
     }
 
@@ -172,6 +196,7 @@ async function requestJson(path, options, expectedStatus) {
 
 async function main() {
   const ws = new WebSocket(wsUrl);
+  activeWs = ws;
 
   const connectTimer = setTimeout(() => {
     if (!closed) {
@@ -179,13 +204,12 @@ async function main() {
     }
   }, 8000);
 
-  ws.onopen = async () => {
-    clearTimeout(connectTimer);
-
-    ws.send('CONNECT {"protocol":1,"verbose":false,"pedantic":false,"echo":false}\r\n');
-    ws.send(`SUB ${accountOrdersTopic} 1\r\n`);
-    ws.send(`SUB ${allOrdersTopic} 2\r\n`);
-    ws.send('PING\r\n');
+  let orderCreateKicked = false;
+  async function kickOrderCreate() {
+    if (orderCreateKicked) {
+      return;
+    }
+    orderCreateKicked = true;
 
     const uniqueQty = Math.floor(Math.random() * 1000) + 1;
     const createPayload = {
@@ -214,6 +238,20 @@ async function main() {
     seenAccountCreate = accountNewOrderIds.has(expectedOrderId);
     seenAllCreate = allNewOrderIds.has(expectedOrderId);
     maybeDone();
+  }
+
+  ws.onopen = () => {
+    clearTimeout(connectTimer);
+
+    ws.send('CONNECT {"protocol":1,"verbose":false,"pedantic":false,"echo":false}\r\n');
+    ws.send(`SUB ${accountOrdersTopic} 1\r\n`);
+    ws.send(`SUB ${allOrdersTopic} 2\r\n`);
+    // kickOrderCreate() fires on the PONG reply (see parseFrameChunk) so the
+    // one-shot NEW order events cannot race the subscription registration.
+    onSubsFlushed = () => {
+      kickOrderCreate().catch((err) => fail(err instanceof Error ? err.message : String(err)));
+    };
+    ws.send('PING\r\n');
   };
 
   ws.onmessage = async (event) => {

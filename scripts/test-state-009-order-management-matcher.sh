@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INGRESS_URL="http://localhost:8080"
+INGRESS_URL="${TRADERX_INGRESS_URL:-http://localhost:8080}"
 ORDER_MATCHER_PORT="${ORDER_MATCHER_PORT:-18110}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-traderx-state-009}"
 GRAFANA_PORT="${GRAFANA_PORT:-3001}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${REPO_ROOT}/generated}"
 SKIP_MESSAGING=0
+INGRESS_URL_ARG_SEEN=0
 
 while (( "$#" )); do
   case "$1" in
@@ -15,8 +16,12 @@ while (( "$#" )); do
       SKIP_MESSAGING=1
       ;;
     *)
-      if [[ "${INGRESS_URL}" == "http://localhost:8080" ]]; then
+      # First positional argument is the ingress URL. Track it with a flag:
+      # comparing against the default breaks when TRADERX_INGRESS_URL is set
+      # and the local-runtime delegation re-forwards the same URL as an arg.
+      if [[ "${INGRESS_URL_ARG_SEEN}" -eq 0 ]]; then
         INGRESS_URL="$1"
+        INGRESS_URL_ARG_SEEN=1
       else
         echo "[error] unknown argument: $1"
         echo "[hint] usage: $0 [INGRESS_URL] [--skip-messaging]"
