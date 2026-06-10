@@ -36,7 +36,7 @@ This document does two things:
 9. [GC choices: Epsilon to prove, ZGC/Shenandoah to protect](#a9-gc-choices-epsilon-to-prove-zgcshenandoah-to-protect)
 10. [Warm-up & the nightly bounce](#a10-warm-up--the-nightly-bounce)
 11. [Proving it: the allocation gate](#a11-proving-it-the-allocation-gate)
-12. [Illustrative code](#a12-illustrative-code)
+12. [The code as implemented in state `009b`](#a12-the-code-as-implemented-in-state-009b)
 
 **Part B — What a spec needs (building on `009`)**
 13. [Proposed scope: a conformance profile, not a component](#b13-proposed-scope-a-conformance-profile-not-a-component)
@@ -109,15 +109,16 @@ every one of these from the hot path.
 
 Two object lifetimes exist on the hot path, and **both** are allocated up front:
 
-- **Ring slots** — the input `TradeEvent[]`, the output `OutEvent[]`: created once by the `EventFactory` at
-  Disruptor construction, mutated in place forever.
-- **Domain state** — order-book entries and positions are **long-lived and pooled**. A resting-order entry is
-  taken from a free-list when an order arrives and returned when it reaches a terminal state
-  (`FILLED`/`CANCELED`). Nothing is `new`-ed mid-life; this also avoids the "mid-life promotion" the article
-  warns about (objects that survive long enough to be promoted, then die, are the worst case for a generational
-  GC).
+- **Ring slots** — the input `InputEvent[]`, the output `OutputEvent[]`: created once by the `EventFactory`
+  at Disruptor construction (`InputEvent::newInstance` / `OutputEvent::newInstance` in `LmaxEngine`),
+  mutated in place forever.
+- **Domain state** — order-book entries are **long-lived and pooled** (`RestingOrder` + the free-list in
+  `MatchingEngine`). A resting-order entry is taken from the free-list when an order arrives; nothing is
+  `new`-ed mid-life. This also avoids the "mid-life promotion" the article warns about (objects that survive
+  long enough to be promoted, then die, are the worst case for a generational GC).
 
 The rule of thumb: **if an object's lifetime is per-event, it must be a reused slot, not a fresh allocation.**
+Both halves are shown with the real `009b` code in [§A12](#a12-the-code-as-implemented-in-state-009b).
 
 ## A5. Off-heap flyweights & SBE
 
@@ -127,33 +128,111 @@ and write fields directly at byte offsets, with **no intermediate object**. The 
 on the wire **and** written to the journal **and** carried in the ring slot — one representation, zero
 re-serialization. This is the single biggest win over `009`'s per-message Jackson `ObjectMapper`.
 
+> **Implementation status (state `009b`):** SBE codecs and Agrona structures are deferred (task `T09B12`).
+> The shipped hot path uses **typed-primitive-field slot holders** (`InputEvent`/`OutputEvent`, shown in
+> [§A12](#a12-the-code-as-implemented-in-state-009b)) which already achieve the zero-per-event-allocation
+> property; the `Journaler` writes them as fixed 64-byte little-endian records through one reused direct
+> `ByteBuffer`. The flyweight/SBE step replaces those holders with offsets over the same bytes.
+
 ## A6. `long` fixed-point instead of `BigDecimal`
 
-Prices and quantities are carried as **scaled `long`s** — e.g. value × 1,000,000 (6 dp), so `187.250`
+Prices and quantities are carried as **scaled `long`s** — value × 1,000,000 (6 dp), so `187.250`
 becomes `187_250_000L`. Arithmetic is plain integer math: allocation-free, branch-light, cache-friendly, and
-deterministic. Conversions to/from `BigDecimal`/`String` happen **only at the edges**:
+deterministic. Conversions to/from `BigDecimal`/`String` happen **only at the edges**. This is the actual
+`Px` class from state `009b`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/Px.java`):
 
 ```java
+/**
+ * Fixed-point price arithmetic for the LMAX hot path (state 009b, FR-09B05 / NGC-03).
+ *
+ * Prices travel through the rings and the BLP as {@code long} "ticks" (price x 1e6).
+ * BigDecimal conversion happens only at the edges (gateway in, read-model/NATS out) and
+ * rounds to 3dp HALF_UP, matching state 009's roundPrice() for penny parity (SC-09B04).
+ */
 public final class Px {
-    public static final long SCALE = 1_000_000L;           // 6 decimal places
-    private Px() {}
-    public static long of(long whole, long micros) { return whole * SCALE + micros; }
-    public static long notional(long pxTicks, long qty) { return pxTicks * qty; }
-    // BigDecimal/String formatting happens ONLY at the Gateway/Projector, never in the BLP
+    public static final long SCALE = 1_000_000L;
+    /** Sentinel for "no price available". Real prices are strictly positive. */
+    public static final long NONE = 0L;
+
+    private Px() {
+    }
+
+    /** Edge conversion in: BigDecimal -> ticks, applying 009's 3dp HALF_UP rounding. */
+    public static long toTicks(BigDecimal price) {
+        if (price == null) {
+            return NONE;
+        }
+        return price.setScale(3, RoundingMode.HALF_UP).movePointRight(6).longValueExact();
+    }
+
+    /** Edge conversion out: ticks -> BigDecimal at the external 3dp scale. */
+    public static BigDecimal toBigDecimal(long ticks) {
+        if (ticks == NONE) {
+            return null;
+        }
+        return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
+    }
 }
 ```
 
 The discipline here: **fix the scale globally, centralize conversions at the edges, and unit-test rounding
-against `009`'s `BigDecimal` behaviour** so there is no penny drift.
+against `009`'s `BigDecimal` behaviour** so there is no penny drift. That unit test exists — `PxTest`
+(same module, `src/test/java/.../lmax/PxTest.java`) round-trips a rounding fixture and asserts the
+in-the-money comparison semantics survive the integer mapping:
+
+```java
+@Test
+void roundTripMatches009Rounding() {
+    String[] fixtures = {
+        "187.250", "187.2499", "187.2495", "412.000", "0.001", "0.0005",
+        "905.125", "61.5", "507.88", "99.9994", "99.9995", "123456789.999"
+    };
+    for (String raw : fixtures) {
+        BigDecimal input = new BigDecimal(raw);
+        BigDecimal expected = input.setScale(3, RoundingMode.HALF_UP); // 009 roundPrice
+        assertEquals(0, expected.compareTo(Px.toBigDecimal(Px.toTicks(input))),
+            "penny drift for " + raw);
+    }
+}
+
+@Test
+void inTheMoneyComparesMatchBigDecimal() {
+    String[] prices = {"99.999", "100.000", "100.001", "187.250", "0.001", "905.125"};
+    String[] limits = {"100.000", "187.250", "0.001", "905.125"};
+    for (String p : prices) {
+        for (String l : limits) {
+            BigDecimal pb = new BigDecimal(p);
+            BigDecimal lb = new BigDecimal(l);
+            long pt = Px.toTicks(pb);
+            long lt = Px.toTicks(lb);
+            // Buy in-the-money: market <= limit; Sell: market >= limit (009 semantics)
+            assertEquals(pb.compareTo(lb) <= 0, pt <= lt, "buy compare " + p + " vs " + l);
+            assertEquals(pb.compareTo(lb) >= 0, pt >= lt, "sell compare " + p + " vs " + l);
+        }
+    }
+}
+```
 
 ## A7. Primitive collections & `int` symbols
 
 `HashMap<Integer,…>` / `ConcurrentHashMap<String,…>` box keys/values and chase pointers. The no-GC path uses
-**Agrona primitive collections** (`Int2ObjectHashMap`, `Long2ObjectHashMap`, `IntArrayList`) — open-addressed,
-no boxing, cache-friendly — the modern equivalent of the article's hand-written `LongToObjectHashMap`. And
-because securities are mapped `String → int securityId` at the Gateway, order books are plain arrays indexed
-by `securityId`: an O(1), allocation-free, branch-predictable lookup that replaces `009`'s per-tick
-stream-filter over JPA rows keyed by `String`.
+**primitive collections and plain arrays** — no boxing, no iterators, cache-friendly — the modern equivalent
+of the article's hand-written `LongToObjectHashMap`. Because securities are mapped `String → int securityId`
+at the Gateway (`SymbolTable`), the BLP's books are plain arrays indexed by `securityId`: an O(1),
+allocation-free, branch-predictable lookup that replaces `009`'s per-tick stream-filter over JPA rows keyed
+by `String`. The real `009b` structures (`MatchingEngine` fields):
+
+```java
+private RestingOrder[] ordersByRef;          // dense index: orderRef -> entry
+private final IntList[] openRefsBySecurity;  // per-security open-order index
+private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
+private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
+```
+
+`IntList` is the module's minimal growable primitive list (full source in
+[§A12](#a12-the-code-as-implemented-in-state-009b)); Agrona's `Int2ObjectHashMap`/`IntArrayList` replace it
+when the SBE/Agrona milestone lands (`T09B12`).
 
 ## A8. Logging off the hot path
 
@@ -195,7 +274,379 @@ The contract is only real if it is enforced. The validation stack:
 - **Determinism replay** — same journal ⇒ same state/output, which also catches accidental allocation that
   perturbs iteration order.
 
-## A12. Illustrative code
+## A12. The code as implemented in state `009b`
+
+Everything below is **verbatim from the codebase** — the LMAX hot path that ships with state `009b`, under
+`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
+(rendered into `order-matcher` by the generation pipeline). Where a class is long, elided sections are
+marked with `// …`.
+
+### A12.1 The ring slot: one mutable holder per slot, reused forever (`InputEvent.java`)
+
+```java
+/**
+ * Input-ring slot holder (one mutable instance per slot, allocated once at startup and
+ * reused forever — NGC-01). Producers overwrite every relevant field in place; nothing is
+ * allocated per event. Time is carried in the event (eventTimeMillis stamped at the
+ * gateway) so the BLP never reads a clock (FR-09B14).
+ */
+public final class InputEvent {
+    public static final byte TYPE_ORDER_NEW = 1;
+    public static final byte TYPE_ORDER_CANCEL = 2;
+    public static final byte TYPE_FORCE_FILL = 3;
+    public static final byte TYPE_PRICE_TICK = 4;
+
+    public static final byte SIDE_BUY = 0;
+    public static final byte SIDE_SELL = 1;
+
+    public long seq;              // global sequence number (the ring sequence)
+    public byte type;
+    public int orderRef;          // numeric part of the external ord-013-%04d id
+    public int accountId;
+    public int securityId;        // ticker mapped to int at the gateway
+    public byte side;
+    public int qty;
+    public long limitPx;          // long fixed-point (x 1e6)
+    public long priceTicks;       // for PRICE_TICK
+    public long ingressNanos;     // System.nanoTime() at the gateway, for latency histograms
+    public long eventTimeMillis;  // wall-clock stamped at the gateway (event-carried time)
+
+    public static InputEvent newInstance() {
+        return new InputEvent();
+    }
+}
+```
+
+### A12.2 Pooled domain state: the free-list (`RestingOrder.java` + `MatchingEngine`)
+
+The order-book entry is a flat primitive-field object, pooled on a free-list owned by the BLP thread:
+
+```java
+/**
+ * BLP-private resting-order entry. Instances are pooled (free list) and reused: taken when
+ * an order arrives, returned when it reaches a terminal state — never allocated mid-life
+ * in the steady state (NGC-01, technique table "object pooling for domain state").
+ */
+public final class RestingOrder {
+    public static final byte STATUS_NEW = 0;
+    public static final byte STATUS_PARTIALLY_FILLED = 1;
+    public static final byte STATUS_FILLED = 2;
+    public static final byte STATUS_CANCELED = 3;
+    public static final byte STATUS_REJECTED = 4;
+
+    public int orderRef;
+    public int accountId;
+    public int securityId;
+    public byte side;
+    public int quantity;
+    public int remaining;
+    public long limitPx;
+    public byte status;
+    public long lastExecPx = Px.NONE;
+    public int lastFillQty;
+    public long createdAtMillis;
+    public long updatedAtMillis;
+
+    RestingOrder nextFree;        // free-list link, BLP thread only
+
+    public boolean isOpen() {
+        return status == STATUS_NEW || status == STATUS_PARTIALLY_FILLED;
+    }
+    // … reset() zeroes every field when an entry is recycled
+}
+```
+
+The pool is filled once in the `MatchingEngine` constructor and drawn from per order — single-threaded, so
+the free-list is a plain linked field, no locks, no `Atomic*`:
+
+```java
+public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
+                      int fillFullThreshold, int initialPoolSize) {
+    // …
+    this.ordersByRef = new RestingOrder[16_384];
+    this.openRefsBySecurity = new IntList[maxSecurities];
+    this.lastPxBySecurity = new long[maxSecurities];
+    for (int i = 0; i < initialPoolSize; i++) {
+        RestingOrder pooled = new RestingOrder();
+        pooled.nextFree = freeList;
+        freeList = pooled;
+    }
+}
+
+private RestingOrder takeFromPool() {
+    RestingOrder o = freeList;
+    if (o == null) {
+        return new RestingOrder();
+    }
+    freeList = o.nextFree;
+    o.nextFree = null;
+    o.reset();
+    return o;
+}
+```
+
+### A12.3 Primitive collections: no boxing, swap-with-last removal (`IntList.java`)
+
+The per-security open-order index — full class, this is the entire implementation:
+
+```java
+/**
+ * Minimal growable primitive int list for the BLP's per-security open-order index.
+ * No boxing, no iterators; removal is unordered swap-with-last so scans stay O(1) per
+ * removal (NGC-04). Growth only happens as a security's book first deepens — steady-state
+ * operation allocates nothing.
+ */
+public final class IntList {
+    private int[] values;
+    private int size;
+
+    public IntList(int initialCapacity) {
+        values = new int[Math.max(4, initialCapacity)];
+    }
+
+    public int size() {
+        return size;
+    }
+
+    public int get(int index) {
+        return values[index];
+    }
+
+    public void add(int value) {
+        if (size == values.length) {
+            int[] grown = new int[values.length * 2];
+            System.arraycopy(values, 0, grown, 0, size);
+            values = grown;
+        }
+        values[size++] = value;
+    }
+
+    /** Swap-with-last removal; the caller re-checks the same index after removal. */
+    public void removeAtUnordered(int index) {
+        values[index] = values[--size];
+    }
+
+    public boolean removeValueUnordered(int value) {
+        for (int i = 0; i < size; i++) {
+            if (values[i] == value) {
+                removeAtUnordered(i);
+                return true;
+            }
+        }
+        return false;
+    }
+}
+```
+
+### A12.4 Integer matching: `009`'s policy with zero `BigDecimal` (`MatchingEngine.java`)
+
+`009`'s in-the-money test was `marketPrice.compareTo(order.getLimitPrice()) <= 0` on `BigDecimal`s pulled
+from a `ConcurrentHashMap<String,BigDecimal>`. In the BLP it is two integer compares over an array read —
+and the price-tick scan that replaces `009`'s per-tick JPA stream-filter walks a primitive index:
+
+```java
+private boolean isInTheMoney(RestingOrder o, long px) {
+    return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
+}
+
+private void autoFill(RestingOrder o, long px, InputEvent e) {
+    autoFillAttempts++;
+    int remaining = o.remaining;
+    int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
+    applyFill(o, fillQty, px, false, e, px);
+    autoFillSuccess++;
+}
+
+private void onPriceTick(InputEvent e) {
+    lastPxBySecurity[e.securityId] = e.priceTicks;
+    IntList refs = openRefsBySecurity[e.securityId];
+    if (refs == null) {
+        return;
+    }
+    // Re-evaluate resting orders for this security. Index-based scan; applyFill removes
+    // terminal orders from this list (swap-with-last), so the same index is re-checked.
+    for (int i = 0; i < refs.size(); ) {
+        RestingOrder o = lookup(refs.get(i));
+        if (o == null || !o.isOpen() || o.remaining <= 0) {
+            refs.removeAtUnordered(i);
+            continue;
+        }
+        if (isInTheMoney(o, e.priceTicks)) {
+            autoFill(o, e.priceTicks, e);
+            if (!o.isOpen()) {
+                continue; // entry at index i was swap-removed by applyFill
+            }
+        }
+        i++;
+    }
+}
+```
+
+### A12.5 Event-carried time, ids from the event, ack-first (`MatchingEngine.onNewOrder`)
+
+No `Instant.now()`, no `String.format("ord-013-%04d", …)`, no clock reads: time comes from
+`e.eventTimeMillis` (stamped once at the Gateway) and the order id derives from `e.orderRef`:
+
+```java
+private void onNewOrder(InputEvent e) {
+    RestingOrder o = takeFromPool();
+    o.orderRef = e.orderRef;
+    o.accountId = e.accountId;
+    o.securityId = e.securityId;
+    o.side = e.side;
+    o.quantity = e.qty;
+    o.remaining = e.qty;
+    o.limitPx = e.limitPx;
+    o.status = RestingOrder.STATUS_NEW;
+    o.lastExecPx = Px.NONE;
+    o.lastFillQty = 0;
+    o.createdAtMillis = e.eventTimeMillis;
+    o.updatedAtMillis = e.eventTimeMillis;
+    index(o);
+    openRefs(e.securityId).add(e.orderRef);
+
+    long px = lastPxBySecurity[e.securityId];
+    // Ack first: the REST create response is the NEW order, exactly as in 009.
+    out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true, px, e.ingressNanos);
+
+    // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
+    if (px != Px.NONE && isInTheMoney(o, px)) {
+        autoFill(o, px, e);
+    }
+}
+```
+
+### A12.6 Single-writer counters: plain `volatile long`, no `Atomic*` (`MatchingEngine`)
+
+Only the BLP thread writes these; edge threads (REST `/health`, `/metrics`) read them racily-but-safely.
+No CAS, no contention, no allocation:
+
+```java
+// Single-writer counters; volatile so edge threads can read them racily-but-safely.
+private volatile long eventsProcessed;
+private volatile long autoFillAttempts;
+private volatile long autoFillSuccess;
+private volatile long lastEventTimeMillis;
+private volatile long blpSeq;
+// …
+
+@Override
+public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
+    // …
+    switch (e.type) {
+        case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
+        case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
+        case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
+        case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+        default -> { /* ignore unknown event types */ }
+    }
+    eventsProcessed++;
+    lastEventTimeMillis = e.eventTimeMillis;
+    blpSeq = sequence;
+    metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
+}
+```
+
+### A12.7 The edges are where allocation is allowed (`LmaxEngine.executeNewOrder`)
+
+The Gateway converts `String`/`BigDecimal` once, then claim/write/publish into the ring with **zero
+allocation past this point** — and `publish` sits in a `finally` so a failed write never strands a slot:
+
+```java
+public OrderSnapshot executeNewOrder(int orderRef, int accountId, String ticker, OrderSide side,
+                                     int quantity, BigDecimal limitPrice) {
+    int securityId = symbols.idFor(ticker);     // String -> int, once, at the edge
+    long limitPx = Px.toTicks(limitPrice);      // BigDecimal -> long fixed-point, once
+    return execute(InputEvent.TYPE_ORDER_NEW, orderRef, accountId, securityId,
+        (byte) side.ordinal(), quantity, limitPx, 0L);
+}
+
+private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
+                              int quantity, long limitPx, long priceTicks) {
+    long seq = inputRing.next();
+    CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
+    try {
+        InputEvent e = inputRing.get(seq);
+        e.seq = seq;
+        e.type = type;
+        e.orderRef = orderRef;
+        e.accountId = accountId;
+        e.securityId = securityId;
+        e.side = side;
+        e.qty = quantity;
+        e.limitPx = limitPx;
+        e.priceTicks = priceTicks;
+        e.ingressNanos = System.nanoTime();
+        e.eventTimeMillis = System.currentTimeMillis();
+    } finally {
+        inputRing.publish(seq);
+    }
+    try {
+        return ack.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+    } // … timeout/interrupt handling maps to 009's REST error semantics
+}
+```
+
+### A12.8 Batch-amortised durability (`Journaler.onEvent`)
+
+The journaler writes each event into **one reused direct `ByteBuffer`** (allocated once in the
+constructor) and fsyncs once per drained batch — `endOfBatch` is the Disruptor's batching hook:
+
+```java
+private final ByteBuffer buffer = ByteBuffer.allocateDirect(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+
+@Override
+public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
+    // …
+    buffer.clear();
+    buffer.putLong(e.seq);
+    buffer.put(e.type);
+    buffer.put(e.side);
+    buffer.putShort((short) 0);
+    buffer.putInt(e.orderRef);
+    buffer.putInt(e.accountId);
+    buffer.putInt(e.securityId);
+    buffer.putInt(e.qty);
+    buffer.putLong(e.limitPx);
+    buffer.putLong(e.priceTicks);
+    buffer.putLong(e.eventTimeMillis);
+    while (buffer.position() < RECORD_SIZE) {
+        buffer.put((byte) 0);
+    }
+    buffer.flip();
+    while (buffer.hasRemaining()) {
+        channel.write(buffer);
+    }
+    if (endOfBatch) {
+        channel.force(false); // durability amortised across the drained batch
+    }
+    // …
+    journaledSeq = sequence;
+}
+```
+
+### A12.9 Observing the contract today (`LmaxEngine.blpAllocatedBytes`)
+
+Until the Epsilon gate lands (`T09B18`), the BLP thread's allocation is **measured and exported** so any
+regression is visible on a dashboard — `traderx_hotpath_alloc_bytes_total{node="blp"}` in `/metrics`:
+
+```java
+public long blpAllocatedBytes() {
+    long threadId = matchingEngine == null ? 0 : matchingEngine.blpThreadId();
+    if (threadId == 0) {
+        return 0;
+    }
+    var threadMx = ManagementFactory.getThreadMXBean();
+    if (threadMx instanceof com.sun.management.ThreadMXBean sunThreadMx
+        && sunThreadMx.isThreadAllocatedMemorySupported()) {
+        long allocated = sunThreadMx.getThreadAllocatedBytes(threadId);
+        return Math.max(0, allocated);
+    }
+    return 0;
+}
+```
+
+### A12.10 The Epsilon allocation gate — planned shape (task `T09B18`, not yet in the codebase)
 
 ```java
 // Allocation-gate test: any steady-state allocation exhausts the (small) Epsilon heap → test FAILS.
@@ -203,21 +654,11 @@ The contract is only real if it is enforced. The validation stack:
 @Test void blpIsAllocationFreeInSteadyState() {
     warmUp(matchingEngine, 100_000);                 // force C2 compilation first
     for (long i = 0; i < 50_000_000L; i++) {         // far more than the heap could hold if we allocated
-        TradeEvent e = nextSyntheticEvent(i);        // mutates a reused holder — no new objects
+        InputEvent e = nextSyntheticEvent(i);        // mutates a reused holder — no new objects
         matchingEngine.onEvent(e, i, true);
     }
     // Reaching here without OutOfMemoryError proves zero steady-state allocation.
 }
-```
-
-```java
-// Hot path: reuse, don't allocate.
-//   009:  BigDecimal mkt = lastPrices.get(order.getSecurity());            // map + boxing + BigDecimal
-//   no-GC: long mkt = lastPxBySecurity[e.securityId];                      // array index, primitive
-//   009:  order.setUpdatedAt(Instant.now());                              // java.time allocation + nondeterministic
-//   no-GC: e.ingressNanos carried from the Gateway;                       // no clock read, no allocation
-//   009:  String id = String.format("ord-013-%04d", seq);                 // formatter + String
-//   no-GC: long id = e.seq;                                               // id derived from sequence
 ```
 
 ---

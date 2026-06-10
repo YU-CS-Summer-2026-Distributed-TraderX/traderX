@@ -34,7 +34,7 @@ This document does two things:
 9. [No-GC at the output stage](#a9-no-gc-at-the-output-stage)
 10. [One event, end to end through the output disruptor](#a10-one-event-end-to-end-through-the-output-disruptor)
 11. [How this replaces `009`'s publish + persist](#a11-how-this-replaces-009s-publish--persist)
-12. [Illustrative code](#a12-illustrative-code)
+12. [The code as implemented in state `009b`](#a12-the-code-as-implemented-in-state-009b)
 
 **Part B — What a spec needs (building on `009`)**
 13. [Proposed state & scope](#b13-proposed-state--scope)
@@ -94,18 +94,54 @@ but with no cross-producer coordination. The BLP emits all of `OrderAccepted`, `
 As with the input ring, slots are **pre-allocated mutable holders, reused forever**. An output holder carries
 enough to render every downstream view without re-reading BLP state:
 
+This is the real slot holder from state `009b`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/OutputEvent.java`):
+
 ```java
-public final class OutEvent {        // one instance per output slot, reused
-    public long seq;                  // echoes the input sequence that produced it
-    public byte kind;                 // ORDER_ACCEPTED | ORDER_FILLED | TRADE_BOOKED | POSITION_UPDATED | ...
-    public int  accountId;
-    public int  securityId;
+/**
+ * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries a full order
+ * snapshot so downstream handlers (marshaller/read-model, NATS bridge, projector) never
+ * read BLP state. {@code ingressNanos} is carried through from the input event so true
+ * end-to-end latency is recorded at egress (NFR-09B01).
+ */
+public final class OutputEvent {
+    public static final byte KIND_ORDER_UPDATE = 1;
+    public static final byte KIND_TRADE_BOOKED = 2;
+    public static final byte KIND_ORDER_NOT_FOUND = 3;
+
+    // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
+    public static final int FLAG_CREATE = 1;
+    public static final int FLAG_PARTIAL_FILL = 1 << 1;
+    public static final int FLAG_FILL = 1 << 2;
+    public static final int FLAG_CANCEL = 1 << 3;
+    public static final int FLAG_REJECT = 1 << 4;
+    public static final int FLAG_FORCE_FILL = 1 << 5;
+
+    public long inputSeq;         // correlates gateway acks (request/response events)
+    public byte kind;
+    public int flags;
+    public boolean publishNats;   // bridge this update onto the 009 NATS subjects
+
+    public int orderRef;
+    public int accountId;
+    public int securityId;
     public byte side;
-    public long qty;                  // fill / order qty
-    public long pxTicks;              // execution / limit price, long fixed-point
-    public long remainingQty;         // for partial fills
-    public byte status;               // NEW | PARTIALLY_FILLED | FILLED | CANCELED | REJECTED
-    public long ingressNanos;         // carried from input → enables true end-to-end latency at egress
+    public int quantity;
+    public int remainingQty;
+    public long limitPx;
+    public byte status;           // OrderStatus ordinal
+    public long lastExecPx;       // Px.NONE when absent
+    public int lastFillQty;       // 0 when absent
+    public long createdAtMillis;
+    public long updatedAtMillis;
+    public long marketPx;         // BLP's last price for the security (Px.NONE when unknown)
+
+    public int tradeQty;          // KIND_TRADE_BOOKED: fill quantity to submit as a trade
+    public long ingressNanos;
+
+    public static OutputEvent newInstance() {
+        return new OutputEvent();
+    }
 }
 ```
 
@@ -184,8 +220,10 @@ downstream of the latency-critical section.
 
 A fill produced by the BLP:
 
-1. **BLP emits.** `out.next()` → write `OutEvent` (`kind=ORDER_FILLED`, `accountId`, `securityId`, `qty`,
-   `pxTicks`, `status=FILLED`, `ingressNanos`) → `out.publish(seq)`. No allocation.
+1. **BLP emits.** `OutputPublisher.emitOrderUpdate(...)` claims a slot and writes the full order snapshot
+   in place (`kind=KIND_ORDER_UPDATE`, `flags=FLAG_FILL`, `lastExecPx`, `remainingQty`, `status`,
+   `ingressNanos`), then `emitTradeBooked(...)` for the fill — `ring.publish(seq)` in a `finally`. No
+   allocation.
 2. **Parallel handlers fire.** Marshaller encodes + records `now − ingressNanos` latency; NATS Publisher maps
    to `/accounts/{id}/orders` + `/orders` (+ `TradeBooked`→`/trades`, `PositionUpdated`→`/positions`) and
    publishes JSON; Projector queues the row.
@@ -201,43 +239,89 @@ The user was already acknowledged at input durability; all of the above is off t
 | `OrderMatcherService.publishOrderUpdate(...)` → `orderPublisher.publish("/accounts/{id}/orders" \| "/orders", OrderResponse)` | **NATS Publisher handler** on the output ring reproduces the same subjects + payloads from BLP events. |
 | `restTemplate.postForEntity(tradeServiceUrl, ...)` to book a trade (blocking, in the match loop) | `TradeBooked` **output event** → published to `/trades` and projected to DB — async, off the ack path. |
 | `orderRepository.save(...)` per mutation (JPA/H2) | **Read-model Projector** batch-writes, off the hot path; journal is authoritative. |
-| `OrderResponse.from(order, lastPrice)` allocation per publish | Pre-allocated `OutEvent` slots; JSON only at the NATS edge. |
+| `OrderResponse.from(order, lastPrice)` allocation per publish | Pre-allocated `OutputEvent` slots; JSON only at the NATS edge. |
 | Per-message Jackson serialization | SBE encode in the Marshaller; JSON only where the legacy UI requires it. |
 | `String security` in payloads | `securityId→ticker` mapping at the edge handler. |
 
 External result: **identical** NATS subjects, payloads, and DB rows; only the *path* that produces them
 changes.
 
-## A12. Illustrative code
+## A12. The code as implemented in state `009b`
+
+Verbatim from `LmaxEngine.java`, `OutputPublisher.java`, and `NatsBridgeHandler.java`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/`):
 
 ```java
-// Output ring: BLP is the SOLE producer → ProducerType.SINGLE
-Disruptor<OutEvent> out = new Disruptor<>(
-    OutEvent::new,                  // pre-allocate every slot
-    1 << 16,                        // sized per the worst publisher stall
-    DaemonThreadFactory.INSTANCE,
-    ProducerType.SINGLE,            // only the BLP writes here
-    new YieldingWaitStrategy());    // egress is less latency-critical than the BLP
+// Output ring (LmaxEngine.afterPropertiesSet): BLP is the SOLE producer → ProducerType.SINGLE.
+// Four parallel handlers: marshaller (read model + acks + latency), NATS bridge,
+// trade-submit bridge (TradeBooked -> existing trade pipeline, off the ack path),
+// and the batched read-model projector.
+marshaller = new MarshallerHandler(readModel, symbols, metrics);
+projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize);
+NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
+TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
 
-out.handleEventsWith(marshaller, natsPublisher, projector);   // three parallel handlers
-out.start();
-RingBuffer<OutEvent> ring = out.getRingBuffer();
+outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
+    DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
+outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
+outputDisruptor.start();
+```
 
-// BLP emits a fill — no allocation
-long s = ring.next();
-try {
-    OutEvent e = ring.get(s);
-    e.kind = ORDER_FILLED; e.accountId = acct; e.securityId = sec;
-    e.qty = fillQty; e.pxTicks = execPx; e.status = FILLED; e.ingressNanos = in.ingressNanos;
-} finally {
-    ring.publish(s);
+```java
+// The BLP's only side-effect channel (OutputPublisher) — claim/write/publish into the
+// output ring; fields are written into the pre-allocated slot in place, no allocation.
+public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolean publishNats,
+                            long marketPx, long ingressNanos) {
+    long seq = ring.next();
+    try {
+        OutputEvent e = ring.get(seq);
+        e.kind = OutputEvent.KIND_ORDER_UPDATE;
+        e.inputSeq = inputSeq;
+        e.flags = flags;
+        e.publishNats = publishNats;
+        e.orderRef = order.orderRef;
+        e.accountId = order.accountId;
+        e.securityId = order.securityId;
+        e.side = order.side;
+        e.quantity = order.quantity;
+        e.remainingQty = order.remaining;
+        e.limitPx = order.limitPx;
+        e.status = order.status;
+        e.lastExecPx = order.lastExecPx;
+        e.lastFillQty = order.lastFillQty;
+        e.createdAtMillis = order.createdAtMillis;
+        e.updatedAtMillis = order.updatedAtMillis;
+        e.marketPx = marketPx;
+        e.tradeQty = 0;
+        e.ingressNanos = ingressNanos;
+    } finally {
+        ring.publish(seq);
+    }
 }
+```
 
-// NATS Publisher handler — maps back to the EXACT 009 subjects/payloads (edge conversions here)
-public void onEvent(OutEvent e, long seq, boolean endOfBatch) {
-    OrderResponse dto = render(e);                       // securityId→ticker, pxTicks→decimal (edge)
-    nats.publish("/accounts/" + e.accountId + "/orders", dto);
-    nats.publish("/orders", dto);
+```java
+// NATS bridge handler — maps back to the EXACT 009 subjects/payloads. securityId -> ticker
+// and fixed-point -> decimal conversions happen HERE, at the edge, never in the BLP.
+// JSON allocation is acceptable here: this handler is off the hot path.
+@Override
+public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+    if (e.kind != OutputEvent.KIND_ORDER_UPDATE || !e.publishNats) {
+        return;
+    }
+    // Build the payload from the event itself (handlers run in parallel; never read
+    // sibling-handler state). Same OrderResponse contract as 009's publishOrderUpdate.
+    OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
+    OrderResponse payload = OrderResponse.from(snapshot.toRecord(), Px.toBigDecimal(e.marketPx));
+    String accountTopic = "/accounts/" + e.accountId + "/orders";
+    try {
+        orderPublisher.publish(accountTopic, payload);
+        orderPublisher.publish(ALL_ORDERS_TOPIC, payload);
+    } catch (PubSubException ex) {
+        readModel.natsErrors().increment();
+        log.warn("Unable to publish order update for {} on {}/{}", snapshot.orderId,
+            accountTopic, ALL_ORDERS_TOPIC, ex);
+    }
 }
 ```
 

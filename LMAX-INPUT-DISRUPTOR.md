@@ -37,7 +37,7 @@ This document does two things:
 10. [Durability & recovery semantics](#a10-durability--recovery-semantics)
 11. [One event, end to end through the input disruptor](#a11-one-event-end-to-end-through-the-input-disruptor)
 12. [How this replaces `009`'s `OrderMatcherService`](#a12-how-this-replaces-009s-ordermatcherservice)
-13. [Illustrative wiring code](#a13-illustrative-wiring-code)
+13. [The wiring as implemented in state `009b`](#a13-the-wiring-as-implemented-in-state-009b)
 
 **Part B — What a spec needs (building on `009`)**
 14. [Proposed state & scope](#b14-proposed-state--scope)
@@ -102,8 +102,8 @@ A Disruptor ring is a **fixed-size circular array of mutable "event holder" obje
 - **Power-of-two capacity.** Size is `2^k`, so slot lookup is `sequence & (size − 1)` — a bitmask, no
   modulo, no branch. Choosing the size is a real spec decision (see [§B21](#b21-ring-sizing-math-worked-example)).
 - **Slots are pre-filled with empty holders.** The ring is constructed with an `EventFactory`
-  (`TradeEvent::new`) that allocates every slot up front. After startup the hot path **allocates nothing** —
-  producers overwrite the fields of an existing holder.
+  (`InputEvent::newInstance`) that allocates every slot up front. After startup the hot path **allocates
+  nothing** — producers overwrite the fields of an existing holder.
 - **The holder is a flyweight, not a DTO.** In the no-GC design each slot wraps an off-heap
   `UnsafeBuffer`; "writing the event" means writing bytes into that buffer via an SBE encoder, not
   constructing objects. (See [§A8](#a8-no-gc-mechanics-at-the-input-stage).)
@@ -111,17 +111,40 @@ A Disruptor ring is a **fixed-size circular array of mutable "event holder" obje
   and a set of **gating sequences** (one per consumer). A producer may not overwrite a slot until every
   consumer that still needs it has moved past — that is what makes the buffer safe to wrap.
 
+This is the real slot holder from state `009b`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/InputEvent.java`):
+
 ```java
-public final class TradeEvent {     // ONE instance per slot, reused forever
-    public long seq;                // global sequence number (stamped by the Sequencer)
-    public byte type;               // ORDER_NEW | ORDER_CANCEL | PRICE_TICK | FORCE_FILL
-    public int  accountId;
-    public int  securityId;         // symbol mapped to int at the Gateway (no String on hot path)
-    public byte side;               // 0 = BUY, 1 = SELL
-    public long qty;
-    public long limitPx;            // long fixed-point (price × 1e6)
-    public long priceTicks;         // for PRICE_TICK
-    public long ingressNanos;       // captured at the Gateway, for latency histograms
+/**
+ * Input-ring slot holder (one mutable instance per slot, allocated once at startup and
+ * reused forever — NGC-01). Producers overwrite every relevant field in place; nothing is
+ * allocated per event. Time is carried in the event (eventTimeMillis stamped at the
+ * gateway) so the BLP never reads a clock (FR-09B14).
+ */
+public final class InputEvent {
+    public static final byte TYPE_ORDER_NEW = 1;
+    public static final byte TYPE_ORDER_CANCEL = 2;
+    public static final byte TYPE_FORCE_FILL = 3;
+    public static final byte TYPE_PRICE_TICK = 4;
+
+    public static final byte SIDE_BUY = 0;
+    public static final byte SIDE_SELL = 1;
+
+    public long seq;              // global sequence number (the ring sequence)
+    public byte type;
+    public int orderRef;          // numeric part of the external ord-013-%04d id
+    public int accountId;
+    public int securityId;        // ticker mapped to int at the gateway
+    public byte side;
+    public int qty;
+    public long limitPx;          // long fixed-point (x 1e6)
+    public long priceTicks;       // for PRICE_TICK
+    public long ingressNanos;     // System.nanoTime() at the gateway, for latency histograms
+    public long eventTimeMillis;  // wall-clock stamped at the gateway (event-carried time)
+
+    public static InputEvent newInstance() {
+        return new InputEvent();
+    }
 }
 ```
 
@@ -163,11 +186,14 @@ three handlers that run **concurrently on their own threads**:
 | **Replicator** | Ship the event to replica BLPs (other node in the DC + DR site). | Replicas must see the identical input stream to stay in lock-step for microsecond failover. | If replication stalls, followers fall behind → promotion would lose data. |
 | **Un-marshaller** | Decode the SBE/flyweight bytes into the typed fields the BLP will read. | Decoding is CPU work that does **not** need to be serial with business logic, so it runs ahead in parallel. | If decode fails, the event is malformed and should be rejected, not matched. |
 
-They are wired as a **parallel group**, not a chain:
+They are wired as a **parallel group**, not a chain. The real `009b` wiring
+(`LmaxEngine.afterPropertiesSet`) currently runs two of the three — the un-marshaller stage arrives with the
+SBE/flyweight milestone (`T09B12`), since typed-field holders need no separate decode step:
 
 ```java
-disruptor.handleEventsWith(journaler, replicator, unmarshaller)  // all three, in parallel
-         .then(matchingEngine);                                  // BLP runs AFTER all three
+// Input ring: journaler + replicator run in parallel; the BLP is gated behind both
+// (sequence barrier), so every event it acts on is already durable and replicated.
+inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
 ```
 
 Because they share no state and each only reads its own slot, they need no locks between them. They race
@@ -185,7 +211,14 @@ BLP may process sequence N  ⇔  journaler.seq ≥ N  AND  replicator.seq ≥ N 
 
 So by the time the BLP touches event `N`, that event is **already durable, already replicated, and already
 decoded**. This is the property that makes failover near-instant: a promoted follower is guaranteed to have
-every input the leader ever acted on.
+every input the leader ever acted on. In `009b` the gate is the two shipped handlers, and it is exported as
+a live metric — `LmaxEngine.gatingSeq()` backs `traderx_input_gating_seq` in `/metrics`:
+
+```java
+public long gatingSeq() {
+    return Math.min(journaledSeq(), replicatedSeq());
+}
+```
 
 ```mermaid
 sequenceDiagram
@@ -323,57 +356,76 @@ direct:
 | `orderRepository.save(...)` (JPA/H2) on the hot path | Journal is authoritative; the `OrderBook` table becomes an **async read-model** fed downstream. *(Optionally deferred — see scope options in [§B14](#b14-proposed-state--scope).)* |
 | `String security` flowing end-to-end; `findAllByOrderByUpdatedAtDesc().stream().filter(...)` per tick | `int securityId`; **array-indexed order book**; no per-tick stream allocation. |
 
-## A13. Illustrative wiring code
+## A13. The wiring as implemented in state `009b`
+
+Verbatim from `LmaxEngine.java` and `MatchingEngine.java`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/`):
 
 ```java
-// 1) Construct the input ring: pre-allocate every slot, MULTI producer, busy-spin (perf profile)
-Disruptor<TradeEvent> in = new Disruptor<>(
-    TradeEvent::new,                 // EventFactory — allocates all 2^k slots ONCE
-    1 << 16,                         // 65,536 slots (power of two) — sized per §B21
-    DaemonThreadFactory.INSTANCE,
-    ProducerType.MULTI,              // Gateway + price feed both publish
-    new BusySpinWaitStrategy());     // demo/CI swaps this for BlockingWaitStrategy
+// 1) Construct the input ring (LmaxEngine.afterPropertiesSet): pre-allocate every slot,
+//    MULTI producer (gateway commands + price ticks), wait strategy from config —
+//    BlockingWaitStrategy in the demo profile, busyspin/yielding for the perf profile.
+inputDisruptor = new Disruptor<>(InputEvent::newInstance, normalizeRingSize(inputRingSize),
+    DaemonThreadFactory.INSTANCE, ProducerType.MULTI, waitStrategy(inputWaitStrategy));
 
-// 2) Three parallel input handlers, then the BLP gated behind all three
-in.handleEventsWith(journaler, replicator, unmarshaller)
-  .then(matchingEngine);            // BLP runs only when J, R, U have all passed the sequence
-in.start();
+// 2) Journaler + replicator in parallel, the BLP gated behind both via the sequence
+//    barrier. (The un-marshaller joins the group when SBE lands — T09B12.)
+inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
+inputDisruptor.start();
+inputRing = inputDisruptor.getRingBuffer();
+```
 
-RingBuffer<TradeEvent> ring = in.getRingBuffer();
-
-// 3) Gateway producer path — no allocation, claim/write/publish
-long seq = ring.next();             // claim sequence N (backpressures if ring is full)
-try {
-    TradeEvent e = ring.get(seq);
-    e.seq = seq;
-    e.type = ORDER_NEW;
-    e.accountId = accountId;
-    e.securityId = symbols.toId(ticker);   // String → int, once, at the edge
-    e.side = BUY;
-    e.qty = qty;
-    e.limitPx = Px.of(187, 250_000);       // long fixed-point
-    e.ingressNanos = System.nanoTime();
-} finally {
-    ring.publish(seq);              // publish in finally so a thrown encoder never strands a slot
+```java
+// 3) Gateway producer path (LmaxEngine.execute) — claim/write/publish, with the ack
+//    future registered against the claimed sequence BEFORE publishing (request/response
+//    events), and publish in finally so a failed write never strands a slot.
+private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
+                              int quantity, long limitPx, long priceTicks) {
+    long seq = inputRing.next();
+    CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
+    try {
+        InputEvent e = inputRing.get(seq);
+        e.seq = seq;
+        e.type = type;
+        e.orderRef = orderRef;
+        e.accountId = accountId;
+        e.securityId = securityId;       // String -> int happened once, at the edge (SymbolTable)
+        e.side = side;
+        e.qty = quantity;
+        e.limitPx = limitPx;             // BigDecimal -> long fixed-point happened at the edge (Px)
+        e.priceTicks = priceTicks;
+        e.ingressNanos = System.nanoTime();
+        e.eventTimeMillis = System.currentTimeMillis();  // event-carried time
+    } finally {
+        inputRing.publish(seq);
+    }
+    try {
+        return ack.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
+    } // … timeout/interrupt handling maps to 009's REST error semantics
 }
 ```
 
 ```java
 // The BLP consumer — single thread, no locks, zero steady-state allocation
-public final class MatchingEngine implements EventHandler<TradeEvent> {
-    private final OrderBook[] booksBySecurity;            // indexed by securityId, pre-sized
-    private final Long2ObjectHashMap<Position> positions; // Agrona — no autoboxing
-    private final OutputPublisher out;                    // writes to the OUTPUT ring
+public final class MatchingEngine implements EventHandler<InputEvent> {
+    private RestingOrder[] ordersByRef;          // dense index: orderRef -> entry
+    private final IntList[] openRefsBySecurity;  // per-security open-order index
+    private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
+    private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
 
-    @Override public void onEvent(TradeEvent e, long sequence, boolean endOfBatch) {
+    @Override
+    public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
         switch (e.type) {
-            case ORDER_NEW    -> onNewOrder(e);  // match vs book → book trade → update position → emit
-            case ORDER_CANCEL -> onCancel(e);
-            case PRICE_TICK   -> onPrice(e);     // re-evaluate resting orders for this security
-            case FORCE_FILL   -> onForceFill(e);
-            default           -> { /* ignore */ }
+            case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
+            case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
+            case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
+            case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+            default -> { /* ignore unknown event types */ }
         }
-        // single writer · no locks · zero allocation in steady state
+        eventsProcessed++;
+        lastEventTimeMillis = e.eventTimeMillis;
+        blpSeq = sequence;
+        metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 }
 ```

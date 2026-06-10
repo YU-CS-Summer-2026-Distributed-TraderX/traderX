@@ -34,7 +34,7 @@ This document does two things:
 9. [Emitting output events](#a9-emitting-output-events)
 10. [Snapshot & replay](#a10-snapshot--replay)
 11. [How this replaces `009`'s matcher logic](#a11-how-this-replaces-009s-matcher-logic)
-12. [Illustrative code](#a12-illustrative-code)
+12. [The code as implemented in state `009b`](#a12-the-code-as-implemented-in-state-009b)
 
 **Part B — What a spec needs (building on `009`)**
 13. [Proposed state & scope](#b13-proposed-state--scope)
@@ -131,25 +131,34 @@ is enough:
 ## A5. The `onEvent` dispatch loop
 
 The BLP is a Disruptor `EventHandler`. Its entire surface is one method that switches on the event type and
-returns quickly. No blocking, no allocation, no locks:
+returns quickly. No blocking, no allocation, no locks — this is the real `MatchingEngine.onEvent` from
+state `009b` (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/MatchingEngine.java`):
 
 ```java
-public final class MatchingEngine implements EventHandler<TradeEvent> {
-    @Override public void onEvent(TradeEvent e, long sequence, boolean endOfBatch) {
-        switch (e.type) {
-            case ORDER_NEW    -> onNewOrder(e);   // match vs book → book trade → update position → emit
-            case ORDER_CANCEL -> onCancel(e);     // mark canceled, emit OrderCanceled
-            case PRICE_TICK   -> onPrice(e);      // update last price, re-evaluate resting orders
-            case FORCE_FILL   -> onForceFill(e);  // operational full fill, emit
-            default           -> { /* ignore unknown */ }
+public final class MatchingEngine implements EventHandler<InputEvent> {
+    @Override
+    public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
+        if (blpThreadId == 0) {
+            blpThreadId = Thread.currentThread().threadId();
         }
-        if (endOfBatch) out.flush();              // amortise output flush across a drained batch
+        switch (e.type) {
+            case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
+            case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
+            case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
+            case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+            default -> { /* ignore unknown event types */ }
+        }
+        eventsProcessed++;
+        lastEventTimeMillis = e.eventTimeMillis;
+        blpSeq = sequence;
+        metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 }
 ```
 
-`endOfBatch` is the BLP's batching hook: under load it drains many events and flushes output once per batch,
-so per-event latency *falls* as load rises.
+The counters are plain `volatile long`s — single writer, so no `Atomic*` and no contention. `endOfBatch` is
+the Disruptor's batching hook: in `009b` it is exploited by the **Journaler** (one fsync per drained batch,
+see `Journaler.onEvent`), so durability cost *falls* per event as load rises.
 
 ## A6. Fused match → book → position
 
@@ -247,33 +256,68 @@ Because BLP state is a pure function of the journaled input stream:
 The **policy and lifecycle** (`NEW…REJECTED`, auto-fill thresholds) are preserved; only the *execution
 model* changes.
 
-## A12. Illustrative code
+## A12. The code as implemented in state `009b`
+
+Verbatim from `MatchingEngine.java`
+(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/`). The book
+structures are primitive arrays + a pooled free-list; the matching policy is `009`'s, in integer math:
 
 ```java
-public final class MatchingEngine implements EventHandler<TradeEvent> {
-    private final OrderBook[] booksBySecurity;             // indexed by securityId, pre-sized & pooled
-    private final long[]      lastPxBySecurity;            // long fixed-point, no map
-    private final Long2ObjectHashMap<Position> positions;  // Agrona — no autoboxing
-    private final Int2ObjectHashMap<Account>   accounts;   // in-memory replica (validation cache)
-    private final OutputPublisher out;                     // sole producer of the OUTPUT ring
+public final class MatchingEngine implements EventHandler<InputEvent> {
+    private final OutputPublisher out;
+    private final HotPathMetrics metrics;
+    private final int fillFullThreshold;
 
-    private void onNewOrder(TradeEvent e) {
-        if (!validate(e)) { out.emitRejected(e); return; }            // local cache check, no REST
-        OrderBook book = booksBySecurity[e.securityId];
+    private RestingOrder[] ordersByRef;          // dense index: orderRef -> entry
+    private final IntList[] openRefsBySecurity;  // per-security open-order index
+    private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
+    private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
+
+    private void onNewOrder(InputEvent e) {
+        RestingOrder o = takeFromPool();
+        o.orderRef = e.orderRef;
+        o.accountId = e.accountId;
+        o.securityId = e.securityId;
+        o.side = e.side;
+        o.quantity = e.qty;
+        o.remaining = e.qty;
+        o.limitPx = e.limitPx;
+        o.status = RestingOrder.STATUS_NEW;
+        o.lastExecPx = Px.NONE;
+        o.lastFillQty = 0;
+        o.createdAtMillis = e.eventTimeMillis;   // event-carried time, no clock read
+        o.updatedAtMillis = e.eventTimeMillis;
+        index(o);
+        openRefs(e.securityId).add(e.orderRef);
+
         long px = lastPxBySecurity[e.securityId];
-        out.emitAccepted(e);
-        if (inTheMoney(e.side, px, e.limitPx)) {
-            long fill = e.qty < 1000 ? e.qty : (e.qty + 1) / 2;       // same policy as 009, integer math
-            book.add(e, e.qty - fill);                                // rest the remainder
-            position(e.accountId, e.securityId).apply(e.side, fill, px);
-            out.emitFilled(e, fill, px);                              // TradeBooked + PositionUpdated emitted too
-        } else {
-            book.add(e, e.qty);                                       // rest fully
+        // Ack first: the REST create response is the NEW order, exactly as in 009.
+        out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CREATE, true, px, e.ingressNanos);
+
+        // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
+        if (px != Px.NONE && isInTheMoney(o, px)) {
+            autoFill(o, px, e);
         }
-        // single writer · no locks · zero allocation · no clock reads
     }
+
+    private boolean isInTheMoney(RestingOrder o, long px) {
+        return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
+    }
+
+    private void autoFill(RestingOrder o, long px, InputEvent e) {
+        autoFillAttempts++;
+        int remaining = o.remaining;
+        int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
+        applyFill(o, fillQty, px, false, e, px);   // same policy as 009, integer math
+        autoFillSuccess++;
+    }
+    // … applyFill emits the order update + a TradeBooked output event and records match latency
 }
 ```
+
+In the demo profile, booking bridges to the existing trade pipeline **from the output ring**
+(`TradeSubmitHandler`, off the acknowledgement path) rather than being fused in-memory — the strangler `P2`
+boundary; see `generation/implementation-status.md` in the `009b` spec pack.
 
 ---
 

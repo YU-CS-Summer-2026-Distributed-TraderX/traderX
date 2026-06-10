@@ -26,7 +26,7 @@ engineered for **zero steady-state allocation (no-GC)** on every node in the pat
 9. [Event sourcing, replay, snapshots](#9-event-sourcing-replay-snapshots)
 10. [Replication & failover](#10-replication--failover)
 11. [Latency budget](#11-latency-budget)
-12. [Illustrative code](#12-illustrative-code)
+12. [The code as implemented in state `009b`](#12-the-code-as-implemented-in-state-009b)
 13. [Migration plan (strangler)](#13-migration-plan-strangler)
 14. [Risks & trade-offs](#14-risks--trade-offs)
 15. [How we will validate latency](#15-how-we-will-validate-latency)
@@ -402,73 +402,120 @@ exactly why those handlers run in parallel on the input disruptor. The compute i
 
 ---
 
-## 12. Illustrative code
+## 12. The code as implemented in state `009b`
 
-> Sketches to convey shape and discipline — not drop-in classes.
+> Verbatim from the `009b` overlay:
+> `specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
+> (rendered into the generated `order-matcher` module by the pipeline).
 
-**Fixed-point prices (replaces `BigDecimal`):**
+**Fixed-point prices (replaces `BigDecimal`) — `Px.java`:**
 
 ```java
-// Price carried as a scaled long: value * 1_000_000 (6 dp). 187.250 -> 187_250_000L
+/**
+ * Prices travel through the rings and the BLP as {@code long} "ticks" (price x 1e6).
+ * BigDecimal conversion happens only at the edges (gateway in, read-model/NATS out) and
+ * rounds to 3dp HALF_UP, matching state 009's roundPrice() for penny parity (SC-09B04).
+ */
 public final class Px {
     public static final long SCALE = 1_000_000L;
-    private Px() {}
-    public static long of(long whole, long micros) { return whole * SCALE + micros; }
-    public static long notional(long priceTicks, long qty) { return priceTicks * qty; }
-    // formatting to BigDecimal/String happens ONLY at the edge (Gateway/Projector), never in the BLP
+    /** Sentinel for "no price available". Real prices are strictly positive. */
+    public static final long NONE = 0L;
+
+    /** Edge conversion in: BigDecimal -> ticks, applying 009's 3dp HALF_UP rounding. */
+    public static long toTicks(BigDecimal price) {
+        if (price == null) {
+            return NONE;
+        }
+        return price.setScale(3, RoundingMode.HALF_UP).movePointRight(6).longValueExact();
+    }
+
+    /** Edge conversion out: ticks -> BigDecimal at the external 3dp scale. */
+    public static BigDecimal toBigDecimal(long ticks) {
+        if (ticks == NONE) {
+            return null;
+        }
+        return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
+    }
 }
 ```
 
-**Ring-slot event holder (allocated once per slot, reused forever):**
+**Ring-slot event holder (allocated once per slot, reused forever) — `InputEvent.java`:**
 
 ```java
-public final class TradeEvent {            // one instance per ring slot
-    public long seq;                        // global sequence number
-    public byte type;                       // ORDER_NEW, ORDER_CANCEL, PRICE_TICK, FORCE_FILL
-    public int  accountId;
-    public int  securityId;                 // symbol mapped to int at the Gateway
-    public byte side;                       // 0 = BUY, 1 = SELL
-    public long qty;
-    public long limitPx;                    // long fixed-point
-    public long priceTicks;                 // for PRICE_TICK
-    public long ingressNanos;               // for latency histograms
+public final class InputEvent {
+    public static final byte TYPE_ORDER_NEW = 1;
+    public static final byte TYPE_ORDER_CANCEL = 2;
+    public static final byte TYPE_FORCE_FILL = 3;
+    public static final byte TYPE_PRICE_TICK = 4;
+
+    public long seq;              // global sequence number (the ring sequence)
+    public byte type;
+    public int orderRef;          // numeric part of the external ord-013-%04d id
+    public int accountId;
+    public int securityId;        // ticker mapped to int at the gateway
+    public byte side;
+    public int qty;
+    public long limitPx;          // long fixed-point (x 1e6)
+    public long priceTicks;       // for PRICE_TICK
+    public long ingressNanos;     // System.nanoTime() at the gateway, for latency histograms
+    public long eventTimeMillis;  // wall-clock stamped at the gateway (event-carried time)
+
+    public static InputEvent newInstance() {
+        return new InputEvent();
+    }
 }
 ```
 
-**Disruptor wiring (input ring; journaler + replicator + un-marshaller in parallel, BLP gated behind them):**
+**Disruptor wiring (`LmaxEngine.afterPropertiesSet`) — output ring first, then the BLP, then the input
+ring with journaler + replicator in parallel and the BLP gated behind both (the un-marshaller stage joins
+when SBE lands, `T09B12`):**
 
 ```java
-Disruptor<TradeEvent> in = new Disruptor<>(
-    TradeEvent::new,                        // pre-allocate every slot
-    1 << 20,                                // 1,048,576 slots (power of two)
-    DaemonThreadFactory.INSTANCE,
-    ProducerType.MULTI,
-    new BusySpinWaitStrategy());            // lowest latency; burns a core
+outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
+    DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
+outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
+outputDisruptor.start();
 
-in.handleEventsWith(journaler, replicator, unmarshaller)  // parallel
-  .then(matchingEngine);                                   // BLP runs only after all three
-in.start();
+matchingEngine = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
+    metrics, maxSecurities, fillFullThreshold, 16_384);
+
+// Input ring: journaler + replicator run in parallel; the BLP is gated behind both
+// (sequence barrier), so every event it acts on is already durable and replicated.
+journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics);
+replicator = new ReplicatorStub();
+inputDisruptor = new Disruptor<>(InputEvent::newInstance, normalizeRingSize(inputRingSize),
+    DaemonThreadFactory.INSTANCE, ProducerType.MULTI, waitStrategy(inputWaitStrategy));
+inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
+inputDisruptor.start();
 ```
 
-**The BLP — single thread, no locks, no allocation, switch on event type:**
+Ring sizes and wait strategies come from configuration (`disruptor.input.ring-size=65536`,
+`disruptor.input.wait-strategy=blocking` in the demo profile; `busyspin`/`yielding` for the perf profile).
+
+**The BLP — single thread, no locks, no allocation, switch on event type — `MatchingEngine.java`:**
 
 ```java
-public final class MatchingEngine implements EventHandler<TradeEvent> {
-    private final OrderBook[] booksBySecurity;             // indexed by securityId, pre-sized
-    private final Long2ObjectHashMap<Position> positions;  // Agrona — no boxing
-    private final OutputPublisher out;                     // writes to the output ring
+public final class MatchingEngine implements EventHandler<InputEvent> {
+    private RestingOrder[] ordersByRef;          // dense index: orderRef -> entry
+    private final IntList[] openRefsBySecurity;  // per-security open-order index
+    private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
+    private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
 
     @Override
-    public void onEvent(TradeEvent e, long sequence, boolean endOfBatch) {
+    public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
         switch (e.type) {
-            case ORDER_NEW    -> onNewOrder(e);   // match vs book, book trade, update position, emit
-            case ORDER_CANCEL -> onCancel(e);
-            case PRICE_TICK   -> onPrice(e);      // re-evaluate resting orders for this security
-            case FORCE_FILL   -> onForceFill(e);
-            default           -> { /* ignore */ }
+            case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
+            case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
+            case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
+            case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+            default -> { /* ignore unknown event types */ }
         }
-        // single writer, no locks, zero allocation in steady state
+        eventsProcessed++;
+        lastEventTimeMillis = e.eventTimeMillis;
+        blpSeq = sequence;
+        metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
+    // single writer, no locks, zero allocation in steady state
 }
 ```
 
