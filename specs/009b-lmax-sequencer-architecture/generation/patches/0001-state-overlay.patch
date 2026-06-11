@@ -245,13 +245,15 @@ index 6489fc1..03f9baf 100644
 -
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java
 new file mode 100644
-index 0000000..8ef4528
+index 0000000..69615cc
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,125 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import org.HdrHistogram.ConcurrentHistogram;
++
++import java.util.concurrent.atomic.LongAdder;
 +
 +/**
 + * HdrHistogram-backed latency telemetry for the hot path (NFR-09B01/NFR-09B08). Latencies
@@ -260,11 +262,16 @@ index 0000000..8ef4528
 + */
 +public final class HotPathMetrics {
 +    private static final long HIGHEST_TRACKABLE_NS = 60_000_000_000L; // 60s
++    private static final long HIGHEST_TRACKABLE_ROWS = 1_000_000L;
 +
 +    private final ConcurrentHistogram journalNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
 +    private final ConcurrentHistogram blpEventNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
 +    private final ConcurrentHistogram matchNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
 +    private final ConcurrentHistogram egressNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
++    private final ConcurrentHistogram projectorBatchRows = new ConcurrentHistogram(HIGHEST_TRACKABLE_ROWS, 3);
++    // Incremented only when a producer finds the input ring full (degraded mode, off the
++    // contention-free claim path), so the adder never touches the steady-state hot path.
++    private final LongAdder backpressureWaits = new LongAdder();
 +
 +    public void recordJournalLatency(long nanos) {
 +        record(journalNs, nanos);
@@ -281,6 +288,23 @@ index 0000000..8ef4528
 +
 +    public void recordEgressLatency(long nanos) {
 +        record(egressNs, nanos);
++    }
++
++    /** Rows written per successful projector flush (traderx_projector_batch_size). */
++    public void recordProjectorBatch(long rows) {
++        if (rows < 0) {
++            return;
++        }
++        projectorBatchRows.recordValue(Math.min(rows, HIGHEST_TRACKABLE_ROWS));
++    }
++
++    /** A producer found the input ring full and waited (FR-09B07 backpressure). */
++    public void recordBackpressureWait() {
++        backpressureWaits.increment();
++    }
++
++    public long backpressureWaits() {
++        return backpressureWaits.sum();
 +    }
 +
 +    private void record(ConcurrentHistogram histogram, long nanos) {
@@ -307,6 +331,22 @@ index 0000000..8ef4528
 +        sb.append(name).append("_count ").append(total).append('\n');
 +    }
 +
++    /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. */
++    public static void renderCountHistogram(StringBuilder sb, String name, String help,
++                                            ConcurrentHistogram histogram, long[] bucketEdges) {
++        sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
++        sb.append("# TYPE ").append(name).append(" histogram\n");
++        long total = histogram.getTotalCount();
++        for (long edge : bucketEdges) {
++            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
++            sb.append(name).append("_bucket{le=\"").append(edge).append("\"} ").append(count).append('\n');
++        }
++        sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
++        double sum = total == 0 ? 0.0 : histogram.getMean() * total;
++        sb.append(name).append("_sum ").append(sum).append('\n');
++        sb.append(name).append("_count ").append(total).append('\n');
++    }
++
 +    private static String trimEdge(double edge) {
 +        if (edge == Math.floor(edge)) {
 +            return String.valueOf((long) edge);
@@ -328,6 +368,10 @@ index 0000000..8ef4528
 +
 +    public ConcurrentHistogram egressHistogram() {
 +        return egressNs;
++    }
++
++    public ConcurrentHistogram projectorBatchHistogram() {
++        return projectorBatchRows;
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java
@@ -621,10 +665,10 @@ index 0000000..1f0f490
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
 new file mode 100644
-index 0000000..c539852
+index 0000000..19dd9fe
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,113 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
@@ -644,6 +688,12 @@ index 0000000..c539852
 + * durable log, in parallel with the Replicator, ahead of the BLP. Demo profile uses a
 + * plain memory-buffered file channel with an fsync per drained batch (endOfBatch);
 + * Chronicle Queue / Aeron Archive are the perf-profile substitutes.
++ *
++ * Demo-profile deviation from strict FR-09B04: on an append failure the journaler logs,
++ * disables itself, and keeps advancing its sequence so the BLP (gated on
++ * min(journaler, replicator)) is not wedged — availability over durability for the
++ * containerized demo. The perf-profile journaler must instead stall the barrier (an event
++ * that is not durable must not be processed).
 + *
 + * Record layout (fixed 64 bytes, little-endian):
 + *   seq:i64 | type:i8 | side:i8 | pad:i16 | orderRef:i32 | accountId:i32 | securityId:i32 |
@@ -734,14 +784,15 @@ index 0000000..c539852
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
 new file mode 100644
-index 0000000..a2cb880
+index 0000000..fb93423
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
-@@ -0,0 +1,439 @@
+@@ -0,0 +1,464 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.BlockingWaitStrategy;
 +import com.lmax.disruptor.BusySpinWaitStrategy;
++import com.lmax.disruptor.InsufficientCapacityException;
 +import com.lmax.disruptor.RingBuffer;
 +import com.lmax.disruptor.SleepingWaitStrategy;
 +import com.lmax.disruptor.WaitStrategy;
@@ -811,6 +862,7 @@ index 0000000..a2cb880
 +    private final String journalPath;
 +    private final int projectorBatchSize;
 +    private final int maxSecurities;
++    private final int bookPoolSize;
 +    private final long ackTimeoutMs;
 +    private final String runtimeProfile;
 +
@@ -822,6 +874,7 @@ index 0000000..a2cb880
 +    private Disruptor<InputEvent> inputDisruptor;
 +    private Disruptor<OutputEvent> outputDisruptor;
 +    private RingBuffer<InputEvent> inputRing;
++    private RingBuffer<OutputEvent> outputRing;
 +    private MatchingEngine matchingEngine;
 +    private Journaler journaler;
 +    private ReplicatorStub replicator;
@@ -843,6 +896,7 @@ index 0000000..a2cb880
 +        @Value("${journal.path:./data/journal}") String journalPath,
 +        @Value("${output.projector.batch-size:500}") int projectorBatchSize,
 +        @Value("${blp.books.max-securities:4096}") int maxSecurities,
++        @Value("${blp.book.pool-size:65536}") int bookPoolSize,
 +        @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
 +        @Value("${runtime.profile:demo}") String runtimeProfile
 +    ) {
@@ -860,6 +914,7 @@ index 0000000..a2cb880
 +        this.journalPath = journalPath;
 +        this.projectorBatchSize = projectorBatchSize;
 +        this.maxSecurities = maxSecurities;
++        this.bookPoolSize = bookPoolSize;
 +        this.ackTimeoutMs = ackTimeoutMs;
 +        this.runtimeProfile = runtimeProfile;
 +        this.symbols = new SymbolTable(maxSecurities);
@@ -871,7 +926,7 @@ index 0000000..a2cb880
 +
 +        // Output ring first: the BLP needs its publisher before it can run.
 +        marshaller = new MarshallerHandler(readModel, symbols, metrics);
-+        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize);
++        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
 +        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
 +        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
 +
@@ -879,9 +934,10 @@ index 0000000..a2cb880
 +            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
 +        outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
 +        outputDisruptor.start();
++        outputRing = outputDisruptor.getRingBuffer();
 +
-+        matchingEngine = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
-+            metrics, maxSecurities, fillFullThreshold, 16_384);
++        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
++            metrics, maxSecurities, fillFullThreshold, bookPoolSize);
 +
 +        bootstrapFromReadModel();
 +
@@ -946,7 +1002,7 @@ index 0000000..a2cb880
 +    public void submitPriceTick(String ticker, BigDecimal price) {
 +        int securityId = symbols.idFor(ticker);
 +        long priceTicks = Px.toTicks(price);
-+        long seq = inputRing.next();
++        long seq = claimInputSlot();
 +        try {
 +            InputEvent e = inputRing.get(seq);
 +            e.seq = seq;
@@ -965,9 +1021,24 @@ index 0000000..a2cb880
 +        }
 +    }
 +
++    /**
++     * Claim the next input-ring slot. The fast path is the lock-free tryNext claim; only
++     * when the ring is full (a lagging consumer still owns the slot) does the producer
++     * fall back to the waiting claim — counted so bounded backpressure is observable
++     * (FR-09B07, traderx_input_backpressure_events_total).
++     */
++    private long claimInputSlot() {
++        try {
++            return inputRing.tryNext();
++        } catch (InsufficientCapacityException ex) {
++            metrics.recordBackpressureWait();
++            return inputRing.next();
++        }
++    }
++
 +    private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
 +                                  int quantity, long limitPx, long priceTicks) {
-+        long seq = inputRing.next();
++        long seq = claimInputSlot();
 +        CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
 +        try {
 +            InputEvent e = inputRing.get(seq);
@@ -1125,6 +1196,10 @@ index 0000000..a2cb880
 +
 +    public long inputRemainingCapacity() {
 +        return inputRing == null ? 0 : inputRing.remainingCapacity();
++    }
++
++    public long outputRemainingCapacity() {
++        return outputRing == null ? 0 : outputRing.remainingCapacity();
 +    }
 +
 +    public long journaledSeq() {
@@ -1885,10 +1960,10 @@ index 0000000..60cfc64
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
 new file mode 100644
-index 0000000..de4ff67
+index 0000000..b296b55
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,76 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.model.OrderRecord;
@@ -1914,14 +1989,17 @@ index 0000000..de4ff67
 +    private final OrderRepository repository;
 +    private final SymbolTable symbols;
 +    private final int batchSize;
++    private final HotPathMetrics metrics;
 +    private final List<OrderRecord> buffer = new ArrayList<>();
 +    private volatile long projectedSeq = -1;
 +    private volatile long pendingRows;
 +
-+    public ProjectorHandler(OrderRepository repository, SymbolTable symbols, int batchSize) {
++    public ProjectorHandler(OrderRepository repository, SymbolTable symbols, int batchSize,
++                            HotPathMetrics metrics) {
 +        this.repository = repository;
 +        this.symbols = symbols;
 +        this.batchSize = Math.max(1, batchSize);
++        this.metrics = metrics;
 +    }
 +
 +    @Override
@@ -1939,6 +2017,7 @@ index 0000000..de4ff67
 +    private void flush(long sequence) {
 +        try {
 +            repository.saveAll(buffer);
++            metrics.recordProjectorBatch(buffer.size());
 +            buffer.clear();
 +            projectedSeq = sequence;
 +        } catch (Exception ex) {
@@ -2034,16 +2113,21 @@ index 0000000..8ae455a
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java
 new file mode 100644
-index 0000000..56ada44
+index 0000000..84bc3dd
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,53 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +/**
-+ * BLP-private resting-order entry. Instances are pooled (free list) and reused: taken when
-+ * an order arrives, returned when it reaches a terminal state — never allocated mid-life
-+ * in the steady state (NGC-01, technique table "object pooling for domain state").
++ * BLP-private resting-order entry. The pool (free list) is filled once at startup
++ * ({@code blp.book.pool-size}) and entries are taken as orders arrive (NGC-01, technique
++ * table "object pooling for domain state"). Entries are retained for the life of the
++ * process — terminal orders stay addressable in the book so cancel/force-fill of a
++ * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
++ * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
++ * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
++ * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
 + */
 +public final class RestingOrder {
 +    public static final byte STATUS_NEW = 0;
@@ -2221,10 +2305,10 @@ index 0000000..255f32f
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
-index c09543c..3332e1a 100644
+index c09543c..49fa3e5 100644
 --- a/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
-@@ -1,235 +1,160 @@
+@@ -1,235 +1,161 @@
  package finos.traderx.ordermatcher.service;
  
 -import finos.traderx.messaging.PubSubException;
@@ -2540,11 +2624,12 @@ index c09543c..3332e1a 100644
 +        lmax.put("marshalledSeq", engine.marshalledSeq());
 +        lmax.put("projectedSeq", engine.projectedSeq());
 +        lmax.put("inputRemainingCapacity", engine.inputRemainingCapacity());
++        lmax.put("outputRemainingCapacity", engine.outputRemainingCapacity());
 +
          Map<String, Object> payload = new LinkedHashMap<>();
          payload.put("status", "ok");
          payload.put("service", APP_NAME);
-@@ -237,17 +162,17 @@ public class OrderMatcherService {
+@@ -237,17 +163,17 @@ public class OrderMatcherService {
          payload.put("priceServiceUrl", priceServiceUrl);
          payload.put("tradeServiceUrl", tradeServiceUrl);
          payload.put("matcher", matcher);
@@ -2567,7 +2652,7 @@ index c09543c..3332e1a 100644
          sb.append("# HELP traderx_orders_open_total Total open orders (NEW + PARTIALLY_FILLED).\n");
          sb.append("# TYPE traderx_orders_open_total gauge\n");
          sb.append("traderx_orders_open_total ").append(openOrders).append('\n');
-@@ -256,158 +181,120 @@ public class OrderMatcherService {
+@@ -256,158 +182,129 @@ public class OrderMatcherService {
          sb.append("traderx_orders_unfilled_total ").append(unfilledOrders).append('\n');
          sb.append("# HELP traderx_orders_pending_by_side Pending orders grouped by side.\n");
          sb.append("# TYPE traderx_orders_pending_by_side gauge\n");
@@ -2638,12 +2723,18 @@ index c09543c..3332e1a 100644
 +        sb.append("# TYPE traderx_input_seq_lag gauge\n");
 +        long blpSeq = engine.blp() == null ? -1 : engine.blp().blpSeq();
 +        sb.append("traderx_input_seq_lag ").append(Math.max(0, engine.inputPublishedSeq() - blpSeq)).append('\n');
++        sb.append("# HELP traderx_input_backpressure_events_total Producer waits for a free input-ring slot.\n");
++        sb.append("# TYPE traderx_input_backpressure_events_total counter\n");
++        sb.append("traderx_input_backpressure_events_total ").append(engine.metrics().backpressureWaits()).append('\n');
 +        sb.append("# HELP traderx_input_events_total Sequenced input events by type.\n");
 +        sb.append("# TYPE traderx_input_events_total counter\n");
 +        sb.append("traderx_input_events_total{type=\"order_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersNew()).append('\n');
 +        sb.append("traderx_input_events_total{type=\"order_cancel\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersCancel()).append('\n');
 +        sb.append("traderx_input_events_total{type=\"force_fill\"} ").append(engine.blp() == null ? 0 : engine.blp().countForceFills()).append('\n');
 +        sb.append("traderx_input_events_total{type=\"price_tick\"} ").append(engine.blp() == null ? 0 : engine.blp().countPriceTicks()).append('\n');
++        sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
++        sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
++        sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
 +        sb.append("# HELP traderx_output_events_total Output-ring events by kind.\n");
 +        sb.append("# TYPE traderx_output_events_total counter\n");
 +        sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
@@ -2657,6 +2748,9 @@ index c09543c..3332e1a 100644
 +        sb.append("# HELP traderx_projector_pending_rows Read-model rows buffered awaiting projection.\n");
 +        sb.append("# TYPE traderx_projector_pending_rows gauge\n");
 +        sb.append("traderx_projector_pending_rows ").append(engine.projectorPendingRows()).append('\n');
++        HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
++            "Rows written per projector flush.",
++            metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});
 +        sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
 +        sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
 +        sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
@@ -2803,7 +2897,7 @@ index c09543c..3332e1a 100644
      private void validateCreateRequest(OrderCreateRequest request) {
          if (request == null
              || request.getAccountId() == null || request.getAccountId() <= 0
-@@ -419,15 +306,6 @@ public class OrderMatcherService {
+@@ -419,15 +316,6 @@ public class OrderMatcherService {
          }
      }
  
@@ -2819,7 +2913,7 @@ index c09543c..3332e1a 100644
      private BigDecimal roundPrice(BigDecimal input) {
          if (input == null) {
              return null;
-@@ -435,89 +313,6 @@ public class OrderMatcherService {
+@@ -435,89 +323,6 @@ public class OrderMatcherService {
          return input.setScale(3, RoundingMode.HALF_UP);
      }
  
@@ -2910,10 +3004,10 @@ index c09543c..3332e1a 100644
          if (!StringUtils.hasText(url)) {
              return "";
 diff --git a/order-matcher/src/main/resources/application.properties b/order-matcher/src/main/resources/application.properties
-index a4dc884..3f4641a 100644
+index a4dc884..450f0ad 100644
 --- a/order-matcher/src/main/resources/application.properties
 +++ b/order-matcher/src/main/resources/application.properties
-@@ -12,11 +12,23 @@ spring.threads.virtual.enabled=true
+@@ -12,11 +12,24 @@ spring.threads.virtual.enabled=true
  
  order.matcher.price-service-url=${PRICE_SERVICE_URL:http://${PRICE_SERVICE_HOST:localhost}:18100}
  order.matcher.trade-service-url=${TRADE_SERVICE_URL:http://${TRADE_SERVICE_HOST:localhost}:18092/trade/}
@@ -2933,6 +3027,7 @@ index a4dc884..3f4641a 100644
 +journal.path=${ORDER_MATCHER_JOURNAL_PATH:./data/journal}
 +output.projector.batch-size=${OUTPUT_PROJECTOR_BATCH_SIZE:500}
 +blp.books.max-securities=${BLP_MAX_SECURITIES:4096}
++blp.book.pool-size=${BLP_BOOK_POOL_SIZE:65536}
 +blp.gateway.ack-timeout-ms=${BLP_GATEWAY_ACK_TIMEOUT_MS:5000}
 +
  # To avoid "Request header is too large" when application is backed by oidc proxy.
@@ -2969,10 +3064,10 @@ index 2979b4d..d9b16dc 100644
 -
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java
 new file mode 100644
-index 0000000..ad786e5
+index 0000000..afcf399
 --- /dev/null
 +++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,183 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.api.OrderCreateRequest;
@@ -2984,6 +3079,7 @@ index 0000000..ad786e5
 +import org.springframework.beans.factory.annotation.Autowired;
 +import org.springframework.boot.test.context.SpringBootTest;
 +import org.springframework.web.server.ResponseStatusException;
++
 +
 +import java.math.BigDecimal;
 +import java.util.function.Predicate;
@@ -3127,6 +3223,32 @@ index 0000000..ad786e5
 +        OrderResponse seeded = service.getOrder("ord-013-0001");
 +        assertEquals(OrderStatus.NEW, seeded.getStatus());
 +        assertTrue(service.listOrders("open", null).size() >= 5);
++    }
++
++    @Test
++    void prometheusExportsRequiredRingAndNoGcFamilies() {
++        // Required metric families from contracts/contract-delta.md (input/output ring,
++        // projector, allocation) render on the 009-parity scrape surface.
++        String metrics = service.prometheusMetrics();
++        for (String family : new String[]{
++            "traderx_disruptor_input_remaining_capacity",
++            "traderx_input_published_seq",
++            "traderx_input_gating_seq",
++            "traderx_input_seq_lag",
++            "traderx_input_backpressure_events_total",
++            "traderx_input_events_total",
++            "traderx_journal_write_latency_seconds",
++            "traderx_blp_event_latency_seconds",
++            "traderx_output_publish_latency_seconds",
++            "traderx_output_remaining_capacity",
++            "traderx_output_events_total",
++            "traderx_output_nats_errors_total",
++            "traderx_projector_lag_seq",
++            "traderx_projector_batch_size",
++            "traderx_hotpath_alloc_bytes_total",
++            "traderx_order_match_latency_seconds"}) {
++            assertTrue(metrics.contains(family), "missing metric family: " + family);
++        }
 +    }
 +}
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/PxTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/PxTest.java

@@ -12,6 +12,12 @@ against Java 21 / Gradle 8.14.5.
   (38 entries: the 25-file order-matcher overlay + state-identity files). A from-scratch
   `pipeline/generate-state.sh 009b-lmax-sequencer-architecture` applies it cleanly (direct apply,
   no 3-way fallback) and the overrides render is byte-idempotent on top.
+- 2026-06-11: the 8 order-matcher entries touched by the conformance fixes (backpressure metric,
+  output-ring headroom, projector batch histogram, `blp.book.pool-size`, doc-truth edits, metrics
+  guard test) were regenerated and spliced into the patch in place — the other 30 entries are
+  byte-identical to the original capture (no `create-state-patchset.sh` re-run; it is lossy for
+  env wrappers). Verified: patch applies clean to the 009 order-matcher baseline and the overlay
+  render on top is byte-idempotent again.
 - Capture now excludes top-level-only installer outputs (`/api-explorer`, `/ingress/api-explorer`,
   `/runtime`, `state-ui.json`): they are absent in nested parent generations, so depth-1 forms
   would create patch entries whose preimages never exist at apply time. The state's own
