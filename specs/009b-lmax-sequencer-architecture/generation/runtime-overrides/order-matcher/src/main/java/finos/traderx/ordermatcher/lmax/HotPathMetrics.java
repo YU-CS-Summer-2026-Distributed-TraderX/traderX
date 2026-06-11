@@ -2,6 +2,8 @@ package finos.traderx.ordermatcher.lmax;
 
 import org.HdrHistogram.ConcurrentHistogram;
 
+import java.util.concurrent.atomic.LongAdder;
+
 /**
  * HdrHistogram-backed latency telemetry for the hot path (NFR-09B01/NFR-09B08). Latencies
  * are recorded in nanoseconds and rendered to Prometheus histogram families with fixed
@@ -9,11 +11,16 @@ import org.HdrHistogram.ConcurrentHistogram;
  */
 public final class HotPathMetrics {
     private static final long HIGHEST_TRACKABLE_NS = 60_000_000_000L; // 60s
+    private static final long HIGHEST_TRACKABLE_ROWS = 1_000_000L;
 
     private final ConcurrentHistogram journalNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     private final ConcurrentHistogram blpEventNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     private final ConcurrentHistogram matchNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     private final ConcurrentHistogram egressNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
+    private final ConcurrentHistogram projectorBatchRows = new ConcurrentHistogram(HIGHEST_TRACKABLE_ROWS, 3);
+    // Incremented only when a producer finds the input ring full (degraded mode, off the
+    // contention-free claim path), so the adder never touches the steady-state hot path.
+    private final LongAdder backpressureWaits = new LongAdder();
 
     public void recordJournalLatency(long nanos) {
         record(journalNs, nanos);
@@ -30,6 +37,23 @@ public final class HotPathMetrics {
 
     public void recordEgressLatency(long nanos) {
         record(egressNs, nanos);
+    }
+
+    /** Rows written per successful projector flush (traderx_projector_batch_size). */
+    public void recordProjectorBatch(long rows) {
+        if (rows < 0) {
+            return;
+        }
+        projectorBatchRows.recordValue(Math.min(rows, HIGHEST_TRACKABLE_ROWS));
+    }
+
+    /** A producer found the input ring full and waited (FR-09B07 backpressure). */
+    public void recordBackpressureWait() {
+        backpressureWaits.increment();
+    }
+
+    public long backpressureWaits() {
+        return backpressureWaits.sum();
     }
 
     private void record(ConcurrentHistogram histogram, long nanos) {
@@ -56,6 +80,22 @@ public final class HotPathMetrics {
         sb.append(name).append("_count ").append(total).append('\n');
     }
 
+    /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. */
+    public static void renderCountHistogram(StringBuilder sb, String name, String help,
+                                            ConcurrentHistogram histogram, long[] bucketEdges) {
+        sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
+        sb.append("# TYPE ").append(name).append(" histogram\n");
+        long total = histogram.getTotalCount();
+        for (long edge : bucketEdges) {
+            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
+            sb.append(name).append("_bucket{le=\"").append(edge).append("\"} ").append(count).append('\n');
+        }
+        sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
+        double sum = total == 0 ? 0.0 : histogram.getMean() * total;
+        sb.append(name).append("_sum ").append(sum).append('\n');
+        sb.append(name).append("_count ").append(total).append('\n');
+    }
+
     private static String trimEdge(double edge) {
         if (edge == Math.floor(edge)) {
             return String.valueOf((long) edge);
@@ -77,5 +117,9 @@ public final class HotPathMetrics {
 
     public ConcurrentHistogram egressHistogram() {
         return egressNs;
+    }
+
+    public ConcurrentHistogram projectorBatchHistogram() {
+        return projectorBatchRows;
     }
 }

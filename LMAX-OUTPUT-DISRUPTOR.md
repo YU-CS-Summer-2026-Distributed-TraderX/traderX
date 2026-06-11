@@ -257,7 +257,7 @@ Verbatim from `LmaxEngine.java`, `OutputPublisher.java`, and `NatsBridgeHandler.
 // trade-submit bridge (TradeBooked -> existing trade pipeline, off the ack path),
 // and the batched read-model projector.
 marshaller = new MarshallerHandler(readModel, symbols, metrics);
-projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize);
+projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
 NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
 TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
 

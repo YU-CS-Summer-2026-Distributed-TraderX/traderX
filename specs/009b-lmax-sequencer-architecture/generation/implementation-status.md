@@ -1,8 +1,8 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
-Date: 2026-06-09 (updated 2026-06-10). Scope of what
+Date: 2026-06-09 (updated 2026-06-11). Scope of what
 `generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to
-later milestones. Verified by compiling and running the module's test suite (11 tests green)
+later milestones. Verified by compiling and running the module's test suite (12 tests green)
 against Java 21 / Gradle 8.14.5.
 
 ## Patchset + pipeline integration (2026-06-10)
@@ -43,9 +43,42 @@ against Java 21 / Gradle 8.14.5.
 - **Recovery (demo shape)**: persisted read-model warm-start (seeds + open orders re-indexed
   into the BLP at boot) + append-only input journal (FR-09B16, demo-simplified).
 - **Metrics**: all 009 families retained (match-latency histogram now a real HdrHistogram
-  measurement) plus input/BLP/output/projector/alloc families from the contract delta.
+  measurement) plus input/BLP/output/projector/alloc families from the contract delta —
+  including (2026-06-11) `traderx_input_backpressure_events_total` (counted tryNext-fallback
+  on ring-full claims, FR-09B07), `traderx_output_remaining_capacity`, and
+  `traderx_projector_batch_size` (rows per successful flush).
+- **Pool sizing**: the BLP resting-order pool is pre-allocated from the contract key
+  `blp.book.pool-size` (default 65536) instead of a hardcoded literal.
 - **Parity tests**: `PxTest` (penny parity, SC-09B04) and `LmaxHotPathParityTest`
-  (policy/lifecycle/REST parity, SC-09B03-lite) pass without any runtime infrastructure.
+  (policy/lifecycle/REST parity, SC-09B03-lite; plus a required-metric-families guard for the
+  contract-delta scrape surface) pass without any runtime infrastructure.
+
+## Documented deviations (implemented scope vs. spec letter)
+
+- **Journal failure semantics (FR-09B04)**: on append failure the demo Journaler logs, disables
+  itself, and keeps advancing its gating sequence so the BLP is not wedged — availability over
+  durability in the containerized demo. The perf-profile journaler (Chronicle/Aeron, T09B14+)
+  must instead stall the sequence barrier.
+- **Order-id derivation (FR-09B14 letter)**: ids continue 009's dense `ord-013-%04d` numbering
+  from a gateway-edge counter (warm-started from the read-model), not from the global sequence —
+  price ticks share the sequence, so seq-derived ids would break 009 id parity (FR-09B40).
+  Determinism is preserved: the ref is assigned at the edge and carried in the event, so the BLP
+  never generates ids.
+- **Resting-order retention (NGC-01 boundary)**: terminal orders stay addressable in the BLP book
+  (009 parity: cancel/force-fill of a completed order returns it unchanged), so pool entries are
+  never recycled; steady state is allocation-free up to `blp.book.pool-size`, then growth follows
+  amortised doubling. Recycling/eviction arrives with the snapshot milestone (T09B14).
+- **Config keys not yet wired** (land with their milestones): `journal.type`, `replication.*`,
+  `affinity.*`, `nogc.*`, `blp.snapshot.*`, `blp.cache.*` (deferred features, T09B14/16/17/18);
+  `output.nats.enabled`, `output.projector.enabled`, `output.projector.flush-interval-ms`,
+  `output.projector.checkpoint-path` (output-stage toggles + idempotent checkpointed projection,
+  FR-09B23 — T09B14/T09B22). `order.matcher.trade-service-url` is retained (contract delta lists
+  it as removed) because the TradeBooked bridge still feeds trade-service until booking fusion.
+- **Metric families tied to deferred features**: `traderx_replication_ack_latency_seconds`
+  (T09B16), `traderx_blp_book_depth` / `traderx_blp_positions_total` /
+  `traderx_blp_cache_miss_total` / `traderx_blp_snapshot_seconds` / `traderx_blp_replay_seconds`
+  (T09B13-fusion/T09B14), `traderx_jvm_gc_pause_seconds`, `traderx_jit_warmup_seconds`,
+  `traderx_nightly_bounce_seconds` (T09B14/T09B18/T09B20).
 
 ## Deferred (tracked in tasks.md)
 
@@ -68,5 +101,5 @@ against Java 21 / Gradle 8.14.5.
 ```bash
 # module assembled exactly as generation produces it (009 patch + 009 render + 009b overrides)
 ./gradlew compileJava   # clean (only pre-existing 009 deprecation warnings)
-./gradlew test          # 11/11 green, broker-free
+./gradlew test          # 12/12 green, broker-free
 ```

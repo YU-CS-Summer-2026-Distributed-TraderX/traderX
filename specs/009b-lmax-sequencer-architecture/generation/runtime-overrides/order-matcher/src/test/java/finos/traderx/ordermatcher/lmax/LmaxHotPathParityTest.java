@@ -154,4 +154,30 @@ class LmaxHotPathParityTest {
         assertEquals(OrderStatus.NEW, seeded.getStatus());
         assertTrue(service.listOrders("open", null).size() >= 5);
     }
+
+    @Test
+    void prometheusExportsRequiredRingAndNoGcFamilies() {
+        // Required metric families from contracts/contract-delta.md (input/output ring,
+        // projector, allocation) render on the 009-parity scrape surface.
+        String metrics = service.prometheusMetrics();
+        for (String family : new String[]{
+            "traderx_disruptor_input_remaining_capacity",
+            "traderx_input_published_seq",
+            "traderx_input_gating_seq",
+            "traderx_input_seq_lag",
+            "traderx_input_backpressure_events_total",
+            "traderx_input_events_total",
+            "traderx_journal_write_latency_seconds",
+            "traderx_blp_event_latency_seconds",
+            "traderx_output_publish_latency_seconds",
+            "traderx_output_remaining_capacity",
+            "traderx_output_events_total",
+            "traderx_output_nats_errors_total",
+            "traderx_projector_lag_seq",
+            "traderx_projector_batch_size",
+            "traderx_hotpath_alloc_bytes_total",
+            "traderx_order_match_latency_seconds"}) {
+            assertTrue(metrics.contains(family), "missing metric family: " + family);
+        }
+    }
 }

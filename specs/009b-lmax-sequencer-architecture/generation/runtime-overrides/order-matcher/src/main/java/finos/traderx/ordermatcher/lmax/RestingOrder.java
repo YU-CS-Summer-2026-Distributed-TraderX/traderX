@@ -1,9 +1,14 @@
 package finos.traderx.ordermatcher.lmax;
 
 /**
- * BLP-private resting-order entry. Instances are pooled (free list) and reused: taken when
- * an order arrives, returned when it reaches a terminal state — never allocated mid-life
- * in the steady state (NGC-01, technique table "object pooling for domain state").
+ * BLP-private resting-order entry. The pool (free list) is filled once at startup
+ * ({@code blp.book.pool-size}) and entries are taken as orders arrive (NGC-01, technique
+ * table "object pooling for domain state"). Entries are retained for the life of the
+ * process — terminal orders stay addressable in the book so cancel/force-fill of a
+ * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
+ * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
+ * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
+ * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
  */
 public final class RestingOrder {
     public static final byte STATUS_NEW = 0;

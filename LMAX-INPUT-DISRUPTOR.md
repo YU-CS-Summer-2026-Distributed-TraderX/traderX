@@ -381,7 +381,8 @@ inputRing = inputDisruptor.getRingBuffer();
 //    events), and publish in finally so a failed write never strands a slot.
 private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                               int quantity, long limitPx, long priceTicks) {
-    long seq = inputRing.next();
+    long seq = claimInputSlot();   // lock-free tryNext; counted waiting fallback when the
+                                   // ring is full (FR-09B07 backpressure metric)
     CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
     try {
         InputEvent e = inputRing.get(seq);

@@ -154,6 +154,7 @@ public class OrderMatcherService {
         lmax.put("marshalledSeq", engine.marshalledSeq());
         lmax.put("projectedSeq", engine.projectedSeq());
         lmax.put("inputRemainingCapacity", engine.inputRemainingCapacity());
+        lmax.put("outputRemainingCapacity", engine.outputRemainingCapacity());
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", "ok");
@@ -229,12 +230,18 @@ public class OrderMatcherService {
         sb.append("# TYPE traderx_input_seq_lag gauge\n");
         long blpSeq = engine.blp() == null ? -1 : engine.blp().blpSeq();
         sb.append("traderx_input_seq_lag ").append(Math.max(0, engine.inputPublishedSeq() - blpSeq)).append('\n');
+        sb.append("# HELP traderx_input_backpressure_events_total Producer waits for a free input-ring slot.\n");
+        sb.append("# TYPE traderx_input_backpressure_events_total counter\n");
+        sb.append("traderx_input_backpressure_events_total ").append(engine.metrics().backpressureWaits()).append('\n');
         sb.append("# HELP traderx_input_events_total Sequenced input events by type.\n");
         sb.append("# TYPE traderx_input_events_total counter\n");
         sb.append("traderx_input_events_total{type=\"order_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersNew()).append('\n');
         sb.append("traderx_input_events_total{type=\"order_cancel\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersCancel()).append('\n');
         sb.append("traderx_input_events_total{type=\"force_fill\"} ").append(engine.blp() == null ? 0 : engine.blp().countForceFills()).append('\n');
         sb.append("traderx_input_events_total{type=\"price_tick\"} ").append(engine.blp() == null ? 0 : engine.blp().countPriceTicks()).append('\n');
+        sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
+        sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
+        sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
         sb.append("# HELP traderx_output_events_total Output-ring events by kind.\n");
         sb.append("# TYPE traderx_output_events_total counter\n");
         sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
@@ -248,6 +255,9 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_projector_pending_rows Read-model rows buffered awaiting projection.\n");
         sb.append("# TYPE traderx_projector_pending_rows gauge\n");
         sb.append("traderx_projector_pending_rows ").append(engine.projectorPendingRows()).append('\n');
+        HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
+            "Rows written per projector flush.",
+            metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});
         sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
         sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
         sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');

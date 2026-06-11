@@ -2,6 +2,7 @@ package finos.traderx.ordermatcher.lmax;
 
 import com.lmax.disruptor.BlockingWaitStrategy;
 import com.lmax.disruptor.BusySpinWaitStrategy;
+import com.lmax.disruptor.InsufficientCapacityException;
 import com.lmax.disruptor.RingBuffer;
 import com.lmax.disruptor.SleepingWaitStrategy;
 import com.lmax.disruptor.WaitStrategy;
@@ -71,6 +72,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final String journalPath;
     private final int projectorBatchSize;
     private final int maxSecurities;
+    private final int bookPoolSize;
     private final long ackTimeoutMs;
     private final String runtimeProfile;
 
@@ -82,6 +84,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private Disruptor<InputEvent> inputDisruptor;
     private Disruptor<OutputEvent> outputDisruptor;
     private RingBuffer<InputEvent> inputRing;
+    private RingBuffer<OutputEvent> outputRing;
     private MatchingEngine matchingEngine;
     private Journaler journaler;
     private ReplicatorStub replicator;
@@ -103,6 +106,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${journal.path:./data/journal}") String journalPath,
         @Value("${output.projector.batch-size:500}") int projectorBatchSize,
         @Value("${blp.books.max-securities:4096}") int maxSecurities,
+        @Value("${blp.book.pool-size:65536}") int bookPoolSize,
         @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
         @Value("${runtime.profile:demo}") String runtimeProfile
     ) {
@@ -120,6 +124,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.journalPath = journalPath;
         this.projectorBatchSize = projectorBatchSize;
         this.maxSecurities = maxSecurities;
+        this.bookPoolSize = bookPoolSize;
         this.ackTimeoutMs = ackTimeoutMs;
         this.runtimeProfile = runtimeProfile;
         this.symbols = new SymbolTable(maxSecurities);
@@ -131,7 +136,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Output ring first: the BLP needs its publisher before it can run.
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize);
+        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
         TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
 
@@ -139,9 +144,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
         outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
         outputDisruptor.start();
+        outputRing = outputDisruptor.getRingBuffer();
 
-        matchingEngine = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
-            metrics, maxSecurities, fillFullThreshold, 16_384);
+        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
+            metrics, maxSecurities, fillFullThreshold, bookPoolSize);
 
         bootstrapFromReadModel();
 
@@ -206,7 +212,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     public void submitPriceTick(String ticker, BigDecimal price) {
         int securityId = symbols.idFor(ticker);
         long priceTicks = Px.toTicks(price);
-        long seq = inputRing.next();
+        long seq = claimInputSlot();
         try {
             InputEvent e = inputRing.get(seq);
             e.seq = seq;
@@ -225,9 +231,24 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
     }
 
+    /**
+     * Claim the next input-ring slot. The fast path is the lock-free tryNext claim; only
+     * when the ring is full (a lagging consumer still owns the slot) does the producer
+     * fall back to the waiting claim — counted so bounded backpressure is observable
+     * (FR-09B07, traderx_input_backpressure_events_total).
+     */
+    private long claimInputSlot() {
+        try {
+            return inputRing.tryNext();
+        } catch (InsufficientCapacityException ex) {
+            metrics.recordBackpressureWait();
+            return inputRing.next();
+        }
+    }
+
     private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                                   int quantity, long limitPx, long priceTicks) {
-        long seq = inputRing.next();
+        long seq = claimInputSlot();
         CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
         try {
             InputEvent e = inputRing.get(seq);
@@ -385,6 +406,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long inputRemainingCapacity() {
         return inputRing == null ? 0 : inputRing.remainingCapacity();
+    }
+
+    public long outputRemainingCapacity() {
+        return outputRing == null ? 0 : outputRing.remainingCapacity();
     }
 
     public long journaledSeq() {

@@ -23,14 +23,17 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private final OrderRepository repository;
     private final SymbolTable symbols;
     private final int batchSize;
+    private final HotPathMetrics metrics;
     private final List<OrderRecord> buffer = new ArrayList<>();
     private volatile long projectedSeq = -1;
     private volatile long pendingRows;
 
-    public ProjectorHandler(OrderRepository repository, SymbolTable symbols, int batchSize) {
+    public ProjectorHandler(OrderRepository repository, SymbolTable symbols, int batchSize,
+                            HotPathMetrics metrics) {
         this.repository = repository;
         this.symbols = symbols;
         this.batchSize = Math.max(1, batchSize);
+        this.metrics = metrics;
     }
 
     @Override
@@ -48,6 +51,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private void flush(long sequence) {
         try {
             repository.saveAll(buffer);
+            metrics.recordProjectorBatch(buffer.size());
             buffer.clear();
             projectedSeq = sequence;
         } catch (Exception ex) {

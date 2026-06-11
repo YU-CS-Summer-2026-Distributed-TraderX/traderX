@@ -18,6 +18,12 @@ import java.nio.file.StandardOpenOption;
  * plain memory-buffered file channel with an fsync per drained batch (endOfBatch);
  * Chronicle Queue / Aeron Archive are the perf-profile substitutes.
  *
+ * Demo-profile deviation from strict FR-09B04: on an append failure the journaler logs,
+ * disables itself, and keeps advancing its sequence so the BLP (gated on
+ * min(journaler, replicator)) is not wedged — availability over durability for the
+ * containerized demo. The perf-profile journaler must instead stall the barrier (an event
+ * that is not durable must not be processed).
+ *
  * Record layout (fixed 64 bytes, little-endian):
  *   seq:i64 | type:i8 | side:i8 | pad:i16 | orderRef:i32 | accountId:i32 | securityId:i32 |
  *   qty:i32 | limitPx:i64 | priceTicks:i64 | eventTimeMillis:i64 | pad to 64
