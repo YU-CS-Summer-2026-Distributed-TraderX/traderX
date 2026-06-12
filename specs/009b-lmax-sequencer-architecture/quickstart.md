@@ -26,13 +26,17 @@ The hot-path node reports unhealthy until snapshot load + journal replay + JIT w
 ## 4) Run the No-GC and Parity Gates
 
 ```bash
-# Epsilon-GC allocation gate (also runs in CI)
+# Epsilon-GC allocation gate: runs the order-matcher's Gradle `noGcTest` task under
+# -XX:+UseEpsilonGC with a fixed pre-touched heap (heap exhaustion = failure)
 bash pipeline/validate-no-gc-conformance.sh
 
-# penny-parity fixture (long fixed-point vs 009 BigDecimal) and determinism replay
-./gradlew :order-matcher:noGcTest
-./gradlew :order-matcher:test --tests "*PennyParity*" --tests "*DeterminismReplay*"
+# full module suite: penny parity (PxTest), functional/policy parity
+# (LmaxHotPathParityTest), byte-exact allocation gate (AllocationGateTest), and the
+# banned-API constant-pool scan (HotPathBannedApiTest)
+(cd generated/code/target-generated/order-matcher && ./gradlew test)
 ```
+
+Determinism-replay and NATS payload byte-parity smoke checks are deferred (T09B19/T09B21).
 
 ## 5) Stop Runtime
 

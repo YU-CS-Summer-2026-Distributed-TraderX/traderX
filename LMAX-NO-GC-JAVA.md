@@ -323,9 +323,14 @@ The order-book entry is a flat primitive-field object, pooled on a free-list own
 
 ```java
 /**
- * BLP-private resting-order entry. Instances are pooled (free list) and reused: taken when
- * an order arrives, returned when it reaches a terminal state — never allocated mid-life
- * in the steady state (NGC-01, technique table "object pooling for domain state").
+ * BLP-private resting-order entry. The pool (free list) is filled once at startup
+ * ({@code blp.book.pool-size}) and entries are taken as orders arrive (NGC-01, technique
+ * table "object pooling for domain state"). Entries are retained for the life of the
+ * process — terminal orders stay addressable in the book so cancel/force-fill of a
+ * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
+ * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
+ * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
+ * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
  */
 public final class RestingOrder {
     public static final byte STATUS_NEW = 0;
@@ -449,11 +454,11 @@ private boolean isInTheMoney(RestingOrder o, long px) {
     return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
 }
 
-private void autoFill(RestingOrder o, long px, InputEvent e) {
+private void autoFill(RestingOrder o, long px, InputEvent e, int openIndex) {
     autoFillAttempts++;
     int remaining = o.remaining;
     int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
-    applyFill(o, fillQty, px, false, e, px);
+    applyFill(o, fillQty, px, false, e, px, openIndex);
     autoFillSuccess++;
 }
 
@@ -472,7 +477,7 @@ private void onPriceTick(InputEvent e) {
             continue;
         }
         if (isInTheMoney(o, e.priceTicks)) {
-            autoFill(o, e.priceTicks, e);
+            autoFill(o, e.priceTicks, e, i);   // index hint: terminal removal is O(1)
             if (!o.isOpen()) {
                 continue; // entry at index i was swap-removed by applyFill
             }
@@ -503,7 +508,8 @@ private void onNewOrder(InputEvent e) {
     o.createdAtMillis = e.eventTimeMillis;
     o.updatedAtMillis = e.eventTimeMillis;
     index(o);
-    openRefs(e.securityId).add(e.orderRef);
+    IntList refs = openRefs(e.securityId);
+    refs.add(e.orderRef);
 
     long px = lastPxBySecurity[e.securityId];
     // Ack first: the REST create response is the NEW order, exactly as in 009.
@@ -511,28 +517,38 @@ private void onNewOrder(InputEvent e) {
 
     // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
     if (px != Px.NONE && isInTheMoney(o, px)) {
-        autoFill(o, px, e);
+        autoFill(o, px, e, refs.size() - 1);
     }
 }
 ```
 
-### A12.6 Single-writer counters: plain `volatile long`, no `Atomic*` (`MatchingEngine`)
+### A12.6 Single-writer counters: plain `long`s behind one release-store, no `Atomic*` (`MatchingEngine`)
 
 Only the BLP thread writes these; edge threads (REST `/health`, `/metrics`) read them racily-but-safely.
-No CAS, no contention, no allocation:
+The counters are plain fields published by a single release-store of `blpSeq` per event — the Disruptor
+`Sequence.set` idiom — so the BLP pays **zero** per-counter fences. Edge accessors acquire-load `blpSeq`
+first (`readFence()`), ordering their plain counter reads after the writes they observe. No CAS, no
+contention, no allocation:
 
 ```java
-// Single-writer counters; volatile so edge threads can read them racily-but-safely.
-private volatile long eventsProcessed;
-private volatile long autoFillAttempts;
-private volatile long autoFillSuccess;
-private volatile long lastEventTimeMillis;
-private volatile long blpSeq;
+// Single-writer telemetry: plain longs published by the once-per-event release-store of
+// blpSeq; readers acquire-load blpSeq first, so the hot path pays no per-counter fences.
+private long eventsProcessed;
+private long autoFillAttempts;
+private long autoFillSuccess;
+private long lastEventTimeMillis;
+private volatile long blpSeq = -1;
 // …
+private static final VarHandle BLP_SEQ; // findVarHandle(MatchingEngine.class, "blpSeq", long.class)
+
+/** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
+@Override
+public void onStart() {
+    blpThreadId = Thread.currentThread().threadId();
+}
 
 @Override
 public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
-    // …
     switch (e.type) {
         case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
         case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
@@ -542,7 +558,9 @@ public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
     }
     eventsProcessed++;
     lastEventTimeMillis = e.eventTimeMillis;
-    blpSeq = sequence;
+    // Release-store: publishes this event's plain counter/time writes to edge readers
+    // without the full volatile-store fence on the BLP thread.
+    BLP_SEQ.setRelease(this, sequence);
     metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
 }
 ```
@@ -610,9 +628,8 @@ public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
     buffer.putLong(e.limitPx);
     buffer.putLong(e.priceTicks);
     buffer.putLong(e.eventTimeMillis);
-    while (buffer.position() < RECORD_SIZE) {
-        buffer.put((byte) 0);
-    }
+    buffer.putInt(0);
+    buffer.putLong(0L); // pad 52 -> 64
     buffer.flip();
     while (buffer.hasRemaining()) {
         channel.write(buffer);
@@ -625,9 +642,9 @@ public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
 }
 ```
 
-### A12.9 Observing the contract today (`LmaxEngine.blpAllocatedBytes`)
+### A12.9 Observing the contract in production (`LmaxEngine.blpAllocatedBytes`)
 
-Until the Epsilon gate lands (`T09B18`), the BLP thread's allocation is **measured and exported** so any
+Alongside the Epsilon gate (A12.10), the BLP thread's allocation is **measured and exported** so any
 regression is visible on a dashboard — `traderx_hotpath_alloc_bytes_total{node="blp"}` in `/metrics`:
 
 ```java
@@ -646,20 +663,27 @@ public long blpAllocatedBytes() {
 }
 ```
 
-### A12.10 The Epsilon allocation gate — planned shape (task `T09B18`, not yet in the codebase)
+### A12.10 The Epsilon allocation gate — implemented (task `T09B18`, `AllocationGateTest`)
 
-```java
-// Allocation-gate test: any steady-state allocation exhausts the (small) Epsilon heap → test FAILS.
-//   JVM args: -XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms64m -Xmx64m -XX:+AlwaysPreTouch
-@Test void blpIsAllocationFreeInSteadyState() {
-    warmUp(matchingEngine, 100_000);                 // force C2 compilation first
-    for (long i = 0; i < 50_000_000L; i++) {         // far more than the heap could hold if we allocated
-        InputEvent e = nextSyntheticEvent(i);        // mutates a reused holder — no new objects
-        matchingEngine.onEvent(e, i, true);
-    }
-    // Reaching here without OutOfMemoryError proves zero steady-state allocation.
-}
-```
+The gate (`src/test/java/.../lmax/AllocationGateTest.java`) drives the **real topology** — input ring →
+journaler + replicator → BLP → output ring — through a deterministic steady-state mix covering every BLP
+branch (create, in-the-money auto-fill with paired trade emit, terminal cancel/force-fill republish,
+not-found, in/out-of-the-money ticks), and enforces the contract twice over:
+
+- **Byte-exact, any collector** (regular `test` task): after a warm-up phase with the identical branch
+  profile, it asserts `ThreadMXBean.getThreadAllocatedBytes` deltas of **exactly 0** for the producer,
+  journaler, and BLP threads across the measured events. A single stray `new` fails with
+  `expected: <0> but was: <N>`.
+- **Heap-exhaustion proof** (Gradle `noGcTest` task, run by `pipeline/validate-no-gc-conformance.sh`):
+  the same test under `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms256m -Xmx256m
+  -XX:+AlwaysPreTouch` with a 3M-event budget — Epsilon never reclaims, so steady-state allocation
+  exhausts the heap and crashes the run.
+
+Startup allocation stays permitted (NGC-01): the harness pre-sizes the pool/indexes for the full
+configured event budget, exactly as a production book is sized for the trading day. The companion
+`HotPathBannedApiTest` (SC-NGC-04) scans the compiled constant pools of the hot-path classes and fails on
+any reference to `BigDecimal`, `java.time`, `HashMap`/`ConcurrentHashMap`, streams, regex, `Atomic*`,
+`String.format`, string concatenation, SLF4J, Spring, or JPA.
 
 ---
 

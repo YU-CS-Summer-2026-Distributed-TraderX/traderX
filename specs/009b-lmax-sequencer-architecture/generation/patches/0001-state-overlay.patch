@@ -189,7 +189,7 @@ index 4098234..39abe00 100644
    }
  }
 diff --git a/order-matcher/build.gradle b/order-matcher/build.gradle
-index e992cff..9e72574 100644
+index e992cff..e23e398 100644
 --- a/order-matcher/build.gradle
 +++ b/order-matcher/build.gradle
 @@ -13,6 +13,19 @@ java {
@@ -223,6 +223,32 @@ index e992cff..9e72574 100644
    testImplementation 'org.springframework.boot:spring-boot-starter-test'
    testRuntimeOnly 'com.h2database:h2'
  }
+@@ -49,6 +66,25 @@ tasks.withType(Test).configureEach {
+   useJUnitPlatform()
+ }
+ 
++// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
++// gate under Epsilon GC — a no-op collector on a small fixed pre-touched heap, so any
++// steady-state allocation exhausts the heap and fails the run. The same test also runs
++// in the regular `test` task under the default collector, where it asserts exact
++// zero-byte deltas per hot-path thread via ThreadMXBean. Invoked by
++// pipeline/validate-no-gc-conformance.sh (SC-NGC-01).
++tasks.register('noGcTest', Test) {
++  description = 'Hot-path allocation gate under Epsilon GC (zero steady-state allocation, NGC-02).'
++  group = 'verification'
++  testClassesDirs = sourceSets.test.output.classesDirs
++  classpath = sourceSets.test.runtimeClasspath
++  filter {
++    includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
++  }
++  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
++  jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
++          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
++}
++
+ configurations.configureEach {
+   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/OrderMatcherApplication.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/OrderMatcherApplication.java
 index 6489fc1..03f9baf 100644
 --- a/order-matcher/src/main/java/finos/traderx/ordermatcher/OrderMatcherApplication.java
@@ -665,10 +691,10 @@ index 0000000..1f0f490
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
 new file mode 100644
-index 0000000..19dd9fe
+index 0000000..771dbdc
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,123 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
@@ -709,6 +735,7 @@ index 0000000..19dd9fe
 +    private final ByteBuffer buffer = ByteBuffer.allocateDirect(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
 +    private FileChannel channel;
 +    private volatile long journaledSeq = -1;
++    private volatile long threadId;
 +    private volatile boolean failed;
 +
 +    public Journaler(boolean enabled, Path journalDir, HotPathMetrics metrics) {
@@ -726,6 +753,12 @@ index 0000000..19dd9fe
 +                this.failed = true;
 +            }
 +        }
++    }
++
++    /** BatchEventProcessor start hook: runs on the journaler thread before the first event. */
++    @Override
++    public void onStart() {
++        threadId = Thread.currentThread().threadId();
 +    }
 +
 +    @Override
@@ -748,9 +781,8 @@ index 0000000..19dd9fe
 +            buffer.putLong(e.limitPx);
 +            buffer.putLong(e.priceTicks);
 +            buffer.putLong(e.eventTimeMillis);
-+            while (buffer.position() < RECORD_SIZE) {
-+                buffer.put((byte) 0);
-+            }
++            buffer.putInt(0);
++            buffer.putLong(0L); // pad 52 -> 64
 +            buffer.flip();
 +            while (buffer.hasRemaining()) {
 +                channel.write(buffer);
@@ -768,6 +800,10 @@ index 0000000..19dd9fe
 +
 +    public long journaledSeq() {
 +        return journaledSeq;
++    }
++
++    public long journalThreadId() {
++        return threadId;
 +    }
 +
 +    @Override
@@ -1310,13 +1346,16 @@ index 0000000..2097f07
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
 new file mode 100644
-index 0000000..605e752
+index 0000000..10cc41a
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,370 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
++
++import java.lang.invoke.MethodHandles;
++import java.lang.invoke.VarHandle;
 +
 +/**
 + * The Business Logic Processor (state 009b): single thread, entirely in memory,
@@ -1345,17 +1384,30 @@ index 0000000..605e752
 +    private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
 +    private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
 +
-+    // Single-writer counters; volatile so edge threads can read them racily-but-safely.
-+    private volatile long eventsProcessed;
-+    private volatile long autoFillAttempts;
-+    private volatile long autoFillSuccess;
-+    private volatile long lastEventTimeMillis;
-+    private volatile long blpSeq;
-+    private volatile long ordersNew;
-+    private volatile long ordersCancel;
-+    private volatile long ordersForceFill;
-+    private volatile long priceTicks;
++    // Single-writer telemetry: only the BLP thread writes, edge threads (REST /health,
++    // /metrics) read racily-but-safely. The counters are plain longs published by the
++    // once-per-event release-store of blpSeq (the Disruptor Sequence.set idiom); readers
++    // acquire-load blpSeq first (readFence), so the hot path pays no per-counter fences.
++    private long eventsProcessed;
++    private long autoFillAttempts;
++    private long autoFillSuccess;
++    private long lastEventTimeMillis;
++    private long ordersNew;
++    private long ordersCancel;
++    private long ordersForceFill;
++    private long priceTicks;
++    private volatile long blpSeq = -1;
 +    private volatile long blpThreadId;
++
++    private static final VarHandle BLP_SEQ;
++
++    static {
++        try {
++            BLP_SEQ = MethodHandles.lookup().findVarHandle(MatchingEngine.class, "blpSeq", long.class);
++        } catch (ReflectiveOperationException ex) {
++            throw new ExceptionInInitializerError(ex);
++        }
++    }
 +
 +    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
 +                          int fillFullThreshold, int initialPoolSize) {
@@ -1372,11 +1424,14 @@ index 0000000..605e752
 +        }
 +    }
 +
++    /** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
++    @Override
++    public void onStart() {
++        blpThreadId = Thread.currentThread().threadId();
++    }
++
 +    @Override
 +    public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
-+        if (blpThreadId == 0) {
-+            blpThreadId = Thread.currentThread().threadId();
-+        }
 +        switch (e.type) {
 +            case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
 +            case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
@@ -1386,7 +1441,9 @@ index 0000000..605e752
 +        }
 +        eventsProcessed++;
 +        lastEventTimeMillis = e.eventTimeMillis;
-+        blpSeq = sequence;
++        // Release-store: publishes this event's plain counter/time writes to edge readers
++        // without the full volatile-store fence on the BLP thread.
++        BLP_SEQ.setRelease(this, sequence);
 +        metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
 +    }
 +
@@ -1432,7 +1489,8 @@ index 0000000..605e752
 +        o.createdAtMillis = e.eventTimeMillis;
 +        o.updatedAtMillis = e.eventTimeMillis;
 +        index(o);
-+        openRefs(e.securityId).add(e.orderRef);
++        IntList refs = openRefs(e.securityId);
++        refs.add(e.orderRef);
 +
 +        long px = lastPxBySecurity[e.securityId];
 +        // Ack first: the REST create response is the NEW order, exactly as in 009.
@@ -1440,7 +1498,7 @@ index 0000000..605e752
 +
 +        // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
 +        if (px != Px.NONE && isInTheMoney(o, px)) {
-+            autoFill(o, px, e);
++            autoFill(o, px, e, refs.size() - 1);
 +        }
 +    }
 +
@@ -1477,7 +1535,7 @@ index 0000000..605e752
 +        // 009 parity: force-fill executes the full remaining quantity at the last market
 +        // price, falling back to the limit price when no tick has been seen yet.
 +        long execPx = px != Px.NONE ? px : o.limitPx;
-+        applyFill(o, o.remaining, execPx, true, e, px);
++        applyFill(o, o.remaining, execPx, true, e, px, -1);
 +    }
 +
 +    private void onPriceTick(InputEvent e) {
@@ -1495,7 +1553,7 @@ index 0000000..605e752
 +                continue;
 +            }
 +            if (isInTheMoney(o, e.priceTicks)) {
-+                autoFill(o, e.priceTicks, e);
++                autoFill(o, e.priceTicks, e, i);
 +                if (!o.isOpen()) {
 +                    continue; // entry at index i was swap-removed by applyFill
 +                }
@@ -1510,15 +1568,16 @@ index 0000000..605e752
 +        return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
 +    }
 +
-+    private void autoFill(RestingOrder o, long px, InputEvent e) {
++    private void autoFill(RestingOrder o, long px, InputEvent e, int openIndex) {
 +        autoFillAttempts++;
 +        int remaining = o.remaining;
 +        int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
-+        applyFill(o, fillQty, px, false, e, px);
++        applyFill(o, fillQty, px, false, e, px, openIndex);
 +        autoFillSuccess++;
 +    }
 +
-+    private void applyFill(RestingOrder o, int fillQty, long execPx, boolean force, InputEvent e, long marketPx) {
++    private void applyFill(RestingOrder o, int fillQty, long execPx, boolean force, InputEvent e,
++                           long marketPx, int openIndex) {
 +        int remainingAfter = Math.max(0, o.remaining - fillQty);
 +        o.remaining = remainingAfter;
 +        o.lastExecPx = execPx;
@@ -1537,14 +1596,27 @@ index 0000000..605e752
 +            flags |= OutputEvent.FLAG_FORCE_FILL;
 +        }
 +        if (!o.isOpen()) {
-+            openRefs(o.securityId).removeValueUnordered(o.orderRef);
++            removeOpenRef(o, openIndex);
 +        }
 +
-+        out.emitOrderUpdate(o, e.seq, flags, true, marketPx, e.ingressNanos);
-+        // Booking leaves as a typed event (FR-09B15); the output bridge feeds the existing
-+        // trade pipeline off the acknowledgement path.
-+        out.emitTradeBooked(o, fillQty, e.seq, e.ingressNanos);
++        // The fill's order update and its TradeBooked event (FR-09B15: booking leaves as a
++        // typed event, off the acknowledgement path) go out as one paired claim — a single
++        // publish, a single consumer signal.
++        out.emitFillWithTrade(o, fillQty, e.seq, flags, marketPx, e.ingressNanos);
 +        metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
++    }
++
++    /** Drop a now-terminal order from its security's open index; O(1) when the caller knows the slot. */
++    private void removeOpenRef(RestingOrder o, int openIndex) {
++        IntList refs = openRefsBySecurity[o.securityId];
++        if (refs == null) {
++            return;
++        }
++        if (openIndex >= 0 && openIndex < refs.size() && refs.get(openIndex) == o.orderRef) {
++            refs.removeAtUnordered(openIndex);
++        } else {
++            refs.removeValueUnordered(o.orderRef);
++        }
 +    }
 +
 +    // ----- internal structures ------------------------------------------------------------
@@ -1591,19 +1663,32 @@ index 0000000..605e752
 +
 +    // ----- edge-readable telemetry ----------------------------------------------------------
 +
++    /**
++     * Acquire-load of blpSeq: orders the subsequent plain counter read after the BLP's
++     * release-store, so edge threads see counters at least as fresh as the last published
++     * sequence they observe.
++     */
++    private void readFence() {
++        BLP_SEQ.getAcquire(this);
++    }
++
 +    public long eventsProcessed() {
++        readFence();
 +        return eventsProcessed;
 +    }
 +
 +    public long autoFillAttempts() {
++        readFence();
 +        return autoFillAttempts;
 +    }
 +
 +    public long autoFillSuccess() {
++        readFence();
 +        return autoFillSuccess;
 +    }
 +
 +    public long lastEventTimeMillis() {
++        readFence();
 +        return lastEventTimeMillis;
 +    }
 +
@@ -1612,18 +1697,22 @@ index 0000000..605e752
 +    }
 +
 +    public long countOrdersNew() {
++        readFence();
 +        return ordersNew;
 +    }
 +
 +    public long countOrdersCancel() {
++        readFence();
 +        return ordersCancel;
 +    }
 +
 +    public long countForceFills() {
++        readFence();
 +        return ordersForceFill;
 +    }
 +
 +    public long countPriceTicks() {
++        readFence();
 +        return priceTicks;
 +    }
 +
@@ -1864,10 +1953,10 @@ index 0000000..7406d85
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
 new file mode 100644
-index 0000000..60cfc64
+index 0000000..ef6db36
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
-@@ -0,0 +1,90 @@
+@@ -0,0 +1,113 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.RingBuffer;
@@ -1875,7 +1964,9 @@ index 0000000..60cfc64
 +/**
 + * The BLP's only side-effect channel (FR-09B15): claim/write/publish into the output ring.
 + * The BLP is the sole producer (ProducerType.SINGLE). No allocation per emit — fields are
-+ * written into the pre-allocated slot in place.
++ * written into the pre-allocated slot in place. A fill's order update and its TradeBooked
++ * event are claimed as one pair ({@link #emitFillWithTrade}) so the BLP pays a single
++ * publish (one consumer signal) per fill.
 + */
 +public final class OutputPublisher {
 +    private final RingBuffer<OutputEvent> ring;
@@ -1888,54 +1979,29 @@ index 0000000..60cfc64
 +                                long marketPx, long ingressNanos) {
 +        long seq = ring.next();
 +        try {
-+            OutputEvent e = ring.get(seq);
-+            e.kind = OutputEvent.KIND_ORDER_UPDATE;
-+            e.inputSeq = inputSeq;
-+            e.flags = flags;
-+            e.publishNats = publishNats;
-+            e.orderRef = order.orderRef;
-+            e.accountId = order.accountId;
-+            e.securityId = order.securityId;
-+            e.side = order.side;
-+            e.quantity = order.quantity;
-+            e.remainingQty = order.remaining;
-+            e.limitPx = order.limitPx;
-+            e.status = order.status;
-+            e.lastExecPx = order.lastExecPx;
-+            e.lastFillQty = order.lastFillQty;
-+            e.createdAtMillis = order.createdAtMillis;
-+            e.updatedAtMillis = order.updatedAtMillis;
-+            e.marketPx = marketPx;
-+            e.tradeQty = 0;
-+            e.ingressNanos = ingressNanos;
++            writeOrderUpdate(ring.get(seq), order, inputSeq, flags, publishNats, marketPx, ingressNanos);
 +        } finally {
 +            ring.publish(seq);
++        }
++    }
++
++    /** Paired claim: fill update + TradeBooked published together, signalled once. */
++    public void emitFillWithTrade(RestingOrder order, int fillQty, long inputSeq, int flags,
++                                  long marketPx, long ingressNanos) {
++        long tradeSeq = ring.next(2);
++        long updateSeq = tradeSeq - 1;
++        try {
++            writeOrderUpdate(ring.get(updateSeq), order, inputSeq, flags, true, marketPx, ingressNanos);
++            writeTradeBooked(ring.get(tradeSeq), order, fillQty, inputSeq, ingressNanos);
++        } finally {
++            ring.publish(updateSeq, tradeSeq);
 +        }
 +    }
 +
 +    public void emitTradeBooked(RestingOrder order, int fillQty, long inputSeq, long ingressNanos) {
 +        long seq = ring.next();
 +        try {
-+            OutputEvent e = ring.get(seq);
-+            e.kind = OutputEvent.KIND_TRADE_BOOKED;
-+            e.inputSeq = inputSeq;
-+            e.flags = 0;
-+            e.publishNats = false;
-+            e.orderRef = order.orderRef;
-+            e.accountId = order.accountId;
-+            e.securityId = order.securityId;
-+            e.side = order.side;
-+            e.quantity = order.quantity;
-+            e.remainingQty = order.remaining;
-+            e.limitPx = order.limitPx;
-+            e.status = order.status;
-+            e.lastExecPx = order.lastExecPx;
-+            e.lastFillQty = order.lastFillQty;
-+            e.createdAtMillis = order.createdAtMillis;
-+            e.updatedAtMillis = order.updatedAtMillis;
-+            e.marketPx = Px.NONE;
-+            e.tradeQty = fillQty;
-+            e.ingressNanos = ingressNanos;
++            writeTradeBooked(ring.get(seq), order, fillQty, inputSeq, ingressNanos);
 +        } finally {
 +            ring.publish(seq);
 +        }
@@ -1956,6 +2022,52 @@ index 0000000..60cfc64
 +        } finally {
 +            ring.publish(seq);
 +        }
++    }
++
++    private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
++                                         boolean publishNats, long marketPx, long ingressNanos) {
++        e.kind = OutputEvent.KIND_ORDER_UPDATE;
++        e.inputSeq = inputSeq;
++        e.flags = flags;
++        e.publishNats = publishNats;
++        e.orderRef = order.orderRef;
++        e.accountId = order.accountId;
++        e.securityId = order.securityId;
++        e.side = order.side;
++        e.quantity = order.quantity;
++        e.remainingQty = order.remaining;
++        e.limitPx = order.limitPx;
++        e.status = order.status;
++        e.lastExecPx = order.lastExecPx;
++        e.lastFillQty = order.lastFillQty;
++        e.createdAtMillis = order.createdAtMillis;
++        e.updatedAtMillis = order.updatedAtMillis;
++        e.marketPx = marketPx;
++        e.tradeQty = 0;
++        e.ingressNanos = ingressNanos;
++    }
++
++    private static void writeTradeBooked(OutputEvent e, RestingOrder order, int fillQty, long inputSeq,
++                                         long ingressNanos) {
++        e.kind = OutputEvent.KIND_TRADE_BOOKED;
++        e.inputSeq = inputSeq;
++        e.flags = 0;
++        e.publishNats = false;
++        e.orderRef = order.orderRef;
++        e.accountId = order.accountId;
++        e.securityId = order.securityId;
++        e.side = order.side;
++        e.quantity = order.quantity;
++        e.remainingQty = order.remaining;
++        e.limitPx = order.limitPx;
++        e.status = order.status;
++        e.lastExecPx = order.lastExecPx;
++        e.lastFillQty = order.lastFillQty;
++        e.createdAtMillis = order.createdAtMillis;
++        e.updatedAtMillis = order.updatedAtMillis;
++        e.marketPx = Px.NONE;
++        e.tradeQty = fillQty;
++        e.ingressNanos = ingressNanos;
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
@@ -3062,6 +3174,382 @@ index 2979b4d..d9b16dc 100644
      }
  }
 -
+diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java
+new file mode 100644
+index 0000000..4a0f59d
+--- /dev/null
++++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java
+@@ -0,0 +1,270 @@
++package finos.traderx.ordermatcher.lmax;
++
++import com.lmax.disruptor.EventHandler;
++import com.lmax.disruptor.RingBuffer;
++import com.lmax.disruptor.YieldingWaitStrategy;
++import com.lmax.disruptor.dsl.Disruptor;
++import com.lmax.disruptor.dsl.ProducerType;
++import com.lmax.disruptor.util.DaemonThreadFactory;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.io.TempDir;
++
++import java.lang.management.ManagementFactory;
++import java.nio.file.Path;
++import java.util.concurrent.TimeUnit;
++import java.util.function.LongSupplier;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assumptions.assumeTrue;
++
++/**
++ * The no-GC allocation gate (NGC-01/NGC-02, SC-09B05, task T09B18).
++ *
++ * Drives the real hot-path topology — input ring -> journaler + replicator -> BLP ->
++ * output ring — through a deterministic steady-state workload that exercises every BLP
++ * branch (create, in-the-money auto-fill with paired trade emit, cancel of open and
++ * terminal orders, force-fill republish, order-not-found, in/out-of-the-money price
++ * ticks, unknown event type), and asserts the producer, journaler, and BLP threads
++ * allocate exactly ZERO bytes during the measured phase
++ * (ThreadMXBean.getThreadAllocatedBytes, exact in HotSpot).
++ *
++ * Two enforcement layers:
++ *  - This test runs in the regular `test` task under any collector: the per-thread
++ *    byte deltas make a single steady-state allocation fail with `expected 0`.
++ *  - The Gradle `noGcTest` task re-runs it under
++ *    `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms256m -Xmx256m
++ *    -XX:+AlwaysPreTouch` with a larger event budget (Epsilon never reclaims, so any
++ *    steady-state allocation exhausts the heap and crashes the run) — invoked by
++ *    `pipeline/validate-no-gc-conformance.sh` (SC-NGC-01).
++ *
++ * Boundaries (documented NGC-01 scope): edge handlers (marshaller/NATS/projector) are
++ * replaced by a no-op drain — edges are explicitly allowed to allocate and are not part
++ * of the gated hot path. Steady-state order creates draw from the pre-allocated
++ * RestingOrder pool, which this harness sizes for the configured event budget exactly as
++ * a production book is sized for the trading day (`blp.book.pool-size`); terminal-order
++ * recycling arrives with T09B14.
++ *
++ * Workload mix per 16 events: 1 in-the-money create (immediate full fill + paired
++ * TradeBooked), 1 terminal-cancel republish, 1 terminal-force-fill republish,
++ * 1 unknown-order command (not-found path), 12 out-of-the-money price ticks scanning a
++ * resting book of 256 orders per security across 4 securities.
++ */
++class AllocationGateTest {
++    private static final byte SIDE_BUY = InputEvent.SIDE_BUY;
++    private static final long T0 = 1_750_000_000_000L; // fixed event-carried wall clock
++    private static final int SECURITIES = 4;
++    private static final int RESTING_PER_SECURITY = 256;
++    private static final long RESTING_LIMIT_PX = 50_000_000L;  // Buy @50.000: ticks at 60+ never match
++    private static final long CREATE_LIMIT_PX = 200_000_000L;  // Buy @200.000: always in the money
++
++    @TempDir
++    Path journalDir;
++
++    @Test
++    void hotPathIsAllocationFreeInSteadyState() throws Exception {
++        var threadMxBase = ManagementFactory.getThreadMXBean();
++        assumeTrue(threadMxBase instanceof com.sun.management.ThreadMXBean,
++            "com.sun.management.ThreadMXBean unavailable");
++        var threadMx = (com.sun.management.ThreadMXBean) threadMxBase;
++        assumeTrue(threadMx.isThreadAllocatedMemorySupported(), "thread allocation accounting unavailable");
++        if (!threadMx.isThreadAllocatedMemoryEnabled()) {
++            threadMx.setThreadAllocatedMemoryEnabled(true);
++        }
++
++        int steadyEvents = Integer.getInteger("gate.steadyStateEvents", 1_000_000);
++        int warmupEvents = Integer.getInteger("gate.warmupEvents", 250_000);
++
++        // Pre-size every hot-path structure for the full configured budget (startup
++        // allocation is the only allowed allocation, NGC-01).
++        int warmupCreates = SECURITIES * (RESTING_PER_SECURITY + 320) + 64 + 32 + 32 + warmupEvents / 16 + 16;
++        int steadyCreates = steadyEvents / 16 + 16;
++        int poolSize = warmupCreates + steadyCreates + 1024;
++        int refCeiling = poolSize + 1024;
++        int missingRef = refCeiling - 2; // never created: exercises the not-found path
++
++        HotPathMetrics metrics = new HotPathMetrics();
++        Disruptor<OutputEvent> outputDisruptor = new Disruptor<>(OutputEvent::newInstance, 65536,
++            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, new YieldingWaitStrategy());
++        DrainHandler drain = new DrainHandler();
++        outputDisruptor.handleEventsWith(drain);
++        outputDisruptor.start();
++
++        MatchingEngine blp = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
++            metrics, 16, 1000, poolSize);
++        Journaler journaler = new Journaler(true, journalDir, metrics);
++        ReplicatorStub replicator = new ReplicatorStub();
++        Disruptor<InputEvent> inputDisruptor = new Disruptor<>(InputEvent::newInstance, 65536,
++            DaemonThreadFactory.INSTANCE, ProducerType.MULTI, new YieldingWaitStrategy());
++        inputDisruptor.handleEventsWith(journaler, replicator).then(blp);
++        inputDisruptor.start();
++        RingBuffer<InputEvent> ring = inputDisruptor.getRingBuffer();
++
++        try {
++            int nextRef = 1;
++
++            // ----- warm-up: startup allocation allowed; covers every branch and pre-grows
++            // ----- every index past anything the measured phase can reach.
++            publishOrder(ring, refCeiling - 1, 0, RESTING_LIMIT_PX, 100); // grows ordersByRef once
++            int terminalRef = nextRef;
++            for (int i = 0; i < 64; i++) {
++                publishOrder(ring, nextRef++, 1, RESTING_LIMIT_PX, 10);
++            }
++            for (int ref = terminalRef; ref < terminalRef + 64; ref++) {
++                publish(ring, InputEvent.TYPE_ORDER_CANCEL, ref, 0, 0, (byte) 0, 0, 0L, 0L); // open cancel
++                publish(ring, InputEvent.TYPE_ORDER_CANCEL, ref, 0, 0, (byte) 0, 0, 0L, 0L); // terminal republish
++            }
++            for (int i = 0; i < 32; i++) { // force-fill with no tick seen: limit-price fallback
++                int ref = nextRef++;
++                publishOrder(ring, ref, 2, RESTING_LIMIT_PX, 700);
++                publish(ring, InputEvent.TYPE_FORCE_FILL, ref, 0, 0, (byte) 0, 0, 0L, 0L);
++            }
++            for (int sec = 0; sec < SECURITIES; sec++) { // the permanent resting book
++                for (int i = 0; i < RESTING_PER_SECURITY; i++) {
++                    publishOrder(ring, nextRef++, sec, RESTING_LIMIT_PX, 100);
++                }
++            }
++            for (int sec = 0; sec < SECURITIES; sec++) { // stretch list depth, then fill back down
++                for (int i = 0; i < 320; i++) {
++                    publishOrder(ring, nextRef++, sec, 100_000_000L, 1800);
++                }
++            }
++            for (int round = 0; round < 2; round++) { // partial fill, then full fill (900 < 1000)
++                for (int sec = 0; sec < SECURITIES; sec++) {
++                    publishTick(ring, sec, 99_500_000L);
++                }
++            }
++            for (int i = 0; i < 32; i++) { // force-fill at last market price
++                int ref = nextRef++;
++                publishOrder(ring, ref, 3, 100_000_000L, 2500);
++                publish(ring, InputEvent.TYPE_FORCE_FILL, ref, 0, 0, (byte) 0, 0, 0L, 0L);
++            }
++            publish(ring, InputEvent.TYPE_ORDER_CANCEL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
++            publish(ring, InputEvent.TYPE_FORCE_FILL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
++            publish(ring, (byte) 99, 0, 0, 0, (byte) 0, 0, 0L, 0L); // unknown type
++            publishTick(ring, 5, 88_000_000L); // security with no open-order list
++            nextRef = runMix(ring, nextRef, warmupEvents, terminalRef, missingRef);
++            awaitDrained(ring, outputDisruptor.getRingBuffer(), blp, drain);
++
++            long blpThread = blp.blpThreadId();
++            long journalThread = journaler.journalThreadId();
++            assertTrue(blpThread != 0 && journalThread != 0, "consumer threads not started");
++            // Lazy-init the accounting call sites on this thread before measuring.
++            threadMx.getThreadAllocatedBytes(Thread.currentThread().threadId());
++            threadMx.getThreadAllocatedBytes(blpThread);
++
++            // ----- measured steady state: zero allocation allowed anywhere on the path.
++            long producerBefore = threadMx.getThreadAllocatedBytes(Thread.currentThread().threadId());
++            long blpBefore = threadMx.getThreadAllocatedBytes(blpThread);
++            long journalBefore = threadMx.getThreadAllocatedBytes(journalThread);
++
++            runMix(ring, nextRef, steadyEvents, terminalRef, missingRef);
++
++            long producerAfter = threadMx.getThreadAllocatedBytes(Thread.currentThread().threadId());
++            awaitDrained(ring, outputDisruptor.getRingBuffer(), blp, drain);
++            long blpAfter = threadMx.getThreadAllocatedBytes(blpThread);
++            long journalAfter = threadMx.getThreadAllocatedBytes(journalThread);
++
++            assertEquals(0L, blpAfter - blpBefore, "BLP thread allocated in steady state (NGC-01)");
++            assertEquals(0L, journalAfter - journalBefore, "journaler thread allocated in steady state (NGC-01)");
++            assertEquals(0L, producerAfter - producerBefore, "producer claim/write/publish allocated in steady state (NGC-01)");
++
++            // Sanity: the measured phase really drove the full mix through the BLP.
++            assertTrue(blp.countPriceTicks() >= steadyEvents / 16L * 12L, "tick mix did not run");
++            assertTrue(blp.countOrdersNew() >= steadyCreates - 16L, "create mix did not run");
++            assertTrue(blp.autoFillSuccess() >= steadyCreates - 16L, "fill mix did not run");
++            assertTrue(journaler.journaledSeq() >= blp.blpSeq(), "journal gating violated");
++        } finally {
++            inputDisruptor.shutdown(10, TimeUnit.SECONDS);
++            outputDisruptor.shutdown(10, TimeUnit.SECONDS);
++            journaler.close();
++        }
++    }
++
++    /**
++     * The shared warm-up/steady-state mix; identical branch profile in both phases so the
++     * JIT compiles exactly the code the measurement runs. Per 16 events: 1 create that
++     * fully fills on arrival, 1 terminal cancel, 1 terminal force-fill, 1 unknown-order
++     * command, 12 resting-book price ticks.
++     */
++    private static int runMix(RingBuffer<InputEvent> ring, int nextRef, int events,
++                              int terminalRef, int missingRef) {
++        for (int i = 0; i < events; i++) {
++            int m = i & 15;
++            int sec = i & 3;
++            if (m == 0) {
++                publishOrder(ring, nextRef++, sec, CREATE_LIMIT_PX, 500);
++            } else if (m == 4) {
++                publish(ring, InputEvent.TYPE_ORDER_CANCEL, terminalRef, 0, 0, (byte) 0, 0, 0L, 0L);
++            } else if (m == 8) {
++                publish(ring, InputEvent.TYPE_FORCE_FILL, terminalRef, 0, 0, (byte) 0, 0, 0L, 0L);
++            } else if (m == 12) {
++                publish(ring, InputEvent.TYPE_ORDER_CANCEL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
++            } else {
++                publishTick(ring, sec, 60_000_000L + ((i & 7) * 1_000_000L));
++            }
++        }
++        return nextRef;
++    }
++
++    private static void publishOrder(RingBuffer<InputEvent> ring, int orderRef, int securityId,
++                                     long limitPx, int qty) {
++        publish(ring, InputEvent.TYPE_ORDER_NEW, orderRef, 42, securityId, SIDE_BUY, qty, limitPx, 0L);
++    }
++
++    private static void publishTick(RingBuffer<InputEvent> ring, int securityId, long priceTicks) {
++        publish(ring, InputEvent.TYPE_PRICE_TICK, 0, 0, securityId, (byte) 0, 0, 0L, priceTicks);
++    }
++
++    /** Mirrors LmaxEngine.execute's slot write: claim, overwrite every field, publish. */
++    private static void publish(RingBuffer<InputEvent> ring, byte type, int orderRef, int accountId,
++                                int securityId, byte side, int qty, long limitPx, long priceTicks) {
++        long seq = ring.next();
++        try {
++            InputEvent e = ring.get(seq);
++            e.seq = seq;
++            e.type = type;
++            e.orderRef = orderRef;
++            e.accountId = accountId;
++            e.securityId = securityId;
++            e.side = side;
++            e.qty = qty;
++            e.limitPx = limitPx;
++            e.priceTicks = priceTicks;
++            e.ingressNanos = System.nanoTime();
++            e.eventTimeMillis = T0;
++        } finally {
++            ring.publish(seq);
++        }
++    }
++
++    private static void awaitDrained(RingBuffer<InputEvent> in, RingBuffer<OutputEvent> out,
++                                     MatchingEngine blp, DrainHandler drain) {
++        awaitSeq(blp::blpSeq, in.getCursor(), "BLP to consume the input ring");
++        awaitSeq(drain::lastSeq, out.getCursor(), "drain to consume the output ring");
++    }
++
++    private static void awaitSeq(LongSupplier actual, long target, String what) {
++        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(120);
++        while (actual.getAsLong() < target) {
++            if (System.nanoTime() > deadline) {
++                throw new AssertionError("timed out waiting for " + what);
++            }
++            Thread.onSpinWait();
++        }
++    }
++
++    /** Output-edge stand-in: consumes events, allocates nothing. */
++    private static final class DrainHandler implements EventHandler<OutputEvent> {
++        private volatile long lastSeq = -1;
++
++        @Override
++        public void onEvent(OutputEvent event, long sequence, boolean endOfBatch) {
++            lastSeq = sequence;
++        }
++
++        long lastSeq() {
++            return lastSeq;
++        }
++    }
++}
+diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java
+new file mode 100644
+index 0000000..c463a39
+--- /dev/null
++++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java
+@@ -0,0 +1,94 @@
++package finos.traderx.ordermatcher.lmax;
++
++import org.junit.jupiter.api.Test;
++
++import java.io.IOException;
++import java.io.InputStream;
++import java.nio.charset.StandardCharsets;
++import java.util.ArrayList;
++import java.util.List;
++
++import static org.junit.jupiter.api.Assertions.assertTrue;
++import static org.junit.jupiter.api.Assertions.fail;
++
++/**
++ * Banned-API gate (SC-09B13 / SC-NGC-04): asserts the hot-path classes — the code that
++ * executes between the gateway edge and the output-handler edge — reference none of the
++ * allocation- or blocking-prone APIs the no-GC profile bans: BigDecimal, java.time,
++ * HashMap/ConcurrentHashMap, stream pipelines, regex, Atomic*, String.format, string
++ * concatenation, SLF4J, Spring, or JPA.
++ *
++ * The check scans the compiled constant pool (class references and method descriptors
++ * appear verbatim as UTF-8 entries), so it catches any reintroduction at build time with
++ * no extra tooling.
++ *
++ * Scope (NGC-01): edge classes are deliberately excluded — Px and SymbolTable are the
++ * conversion edges (BigDecimal/ConcurrentHashMap by design), HotPathMetrics renders
++ * Prometheus text at scrape time, and LmaxEngine/the output handlers are the allowed
++ * allocation edges. The Journaler is scanned with SLF4J permitted: it logs only on the
++ * cold open/failure paths, never per event.
++ */
++class HotPathBannedApiTest {
++    private static final Class<?>[] HOT_PATH_CLASSES = {
++        MatchingEngine.class, OutputPublisher.class, RestingOrder.class,
++        IntList.class, InputEvent.class, OutputEvent.class, ReplicatorStub.class
++    };
++
++    private static final String[] BANNED = {
++        "java/math/BigDecimal",
++        "java/time/Instant",
++        "java/util/HashMap",
++        "java/util/concurrent/ConcurrentHashMap",
++        "java/util/stream/",
++        "java/util/regex/",
++        "java/util/concurrent/atomic/",
++        "org/springframework/",
++        "jakarta/persistence/",
++        "(Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;", // String.format
++        "makeConcatWithConstants"                                    // string concatenation
++    };
++
++    private static final String[] BANNED_LOGGING = {
++        "org/slf4j/"
++    };
++
++    @Test
++    void blpAndRingClassesReferenceNoBannedApis() {
++        List<String> violations = new ArrayList<>();
++        for (Class<?> hotPathClass : HOT_PATH_CLASSES) {
++            String pool = constantPoolText(hotPathClass);
++            scan(hotPathClass, pool, BANNED, violations);
++            scan(hotPathClass, pool, BANNED_LOGGING, violations);
++        }
++        assertTrue(violations.isEmpty(), () -> "banned API references on the hot path:\n" + String.join("\n", violations));
++    }
++
++    @Test
++    void journalerReferencesNoBannedApisBeyondColdPathLogging() {
++        List<String> violations = new ArrayList<>();
++        scan(Journaler.class, constantPoolText(Journaler.class), BANNED, violations);
++        assertTrue(violations.isEmpty(), () -> "banned API references in the journaler:\n" + String.join("\n", violations));
++    }
++
++    private static void scan(Class<?> scanned, String pool, String[] banned, List<String> violations) {
++        for (String needle : banned) {
++            if (pool.contains(needle)) {
++                violations.add(scanned.getSimpleName() + " references " + needle);
++            }
++        }
++    }
++
++    private static String constantPoolText(Class<?> scanned) {
++        String resource = "/" + scanned.getName().replace('.', '/') + ".class";
++        try (InputStream in = scanned.getResourceAsStream(resource)) {
++            if (in == null) {
++                fail("class bytes not found for " + scanned.getName());
++            }
++            // Constant-pool UTF-8 entries are ASCII for the names we scan; ISO-8859-1
++            // maps every byte 1:1 so substring search over the raw bytes is exact.
++            return new String(in.readAllBytes(), StandardCharsets.ISO_8859_1);
++        } catch (IOException ex) {
++            throw new AssertionError("unable to read class bytes for " + scanned.getName(), ex);
++        }
++    }
++}
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java
 new file mode 100644
 index 0000000..afcf399

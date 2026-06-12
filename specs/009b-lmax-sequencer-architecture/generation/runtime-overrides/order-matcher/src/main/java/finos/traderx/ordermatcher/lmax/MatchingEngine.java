@@ -2,6 +2,9 @@ package finos.traderx.ordermatcher.lmax;
 
 import com.lmax.disruptor.EventHandler;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
+
 /**
  * The Business Logic Processor (state 009b): single thread, entirely in memory,
  * event-sourced (FR-09B10..FR-09B16).
@@ -29,17 +32,30 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
     private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
 
-    // Single-writer counters; volatile so edge threads can read them racily-but-safely.
-    private volatile long eventsProcessed;
-    private volatile long autoFillAttempts;
-    private volatile long autoFillSuccess;
-    private volatile long lastEventTimeMillis;
-    private volatile long blpSeq;
-    private volatile long ordersNew;
-    private volatile long ordersCancel;
-    private volatile long ordersForceFill;
-    private volatile long priceTicks;
+    // Single-writer telemetry: only the BLP thread writes, edge threads (REST /health,
+    // /metrics) read racily-but-safely. The counters are plain longs published by the
+    // once-per-event release-store of blpSeq (the Disruptor Sequence.set idiom); readers
+    // acquire-load blpSeq first (readFence), so the hot path pays no per-counter fences.
+    private long eventsProcessed;
+    private long autoFillAttempts;
+    private long autoFillSuccess;
+    private long lastEventTimeMillis;
+    private long ordersNew;
+    private long ordersCancel;
+    private long ordersForceFill;
+    private long priceTicks;
+    private volatile long blpSeq = -1;
     private volatile long blpThreadId;
+
+    private static final VarHandle BLP_SEQ;
+
+    static {
+        try {
+            BLP_SEQ = MethodHandles.lookup().findVarHandle(MatchingEngine.class, "blpSeq", long.class);
+        } catch (ReflectiveOperationException ex) {
+            throw new ExceptionInInitializerError(ex);
+        }
+    }
 
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
                           int fillFullThreshold, int initialPoolSize) {
@@ -56,11 +72,14 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    /** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
+    @Override
+    public void onStart() {
+        blpThreadId = Thread.currentThread().threadId();
+    }
+
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
-        if (blpThreadId == 0) {
-            blpThreadId = Thread.currentThread().threadId();
-        }
         switch (e.type) {
             case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
@@ -70,7 +89,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         eventsProcessed++;
         lastEventTimeMillis = e.eventTimeMillis;
-        blpSeq = sequence;
+        // Release-store: publishes this event's plain counter/time writes to edge readers
+        // without the full volatile-store fence on the BLP thread.
+        BLP_SEQ.setRelease(this, sequence);
         metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 
@@ -116,7 +137,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         o.createdAtMillis = e.eventTimeMillis;
         o.updatedAtMillis = e.eventTimeMillis;
         index(o);
-        openRefs(e.securityId).add(e.orderRef);
+        IntList refs = openRefs(e.securityId);
+        refs.add(e.orderRef);
 
         long px = lastPxBySecurity[e.securityId];
         // Ack first: the REST create response is the NEW order, exactly as in 009.
@@ -124,7 +146,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
         // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
         if (px != Px.NONE && isInTheMoney(o, px)) {
-            autoFill(o, px, e);
+            autoFill(o, px, e, refs.size() - 1);
         }
     }
 
@@ -161,7 +183,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // 009 parity: force-fill executes the full remaining quantity at the last market
         // price, falling back to the limit price when no tick has been seen yet.
         long execPx = px != Px.NONE ? px : o.limitPx;
-        applyFill(o, o.remaining, execPx, true, e, px);
+        applyFill(o, o.remaining, execPx, true, e, px, -1);
     }
 
     private void onPriceTick(InputEvent e) {
@@ -179,7 +201,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 continue;
             }
             if (isInTheMoney(o, e.priceTicks)) {
-                autoFill(o, e.priceTicks, e);
+                autoFill(o, e.priceTicks, e, i);
                 if (!o.isOpen()) {
                     continue; // entry at index i was swap-removed by applyFill
                 }
@@ -194,15 +216,16 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
     }
 
-    private void autoFill(RestingOrder o, long px, InputEvent e) {
+    private void autoFill(RestingOrder o, long px, InputEvent e, int openIndex) {
         autoFillAttempts++;
         int remaining = o.remaining;
         int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
-        applyFill(o, fillQty, px, false, e, px);
+        applyFill(o, fillQty, px, false, e, px, openIndex);
         autoFillSuccess++;
     }
 
-    private void applyFill(RestingOrder o, int fillQty, long execPx, boolean force, InputEvent e, long marketPx) {
+    private void applyFill(RestingOrder o, int fillQty, long execPx, boolean force, InputEvent e,
+                           long marketPx, int openIndex) {
         int remainingAfter = Math.max(0, o.remaining - fillQty);
         o.remaining = remainingAfter;
         o.lastExecPx = execPx;
@@ -221,14 +244,27 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             flags |= OutputEvent.FLAG_FORCE_FILL;
         }
         if (!o.isOpen()) {
-            openRefs(o.securityId).removeValueUnordered(o.orderRef);
+            removeOpenRef(o, openIndex);
         }
 
-        out.emitOrderUpdate(o, e.seq, flags, true, marketPx, e.ingressNanos);
-        // Booking leaves as a typed event (FR-09B15); the output bridge feeds the existing
-        // trade pipeline off the acknowledgement path.
-        out.emitTradeBooked(o, fillQty, e.seq, e.ingressNanos);
+        // The fill's order update and its TradeBooked event (FR-09B15: booking leaves as a
+        // typed event, off the acknowledgement path) go out as one paired claim — a single
+        // publish, a single consumer signal.
+        out.emitFillWithTrade(o, fillQty, e.seq, flags, marketPx, e.ingressNanos);
         metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
+    }
+
+    /** Drop a now-terminal order from its security's open index; O(1) when the caller knows the slot. */
+    private void removeOpenRef(RestingOrder o, int openIndex) {
+        IntList refs = openRefsBySecurity[o.securityId];
+        if (refs == null) {
+            return;
+        }
+        if (openIndex >= 0 && openIndex < refs.size() && refs.get(openIndex) == o.orderRef) {
+            refs.removeAtUnordered(openIndex);
+        } else {
+            refs.removeValueUnordered(o.orderRef);
+        }
     }
 
     // ----- internal structures ------------------------------------------------------------
@@ -275,19 +311,32 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     // ----- edge-readable telemetry ----------------------------------------------------------
 
+    /**
+     * Acquire-load of blpSeq: orders the subsequent plain counter read after the BLP's
+     * release-store, so edge threads see counters at least as fresh as the last published
+     * sequence they observe.
+     */
+    private void readFence() {
+        BLP_SEQ.getAcquire(this);
+    }
+
     public long eventsProcessed() {
+        readFence();
         return eventsProcessed;
     }
 
     public long autoFillAttempts() {
+        readFence();
         return autoFillAttempts;
     }
 
     public long autoFillSuccess() {
+        readFence();
         return autoFillSuccess;
     }
 
     public long lastEventTimeMillis() {
+        readFence();
         return lastEventTimeMillis;
     }
 
@@ -296,18 +345,22 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     }
 
     public long countOrdersNew() {
+        readFence();
         return ordersNew;
     }
 
     public long countOrdersCancel() {
+        readFence();
         return ordersCancel;
     }
 
     public long countForceFills() {
+        readFence();
         return ordersForceFill;
     }
 
     public long countPriceTicks() {
+        readFence();
         return priceTicks;
     }
 

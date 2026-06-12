@@ -220,9 +220,10 @@ downstream of the latency-critical section.
 
 A fill produced by the BLP:
 
-1. **BLP emits.** `OutputPublisher.emitOrderUpdate(...)` claims a slot and writes the full order snapshot
-   in place (`kind=KIND_ORDER_UPDATE`, `flags=FLAG_FILL`, `lastExecPx`, `remainingQty`, `status`,
-   `ingressNanos`), then `emitTradeBooked(...)` for the fill — `ring.publish(seq)` in a `finally`. No
+1. **BLP emits.** `OutputPublisher.emitFillWithTrade(...)` claims **two adjacent slots in one batch claim**
+   and writes the full order snapshot (`kind=KIND_ORDER_UPDATE`, `flags=FLAG_FILL`, `lastExecPx`,
+   `remainingQty`, `status`, `ingressNanos`) and the `KIND_TRADE_BOOKED` event in place —
+   `ring.publish(lo, hi)` in a `finally`, so a fill costs a single publish (one consumer signal). No
    allocation.
 2. **Parallel handlers fire.** Marshaller encodes + records `now − ingressNanos` latency; NATS Publisher maps
    to `/accounts/{id}/orders` + `/orders` (+ `TradeBooked`→`/trades`, `PositionUpdated`→`/positions`) and
@@ -274,29 +275,46 @@ public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolea
                             long marketPx, long ingressNanos) {
     long seq = ring.next();
     try {
-        OutputEvent e = ring.get(seq);
-        e.kind = OutputEvent.KIND_ORDER_UPDATE;
-        e.inputSeq = inputSeq;
-        e.flags = flags;
-        e.publishNats = publishNats;
-        e.orderRef = order.orderRef;
-        e.accountId = order.accountId;
-        e.securityId = order.securityId;
-        e.side = order.side;
-        e.quantity = order.quantity;
-        e.remainingQty = order.remaining;
-        e.limitPx = order.limitPx;
-        e.status = order.status;
-        e.lastExecPx = order.lastExecPx;
-        e.lastFillQty = order.lastFillQty;
-        e.createdAtMillis = order.createdAtMillis;
-        e.updatedAtMillis = order.updatedAtMillis;
-        e.marketPx = marketPx;
-        e.tradeQty = 0;
-        e.ingressNanos = ingressNanos;
+        writeOrderUpdate(ring.get(seq), order, inputSeq, flags, publishNats, marketPx, ingressNanos);
     } finally {
         ring.publish(seq);
     }
+}
+
+/** Paired claim: fill update + TradeBooked published together, signalled once. */
+public void emitFillWithTrade(RestingOrder order, int fillQty, long inputSeq, int flags,
+                              long marketPx, long ingressNanos) {
+    long tradeSeq = ring.next(2);
+    long updateSeq = tradeSeq - 1;
+    try {
+        writeOrderUpdate(ring.get(updateSeq), order, inputSeq, flags, true, marketPx, ingressNanos);
+        writeTradeBooked(ring.get(tradeSeq), order, fillQty, inputSeq, ingressNanos);
+    } finally {
+        ring.publish(updateSeq, tradeSeq);
+    }
+}
+
+private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
+                                     boolean publishNats, long marketPx, long ingressNanos) {
+    e.kind = OutputEvent.KIND_ORDER_UPDATE;
+    e.inputSeq = inputSeq;
+    e.flags = flags;
+    e.publishNats = publishNats;
+    e.orderRef = order.orderRef;
+    e.accountId = order.accountId;
+    e.securityId = order.securityId;
+    e.side = order.side;
+    e.quantity = order.quantity;
+    e.remainingQty = order.remaining;
+    e.limitPx = order.limitPx;
+    e.status = order.status;
+    e.lastExecPx = order.lastExecPx;
+    e.lastFillQty = order.lastFillQty;
+    e.createdAtMillis = order.createdAtMillis;
+    e.updatedAtMillis = order.updatedAtMillis;
+    e.marketPx = marketPx;
+    e.tradeQty = 0;
+    e.ingressNanos = ingressNanos;
 }
 ```
 

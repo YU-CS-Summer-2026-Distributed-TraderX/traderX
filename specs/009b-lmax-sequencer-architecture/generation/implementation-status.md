@@ -1,9 +1,46 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
-Date: 2026-06-09 (updated 2026-06-11). Scope of what
+Date: 2026-06-09 (updated 2026-06-11, twice). Scope of what
 `generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to
-later milestones. Verified by compiling and running the module's test suite (12 tests green)
-against Java 21 / Gradle 8.14.5.
+later milestones. Verified by compiling and running the module's test suite (15 tests green)
+plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
+
+## Hot-path optimization + allocation gate pass (2026-06-11, second update)
+
+- **BLP fence elimination**: the per-event telemetry fields are now plain `long`s published by a
+  single `VarHandle.setRelease` of `blpSeq` per event (the Disruptor `Sequence.set` idiom); edge
+  accessors acquire-load `blpSeq` first. Replaces 4–5 volatile stores (StoreLoad fences) per event
+  with zero. `blpThreadId` moves to the Disruptor `onStart()` lifecycle hook, removing a per-event
+  branch.
+- **O(1) terminal removal**: fills triggered from the price-tick scan and from create-time matching
+  pass their open-index slot down (`autoFill(..., openIndex)`), so removing a terminal order is a
+  guarded swap-with-last at a known index instead of an O(depth) value scan (`removeOpenRef`).
+- **Paired fill emit**: `OutputPublisher.emitFillWithTrade` claims the fill's order-update and
+  TradeBooked slots in one `next(2)` batch claim and publishes both with one
+  `publish(lo, hi)` — halving claim/publish (and BlockingWaitStrategy signal-lock) cost per fill.
+  Event order and handler semantics are unchanged.
+- **Journaler pad**: the 12-iteration single-byte pad loop is two puts (`putInt` + `putLong`).
+  `Journaler` also records its thread id via `onStart()` (`journalThreadId()`).
+- **T09B18 allocation gate (partial — gate + static check)**:
+  - `AllocationGateTest` drives the real input-ring -> journaler+replicator -> BLP -> output-ring
+    topology through a deterministic mix covering every BLP branch, then asserts **byte-exact zero**
+    `ThreadMXBean.getThreadAllocatedBytes` deltas for the producer, journaler, and BLP threads over
+    the measured phase (1M events in `test`). Negative-tested: an injected per-tick `new long[1]`
+    fails with `expected: <0> but was: <18000000>`.
+  - Gradle `noGcTest` task re-runs the gate under
+    `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms256m -Xmx256m -XX:+AlwaysPreTouch`
+    with a 3M-event budget (no reclamation: steady-state allocation exhausts the heap and fails);
+    `pipeline/validate-no-gc-conformance.sh` wraps it (SC-NGC-01/SC-09B05).
+  - `HotPathBannedApiTest` (SC-09B13/SC-NGC-04) scans compiled constant pools of the hot-path
+    classes (MatchingEngine, OutputPublisher, RestingOrder, IntList, InputEvent, OutputEvent,
+    ReplicatorStub; Journaler with cold-path SLF4J permitted) for BigDecimal, java.time, HashMap/
+    ConcurrentHashMap, streams, regex, Atomic*, String.format, string concatenation, Spring, JPA.
+  - JFR/async-profiler attribution tooling and the `perf`/`noGcTest` launch profiles for the
+    packaged service (T09B17) remain deferred.
+- Doc-truth: the verbatim snippets in `LMAX-BLP.md`, `LMAX-INPUT-DISRUPTOR.md`,
+  `LMAX-OUTPUT-DISRUPTOR.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, and `LMAX-NO-GC-JAVA.md`
+  (A12.2/A12.4/A12.5/A12.6/A12.8/A12.9/A12.10) were updated to match; `quickstart.md` step 4 now
+  shows the real gate commands.
 
 ## Patchset + pipeline integration (2026-06-10)
 
@@ -97,9 +134,11 @@ against Java 21 / Gradle 8.14.5.
   counters instead of 009's pre-fill rejection — documented behavioral edge.
 - **Snapshot files, journal replay tooling, JIT warm-up, nightly bounce** (T09B14).
 - **Real replication/failover** (T09B16): loopback stub only; no follower BLP yet.
-- **`perf`/`noGcTest` launch profiles + Epsilon allocation gate** (T09B17/T09B18): the demo
-  profile uses BlockingWaitStrategy and standard GC; `traderx_hotpath_alloc_bytes_total`
-  exposes the BLP thread's allocation for observation in the meantime.
+- **`perf`/`noGcTest` launch profiles for the packaged service** (T09B17): the demo profile uses
+  BlockingWaitStrategy and standard GC. The Epsilon allocation gate itself is implemented (see the
+  2026-06-11 second update above); `traderx_hotpath_alloc_bytes_total` additionally exposes the BLP
+  thread's allocation at runtime. JFR/async-profiler attribution tooling (T09B18 remainder)
+  deferred.
 - **Determinism replay + NATS payload byte-parity smoke** (T09B19 remainder, T09B21).
 
 ## How this was verified
@@ -107,5 +146,7 @@ against Java 21 / Gradle 8.14.5.
 ```bash
 # module assembled exactly as generation produces it (009 patch + 009 render + 009b overrides)
 ./gradlew compileJava   # clean (only pre-existing 009 deprecation warnings)
-./gradlew test          # 12/12 green, broker-free
+./gradlew test          # 15/15 green, broker-free (incl. AllocationGateTest byte-exact zero,
+                        # HotPathBannedApiTest)
+./gradlew noGcTest      # allocation gate under Epsilon GC, 3M steady-state events, green
 ```

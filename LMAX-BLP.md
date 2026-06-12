@@ -136,11 +136,14 @@ state `009b` (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrid
 
 ```java
 public final class MatchingEngine implements EventHandler<InputEvent> {
+    /** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
+    @Override
+    public void onStart() {
+        blpThreadId = Thread.currentThread().threadId();
+    }
+
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
-        if (blpThreadId == 0) {
-            blpThreadId = Thread.currentThread().threadId();
-        }
         switch (e.type) {
             case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
@@ -150,15 +153,19 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         eventsProcessed++;
         lastEventTimeMillis = e.eventTimeMillis;
-        blpSeq = sequence;
+        // Release-store: publishes this event's plain counter/time writes to edge readers
+        // without the full volatile-store fence on the BLP thread.
+        BLP_SEQ.setRelease(this, sequence);
         metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 }
 ```
 
-The counters are plain `volatile long`s — single writer, so no `Atomic*` and no contention. `endOfBatch` is
-the Disruptor's batching hook: in `009b` it is exploited by the **Journaler** (one fsync per drained batch,
-see `Journaler.onEvent`), so durability cost *falls* per event as load rises.
+The counters are plain `long`s — single writer, so no `Atomic*` and no contention. They are published by
+one release-store of `blpSeq` per event (the Disruptor `Sequence.set` idiom); edge readers acquire-load
+`blpSeq` first, so the BLP pays no per-counter volatile fences. `endOfBatch` is the Disruptor's batching
+hook: in `009b` it is exploited by the **Journaler** (one fsync per drained batch, see `Journaler.onEvent`),
+so durability cost *falls* per event as load rises.
 
 ## A6. Fused match → book → position
 

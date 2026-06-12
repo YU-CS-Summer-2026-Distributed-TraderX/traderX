@@ -66,6 +66,25 @@ tasks.withType(Test).configureEach {
   useJUnitPlatform()
 }
 
+// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
+// gate under Epsilon GC — a no-op collector on a small fixed pre-touched heap, so any
+// steady-state allocation exhausts the heap and fails the run. The same test also runs
+// in the regular `test` task under the default collector, where it asserts exact
+// zero-byte deltas per hot-path thread via ThreadMXBean. Invoked by
+// pipeline/validate-no-gc-conformance.sh (SC-NGC-01).
+tasks.register('noGcTest', Test) {
+  description = 'Hot-path allocation gate under Epsilon GC (zero steady-state allocation, NGC-02).'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+  }
+  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
+  jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
+          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
+}
+
 configurations.configureEach {
   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'

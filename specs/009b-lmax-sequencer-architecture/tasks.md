@@ -34,8 +34,13 @@
       follower BLP + promotion failover deferred to the perf profile.
 - [~] T09B17 Wait-strategy/ring-size/journal config keys implemented with demo-safe defaults
       (`blocking`); `perf`/`noGcTest` JVM launch profiles deferred.
-- [ ] T09B18 Implement the no-GC gate: `pipeline/validate-no-gc-conformance.sh`, Gradle `noGcTest`
-      task under Epsilon GC, banned-API static check, JFR/async-profiler attribution.
+- [~] T09B18 No-GC gate implemented (2026-06-11): `pipeline/validate-no-gc-conformance.sh` runs the
+      order-matcher Gradle `noGcTest` task — `AllocationGateTest` under Epsilon GC on a fixed
+      pre-touched 256m heap (steady-state allocation exhausts the heap and fails), with the same
+      test asserting byte-exact zero `ThreadMXBean` allocation deltas for the producer, journaler,
+      and BLP threads in the regular `test` task; banned-API constant-pool scan
+      (`HotPathBannedApiTest`, SC-09B13/SC-NGC-04). JFR/async-profiler attribution tooling
+      deferred.
 - [~] T09B19 Parity fixtures: penny parity (`PxTest`) and functional-policy parity
       (`LmaxHotPathParityTest`) implemented and passing; determinism replay + NATS payload
       byte-parity smoke deferred.

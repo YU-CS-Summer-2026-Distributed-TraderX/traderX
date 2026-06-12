@@ -425,7 +425,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         eventsProcessed++;
         lastEventTimeMillis = e.eventTimeMillis;
-        blpSeq = sequence;
+        // Release-store: publishes this event's plain counter/time writes to edge readers
+        // without the full volatile-store fence on the BLP thread.
+        BLP_SEQ.setRelease(this, sequence);
         metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 }

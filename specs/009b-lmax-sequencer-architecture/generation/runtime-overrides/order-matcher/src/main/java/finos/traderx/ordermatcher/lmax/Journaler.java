@@ -38,6 +38,7 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
     private final ByteBuffer buffer = ByteBuffer.allocateDirect(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
     private FileChannel channel;
     private volatile long journaledSeq = -1;
+    private volatile long threadId;
     private volatile boolean failed;
 
     public Journaler(boolean enabled, Path journalDir, HotPathMetrics metrics) {
@@ -55,6 +56,12 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
                 this.failed = true;
             }
         }
+    }
+
+    /** BatchEventProcessor start hook: runs on the journaler thread before the first event. */
+    @Override
+    public void onStart() {
+        threadId = Thread.currentThread().threadId();
     }
 
     @Override
@@ -77,9 +84,8 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
             buffer.putLong(e.limitPx);
             buffer.putLong(e.priceTicks);
             buffer.putLong(e.eventTimeMillis);
-            while (buffer.position() < RECORD_SIZE) {
-                buffer.put((byte) 0);
-            }
+            buffer.putInt(0);
+            buffer.putLong(0L); // pad 52 -> 64
             buffer.flip();
             while (buffer.hasRemaining()) {
                 channel.write(buffer);
@@ -97,6 +103,10 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
 
     public long journaledSeq() {
         return journaledSeq;
+    }
+
+    public long journalThreadId() {
+        return threadId;
     }
 
     @Override
