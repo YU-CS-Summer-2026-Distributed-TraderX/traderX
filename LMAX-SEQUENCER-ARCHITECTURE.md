@@ -4,6 +4,9 @@
 > **Target state base:** `009-order-management-matcher`.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-04
+> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document proposes re-architecting the **trading hot path** of TraderX around the
 [LMAX architecture](https://martinfowler.com/articles/lmax.html): a single, globally **sequenced**,
@@ -412,6 +415,8 @@ exactly why those handlers run in parallel on the input disruptor. The compute i
 
 ```java
 /**
+ * Fixed-point price arithmetic for the LMAX hot path (state 009b, FR-09B05 / NGC-03).
+ *
  * Prices travel through the rings and the BLP as {@code long} "ticks" (price x 1e6).
  * BigDecimal conversion happens only at the edges (gateway in, read-model/NATS out) and
  * rounds to 3dp HALF_UP, matching state 009's roundPrice() for penny parity (SC-09B04).
@@ -420,6 +425,9 @@ public final class Px {
     public static final long SCALE = 1_000_000L;
     /** Sentinel for "no price available". Real prices are strictly positive. */
     public static final long NONE = 0L;
+
+    private Px() {
+    }
 
     /** Edge conversion in: BigDecimal -> ticks, applying 009's 3dp HALF_UP rounding. */
     public static long toTicks(BigDecimal price) {
@@ -447,6 +455,9 @@ public final class InputEvent {
     public static final byte TYPE_ORDER_CANCEL = 2;
     public static final byte TYPE_FORCE_FILL = 3;
     public static final byte TYPE_PRICE_TICK = 4;
+
+    public static final byte SIDE_BUY = 0;
+    public static final byte SIDE_SELL = 1;
 
     public long seq;              // global sequence number (the ring sequence)
     public byte type;
@@ -476,8 +487,8 @@ outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(ou
 outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
 outputDisruptor.start();
 
-matchingEngine = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
-    metrics, maxSecurities, fillFullThreshold, 16_384);
+matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
+    metrics, maxSecurities, fillFullThreshold, bookPoolSize);
 
 // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
 // (sequence barrier), so every event it acts on is already durable and replicated.
@@ -564,6 +575,12 @@ flowchart LR
 
 ## 15. How we will validate latency
 
+> **Measured results exist:** `LMAX-BENCHMARK-009-VS-009B.md` runs the identical order + price-tick
+> workload through full stacks of `009` and `009b` (demo profile, containerized): total wall time
+> 179.6 s vs 1.2 s (153×), identical business outcomes, BLP-thread allocation 4,776 B across the live
+> run. The zero-allocation contract itself is enforced by `AllocationGateTest` + the Epsilon `noGcTest`
+> gate (`pipeline/validate-no-gc-conformance.sh`).
+
 - **HdrHistogram** for full latency distributions (record `now - ingressNanos` at the output stage) — report
   p50/p99/p99.9/max, never just the mean.
 - **JLBH** (Java Latency Benchmark Harness) for end-to-end pipeline latency under controlled load.
@@ -603,6 +620,7 @@ flowchart LR
 - Chronicle Queue: https://github.com/OpenHFT/Chronicle-Queue
 - HdrHistogram: https://hdrhistogram.org/
 - TraderX (this snapshot): state `009-order-management-matcher` — see `README.md`, `docs/learning/system-design.md`
+- Measured `009` vs `009b` comparison on this design: `LMAX-BENCHMARK-009-VS-009B.md` (repo root)
 
 ---
 

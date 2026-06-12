@@ -8,6 +8,9 @@
 > projector that feeds the database off the critical path.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
+> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
 
@@ -215,6 +218,11 @@ Same discipline as the input ring: slots pre-allocated once; encode into off-hea
 NATS/DB edge, where allocation is acceptable because it is off the hot path. The BLP→ring emit allocates
 nothing; only the outermost edge (JSON for the legacy UI, SQL for the DB) allocates, and that is deliberately
 downstream of the latency-critical section.
+
+> **Implementation status (state `009b`):** SBE/off-heap slots are deferred with `T09B12`; the shipped
+> output ring uses the typed-primitive-field `OutputEvent` holder quoted in [§A3](#a3-output-event-holders)
+> — already zero-allocation per emit, enforced by the Epsilon allocation gate (`AllocationGateTest`,
+> `pipeline/validate-no-gc-conformance.sh`).
 
 ## A10. One event, end to end through the output disruptor
 

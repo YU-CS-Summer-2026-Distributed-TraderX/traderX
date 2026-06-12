@@ -17,10 +17,11 @@ fi
 echo "[info] generating parent state ${PARENT_STATE_ID} for ${STATE_ID}"
 bash "${ROOT}/pipeline/generate-state.sh" "${PARENT_STATE_ID}"
 
-# The LMAX hot-path overlay is captured from implemented deltas via
-# pipeline/create-state-patchset.sh (tasks T09B11..T09B17). Until that patchset
-# exists this state generates a 009-identical runtime with 009b state identity,
-# so the pipeline stays runnable end-to-end during spec-first development.
+# The LMAX hot-path overlay patchset (captured from the implemented deltas, tasks
+# T09B11..T09B18) lives in generation/patches/ and is applied here. The no-patchset
+# fallback below is retained for robustness only: it generates a 009-identical
+# runtime with 009b state identity so the pipeline stays runnable even if the patch
+# directory is emptied during development.
 if compgen -G "${PATCH_DIR}/*.patch" >/dev/null; then
   bash "${ROOT}/pipeline/apply-state-patchset.sh" "${STATE_ID}"
 else

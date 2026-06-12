@@ -9,6 +9,9 @@
 > the BLP, and the output ring rather than being a single component.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
+> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
 
@@ -263,7 +266,9 @@ happens off-thread. The BLP thread never blocks on or allocates for logging.
 
 ## A11. Proving it: the allocation gate
 
-The contract is only real if it is enforced. The validation stack:
+The contract is only real if it is enforced. The validation stack (the gate itself is implemented —
+see [§A12.10](#a1210-the-epsilon-allocation-gate--implemented-task-t09b18-allocationgatetest); for a
+measured end-to-end consequence of the discipline, see `LMAX-BENCHMARK-009-VS-009B.md`):
 
 - **Epsilon-GC allocation gate** (CI) — sustained hot-path run under `-XX:+UseEpsilonGC`; **fails** on any
   steady-state allocation. This is the primary gate.
@@ -579,9 +584,24 @@ public OrderSnapshot executeNewOrder(int orderRef, int accountId, String ticker,
         (byte) side.ordinal(), quantity, limitPx, 0L);
 }
 
+/**
+ * Claim the next input-ring slot. The fast path is the lock-free tryNext claim; only
+ * when the ring is full (a lagging consumer still owns the slot) does the producer
+ * fall back to the waiting claim — counted so bounded backpressure is observable
+ * (FR-09B07, traderx_input_backpressure_events_total).
+ */
+private long claimInputSlot() {
+    try {
+        return inputRing.tryNext();
+    } catch (InsufficientCapacityException ex) {
+        metrics.recordBackpressureWait();
+        return inputRing.next();
+    }
+}
+
 private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                               int quantity, long limitPx, long priceTicks) {
-    long seq = inputRing.next();
+    long seq = claimInputSlot();
     CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
     try {
         InputEvent e = inputRing.get(seq);

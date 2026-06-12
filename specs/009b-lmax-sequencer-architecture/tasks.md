@@ -50,5 +50,8 @@
 - [ ] T09B22 Validate docs/spec gates, flip the catalog entry from `draft` to `implemented`, replace
       the `009`-delegating lifecycle scripts with state-native ones, and publish the generated
       snapshot branch.
-- [ ] T09B23 Extend `C2` build/publish workflow + GHCR run bundle + `runtime/deploy/` bundle for this
-      state; validate local dry-run and no embedded secrets.
+- [~] T09B23 CI slice landed (2026-06-12): the generated tree ships
+      `.github/workflows/no-gc-gate.yml` running the Epsilon allocation gate (`noGcTest`) and
+      the hot-path conformance tests on `order-matcher/**` changes (NGC-02-in-CI per
+      SC-09B14/SC-NGC-06). GHCR publish workflow extension, run bundle, and
+      `runtime/deploy/` bundle remain.

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# State 009b scaffold: the LMAX hot-path overlay patchset has not landed yet,
-# so the generated runtime is 009-parity (with 009b state identity). Delegate
-# to the 009 lifecycle script until 009b-specific runtime wiring exists
-# (tasks T09B11..T09B17 in specs/009b-lmax-sequencer-architecture/tasks.md).
+# State 009b lifecycle wrapper: the LMAX hot-path overlay (patchset + order-matcher
+# overrides) is installed by generation. The runtime harness and compose project are
+# shared with the 009 lineage, so this delegates to the 009 lifecycle script (which
+# prefers the generated tree's local runtime scripts); state-native scripts replace
+# these delegates with T09B22.
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec bash "${ROOT}/start-state-009-order-management-matcher-generated.sh" "$@"

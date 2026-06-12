@@ -13,7 +13,8 @@ bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
 ./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
 ```
 
-The hot-path node reports unhealthy until snapshot load + journal replay + JIT warm-up complete.
+The hot-path node warm-starts from the persisted read-model (orders re-indexed into the BLP at
+boot); snapshot files, journal replay, and JIT warm-up land with T09B14.
 
 ## 3) Run Smoke Tests
 

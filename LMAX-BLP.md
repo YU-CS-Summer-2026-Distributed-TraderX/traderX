@@ -8,6 +8,9 @@
 > `LMAX-OUTPUT-DISRUPTOR.md`; allocation discipline in `LMAX-NO-GC-JAVA.md`.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
+> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
 
@@ -123,9 +126,11 @@ is enough:
   typically price levels each holding a FIFO of resting orders. For TraderX's demo-scale matcher (auto-fill
   against a market price, not a full crossing book) a flat, pre-sized array of resting orders per security
   with an index by `orderId` is sufficient.
-- **Pre-sized and pooled.** Order entries are pooled objects, reused as orders come and go; nothing is
-  `new`-ed mid-life. An order's slot is returned to the pool when it reaches a terminal state
-  (`FILLED`/`CANCELED`).
+- **Pre-sized and pooled.** Order entries are pooled objects (`blp.book.pool-size` pre-allocated at
+  startup); nothing is `new`-ed mid-life. *Implementation status (state `009b`):* terminal orders are
+  retained in the book rather than recycled — `009` parity requires cancel/force-fill of a completed
+  order to return it unchanged — so steady state is allocation-free up to the pool size; recycling and
+  book eviction arrive with the snapshot milestone (`T09B14`).
 - **`long` fixed-point** for price/qty comparison; the in-the-money test from `009` becomes integer compare.
 
 ## A5. The `onEvent` dispatch loop
@@ -295,7 +300,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         o.createdAtMillis = e.eventTimeMillis;   // event-carried time, no clock read
         o.updatedAtMillis = e.eventTimeMillis;
         index(o);
-        openRefs(e.securityId).add(e.orderRef);
+        IntList refs = openRefs(e.securityId);
+        refs.add(e.orderRef);
 
         long px = lastPxBySecurity[e.securityId];
         // Ack first: the REST create response is the NEW order, exactly as in 009.
@@ -303,7 +309,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
         // Event-driven matching: evaluate immediately instead of waiting for a poll tick.
         if (px != Px.NONE && isInTheMoney(o, px)) {
-            autoFill(o, px, e);
+            autoFill(o, px, e, refs.size() - 1);
         }
     }
 
@@ -311,14 +317,17 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return o.side == InputEvent.SIDE_BUY ? px <= o.limitPx : px >= o.limitPx;
     }
 
-    private void autoFill(RestingOrder o, long px, InputEvent e) {
+    private void autoFill(RestingOrder o, long px, InputEvent e, int openIndex) {
         autoFillAttempts++;
         int remaining = o.remaining;
         int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
-        applyFill(o, fillQty, px, false, e, px);   // same policy as 009, integer math
+        applyFill(o, fillQty, px, false, e, px, openIndex);   // same policy as 009, integer math
         autoFillSuccess++;
     }
-    // … applyFill emits the order update + a TradeBooked output event and records match latency
+    // … applyFill drops the terminal order from its open index (O(1) at the hinted slot),
+    // emits the order update + TradeBooked pair as ONE batched output-ring claim
+    // (emitFillWithTrade: a single publish, a single consumer signal), and records match
+    // latency.
 }
 ```
 

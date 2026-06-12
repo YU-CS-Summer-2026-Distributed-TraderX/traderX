@@ -41,6 +41,14 @@ plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
   `LMAX-OUTPUT-DISRUPTOR.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, and `LMAX-NO-GC-JAVA.md`
   (A12.2/A12.4/A12.5/A12.6/A12.8/A12.9/A12.10) were updated to match; `quickstart.md` step 4 now
   shows the real gate commands.
+- 2026-06-12 follow-ups: measured A/B benchmark vs `009` (`scripts/bench-009-vs-009b.sh`,
+  report `LMAX-BENCHMARK-009-VS-009B.md`: identical workload, `009` 179.6s vs `009b` 1.2s,
+  identical outcomes; BLP allocated 4,776 B across the live run, corroborating the gate).
+  Patchset now 41 entries: added `.github/workflows/no-gc-gate.yml` (Epsilon gate +
+  hot-path conformance tests in generated-tree CI, T09B23 slice) and refreshed the stale
+  "patchset has not landed" comments in the generated 009b lifecycle delegates (their
+  repo-side wrappers, the pipeline hook comment, and the quickstart warm-start note were
+  fixed in place).
 
 ## Patchset + pipeline integration (2026-06-10)
 

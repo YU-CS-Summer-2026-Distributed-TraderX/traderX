@@ -7,6 +7,9 @@
 > failover, and the broader redesign are covered in `LMAX-SEQUENCER-ARCHITECTURE.md`.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
+> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
 
@@ -288,8 +291,15 @@ stage specifically:
 - **Padded sequences.** `Sequence` counters are `@Contended` so the producer cursor and each consumer's
   sequence live on separate cache lines (no false sharing between the four busy threads).
 
+> **Implementation status (state `009b`):** the flyweight/SBE slot is deferred with the un-marshaller
+> stage (task `T09B12`). The shipped ring uses the typed-primitive-field `InputEvent` holder quoted in
+> [§A2](#a2-anatomy-of-the-ring-buffer), which already achieves zero per-event allocation; the Journaler
+> writes fixed 64-byte little-endian records through one reused direct `ByteBuffer`.
+
 This discipline is **proven, not assumed**: hot-path tests run under **Epsilon GC**, which has no collector,
-so any accidental steady-state allocation exhausts the heap and **fails the test** (see [§B24](#b24-success-criteria--validation)).
+so any accidental steady-state allocation exhausts the heap and **fails the test** — implemented as
+`AllocationGateTest` + the Gradle `noGcTest` task run by `pipeline/validate-no-gc-conformance.sh`
+(see [§B24](#b24-success-criteria--validation)).
 
 ## A9. Backpressure & ring-full behaviour
 
