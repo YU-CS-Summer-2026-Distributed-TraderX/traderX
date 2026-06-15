@@ -102,15 +102,21 @@ This is the real slot holder from state `009b`
 
 ```java
 /**
- * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries a full order
- * snapshot so downstream handlers (marshaller/read-model, NATS bridge, projector) never
- * read BLP state. {@code ingressNanos} is carried through from the input event so true
- * end-to-end latency is recorded at egress (NFR-09B01).
+ * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries enough
+ * primitive state for downstream handlers (marshaller/read-model, NATS bridge,
+ * projector) to render the 009-compatible contracts without reading BLP state.
+ * {@code ingressNanos} is carried through from the input event so true end-to-end
+ * latency is recorded at egress (NFR-09B01).
  */
 public final class OutputEvent {
-    public static final byte KIND_ORDER_UPDATE = 1;
-    public static final byte KIND_TRADE_BOOKED = 2;
-    public static final byte KIND_ORDER_NOT_FOUND = 3;
+    public static final byte KIND_ORDER_ACCEPTED = 1;
+    public static final byte KIND_ORDER_REJECTED = 2;
+    public static final byte KIND_ORDER_PARTIALLY_FILLED = 3;
+    public static final byte KIND_ORDER_FILLED = 4;
+    public static final byte KIND_ORDER_CANCELED = 5;
+    public static final byte KIND_TRADE_BOOKED = 6;
+    public static final byte KIND_POSITION_UPDATED = 7;
+    public static final byte KIND_ORDER_NOT_FOUND = 8;
 
     // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
     public static final int FLAG_CREATE = 1;
@@ -144,6 +150,10 @@ public final class OutputEvent {
 
     public static OutputEvent newInstance() {
         return new OutputEvent();
+    }
+
+    public static boolean isOrderLifecycleKind(byte kind) {
+        return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
     }
 }
 ```
@@ -229,13 +239,14 @@ downstream of the latency-critical section.
 A fill produced by the BLP:
 
 1. **BLP emits.** `OutputPublisher.emitFillWithTrade(...)` claims **two adjacent slots in one batch claim**
-   and writes the full order snapshot (`kind=KIND_ORDER_UPDATE`, `flags=FLAG_FILL`, `lastExecPx`,
+   and writes the full order snapshot (`kind=KIND_ORDER_FILLED`, `flags=FLAG_FILL`, `lastExecPx`,
    `remainingQty`, `status`, `ingressNanos`) and the `KIND_TRADE_BOOKED` event in place —
    `ring.publish(lo, hi)` in a `finally`, so a fill costs a single publish (one consumer signal). No
    allocation.
 2. **Parallel handlers fire.** Marshaller encodes + records `now − ingressNanos` latency; NATS Publisher maps
-   to `/accounts/{id}/orders` + `/orders` (+ `TradeBooked`→`/trades`, `PositionUpdated`→`/positions`) and
-   publishes JSON; Projector queues the row.
+   order lifecycle events to `/accounts/{id}/orders` + `/orders`; TradeSubmit publishes `TradeBooked` to
+   `/trades` so the existing trade processor continues to emit account trades and positions; Projector queues
+   order rows.
 3. **UI updates.** The Angular blotters receive the push exactly as in `009` — no front-end change.
 4. **DB catches up.** On `endOfBatch`, the Projector flushes batched rows to the shared DB.
 
@@ -246,7 +257,7 @@ The user was already acknowledged at input durability; all of the above is off t
 | `009` mechanism (today) | Output-disruptor replacement |
 | --- | --- |
 | `OrderMatcherService.publishOrderUpdate(...)` → `orderPublisher.publish("/accounts/{id}/orders" \| "/orders", OrderResponse)` | **NATS Publisher handler** on the output ring reproduces the same subjects + payloads from BLP events. |
-| `restTemplate.postForEntity(tradeServiceUrl, ...)` to book a trade (blocking, in the match loop) | `TradeBooked` **output event** → published to `/trades` and projected to DB — async, off the ack path. |
+| `restTemplate.postForEntity(tradeServiceUrl, ...)` to book a trade (blocking, in the match loop) | `TradeBooked` **output event** → published to `/trades`; the existing trade processor consumes it and persists trade/position updates — async, off the ack path. |
 | `orderRepository.save(...)` per mutation (JPA/H2) | **Read-model Projector** batch-writes, off the hot path; journal is authoritative. |
 | `OrderResponse.from(order, lastPrice)` allocation per publish | Pre-allocated `OutputEvent` slots; JSON only at the NATS edge. |
 | Per-message Jackson serialization | SBE encode in the Marshaller; JSON only where the legacy UI requires it. |
@@ -268,7 +279,7 @@ Verbatim from `LmaxEngine.java`, `OutputPublisher.java`, and `NatsBridgeHandler.
 marshaller = new MarshallerHandler(readModel, symbols, metrics);
 projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
 NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
+TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
 
 outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
     DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
@@ -304,7 +315,7 @@ public void emitFillWithTrade(RestingOrder order, int fillQty, long inputSeq, in
 
 private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
                                      boolean publishNats, long marketPx, long ingressNanos) {
-    e.kind = OutputEvent.KIND_ORDER_UPDATE;
+    e.kind = orderKind(order, flags);
     e.inputSeq = inputSeq;
     e.flags = flags;
     e.publishNats = publishNats;
@@ -332,7 +343,7 @@ private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inp
 // JSON allocation is acceptable here: this handler is off the hot path.
 @Override
 public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-    if (e.kind != OutputEvent.KIND_ORDER_UPDATE || !e.publishNats) {
+    if (!OutputEvent.isOrderLifecycleKind(e.kind) || !e.publishNats) {
         return;
     }
     // Build the payload from the event itself (handlers run in parallel; never read
