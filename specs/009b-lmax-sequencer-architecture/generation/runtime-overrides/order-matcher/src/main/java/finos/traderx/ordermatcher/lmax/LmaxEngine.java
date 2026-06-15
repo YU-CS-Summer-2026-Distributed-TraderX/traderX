@@ -22,7 +22,6 @@ import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
 
 import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
@@ -60,10 +59,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private final OrderRepository orderRepository;
     private final Publisher<OrderResponse> orderPublisher;
-    private final RestTemplate restTemplate;
+    private final Publisher<TradeOrder> tradePublisher;
     private final boolean seedEnabled;
     private final int fillFullThreshold;
-    private final String tradeServiceUrl;
     private final int inputRingSize;
     private final String inputWaitStrategy;
     private final int outputRingSize;
@@ -94,10 +92,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     public LmaxEngine(
         OrderRepository orderRepository,
         Publisher<OrderResponse> orderPublisher,
-        RestTemplate restTemplate,
+        Publisher<TradeOrder> tradePublisher,
         @Value("${order.matcher.seed-enabled:true}") boolean seedEnabled,
         @Value("${order.matcher.fill-full-threshold:1000}") int fillFullThreshold,
-        @Value("${order.matcher.trade-service-url:http://trade-service:18092/trade/}") String tradeServiceUrl,
         @Value("${disruptor.input.ring-size:65536}") int inputRingSize,
         @Value("${disruptor.input.wait-strategy:blocking}") String inputWaitStrategy,
         @Value("${disruptor.output.ring-size:65536}") int outputRingSize,
@@ -112,10 +109,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     ) {
         this.orderRepository = orderRepository;
         this.orderPublisher = orderPublisher;
-        this.restTemplate = restTemplate;
+        this.tradePublisher = tradePublisher;
         this.seedEnabled = seedEnabled;
         this.fillFullThreshold = fillFullThreshold;
-        this.tradeServiceUrl = tradeServiceUrl;
         this.inputRingSize = inputRingSize;
         this.inputWaitStrategy = inputWaitStrategy;
         this.outputRingSize = outputRingSize;
@@ -138,7 +134,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
         projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
+        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
 
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));

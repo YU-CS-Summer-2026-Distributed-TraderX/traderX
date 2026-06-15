@@ -32,7 +32,7 @@ public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        if (e.kind != OutputEvent.KIND_ORDER_UPDATE || !e.publishNats) {
+        if (!OutputEvent.isOrderLifecycleKind(e.kind) || !e.publishNats) {
             return;
         }
         // Build the payload from the event itself (handlers run in parallel; never read

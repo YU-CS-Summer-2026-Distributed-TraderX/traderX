@@ -228,6 +228,19 @@ index 4098234..39abe00 100644
 +    "domainHint": ""
    }
  }
+diff --git a/order-management-matcher/docker-compose.yml b/order-management-matcher/docker-compose.yml
+index 165fa40..28034fa 100644
+--- a/order-management-matcher/docker-compose.yml
++++ b/order-management-matcher/docker-compose.yml
+@@ -230,7 +230,7 @@ services:
+       ORDER_MATCHER_URL: "http://order-matcher:18110/"
+       WEB_FRONTEND_URL: "http://web-front-end-angular:18093/"
+     ports:
+-      - "8080:8080"
++      - "${TRADERX_INGRESS_PORT:-8080}:8080"
+     depends_on:
+       - web-front-end-angular
+       - account-service
 diff --git a/order-matcher/build.gradle b/order-matcher/build.gradle
 index e992cff..e23e398 100644
 --- a/order-matcher/build.gradle
@@ -309,6 +322,64 @@ index 6489fc1..03f9baf 100644
      }
  }
 -
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
+index b76ad49..d1ed73d 100644
+--- a/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
+@@ -4,6 +4,7 @@ import finos.traderx.messaging.PubSubException;
+ import finos.traderx.messaging.Publisher;
+ import finos.traderx.messaging.nats.NatsJSONPublisher;
+ import finos.traderx.ordermatcher.api.OrderResponse;
++import finos.traderx.ordermatcher.lmax.TradeOrder;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+ import org.springframework.context.annotation.Bean;
+@@ -22,6 +23,17 @@ public class PubSubConfig {
+         return publisher;
+     }
+ 
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = "nats", matchIfMissing = true)
++    public Publisher<TradeOrder> natsTradePublisher(
++        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
++    ) {
++        NatsJSONPublisher<TradeOrder> publisher = new NatsJSONPublisher<>();
++        publisher.setServerAddress(natsAddress);
++        publisher.setSender("order-matcher");
++        return publisher;
++    }
++
+     @Bean
+     @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = "noop")
+     public Publisher<OrderResponse> noopOrderPublisher() {
+@@ -44,4 +56,27 @@ public class PubSubConfig {
+             public void disconnect() throws PubSubException {}
+         };
+     }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = "noop")
++    public Publisher<TradeOrder> noopTradePublisher() {
++        return new Publisher<>() {
++            @Override
++            public void publish(TradeOrder message) throws PubSubException {}
++
++            @Override
++            public void publish(String topic, TradeOrder message) throws PubSubException {}
++
++            @Override
++            public boolean isConnected() {
++                return true;
++            }
++
++            @Override
++            public void connect() throws PubSubException {}
++
++            @Override
++            public void disconnect() throws PubSubException {}
++        };
++    }
+ }
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java
 new file mode 100644
 index 0000000..69615cc
@@ -860,10 +931,10 @@ index 0000000..771dbdc
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
 new file mode 100644
-index 0000000..fb93423
+index 0000000..270d466
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,460 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.BlockingWaitStrategy;
@@ -888,7 +959,6 @@ index 0000000..fb93423
 +import org.springframework.beans.factory.InitializingBean;
 +import org.springframework.beans.factory.annotation.Value;
 +import org.springframework.stereotype.Component;
-+import org.springframework.web.client.RestTemplate;
 +
 +import java.lang.management.ManagementFactory;
 +import java.math.BigDecimal;
@@ -926,10 +996,9 @@ index 0000000..fb93423
 +
 +    private final OrderRepository orderRepository;
 +    private final Publisher<OrderResponse> orderPublisher;
-+    private final RestTemplate restTemplate;
++    private final Publisher<TradeOrder> tradePublisher;
 +    private final boolean seedEnabled;
 +    private final int fillFullThreshold;
-+    private final String tradeServiceUrl;
 +    private final int inputRingSize;
 +    private final String inputWaitStrategy;
 +    private final int outputRingSize;
@@ -960,10 +1029,9 @@ index 0000000..fb93423
 +    public LmaxEngine(
 +        OrderRepository orderRepository,
 +        Publisher<OrderResponse> orderPublisher,
-+        RestTemplate restTemplate,
++        Publisher<TradeOrder> tradePublisher,
 +        @Value("${order.matcher.seed-enabled:true}") boolean seedEnabled,
 +        @Value("${order.matcher.fill-full-threshold:1000}") int fillFullThreshold,
-+        @Value("${order.matcher.trade-service-url:http://trade-service:18092/trade/}") String tradeServiceUrl,
 +        @Value("${disruptor.input.ring-size:65536}") int inputRingSize,
 +        @Value("${disruptor.input.wait-strategy:blocking}") String inputWaitStrategy,
 +        @Value("${disruptor.output.ring-size:65536}") int outputRingSize,
@@ -978,10 +1046,9 @@ index 0000000..fb93423
 +    ) {
 +        this.orderRepository = orderRepository;
 +        this.orderPublisher = orderPublisher;
-+        this.restTemplate = restTemplate;
++        this.tradePublisher = tradePublisher;
 +        this.seedEnabled = seedEnabled;
 +        this.fillFullThreshold = fillFullThreshold;
-+        this.tradeServiceUrl = tradeServiceUrl;
 +        this.inputRingSize = inputRingSize;
 +        this.inputWaitStrategy = inputWaitStrategy;
 +        this.outputRingSize = outputRingSize;
@@ -1004,7 +1071,7 @@ index 0000000..fb93423
 +        marshaller = new MarshallerHandler(readModel, symbols, metrics);
 +        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
 +        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-+        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
++        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
 +
 +        outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
 +            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
@@ -1330,10 +1397,10 @@ index 0000000..fb93423
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java
 new file mode 100644
-index 0000000..2097f07
+index 0000000..704c083
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,52 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
@@ -1360,7 +1427,9 @@ index 0000000..2097f07
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
 +        switch (e.kind) {
-+            case OutputEvent.KIND_ORDER_UPDATE -> {
++            case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
++                 OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
++                 OutputEvent.KIND_ORDER_CANCELED -> {
 +                orderUpdates++;
 +                readModel.apply(e, symbols);
 +            }
@@ -1762,7 +1831,7 @@ index 0000000..10cc41a
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java
 new file mode 100644
-index 0000000..1ea3706
+index 0000000..b336f7f
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java
 @@ -0,0 +1,52 @@
@@ -1800,7 +1869,7 @@ index 0000000..1ea3706
 +
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-+        if (e.kind != OutputEvent.KIND_ORDER_UPDATE || !e.publishNats) {
++        if (!OutputEvent.isOrderLifecycleKind(e.kind) || !e.publishNats) {
 +            return;
 +        }
 +        // Build the payload from the event itself (handlers run in parallel; never read
@@ -1940,22 +2009,28 @@ index 0000000..7861acb
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java
 new file mode 100644
-index 0000000..7406d85
+index 0000000..01decbd
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,57 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +/**
-+ * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries a full order
-+ * snapshot so downstream handlers (marshaller/read-model, NATS bridge, projector) never
-+ * read BLP state. {@code ingressNanos} is carried through from the input event so true
-+ * end-to-end latency is recorded at egress (NFR-09B01).
++ * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries enough
++ * primitive state for downstream handlers (marshaller/read-model, NATS bridge,
++ * projector) to render the 009-compatible contracts without reading BLP state.
++ * {@code ingressNanos} is carried through from the input event so true end-to-end
++ * latency is recorded at egress (NFR-09B01).
 + */
 +public final class OutputEvent {
-+    public static final byte KIND_ORDER_UPDATE = 1;
-+    public static final byte KIND_TRADE_BOOKED = 2;
-+    public static final byte KIND_ORDER_NOT_FOUND = 3;
++    public static final byte KIND_ORDER_ACCEPTED = 1;
++    public static final byte KIND_ORDER_REJECTED = 2;
++    public static final byte KIND_ORDER_PARTIALLY_FILLED = 3;
++    public static final byte KIND_ORDER_FILLED = 4;
++    public static final byte KIND_ORDER_CANCELED = 5;
++    public static final byte KIND_TRADE_BOOKED = 6;
++    public static final byte KIND_POSITION_UPDATED = 7;
++    public static final byte KIND_ORDER_NOT_FOUND = 8;
 +
 +    // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
 +    public static final int FLAG_CREATE = 1;
@@ -1990,13 +2065,17 @@ index 0000000..7406d85
 +    public static OutputEvent newInstance() {
 +        return new OutputEvent();
 +    }
++
++    public static boolean isOrderLifecycleKind(byte kind) {
++        return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
++    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
 new file mode 100644
-index 0000000..ef6db36
+index 0000000..d720e10
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,137 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.RingBuffer;
@@ -2066,7 +2145,7 @@ index 0000000..ef6db36
 +
 +    private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
 +                                         boolean publishNats, long marketPx, long ingressNanos) {
-+        e.kind = OutputEvent.KIND_ORDER_UPDATE;
++        e.kind = orderKind(order, flags);
 +        e.inputSeq = inputSeq;
 +        e.flags = flags;
 +        e.publishNats = publishNats;
@@ -2085,6 +2164,30 @@ index 0000000..ef6db36
 +        e.marketPx = marketPx;
 +        e.tradeQty = 0;
 +        e.ingressNanos = ingressNanos;
++    }
++
++    private static byte orderKind(RestingOrder order, int flags) {
++        if ((flags & OutputEvent.FLAG_REJECT) != 0) {
++            return OutputEvent.KIND_ORDER_REJECTED;
++        }
++        if ((flags & OutputEvent.FLAG_CANCEL) != 0) {
++            return OutputEvent.KIND_ORDER_CANCELED;
++        }
++        if ((flags & OutputEvent.FLAG_FILL) != 0) {
++            return OutputEvent.KIND_ORDER_FILLED;
++        }
++        if ((flags & OutputEvent.FLAG_PARTIAL_FILL) != 0) {
++            return OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
++        }
++        if ((flags & OutputEvent.FLAG_CREATE) != 0) {
++            return OutputEvent.KIND_ORDER_ACCEPTED;
++        }
++        return switch (order.status) {
++            case RestingOrder.STATUS_CANCELED -> OutputEvent.KIND_ORDER_CANCELED;
++            case RestingOrder.STATUS_FILLED -> OutputEvent.KIND_ORDER_FILLED;
++            case RestingOrder.STATUS_PARTIALLY_FILLED -> OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
++            default -> OutputEvent.KIND_ORDER_ACCEPTED;
++        };
 +    }
 +
 +    private static void writeTradeBooked(OutputEvent e, RestingOrder order, int fillQty, long inputSeq,
@@ -2112,7 +2215,7 @@ index 0000000..ef6db36
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
 new file mode 100644
-index 0000000..b296b55
+index 0000000..1678bd4
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
 @@ -0,0 +1,76 @@
@@ -2156,7 +2259,7 @@ index 0000000..b296b55
 +
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-+        if (e.kind == OutputEvent.KIND_ORDER_UPDATE && e.flags != 0) {
++        if (OutputEvent.isOrderLifecycleKind(e.kind) && e.flags != 0) {
 +            // flags==0 updates are republished unchanged state (no persistence in 009 either)
 +            buffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());
 +        }
@@ -2381,49 +2484,133 @@ index 0000000..c06e6c8
 +        return nextId.get();
 +    }
 +}
-diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java
 new file mode 100644
-index 0000000..255f32f
+index 0000000..d8ff0bd
 --- /dev/null
-+++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
-@@ -0,0 +1,69 @@
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java
+@@ -0,0 +1,89 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.model.OrderSide;
++
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++
++/**
++ * 009-compatible `/trades` payload emitted at the output edge from TradeBooked.
++ * The class name is intentionally `TradeOrder`: NatsEnvelope.type is derived from
++ * the payload simple class name, and the existing trade processor filters for that
++ * legacy type before deserializing.
++ */
++public final class TradeOrder {
++    private String id;
++    private String state;
++    private String security;
++    private Integer quantity;
++    private BigDecimal price;
++    private Integer accountId;
++    private OrderSide side;
++
++    public String getId() {
++        return id;
++    }
++
++    public void setId(String id) {
++        this.id = id;
++    }
++
++    public String getState() {
++        return state;
++    }
++
++    public void setState(String state) {
++        this.state = state;
++    }
++
++    public String getSecurity() {
++        return security;
++    }
++
++    public void setSecurity(String security) {
++        this.security = security;
++    }
++
++    public Integer getQuantity() {
++        return quantity;
++    }
++
++    public void setQuantity(Integer quantity) {
++        this.quantity = quantity;
++    }
++
++    public BigDecimal getPrice() {
++        return price;
++    }
++
++    public void setPrice(BigDecimal price) {
++        this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
++    }
++
++    public Integer getAccountId() {
++        return accountId;
++    }
++
++    public void setAccountId(Integer accountId) {
++        this.accountId = accountId;
++    }
++
++    public OrderSide getSide() {
++        return side;
++    }
++
++    public void setSide(OrderSide side) {
++        this.side = side;
++    }
++
++    public static TradeOrder fromEvent(OutputEvent e, SymbolTable symbols) {
++        TradeOrder payload = new TradeOrder();
++        payload.setId(OrderSnapshot.orderIdFor(e.orderRef));
++        payload.setSecurity(symbols.tickerFor(e.securityId));
++        payload.setQuantity(e.tradeQty);
++        payload.setPrice(Px.toBigDecimal(e.lastExecPx));
++        payload.setAccountId(e.accountId);
++        payload.setSide(OrderSide.values()[e.side]);
++        return payload;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
+new file mode 100644
+index 0000000..5ba8274
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
+@@ -0,0 +1,50 @@
++package finos.traderx.ordermatcher.lmax;
++
++import finos.traderx.messaging.PubSubException;
++import finos.traderx.messaging.Publisher;
 +import org.slf4j.Logger;
 +import org.slf4j.LoggerFactory;
-+import org.springframework.http.ResponseEntity;
-+import org.springframework.web.client.RestTemplate;
 +
 +import com.lmax.disruptor.EventHandler;
 +
-+import java.util.Map;
-+
 +/**
-+ * Output-ring booking bridge. The BLP emits TradeBooked events instead of POSTing trades
-+ * inside the match loop (FR-09B15); this handler feeds those events into the existing
-+ * trade pipeline (trade-service -> NATS -> trade-processor -> positions), preserving the
-+ * 009 trade/position contract while keeping the call off the acknowledgement path
-+ * (NFR-09B01: ack ends at input durability, booking fan-out is downstream).
-+ *
-+ * Demo simplification (strangler P2 boundary): full booking/position fusion into the BLP
-+ * (FR-09B08/FR-09B22) lands when the trade pipeline itself is restructured; until then a
-+ * trade-service submit failure is counted (reject + tradeSubmitFailures, as in 009) and
-+ * surfaced via metrics rather than rolling back the in-memory fill.
++ * Output-ring TradeBooked bridge. Publishes the unchanged 009 `/trades` payload so the
++ * existing trade-processor consumes the fill and continues producing account trade and
++ * position subjects. JSON allocation and security/price rendering happen here, at the
++ * edge, never in the BLP.
 + */
 +public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
 +    private static final Logger log = LoggerFactory.getLogger(TradeSubmitHandler.class);
-+    private static final OrderSide[] SIDES = OrderSide.values();
++    private static final String TRADES_TOPIC = "/trades";
 +
-+    private final RestTemplate restTemplate;
-+    private final String tradeServiceUrl;
++    private final Publisher<TradeOrder> tradePublisher;
 +    private final SymbolTable symbols;
 +    private final InMemoryOrderReadModel readModel;
 +
-+    public TradeSubmitHandler(RestTemplate restTemplate, String tradeServiceUrl, SymbolTable symbols,
++    public TradeSubmitHandler(Publisher<TradeOrder> tradePublisher, SymbolTable symbols,
 +                              InMemoryOrderReadModel readModel) {
-+        this.restTemplate = restTemplate;
-+        this.tradeServiceUrl = tradeServiceUrl;
++        this.tradePublisher = tradePublisher;
 +        this.symbols = symbols;
 +        this.readModel = readModel;
 +    }
@@ -2433,18 +2620,10 @@ index 0000000..255f32f
 +        if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
 +            return;
 +        }
++        TradeOrder payload = TradeOrder.fromEvent(e, symbols);
 +        try {
-+            Map<String, Object> payload = Map.of(
-+                "security", symbols.tickerFor(e.securityId),
-+                "quantity", e.tradeQty,
-+                "accountId", e.accountId,
-+                "side", SIDES[e.side].name()
-+            );
-+            ResponseEntity<Map> response = restTemplate.postForEntity(tradeServiceUrl, payload, Map.class);
-+            if (!response.getStatusCode().is2xxSuccessful()) {
-+                recordFailure(e, null);
-+            }
-+        } catch (Exception ex) {
++            tradePublisher.publish(TRADES_TOPIC, payload);
++        } catch (PubSubException ex) {
 +            recordFailure(e, ex);
 +        }
 +    }
@@ -2452,7 +2631,7 @@ index 0000000..255f32f
 +    private void recordFailure(OutputEvent e, Exception ex) {
 +        readModel.tradeSubmitFailures().increment();
 +        readModel.increment("reject");
-+        log.warn("Trade submit failed for order {} (qty {})", OrderSnapshot.orderIdFor(e.orderRef),
++        log.warn("TradeBooked publish failed for order {} (qty {})", OrderSnapshot.orderIdFor(e.orderRef),
 +            e.tradeQty, ex);
 +    }
 +}
@@ -3851,8 +4030,8 @@ index 22e0cdb..565542a 100644
  - Scripts in this folder are local-runtime wrappers for the generated codebase.
  - They are designed to run without invoking root pipeline generation.
 diff --git a/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..ebea0b9
+new file mode 100755
+index 0000000..4a034ee
 --- /dev/null
 +++ b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
 @@ -0,0 +1,16 @@
@@ -3866,18 +4045,18 @@ index 0000000..ebea0b9
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the LMAX hot-path overlay (patchset + order-matcher
++# overrides) is installed by generation. The runtime harness and compose project are
++# shared with the 009 lineage, but this state runs under an isolated compose project.
++export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-traderx-state-009b}"
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/start-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..50f2dda
+new file mode 100755
+index 0000000..6141f2d
 --- /dev/null
 +++ b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3888,18 +4067,17 @@ index 0000000..50f2dda
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the runtime (LMAX hot path installed by generation)
++# shares the 009 lineage harness, but runs under an isolated compose project.
++export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-traderx-state-009b}"
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/status-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..a450271
+new file mode 100755
+index 0000000..fb61d3d
 --- /dev/null
 +++ b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3910,14 +4088,13 @@ index 0000000..a450271
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the runtime (LMAX hot path installed by generation)
++# shares the 009 lineage harness, but runs under an isolated compose project.
++export COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-traderx-state-009b}"
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/stop-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/start-env.sh b/start-env.sh
-index a1cde6d..62ee5a2 100644
+index a1cde6d..62ee5a2 100755
 --- a/start-env.sh
 +++ b/start-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -3930,7 +4107,7 @@ index a1cde6d..62ee5a2 100644
 -exec "${ROOT}/scripts/start-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/status-env.sh b/status-env.sh
-index 2d112e0..8fc992e 100644
+index 2d112e0..8fc992e 100755
 --- a/status-env.sh
 +++ b/status-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -3943,7 +4120,7 @@ index 2d112e0..8fc992e 100644
 -exec "${ROOT}/scripts/status-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/stop-env.sh b/stop-env.sh
-index a712c43..67ab977 100644
+index a712c43..67ab977 100755
 --- a/stop-env.sh
 +++ b/stop-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -3956,7 +4133,7 @@ index a712c43..67ab977 100644
 -exec "${ROOT}/scripts/stop-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/test-env.sh b/test-env.sh
-index e05cf9b..520329b 100644
+index e05cf9b..520329b 100755
 --- a/test-env.sh
 +++ b/test-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

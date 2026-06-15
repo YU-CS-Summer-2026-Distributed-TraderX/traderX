@@ -38,7 +38,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        if (e.kind == OutputEvent.KIND_ORDER_UPDATE && e.flags != 0) {
+        if (OutputEvent.isOrderLifecycleKind(e.kind) && e.flags != 0) {
             // flags==0 updates are republished unchanged state (no persistence in 009 either)
             buffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());
         }

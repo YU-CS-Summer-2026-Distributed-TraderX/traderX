@@ -1,40 +1,29 @@
 package finos.traderx.ordermatcher.lmax;
 
-import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.messaging.PubSubException;
+import finos.traderx.messaging.Publisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.http.ResponseEntity;
-import org.springframework.web.client.RestTemplate;
 
 import com.lmax.disruptor.EventHandler;
 
-import java.util.Map;
-
 /**
- * Output-ring booking bridge. The BLP emits TradeBooked events instead of POSTing trades
- * inside the match loop (FR-09B15); this handler feeds those events into the existing
- * trade pipeline (trade-service -> NATS -> trade-processor -> positions), preserving the
- * 009 trade/position contract while keeping the call off the acknowledgement path
- * (NFR-09B01: ack ends at input durability, booking fan-out is downstream).
- *
- * Demo simplification (strangler P2 boundary): full booking/position fusion into the BLP
- * (FR-09B08/FR-09B22) lands when the trade pipeline itself is restructured; until then a
- * trade-service submit failure is counted (reject + tradeSubmitFailures, as in 009) and
- * surfaced via metrics rather than rolling back the in-memory fill.
+ * Output-ring TradeBooked bridge. Publishes the unchanged 009 `/trades` payload so the
+ * existing trade-processor consumes the fill and continues producing account trade and
+ * position subjects. JSON allocation and security/price rendering happen here, at the
+ * edge, never in the BLP.
  */
 public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(TradeSubmitHandler.class);
-    private static final OrderSide[] SIDES = OrderSide.values();
+    private static final String TRADES_TOPIC = "/trades";
 
-    private final RestTemplate restTemplate;
-    private final String tradeServiceUrl;
+    private final Publisher<TradeOrder> tradePublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
 
-    public TradeSubmitHandler(RestTemplate restTemplate, String tradeServiceUrl, SymbolTable symbols,
+    public TradeSubmitHandler(Publisher<TradeOrder> tradePublisher, SymbolTable symbols,
                               InMemoryOrderReadModel readModel) {
-        this.restTemplate = restTemplate;
-        this.tradeServiceUrl = tradeServiceUrl;
+        this.tradePublisher = tradePublisher;
         this.symbols = symbols;
         this.readModel = readModel;
     }
@@ -44,18 +33,10 @@ public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;
         }
+        TradeOrder payload = TradeOrder.fromEvent(e, symbols);
         try {
-            Map<String, Object> payload = Map.of(
-                "security", symbols.tickerFor(e.securityId),
-                "quantity", e.tradeQty,
-                "accountId", e.accountId,
-                "side", SIDES[e.side].name()
-            );
-            ResponseEntity<Map> response = restTemplate.postForEntity(tradeServiceUrl, payload, Map.class);
-            if (!response.getStatusCode().is2xxSuccessful()) {
-                recordFailure(e, null);
-            }
-        } catch (Exception ex) {
+            tradePublisher.publish(TRADES_TOPIC, payload);
+        } catch (PubSubException ex) {
             recordFailure(e, ex);
         }
     }
@@ -63,7 +44,7 @@ public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
     private void recordFailure(OutputEvent e, Exception ex) {
         readModel.tradeSubmitFailures().increment();
         readModel.increment("reject");
-        log.warn("Trade submit failed for order {} (qty {})", OrderSnapshot.orderIdFor(e.orderRef),
+        log.warn("TradeBooked publish failed for order {} (qty {})", OrderSnapshot.orderIdFor(e.orderRef),
             e.tradeQty, ex);
     }
 }

@@ -67,7 +67,7 @@ public final class OutputPublisher {
 
     private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
                                          boolean publishNats, long marketPx, long ingressNanos) {
-        e.kind = OutputEvent.KIND_ORDER_UPDATE;
+        e.kind = orderKind(order, flags);
         e.inputSeq = inputSeq;
         e.flags = flags;
         e.publishNats = publishNats;
@@ -86,6 +86,30 @@ public final class OutputPublisher {
         e.marketPx = marketPx;
         e.tradeQty = 0;
         e.ingressNanos = ingressNanos;
+    }
+
+    private static byte orderKind(RestingOrder order, int flags) {
+        if ((flags & OutputEvent.FLAG_REJECT) != 0) {
+            return OutputEvent.KIND_ORDER_REJECTED;
+        }
+        if ((flags & OutputEvent.FLAG_CANCEL) != 0) {
+            return OutputEvent.KIND_ORDER_CANCELED;
+        }
+        if ((flags & OutputEvent.FLAG_FILL) != 0) {
+            return OutputEvent.KIND_ORDER_FILLED;
+        }
+        if ((flags & OutputEvent.FLAG_PARTIAL_FILL) != 0) {
+            return OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
+        }
+        if ((flags & OutputEvent.FLAG_CREATE) != 0) {
+            return OutputEvent.KIND_ORDER_ACCEPTED;
+        }
+        return switch (order.status) {
+            case RestingOrder.STATUS_CANCELED -> OutputEvent.KIND_ORDER_CANCELED;
+            case RestingOrder.STATUS_FILLED -> OutputEvent.KIND_ORDER_FILLED;
+            case RestingOrder.STATUS_PARTIALLY_FILLED -> OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
+            default -> OutputEvent.KIND_ORDER_ACCEPTED;
+        };
     }
 
     private static void writeTradeBooked(OutputEvent e, RestingOrder order, int fillQty, long inputSeq,

@@ -1,15 +1,21 @@
 package finos.traderx.ordermatcher.lmax;
 
 /**
- * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries a full order
- * snapshot so downstream handlers (marshaller/read-model, NATS bridge, projector) never
- * read BLP state. {@code ingressNanos} is carried through from the input event so true
- * end-to-end latency is recorded at egress (NFR-09B01).
+ * Output-ring slot holder (single producer: the BLP — FR-09B20). Carries enough
+ * primitive state for downstream handlers (marshaller/read-model, NATS bridge,
+ * projector) to render the 009-compatible contracts without reading BLP state.
+ * {@code ingressNanos} is carried through from the input event so true end-to-end
+ * latency is recorded at egress (NFR-09B01).
  */
 public final class OutputEvent {
-    public static final byte KIND_ORDER_UPDATE = 1;
-    public static final byte KIND_TRADE_BOOKED = 2;
-    public static final byte KIND_ORDER_NOT_FOUND = 3;
+    public static final byte KIND_ORDER_ACCEPTED = 1;
+    public static final byte KIND_ORDER_REJECTED = 2;
+    public static final byte KIND_ORDER_PARTIALLY_FILLED = 3;
+    public static final byte KIND_ORDER_FILLED = 4;
+    public static final byte KIND_ORDER_CANCELED = 5;
+    public static final byte KIND_TRADE_BOOKED = 6;
+    public static final byte KIND_POSITION_UPDATED = 7;
+    public static final byte KIND_ORDER_NOT_FOUND = 8;
 
     // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
     public static final int FLAG_CREATE = 1;
@@ -43,5 +49,9 @@ public final class OutputEvent {
 
     public static OutputEvent newInstance() {
         return new OutputEvent();
+    }
+
+    public static boolean isOrderLifecycleKind(byte kind) {
+        return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
     }
 }
