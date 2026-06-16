@@ -1,12 +1,6 @@
 package finos.traderx.ordermatcher.lmax;
 
-import com.lmax.disruptor.BlockingWaitStrategy;
-import com.lmax.disruptor.BusySpinWaitStrategy;
-import com.lmax.disruptor.InsufficientCapacityException;
-import com.lmax.disruptor.RingBuffer;
-import com.lmax.disruptor.SleepingWaitStrategy;
-import com.lmax.disruptor.WaitStrategy;
-import com.lmax.disruptor.YieldingWaitStrategy;
+import com.lmax.disruptor.*;
 import com.lmax.disruptor.dsl.Disruptor;
 import com.lmax.disruptor.dsl.ProducerType;
 import com.lmax.disruptor.util.DaemonThreadFactory;
@@ -15,14 +9,17 @@ import finos.traderx.ordermatcher.api.OrderResponse;
 import finos.traderx.ordermatcher.model.OrderRecord;
 import finos.traderx.ordermatcher.model.OrderSide;
 import finos.traderx.ordermatcher.model.OrderStatus;
+import finos.traderx.ordermatcher.model.Position;
+import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.repository.OrderRepository;
+import finos.traderx.ordermatcher.repository.PositionRepository;
+import finos.traderx.ordermatcher.repository.TradeRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.RestTemplate;
 
 import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
@@ -59,11 +56,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ord-013-(\\d{4,})$");
 
     private final OrderRepository orderRepository;
+    private final TradeRepository tradeRepository;
+    private final PositionRepository positionRepository;
     private final Publisher<OrderResponse> orderPublisher;
-    private final RestTemplate restTemplate;
+    private final Publisher<Trade> tradePublisher;
+    private final Publisher<Position> positionPublisher;
     private final boolean seedEnabled;
     private final int fillFullThreshold;
-    private final String tradeServiceUrl;
     private final int inputRingSize;
     private final String inputWaitStrategy;
     private final int outputRingSize;
@@ -73,6 +72,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final int projectorBatchSize;
     private final int maxSecurities;
     private final int bookPoolSize;
+    private final int positionCapacity;
     private final long ackTimeoutMs;
     private final String runtimeProfile;
 
@@ -93,11 +93,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public LmaxEngine(
         OrderRepository orderRepository,
+        TradeRepository tradeRepository,
+        PositionRepository positionRepository,
         Publisher<OrderResponse> orderPublisher,
-        RestTemplate restTemplate,
+        Publisher<Trade> tradePublisher,
+        Publisher<Position> positionPublisher,
         @Value("${order.matcher.seed-enabled:true}") boolean seedEnabled,
         @Value("${order.matcher.fill-full-threshold:1000}") int fillFullThreshold,
-        @Value("${order.matcher.trade-service-url:http://trade-service:18092/trade/}") String tradeServiceUrl,
         @Value("${disruptor.input.ring-size:65536}") int inputRingSize,
         @Value("${disruptor.input.wait-strategy:blocking}") String inputWaitStrategy,
         @Value("${disruptor.output.ring-size:65536}") int outputRingSize,
@@ -107,15 +109,18 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${output.projector.batch-size:500}") int projectorBatchSize,
         @Value("${blp.books.max-securities:4096}") int maxSecurities,
         @Value("${blp.book.pool-size:65536}") int bookPoolSize,
+        @Value("${blp.positions.capacity:8192}") int positionCapacity,
         @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
         @Value("${runtime.profile:demo}") String runtimeProfile
     ) {
         this.orderRepository = orderRepository;
+        this.tradeRepository = tradeRepository;
+        this.positionRepository = positionRepository;
         this.orderPublisher = orderPublisher;
-        this.restTemplate = restTemplate;
+        this.tradePublisher = tradePublisher;
+        this.positionPublisher = positionPublisher;
         this.seedEnabled = seedEnabled;
         this.fillFullThreshold = fillFullThreshold;
-        this.tradeServiceUrl = tradeServiceUrl;
         this.inputRingSize = inputRingSize;
         this.inputWaitStrategy = inputWaitStrategy;
         this.outputRingSize = outputRingSize;
@@ -125,6 +130,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.projectorBatchSize = projectorBatchSize;
         this.maxSecurities = maxSecurities;
         this.bookPoolSize = bookPoolSize;
+        this.positionCapacity = positionCapacity;
         this.ackTimeoutMs = ackTimeoutMs;
         this.runtimeProfile = runtimeProfile;
         this.symbols = new SymbolTable(maxSecurities);
@@ -136,18 +142,23 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Output ring first: the BLP needs its publisher before it can run.
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
-        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
+        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
+            projectorBatchSize, metrics);
+        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, tradePublisher,
+            positionPublisher, symbols, readModel);
 
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans
+        // out to the marshaller (acks/read-model), the NATS bridge (orders + trades + positions),
+        // and the projector (OrderBook + TRADES + POSITIONS). The 009 trade-service round-trip
+        // (TradeSubmitHandler) is gone — trades and positions never leave the single-writer path.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-        outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
+        outputDisruptor.handleEventsWith(marshaller, natsBridge, projector);
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
         matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-            metrics, maxSecurities, fillFullThreshold, bookPoolSize);
+            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
 
         bootstrapFromReadModel();
 
@@ -224,6 +235,32 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             e.qty = 0;
             e.limitPx = 0L;
             e.priceTicks = priceTicks;
+            e.ingressNanos = System.nanoTime();
+            e.eventTimeMillis = System.currentTimeMillis();
+        } finally {
+            inputRing.publish(seq);
+        }
+    }
+
+    /**
+     * Market trade from the trade ticket (FR-09B08): sequence a TRADE_NEW event so booking +
+     * position-keeping run on the single-writer BLP. Fire-and-forget, matching 009's POST
+     * /trade/ contract (booking is async; the gateway does not block on the read-model).
+     */
+    public void executeTradeNew(int accountId, String ticker, OrderSide side, int quantity) {
+        int securityId = symbols.idFor(ticker);
+        long seq = claimInputSlot();
+        try {
+            InputEvent e = inputRing.get(seq);
+            e.seq = seq;
+            e.type = InputEvent.TYPE_TRADE_NEW;
+            e.orderRef = 0;
+            e.accountId = accountId;
+            e.securityId = securityId;
+            e.side = (byte) side.ordinal();
+            e.qty = quantity;
+            e.limitPx = 0L;
+            e.priceTicks = 0L;
             e.ingressNanos = System.nanoTime();
             e.eventTimeMillis = System.currentTimeMillis();
         } finally {
@@ -357,6 +394,26 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         nextOrderRef.set(maxRef + 1);
 
+        // Warm the BLP's net positions from the persisted POSITIONS read-model (FR-09B16 recovery):
+        // the BLP is the single position writer, so it must resume from the durable state on restart.
+        for (Position position : positionRepository.findAll()) {
+            if (position.getAccountId() == null || position.getSecurity() == null) {
+                continue;
+            }
+            int securityId = symbols.idFor(position.getSecurity());
+            matchingEngine.bootstrapPosition(position.getAccountId(), securityId,
+                position.getQuantity() == null ? 0 : position.getQuantity(),
+                Px.toTicks(position.getAverageCostBasis()));
+        }
+
+        // Resume the global trade counter above the max persisted trade id so ids never collide
+        // across restarts (mirrors nextOrderRef; foreign-format ids — e.g. 009 seed — are ignored).
+        long maxTradeSeq = 0;
+        for (Trade trade : tradeRepository.findAll()) {
+            maxTradeSeq = Math.max(maxTradeSeq, OrderSnapshot.tradeSeqFromId(trade.getId()));
+        }
+        matchingEngine.bootstrapTradeCounter(maxTradeSeq);
+
         // Counter parity with 009's refreshCountersFromDatabase().
         readModel.setCounter("create", counterCreate);
         readModel.setCounter("partial_fill", readModel.countByStatus(OrderStatus.PARTIALLY_FILLED));
@@ -434,6 +491,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long tradesBookedOut() {
         return marshaller == null ? 0 : marshaller.tradesBooked();
+    }
+
+    public long positionsUpdatedOut() {
+        return marshaller == null ? 0 : marshaller.positionsUpdated();
     }
 
     public long projectedSeq() {

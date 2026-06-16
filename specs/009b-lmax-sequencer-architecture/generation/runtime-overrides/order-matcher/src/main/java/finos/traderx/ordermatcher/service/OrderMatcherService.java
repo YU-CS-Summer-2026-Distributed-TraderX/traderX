@@ -1,5 +1,6 @@
 package finos.traderx.ordermatcher.service;
 
+import finos.traderx.ordermatcher.api.MarketTradeRequest;
 import finos.traderx.ordermatcher.api.OpenCountResponse;
 import finos.traderx.ordermatcher.api.OrderCreateRequest;
 import finos.traderx.ordermatcher.api.OrderResponse;
@@ -95,6 +96,19 @@ public class OrderMatcherService {
     public OrderResponse forceFillOrder(String orderId) {
         OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
         return toResponse(snapshot);
+    }
+
+    /**
+     * Market trade from the trade ticket (FR-09B08): trade-service has already validated the
+     * ticker/account; here we sequence a TRADE_NEW event so the BLP books it and updates the
+     * position (single writer). Fire-and-forget — 009's POST /trade/ booked asynchronously too —
+     * so the request is echoed back without waiting on the read model.
+     */
+    public MarketTradeRequest bookMarketTrade(MarketTradeRequest request) {
+        validateMarketTrade(request);
+        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
+        engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(), request.getQuantity());
+        return request;
     }
 
     /**
@@ -239,6 +253,7 @@ public class OrderMatcherService {
         sb.append("traderx_input_events_total{type=\"order_cancel\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersCancel()).append('\n');
         sb.append("traderx_input_events_total{type=\"force_fill\"} ").append(engine.blp() == null ? 0 : engine.blp().countForceFills()).append('\n');
         sb.append("traderx_input_events_total{type=\"price_tick\"} ").append(engine.blp() == null ? 0 : engine.blp().countPriceTicks()).append('\n');
+        sb.append("traderx_input_events_total{type=\"trade_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countTradesNew()).append('\n');
         sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
         sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
         sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
@@ -246,6 +261,7 @@ public class OrderMatcherService {
         sb.append("# TYPE traderx_output_events_total counter\n");
         sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
         sb.append("traderx_output_events_total{kind=\"trade_booked\"} ").append(engine.tradesBookedOut()).append('\n');
+        sb.append("traderx_output_events_total{kind=\"position_updated\"} ").append(engine.positionsUpdatedOut()).append('\n');
         sb.append("# HELP traderx_output_nats_errors_total NATS bridge publish failures.\n");
         sb.append("# TYPE traderx_output_nats_errors_total counter\n");
         sb.append("traderx_output_nats_errors_total ").append(readModel.natsErrors().sum()).append('\n');
@@ -313,6 +329,16 @@ public class OrderMatcherService {
             || request.getQuantity() == null || request.getQuantity() <= 0
             || request.getLimitPrice() == null || request.getLimitPrice().compareTo(BigDecimal.ZERO) <= 0) {
             throw new ResponseStatusException(BAD_REQUEST, "invalid order payload");
+        }
+    }
+
+    private void validateMarketTrade(MarketTradeRequest request) {
+        if (request == null
+            || request.getAccountId() == null || request.getAccountId() <= 0
+            || !StringUtils.hasText(request.getSecurity())
+            || request.getSide() == null
+            || request.getQuantity() == null || request.getQuantity() <= 0) {
+            throw new ResponseStatusException(BAD_REQUEST, "invalid market trade payload");
         }
     }
 

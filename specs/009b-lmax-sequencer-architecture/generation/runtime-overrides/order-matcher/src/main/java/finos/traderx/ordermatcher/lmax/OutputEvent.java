@@ -10,6 +10,7 @@ public final class OutputEvent {
     public static final byte KIND_ORDER_UPDATE = 1;
     public static final byte KIND_TRADE_BOOKED = 2;
     public static final byte KIND_ORDER_NOT_FOUND = 3;
+    public static final byte KIND_POSITION_UPDATED = 4;
 
     // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
     public static final int FLAG_CREATE = 1;
@@ -38,7 +39,11 @@ public final class OutputEvent {
     public long updatedAtMillis;
     public long marketPx;         // BLP's last price for the security (Px.NONE when unknown)
 
-    public int tradeQty;          // KIND_TRADE_BOOKED: fill quantity to submit as a trade
+    public int tradeQty;          // KIND_TRADE_BOOKED: fill quantity booked as a trade
+    public long tradeSeq;         // KIND_TRADE_BOOKED: BLP-assigned global trade number (deterministic id)
+    public long tradePx;          // KIND_TRADE_BOOKED: stamped execution price (Px ticks; Px.NONE if no tick)
+    public int positionQty;       // KIND_POSITION_UPDATED: account's net position after the fill/trade
+    public long positionAvgCostTicks; // KIND_POSITION_UPDATED: weighted average cost basis (Px ticks)
     public long ingressNanos;
 
     public static OutputEvent newInstance() {

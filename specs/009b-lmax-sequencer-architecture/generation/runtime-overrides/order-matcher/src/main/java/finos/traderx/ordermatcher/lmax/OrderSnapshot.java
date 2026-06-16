@@ -54,6 +54,27 @@ public final class OrderSnapshot {
         return String.format("ord-013-%04d", orderRef);
     }
 
+    /**
+     * Deterministic booked-trade id from the BLP's global trade number, shared by the
+     * projector (DB row id) and the NATS bridge (published id) so both agree exactly — the
+     * single-id-per-trade property 009 got from one UUID (FR-09B22/FR-09B23 idempotency).
+     */
+    public static String tradeIdFor(long tradeSeq) {
+        return "trd-09b-" + tradeSeq;
+    }
+
+    /** Inverse of {@link #tradeIdFor}: the trade number for our id scheme, or -1 if foreign. */
+    public static long tradeSeqFromId(String tradeId) {
+        if (tradeId == null || !tradeId.startsWith("trd-09b-")) {
+            return -1;
+        }
+        try {
+            return Long.parseLong(tradeId.substring("trd-09b-".length()));
+        } catch (NumberFormatException ex) {
+            return -1;
+        }
+    }
+
     public static OrderSnapshot fromEvent(OutputEvent e, SymbolTable symbols) {
         return new OrderSnapshot(
             e.orderRef,

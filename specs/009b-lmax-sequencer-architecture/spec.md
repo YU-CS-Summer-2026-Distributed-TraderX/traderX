@@ -61,6 +61,13 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
 - FR-09B08: Market trades from the trade ticket SHALL enter the sequenced stream as `TRADE_NEW` input
   events via the Gateway, so trade booking and position keeping share the single-writer path (the
   inline booking role of `trade-processor` on this path is fused into the BLP).
+- FR-09B09: `trade-service` SHALL remain the validating edge for market trades — validating the ticker
+  (`reference-data`) and account (`account-service`) exactly as in `009`/`008` — and on success SHALL
+  forward the validated trade to the order-matcher Gateway (which sequences it as `TRADE_NEW`) instead
+  of publishing to the `/trades` NATS subject. The `POST /trade/` request/response contract (HTTP 200
+  echoing the trade) is unchanged (FR-09B40) and the forward is fire-and-forget (booking is async on
+  the BLP, matching `009`'s publish semantics). The client does not supply a price; the execution price
+  is stamped by the BLP (FR-09B17), subsuming `008`'s `trade-service` price-stamping role (FR-1002).
 
 ### Business Logic Processor (BLP)
 
@@ -71,17 +78,42 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
   in memory SHALL be resolved via asynchronous request/response event pairs.
 - FR-09B12: Validation that `009` performed via blocking REST (`account`, `stocks`, latest `price`)
   SHALL be served from in-memory caches kept fresh from the event streams and warmed at startup.
-- FR-09B13: The `009` auto-fill policy and lifecycle SHALL be preserved exactly: in-the-money test
+- FR-09B13: The `009` autofill policy and lifecycle SHALL be preserved exactly: in-the-money test
   (`Buy: marketPrice <= limitPrice`, `Sell: marketPrice >= limitPrice`), remaining `< 1000` fills
   fully, otherwise half (rounded up); statuses `NEW | PARTIALLY_FILLED | FILLED | CANCELED | REJECTED`.
 - FR-09B14: The BLP SHALL be deterministic: no wall-clock reads, no unordered-collection iteration, no
   RNG/UUID on the hot path; timestamps are carried in events (`ingressNanos` stamped at the Gateway)
-  and order IDs derive from the global sequence.
+  and order IDs derive from the global sequence. Trade IDs SHALL derive from a BLP-assigned monotonic
+  trade number (`trd-09b-<n>`, no `UUID`/RNG), warm-seeded above the maximum persisted trade id at
+  startup so ids are replay-stable and never collide across restarts (replacing `009`'s
+  `UUID.randomUUID()`); both the projector and the NATS bridge derive the same id from the carried
+  trade number.
 - FR-09B15: The BLP SHALL emit typed output events (`OrderAccepted`, `OrderRejected`,
   `OrderPartiallyFilled`, `OrderFilled`, `OrderCanceled`, `TradeBooked`, `PositionUpdated`) into the
-  output ring as its sole side-effect channel, rather than POSTing trades or writing the DB inline.
+  output ring as its sole side effect channel, rather than POSTing trades or writing the DB inline.
+  `TradeBooked` SHALL carry the stamped execution price (FR-09B17) and `PositionUpdated` the resulting
+  net quantity and weighted average cost basis (FR-09B18); a fill SHALL emit its order update,
+  `TradeBooked`, and `PositionUpdated` as one paired ring claim. The `009` output-ring trade-submit
+  handler that re-POSTed fills to `trade-service` SHALL be removed.
 - FR-09B16: BLP state SHALL be recoverable via snapshot + journal replay to the last journaled
-  sequence, followed by a JIT warm-up replay before going live.
+  sequence, followed by a JIT warm-up replay before going live. Warm-start from the persisted
+  read-model SHALL restore the in-memory order book, the net positions (quantity AND weighted average
+  cost basis), and the trade-number counter, so the single-writer BLP resumes consistent with durable
+  state.
+- FR-09B17: The BLP SHALL stamp every booked trade with an execution price: an order fill books at its
+  fill execution price (last market price, or the limit price on a force-fill before any tick), and a
+  `TRADE_NEW` market trade books at the security's last sequenced market price (`PRICE_TICK`),
+  defaulting to `0` (rendered `0.000`, never null) when no tick has been seen. The price is carried on
+  `TradeBooked` and rendered to the `TRADES.price` column and NATS payload at the edge, preserving the
+  `008` trade-price contract (FR-1001/FR-1003).
+- FR-09B18: The BLP SHALL keep, per `(accountId, securityId)`, the net quantity AND the volume-weighted
+  average cost basis, updated on every fill and market trade using `008`/`009`'s running-average formula
+  (`newAvg = (oldAvg*oldQty + execPx*signedQty) / newQty`, reset to `0` when the net position is flat),
+  computed in `long` fixed-point on the hot path. The result is carried on `PositionUpdated` and
+  rendered to `POSITIONS.quantity` / `POSITIONS.averageCostBasis` at the edge, preserving the `008`
+  position contract (FR-1004). The position store SHALL be an allocation-free primitive structure
+  (no `HashMap`/autoboxing/`BigDecimal`), subject to the no-GC and banned-API gates (NFR-09B02,
+  SC-09B13).
 
 ### Output Disruptor and read-model
 
@@ -90,10 +122,22 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
   Projector handlers.
 - FR-09B21: The NATS Publisher SHALL reproduce the exact `009` subjects and payload shapes —
   `/orders`, `/accounts/{accountId}/orders`, `/trades`, `/accounts/{accountId}/trades`,
-  `/accounts/{accountId}/positions` — so all UI consumers work unchanged.
+  `/accounts/{accountId}/positions` — so all UI consumers work unchanged. A single `TradeBooked` SHALL
+  be published to BOTH `/trades` (global, formerly produced by `trade-service`) and
+  `/accounts/{accountId}/trades` (formerly produced by `trade-processor`), and a `PositionUpdated` to
+  `/accounts/{accountId}/positions`. The published `Trade` payload SHALL include the execution `price`
+  and state `Settled`, and the `Position` payload SHALL include `averageCostBasis`, byte-compatible with
+  the `008`/`009` shapes; `securityId -> ticker` and fixed-point -> 3dp decimal rendering happen here at
+  the edge (FR-09B25).
 - FR-09B22: Database writes SHALL move to the async, batched Read-model Projector off the
   acknowledgement path; the `OrderBook` table and trade/position rows become a read-model projected
-  from output events, preserving the `009` schema contract.
+  from output events, preserving the `009` schema contract. The order-matcher Projector SHALL be the
+  SOLE writer of the `OrderBook`, `TRADES`, and `POSITIONS` tables (replacing `trade-processor`'s inline
+  JPA on this path), writing `TRADES.price` and `POSITIONS.averageCostBasis` from the carried output
+  events. `trade-processor` remains deployed for its REST read endpoints and smoke-suite health parity
+  but books no trades and writes no positions on the order/market-trade path; the `009`
+  `fill -> trade-service -> /trades -> trade-processor` booking round-trip is removed (superseding
+  FR-01310).
 - FR-09B23: The read-model SHALL be rebuildable by re-projecting the journal (recovery and schema
   migration path), resuming idempotently from a persisted projection checkpoint (`last projected seq`).
 - FR-09B24: A slow or unavailable read-model DB or NATS bus SHALL NOT block matching beyond the
@@ -206,3 +250,13 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
 - SC-09B16: Generated snapshot branch and tag strategy are defined in the state catalog at
   implementation time; generated branch artifacts include the `C2` build/publish workflow and GHCR
   run-bundle assets.
+- SC-09B17: Trade & position field parity — for the same order-fill and market-trade scenarios, booked
+  trades carry the stamped execution `price` (`TRADES.price`, finite on `/trades` and
+  `/accounts/{accountId}/trades`) and positions carry the volume-weighted `averageCostBasis`
+  (`POSITIONS.averageCostBasis`) identical to `009`/`008`'s `trade-processor` outputs, extending the
+  penny-parity fixture (SC-09B04) to price and cost basis.
+- SC-09B18: Single-writer booking — submitting an order fill or a market trade books a trade and updates
+  the position written solely by the order-matcher Projector, with `trade-processor` processing no
+  trades on this path (no trade-booking activity) and positions not double-counted; the deterministic
+  trade ids (`trd-09b-<n>`) remain stable and non-colliding across an order-matcher restart (warm-start
+  from `POSITIONS` plus the seeded trade counter).

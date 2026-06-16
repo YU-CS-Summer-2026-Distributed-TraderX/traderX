@@ -334,7 +334,7 @@ The order-book entry is a flat primitive-field object, pooled on a free-list own
  * process — terminal orders stay addressable in the book so cancel/force-fill of a
  * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
  * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
- * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
+ * follows the same amortized-doubling rule as the indexes. Recycling terminal entries
  * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
  */
 public final class RestingOrder {
@@ -625,7 +625,7 @@ private OrderSnapshot execute(byte type, int orderRef, int accountId, int securi
 }
 ```
 
-### A12.8 Batch-amortised durability (`Journaler.onEvent`)
+### A12.8 Batch-amortized durability (`Journaler.onEvent`)
 
 The journaler writes each event into **one reused direct `ByteBuffer`** (allocated once in the
 constructor) and fsyncs once per drained batch — `endOfBatch` is the Disruptor's batching hook:
@@ -655,7 +655,7 @@ public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
         channel.write(buffer);
     }
     if (endOfBatch) {
-        channel.force(false); // durability amortised across the drained batch
+        channel.force(false); // durability amortized across the drained batch
     }
     // …
     journaledSeq = sequence;

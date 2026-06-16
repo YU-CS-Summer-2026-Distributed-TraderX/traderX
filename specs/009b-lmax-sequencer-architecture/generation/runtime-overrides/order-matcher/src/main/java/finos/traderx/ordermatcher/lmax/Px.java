@@ -33,4 +33,14 @@ public final class Px {
         }
         return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
     }
+
+    /**
+     * Edge conversion out for monetary fields where zero is a real value, not "absent": a
+     * booked trade's execution price and a position's average cost basis are 0.000 (never
+     * null) when no market price has been seen, matching 009's trade-processor which stamps
+     * {@code BigDecimal.ZERO} rather than leaving the column null (FR-09B40 contract parity).
+     */
+    public static BigDecimal toDecimalOrZero(long ticks) {
+        return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
+    }
 }

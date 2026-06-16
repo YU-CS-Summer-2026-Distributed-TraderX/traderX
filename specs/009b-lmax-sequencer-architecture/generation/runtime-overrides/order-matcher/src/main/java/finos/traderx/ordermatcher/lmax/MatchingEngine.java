@@ -31,6 +31,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private final IntList[] openRefsBySecurity;  // per-security open-order index
     private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
     private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
+    private final PositionBook positions;        // net positions, single-writer (FR-09B08/B10)
+    private long tradeCounter;                    // global trade number, single-writer (deterministic ids)
 
     // Single-writer telemetry: only the BLP thread writes, edge threads (REST /health,
     // /metrics) read racily-but-safely. The counters are plain longs published by the
@@ -44,6 +46,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long ordersCancel;
     private long ordersForceFill;
     private long priceTicks;
+    private long tradesNew;
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
 
@@ -58,13 +61,14 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     }
 
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
-                          int fillFullThreshold, int initialPoolSize) {
+                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
         this.out = out;
         this.metrics = metrics;
         this.fillFullThreshold = Math.max(1, fillFullThreshold);
         this.ordersByRef = new RestingOrder[16_384];
         this.openRefsBySecurity = new IntList[maxSecurities];
         this.lastPxBySecurity = new long[maxSecurities];
+        this.positions = new PositionBook(positionCapacity);
         for (int i = 0; i < initialPoolSize; i++) {
             RestingOrder pooled = new RestingOrder();
             pooled.nextFree = freeList;
@@ -85,6 +89,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
             case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
             case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+            case InputEvent.TYPE_TRADE_NEW -> { tradesNew++; onTradeNew(e); }
             default -> { /* ignore unknown event types */ }
         }
         eventsProcessed++;
@@ -117,6 +122,18 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         if (o.isOpen()) {
             openRefs(securityId).add(orderRef);
+        }
+    }
+
+    /** Warm the in-memory net positions (quantity + cost basis) from the persisted POSITIONS read-model. */
+    public void bootstrapPosition(int accountId, int securityId, int quantity, long avgCostTicks) {
+        positions.put(accountId, securityId, quantity, avgCostTicks);
+    }
+
+    /** Resume the global trade counter above the persisted max so trade ids never collide across restarts. */
+    public void bootstrapTradeCounter(long lastTradeSeq) {
+        if (lastTradeSeq > tradeCounter) {
+            tradeCounter = lastTradeSeq;
         }
     }
 
@@ -210,6 +227,26 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    /**
+     * Market trade from the trade ticket (FR-09B08): no order and no matching — book the trade
+     * and update the account's net position directly on the BLP thread (the single position
+     * writer), then emit TradeBooked + PositionUpdated. Deterministic: quantity, side, and time
+     * are carried in the event; the booking pipeline of trade-processor is fused in here.
+     */
+    private void onTradeNew(InputEvent e) {
+        // Stamp the trade at the BLP's current market price for the security (FR-09B40: the
+        // /trades payload carries the execution price); Px.NONE -> 0.000 at the edge when no
+        // tick has been seen yet, matching 009's trade-processor null-price handling.
+        long execPx = lastPxBySecurity[e.securityId];
+        int signedQty = e.side == InputEvent.SIDE_BUY ? e.qty : -e.qty;
+        int newPosition = positions.bookTrade(e.accountId, e.securityId, signedQty, execPx);
+        long avgCostTicks = positions.lastAvgCostTicks();
+        long tradeSeq = ++tradeCounter;
+        out.emitMarketTrade(e.accountId, e.securityId, e.side, e.qty, execPx, tradeSeq, newPosition,
+            avgCostTicks, e.seq, e.eventTimeMillis, e.ingressNanos);
+        metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
+    }
+
     // ----- matching policy (preserved from 009, integer math) ----------------------------
 
     private boolean isInTheMoney(RestingOrder o, long px) {
@@ -247,10 +284,17 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             removeOpenRef(o, openIndex);
         }
 
-        // The fill's order update and its TradeBooked event (FR-09B15: booking leaves as a
-        // typed event, off the acknowledgement path) go out as one paired claim — a single
-        // publish, a single consumer signal.
-        out.emitFillWithTrade(o, fillQty, e.seq, flags, marketPx, e.ingressNanos);
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the fill books the
+        // trade at its execution price and updates the account's net position + weighted cost
+        // basis in memory (single writer, no DB hop), then the order update, TradeBooked, and
+        // PositionUpdated events leave as one paired claim — a single publish, a single
+        // consumer signal (FR-09B15: side-effects are typed output events).
+        int signedQty = o.side == InputEvent.SIDE_BUY ? fillQty : -fillQty;
+        int newPosition = positions.bookTrade(o.accountId, o.securityId, signedQty, execPx);
+        long avgCostTicks = positions.lastAvgCostTicks();
+        long tradeSeq = ++tradeCounter;
+        out.emitFillWithTrade(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks, e.seq, flags,
+            marketPx, e.ingressNanos);
         metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
     }
 
@@ -362,6 +406,27 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long countPriceTicks() {
         readFence();
         return priceTicks;
+    }
+
+    public long countTradesNew() {
+        readFence();
+        return tradesNew;
+    }
+
+    /**
+     * Net position for an account/security. Single-writer state read off the BLP thread; the
+     * acquire-load orders the read after the BLP's last release-store. Intended for tests and
+     * warm-start verification (read when the BLP is quiesced), not per-event edge polling.
+     */
+    public int positionQuantity(int accountId, int securityId) {
+        readFence();
+        return positions.get(accountId, securityId);
+    }
+
+    /** Weighted average cost basis (Px ticks) for an account/security; single-writer read off the BLP thread. */
+    public long positionAvgCostTicks(int accountId, int securityId) {
+        readFence();
+        return positions.avgCostTicks(accountId, securityId);
     }
 
     public long blpThreadId() {

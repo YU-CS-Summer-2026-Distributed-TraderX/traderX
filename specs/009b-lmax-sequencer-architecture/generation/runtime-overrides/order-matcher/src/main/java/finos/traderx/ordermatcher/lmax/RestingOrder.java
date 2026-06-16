@@ -7,7 +7,7 @@ package finos.traderx.ordermatcher.lmax;
  * process — terminal orders stay addressable in the book so cancel/force-fill of a
  * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
  * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
- * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
+ * follows the same amortized-doubling rule as the indexes. Recycling terminal entries
  * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
  */
 public final class RestingOrder {

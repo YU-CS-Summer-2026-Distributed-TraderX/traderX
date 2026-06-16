@@ -11,6 +11,8 @@ public final class InputEvent {
     public static final byte TYPE_ORDER_CANCEL = 2;
     public static final byte TYPE_FORCE_FILL = 3;
     public static final byte TYPE_PRICE_TICK = 4;
+    /** Market trade from the trade ticket, sequenced through the gateway (FR-09B08). */
+    public static final byte TYPE_TRADE_NEW = 5;
 
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;

@@ -75,7 +75,7 @@ in-memory and binary structures is introduced on the hot path.
 ## Ring sizing
 
 `slots_needed >= peak_input_rate × max_handler_stall × safety_factor`, rounded up to a power of two.
-Demo example: 50,000 events/s × 2 ms journaler stall × 4 = 400 -> generously rounded to
+Demo example: 50,000 events/s × 2 ms journaler stall × 4 = 400 → generously rounded to
 `2^16 = 65,536` (input and output). Perf profile: `2^20`. Memory ≈ `ring_size × (holder + off-heap
 slot buffer)` (~256 MB at `2^20 × 256 B`), pre-touched at startup. Config keys:
 `disruptor.input.ring-size`, `disruptor.output.ring-size`.

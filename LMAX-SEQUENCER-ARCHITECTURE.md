@@ -281,7 +281,7 @@ sequenceDiagram
 
 Notes:
 
-- The **journaler + replicator run in parallel** with un-marshalling; the BLP is gated behind all three, so by
+- The **journaler + replicator run in parallel** with un-marshaling; the BLP is gated behind all three, so by
   the time it acts on event `N`, that event is already **durable and replicated**. This is what lets failover be
   near-instant.
 - The **BLP never blocks**. If matching needed something it doesn't have in memory (it shouldn't, given the
@@ -455,6 +455,7 @@ public final class InputEvent {
     public static final byte TYPE_ORDER_CANCEL = 2;
     public static final byte TYPE_FORCE_FILL = 3;
     public static final byte TYPE_PRICE_TICK = 4;
+    public static final byte TYPE_TRADE_NEW = 5;   // market trade from the trade ticket (FR-09B08)
 
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;
@@ -484,11 +485,14 @@ when SBE lands, `T09B12`):**
 ```java
 outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
     DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
+// Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans out to
+// the marshaller (acks/read-model), the NATS bridge (orders + trades + positions), and the
+// read-model projector (OrderBook + TRADES + POSITIONS). No trade-service round-trip on the path.
+outputDisruptor.handleEventsWith(marshaller, natsBridge, projector);
 outputDisruptor.start();
 
 matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-    metrics, maxSecurities, fillFullThreshold, bookPoolSize);
+    metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
 
 // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
 // (sequence barrier), so every event it acts on is already durable and replicated.
@@ -511,6 +515,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private final IntList[] openRefsBySecurity;  // per-security open-order index
     private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
     private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
+    private final PositionBook positions;        // net positions, single writer (FR-09B08/B10)
+    private long tradeCounter;                    // global trade number -> deterministic trade ids
 
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
@@ -519,6 +525,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
             case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
             case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
+            case InputEvent.TYPE_TRADE_NEW -> { tradesNew++; onTradeNew(e); } // book + position
             default -> { /* ignore unknown event types */ }
         }
         eventsProcessed++;
@@ -528,9 +535,27 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         BLP_SEQ.setRelease(this, sequence);
         metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
-    // single writer, no locks, zero allocation in steady state
+    // single writer, no locks, zero allocation in steady state. Each fill (and each market
+    // trade) updates the account's net position in-memory and emits OrderUpdate + TradeBooked
+    // + PositionUpdated — booking and position-keeping fused onto the one thread (FR-09B08/B10).
 }
 ```
+
+**Booking & position-keeping are now fused into the BLP** (FR-09B08 / FR-09B10 / FR-09B15 / FR-09B22).
+Market trades from the trade ticket enter the sequencer as `TYPE_TRADE_NEW` — trade-service validates the
+ticker/account, then forwards to the order-matcher gateway; the BLP stamps the trade with the security's
+current market price (the last `PRICE_TICK` it sequenced), books it, and folds quantity + price into the
+account's net position — net quantity **and** weighted average cost basis — in memory (`PositionBook`,
+single writer, long fixed-point), then emits `TradeBooked` (carrying the execution price) + `PositionUpdated`
+(carrying the average cost basis). The same fusion happens on every order fill, so `TRADES.PRICE` and
+`POSITIONS.AVERAGECOSTBASIS` stay byte-identical to 009's `trade-processor`. The read-model **projector**
+writes the `TRADES` and `POSITIONS` rows (deterministic trade ids from a BLP-assigned trade number) and the
+**NATS bridge** publishes the booked trade onto both the global `/trades` (was `trade-service`) and the
+per-account `/accounts/{id}/trades` (was `trade-processor`), plus `/accounts/{id}/positions` — the exact 009
+subjects and payload shapes (price/decimal rendered at the edge) — so the UI is unchanged. The 009
+`trade-service → NATS → trade-processor` booking round-trip (and the old `TradeSubmitHandler`) is gone;
+`trade-processor` stays deployed but **idle** on this path (its REST read endpoints still serve),
+preserving the inherited smoke gate.
 
 ---
 

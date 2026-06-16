@@ -14,6 +14,7 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
     private volatile long marshalledSeq = -1;
     private volatile long orderUpdates;
     private volatile long tradesBooked;
+    private volatile long positionsUpdated;
 
     public MarshallerHandler(InMemoryOrderReadModel readModel, SymbolTable symbols, HotPathMetrics metrics) {
         this.readModel = readModel;
@@ -30,6 +31,7 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
             }
             case OutputEvent.KIND_ORDER_NOT_FOUND -> readModel.notFound(e.inputSeq);
             case OutputEvent.KIND_TRADE_BOOKED -> tradesBooked++;
+            case OutputEvent.KIND_POSITION_UPDATED -> positionsUpdated++;
             default -> { /* ignore */ }
         }
         metrics.recordEgressLatency(System.nanoTime() - e.ingressNanos);
@@ -46,5 +48,9 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
 
     public long tradesBooked() {
         return tradesBooked;
+    }
+
+    public long positionsUpdated() {
+        return positionsUpdated;
     }
 }

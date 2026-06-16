@@ -1,9 +1,15 @@
 package finos.traderx.ordermatcher.lmax;
 
+import finos.traderx.ordermatcher.api.MarketTradeRequest;
 import finos.traderx.ordermatcher.api.OrderCreateRequest;
 import finos.traderx.ordermatcher.api.OrderResponse;
 import finos.traderx.ordermatcher.model.OrderSide;
 import finos.traderx.ordermatcher.model.OrderStatus;
+import finos.traderx.ordermatcher.model.Position;
+import finos.traderx.ordermatcher.model.Trade;
+import finos.traderx.ordermatcher.model.TradeState;
+import finos.traderx.ordermatcher.repository.PositionRepository;
+import finos.traderx.ordermatcher.repository.TradeRepository;
 import finos.traderx.ordermatcher.service.OrderMatcherService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -44,6 +50,15 @@ class LmaxHotPathParityTest {
 
     @Autowired
     private OrderMatcherService service;
+
+    @Autowired
+    private LmaxEngine engine;
+
+    @Autowired
+    private TradeRepository tradeRepository;
+
+    @Autowired
+    private PositionRepository positionRepository;
 
     @Test
     void createAcksNewThenAutoFillsPerPolicy() {
@@ -100,6 +115,63 @@ class LmaxHotPathParityTest {
     }
 
     @Test
+    void buyFillIncreasesNetPositionInTheBlp() {
+        // Booking + position-keeping fused into the BLP (FR-09B08/B10): a buy fill raises the
+        // account's net position, computed in-memory on the single BLP thread.
+        int account = 22214;
+        OrderResponse created = service.createOrder(request(account, "POSBUY", OrderSide.Buy, 500, "100.000"));
+        service.onPriceTick("POSBUY", new BigDecimal("99.500")); // in the money, 500 < 1000 -> full fill
+        awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
+        int securityId = engine.symbols().idFor("POSBUY");
+        assertEquals(500, engine.blp().positionQuantity(account, securityId));
+
+        // The projector persists the booked trade with the stamped execution price and the
+        // position with its weighted average cost basis (booking fused into the BLP, FR-09B40).
+        Trade booked = awaitTrade(t -> "POSBUY".equals(t.getSecurity()) && account == t.getAccountId());
+        assertEquals(TradeState.Settled, booked.getState());
+        assertEquals(500, booked.getQuantity().intValue());
+        assertEquals(0, new BigDecimal("99.500").compareTo(booked.getPrice()));
+        Position position = awaitPersistedPosition(account, "POSBUY");
+        assertEquals(0, new BigDecimal("99.500").compareTo(position.getAverageCostBasis()));
+    }
+
+    @Test
+    void sellFillDecreasesNetPositionInTheBlp() {
+        int account = 44044;
+        OrderResponse created = service.createOrder(request(account, "POSSELL", OrderSide.Sell, 300, "10.000"));
+        service.onPriceTick("POSSELL", new BigDecimal("10.500")); // sell in the money (px >= limit), full fill
+        awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
+        int securityId = engine.symbols().idFor("POSSELL");
+        assertEquals(-300, engine.blp().positionQuantity(account, securityId));
+    }
+
+    @Test
+    void marketTradeBooksAndUpdatesPosition() {
+        // FR-09B08: a market trade from the trade ticket is sequenced as TRADE_NEW and booked
+        // by the BLP (no matching), moving the position through the single-writer path.
+        int account = 52355;
+        service.onPriceTick("POSMKT", new BigDecimal("12.500")); // BLP stamps the booking at this price
+        MarketTradeRequest trade = new MarketTradeRequest();
+        trade.setAccountId(account);
+        trade.setSecurity("POSMKT");
+        trade.setSide(OrderSide.Buy);
+        trade.setQuantity(750);
+        service.bookMarketTrade(trade);
+
+        int securityId = engine.symbols().idFor("POSMKT");
+        awaitPosition(account, securityId, 750);
+        assertEquals(750, engine.blp().positionQuantity(account, securityId));
+
+        // The market trade is booked at the stamped market price and persisted by the projector,
+        // and its position carries the resulting average cost basis (single-writer fusion).
+        Trade booked = awaitTrade(t -> "POSMKT".equals(t.getSecurity()) && account == t.getAccountId());
+        assertEquals(TradeState.Settled, booked.getState());
+        assertEquals(0, new BigDecimal("12.500").compareTo(booked.getPrice()));
+        Position position = awaitPersistedPosition(account, "POSMKT");
+        assertEquals(0, new BigDecimal("12.500").compareTo(position.getAverageCostBasis()));
+    }
+
+    @Test
     void unknownOrderIs404() {
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
             () -> service.cancelOrder("ord-013-9999"));
@@ -135,6 +207,43 @@ class LmaxHotPathParityTest {
             sleep(20);
         }
         fail("condition not met for order " + orderId + " within timeout");
+        return null;
+    }
+
+    private void awaitPosition(int accountId, int securityId, int expected) {
+        for (int i = 0; i < 200; i++) {
+            if (engine.blp().positionQuantity(accountId, securityId) == expected) {
+                return;
+            }
+            sleep(20);
+        }
+        fail("position " + accountId + ":" + securityId + " did not reach " + expected + " within timeout");
+    }
+
+    private Trade awaitTrade(Predicate<Trade> condition) {
+        for (int i = 0; i < 200; i++) {
+            for (Trade trade : tradeRepository.findAll()) {
+                if (trade.getAccountId() != null && condition.test(trade)) {
+                    return trade;
+                }
+            }
+            sleep(20);
+        }
+        fail("no persisted trade matched within timeout");
+        return null;
+    }
+
+    private Position awaitPersistedPosition(int accountId, String security) {
+        for (int i = 0; i < 200; i++) {
+            for (Position position : positionRepository.findAll()) {
+                if (position.getAccountId() != null && position.getAccountId() == accountId
+                    && security.equals(position.getSecurity())) {
+                    return position;
+                }
+            }
+            sleep(20);
+        }
+        fail("no persisted position " + accountId + ":" + security + " within timeout");
         return null;
     }
 

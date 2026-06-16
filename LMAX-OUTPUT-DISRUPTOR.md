@@ -289,7 +289,7 @@ public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolea
     }
 }
 
-/** Paired claim: fill update + TradeBooked published together, signalled once. */
+/** Paired claim: fill update + TradeBooked published together, signaled once. */
 public void emitFillWithTrade(RestingOrder order, int fillQty, long inputSeq, int flags,
                               long marketPx, long ingressNanos) {
     long tradeSeq = ring.next(2);

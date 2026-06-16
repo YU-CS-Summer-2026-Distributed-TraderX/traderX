@@ -31,7 +31,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 class HotPathBannedApiTest {
     private static final Class<?>[] HOT_PATH_CLASSES = {
         MatchingEngine.class, OutputPublisher.class, RestingOrder.class,
-        IntList.class, InputEvent.class, OutputEvent.class, ReplicatorStub.class
+        IntList.class, InputEvent.class, OutputEvent.class, ReplicatorStub.class,
+        PositionBook.class
     };
 
     private static final String[] BANNED = {

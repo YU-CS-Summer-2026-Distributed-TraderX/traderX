@@ -25,7 +25,14 @@ overlay_dir() {
     mkdir -p "${dst}"
     # .parent-src is an IDE-only snapshot of parent-state sources for in-place
     # overlay development; generated trees already contain those files in src/.
-    tar -C "${src}" --exclude='./*/.parent-src' --exclude='./.parent-src' -cf - . \
+    # Gradle wrapper assets are canonical/template-owned (sync-gradle-wrapper-assets.sh),
+    # never overlay-owned (same exclusion as create-state-patchset.sh); excluding them keeps
+    # the parent's validated 8.14.5+SHA wrapper instead of a stray local wrapper that fails
+    # validate-generated-dependency-targets.sh's wrapper-SHA gate.
+    tar -C "${src}" \
+      --exclude='./*/.parent-src' --exclude='./.parent-src' \
+      --exclude='./*/gradlew' --exclude='./*/gradlew.bat' --exclude='./*/gradle/wrapper' \
+      -cf - . \
       | tar -C "${dst}" -xf -
     echo "[render] overlaid ${label} from ${src}"
   else

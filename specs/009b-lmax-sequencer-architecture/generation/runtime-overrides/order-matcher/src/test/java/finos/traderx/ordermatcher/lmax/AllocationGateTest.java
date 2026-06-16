@@ -91,7 +91,7 @@ class AllocationGateTest {
         outputDisruptor.start();
 
         MatchingEngine blp = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
-            metrics, 16, 1000, poolSize);
+            metrics, 16, 1000, poolSize, 1024);
         Journaler journaler = new Journaler(true, journalDir, metrics);
         ReplicatorStub replicator = new ReplicatorStub();
         Disruptor<InputEvent> inputDisruptor = new Disruptor<>(InputEvent::newInstance, 65536,

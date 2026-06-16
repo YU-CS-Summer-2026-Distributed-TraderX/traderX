@@ -118,7 +118,7 @@ plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
 - **Resting-order retention (NGC-01 boundary)**: terminal orders stay addressable in the BLP book
   (009 parity: cancel/force-fill of a completed order returns it unchanged), so pool entries are
   never recycled; steady state is allocation-free up to `blp.book.pool-size`, then growth follows
-  amortised doubling. Recycling/eviction arrives with the snapshot milestone (T09B14).
+  amortized doubling. Recycling/eviction arrives with the snapshot milestone (T09B14).
 - **Config keys not yet wired** (land with their milestones): `journal.type`, `replication.*`,
   `affinity.*`, `nogc.*`, `blp.snapshot.*`, `blp.cache.*` (deferred features, T09B14/16/17/18);
   `output.nats.enabled`, `output.projector.enabled`, `output.projector.flush-interval-ms`,

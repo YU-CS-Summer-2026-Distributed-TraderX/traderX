@@ -36,7 +36,7 @@ This document does two things:
 6. [Wait strategy — the latency dial](#a6-wait-strategy--the-latency-dial)
 7. [Batching for free](#a7-batching-for-free)
 8. [No-GC mechanics at the input stage](#a8-no-gc-mechanics-at-the-input-stage)
-9. [Backpressure & ring-full behaviour](#a9-backpressure--ring-full-behaviour)
+9. [Backpressure & ring-full behavior](#a9-backpressure--ring-full-behaviour)
 10. [Durability & recovery semantics](#a10-durability--recovery-semantics)
 11. [One event, end to end through the input disruptor](#a11-one-event-end-to-end-through-the-input-disruptor)
 12. [How this replaces `009`'s `OrderMatcherService`](#a12-how-this-replaces-009s-ordermatcherservice)
@@ -64,7 +64,7 @@ This document does two things:
 ## A1. Where it sits in the path
 
 The input disruptor is the **ingestion ring** of the LMAX hot path. Everything that can mutate trading
-state — **new orders, cancels, force-fills, and price ticks** — is funnelled through one Gateway, stamped
+state — **new orders, cancels, force-fills, and price ticks** — is funneled through one Gateway, stamped
 with a **global sequence number** by the Sequencer, and written into a **single pre-allocated ring buffer**.
 Three handlers read each slot **in parallel** (journal it, replicate it, decode it); only when all three
 have passed a given sequence does the **BLP** (the single-threaded matching engine) get to act on it.
@@ -266,7 +266,7 @@ profile split is itself a spec item (see [§B22](#b22-configuration-keys)).
 
 When the BLP falls behind under a burst, the barrier reports the **highest available sequence**, and the
 consumer drains everything up to it in one tight loop. The handler is told `endOfBatch == true` on the last
-event of the drained run, which lets it amortise per-batch costs (e.g., flush the journal once per batch,
+event of the drained run, which lets it amortize per-batch costs (e.g., flush the journal once per batch,
 publish output once). The counter-intuitive result from the article: **as load rises, per-event latency
 falls**, because fixed costs are spread across the batch. No code change is needed — batching is inherent
 to how the consumer reads the ring.
@@ -280,7 +280,7 @@ stage specifically:
   per event thereafter.
 - **Flyweight over off-heap.** Each slot wraps an Agrona `UnsafeBuffer`; the SBE encoder writes binary
   bytes directly into it. **The same bytes go on the wire, into the journal, and into the ring** — zero
-  re-serialisation, zero intermediate objects. This directly replaces `009`'s Jackson `ObjectMapper`
+  re-serialization, zero intermediate objects. This directly replaces `009`'s Jackson `ObjectMapper`
   JSON parse/allocate per NATS message.
 - **`long` fixed-point.** Prices/quantities are scaled `long`s (e.g. `187.250 → 187_250_000L`), not
   `BigDecimal`. Integer math is allocation-free and branch-light. Conversion to/from `BigDecimal`/`String`
@@ -301,7 +301,7 @@ so any accidental steady-state allocation exhausts the heap and **fails the test
 `AllocationGateTest` + the Gradle `noGcTest` task run by `pipeline/validate-no-gc-conformance.sh`
 (see [§B24](#b24-success-criteria--validation)).
 
-## A9. Backpressure & ring-full behaviour
+## A9. Backpressure & ring-full behavior
 
 The ring cannot grow. If producers outrun the slowest consumer for long enough to lap the buffer,
 `ringBuffer.next()` **blocks/spins** on the claim until the gating consumer frees a slot. That is the
@@ -621,7 +621,7 @@ Worked demo example: peak `~50,000 events/s`, journaler worst-case stall `~2 ms`
 slots_needed = 50_000 × 0.002 × 4 = 400  → next_pow2 = 512 (2^9)
 ```
 
-That is tiny; round **up** generously for headroom and cache behaviour → **`2^16 = 65,536`** for the demo,
+That is tiny; round **up** generously for headroom and cache behavior → **`2^16 = 65,536`** for the demo,
 **`2^20 = 1,048,576`** for the performance profile (the article ran a `20M`-slot input ring at exchange
 scale). Memory cost ≈ `ring_size × (holder + off-heap slot buffer)`; at `2^20` slots × `256 B` ≈ `256 MB` —
 pre-touched once at startup. The size is a single config key (`disruptor.input.ring-size`).

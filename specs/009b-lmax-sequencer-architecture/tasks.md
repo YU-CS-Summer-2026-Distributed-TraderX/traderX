@@ -24,8 +24,13 @@
       `SymbolTable`); SBE codec generation (`generateSbe`, `sbe/*.xml`) and Agrona structures
       deferred (`generation/implementation-status.md`).
 - [x] T09B13 Implement the BLP (single-threaded in-memory order book, event-carried time, typed
-      output events, gateway request/response acks). Booking/position fusion is bridged through the
-      existing trade pipeline at the output ring (strangler P2 boundary; see status doc).
+      output events, gateway request/response acks). Booking + position-keeping are fused into the BLP
+      (FR-09B08/B10/B15, 2026-06-15): fills and `TYPE_TRADE_NEW` market trades update the in-memory
+      `PositionBook` (single writer) and emit `TradeBooked` + `PositionUpdated`; the projector writes
+      `TRADES`/`POSITIONS` (deterministic trade ids) and the NATS bridge publishes
+      `/accounts/{id}/trades` and `/accounts/{id}/positions`. trade-service forwards market trades to
+      the gateway; the old `TradeSubmitHandler` round-trip is removed and `trade-processor` is idle on
+      this path (still deployed for read endpoints + smoke parity).
 - [~] T09B14 Recovery: persisted read-model warm-start + input-event journal implemented; snapshot
       files, journal replay tooling, JIT warm-up, and nightly bounce deferred.
 - [x] T09B15 Implement the output disruptor (Marshaller/read-model, NATS bridge preserving `009`

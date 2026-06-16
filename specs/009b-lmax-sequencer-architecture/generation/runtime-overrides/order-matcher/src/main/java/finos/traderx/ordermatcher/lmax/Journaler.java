@@ -91,7 +91,7 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
                 channel.write(buffer);
             }
             if (endOfBatch) {
-                channel.force(false); // durability amortised across the drained batch
+                channel.force(false); // durability amortized across the drained batch
             }
         } catch (IOException ex) {
             failed = true;

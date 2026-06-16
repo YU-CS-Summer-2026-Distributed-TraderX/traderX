@@ -19,7 +19,7 @@ contracts and observability obligations.
 ## Key Decisions
 
 1. **Single combined state pack.** The LMAX docs staged the work as three future states
-   (input disruptor -> fused BLP -> output disruptor) plus a cross-cutting no-GC profile. Those state
+   (input disruptor → fused BLP → output disruptor) plus a cross-cutting no-GC profile. Those state
    IDs (`010`–`012`) are already taken by the canonical lineage, and the requested shape is one `009b`
    branch; the staging survives as plan milestones P0–P4 inside this pack.
 2. **Sibling branch, not canonical lineage.** `009b` branches off `009`; the canonical `010+` lineage
