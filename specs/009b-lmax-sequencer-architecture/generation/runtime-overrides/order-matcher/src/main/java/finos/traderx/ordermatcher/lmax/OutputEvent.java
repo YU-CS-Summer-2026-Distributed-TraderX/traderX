@@ -7,10 +7,14 @@ package finos.traderx.ordermatcher.lmax;
  * end-to-end latency is recorded at egress (NFR-09B01).
  */
 public final class OutputEvent {
-    public static final byte KIND_ORDER_UPDATE = 1;
-    public static final byte KIND_TRADE_BOOKED = 2;
-    public static final byte KIND_ORDER_NOT_FOUND = 3;
-    public static final byte KIND_POSITION_UPDATED = 4;
+    public static final byte KIND_ORDER_ACCEPTED = 1;
+    public static final byte KIND_ORDER_REJECTED = 2;
+    public static final byte KIND_ORDER_PARTIALLY_FILLED = 3;
+    public static final byte KIND_ORDER_FILLED = 4;
+    public static final byte KIND_ORDER_CANCELED = 5;
+    public static final byte KIND_TRADE_BOOKED = 6;
+    public static final byte KIND_POSITION_UPDATED = 7;
+    public static final byte KIND_ORDER_NOT_FOUND = 8;
 
     // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
     public static final int FLAG_CREATE = 1;
@@ -44,9 +48,14 @@ public final class OutputEvent {
     public long tradePx;          // KIND_TRADE_BOOKED: stamped execution price (Px ticks; Px.NONE if no tick)
     public int positionQty;       // KIND_POSITION_UPDATED: account's net position after the fill/trade
     public long positionAvgCostTicks; // KIND_POSITION_UPDATED: weighted average cost basis (Px ticks)
+    public long averageCostBasisPx;   // alias retained for direct UI payloads/tests
     public long ingressNanos;
 
     public static OutputEvent newInstance() {
         return new OutputEvent();
+    }
+
+    public static boolean isOrderLifecycleKind(byte kind) {
+        return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
     }
 }

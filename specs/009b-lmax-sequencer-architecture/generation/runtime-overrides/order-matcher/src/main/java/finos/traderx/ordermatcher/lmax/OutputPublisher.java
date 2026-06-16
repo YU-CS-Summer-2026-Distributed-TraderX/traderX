@@ -9,9 +9,7 @@ import com.lmax.disruptor.RingBuffer;
  *
  * Booking and position-keeping are fused into the BLP (FR-09B08/FR-09B10): a fill emits its
  * order update, the {@code TradeBooked} event, and the resulting {@code PositionUpdated} as
- * one claim ({@link #emitFillWithTrade}); a market trade emits {@code TradeBooked} +
- * {@code PositionUpdated} ({@link #emitMarketTrade}). One publish per business event keeps
- * the consumer signaled once.
+ * one claim; a market trade emits {@code TradeBooked} + {@code PositionUpdated}.
  */
 public final class OutputPublisher {
     private final RingBuffer<OutputEvent> ring;
@@ -31,9 +29,9 @@ public final class OutputPublisher {
     }
 
     /** Paired claim: fill order-update + TradeBooked + PositionUpdated, signaled once. */
-    public void emitFillWithTrade(RestingOrder order, int fillQty, long tradePx, long tradeSeq,
-                                  int newPosition, long avgCostTicks, long inputSeq, int flags,
-                                  long marketPx, long ingressNanos) {
+    public void emitFillWithTradeAndPosition(RestingOrder order, int fillQty, long tradePx, long tradeSeq,
+                                             int newPosition, long avgCostTicks, long inputSeq, int flags,
+                                             long marketPx, long ingressNanos) {
         long hi = ring.next(3);
         long updateSlot = hi - 2;
         long tradeSlot = hi - 1;
@@ -80,6 +78,7 @@ public final class OutputPublisher {
             e.tradePx = Px.NONE;
             e.positionQty = 0;
             e.positionAvgCostTicks = 0L;
+            e.averageCostBasisPx = Px.NONE;
             e.marketPx = Px.NONE;
             e.ingressNanos = ingressNanos;
         } finally {
@@ -89,7 +88,7 @@ public final class OutputPublisher {
 
     private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
                                          boolean publishNats, long marketPx, long ingressNanos) {
-        e.kind = OutputEvent.KIND_ORDER_UPDATE;
+        e.kind = orderKind(order, flags);
         e.inputSeq = inputSeq;
         e.flags = flags;
         e.publishNats = publishNats;
@@ -111,7 +110,32 @@ public final class OutputPublisher {
         e.tradePx = Px.NONE;
         e.positionQty = 0;
         e.positionAvgCostTicks = 0L;
+        e.averageCostBasisPx = Px.NONE;
         e.ingressNanos = ingressNanos;
+    }
+
+    private static byte orderKind(RestingOrder order, int flags) {
+        if ((flags & OutputEvent.FLAG_REJECT) != 0) {
+            return OutputEvent.KIND_ORDER_REJECTED;
+        }
+        if ((flags & OutputEvent.FLAG_CANCEL) != 0) {
+            return OutputEvent.KIND_ORDER_CANCELED;
+        }
+        if ((flags & OutputEvent.FLAG_FILL) != 0) {
+            return OutputEvent.KIND_ORDER_FILLED;
+        }
+        if ((flags & OutputEvent.FLAG_PARTIAL_FILL) != 0) {
+            return OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
+        }
+        if ((flags & OutputEvent.FLAG_CREATE) != 0) {
+            return OutputEvent.KIND_ORDER_ACCEPTED;
+        }
+        return switch (order.status) {
+            case RestingOrder.STATUS_CANCELED -> OutputEvent.KIND_ORDER_CANCELED;
+            case RestingOrder.STATUS_FILLED -> OutputEvent.KIND_ORDER_FILLED;
+            case RestingOrder.STATUS_PARTIALLY_FILLED -> OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
+            default -> OutputEvent.KIND_ORDER_ACCEPTED;
+        };
     }
 
     private static void writeTradeBooked(OutputEvent e, int accountId, int securityId, byte side,
@@ -120,7 +144,7 @@ public final class OutputPublisher {
         e.kind = OutputEvent.KIND_TRADE_BOOKED;
         e.inputSeq = inputSeq;
         e.flags = 0;
-        e.publishNats = true;            // booking leaves on the 009 /trades + /accounts/{id}/trades subjects
+        e.publishNats = false;
         e.orderRef = 0;
         e.accountId = accountId;
         e.securityId = securityId;
@@ -139,6 +163,7 @@ public final class OutputPublisher {
         e.tradePx = tradePx;
         e.positionQty = 0;
         e.positionAvgCostTicks = 0L;
+        e.averageCostBasisPx = Px.NONE;
         e.ingressNanos = ingressNanos;
     }
 
@@ -148,7 +173,7 @@ public final class OutputPublisher {
         e.kind = OutputEvent.KIND_POSITION_UPDATED;
         e.inputSeq = inputSeq;
         e.flags = 0;
-        e.publishNats = true;            // position leaves on the 009 /accounts/{id}/positions subject
+        e.publishNats = false;
         e.orderRef = 0;
         e.accountId = accountId;
         e.securityId = securityId;
@@ -167,6 +192,7 @@ public final class OutputPublisher {
         e.tradePx = Px.NONE;
         e.positionQty = positionQty;
         e.positionAvgCostTicks = avgCostTicks;
+        e.averageCostBasisPx = avgCostTicks;
         e.ingressNanos = ingressNanos;
     }
 }

@@ -43,8 +43,8 @@ import java.util.regex.Pattern;
  *           -> journaler + replicator in parallel, BLP gated behind both
  *      -> single-threaded MatchingEngine (in-memory book; match + emit on one thread)
  *           -> output disruptor (single producer)
- *                -> marshaller (read model + acks + latency) | NATS bridge | trade submit
- *                   | read-model projector — in parallel
+ *                -> marshaller | order NATS bridge | account trade | position update
+ *                   | optional legacy trade submit | read-model projector
  *
  * Demo profile defaults: BlockingWaitStrategy, loopback replicator, file journal, no core
  * pinning — container-safe per NFR-09B06. Recovery: read-model warm-start + journal
@@ -59,8 +59,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final TradeRepository tradeRepository;
     private final PositionRepository positionRepository;
     private final Publisher<OrderResponse> orderPublisher;
-    private final Publisher<Trade> tradePublisher;
-    private final Publisher<Position> positionPublisher;
+    private final Publisher<TradeOrder> tradePublisher;
+    private final Publisher<AccountTrade> accountTradePublisher;
+    private final Publisher<PositionUpdate> positionPublisher;
+    private final boolean legacyTradeSubmitEnabled;
     private final boolean seedEnabled;
     private final int fillFullThreshold;
     private final int inputRingSize;
@@ -96,8 +98,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         TradeRepository tradeRepository,
         PositionRepository positionRepository,
         Publisher<OrderResponse> orderPublisher,
-        Publisher<Trade> tradePublisher,
-        Publisher<Position> positionPublisher,
+        Publisher<TradeOrder> tradePublisher,
+        Publisher<AccountTrade> accountTradePublisher,
+        Publisher<PositionUpdate> positionPublisher,
+        @Value("${output.legacy-trades.enabled:false}") boolean legacyTradeSubmitEnabled,
         @Value("${order.matcher.seed-enabled:true}") boolean seedEnabled,
         @Value("${order.matcher.fill-full-threshold:1000}") int fillFullThreshold,
         @Value("${disruptor.input.ring-size:65536}") int inputRingSize,
@@ -118,7 +122,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.positionRepository = positionRepository;
         this.orderPublisher = orderPublisher;
         this.tradePublisher = tradePublisher;
+        this.accountTradePublisher = accountTradePublisher;
         this.positionPublisher = positionPublisher;
+        this.legacyTradeSubmitEnabled = legacyTradeSubmitEnabled;
         this.seedEnabled = seedEnabled;
         this.fillFullThreshold = fillFullThreshold;
         this.inputRingSize = inputRingSize;
@@ -144,16 +150,21 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
         projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
             projectorBatchSize, metrics);
-        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, tradePublisher,
-            positionPublisher, symbols, readModel);
+        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
+        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
+        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
         // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans
-        // out to the marshaller (acks/read-model), the NATS bridge (orders + trades + positions),
-        // and the projector (OrderBook + TRADES + POSITIONS). The 009 trade-service round-trip
-        // (TradeSubmitHandler) is gone — trades and positions never leave the single-writer path.
+        // out to the marshaller, order bridge, direct account trade + position fan-out, optional
+        // legacy `/trades`, and the async projector.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-        outputDisruptor.handleEventsWith(marshaller, natsBridge, projector);
+        if (legacyTradeSubmitEnabled) {
+            TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, tradeSubmit, projector);
+        } else {
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
+        }
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
