@@ -1,44 +1,120 @@
-# TraderX - Output Disruptor
+# TraderX - The Output Disruptor: How It Works & What the State Defines
 
 > **Status:** Implemented in state `009b-lmax-sequencer-architecture`.
-> **Base state:** `lmax-sequencer-no-gc`.
-> **Scope:** The BLP-owned output ring, typed output events, direct UI fan-out handlers, async read-model projection, failure semantics, configuration, observability, and validation.
+> **Base branch:** `lmax-sequencer-no-gc`.
+> **Scope of this doc:** the output disruptor only: the ring the BLP publishes into, typed output events,
+> direct account-trade and position fan-out, order NATS bridging, optional `/trades` compatibility,
+> async read-model projection, failure semantics, observability, and validation.
+> **Primary reference:** Martin Fowler, *The LMAX Architecture* - https://martinfowler.com/articles/lmax.html
 > **Last code-sync:** 2026-06-17, verified against `output-disruptor` commit `05c72c0`.
 
-The output disruptor is the egress side of the LMAX hot path. The BLP is the only producer. It writes typed business result events into a pre-allocated Disruptor ring. Independent output handlers then fan those events out to the UI subjects, update the in-memory acknowledgement/read model, optionally publish the legacy `/trades` stream, and project durable query rows into the database.
+This document does two things:
 
-The important property is that output work is no longer part of the gateway acknowledgement path. Gateway commands are acknowledged after the input event is sequenced, journaled, replicated, and processed by the BLP. UI publishing and database projection happen after that through the output ring.
+1. **Part A** explains, in detail, how the output disruptor works in the implemented `009b` state: the BLP as
+   sole producer, the pre-allocated output ring, typed output event holders, direct UI fan-out handlers, the
+   async read-model projector, and why output side effects are off the user acknowledgement path.
+2. **Part B** specifies what the state defines: source files, event contracts, subject contracts,
+   configuration, observability, no-GC gates, validation commands, and operational risks.
 
-## Runtime Topology
+---
+
+## Table of contents
+
+**Part A - How the output disruptor works**
+
+1. [Where it sits & why it exists](#a1-where-it-sits--why-it-exists)
+2. [Single-producer ring: the BLP writes, nobody else](#a2-single-producer-ring-the-blp-writes-nobody-else)
+3. [Output event holders](#a3-output-event-holders)
+4. [The parallel output handlers](#a4-the-parallel-output-handlers)
+5. [NATS fan-out: preserving the UI contract](#a5-nats-fan-out-preserving-the-ui-contract)
+6. [The async read-model projector](#a6-the-async-read-model-projector)
+7. [Off the acknowledgement path](#a7-off-the-acknowledgement-path)
+8. [Wait strategy & backpressure](#a8-wait-strategy--backpressure)
+9. [No-GC at the output stage](#a9-no-gc-at-the-output-stage)
+10. [One fill, end to end through the output disruptor](#a10-one-fill-end-to-end-through-the-output-disruptor)
+11. [How this replaces inline publish + persist](#a11-how-this-replaces-inline-publish--persist)
+12. [The code as implemented in state `009b`](#a12-the-code-as-implemented-in-state-009b)
+
+**Part B - What the state defines**
+
+13. [Implemented state & scope](#b13-implemented-state--scope)
+14. [Spec-kit artifacts and source of truth](#b14-spec-kit-artifacts-and-source-of-truth)
+15. [Functional behavior](#b15-functional-behavior)
+16. [Non-functional behavior](#b16-non-functional-behavior)
+17. [Data-model & contract deltas](#b17-data-model--contract-deltas)
+18. [Build & dependency specs](#b18-build--dependency-specs)
+19. [Configuration keys](#b19-configuration-keys)
+20. [Observability deltas](#b20-observability-deltas)
+21. [Success criteria & validation](#b21-success-criteria--validation)
+22. [What the base branch provides vs. what this branch adds](#b22-what-the-base-branch-provides-vs-what-this-branch-adds)
+23. [Risks specific to the output stage](#b23-risks-specific-to-the-output-stage)
+
+---
+
+# Part A - How the output disruptor works
+
+## A1. Where it sits & why it exists
+
+The output disruptor is the egress ring of the LMAX hot path. The BLP, after processing a sequenced input
+event, publishes typed business result events into a pre-allocated Disruptor ring. Output handlers consume
+those events and perform side effects: order fan-out, account trade fan-out, account position fan-out,
+optional `/trades` compatibility publishing, and batched read-model projection.
+
+The important property is that output work is not on the gateway acknowledgement path. A command is
+acknowledged after the input event is sequenced, journaled, replicated, and processed by the BLP. NATS
+publishing and database projection happen afterward through the output ring.
 
 ```mermaid
 flowchart LR
-  G["Gateway/API edge"] --> IR["Input Disruptor<br/>multi-producer"]
+  G["Gateway / API edge"] --> IR["Input Disruptor<br/>multi-producer"]
   IR --> J["Journaler"]
   IR --> R["Replicator"]
   J --> BLP["BLP / MatchingEngine<br/>single business writer"]
   R --> BLP
-  BLP --> OR["Output Disruptor<br/>single producer"]
+
+  BLP -->|"claim slot(s) + write event(s)"| OR
+
+  subgraph OUTD["Output Disruptor - pre-allocated ring"]
+    OR(("Output Ring Buffer<br/>2^k slots"))
+  end
 
   OR --> M["MarshallerHandler"]
-  OR --> OB["NatsBridgeHandler<br/>order subjects"]
-  OR --> AT["AccountTradeHandler<br/>account trade subject"]
-  OR --> PU["PositionUpdateHandler<br/>account position subject"]
-  OR --> TS["TradeSubmitHandler<br/>optional /trades compatibility"]
-  OR --> P["ProjectorHandler<br/>batched DB projection"]
+  OR --> NB["NatsBridgeHandler<br/>orders"]
+  OR --> AT["AccountTradeHandler<br/>account trades"]
+  OR --> PU["PositionUpdateHandler<br/>positions"]
+  OR --> TS["TradeSubmitHandler<br/>optional /trades"]
+  OR --> PRJ["ProjectorHandler<br/>batched DB writes"]
 
-  OB --> UI["Angular UI"]
+  NB --> UI["Angular UI"]
   AT --> UI
   PU --> UI
-  TS --> TP["Trade consumers"]
-  P --> DB[("Order / Trade / Position read model")]
+  TS --> LEGACY["Legacy trade consumers"]
+  PRJ --> DB[("Order / Trade / Position read model")]
 ```
 
-`LmaxEngine` wires the output ring before the input ring because the BLP needs an `OutputPublisher` before it can run. The output Disruptor uses `ProducerType.SINGLE`; only the BLP writes output slots.
+## A2. Single-producer ring: the BLP writes, nobody else
 
-## Output Event Model
+The output ring has exactly one producer: the BLP. `LmaxEngine` creates the output Disruptor with
+`ProducerType.SINGLE`, starts it before the input ring, and passes an `OutputPublisher` into
+`MatchingEngine`.
 
-`OutputEvent` is a reusable mutable slot holder. It carries primitive fields only, so BLP emission can write into a pre-allocated ring slot without allocating a payload object.
+The BLP-side emission mechanics come from the 009b LMAX sequencer base. That base already makes the matching
+thread the owner of trade booking, position keeping, and paired output-ring publication. This branch consumes
+that producer contract and implements the downstream output fan-out, projection, and failure handling.
+
+The producer protocol is the standard Disruptor protocol:
+
+1. claim one slot with `ring.next()` or a range with `ring.next(n)`
+2. write fields directly into the pre-allocated `OutputEvent` slot(s)
+3. publish the slot or range in a `finally` block
+
+Order-only lifecycle output uses one slot. A fill uses three adjacent slots: order lifecycle, `TradeBooked`,
+and `PositionUpdated`. A market trade uses two adjacent slots: `TradeBooked` and `PositionUpdated`.
+
+## A3. Output event holders
+
+Output slots are reusable mutable holders. They carry primitive state, ids, fixed-point prices, timestamps,
+and flags. Output handlers can render UI payloads and database rows without reading BLP state.
 
 Current event kinds:
 
@@ -53,221 +129,380 @@ Current event kinds:
 | `KIND_POSITION_UPDATED` | The account/security net position changed. |
 | `KIND_ORDER_NOT_FOUND` | A cancel or force-fill referenced a missing order. |
 
-The event carries:
-
-- order identity and lifecycle fields: `orderRef`, `accountId`, `securityId`, `side`, `quantity`, `remainingQty`, `limitPx`, `status`, timestamps, fill fields, and lifecycle flags
-- trade fields: `tradeQty`, `tradeSeq`, `tradePx`
-- position fields: `positionQty`, `positionAvgCostTicks`, `averageCostBasisPx`
-- correlation and latency fields: `inputSeq`, `ingressNanos`
-- output control fields: `kind`, `flags`, `publishNats`
-
-The BLP never asks downstream services for extra state to publish output. Everything needed by the output handlers is already in the ring event.
-
-## Publishing From The BLP
-
-The BLP publishes through `OutputPublisher`. The BLP-side emission mechanics are part of the 009b LMAX sequencer base: the matching thread already owns trade booking, position keeping, and paired output-ring publication. The output disruptor consumes that producer contract and owns the downstream fan-out, projection, and failure handling described below.
-
-Order-only lifecycle updates use a single slot:
+The current `OutputEvent` fields are:
 
 ```java
-emitOrderUpdate(order, inputSeq, flags, publishNats, marketPx, ingressNanos)
+public long inputSeq;
+public byte kind;
+public int flags;
+public boolean publishNats;
+
+public int orderRef;
+public int accountId;
+public int securityId;
+public byte side;
+public int quantity;
+public int remainingQty;
+public long limitPx;
+public byte status;
+public long lastExecPx;
+public int lastFillQty;
+public long createdAtMillis;
+public long updatedAtMillis;
+public long marketPx;
+
+public int tradeQty;
+public long tradeSeq;
+public long tradePx;
+public int positionQty;
+public long positionAvgCostTicks;
+public long averageCostBasisPx;
+public long ingressNanos;
 ```
 
-Fills publish order, trade, and position output together:
+`ingressNanos` is carried from the input event so output egress latency can be recorded as
+`System.nanoTime() - ingressNanos`.
 
-```java
-emitFillWithTradeAndPosition(order, fillQty, tradePx, tradeSeq,
-    newPosition, avgCostTicks, inputSeq, flags, marketPx, ingressNanos)
-```
+## A4. The parallel output handlers
 
-That method claims three adjacent output slots:
-
-1. order lifecycle event
-2. `TradeBooked`
-3. `PositionUpdated`
-
-It then publishes the range in one `ring.publish(updateSlot, positionSlot)` call. Consumers see a contiguous output sequence for the business result.
-
-Market trade submissions use two adjacent slots:
-
-1. `TradeBooked`
-2. `PositionUpdated`
-
-The BLP also owns position keeping. `MatchingEngine` keeps an in-memory `PositionBook`, updates quantity and weighted average cost basis on the BLP thread, and emits `PositionUpdated` with the resulting net state.
-
-## Output Handlers
-
-The output handlers run from the same output ring and are independent.
+The output ring fans every event out to independent handlers:
 
 | Handler | Events | Responsibility |
 | --- | --- | --- |
-| `MarshallerHandler` | order lifecycle, `TradeBooked`, `PositionUpdated`, `OrderNotFound` | Updates the in-memory read model used for acknowledgements and counters; records egress latency. |
-| `NatsBridgeHandler` | order lifecycle | Publishes `OrderResponse` to `/accounts/{accountId}/orders` and `/orders`. |
+| `MarshallerHandler` | order lifecycle, `TradeBooked`, `PositionUpdated`, `OrderNotFound` | Updates in-memory acknowledgement/read-model state and records egress latency. |
+| `NatsBridgeHandler` | order lifecycle | Publishes `OrderResponse` payloads to order subjects. |
 | `AccountTradeHandler` | `TradeBooked` | Publishes account-scoped trade payloads directly to `/accounts/{accountId}/trades`. |
 | `PositionUpdateHandler` | `PositionUpdated` | Publishes account-scoped position payloads directly to `/accounts/{accountId}/positions`. |
 | `TradeSubmitHandler` | `TradeBooked` | Optional compatibility publisher for `/trades`; disabled by default. |
 | `ProjectorHandler` | order lifecycle, `TradeBooked`, `PositionUpdated` | Batches order, trade, and position rows into the durable read model. |
 
-Direct account trade and position fan-out do not depend on the legacy trade processor path. The UI receives account-scoped trade and position updates from the output ring itself.
+Direct account trade and position fan-out do not depend on a downstream trade processor. The UI receives
+account-scoped trade and position updates from the output ring itself.
 
-## NATS Subject Contract
+## A5. NATS fan-out: preserving the UI contract
 
-The output handlers preserve the subjects consumed by the existing Angular UI.
+The output handlers preserve the subjects consumed by the existing Angular UI:
 
 | Output event | Subject(s) |
 | --- | --- |
 | order lifecycle events | `/accounts/{accountId}/orders`, `/orders` |
 | `TradeBooked` | `/accounts/{accountId}/trades` |
 | `PositionUpdated` | `/accounts/{accountId}/positions` |
-| `TradeBooked` when legacy publishing is enabled | `/trades` |
+| `TradeBooked` when compatibility publishing is enabled | `/trades` |
 
-Payload conversion happens only at the output edge. The BLP uses primitive ids and fixed-point ticks. Handlers convert `securityId` to ticker symbols and fixed-point price ticks to `BigDecimal` payload fields.
+The BLP carries primitive ids and fixed-point ticks. Conversion happens at the output edge:
 
-## Read-Model Projection
+- `securityId` becomes a ticker symbol through `SymbolTable`
+- fixed-point price ticks become `BigDecimal`
+- output ring fields become `OrderResponse`, `AccountTrade`, or `PositionUpdate` payloads
 
-`ProjectorHandler` writes the durable query model asynchronously:
+The order subject bridge is isolated in `NatsBridgeHandler`. Account trade and position fan-out are isolated
+in their own handlers, which makes failures and metrics specific to the side effect that failed.
+
+## A6. The async read-model projector
+
+`ProjectorHandler` consumes the same output events and writes the query model:
 
 - order lifecycle events become `OrderRecord` rows
 - `TradeBooked` events become `Trade` rows
 - `PositionUpdated` events become `Position` rows
 
-Projection is batched. The handler buffers rows and flushes when the batch threshold is reached or when Disruptor marks `endOfBatch`. Position projection deduplicates within a batch by `(accountId, security)` and writes only the latest net position for that key.
+Projection is batched. The handler buffers rows and flushes when the batch threshold is reached or when the
+Disruptor marks `endOfBatch`. Position projection deduplicates within a batch by `(accountId, security)` and
+writes only the latest net position for that key.
 
-The database is not the source of truth for the hot path. The BLP is warmed from the read model on startup, and the journal remains the event-stream authority for recovery and replay work.
+The database is not the source of truth for the hot path. The BLP warms from the persisted read model on
+startup, while the journal remains the event-stream authority for recovery and replay work.
 
-## Failure Semantics
+## A7. Off the acknowledgement path
 
-Output publishing failures are isolated to the output handler that owns the failing side effect.
+Output side effects are asynchronous to the user acknowledgement. The input side provides the durability
+gate: a command enters the input ring, journaler and replicator consume it, and the BLP processes it after
+both gates. The output ring then handles UI publishing and projection.
 
-- order publish failure increments `orderPublishFailures`
-- account-trade publish failure increments `accountTradePublishFailures`
-- position publish failure increments `positionPublishFailures`
-- optional `/trades` publish failure increments `tradeSubmitFailures`
-- projection failure increments projection failure metrics, trims buffers to bounded size, and logs the affected sequence and buffered row counts
+That separation keeps these operations off the ack path:
 
-Handlers log failures and keep the output consumer alive. A failed UI publish does not roll back the BLP state, does not undo the journaled input event, and does not block unrelated output handlers.
+- order NATS publish
+- account trade NATS publish
+- position NATS publish
+- optional `/trades` compatibility publish
+- database projection
 
-If a downstream service stalls rather than failing fast, the bounded output ring eventually backpressures the BLP. That is deliberate: the ring bounds memory. Capacity is exposed through health/metrics so stalls are visible before they become sustained throughput problems.
+If an output handler fails, the BLP state and the journaled input event are not rolled back.
 
-## Configuration
+## A8. Wait strategy & backpressure
 
-Current output-related configuration:
+The output ring is bounded. If a downstream handler stalls, the ring eventually fills and the BLP is
+backpressured on publication. That protects memory and keeps failure visible.
+
+Current output-related capacity and wait strategy are configurable:
+
+- `disruptor.output.ring-size`
+- `disruptor.output.wait-strategy`
+- `output.projector.batch-size`
+
+The demo profile defaults to a container-friendly blocking strategy. Low-latency deployments can select a
+more aggressive wait strategy once CPU pinning and runtime isolation are available.
+
+## A9. No-GC at the output stage
+
+The BLP-to-output-ring emission path is allocation-free in steady state:
+
+- slots are pre-allocated
+- event fields are primitive ids, flags, quantities, ticks, and timestamps
+- the BLP does not allocate JSON, `String`, `BigDecimal`, or JPA entities while writing output events
+
+Allocating conversions happen downstream of the hot path:
+
+- `OrderResponse` for order subjects
+- `AccountTrade` for `/accounts/{accountId}/trades`
+- `PositionUpdate` for `/accounts/{accountId}/positions`
+- JPA entities for projection
+
+The hot-path allocation gate is `./gradlew noGcTest` in the generated order-matcher service.
+
+## A10. One fill, end to end through the output disruptor
+
+A fill flows through the system as follows:
+
+1. The gateway publishes an input event.
+2. Journaler and replicator consume the input event.
+3. The BLP runs after both durability gates.
+4. `MatchingEngine` updates the order, books the trade, and updates the in-memory position book.
+5. `OutputPublisher.emitFillWithTradeAndPosition(...)` writes three adjacent output slots:
+   order lifecycle, `TradeBooked`, `PositionUpdated`.
+6. `MarshallerHandler` updates in-memory acknowledgement/read-model state and records latency.
+7. `NatsBridgeHandler` publishes order updates.
+8. `AccountTradeHandler` publishes the account trade update.
+9. `PositionUpdateHandler` publishes the account position update.
+10. `ProjectorHandler` asynchronously writes order/trade/position rows.
+
+The acknowledgement is not waiting for NATS publish or database projection.
+
+## A11. How this replaces inline publish + persist
+
+| Previous mechanism | Output-disruptor mechanism |
+| --- | --- |
+| Order service code publishes order updates directly from the command path. | BLP emits order lifecycle events; `NatsBridgeHandler` publishes `/accounts/{id}/orders` and `/orders`. |
+| Trade and position UI updates depend on a downstream processing path. | BLP emits `TradeBooked` and `PositionUpdated`; dedicated output handlers publish `/accounts/{id}/trades` and `/accounts/{id}/positions` directly. |
+| Persistence happens inline with business mutation. | `ProjectorHandler` batches DB writes off the hot path. |
+| Publish failures are mixed with command handling. | Each output handler owns its failure counter and logs its own side-effect failures. |
+
+## A12. The code as implemented in state `009b`
+
+The output ring is wired in `LmaxEngine`:
+
+```java
+MarshallerHandler marshaller = new MarshallerHandler(readModel, symbols, metrics);
+NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
+AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
+PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
+ProjectorHandler projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository,
+    symbols, projectorBatchSize, metrics);
+
+if (legacyTradeSubmitEnabled) {
+    TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
+    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+        tradeSubmit, projector);
+} else {
+    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
+}
+```
+
+The implemented source files live under:
+
+```text
+specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher
+```
+
+---
+
+# Part B - What the state defines
+
+## B13. Implemented state & scope
+
+The implemented state is `009b-lmax-sequencer-architecture` on top of `lmax-sequencer-no-gc`. This branch
+defines the output-side behavior that consumes the BLP's typed output events and fans them out directly to
+the UI subjects.
+
+In scope:
+
+- explicit output lifecycle event handling
+- direct account trade fan-out
+- direct position fan-out
+- order subject bridge
+- optional `/trades` compatibility publishing
+- async order/trade/position projection
+- output-side failure counters
+- output-side tests
+- updated 009b overlay patch
+
+
+## B14. Spec-kit artifacts and source of truth
+
+The durable source of truth is:
+
+```text
+specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher
+specs/009b-lmax-sequencer-architecture/generation/patches/0001-state-overlay.patch
+```
+
+Primary output-disruptor files:
+
+- `src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/AccountTrade.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/AccountTradeHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdate.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdateHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java`
+- `src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java`
+- `src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java`
+- `src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java`
+- `src/test/java/finos/traderx/ordermatcher/lmax/OutputDisruptorHandlersTest.java`
+
+## B15. Functional behavior
+
+The state defines these output behaviors:
+
+1. Order lifecycle events publish to `/accounts/{accountId}/orders` and `/orders`.
+2. `TradeBooked` publishes directly to `/accounts/{accountId}/trades`.
+3. `PositionUpdated` publishes directly to `/accounts/{accountId}/positions`.
+4. Optional `/trades` compatibility publishing is controlled by `output.legacy-trades.enabled`.
+5. `ProjectorHandler` writes order, trade, and position rows asynchronously.
+6. Output publish failures are logged and counted without stopping unrelated handlers.
+7. The gateway acknowledgement path does not wait for NATS publish or projection.
+
+## B16. Non-functional behavior
+
+The output stage keeps these non-functional properties:
+
+- single producer: only the BLP writes output ring slots
+- bounded memory: output ring capacity controls backpressure
+- no allocation on the BLP-to-output-ring emit path in steady state
+- output conversion and persistence allocate only downstream of the hot path
+- latency observability records egress timing from `ingressNanos`
+- output failures are isolated by handler and counter
+
+## B17. Data-model & contract deltas
+
+New or changed output payloads:
+
+| Payload | Source event | Subject |
+| --- | --- | --- |
+| `OrderResponse` | order lifecycle event | `/accounts/{accountId}/orders`, `/orders` |
+| `AccountTrade` | `TradeBooked` | `/accounts/{accountId}/trades` |
+| `PositionUpdate` | `PositionUpdated` | `/accounts/{accountId}/positions` |
+| `TradeOrder` | `TradeBooked` | `/trades`, only when compatibility publishing is enabled |
+
+Projection writes:
+
+- `OrderRecord` from order lifecycle output
+- `Trade` from `TradeBooked`
+- `Position` from `PositionUpdated`
+
+The UI subject names remain stable. The change is the producer of account trade and position updates: they
+now come directly from output-ring handlers.
+
+## B18. Build & dependency specs
+
+The output disruptor uses the dependencies already present in the generated 009b order-matcher service:
+
+- LMAX Disruptor
+- Spring Boot
+- Spring Data repositories
+- TraderX `Publisher<T>` abstraction
+- existing generated model/repository classes
+
+Do not run Gradle from the runtime override directory. The override directory is not a complete service. Run
+Gradle from:
+
+```text
+generated/code/target-generated/order-matcher
+```
+
+## B19. Configuration keys
 
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `disruptor.output.ring-size` | `65536` | Output ring size, normalized to a power of two. |
 | `disruptor.output.wait-strategy` | `blocking` | Output consumer wait strategy for the demo profile. |
 | `output.projector.batch-size` | `500` | Projector flush threshold. |
-| `output.legacy-trades.enabled` | `false` | Enables the optional `/trades` compatibility publisher. |
-| `blp.positions.capacity` | `8192` | In-memory BLP position-book capacity. |
+| `output.legacy-trades.enabled` | `false` | Enables optional `/trades` compatibility publishing. |
+| `blp.positions.capacity` | `8192` | In-memory position-book capacity owned by the BLP. |
 
-The default runtime keeps direct account trade and position fan-out enabled and leaves `/trades` compatibility publishing disabled unless explicitly requested.
+## B20. Observability deltas
 
-## Observability
+The output stage exposes:
 
-The order-matcher health endpoint reports the LMAX/output state, including:
-
-- input and output ring remaining capacity
-- `inputPublishedSeq`, `journaledSeq`, `replicatedSeq`, `blpSeq`, `marshalledSeq`, `projectedSeq`
+- output ring remaining capacity
+- `marshalledSeq`
+- `projectedSeq`
+- output egress latency
 - trade submit failures
 - account trade publish failures
 - position publish failures
-- BLP tick/fill counters
-- message bus connection state
-
-The output path also contributes to the existing Prometheus/Grafana coverage:
-
+- message bus connectivity state
 - order lifecycle counters
-- output egress latency
-- message bus connectivity
-- order-matcher actuator metrics
-- direct account trade and position publish failure counters
 
-## No-GC Boundary
+The order-matcher health endpoint includes LMAX sequence positions and output failure counters so runtime
+stalls or publish failures are visible without reading logs.
 
-The BLP-to-output-ring emission path is allocation-free in steady state:
+## B21. Success criteria & validation
 
-- output slots are pre-allocated
-- output fields are primitive ids, quantities, ticks, flags, and timestamps
-- no JSON, `String`, `BigDecimal`, or database entity is created by the BLP while writing the ring
-
-Allocating conversions happen in output handlers, after the hot path:
-
-- `OrderResponse` for order subjects
-- `AccountTrade` for `/accounts/{accountId}/trades`
-- `PositionUpdate` for `/accounts/{accountId}/positions`
-- JPA model objects for projection
-
-The no-GC gate for the hot path is `noGcTest`.
-
-## End-To-End Fill Flow
-
-For a fill:
-
-1. The input event is sequenced on the input ring.
-2. Journaler and replicator consume the input event.
-3. The BLP runs after both durability gates.
-4. `MatchingEngine` updates the order, books the trade, and updates the in-memory position.
-5. `OutputPublisher.emitFillWithTradeAndPosition(...)` writes order, trade, and position events into the output ring.
-6. `MarshallerHandler` updates acknowledgement/read-model state and latency counters.
-7. `NatsBridgeHandler` publishes order updates.
-8. `AccountTradeHandler` publishes the account trade update.
-9. `PositionUpdateHandler` publishes the account position update.
-10. `ProjectorHandler` asynchronously writes order/trade/position rows.
-
-The gateway acknowledgement is not waiting for NATS publish or database projection.
-
-## Validation
-
-Use the generated service tree for Gradle tests, not the runtime override directory.
+Regenerate the state:
 
 ```bash
-cd "/Users/yaakov/Desktop/Summer 26/lmax/traderX-output-disruptor"
-
 bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
+```
 
+Run generated order-matcher checks:
+
+```bash
 cd generated/code/target-generated/order-matcher
 ./gradlew noGcTest
 ```
 
-For runtime smoke:
+Run runtime smoke:
 
 ```bash
-cd "/Users/yaakov/Desktop/Summer 26/lmax/traderX-output-disruptor"
-
 bash generated/code/target-generated/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-bash generated/code/target-generated/scripts/test-state-009b-lmax-sequencer-architecture.sh
+bash generated/code/target-generated/scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
 ```
 
-## Source Of Truth
+## B22. What the base branch provides vs. what this branch adds
 
-The implemented source of truth is the 009b runtime override tree:
+The `lmax-sequencer-no-gc` base branch provides:
 
-```text
-specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher
-```
+- the input Disruptor
+- journaler and replicator gates
+- BLP/matching engine ownership of trade booking
+- BLP/matching engine ownership of position keeping
+- paired output-ring publication of order/trade/position events
 
-The generated runtime is produced from those overrides plus:
+This output-disruptor branch added or changed:
 
-```text
-specs/009b-lmax-sequencer-architecture/generation/patches/0001-state-overlay.patch
-```
+- explicit order lifecycle event kinds on the output side
+- direct account trade fan-out handler
+- direct position fan-out handler
+- `AccountTrade` and `PositionUpdate` payloads
+- output-side publisher wiring in `PubSubConfig` and `LmaxEngine`
+- optional `/trades` compatibility publishing
+- position projection support
+- output publish failure counters
+- focused output handler tests
+- updated generated 009b overlay patch
 
-The main files for the output disruptor are:
+## B23. Risks specific to the output stage
 
-- `lmax/OutputEvent.java`
-- `lmax/OutputPublisher.java`
-- `lmax/LmaxEngine.java`
-- `lmax/MatchingEngine.java`
-- `lmax/MarshallerHandler.java`
-- `lmax/NatsBridgeHandler.java`
-- `lmax/AccountTrade.java`
-- `lmax/AccountTradeHandler.java`
-- `lmax/PositionUpdate.java`
-- `lmax/PositionUpdateHandler.java`
-- `lmax/TradeSubmitHandler.java`
-- `lmax/ProjectorHandler.java`
-- `lmax/InMemoryOrderReadModel.java`
-- `config/PubSubConfig.java`
-- `service/OrderMatcherService.java`
-- `src/test/java/finos/traderx/ordermatcher/lmax/OutputDisruptorHandlersTest.java`
+| Risk | Impact | Mitigation |
+| --- | --- | --- |
+| NATS publish failure | UI misses an update. | Handler-specific failure counters and logs; BLP state remains authoritative. |
+| NATS stall | Output ring can fill and backpressure the BLP. | Ring capacity metrics, health checks, and message bus connectivity metrics. |
+| Projector failure | Durable read model lags. | Failure metrics, bounded buffers, replay/reprojection from authoritative event stream. |
+| Subject contract drift | UI stops receiving expected updates. | Focused output handler tests for subjects and payloads. |
