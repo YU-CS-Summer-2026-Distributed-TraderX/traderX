@@ -59,7 +59,9 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
         switch (e.kind) {
-            case OutputEvent.KIND_ORDER_UPDATE -> {
+            case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
+                 OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
+                 OutputEvent.KIND_ORDER_CANCELED -> {
                 // flags==0 updates are republished unchanged state (no persistence in 009 either)
                 if (e.flags != 0) {
                     orderBuffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());

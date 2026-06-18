@@ -76,6 +76,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
+                          int fillFullThreshold, int initialPoolSize) {
+        this(out, metrics, maxSecurities, fillFullThreshold, initialPoolSize, Math.max(1024, initialPoolSize));
+    }
+
     /** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
     @Override
     public void onStart() {
@@ -293,8 +298,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         int newPosition = positions.bookTrade(o.accountId, o.securityId, signedQty, execPx);
         long avgCostTicks = positions.lastAvgCostTicks();
         long tradeSeq = ++tradeCounter;
-        out.emitFillWithTrade(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks, e.seq, flags,
-            marketPx, e.ingressNanos);
+        out.emitFillWithTradeAndPosition(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks,
+            e.seq, flags, marketPx, e.ingressNanos);
         metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
     }
 

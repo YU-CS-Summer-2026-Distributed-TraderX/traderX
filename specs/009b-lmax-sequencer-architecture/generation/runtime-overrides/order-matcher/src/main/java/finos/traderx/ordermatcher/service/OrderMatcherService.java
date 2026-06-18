@@ -158,6 +158,8 @@ public class OrderMatcherService {
         matcher.put("autoFillAttempts", engine.blp() == null ? 0 : engine.blp().autoFillAttempts());
         matcher.put("autoFillSuccess", engine.blp() == null ? 0 : engine.blp().autoFillSuccess());
         matcher.put("tradeSubmitFailures", readModel.tradeSubmitFailures().sum());
+        matcher.put("accountTradePublishFailures", readModel.accountTradePublishFailures().sum());
+        matcher.put("positionPublishFailures", readModel.positionPublishFailures().sum());
 
         Map<String, Object> lmax = new LinkedHashMap<>();
         lmax.put("profile", engine.runtimeProfile());
@@ -216,6 +218,12 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_order_trade_submit_failures_total Trade submit failures on fill attempts.\n");
         sb.append("# TYPE traderx_order_trade_submit_failures_total counter\n");
         sb.append("traderx_order_trade_submit_failures_total ").append(readModel.tradeSubmitFailures().sum()).append('\n');
+        sb.append("# HELP traderx_account_trade_publish_failures_total Direct account trade publish failures.\n");
+        sb.append("# TYPE traderx_account_trade_publish_failures_total counter\n");
+        sb.append("traderx_account_trade_publish_failures_total ").append(readModel.accountTradePublishFailures().sum()).append('\n');
+        sb.append("# HELP traderx_position_publish_failures_total Direct position update publish failures.\n");
+        sb.append("# TYPE traderx_position_publish_failures_total counter\n");
+        sb.append("traderx_position_publish_failures_total ").append(readModel.positionPublishFailures().sum()).append('\n');
 
         HotPathMetrics metrics = engine.metrics();
         HotPathMetrics.renderHistogram(sb, "traderx_order_match_latency_seconds",

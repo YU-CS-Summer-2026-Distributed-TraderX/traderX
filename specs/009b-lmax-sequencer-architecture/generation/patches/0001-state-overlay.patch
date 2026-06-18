@@ -8,7 +8,7 @@ index 9dc69a9..58ae4e4 100644
 @@ -1,22 +1,19 @@
 -name: Build and Publish Application Images
 +name: Build Container Images (No Publish)
- 
+
  on:
    workflow_dispatch:
    push:
@@ -22,7 +22,7 @@ index 9dc69a9..58ae4e4 100644
 +      - '**/Dockerfile'
 +      - '**/Dockerfile.compose'
 +      - '.github/workflows/build-container-images.yml'
- 
+
  jobs:
 -  build-ghcr:
 -    name: Build and push ${{ matrix.image_name }}
@@ -78,56 +78,16 @@ index 9dc69a9..58ae4e4 100644
 -          image: ${{ env.GHCR_ORG }}/${{ env.IMAGE_NAMESPACE }}/${{ matrix.image_name }}:${{ github.sha }}
 +          image: traderx-local/${{ matrix.image_name }}:${{ github.sha }}
            severity: HIGH
-diff --git a/.github/workflows/no-gc-gate.yml b/.github/workflows/no-gc-gate.yml
-new file mode 100644
-index 0000000..dbcd59d
---- /dev/null
-+++ b/.github/workflows/no-gc-gate.yml
-@@ -0,0 +1,34 @@
-+name: No-GC Allocation Gate (state 009b)
-+
-+on:
-+  workflow_dispatch:
-+  push:
-+    branches:
-+      - code/generated-state-*
-+    paths:
-+      - 'order-matcher/**'
-+      - '.github/workflows/no-gc-gate.yml'
-+
-+jobs:
-+  no-gc-gate:
-+    name: Epsilon allocation gate (order-matcher hot path)
-+    runs-on: ubuntu-latest
-+    steps:
-+      - name: Checkout code
-+        uses: actions/checkout@v4
-+      - name: Set up Java 21
-+        uses: actions/setup-java@v4
-+        with:
-+          distribution: temurin
-+          java-version: '21'
-+      # NGC-02 / SC-09B05: Epsilon never reclaims, so any steady-state allocation on
-+      # the hot path exhausts the fixed heap and fails this job. The same test also
-+      # asserts exact zero per-thread allocated-byte deltas via ThreadMXBean.
-+      - name: Allocation gate under Epsilon GC
-+        working-directory: order-matcher
-+        run: sh ./gradlew --no-daemon noGcTest
-+      # SC-09B13 banned-API constant-pool scan, penny parity, and hot-path policy
-+      # parity (broker-free).
-+      - name: Hot-path conformance tests
-+        working-directory: order-matcher
-+        run: sh ./gradlew --no-daemon test --tests 'finos.traderx.ordermatcher.lmax.*'
 diff --git a/AGENTS.md b/AGENTS.md
 index 491b34e..fc9b77a 100644
 --- a/AGENTS.md
 +++ b/AGENTS.md
 @@ -1,6 +1,6 @@
  # AGENTS.md
- 
+
 -This generated codebase is a reproducible runtime snapshot for state `009-order-management-matcher`.
 +This generated codebase is a reproducible runtime snapshot for state `009b-lmax-sequencer-architecture`.
- 
+
  - Treat this snapshot as generated output; expect it to be replaced on regeneration.
  - Prototype and experiment locally here when needed.
 diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
@@ -136,10 +96,10 @@ index 7b5ea7f..b47ef54 100644
 +++ b/ARCHITECTURE.md
 @@ -1,6 +1,6 @@
  # ARCHITECTURE.md
- 
+
 -This snapshot was generated from TraderX state `009-order-management-matcher`.
 +This snapshot was generated from TraderX state `009b-lmax-sequencer-architecture`.
- 
+
  - Service/runtime topology is defined by the source state pack in the upstream repository.
  - This generated directory contains runnable artifacts, not the authoritative architecture source.
 diff --git a/RUN_FROM_GENERATED.md b/RUN_FROM_GENERATED.md
@@ -149,30 +109,30 @@ index 5bd8f61..d69bb2e 100644
 @@ -1,28 +1,28 @@
 -# Run From Generated (State 009)
 +# Run From Generated (State 009b)
- 
+
  Start (choose one):
- 
+
  ```bash
  # Full start (build + start)
 -./scripts/start-state-009-order-management-matcher-generated.sh
 +./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
- 
+
  # Fast restart (reuse existing artifacts; skips build)
 -./scripts/start-state-009-order-management-matcher-generated.sh --skip-build
 +./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
  ```
- 
+
  Status / stop:
- 
+
  ```bash
 -./scripts/status-state-009-order-management-matcher-generated.sh
 -./scripts/stop-state-009-order-management-matcher-generated.sh
 +./scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
 +./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
  ```
- 
+
  Smoke test:
- 
+
  ```bash
 -./scripts/test-state-009-order-management-matcher.sh
 -./scripts/test-state-009-order-management-matcher.sh --skip-messaging
@@ -181,7 +141,7 @@ index 5bd8f61..d69bb2e 100644
 +./scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
 +./scripts/test-messaging-009b-lmax-sequencer-architecture.sh
  ```
- 
+
  ## Interactive URLs
 @@ -34,13 +34,3 @@ Smoke test:
  - Prometheus: `http://localhost:9090`
@@ -235,7 +195,7 @@ index e992cff..e23e398 100644
 @@ -13,6 +13,19 @@ java {
    sourceCompatibility = JavaVersion.VERSION_21
  }
- 
+
 +// In-place development of this overlay (specs/.../runtime-overrides): the
 +// parent-state (009) sources live in .parent-src so the module compiles and
 +// the IDE resolves imports without generating. Generated trees merge the
@@ -255,7 +215,7 @@ index e992cff..e23e398 100644
 @@ -41,6 +54,10 @@ dependencies {
    implementation 'org.apache.commons:commons-lang3:3.20.0'
    implementation 'io.nats:jnats:2.20.5'
- 
+
 +  // LMAX hot path (state 009b): ring buffers + latency histograms.
 +  implementation 'com.lmax:disruptor:4.0.0'
 +  implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
@@ -266,7 +226,7 @@ index e992cff..e23e398 100644
 @@ -49,6 +66,25 @@ tasks.withType(Test).configureEach {
    useJUnitPlatform()
  }
- 
+
 +// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
 +// gate under Epsilon GC — a no-op collector on a small fixed pre-touched heap, so any
 +// steady-state allocation exhausts the heap and fails the run. The same test also runs
@@ -294,11 +254,11 @@ index 6489fc1..03f9baf 100644
 --- a/order-matcher/src/main/java/finos/traderx/ordermatcher/OrderMatcherApplication.java
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/OrderMatcherApplication.java
 @@ -2,13 +2,12 @@ package finos.traderx.ordermatcher;
- 
+
  import org.springframework.boot.SpringApplication;
  import org.springframework.boot.autoconfigure.SpringBootApplication;
 -import org.springframework.scheduling.annotation.EnableScheduling;
- 
+
 +// State 009b: no @EnableScheduling — the 009 matcher polling tick is replaced by the
 +// event-driven LMAX input disruptor (FR-09B02).
  @SpringBootApplication
@@ -309,6 +269,369 @@ index 6489fc1..03f9baf 100644
      }
  }
 -
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/api/MarketTradeRequest.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/api/MarketTradeRequest.java
+new file mode 100644
+index 0000000..e20cc23
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/api/MarketTradeRequest.java
+@@ -0,0 +1,49 @@
++package finos.traderx.ordermatcher.api;
++
++import com.fasterxml.jackson.annotation.JsonAlias;
++import finos.traderx.ordermatcher.model.OrderSide;
++
++/**
++ * Market trade submitted by trade-service (the validating gateway edge) for sequencing as a
++ * TRADE_NEW event (FR-09B08). Field shape matches trade-service's {@code TradeOrder} so the
++ * forward is a straight pass-through.
++ */
++public class MarketTradeRequest {
++    @JsonAlias("accountID")
++    private Integer accountId;
++    private String security;
++    private OrderSide side;
++    private Integer quantity;
++
++    public Integer getAccountId() {
++        return accountId;
++    }
++
++    public void setAccountId(Integer accountId) {
++        this.accountId = accountId;
++    }
++
++    public String getSecurity() {
++        return security;
++    }
++
++    public void setSecurity(String security) {
++        this.security = security;
++    }
++
++    public OrderSide getSide() {
++        return side;
++    }
++
++    public void setSide(OrderSide side) {
++        this.side = side;
++    }
++
++    public Integer getQuantity() {
++        return quantity;
++    }
++
++    public void setQuantity(Integer quantity) {
++        this.quantity = quantity;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
+index b76ad49..656e89e 100644
+--- a/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/config/PubSubConfig.java
+@@ -4,33 +4,70 @@ import finos.traderx.messaging.PubSubException;
+ import finos.traderx.messaging.Publisher;
+ import finos.traderx.messaging.nats.NatsJSONPublisher;
+ import finos.traderx.ordermatcher.api.OrderResponse;
++import finos.traderx.ordermatcher.lmax.AccountTrade;
++import finos.traderx.ordermatcher.lmax.PositionUpdate;
++import finos.traderx.ordermatcher.lmax.TradeOrder;
+ import org.springframework.beans.factory.annotation.Value;
+ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+ import org.springframework.context.annotation.Bean;
+ import org.springframework.context.annotation.Configuration;
+
++/**
++ * Output-side publishers for state 009b. Orders stay on the existing `/orders` subjects,
++ * direct account trades and positions use dedicated UI payloads, and the legacy `/trades`
++ * payload stays available behind the optional compatibility handler.
++ */
+ @Configuration
+ public class PubSubConfig {
++    private static final String NATS = "nats";
++    private static final String NOOP = "noop";
++
+     @Bean
+-    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = "nats", matchIfMissing = true)
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
+     public Publisher<OrderResponse> natsOrderPublisher(
+         @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
+     ) {
+-        NatsJSONPublisher<OrderResponse> publisher = new NatsJSONPublisher<>();
++        return natsPublisher(natsAddress);
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
++    public Publisher<TradeOrder> natsTradePublisher(
++        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
++    ) {
++        return natsPublisher(natsAddress);
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
++    public Publisher<AccountTrade> natsAccountTradePublisher(
++        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
++    ) {
++        return natsPublisher(natsAddress);
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
++    public Publisher<PositionUpdate> natsPositionPublisher(
++        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
++    ) {
++        return natsPublisher(natsAddress);
++    }
++
++    private static <T> NatsJSONPublisher<T> natsPublisher(String natsAddress) {
++        NatsJSONPublisher<T> publisher = new NatsJSONPublisher<>();
+         publisher.setServerAddress(natsAddress);
+         publisher.setSender("order-matcher");
+         return publisher;
+     }
+
+-    @Bean
+-    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = "noop")
+-    public Publisher<OrderResponse> noopOrderPublisher() {
++    private static <T> Publisher<T> noopPublisher() {
+         return new Publisher<>() {
+             @Override
+-            public void publish(OrderResponse message) throws PubSubException {}
++            public void publish(T message) throws PubSubException {}
+
+             @Override
+-            public void publish(String topic, OrderResponse message) throws PubSubException {}
++            public void publish(String topic, T message) throws PubSubException {}
+
+             @Override
+             public boolean isConnected() {
+@@ -44,4 +81,28 @@ public class PubSubConfig {
+             public void disconnect() throws PubSubException {}
+         };
+     }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NOOP)
++    public Publisher<OrderResponse> noopOrderPublisher() {
++        return noopPublisher();
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NOOP)
++    public Publisher<TradeOrder> noopTradePublisher() {
++        return noopPublisher();
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NOOP)
++    public Publisher<AccountTrade> noopAccountTradePublisher() {
++        return noopPublisher();
++    }
++
++    @Bean
++    @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NOOP)
++    public Publisher<PositionUpdate> noopPositionPublisher() {
++        return noopPublisher();
++    }
+ }
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/controller/MarketTradeController.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/controller/MarketTradeController.java
+new file mode 100644
+index 0000000..c5b440a
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/controller/MarketTradeController.java
+@@ -0,0 +1,30 @@
++package finos.traderx.ordermatcher.controller;
++
++import finos.traderx.ordermatcher.api.MarketTradeRequest;
++import finos.traderx.ordermatcher.service.OrderMatcherService;
++import org.springframework.http.ResponseEntity;
++import org.springframework.web.bind.annotation.PostMapping;
++import org.springframework.web.bind.annotation.RequestBody;
++import org.springframework.web.bind.annotation.RequestMapping;
++import org.springframework.web.bind.annotation.RestController;
++
++/**
++ * Market-trade ingress for the LMAX gateway (FR-09B08). trade-service validates the ticker and
++ * account, then forwards the trade here; the gateway sequences it as a TRADE_NEW event so the
++ * single-writer BLP books it and updates the position. Returns 200 with the echoed trade —
++ * booking is asynchronous, matching 009's POST /trade/ contract.
++ */
++@RestController
++@RequestMapping("/")
++public class MarketTradeController {
++    private final OrderMatcherService orderMatcherService;
++
++    public MarketTradeController(OrderMatcherService orderMatcherService) {
++        this.orderMatcherService = orderMatcherService;
++    }
++
++    @PostMapping("/trades")
++    public ResponseEntity<MarketTradeRequest> bookMarketTrade(@RequestBody MarketTradeRequest request) {
++        return ResponseEntity.ok(orderMatcherService.bookMarketTrade(request));
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTrade.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTrade.java
+new file mode 100644
+index 0000000..d7fa1e0
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTrade.java
+@@ -0,0 +1,108 @@
++package finos.traderx.ordermatcher.lmax;
++
++import finos.traderx.ordermatcher.model.OrderSide;
++
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.util.Date;
++
++/**
++ * 009-compatible `/accounts/{accountId}/trades` payload emitted directly from TradeBooked.
++ */
++public final class AccountTrade {
++    private String id;
++    private Integer accountId;
++    private String security;
++    private OrderSide side;
++    private String state;
++    private Integer quantity;
++    private BigDecimal price;
++    private Date created;
++    private Date updated;
++
++    public String getId() {
++        return id;
++    }
++
++    public void setId(String id) {
++        this.id = id;
++    }
++
++    public Integer getAccountId() {
++        return accountId;
++    }
++
++    public void setAccountId(Integer accountId) {
++        this.accountId = accountId;
++    }
++
++    public String getSecurity() {
++        return security;
++    }
++
++    public void setSecurity(String security) {
++        this.security = security;
++    }
++
++    public OrderSide getSide() {
++        return side;
++    }
++
++    public void setSide(OrderSide side) {
++        this.side = side;
++    }
++
++    public String getState() {
++        return state;
++    }
++
++    public void setState(String state) {
++        this.state = state;
++    }
++
++    public Integer getQuantity() {
++        return quantity;
++    }
++
++    public void setQuantity(Integer quantity) {
++        this.quantity = quantity;
++    }
++
++    public BigDecimal getPrice() {
++        return price;
++    }
++
++    public void setPrice(BigDecimal price) {
++        this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
++    }
++
++    public Date getCreated() {
++        return created;
++    }
++
++    public void setCreated(Date created) {
++        this.created = created;
++    }
++
++    public Date getUpdated() {
++        return updated;
++    }
++
++    public void setUpdated(Date updated) {
++        this.updated = updated;
++    }
++
++    public static AccountTrade fromEvent(OutputEvent e, SymbolTable symbols) {
++        AccountTrade payload = new AccountTrade();
++        payload.setId(e.tradeSeq > 0 ? OrderSnapshot.tradeIdFor(e.tradeSeq) : OrderSnapshot.orderIdFor(e.orderRef));
++        payload.setAccountId(e.accountId);
++        payload.setSecurity(symbols.tickerFor(e.securityId));
++        payload.setSide(OrderSide.values()[e.side]);
++        payload.setState("Settled");
++        payload.setQuantity(e.tradeQty);
++        payload.setPrice(Px.toBigDecimal(e.tradePx != Px.NONE ? e.tradePx : e.lastExecPx));
++        payload.setCreated(new Date(e.updatedAtMillis));
++        payload.setUpdated(new Date(e.updatedAtMillis));
++        return payload;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTradeHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTradeHandler.java
+new file mode 100644
+index 0000000..2de99ea
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/AccountTradeHandler.java
+@@ -0,0 +1,41 @@
++package finos.traderx.ordermatcher.lmax;
++
++import com.lmax.disruptor.EventHandler;
++import finos.traderx.messaging.PubSubException;
++import finos.traderx.messaging.Publisher;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Output-ring account-trade bridge. Owns direct UI fan-out for `/accounts/{accountId}/trades`.
++ */
++public final class AccountTradeHandler implements EventHandler<OutputEvent> {
++    private static final Logger log = LoggerFactory.getLogger(AccountTradeHandler.class);
++
++    private final Publisher<AccountTrade> accountTradePublisher;
++    private final SymbolTable symbols;
++    private final InMemoryOrderReadModel readModel;
++
++    public AccountTradeHandler(Publisher<AccountTrade> accountTradePublisher, SymbolTable symbols,
++                               InMemoryOrderReadModel readModel) {
++        this.accountTradePublisher = accountTradePublisher;
++        this.symbols = symbols;
++        this.readModel = readModel;
++    }
++
++    @Override
++    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
++        if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
++            return;
++        }
++        AccountTrade payload = AccountTrade.fromEvent(e, symbols);
++        String accountTopic = "/accounts/" + e.accountId + "/trades";
++        try {
++            accountTradePublisher.publish(accountTopic, payload);
++        } catch (PubSubException ex) {
++            readModel.accountTradePublishFailures().increment();
++            log.warn("Account trade publish failed for account {} order {}", e.accountId,
++                OrderSnapshot.orderIdFor(e.orderRef), ex);
++        }
++    }
++}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/HotPathMetrics.java
 new file mode 100644
 index 0000000..69615cc
@@ -442,10 +765,10 @@ index 0000000..69615cc
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java
 new file mode 100644
-index 0000000..027ace3
+index 0000000..acf7a9f
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InMemoryOrderReadModel.java
-@@ -0,0 +1,190 @@
+@@ -0,0 +1,200 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.model.OrderSide;
@@ -479,6 +802,8 @@ index 0000000..027ace3
 +    private final ConcurrentHashMap<String, LongAdder> eventCounters = new ConcurrentHashMap<>();
 +    private final ConcurrentHashMap<Long, CompletableFuture<OrderSnapshot>> pendingAcks = new ConcurrentHashMap<>();
 +    private final LongAdder tradeSubmitFailures = new LongAdder();
++    private final LongAdder accountTradePublishFailures = new LongAdder();
++    private final LongAdder positionPublishFailures = new LongAdder();
 +    private final LongAdder natsErrors = new LongAdder();
 +
 +    public InMemoryOrderReadModel() {
@@ -632,16 +957,24 @@ index 0000000..027ace3
 +        return tradeSubmitFailures;
 +    }
 +
++    public LongAdder accountTradePublishFailures() {
++        return accountTradePublishFailures;
++    }
++
++    public LongAdder positionPublishFailures() {
++        return positionPublishFailures;
++    }
++
 +    public LongAdder natsErrors() {
 +        return natsErrors;
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InputEvent.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InputEvent.java
 new file mode 100644
-index 0000000..84ddbb5
+index 0000000..7717578
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/InputEvent.java
-@@ -0,0 +1,33 @@
+@@ -0,0 +1,35 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +/**
@@ -655,6 +988,8 @@ index 0000000..84ddbb5
 +    public static final byte TYPE_ORDER_CANCEL = 2;
 +    public static final byte TYPE_FORCE_FILL = 3;
 +    public static final byte TYPE_PRICE_TICK = 4;
++    /** Market trade from the trade ticket, sequenced through the gateway (FR-09B08). */
++    public static final byte TYPE_TRADE_NEW = 5;
 +
 +    public static final byte SIDE_BUY = 0;
 +    public static final byte SIDE_SELL = 1;
@@ -731,7 +1066,7 @@ index 0000000..1f0f490
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
 new file mode 100644
-index 0000000..771dbdc
+index 0000000..7143201
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Journaler.java
 @@ -0,0 +1,123 @@
@@ -828,7 +1163,7 @@ index 0000000..771dbdc
 +                channel.write(buffer);
 +            }
 +            if (endOfBatch) {
-+                channel.force(false); // durability amortised across the drained batch
++                channel.force(false); // durability amortized across the drained batch
 +            }
 +        } catch (IOException ex) {
 +            failed = true;
@@ -860,19 +1195,13 @@ index 0000000..771dbdc
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
 new file mode 100644
-index 0000000..fb93423
+index 0000000..2608b82
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,536 @@
 +package finos.traderx.ordermatcher.lmax;
 +
-+import com.lmax.disruptor.BlockingWaitStrategy;
-+import com.lmax.disruptor.BusySpinWaitStrategy;
-+import com.lmax.disruptor.InsufficientCapacityException;
-+import com.lmax.disruptor.RingBuffer;
-+import com.lmax.disruptor.SleepingWaitStrategy;
-+import com.lmax.disruptor.WaitStrategy;
-+import com.lmax.disruptor.YieldingWaitStrategy;
++import com.lmax.disruptor.*;
 +import com.lmax.disruptor.dsl.Disruptor;
 +import com.lmax.disruptor.dsl.ProducerType;
 +import com.lmax.disruptor.util.DaemonThreadFactory;
@@ -881,14 +1210,17 @@ index 0000000..fb93423
 +import finos.traderx.ordermatcher.model.OrderRecord;
 +import finos.traderx.ordermatcher.model.OrderSide;
 +import finos.traderx.ordermatcher.model.OrderStatus;
++import finos.traderx.ordermatcher.model.Position;
++import finos.traderx.ordermatcher.model.Trade;
 +import finos.traderx.ordermatcher.repository.OrderRepository;
++import finos.traderx.ordermatcher.repository.PositionRepository;
++import finos.traderx.ordermatcher.repository.TradeRepository;
 +import org.slf4j.Logger;
 +import org.slf4j.LoggerFactory;
 +import org.springframework.beans.factory.DisposableBean;
 +import org.springframework.beans.factory.InitializingBean;
 +import org.springframework.beans.factory.annotation.Value;
 +import org.springframework.stereotype.Component;
-+import org.springframework.web.client.RestTemplate;
 +
 +import java.lang.management.ManagementFactory;
 +import java.math.BigDecimal;
@@ -912,8 +1244,8 @@ index 0000000..fb93423
 + *           -> journaler + replicator in parallel, BLP gated behind both
 + *      -> single-threaded MatchingEngine (in-memory book; match + emit on one thread)
 + *           -> output disruptor (single producer)
-+ *                -> marshaller (read model + acks + latency) | NATS bridge | trade submit
-+ *                   | read-model projector — in parallel
++ *                -> marshaller | order NATS bridge | account trade | position update
++ *                   | optional legacy trade submit | read-model projector
 + *
 + * Demo profile defaults: BlockingWaitStrategy, loopback replicator, file journal, no core
 + * pinning — container-safe per NFR-09B06. Recovery: read-model warm-start + journal
@@ -925,11 +1257,15 @@ index 0000000..fb93423
 +    private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ord-013-(\\d{4,})$");
 +
 +    private final OrderRepository orderRepository;
++    private final TradeRepository tradeRepository;
++    private final PositionRepository positionRepository;
 +    private final Publisher<OrderResponse> orderPublisher;
-+    private final RestTemplate restTemplate;
++    private final Publisher<TradeOrder> tradePublisher;
++    private final Publisher<AccountTrade> accountTradePublisher;
++    private final Publisher<PositionUpdate> positionPublisher;
++    private final boolean legacyTradeSubmitEnabled;
 +    private final boolean seedEnabled;
 +    private final int fillFullThreshold;
-+    private final String tradeServiceUrl;
 +    private final int inputRingSize;
 +    private final String inputWaitStrategy;
 +    private final int outputRingSize;
@@ -939,6 +1275,7 @@ index 0000000..fb93423
 +    private final int projectorBatchSize;
 +    private final int maxSecurities;
 +    private final int bookPoolSize;
++    private final int positionCapacity;
 +    private final long ackTimeoutMs;
 +    private final String runtimeProfile;
 +
@@ -959,11 +1296,15 @@ index 0000000..fb93423
 +
 +    public LmaxEngine(
 +        OrderRepository orderRepository,
++        TradeRepository tradeRepository,
++        PositionRepository positionRepository,
 +        Publisher<OrderResponse> orderPublisher,
-+        RestTemplate restTemplate,
++        Publisher<TradeOrder> tradePublisher,
++        Publisher<AccountTrade> accountTradePublisher,
++        Publisher<PositionUpdate> positionPublisher,
++        @Value("${output.legacy-trades.enabled:false}") boolean legacyTradeSubmitEnabled,
 +        @Value("${order.matcher.seed-enabled:true}") boolean seedEnabled,
 +        @Value("${order.matcher.fill-full-threshold:1000}") int fillFullThreshold,
-+        @Value("${order.matcher.trade-service-url:http://trade-service:18092/trade/}") String tradeServiceUrl,
 +        @Value("${disruptor.input.ring-size:65536}") int inputRingSize,
 +        @Value("${disruptor.input.wait-strategy:blocking}") String inputWaitStrategy,
 +        @Value("${disruptor.output.ring-size:65536}") int outputRingSize,
@@ -973,15 +1314,20 @@ index 0000000..fb93423
 +        @Value("${output.projector.batch-size:500}") int projectorBatchSize,
 +        @Value("${blp.books.max-securities:4096}") int maxSecurities,
 +        @Value("${blp.book.pool-size:65536}") int bookPoolSize,
++        @Value("${blp.positions.capacity:8192}") int positionCapacity,
 +        @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
 +        @Value("${runtime.profile:demo}") String runtimeProfile
 +    ) {
 +        this.orderRepository = orderRepository;
++        this.tradeRepository = tradeRepository;
++        this.positionRepository = positionRepository;
 +        this.orderPublisher = orderPublisher;
-+        this.restTemplate = restTemplate;
++        this.tradePublisher = tradePublisher;
++        this.accountTradePublisher = accountTradePublisher;
++        this.positionPublisher = positionPublisher;
++        this.legacyTradeSubmitEnabled = legacyTradeSubmitEnabled;
 +        this.seedEnabled = seedEnabled;
 +        this.fillFullThreshold = fillFullThreshold;
-+        this.tradeServiceUrl = tradeServiceUrl;
 +        this.inputRingSize = inputRingSize;
 +        this.inputWaitStrategy = inputWaitStrategy;
 +        this.outputRingSize = outputRingSize;
@@ -991,6 +1337,7 @@ index 0000000..fb93423
 +        this.projectorBatchSize = projectorBatchSize;
 +        this.maxSecurities = maxSecurities;
 +        this.bookPoolSize = bookPoolSize;
++        this.positionCapacity = positionCapacity;
 +        this.ackTimeoutMs = ackTimeoutMs;
 +        this.runtimeProfile = runtimeProfile;
 +        this.symbols = new SymbolTable(maxSecurities);
@@ -1002,18 +1349,28 @@ index 0000000..fb93423
 +
 +        // Output ring first: the BLP needs its publisher before it can run.
 +        marshaller = new MarshallerHandler(readModel, symbols, metrics);
-+        projector = new ProjectorHandler(orderRepository, symbols, projectorBatchSize, metrics);
++        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
++            projectorBatchSize, metrics);
 +        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-+        TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(restTemplate, tradeServiceUrl, symbols, readModel);
++        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
++        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 +
++        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans
++        // out to the marshaller, order bridge, direct account trade + position fan-out, optional
++        // legacy `/trades`, and the async projector.
 +        outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
 +            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-+        outputDisruptor.handleEventsWith(marshaller, natsBridge, tradeSubmit, projector);
++        if (legacyTradeSubmitEnabled) {
++            TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
++            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, tradeSubmit, projector);
++        } else {
++            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
++        }
 +        outputDisruptor.start();
 +        outputRing = outputDisruptor.getRingBuffer();
 +
 +        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-+            metrics, maxSecurities, fillFullThreshold, bookPoolSize);
++            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
 +
 +        bootstrapFromReadModel();
 +
@@ -1090,6 +1447,32 @@ index 0000000..fb93423
 +            e.qty = 0;
 +            e.limitPx = 0L;
 +            e.priceTicks = priceTicks;
++            e.ingressNanos = System.nanoTime();
++            e.eventTimeMillis = System.currentTimeMillis();
++        } finally {
++            inputRing.publish(seq);
++        }
++    }
++
++    /**
++     * Market trade from the trade ticket (FR-09B08): sequence a TRADE_NEW event so booking +
++     * position-keeping run on the single-writer BLP. Fire-and-forget, matching 009's POST
++     * /trade/ contract (booking is async; the gateway does not block on the read-model).
++     */
++    public void executeTradeNew(int accountId, String ticker, OrderSide side, int quantity) {
++        int securityId = symbols.idFor(ticker);
++        long seq = claimInputSlot();
++        try {
++            InputEvent e = inputRing.get(seq);
++            e.seq = seq;
++            e.type = InputEvent.TYPE_TRADE_NEW;
++            e.orderRef = 0;
++            e.accountId = accountId;
++            e.securityId = securityId;
++            e.side = (byte) side.ordinal();
++            e.qty = quantity;
++            e.limitPx = 0L;
++            e.priceTicks = 0L;
 +            e.ingressNanos = System.nanoTime();
 +            e.eventTimeMillis = System.currentTimeMillis();
 +        } finally {
@@ -1223,6 +1606,26 @@ index 0000000..fb93423
 +        }
 +        nextOrderRef.set(maxRef + 1);
 +
++        // Warm the BLP's net positions from the persisted POSITIONS read-model (FR-09B16 recovery):
++        // the BLP is the single position writer, so it must resume from the durable state on restart.
++        for (Position position : positionRepository.findAll()) {
++            if (position.getAccountId() == null || position.getSecurity() == null) {
++                continue;
++            }
++            int securityId = symbols.idFor(position.getSecurity());
++            matchingEngine.bootstrapPosition(position.getAccountId(), securityId,
++                position.getQuantity() == null ? 0 : position.getQuantity(),
++                Px.toTicks(position.getAverageCostBasis()));
++        }
++
++        // Resume the global trade counter above the max persisted trade id so ids never collide
++        // across restarts (mirrors nextOrderRef; foreign-format ids — e.g. 009 seed — are ignored).
++        long maxTradeSeq = 0;
++        for (Trade trade : tradeRepository.findAll()) {
++            maxTradeSeq = Math.max(maxTradeSeq, OrderSnapshot.tradeSeqFromId(trade.getId()));
++        }
++        matchingEngine.bootstrapTradeCounter(maxTradeSeq);
++
 +        // Counter parity with 009's refreshCountersFromDatabase().
 +        readModel.setCounter("create", counterCreate);
 +        readModel.setCounter("partial_fill", readModel.countByStatus(OrderStatus.PARTIALLY_FILLED));
@@ -1302,6 +1705,10 @@ index 0000000..fb93423
 +        return marshaller == null ? 0 : marshaller.tradesBooked();
 +    }
 +
++    public long positionsUpdatedOut() {
++        return marshaller == null ? 0 : marshaller.positionsUpdated();
++    }
++
 +    public long projectedSeq() {
 +        return projector == null ? -1 : projector.projectedSeq();
 +    }
@@ -1330,10 +1737,10 @@ index 0000000..fb93423
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java
 new file mode 100644
-index 0000000..2097f07
+index 0000000..b53298d
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,58 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
@@ -1350,6 +1757,7 @@ index 0000000..2097f07
 +    private volatile long marshalledSeq = -1;
 +    private volatile long orderUpdates;
 +    private volatile long tradesBooked;
++    private volatile long positionsUpdated;
 +
 +    public MarshallerHandler(InMemoryOrderReadModel readModel, SymbolTable symbols, HotPathMetrics metrics) {
 +        this.readModel = readModel;
@@ -1360,12 +1768,15 @@ index 0000000..2097f07
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
 +        switch (e.kind) {
-+            case OutputEvent.KIND_ORDER_UPDATE -> {
++            case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
++                 OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
++                 OutputEvent.KIND_ORDER_CANCELED -> {
 +                orderUpdates++;
 +                readModel.apply(e, symbols);
 +            }
 +            case OutputEvent.KIND_ORDER_NOT_FOUND -> readModel.notFound(e.inputSeq);
 +            case OutputEvent.KIND_TRADE_BOOKED -> tradesBooked++;
++            case OutputEvent.KIND_POSITION_UPDATED -> positionsUpdated++;
 +            default -> { /* ignore */ }
 +        }
 +        metrics.recordEgressLatency(System.nanoTime() - e.ingressNanos);
@@ -1383,13 +1794,17 @@ index 0000000..2097f07
 +    public long tradesBooked() {
 +        return tradesBooked;
 +    }
++
++    public long positionsUpdated() {
++        return positionsUpdated;
++    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
 new file mode 100644
-index 0000000..10cc41a
+index 0000000..c400cdb
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
-@@ -0,0 +1,370 @@
+@@ -0,0 +1,440 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.EventHandler;
@@ -1423,6 +1838,8 @@ index 0000000..10cc41a
 +    private final IntList[] openRefsBySecurity;  // per-security open-order index
 +    private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
 +    private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
++    private final PositionBook positions;        // net positions, single-writer (FR-09B08/B10)
++    private long tradeCounter;                    // global trade number, single-writer (deterministic ids)
 +
 +    // Single-writer telemetry: only the BLP thread writes, edge threads (REST /health,
 +    // /metrics) read racily-but-safely. The counters are plain longs published by the
@@ -1436,6 +1853,7 @@ index 0000000..10cc41a
 +    private long ordersCancel;
 +    private long ordersForceFill;
 +    private long priceTicks;
++    private long tradesNew;
 +    private volatile long blpSeq = -1;
 +    private volatile long blpThreadId;
 +
@@ -1450,18 +1868,24 @@ index 0000000..10cc41a
 +    }
 +
 +    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
-+                          int fillFullThreshold, int initialPoolSize) {
++                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
 +        this.out = out;
 +        this.metrics = metrics;
 +        this.fillFullThreshold = Math.max(1, fillFullThreshold);
 +        this.ordersByRef = new RestingOrder[16_384];
 +        this.openRefsBySecurity = new IntList[maxSecurities];
 +        this.lastPxBySecurity = new long[maxSecurities];
++        this.positions = new PositionBook(positionCapacity);
 +        for (int i = 0; i < initialPoolSize; i++) {
 +            RestingOrder pooled = new RestingOrder();
 +            pooled.nextFree = freeList;
 +            freeList = pooled;
 +        }
++    }
++
++    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
++                          int fillFullThreshold, int initialPoolSize) {
++        this(out, metrics, maxSecurities, fillFullThreshold, initialPoolSize, Math.max(1024, initialPoolSize));
 +    }
 +
 +    /** BatchEventProcessor start hook: runs on the BLP thread before the first event. */
@@ -1477,6 +1901,7 @@ index 0000000..10cc41a
 +            case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
 +            case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
 +            case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
++            case InputEvent.TYPE_TRADE_NEW -> { tradesNew++; onTradeNew(e); }
 +            default -> { /* ignore unknown event types */ }
 +        }
 +        eventsProcessed++;
@@ -1509,6 +1934,18 @@ index 0000000..10cc41a
 +        index(o);
 +        if (o.isOpen()) {
 +            openRefs(securityId).add(orderRef);
++        }
++    }
++
++    /** Warm the in-memory net positions (quantity + cost basis) from the persisted POSITIONS read-model. */
++    public void bootstrapPosition(int accountId, int securityId, int quantity, long avgCostTicks) {
++        positions.put(accountId, securityId, quantity, avgCostTicks);
++    }
++
++    /** Resume the global trade counter above the persisted max so trade ids never collide across restarts. */
++    public void bootstrapTradeCounter(long lastTradeSeq) {
++        if (lastTradeSeq > tradeCounter) {
++            tradeCounter = lastTradeSeq;
 +        }
 +    }
 +
@@ -1602,6 +2039,26 @@ index 0000000..10cc41a
 +        }
 +    }
 +
++    /**
++     * Market trade from the trade ticket (FR-09B08): no order and no matching — book the trade
++     * and update the account's net position directly on the BLP thread (the single position
++     * writer), then emit TradeBooked + PositionUpdated. Deterministic: quantity, side, and time
++     * are carried in the event; the booking pipeline of trade-processor is fused in here.
++     */
++    private void onTradeNew(InputEvent e) {
++        // Stamp the trade at the BLP's current market price for the security (FR-09B40: the
++        // /trades payload carries the execution price); Px.NONE -> 0.000 at the edge when no
++        // tick has been seen yet, matching 009's trade-processor null-price handling.
++        long execPx = lastPxBySecurity[e.securityId];
++        int signedQty = e.side == InputEvent.SIDE_BUY ? e.qty : -e.qty;
++        int newPosition = positions.bookTrade(e.accountId, e.securityId, signedQty, execPx);
++        long avgCostTicks = positions.lastAvgCostTicks();
++        long tradeSeq = ++tradeCounter;
++        out.emitMarketTrade(e.accountId, e.securityId, e.side, e.qty, execPx, tradeSeq, newPosition,
++            avgCostTicks, e.seq, e.eventTimeMillis, e.ingressNanos);
++        metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
++    }
++
 +    // ----- matching policy (preserved from 009, integer math) ----------------------------
 +
 +    private boolean isInTheMoney(RestingOrder o, long px) {
@@ -1639,10 +2096,17 @@ index 0000000..10cc41a
 +            removeOpenRef(o, openIndex);
 +        }
 +
-+        // The fill's order update and its TradeBooked event (FR-09B15: booking leaves as a
-+        // typed event, off the acknowledgement path) go out as one paired claim — a single
-+        // publish, a single consumer signal.
-+        out.emitFillWithTrade(o, fillQty, e.seq, flags, marketPx, e.ingressNanos);
++        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the fill books the
++        // trade at its execution price and updates the account's net position + weighted cost
++        // basis in memory (single writer, no DB hop), then the order update, TradeBooked, and
++        // PositionUpdated events leave as one paired claim — a single publish, a single
++        // consumer signal (FR-09B15: side-effects are typed output events).
++        int signedQty = o.side == InputEvent.SIDE_BUY ? fillQty : -fillQty;
++        int newPosition = positions.bookTrade(o.accountId, o.securityId, signedQty, execPx);
++        long avgCostTicks = positions.lastAvgCostTicks();
++        long tradeSeq = ++tradeCounter;
++        out.emitFillWithTradeAndPosition(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks,
++            e.seq, flags, marketPx, e.ingressNanos);
 +        metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
 +    }
 +
@@ -1756,32 +2220,49 @@ index 0000000..10cc41a
 +        return priceTicks;
 +    }
 +
++    public long countTradesNew() {
++        readFence();
++        return tradesNew;
++    }
++
++    /**
++     * Net position for an account/security. Single-writer state read off the BLP thread; the
++     * acquire-load orders the read after the BLP's last release-store. Intended for tests and
++     * warm-start verification (read when the BLP is quiesced), not per-event edge polling.
++     */
++    public int positionQuantity(int accountId, int securityId) {
++        readFence();
++        return positions.get(accountId, securityId);
++    }
++
++    /** Weighted average cost basis (Px ticks) for an account/security; single-writer read off the BLP thread. */
++    public long positionAvgCostTicks(int accountId, int securityId) {
++        readFence();
++        return positions.avgCostTicks(accountId, securityId);
++    }
++
 +    public long blpThreadId() {
 +        return blpThreadId;
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java
 new file mode 100644
-index 0000000..1ea3706
+index 0000000..a6a0294
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,50 @@
 +package finos.traderx.ordermatcher.lmax;
 +
++import com.lmax.disruptor.EventHandler;
 +import finos.traderx.messaging.PubSubException;
 +import finos.traderx.messaging.Publisher;
 +import finos.traderx.ordermatcher.api.OrderResponse;
 +import org.slf4j.Logger;
 +import org.slf4j.LoggerFactory;
 +
-+import com.lmax.disruptor.EventHandler;
-+
 +/**
-+ * Output-ring NATS publisher (FR-09B21): bridges BLP order updates onto the exact 009
-+ * subjects (`/accounts/{accountId}/orders` and `/orders`) with the exact 009 payload shape
-+ * (OrderResponse), so every UI consumer keeps working unchanged. securityId -> ticker and
-+ * fixed-point -> decimal conversions happen here, at the edge, never in the BLP
-+ * (FR-09B25). JSON allocation is acceptable here: this handler is off the hot path.
++ * Output-ring NATS bridge for order subjects only. Direct account trade and position fan-out
++ * are handled by dedicated output handlers; this bridge preserves the existing order streams.
 + */
 +public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
 +    private static final Logger log = LoggerFactory.getLogger(NatsBridgeHandler.class);
@@ -1800,11 +2281,13 @@ index 0000000..1ea3706
 +
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-+        if (e.kind != OutputEvent.KIND_ORDER_UPDATE || !e.publishNats) {
++        if (!e.publishNats || !OutputEvent.isOrderLifecycleKind(e.kind)) {
 +            return;
 +        }
-+        // Build the payload from the event itself (handlers run in parallel; never read
-+        // sibling-handler state). Same OrderResponse contract as 009's publishOrderUpdate.
++        publishOrder(e);
++    }
++
++    private void publishOrder(OutputEvent e) {
 +        OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
 +        OrderResponse payload = OrderResponse.from(snapshot.toRecord(), Px.toBigDecimal(e.marketPx));
 +        String accountTopic = "/accounts/" + e.accountId + "/orders";
@@ -1820,10 +2303,10 @@ index 0000000..1ea3706
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OrderSnapshot.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OrderSnapshot.java
 new file mode 100644
-index 0000000..7861acb
+index 0000000..dd287d6
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OrderSnapshot.java
-@@ -0,0 +1,114 @@
+@@ -0,0 +1,135 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.model.OrderRecord;
@@ -1878,6 +2361,27 @@ index 0000000..7861acb
 +    public static String orderIdFor(int orderRef) {
 +        // 009 id scheme preserved verbatim; the numeric part is the order reference.
 +        return String.format("ord-013-%04d", orderRef);
++    }
++
++    /**
++     * Deterministic booked-trade id from the BLP's global trade number, shared by the
++     * projector (DB row id) and the NATS bridge (published id) so both agree exactly — the
++     * single-id-per-trade property 009 got from one UUID (FR-09B22/FR-09B23 idempotency).
++     */
++    public static String tradeIdFor(long tradeSeq) {
++        return "trd-09b-" + tradeSeq;
++    }
++
++    /** Inverse of {@link #tradeIdFor}: the trade number for our id scheme, or -1 if foreign. */
++    public static long tradeSeqFromId(String tradeId) {
++        if (tradeId == null || !tradeId.startsWith("trd-09b-")) {
++            return -1;
++        }
++        try {
++            return Long.parseLong(tradeId.substring("trd-09b-".length()));
++        } catch (NumberFormatException ex) {
++            return -1;
++        }
 +    }
 +
 +    public static OrderSnapshot fromEvent(OutputEvent e, SymbolTable symbols) {
@@ -1940,10 +2444,10 @@ index 0000000..7861acb
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java
 new file mode 100644
-index 0000000..7406d85
+index 0000000..5ff2f59
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputEvent.java
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,61 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +/**
@@ -1953,9 +2457,14 @@ index 0000000..7406d85
 + * end-to-end latency is recorded at egress (NFR-09B01).
 + */
 +public final class OutputEvent {
-+    public static final byte KIND_ORDER_UPDATE = 1;
-+    public static final byte KIND_TRADE_BOOKED = 2;
-+    public static final byte KIND_ORDER_NOT_FOUND = 3;
++    public static final byte KIND_ORDER_ACCEPTED = 1;
++    public static final byte KIND_ORDER_REJECTED = 2;
++    public static final byte KIND_ORDER_PARTIALLY_FILLED = 3;
++    public static final byte KIND_ORDER_FILLED = 4;
++    public static final byte KIND_ORDER_CANCELED = 5;
++    public static final byte KIND_TRADE_BOOKED = 6;
++    public static final byte KIND_POSITION_UPDATED = 7;
++    public static final byte KIND_ORDER_NOT_FOUND = 8;
 +
 +    // Lifecycle counter flags (parity with 009's traderx_order_events_total labels).
 +    public static final int FLAG_CREATE = 1;
@@ -1984,19 +2493,28 @@ index 0000000..7406d85
 +    public long updatedAtMillis;
 +    public long marketPx;         // BLP's last price for the security (Px.NONE when unknown)
 +
-+    public int tradeQty;          // KIND_TRADE_BOOKED: fill quantity to submit as a trade
++    public int tradeQty;          // KIND_TRADE_BOOKED: fill quantity booked as a trade
++    public long tradeSeq;         // KIND_TRADE_BOOKED: BLP-assigned global trade number (deterministic id)
++    public long tradePx;          // KIND_TRADE_BOOKED: stamped execution price (Px ticks; Px.NONE if no tick)
++    public int positionQty;       // KIND_POSITION_UPDATED: account's net position after the fill/trade
++    public long positionAvgCostTicks; // KIND_POSITION_UPDATED: weighted average cost basis (Px ticks)
++    public long averageCostBasisPx;   // alias retained for direct UI payloads/tests
 +    public long ingressNanos;
 +
 +    public static OutputEvent newInstance() {
 +        return new OutputEvent();
 +    }
++
++    public static boolean isOrderLifecycleKind(byte kind) {
++        return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
++    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
 new file mode 100644
-index 0000000..ef6db36
+index 0000000..52aedeb
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/OutputPublisher.java
-@@ -0,0 +1,113 @@
+@@ -0,0 +1,198 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import com.lmax.disruptor.RingBuffer;
@@ -2004,9 +2522,11 @@ index 0000000..ef6db36
 +/**
 + * The BLP's only side-effect channel (FR-09B15): claim/write/publish into the output ring.
 + * The BLP is the sole producer (ProducerType.SINGLE). No allocation per emit — fields are
-+ * written into the pre-allocated slot in place. A fill's order update and its TradeBooked
-+ * event are claimed as one pair ({@link #emitFillWithTrade}) so the BLP pays a single
-+ * publish (one consumer signal) per fill.
++ * written into the pre-allocated slot in place.
++ *
++ * Booking and position-keeping are fused into the BLP (FR-09B08/FR-09B10): a fill emits its
++ * order update, the {@code TradeBooked} event, and the resulting {@code PositionUpdated} as
++ * one claim; a market trade emits {@code TradeBooked} + {@code PositionUpdated}.
 + */
 +public final class OutputPublisher {
 +    private final RingBuffer<OutputEvent> ring;
@@ -2025,25 +2545,39 @@ index 0000000..ef6db36
 +        }
 +    }
 +
-+    /** Paired claim: fill update + TradeBooked published together, signalled once. */
-+    public void emitFillWithTrade(RestingOrder order, int fillQty, long inputSeq, int flags,
-+                                  long marketPx, long ingressNanos) {
-+        long tradeSeq = ring.next(2);
-+        long updateSeq = tradeSeq - 1;
++    /** Paired claim: fill order-update + TradeBooked + PositionUpdated, signaled once. */
++    public void emitFillWithTradeAndPosition(RestingOrder order, int fillQty, long tradePx, long tradeSeq,
++                                             int newPosition, long avgCostTicks, long inputSeq, int flags,
++                                             long marketPx, long ingressNanos) {
++        long hi = ring.next(3);
++        long updateSlot = hi - 2;
++        long tradeSlot = hi - 1;
++        long positionSlot = hi;
 +        try {
-+            writeOrderUpdate(ring.get(updateSeq), order, inputSeq, flags, true, marketPx, ingressNanos);
-+            writeTradeBooked(ring.get(tradeSeq), order, fillQty, inputSeq, ingressNanos);
++            writeOrderUpdate(ring.get(updateSlot), order, inputSeq, flags, true, marketPx, ingressNanos);
++            writeTradeBooked(ring.get(tradeSlot), order.accountId, order.securityId, order.side, fillQty,
++                tradePx, tradeSeq, inputSeq, order.updatedAtMillis, ingressNanos);
++            writePositionUpdated(ring.get(positionSlot), order.accountId, order.securityId, newPosition,
++                avgCostTicks, inputSeq, order.updatedAtMillis, ingressNanos);
 +        } finally {
-+            ring.publish(updateSeq, tradeSeq);
++            ring.publish(updateSlot, positionSlot);
 +        }
 +    }
 +
-+    public void emitTradeBooked(RestingOrder order, int fillQty, long inputSeq, long ingressNanos) {
-+        long seq = ring.next();
++    /** Market trade (FR-09B08): no order, no matching — TradeBooked + PositionUpdated. */
++    public void emitMarketTrade(int accountId, int securityId, byte side, int qty, long tradePx,
++                                long tradeSeq, int newPosition, long avgCostTicks, long inputSeq,
++                                long eventTimeMillis, long ingressNanos) {
++        long hi = ring.next(2);
++        long tradeSlot = hi - 1;
++        long positionSlot = hi;
 +        try {
-+            writeTradeBooked(ring.get(seq), order, fillQty, inputSeq, ingressNanos);
++            writeTradeBooked(ring.get(tradeSlot), accountId, securityId, side, qty, tradePx, tradeSeq,
++                inputSeq, eventTimeMillis, ingressNanos);
++            writePositionUpdated(ring.get(positionSlot), accountId, securityId, newPosition, avgCostTicks,
++                inputSeq, eventTimeMillis, ingressNanos);
 +        } finally {
-+            ring.publish(seq);
++            ring.publish(tradeSlot, positionSlot);
 +        }
 +    }
 +
@@ -2057,6 +2591,11 @@ index 0000000..ef6db36
 +            e.publishNats = false;
 +            e.orderRef = 0;
 +            e.tradeQty = 0;
++            e.tradeSeq = 0;
++            e.tradePx = Px.NONE;
++            e.positionQty = 0;
++            e.positionAvgCostTicks = 0L;
++            e.averageCostBasisPx = Px.NONE;
 +            e.marketPx = Px.NONE;
 +            e.ingressNanos = ingressNanos;
 +        } finally {
@@ -2066,7 +2605,7 @@ index 0000000..ef6db36
 +
 +    private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
 +                                         boolean publishNats, long marketPx, long ingressNanos) {
-+        e.kind = OutputEvent.KIND_ORDER_UPDATE;
++        e.kind = orderKind(order, flags);
 +        e.inputSeq = inputSeq;
 +        e.flags = flags;
 +        e.publishNats = publishNats;
@@ -2084,71 +2623,437 @@ index 0000000..ef6db36
 +        e.updatedAtMillis = order.updatedAtMillis;
 +        e.marketPx = marketPx;
 +        e.tradeQty = 0;
++        e.tradeSeq = 0;
++        e.tradePx = Px.NONE;
++        e.positionQty = 0;
++        e.positionAvgCostTicks = 0L;
++        e.averageCostBasisPx = Px.NONE;
 +        e.ingressNanos = ingressNanos;
 +    }
 +
-+    private static void writeTradeBooked(OutputEvent e, RestingOrder order, int fillQty, long inputSeq,
-+                                         long ingressNanos) {
++    private static byte orderKind(RestingOrder order, int flags) {
++        if ((flags & OutputEvent.FLAG_REJECT) != 0) {
++            return OutputEvent.KIND_ORDER_REJECTED;
++        }
++        if ((flags & OutputEvent.FLAG_CANCEL) != 0) {
++            return OutputEvent.KIND_ORDER_CANCELED;
++        }
++        if ((flags & OutputEvent.FLAG_FILL) != 0) {
++            return OutputEvent.KIND_ORDER_FILLED;
++        }
++        if ((flags & OutputEvent.FLAG_PARTIAL_FILL) != 0) {
++            return OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
++        }
++        if ((flags & OutputEvent.FLAG_CREATE) != 0) {
++            return OutputEvent.KIND_ORDER_ACCEPTED;
++        }
++        return switch (order.status) {
++            case RestingOrder.STATUS_CANCELED -> OutputEvent.KIND_ORDER_CANCELED;
++            case RestingOrder.STATUS_FILLED -> OutputEvent.KIND_ORDER_FILLED;
++            case RestingOrder.STATUS_PARTIALLY_FILLED -> OutputEvent.KIND_ORDER_PARTIALLY_FILLED;
++            default -> OutputEvent.KIND_ORDER_ACCEPTED;
++        };
++    }
++
++    private static void writeTradeBooked(OutputEvent e, int accountId, int securityId, byte side,
++                                         int fillQty, long tradePx, long tradeSeq, long inputSeq,
++                                         long updatedAtMillis, long ingressNanos) {
 +        e.kind = OutputEvent.KIND_TRADE_BOOKED;
 +        e.inputSeq = inputSeq;
 +        e.flags = 0;
 +        e.publishNats = false;
-+        e.orderRef = order.orderRef;
-+        e.accountId = order.accountId;
-+        e.securityId = order.securityId;
-+        e.side = order.side;
-+        e.quantity = order.quantity;
-+        e.remainingQty = order.remaining;
-+        e.limitPx = order.limitPx;
-+        e.status = order.status;
-+        e.lastExecPx = order.lastExecPx;
-+        e.lastFillQty = order.lastFillQty;
-+        e.createdAtMillis = order.createdAtMillis;
-+        e.updatedAtMillis = order.updatedAtMillis;
++        e.orderRef = 0;
++        e.accountId = accountId;
++        e.securityId = securityId;
++        e.side = side;
++        e.quantity = fillQty;
++        e.remainingQty = 0;
++        e.limitPx = Px.NONE;
++        e.status = 0;
++        e.lastExecPx = tradePx;
++        e.lastFillQty = fillQty;
++        e.createdAtMillis = updatedAtMillis;
++        e.updatedAtMillis = updatedAtMillis;
 +        e.marketPx = Px.NONE;
 +        e.tradeQty = fillQty;
++        e.tradeSeq = tradeSeq;
++        e.tradePx = tradePx;
++        e.positionQty = 0;
++        e.positionAvgCostTicks = 0L;
++        e.averageCostBasisPx = Px.NONE;
 +        e.ingressNanos = ingressNanos;
++    }
++
++    private static void writePositionUpdated(OutputEvent e, int accountId, int securityId, int positionQty,
++                                             long avgCostTicks, long inputSeq, long updatedAtMillis,
++                                             long ingressNanos) {
++        e.kind = OutputEvent.KIND_POSITION_UPDATED;
++        e.inputSeq = inputSeq;
++        e.flags = 0;
++        e.publishNats = false;
++        e.orderRef = 0;
++        e.accountId = accountId;
++        e.securityId = securityId;
++        e.side = 0;
++        e.quantity = 0;
++        e.remainingQty = 0;
++        e.limitPx = Px.NONE;
++        e.status = 0;
++        e.lastExecPx = Px.NONE;
++        e.lastFillQty = 0;
++        e.createdAtMillis = updatedAtMillis;
++        e.updatedAtMillis = updatedAtMillis;
++        e.marketPx = Px.NONE;
++        e.tradeQty = 0;
++        e.tradeSeq = 0;
++        e.tradePx = Px.NONE;
++        e.positionQty = positionQty;
++        e.positionAvgCostTicks = avgCostTicks;
++        e.averageCostBasisPx = avgCostTicks;
++        e.ingressNanos = ingressNanos;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionBook.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionBook.java
+new file mode 100644
+index 0000000..f13c081
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionBook.java
+@@ -0,0 +1,155 @@
++package finos.traderx.ordermatcher.lmax;
++
++/**
++ * BLP-private net-position store (state 009b, FR-09B08/FR-09B10): the single in-memory,
++ * single-writer record of {@code (accountId, securityId) -> (net quantity, average cost
++ * basis)}. Booking and position-keeping are fused into the BLP, so a fill or market trade
++ * updates the position — quantity and weighted average cost — with one in-memory call on the
++ * BLP thread: no second writer, no DB round-trip, no lock.
++ *
++ * Open-addressing primitive hash map with linear probing: the long key and the parallel
++ * {@code int} quantity / {@code long} cost-basis-in-Px-ticks values live in pre-allocated
++ * arrays, so steady-state updates allocate nothing (NGC-01). The only allocation is the rare
++ * amortized-doubling resize, a cold event, in line with {@link MatchingEngine}'s order index.
++ * No {@code HashMap}/autoboxing/streams/BigDecimal — this is a hot-path class scanned by the
++ * banned-API gate (SC-09B13); the average is kept in long fixed-point and converted to
++ * BigDecimal only at the read-model/NATS edge.
++ */
++public final class PositionBook {
++    private static final long EMPTY = Long.MIN_VALUE;
++    private static final float LOAD_FACTOR = 0.7f;
++
++    private long[] keys;
++    private int[] values;             // net quantity
++    private long[] avgCostTicks;      // weighted average cost basis, Px ticks (Px.NONE/0 when flat)
++    private int mask;
++    private int size;
++    private int resizeThreshold;
++    private long lastAvgCostTicks;    // average produced by the most recent bookTrade (BLP-thread read)
++
++    public PositionBook(int initialCapacity) {
++        int capacity = Math.max(16, Integer.highestOneBit(Math.max(1, initialCapacity - 1)) << 1);
++        allocate(capacity);
++    }
++
++    private void allocate(int capacity) {
++        this.keys = new long[capacity];
++        this.values = new int[capacity];
++        this.avgCostTicks = new long[capacity];
++        java.util.Arrays.fill(this.keys, EMPTY);
++        this.mask = capacity - 1;
++        this.resizeThreshold = (int) (capacity * LOAD_FACTOR);
++    }
++
++    private static long key(int accountId, int securityId) {
++        return ((long) accountId << 32) | (securityId & 0xFFFFFFFFL);
++    }
++
++    /**
++     * Book a trade: apply the signed quantity delta and fold the execution price into the
++     * weighted average cost basis (009 trade-processor's running-average formula, in long
++     * fixed-point). Returns the new net quantity; the new average cost basis (Px ticks) is
++     * read right after with {@link #lastAvgCostTicks()} on the same BLP thread.
++     */
++    public int bookTrade(int accountId, int securityId, int signedQty, long execPxTicks) {
++        long k = key(accountId, securityId);
++        int idx = indexOf(k);
++        boolean fresh = keys[idx] == EMPTY;
++        int oldQty = fresh ? 0 : values[idx];
++        long oldAvgTicks = fresh ? 0L : avgCostTicks[idx];
++        int newQty = oldQty + signedQty;
++        // newNotional = oldAvg*oldQty + execPx*signedQty (Px ticks), re-averaged over newQty;
++        // a flat (zero) net position resets the basis to zero, exactly as 009's processTrade.
++        long newAvgTicks = newQty == 0 ? 0L
++            : divRoundHalfUp(oldAvgTicks * (long) oldQty + execPxTicks * (long) signedQty, newQty);
++        // Write all three parallel arrays before any resize so the rehash copies this entry.
++        keys[idx] = k;
++        values[idx] = newQty;
++        avgCostTicks[idx] = newAvgTicks;
++        if (fresh && ++size >= resizeThreshold) {
++            resize();
++        }
++        lastAvgCostTicks = newAvgTicks;
++        return newQty;
++    }
++
++    /** Average cost basis (Px ticks) produced by the most recent {@link #bookTrade} call. */
++    public long lastAvgCostTicks() {
++        return lastAvgCostTicks;
++    }
++
++    /** Absolute set, used for warm-start bootstrap from the persisted POSITIONS read-model. */
++    public void put(int accountId, int securityId, int quantity, long avgCostTicks) {
++        long k = key(accountId, securityId);
++        int idx = indexOf(k);
++        boolean fresh = keys[idx] == EMPTY;
++        if (fresh) {
++            keys[idx] = k;
++        }
++        values[idx] = quantity;
++        this.avgCostTicks[idx] = avgCostTicks;
++        if (fresh && ++size >= resizeThreshold) {
++            resize();
++        }
++    }
++
++    public int get(int accountId, int securityId) {
++        int idx = indexOf(key(accountId, securityId));
++        return keys[idx] == EMPTY ? 0 : values[idx];
++    }
++
++    /** Average cost basis (Px ticks) currently stored for the position; 0 when flat/unknown. */
++    public long avgCostTicks(int accountId, int securityId) {
++        int idx = indexOf(key(accountId, securityId));
++        return keys[idx] == EMPTY ? 0L : avgCostTicks[idx];
++    }
++
++    public int size() {
++        return size;
++    }
++
++    private int indexOf(long k) {
++        int idx = (int) (mix(k) & mask);
++        while (keys[idx] != EMPTY && keys[idx] != k) {
++            idx = (idx + 1) & mask;
++        }
++        return idx;
++    }
++
++    private void resize() {
++        long[] oldKeys = keys;
++        int[] oldValues = values;
++        long[] oldAvg = avgCostTicks;
++        allocate(oldKeys.length << 1);
++        size = 0;
++        for (int i = 0; i < oldKeys.length; i++) {
++            if (oldKeys[i] != EMPTY) {
++                int idx = indexOf(oldKeys[i]);
++                keys[idx] = oldKeys[i];
++                values[idx] = oldValues[i];
++                avgCostTicks[idx] = oldAvg[i];
++                size++;
++            }
++        }
++    }
++
++    /** Fibonacci-style mix so sequential account/security ids scatter across buckets. */
++    private static long mix(long k) {
++        long h = k * 0x9E3779B97F4A7C15L;
++        return h ^ (h >>> 32);
++    }
++
++    /**
++     * Round-half-away-from-zero integer division for the weighted average. The 6dp tick
++     * scale is three decimals finer than the 3dp the edge renders, so this is exact for every
++     * value the read-model emits; primitive-only (no BigDecimal) to stay banned-API clean.
++     */
++    private static long divRoundHalfUp(long num, long den) {
++        if (den < 0) {
++            num = -num;
++            den = -den;
++        }
++        long half = den >> 1;
++        return num >= 0 ? (num + half) / den : -((-num + half) / den);
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdate.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdate.java
+new file mode 100644
+index 0000000..e2ab9db
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdate.java
+@@ -0,0 +1,67 @@
++package finos.traderx.ordermatcher.lmax;
++
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.util.Date;
++
++/**
++ * 009-compatible `/accounts/{accountId}/positions` payload emitted at the output edge
++ * from PositionUpdated. Field names match the existing position-service/web UI contract.
++ */
++public final class PositionUpdate {
++    private Integer accountId;
++    private String security;
++    private Integer quantity;
++    private BigDecimal averageCostBasis;
++    private Date updated;
++
++    public Integer getAccountId() {
++        return accountId;
++    }
++
++    public void setAccountId(Integer accountId) {
++        this.accountId = accountId;
++    }
++
++    public String getSecurity() {
++        return security;
++    }
++
++    public void setSecurity(String security) {
++        this.security = security;
++    }
++
++    public Integer getQuantity() {
++        return quantity;
++    }
++
++    public void setQuantity(Integer quantity) {
++        this.quantity = quantity;
++    }
++
++    public BigDecimal getAverageCostBasis() {
++        return averageCostBasis;
++    }
++
++    public void setAverageCostBasis(BigDecimal averageCostBasis) {
++        this.averageCostBasis = averageCostBasis == null ? null : averageCostBasis.setScale(3, RoundingMode.HALF_UP);
++    }
++
++    public Date getUpdated() {
++        return updated;
++    }
++
++    public void setUpdated(Date updated) {
++        this.updated = updated;
++    }
++
++    public static PositionUpdate fromEvent(OutputEvent e, SymbolTable symbols) {
++        PositionUpdate payload = new PositionUpdate();
++        payload.setAccountId(e.accountId);
++        payload.setSecurity(symbols.tickerFor(e.securityId));
++        payload.setQuantity(e.positionQty);
++        payload.setAverageCostBasis(e.averageCostBasisPx == Px.NONE ? null : Px.toBigDecimal(e.averageCostBasisPx));
++        payload.setUpdated(new Date(e.updatedAtMillis));
++        return payload;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdateHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdateHandler.java
+new file mode 100644
+index 0000000..48aa47a
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/PositionUpdateHandler.java
+@@ -0,0 +1,42 @@
++package finos.traderx.ordermatcher.lmax;
++
++import com.lmax.disruptor.EventHandler;
++import finos.traderx.messaging.PubSubException;
++import finos.traderx.messaging.Publisher;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++/**
++ * Output-ring PositionUpdated bridge. Publishes the UI's existing account position subject
++ * directly from the output disruptor.
++ */
++public final class PositionUpdateHandler implements EventHandler<OutputEvent> {
++    private static final Logger log = LoggerFactory.getLogger(PositionUpdateHandler.class);
++
++    private final Publisher<PositionUpdate> positionPublisher;
++    private final SymbolTable symbols;
++    private final InMemoryOrderReadModel readModel;
++
++    public PositionUpdateHandler(Publisher<PositionUpdate> positionPublisher, SymbolTable symbols,
++                                 InMemoryOrderReadModel readModel) {
++        this.positionPublisher = positionPublisher;
++        this.symbols = symbols;
++        this.readModel = readModel;
++    }
++
++    @Override
++    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
++        if (e.kind != OutputEvent.KIND_POSITION_UPDATED) {
++            return;
++        }
++        PositionUpdate payload = PositionUpdate.fromEvent(e, symbols);
++        String accountTopic = "/accounts/" + e.accountId + "/positions";
++        try {
++            positionPublisher.publish(accountTopic, payload);
++        } catch (PubSubException ex) {
++            readModel.positionPublishFailures().increment();
++            log.warn("PositionUpdated publish failed for account {} security {}", e.accountId,
++                payload.getSecurity(), ex);
++        }
 +    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
 new file mode 100644
-index 0000000..b296b55
+index 0000000..7723896
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ProjectorHandler.java
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,161 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import finos.traderx.ordermatcher.model.OrderRecord;
++import finos.traderx.ordermatcher.model.Position;
++import finos.traderx.ordermatcher.model.PositionID;
++import finos.traderx.ordermatcher.model.Trade;
++import finos.traderx.ordermatcher.model.TradeSide;
++import finos.traderx.ordermatcher.model.TradeState;
 +import finos.traderx.ordermatcher.repository.OrderRepository;
++import finos.traderx.ordermatcher.repository.PositionRepository;
++import finos.traderx.ordermatcher.repository.TradeRepository;
 +import org.slf4j.Logger;
 +import org.slf4j.LoggerFactory;
 +
 +import com.lmax.disruptor.EventHandler;
 +
 +import java.util.ArrayList;
++import java.util.Date;
++import java.util.LinkedHashMap;
 +import java.util.List;
++import java.util.Map;
 +
 +/**
-+ * Async read-model projector (FR-09B22..FR-09B24): batch-writes order rows into the shared
-+ * `OrderBook` table off the acknowledgement path. The schema and writer semantics match
-+ * 009's inline JPA persistence; only the path changes. A slow or down database degrades to
-+ * projector lag (rows buffered and retried on the next batch), never to matching failure.
++ * Async read-model projector (FR-09B22..FR-09B24): batch-writes the order, trade, and
++ * position rows off the acknowledgement path. With booking + position-keeping fused into the
++ * BLP, this handler is now the sole writer of the {@code OrderBook}, {@code TRADES}, and
++ * {@code POSITIONS} tables (replacing trade-processor's inline JPA). Schema and row semantics
++ * match 009; only the writer and path changed. A slow or down database degrades to projector
++ * lag (rows buffered, retried next batch), never to matching failure.
 + */
 +public final class ProjectorHandler implements EventHandler<OutputEvent> {
 +    private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
 +    private static final int MAX_BUFFERED_ROWS = 10_000;
 +
-+    private final OrderRepository repository;
++    private final OrderRepository orderRepository;
++    private final TradeRepository tradeRepository;
++    private final PositionRepository positionRepository;
 +    private final SymbolTable symbols;
 +    private final int batchSize;
 +    private final HotPathMetrics metrics;
-+    private final List<OrderRecord> buffer = new ArrayList<>();
++    private final List<OrderRecord> orderBuffer = new ArrayList<>();
++    private final List<Trade> tradeBuffer = new ArrayList<>();
++    // Positions dedupe within a batch: only the latest net quantity per (account, security) needs writing.
++    private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
 +    private volatile long projectedSeq = -1;
 +    private volatile long pendingRows;
 +
-+    public ProjectorHandler(OrderRepository repository, SymbolTable symbols, int batchSize,
++    public ProjectorHandler(OrderRepository orderRepository, TradeRepository tradeRepository,
++                            PositionRepository positionRepository, SymbolTable symbols, int batchSize,
 +                            HotPathMetrics metrics) {
-+        this.repository = repository;
++        this.orderRepository = orderRepository;
++        this.tradeRepository = tradeRepository;
++        this.positionRepository = positionRepository;
 +        this.symbols = symbols;
 +        this.batchSize = Math.max(1, batchSize);
 +        this.metrics = metrics;
@@ -2156,31 +3061,96 @@ index 0000000..b296b55
 +
 +    @Override
 +    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-+        if (e.kind == OutputEvent.KIND_ORDER_UPDATE && e.flags != 0) {
-+            // flags==0 updates are republished unchanged state (no persistence in 009 either)
-+            buffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());
++        switch (e.kind) {
++            case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
++                 OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
++                 OutputEvent.KIND_ORDER_CANCELED -> {
++                // flags==0 updates are republished unchanged state (no persistence in 009 either)
++                if (e.flags != 0) {
++                    orderBuffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());
++                }
++            }
++            case OutputEvent.KIND_TRADE_BOOKED -> tradeBuffer.add(toTrade(e));
++            case OutputEvent.KIND_POSITION_UPDATED -> {
++                Position p = toPosition(e);
++                positionBuffer.put(new PositionID(p.getAccountId(), p.getSecurity()), p);
++            }
++            default -> { /* KIND_ORDER_NOT_FOUND: nothing to persist */ }
 +        }
-+        if (!buffer.isEmpty() && (endOfBatch || buffer.size() >= batchSize)) {
++        int buffered = orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
++        if (buffered > 0 && (endOfBatch || buffered >= batchSize)) {
 +            flush(sequence);
 +        }
-+        pendingRows = buffer.size();
++        pendingRows = orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
++    }
++
++    private Trade toTrade(OutputEvent e) {
++        Trade trade = new Trade();
++        trade.setId(OrderSnapshot.tradeIdFor(e.tradeSeq));
++        trade.setAccountId(e.accountId);
++        trade.setSecurity(symbols.tickerFor(e.securityId));
++        trade.setSide(e.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
++        trade.setQuantity(e.tradeQty);
++        trade.setPrice(Px.toDecimalOrZero(e.tradePx));   // stamped execution price (0.000 if no tick), FR-09B40
++        trade.setState(TradeState.Settled);
++        Date when = new Date(e.updatedAtMillis);   // event-carried time (deterministic), not wall clock
++        trade.setCreated(when);
++        trade.setUpdated(when);
++        return trade;
++    }
++
++    private Position toPosition(OutputEvent e) {
++        Position position = new Position();
++        position.setAccountId(e.accountId);
++        position.setSecurity(symbols.tickerFor(e.securityId));
++        position.setQuantity(e.positionQty);
++        position.setAverageCostBasis(Px.toDecimalOrZero(e.positionAvgCostTicks));   // weighted cost basis, FR-09B40
++        position.setUpdated(new Date(e.updatedAtMillis));
++        return position;
 +    }
 +
 +    private void flush(long sequence) {
 +        try {
-+            repository.saveAll(buffer);
-+            metrics.recordProjectorBatch(buffer.size());
-+            buffer.clear();
++            int rows = orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
++            if (!orderBuffer.isEmpty()) {
++                orderRepository.saveAll(orderBuffer);
++                orderBuffer.clear();
++            }
++            if (!tradeBuffer.isEmpty()) {
++                tradeRepository.saveAll(tradeBuffer);
++                tradeBuffer.clear();
++            }
++            if (!positionBuffer.isEmpty()) {
++                positionRepository.saveAll(positionBuffer.values());
++                positionBuffer.clear();
++            }
++            metrics.recordProjectorBatch(rows);
 +            projectedSeq = sequence;
 +        } catch (Exception ex) {
-+            // DB unavailable: lag and catch up later (FR-09B24). Bound the buffer so a long
-+            // outage cannot exhaust memory; oldest rows drop first (they are superseded by
-+            // newer snapshots of the same orders in most cases).
-+            if (buffer.size() > MAX_BUFFERED_ROWS) {
-+                buffer.subList(0, buffer.size() - MAX_BUFFERED_ROWS).clear();
++            // DB unavailable: lag and catch up later (FR-09B24). Bound each buffer so a long
++            // outage cannot exhaust memory; oldest rows drop first (superseded by newer snapshots).
++            trimToBound(orderBuffer);
++            trimToBound(tradeBuffer);
++            trimMapToBound(positionBuffer);
++            log.warn("Read-model projection failed at seq {} ({}/{}/{} order/trade/position rows buffered): {}",
++                sequence, orderBuffer.size(), tradeBuffer.size(), positionBuffer.size(), ex.getMessage());
++        }
++    }
++
++    private static void trimToBound(List<?> buffer) {
++        if (buffer.size() > MAX_BUFFERED_ROWS) {
++            buffer.subList(0, buffer.size() - MAX_BUFFERED_ROWS).clear();
++        }
++    }
++
++    private static void trimMapToBound(Map<?, ?> buffer) {
++        if (buffer.size() > MAX_BUFFERED_ROWS) {
++            var it = buffer.keySet().iterator();
++            int toDrop = buffer.size() - MAX_BUFFERED_ROWS;
++            for (int i = 0; i < toDrop && it.hasNext(); i++) {
++                it.next();
++                it.remove();
 +            }
-+            log.warn("Read-model projection failed at seq {} ({} rows buffered): {}", sequence,
-+                buffer.size(), ex.getMessage());
 +        }
 +    }
 +
@@ -2194,10 +3164,10 @@ index 0000000..b296b55
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Px.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Px.java
 new file mode 100644
-index 0000000..c87dbc8
+index 0000000..a4dec7a
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/Px.java
-@@ -0,0 +1,36 @@
+@@ -0,0 +1,46 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import java.math.BigDecimal;
@@ -2233,6 +3203,16 @@ index 0000000..c87dbc8
 +        }
 +        return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
 +    }
++
++    /**
++     * Edge conversion out for monetary fields where zero is a real value, not "absent": a
++     * booked trade's execution price and a position's average cost basis are 0.000 (never
++     * null) when no market price has been seen, matching 009's trade-processor which stamps
++     * {@code BigDecimal.ZERO} rather than leaving the column null (FR-09B40 contract parity).
++     */
++    public static BigDecimal toDecimalOrZero(long ticks) {
++        return BigDecimal.valueOf(ticks, 6).setScale(3, RoundingMode.HALF_UP);
++    }
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ReplicatorStub.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/ReplicatorStub.java
 new file mode 100644
@@ -2265,7 +3245,7 @@ index 0000000..8ae455a
 +}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java
 new file mode 100644
-index 0000000..84bc3dd
+index 0000000..000d4f4
 --- /dev/null
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/RestingOrder.java
 @@ -0,0 +1,53 @@
@@ -2278,7 +3258,7 @@ index 0000000..84bc3dd
 + * process — terminal orders stay addressable in the book so cancel/force-fill of a
 + * completed order reproduces 009's "return it unchanged" semantics (FR-09B13) — so the
 + * steady state allocates nothing while the pre-allocated pool lasts; beyond it, growth
-+ * follows the same amortised-doubling rule as the indexes. Recycling terminal entries
++ * follows the same amortized-doubling rule as the indexes. Recycling terminal entries
 + * (and bounding the book) arrives with the snapshot/eviction milestone (T09B14).
 + */
 +public final class RestingOrder {
@@ -2381,15 +3361,506 @@ index 0000000..c06e6c8
 +        return nextId.get();
 +    }
 +}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java
+new file mode 100644
+index 0000000..d8ff0bd
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeOrder.java
+@@ -0,0 +1,89 @@
++package finos.traderx.ordermatcher.lmax;
++
++import finos.traderx.ordermatcher.model.OrderSide;
++
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++
++/**
++ * 009-compatible `/trades` payload emitted at the output edge from TradeBooked.
++ * The class name is intentionally `TradeOrder`: NatsEnvelope.type is derived from
++ * the payload simple class name, and the existing trade processor filters for that
++ * legacy type before deserializing.
++ */
++public final class TradeOrder {
++    private String id;
++    private String state;
++    private String security;
++    private Integer quantity;
++    private BigDecimal price;
++    private Integer accountId;
++    private OrderSide side;
++
++    public String getId() {
++        return id;
++    }
++
++    public void setId(String id) {
++        this.id = id;
++    }
++
++    public String getState() {
++        return state;
++    }
++
++    public void setState(String state) {
++        this.state = state;
++    }
++
++    public String getSecurity() {
++        return security;
++    }
++
++    public void setSecurity(String security) {
++        this.security = security;
++    }
++
++    public Integer getQuantity() {
++        return quantity;
++    }
++
++    public void setQuantity(Integer quantity) {
++        this.quantity = quantity;
++    }
++
++    public BigDecimal getPrice() {
++        return price;
++    }
++
++    public void setPrice(BigDecimal price) {
++        this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
++    }
++
++    public Integer getAccountId() {
++        return accountId;
++    }
++
++    public void setAccountId(Integer accountId) {
++        this.accountId = accountId;
++    }
++
++    public OrderSide getSide() {
++        return side;
++    }
++
++    public void setSide(OrderSide side) {
++        this.side = side;
++    }
++
++    public static TradeOrder fromEvent(OutputEvent e, SymbolTable symbols) {
++        TradeOrder payload = new TradeOrder();
++        payload.setId(OrderSnapshot.orderIdFor(e.orderRef));
++        payload.setSecurity(symbols.tickerFor(e.securityId));
++        payload.setQuantity(e.tradeQty);
++        payload.setPrice(Px.toBigDecimal(e.lastExecPx));
++        payload.setAccountId(e.accountId);
++        payload.setSide(OrderSide.values()[e.side]);
++        return payload;
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
+new file mode 100644
+index 0000000..34bf8b4
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/TradeSubmitHandler.java
+@@ -0,0 +1,48 @@
++package finos.traderx.ordermatcher.lmax;
++
++import finos.traderx.messaging.PubSubException;
++import finos.traderx.messaging.Publisher;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++
++import com.lmax.disruptor.EventHandler;
++
++/**
++ * Optional Output-ring TradeBooked bridge for the unchanged 009 `/trades` subject.
++ * Full Option B UI fan-out does not depend on this handler; enable it only for
++ * compatibility, debug, or non-UI consumers.
++ */
++public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
++    private static final Logger log = LoggerFactory.getLogger(TradeSubmitHandler.class);
++    private static final String TRADES_TOPIC = "/trades";
++
++    private final Publisher<TradeOrder> tradePublisher;
++    private final SymbolTable symbols;
++    private final InMemoryOrderReadModel readModel;
++
++    public TradeSubmitHandler(Publisher<TradeOrder> tradePublisher, SymbolTable symbols,
++                              InMemoryOrderReadModel readModel) {
++        this.tradePublisher = tradePublisher;
++        this.symbols = symbols;
++        this.readModel = readModel;
++    }
++
++    @Override
++    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
++        if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
++            return;
++        }
++        TradeOrder payload = TradeOrder.fromEvent(e, symbols);
++        try {
++            tradePublisher.publish(TRADES_TOPIC, payload);
++        } catch (PubSubException ex) {
++            recordFailure(e, ex);
++        }
++    }
++
++    private void recordFailure(OutputEvent e, Exception ex) {
++        readModel.tradeSubmitFailures().increment();
++        log.warn("TradeBooked publish failed for order {} (qty {})", OrderSnapshot.orderIdFor(e.orderRef),
++            e.tradeQty, ex);
++    }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Position.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Position.java
+new file mode 100644
+index 0000000..db0988e
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Position.java
+@@ -0,0 +1,84 @@
++package finos.traderx.ordermatcher.model;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.Id;
++import jakarta.persistence.IdClass;
++import jakarta.persistence.Table;
++import java.io.Serial;
++import java.io.Serializable;
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.util.Date;
++
++/**
++ * Net-position read-model row (POSITIONS). State 009b: the BLP is the single position writer
++ * (FR-09B10) and the order-matcher Projector persists the result (FR-09B22). Schema and shape
++ * are identical to 009 — only the writer changed (the BLP keeps the running net quantity and
++ * weighted {@code AVERAGECOSTBASIS} on the single thread, FR-09B40 contract parity).
++ */
++@Entity
++@IdClass(PositionID.class)
++@Table(name = "POSITIONS")
++public class Position implements Serializable {
++
++  @Serial
++  private static final long serialVersionUID = 1L;
++
++  @Id
++  @Column(name = "ACCOUNTID")
++  private Integer accountId;
++
++  @Id
++  @Column(length = 50, name = "SECURITY")
++  private String security;
++
++  @Column(name = "QUANTITY")
++  private Integer quantity;
++
++  @Column(name = "AVERAGECOSTBASIS", precision = 18, scale = 3)
++  private BigDecimal averageCostBasis;
++
++  @Column(name = "UPDATED")
++  private Date updated;
++
++  public Integer getAccountId() {
++    return accountId;
++  }
++
++  public void setAccountId(Integer accountId) {
++    this.accountId = accountId;
++  }
++
++  public String getSecurity() {
++    return security;
++  }
++
++  public void setSecurity(String security) {
++    this.security = security;
++  }
++
++  public Integer getQuantity() {
++    return quantity;
++  }
++
++  public void setQuantity(Integer quantity) {
++    this.quantity = quantity;
++  }
++
++  public BigDecimal getAverageCostBasis() {
++    return averageCostBasis;
++  }
++
++  public void setAverageCostBasis(BigDecimal averageCostBasis) {
++    this.averageCostBasis = averageCostBasis == null ? null : averageCostBasis.setScale(3, RoundingMode.HALF_UP);
++  }
++
++  public Date getUpdated() {
++    return updated;
++  }
++
++  public void setUpdated(Date updated) {
++    this.updated = updated;
++  }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/model/PositionID.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/PositionID.java
+new file mode 100644
+index 0000000..c8e2d67
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/PositionID.java
+@@ -0,0 +1,36 @@
++package finos.traderx.ordermatcher.model;
++
++import java.io.Serializable;
++import java.util.Objects;
++
++/** Composite key for {@link Position} (accountId + security). Copied from trade-processor. */
++public class PositionID implements Serializable {
++  private Integer accountId;
++  private String security;
++
++  public PositionID() {
++    // JPA
++  }
++
++  public PositionID(Integer accountId, String security) {
++    this.accountId = accountId;
++    this.security = security;
++  }
++
++  @Override
++  public boolean equals(Object o) {
++    if (this == o) {
++      return true;
++    }
++    if (o == null || getClass() != o.getClass()) {
++      return false;
++    }
++    PositionID that = (PositionID) o;
++    return Objects.equals(accountId, that.accountId) && Objects.equals(security, that.security);
++  }
++
++  @Override
++  public int hashCode() {
++    return Objects.hash(accountId, security);
++  }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Trade.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Trade.java
+new file mode 100644
+index 0000000..36eed03
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/Trade.java
+@@ -0,0 +1,129 @@
++package finos.traderx.ordermatcher.model;
++
++import jakarta.persistence.Column;
++import jakarta.persistence.Entity;
++import jakarta.persistence.EnumType;
++import jakarta.persistence.Enumerated;
++import jakarta.persistence.Id;
++import jakarta.persistence.Table;
++import java.io.Serial;
++import java.io.Serializable;
++import java.math.BigDecimal;
++import java.math.RoundingMode;
++import java.util.Date;
++
++/**
++ * Booked-trade read-model row (TRADES). State 009b: written by the order-matcher
++ * read-model Projector off the output ring (FR-09B22) instead of inline by trade-processor.
++ * Schema and shape are identical to 009 — only the writer changed (the {@code PRICE} column
++ * carries the stamped execution price, FR-09B40 contract parity).
++ */
++@Entity
++@Table(name = "TRADES")
++public class Trade implements Serializable {
++
++  @Serial
++  private static final long serialVersionUID = 1L;
++
++  @Id
++  @Column(length = 100, name = "ID")
++  private String id;
++
++  @Column(name = "ACCOUNTID")
++  private Integer accountId;
++
++  @Column(length = 50, name = "SECURITY")
++  private String security;
++
++  @Enumerated(EnumType.STRING)
++  @Column(length = 4, name = "SIDE")
++  private TradeSide side;
++
++  @Enumerated(EnumType.STRING)
++  @Column(length = 20, name = "STATE")
++  private TradeState state = TradeState.New;
++
++  @Column(name = "QUANTITY")
++  private Integer quantity;
++
++  @Column(name = "PRICE", precision = 18, scale = 3)
++  private BigDecimal price;
++
++  @Column(name = "UPDATED")
++  private Date updated;
++
++  @Column(name = "CREATED")
++  private Date created;
++
++  public String getId() {
++    return id;
++  }
++
++  public void setId(String id) {
++    this.id = id;
++  }
++
++  public Integer getAccountId() {
++    return accountId;
++  }
++
++  public void setAccountId(Integer accountId) {
++    this.accountId = accountId;
++  }
++
++  public String getSecurity() {
++    return security;
++  }
++
++  public void setSecurity(String security) {
++    this.security = security;
++  }
++
++  public TradeSide getSide() {
++    return side;
++  }
++
++  public void setSide(TradeSide side) {
++    this.side = side;
++  }
++
++  public TradeState getState() {
++    return state;
++  }
++
++  public void setState(TradeState state) {
++    this.state = state;
++  }
++
++  public Integer getQuantity() {
++    return quantity;
++  }
++
++  public void setQuantity(Integer quantity) {
++    this.quantity = quantity;
++  }
++
++  public BigDecimal getPrice() {
++    return price;
++  }
++
++  public void setPrice(BigDecimal price) {
++    this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
++  }
++
++  public Date getUpdated() {
++    return updated;
++  }
++
++  public void setUpdated(Date updated) {
++    this.updated = updated;
++  }
++
++  public Date getCreated() {
++    return created;
++  }
++
++  public void setCreated(Date created) {
++    this.created = created;
++  }
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeSide.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeSide.java
+new file mode 100644
+index 0000000..c4d6b54
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeSide.java
+@@ -0,0 +1,10 @@
++package finos.traderx.ordermatcher.model;
++
++/**
++ * Trade direction (Buy/Sell). Copied from trade-processor's model so the booked-trade rows
++ * and NATS payloads order-matcher now produces (FR-09B08/FR-09B22) match 009 byte-for-byte.
++ */
++public enum TradeSide {
++  Buy,
++  Sell
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeState.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeState.java
+new file mode 100644
+index 0000000..3359ac8
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/model/TradeState.java
+@@ -0,0 +1,12 @@
++package finos.traderx.ordermatcher.model;
++
++/**
++ * Trade lifecycle state. Copied from trade-processor's model for read-model contract parity
++ * (the projector writes booked trades as {@code Settled}, matching 009's terminal state).
++ */
++public enum TradeState {
++  New,
++  Processing,
++  Settled,
++  Cancelled
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/PositionRepository.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/PositionRepository.java
+new file mode 100644
+index 0000000..7b6eac8
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/PositionRepository.java
+@@ -0,0 +1,15 @@
++package finos.traderx.ordermatcher.repository;
++
++import finos.traderx.ordermatcher.model.Position;
++import finos.traderx.ordermatcher.model.PositionID;
++import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.stereotype.Repository;
++
++/**
++ * Read-model writer + warm-start source for net positions (POSITIONS). State 009b: the BLP is
++ * the single position writer (FR-09B10); the Projector persists results and the engine warms
++ * the in-memory PositionBook from here at startup (FR-09B16 recovery parity).
++ */
++@Repository
++public interface PositionRepository extends JpaRepository<Position, PositionID> {
++}
+diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/TradeRepository.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/TradeRepository.java
+new file mode 100644
+index 0000000..79b4d63
+--- /dev/null
++++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/repository/TradeRepository.java
+@@ -0,0 +1,13 @@
++package finos.traderx.ordermatcher.repository;
++
++import finos.traderx.ordermatcher.model.Trade;
++import org.springframework.data.jpa.repository.JpaRepository;
++import org.springframework.stereotype.Repository;
++
++/**
++ * Read-model writer for booked trades (TRADES). State 009b: the order-matcher Projector
++ * persists trades off the output ring (FR-09B22), replacing trade-processor's inline JPA.
++ */
++@Repository
++public interface TradeRepository extends JpaRepository<Trade, String> {
++}
 diff --git a/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java b/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
-index c09543c..49fa3e5 100644
+index c09543c..ff7dee2 100644
 --- a/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
 +++ b/order-matcher/src/main/java/finos/traderx/ordermatcher/service/OrderMatcherService.java
-@@ -1,235 +1,161 @@
+@@ -1,235 +1,177 @@
  package finos.traderx.ordermatcher.service;
- 
+
 -import finos.traderx.messaging.PubSubException;
 -import finos.traderx.messaging.Publisher;
++import finos.traderx.ordermatcher.api.MarketTradeRequest;
  import finos.traderx.ordermatcher.api.OpenCountResponse;
  import finos.traderx.ordermatcher.api.OrderCreateRequest;
  import finos.traderx.ordermatcher.api.OrderResponse;
@@ -2410,7 +3881,7 @@ index c09543c..49fa3e5 100644
  import org.springframework.util.StringUtils;
 -import org.springframework.web.client.RestTemplate;
  import org.springframework.web.server.ResponseStatusException;
- 
+
  import java.math.BigDecimal;
  import java.math.RoundingMode;
  import java.time.Instant;
@@ -2428,12 +3899,12 @@ index c09543c..49fa3e5 100644
 -import java.util.concurrent.locks.ReentrantLock;
  import java.util.regex.Matcher;
  import java.util.regex.Pattern;
- 
+
 -import static org.springframework.http.HttpStatus.BAD_GATEWAY;
  import static org.springframework.http.HttpStatus.BAD_REQUEST;
 +import static org.springframework.http.HttpStatus.GATEWAY_TIMEOUT;
  import static org.springframework.http.HttpStatus.NOT_FOUND;
- 
+
 +/**
 + * State 009b: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
 + *
@@ -2450,7 +3921,7 @@ index c09543c..49fa3e5 100644
      private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ord-013-(\\d{4,})$");
 -    private static final String ALL_ORDERS_TOPIC = "/orders";
 -    private static final Set<OrderStatus> OPEN_STATUSES = Set.of(OrderStatus.NEW, OrderStatus.PARTIALLY_FILLED);
- 
+
 -    private final OrderRepository orderRepository;
 -    private final Publisher<OrderResponse> orderPublisher;
 -    private final RestTemplate restTemplate;
@@ -2472,7 +3943,7 @@ index c09543c..49fa3e5 100644
 -    private final Map<String, BigDecimal> lastPrices = new ConcurrentHashMap<>();
 -    private final ReentrantLock orderMutationLock = new ReentrantLock();
 -    private volatile Instant lastTickAt;
- 
+
      public OrderMatcherService(
 -        OrderRepository orderRepository,
 -        Publisher<OrderResponse> orderPublisher,
@@ -2498,7 +3969,7 @@ index c09543c..49fa3e5 100644
 -        initializeCounters();
 -        initializeData();
      }
- 
+
 -    @Scheduled(fixedDelayString = "${order.matcher.tick-ms:1000}")
 -    public void runMatcherTick() {
 -        List<OrderRecord> openOrders = orderRepository.findAllByOrderByUpdatedAtDesc().stream()
@@ -2516,7 +3987,7 @@ index c09543c..49fa3e5 100644
 -        lastTickAt = Instant.now();
 -    }
 +    // ----- gateway ingress (price ticks become sequenced PRICE_TICK events, FR-09B06) -----
- 
+
      public void onPriceTick(String ticker, BigDecimal marketPrice) {
          if (!StringUtils.hasText(ticker) || marketPrice == null) {
              return;
@@ -2542,45 +4013,30 @@ index c09543c..49fa3e5 100644
 +        readModel.recordPrice(normalizedTicker, normalizedPrice);
 +        engine.submitPriceTick(normalizedTicker, normalizedPrice);
      }
- 
+
 -    public List<OrderResponse> listOrders(String statusFilter, Integer accountIdFilter) {
 -        String normalizedStatus = StringUtils.hasText(statusFilter) ? statusFilter.trim().toLowerCase(Locale.ROOT) : "open";
 -        List<OrderRecord> rows = new ArrayList<>(orderRepository.findAllByOrderByUpdatedAtDesc());
-+    // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
- 
+-
 -        rows = rows.stream()
 -            .filter(order -> filterByStatus(order, normalizedStatus))
 -            .filter(order -> accountIdFilter == null || order.getAccountId().equals(accountIdFilter))
 -            .sorted(Comparator.comparing(OrderRecord::getUpdatedAt).reversed())
 -            .toList();
-+    public OrderResponse createOrder(OrderCreateRequest request) {
-+        validateCreateRequest(request);
-+        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
-+        int orderRef = engine.nextOrderRef();
-+        OrderSnapshot snapshot = run(() -> engine.executeNewOrder(
-+            orderRef, request.getAccountId(), ticker, request.getSide(),
-+            request.getQuantity(), roundPrice(request.getLimitPrice())));
-+        return toResponse(snapshot);
-+    }
- 
+-
 -        return rows.stream()
 -            .map(order -> OrderResponse.from(order, lastPrices.get(order.getSecurity())))
 -            .toList();
-+    public OrderResponse cancelOrder(String orderId) {
-+        OrderSnapshot snapshot = run(() -> engine.executeCancel(parseOrderRef(orderId)));
-+        return toResponse(snapshot);
-     }
- 
+-    }
+-
 -    public OrderResponse getOrder(String orderId) {
 -        OrderRecord order = findOrder(orderId);
 -        return OrderResponse.from(order, lastPrices.get(order.getSecurity()));
-+    public OrderResponse forceFillOrder(String orderId) {
-+        OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
-+        return toResponse(snapshot);
-     }
- 
--    public OrderResponse createOrder(OrderCreateRequest request) {
--        validateCreateRequest(request);
+-    }
++    // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
+
+     public OrderResponse createOrder(OrderCreateRequest request) {
+         validateCreateRequest(request);
 -        orderMutationLock.lock();
 -        try {
 -            OrderRecord order = new OrderRecord();
@@ -2600,16 +4056,15 @@ index c09543c..49fa3e5 100644
 -        } finally {
 -            orderMutationLock.unlock();
 -        }
-+    /**
-+     * Retained for controller compatibility: in 009 the controller re-published command
-+     * responses onto the order subjects. In 009b every lifecycle transition is published by
-+     * the output-disruptor NATS bridge (exactly once), so this is intentionally a no-op.
-+     */
-+    public void publishOrderUpdate(OrderResponse order) {
-+        // no-op: the output ring's NATS bridge owns subject publication (FR-09B21)
++        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
++        int orderRef = engine.nextOrderRef();
++        OrderSnapshot snapshot = run(() -> engine.executeNewOrder(
++            orderRef, request.getAccountId(), ticker, request.getSide(),
++            request.getQuantity(), roundPrice(request.getLimitPrice())));
++        return toResponse(snapshot);
      }
- 
--    public OrderResponse cancelOrder(String orderId) {
+
+     public OrderResponse cancelOrder(String orderId) {
 -        orderMutationLock.lock();
 -        try {
 -            OrderRecord order = findOrder(orderId);
@@ -2624,20 +4079,11 @@ index c09543c..49fa3e5 100644
 -        } finally {
 -            orderMutationLock.unlock();
 -        }
-+    // ----- read path (in-memory read model; no DB on the request path) ----------------------
-+
-+    public List<OrderResponse> listOrders(String statusFilter, Integer accountIdFilter) {
-+        String normalizedStatus = StringUtils.hasText(statusFilter)
-+            ? statusFilter.trim().toLowerCase(Locale.ROOT) : "open";
-+        return readModel.all().stream()
-+            .filter(snapshot -> filterByStatus(snapshot, normalizedStatus))
-+            .filter(snapshot -> accountIdFilter == null || accountIdFilter.equals(snapshot.accountId))
-+            .sorted(Comparator.comparing((OrderSnapshot snapshot) -> snapshot.updatedAt).reversed())
-+            .map(this::toResponse)
-+            .toList();
++        OrderSnapshot snapshot = run(() -> engine.executeCancel(parseOrderRef(orderId)));
++        return toResponse(snapshot);
      }
- 
--    public OrderResponse forceFillOrder(String orderId) {
+
+     public OrderResponse forceFillOrder(String orderId) {
 -        orderMutationLock.lock();
 -        try {
 -            OrderRecord order = findOrder(orderId);
@@ -2657,6 +4103,45 @@ index c09543c..49fa3e5 100644
 -            return OrderResponse.from(order, lastPrices.get(order.getSecurity()));
 -        } finally {
 -            orderMutationLock.unlock();
++        OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
++        return toResponse(snapshot);
++    }
++
++    /**
++     * Market trade from the trade ticket (FR-09B08): trade-service has already validated the
++     * ticker/account; here we sequence a TRADE_NEW event so the BLP books it and updates the
++     * position (single writer). Fire-and-forget — 009's POST /trade/ booked asynchronously too —
++     * so the request is echoed back without waiting on the read model.
++     */
++    public MarketTradeRequest bookMarketTrade(MarketTradeRequest request) {
++        validateMarketTrade(request);
++        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
++        engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(), request.getQuantity());
++        return request;
++    }
++
++    /**
++     * Retained for controller compatibility: in 009 the controller re-published command
++     * responses onto the order subjects. In 009b every lifecycle transition is published by
++     * the output-disruptor NATS bridge (exactly once), so this is intentionally a no-op.
++     */
++    public void publishOrderUpdate(OrderResponse order) {
++        // no-op: the output ring's NATS bridge owns subject publication (FR-09B21)
++    }
++
++    // ----- read path (in-memory read model; no DB on the request path) ----------------------
++
++    public List<OrderResponse> listOrders(String statusFilter, Integer accountIdFilter) {
++        String normalizedStatus = StringUtils.hasText(statusFilter)
++            ? statusFilter.trim().toLowerCase(Locale.ROOT) : "open";
++        return readModel.all().stream()
++            .filter(snapshot -> filterByStatus(snapshot, normalizedStatus))
++            .filter(snapshot -> accountIdFilter == null || accountIdFilter.equals(snapshot.accountId))
++            .sorted(Comparator.comparing((OrderSnapshot snapshot) -> snapshot.updatedAt).reversed())
++            .map(this::toResponse)
++            .toList();
++    }
++
 +    public OrderResponse getOrder(String orderId) {
 +        OrderSnapshot snapshot = readModel.get(parseOrderRef(orderId));
 +        if (snapshot == null) {
@@ -2664,14 +4149,14 @@ index c09543c..49fa3e5 100644
          }
 +        return toResponse(snapshot);
      }
- 
+
      public OpenCountResponse openCounts() {
 -        long openOrders = orderRepository.countByStatusIn(OPEN_STATUSES);
 -        long unfilledOrders = orderRepository.countByStatusInAndRemainingQuantityGreaterThan(OPEN_STATUSES, 0);
 -        return new OpenCountResponse(openOrders, unfilledOrders);
 +        return new OpenCountResponse(readModel.countOpen(), readModel.countUnfilled());
      }
- 
+
      public Map<String, Object> health() {
          OpenCountResponse openCount = openCounts();
 +        long lastEventMillis = engine.blp() == null ? 0 : engine.blp().lastEventTimeMillis();
@@ -2691,6 +4176,8 @@ index c09543c..49fa3e5 100644
 +        matcher.put("autoFillAttempts", engine.blp() == null ? 0 : engine.blp().autoFillAttempts());
 +        matcher.put("autoFillSuccess", engine.blp() == null ? 0 : engine.blp().autoFillSuccess());
 +        matcher.put("tradeSubmitFailures", readModel.tradeSubmitFailures().sum());
++        matcher.put("accountTradePublishFailures", readModel.accountTradePublishFailures().sum());
++        matcher.put("positionPublishFailures", readModel.positionPublishFailures().sum());
 +
 +        Map<String, Object> lmax = new LinkedHashMap<>();
 +        lmax.put("profile", engine.runtimeProfile());
@@ -2706,7 +4193,7 @@ index c09543c..49fa3e5 100644
          Map<String, Object> payload = new LinkedHashMap<>();
          payload.put("status", "ok");
          payload.put("service", APP_NAME);
-@@ -237,17 +163,17 @@ public class OrderMatcherService {
+@@ -237,17 +179,17 @@ public class OrderMatcherService {
          payload.put("priceServiceUrl", priceServiceUrl);
          payload.put("tradeServiceUrl", tradeServiceUrl);
          payload.put("matcher", matcher);
@@ -2715,7 +4202,7 @@ index c09543c..49fa3e5 100644
          payload.put("unfilledOrders", openCount.getUnfilledOrders());
          return payload;
      }
- 
+
      public String prometheusMetrics() {
 -        long openOrders = orderRepository.countByStatusIn(OPEN_STATUSES);
 -        long unfilledOrders = orderRepository.countByStatusInAndRemainingQuantityGreaterThan(OPEN_STATUSES, 0);
@@ -2729,7 +4216,7 @@ index c09543c..49fa3e5 100644
          sb.append("# HELP traderx_orders_open_total Total open orders (NEW + PARTIALLY_FILLED).\n");
          sb.append("# TYPE traderx_orders_open_total gauge\n");
          sb.append("traderx_orders_open_total ").append(openOrders).append('\n');
-@@ -256,158 +182,129 @@ public class OrderMatcherService {
+@@ -256,158 +198,137 @@ public class OrderMatcherService {
          sb.append("traderx_orders_unfilled_total ").append(unfilledOrders).append('\n');
          sb.append("# HELP traderx_orders_pending_by_side Pending orders grouped by side.\n");
          sb.append("# TYPE traderx_orders_pending_by_side gauge\n");
@@ -2772,6 +4259,12 @@ index c09543c..49fa3e5 100644
 -        sb.append("traderx_order_match_latency_seconds_sum 0\n");
 -        sb.append("traderx_order_match_latency_seconds_count ").append(matcherTicks.get()).append('\n');
 +        sb.append("traderx_order_trade_submit_failures_total ").append(readModel.tradeSubmitFailures().sum()).append('\n');
++        sb.append("# HELP traderx_account_trade_publish_failures_total Direct account trade publish failures.\n");
++        sb.append("# TYPE traderx_account_trade_publish_failures_total counter\n");
++        sb.append("traderx_account_trade_publish_failures_total ").append(readModel.accountTradePublishFailures().sum()).append('\n');
++        sb.append("# HELP traderx_position_publish_failures_total Direct position update publish failures.\n");
++        sb.append("# TYPE traderx_position_publish_failures_total counter\n");
++        sb.append("traderx_position_publish_failures_total ").append(readModel.positionPublishFailures().sum()).append('\n');
 +
 +        HotPathMetrics metrics = engine.metrics();
 +        HotPathMetrics.renderHistogram(sb, "traderx_order_match_latency_seconds",
@@ -2809,6 +4302,7 @@ index c09543c..49fa3e5 100644
 +        sb.append("traderx_input_events_total{type=\"order_cancel\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersCancel()).append('\n');
 +        sb.append("traderx_input_events_total{type=\"force_fill\"} ").append(engine.blp() == null ? 0 : engine.blp().countForceFills()).append('\n');
 +        sb.append("traderx_input_events_total{type=\"price_tick\"} ").append(engine.blp() == null ? 0 : engine.blp().countPriceTicks()).append('\n');
++        sb.append("traderx_input_events_total{type=\"trade_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countTradesNew()).append('\n');
 +        sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
 +        sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
 +        sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
@@ -2816,6 +4310,7 @@ index c09543c..49fa3e5 100644
 +        sb.append("# TYPE traderx_output_events_total counter\n");
 +        sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
 +        sb.append("traderx_output_events_total{kind=\"trade_booked\"} ").append(engine.tradesBookedOut()).append('\n');
++        sb.append("traderx_output_events_total{kind=\"position_updated\"} ").append(engine.positionsUpdatedOut()).append('\n');
 +        sb.append("# HELP traderx_output_nats_errors_total NATS bridge publish failures.\n");
 +        sb.append("# TYPE traderx_output_nats_errors_total counter\n");
 +        sb.append("traderx_output_nats_errors_total ").append(readModel.natsErrors().sum()).append('\n');
@@ -2833,7 +4328,7 @@ index c09543c..49fa3e5 100644
 +        sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
          return sb.toString();
      }
- 
+
 -    private void tryAutoFill(String orderId, BigDecimal marketPrice) {
 -        OrderRecord order = orderRepository.findById(orderId).orElse(null);
 -        if (order == null || !isOpen(order) || order.getRemainingQuantity() == null || order.getRemainingQuantity() <= 0) {
@@ -2848,9 +4343,11 @@ index c09543c..49fa3e5 100644
 -        autoFillAttempts.incrementAndGet();
 -        int remaining = order.getRemainingQuantity();
 -        int fillQty = remaining < fillFullThreshold ? remaining : Math.max(1, (remaining + 1) / 2);
--
++    // ----- helpers --------------------------------------------------------------------------
+
 -        orderMutationLock.lock();
--        try {
++    private OrderSnapshot run(java.util.function.Supplier<OrderSnapshot> command) {
+         try {
 -            OrderRecord liveOrder = orderRepository.findById(orderId).orElse(null);
 -            if (liveOrder == null || !isOpen(liveOrder) || liveOrder.getRemainingQuantity() == null || liveOrder.getRemainingQuantity() <= 0) {
 -                return;
@@ -2868,21 +4365,6 @@ index c09543c..49fa3e5 100644
 -            autoFillSuccess.incrementAndGet();
 -        } finally {
 -            orderMutationLock.unlock();
--        }
--    }
-+    // ----- helpers --------------------------------------------------------------------------
- 
--    public void publishOrderUpdate(OrderResponse order) {
--        if (order == null || order.getAccountId() == null) {
--            return;
--        }
--        String accountTopic = "/accounts/" + order.getAccountId() + "/orders";
-+    private OrderSnapshot run(java.util.function.Supplier<OrderSnapshot> command) {
-         try {
--            orderPublisher.publish(accountTopic, order);
--            orderPublisher.publish(ALL_ORDERS_TOPIC, order);
--        } catch (PubSubException ex) {
--            log.warn("Unable to publish order update for {} on {}/{}", order.getOrderId(), accountTopic, ALL_ORDERS_TOPIC, ex);
 +            return command.get();
 +        } catch (InMemoryOrderReadModel.OrderNotFoundException ex) {
 +            throw new ResponseStatusException(NOT_FOUND, "order not found");
@@ -2890,11 +4372,26 @@ index c09543c..49fa3e5 100644
 +            throw new ResponseStatusException(GATEWAY_TIMEOUT, "order command not acknowledged");
          }
      }
- 
--    private void publishOrderUpdate(OrderRecord order) {
--        publishOrderUpdate(OrderResponse.from(order, lastPrices.get(order.getSecurity())));
+
+-    public void publishOrderUpdate(OrderResponse order) {
+-        if (order == null || order.getAccountId() == null) {
+-            return;
+-        }
+-        String accountTopic = "/accounts/" + order.getAccountId() + "/orders";
+-        try {
+-            orderPublisher.publish(accountTopic, order);
+-            orderPublisher.publish(ALL_ORDERS_TOPIC, order);
+-        } catch (PubSubException ex) {
+-            log.warn("Unable to publish order update for {} on {}/{}", order.getOrderId(), accountTopic, ALL_ORDERS_TOPIC, ex);
+-        }
 -    }
 -
+-    private void publishOrderUpdate(OrderRecord order) {
+-        publishOrderUpdate(OrderResponse.from(order, lastPrices.get(order.getSecurity())));
++    private OrderResponse toResponse(OrderSnapshot snapshot) {
++        return OrderResponse.from(snapshot.toRecord(), readModel.lastPrice(snapshot.security));
+     }
+
 -    private void applyFill(OrderRecord order, int fillQty, BigDecimal executionPrice, boolean forceFill) {
 -        int remainingBefore = order.getRemainingQuantity() == null ? 0 : order.getRemainingQuantity();
 -        int remainingAfter = Math.max(0, remainingBefore - fillQty);
@@ -2913,10 +4410,8 @@ index c09543c..49fa3e5 100644
 -        if (forceFill) {
 -            incrementEvent("force_fill");
 -        }
-+    private OrderResponse toResponse(OrderSnapshot snapshot) {
-+        return OrderResponse.from(snapshot.toRecord(), readModel.lastPrice(snapshot.security));
-     }
- 
+-    }
+-
 -    private boolean submitTrade(OrderRecord order, int quantity) {
 -        try {
 -            Map<String, Object> payload = Map.of(
@@ -2938,7 +4433,7 @@ index c09543c..49fa3e5 100644
          }
 +        throw new ResponseStatusException(NOT_FOUND, "order not found");
      }
- 
+
 -    private boolean filterByStatus(OrderRecord order, String statusFilter) {
 +    private boolean filterByStatus(OrderSnapshot snapshot, String statusFilter) {
          if ("open".equals(statusFilter)) {
@@ -2956,7 +4451,7 @@ index c09543c..49fa3e5 100644
              return false;
          }
      }
- 
+
 -    private boolean isOpen(OrderRecord order) {
 -        return OPEN_STATUSES.contains(order.getStatus());
 -    }
@@ -2974,10 +4469,10 @@ index c09543c..49fa3e5 100644
      private void validateCreateRequest(OrderCreateRequest request) {
          if (request == null
              || request.getAccountId() == null || request.getAccountId() <= 0
-@@ -419,15 +316,6 @@ public class OrderMatcherService {
+@@ -419,13 +340,14 @@ public class OrderMatcherService {
          }
      }
- 
+
 -    private String nextOrderId() {
 -        return String.format("ord-013-%04d", nextOrderSequence.getAndIncrement());
 -    }
@@ -2985,15 +4480,21 @@ index c09543c..49fa3e5 100644
 -    private OrderRecord findOrder(String orderId) {
 -        return orderRepository.findById(orderId)
 -            .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "order not found"));
--    }
--
++    private void validateMarketTrade(MarketTradeRequest request) {
++        if (request == null
++            || request.getAccountId() == null || request.getAccountId() <= 0
++            || !StringUtils.hasText(request.getSecurity())
++            || request.getSide() == null
++            || request.getQuantity() == null || request.getQuantity() <= 0) {
++            throw new ResponseStatusException(BAD_REQUEST, "invalid market trade payload");
++        }
+     }
+
      private BigDecimal roundPrice(BigDecimal input) {
-         if (input == null) {
-             return null;
-@@ -435,89 +323,6 @@ public class OrderMatcherService {
+@@ -435,89 +357,6 @@ public class OrderMatcherService {
          return input.setScale(3, RoundingMode.HALF_UP);
      }
- 
+
 -    private void initializeData() {
 -        if (seedEnabled && orderRepository.count() == 0) {
 -            List<OrderRecord> seed = List.of(
@@ -3081,18 +4582,18 @@ index c09543c..49fa3e5 100644
          if (!StringUtils.hasText(url)) {
              return "";
 diff --git a/order-matcher/src/main/resources/application.properties b/order-matcher/src/main/resources/application.properties
-index a4dc884..450f0ad 100644
+index a4dc884..b8530eb 100644
 --- a/order-matcher/src/main/resources/application.properties
 +++ b/order-matcher/src/main/resources/application.properties
-@@ -12,11 +12,24 @@ spring.threads.virtual.enabled=true
- 
+@@ -12,11 +12,25 @@ spring.threads.virtual.enabled=true
+
  order.matcher.price-service-url=${PRICE_SERVICE_URL:http://${PRICE_SERVICE_HOST:localhost}:18100}
  order.matcher.trade-service-url=${TRADE_SERVICE_URL:http://${TRADE_SERVICE_HOST:localhost}:18092/trade/}
 -order.matcher.tick-ms=${ORDER_MATCHER_TICK_MS:1000}
  order.matcher.fill-full-threshold=${ORDER_FILL_FULL_THRESHOLD:1000}
  order.matcher.seed-enabled=${ORDER_MATCHER_SEED_ENABLED:true}
  nats.address=${NATS_ADDRESS:nats://${NATS_BROKER_HOST:localhost}:4222}
- 
+
 +# LMAX hot path (state 009b). The 009 polling tick (order.matcher.tick-ms) is removed:
 +# matching is event-driven off the sequenced input ring (FR-09B02).
 +runtime.profile=${RUNTIME_PROFILE:demo}
@@ -3102,6 +4603,7 @@ index a4dc884..450f0ad 100644
 +disruptor.output.wait-strategy=${DISRUPTOR_OUTPUT_WAIT_STRATEGY:blocking}
 +journal.enabled=${ORDER_MATCHER_JOURNAL_ENABLED:true}
 +journal.path=${ORDER_MATCHER_JOURNAL_PATH:./data/journal}
++output.legacy-trades.enabled=${OUTPUT_LEGACY_TRADES_ENABLED:false}
 +output.projector.batch-size=${OUTPUT_PROJECTOR_BATCH_SIZE:500}
 +blp.books.max-securities=${BLP_MAX_SECURITIES:4096}
 +blp.book.pool-size=${BLP_BOOK_POOL_SIZE:65536}
@@ -3109,7 +4611,7 @@ index a4dc884..450f0ad 100644
 +
  # To avoid "Request header is too large" when application is backed by oidc proxy.
  server.max-http-request-header-size=1000000
- 
+
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/OrderMatcherApplicationTests.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/OrderMatcherApplicationTests.java
 index 2979b4d..d9b16dc 100644
 --- a/order-matcher/src/test/java/finos/traderx/ordermatcher/OrderMatcherApplicationTests.java
@@ -3117,7 +4619,7 @@ index 2979b4d..d9b16dc 100644
 @@ -3,17 +3,22 @@ package finos.traderx.ordermatcher;
  import org.junit.jupiter.api.Test;
  import org.springframework.boot.test.context.SpringBootTest;
- 
+
 +// State 009b: context test runs broker-free (no-op publisher, pricing subscriber off,
 +// journal off) so the suite is green without runtime infrastructure; messaging behavior
 +// is covered by the state smoke tests against the real NATS broker.
@@ -3141,7 +4643,7 @@ index 2979b4d..d9b16dc 100644
 -
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java
 new file mode 100644
-index 0000000..4a0f59d
+index 0000000..74989ae
 --- /dev/null
 +++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/AllocationGateTest.java
 @@ -0,0 +1,270 @@
@@ -3238,7 +4740,7 @@ index 0000000..4a0f59d
 +        outputDisruptor.start();
 +
 +        MatchingEngine blp = new MatchingEngine(new OutputPublisher(outputDisruptor.getRingBuffer()),
-+            metrics, 16, 1000, poolSize);
++            metrics, 16, 1000, poolSize, 1024);
 +        Journaler journaler = new Journaler(true, journalDir, metrics);
 +        ReplicatorStub replicator = new ReplicatorStub();
 +        Disruptor<InputEvent> inputDisruptor = new Disruptor<>(InputEvent::newInstance, 65536,
@@ -3417,10 +4919,10 @@ index 0000000..4a0f59d
 +}
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java
 new file mode 100644
-index 0000000..c463a39
+index 0000000..cfb32e2
 --- /dev/null
 +++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/HotPathBannedApiTest.java
-@@ -0,0 +1,94 @@
+@@ -0,0 +1,95 @@
 +package finos.traderx.ordermatcher.lmax;
 +
 +import org.junit.jupiter.api.Test;
@@ -3454,7 +4956,8 @@ index 0000000..c463a39
 +class HotPathBannedApiTest {
 +    private static final Class<?>[] HOT_PATH_CLASSES = {
 +        MatchingEngine.class, OutputPublisher.class, RestingOrder.class,
-+        IntList.class, InputEvent.class, OutputEvent.class, ReplicatorStub.class
++        IntList.class, InputEvent.class, OutputEvent.class, ReplicatorStub.class,
++        PositionBook.class
 +    };
 +
 +    private static final String[] BANNED = {
@@ -3517,16 +5020,22 @@ index 0000000..c463a39
 +}
 diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java
 new file mode 100644
-index 0000000..afcf399
+index 0000000..05c2ad7
 --- /dev/null
 +++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/LmaxHotPathParityTest.java
-@@ -0,0 +1,183 @@
+@@ -0,0 +1,292 @@
 +package finos.traderx.ordermatcher.lmax;
 +
++import finos.traderx.ordermatcher.api.MarketTradeRequest;
 +import finos.traderx.ordermatcher.api.OrderCreateRequest;
 +import finos.traderx.ordermatcher.api.OrderResponse;
 +import finos.traderx.ordermatcher.model.OrderSide;
 +import finos.traderx.ordermatcher.model.OrderStatus;
++import finos.traderx.ordermatcher.model.Position;
++import finos.traderx.ordermatcher.model.Trade;
++import finos.traderx.ordermatcher.model.TradeState;
++import finos.traderx.ordermatcher.repository.PositionRepository;
++import finos.traderx.ordermatcher.repository.TradeRepository;
 +import finos.traderx.ordermatcher.service.OrderMatcherService;
 +import org.junit.jupiter.api.Test;
 +import org.springframework.beans.factory.annotation.Autowired;
@@ -3567,6 +5076,15 @@ index 0000000..afcf399
 +
 +    @Autowired
 +    private OrderMatcherService service;
++
++    @Autowired
++    private LmaxEngine engine;
++
++    @Autowired
++    private TradeRepository tradeRepository;
++
++    @Autowired
++    private PositionRepository positionRepository;
 +
 +    @Test
 +    void createAcksNewThenAutoFillsPerPolicy() {
@@ -3623,6 +5141,63 @@ index 0000000..afcf399
 +    }
 +
 +    @Test
++    void buyFillIncreasesNetPositionInTheBlp() {
++        // Booking + position-keeping fused into the BLP (FR-09B08/B10): a buy fill raises the
++        // account's net position, computed in-memory on the single BLP thread.
++        int account = 22214;
++        OrderResponse created = service.createOrder(request(account, "POSBUY", OrderSide.Buy, 500, "100.000"));
++        service.onPriceTick("POSBUY", new BigDecimal("99.500")); // in the money, 500 < 1000 -> full fill
++        awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
++        int securityId = engine.symbols().idFor("POSBUY");
++        assertEquals(500, engine.blp().positionQuantity(account, securityId));
++
++        // The projector persists the booked trade with the stamped execution price and the
++        // position with its weighted average cost basis (booking fused into the BLP, FR-09B40).
++        Trade booked = awaitTrade(t -> "POSBUY".equals(t.getSecurity()) && account == t.getAccountId());
++        assertEquals(TradeState.Settled, booked.getState());
++        assertEquals(500, booked.getQuantity().intValue());
++        assertEquals(0, new BigDecimal("99.500").compareTo(booked.getPrice()));
++        Position position = awaitPersistedPosition(account, "POSBUY");
++        assertEquals(0, new BigDecimal("99.500").compareTo(position.getAverageCostBasis()));
++    }
++
++    @Test
++    void sellFillDecreasesNetPositionInTheBlp() {
++        int account = 44044;
++        OrderResponse created = service.createOrder(request(account, "POSSELL", OrderSide.Sell, 300, "10.000"));
++        service.onPriceTick("POSSELL", new BigDecimal("10.500")); // sell in the money (px >= limit), full fill
++        awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
++        int securityId = engine.symbols().idFor("POSSELL");
++        assertEquals(-300, engine.blp().positionQuantity(account, securityId));
++    }
++
++    @Test
++    void marketTradeBooksAndUpdatesPosition() {
++        // FR-09B08: a market trade from the trade ticket is sequenced as TRADE_NEW and booked
++        // by the BLP (no matching), moving the position through the single-writer path.
++        int account = 52355;
++        service.onPriceTick("POSMKT", new BigDecimal("12.500")); // BLP stamps the booking at this price
++        MarketTradeRequest trade = new MarketTradeRequest();
++        trade.setAccountId(account);
++        trade.setSecurity("POSMKT");
++        trade.setSide(OrderSide.Buy);
++        trade.setQuantity(750);
++        service.bookMarketTrade(trade);
++
++        int securityId = engine.symbols().idFor("POSMKT");
++        awaitPosition(account, securityId, 750);
++        assertEquals(750, engine.blp().positionQuantity(account, securityId));
++
++        // The market trade is booked at the stamped market price and persisted by the projector,
++        // and its position carries the resulting average cost basis (single-writer fusion).
++        Trade booked = awaitTrade(t -> "POSMKT".equals(t.getSecurity()) && account == t.getAccountId());
++        assertEquals(TradeState.Settled, booked.getState());
++        assertEquals(0, new BigDecimal("12.500").compareTo(booked.getPrice()));
++        Position position = awaitPersistedPosition(account, "POSMKT");
++        assertEquals(0, new BigDecimal("12.500").compareTo(position.getAverageCostBasis()));
++    }
++
++    @Test
 +    void unknownOrderIs404() {
 +        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
 +            () -> service.cancelOrder("ord-013-9999"));
@@ -3658,6 +5233,43 @@ index 0000000..afcf399
 +            sleep(20);
 +        }
 +        fail("condition not met for order " + orderId + " within timeout");
++        return null;
++    }
++
++    private void awaitPosition(int accountId, int securityId, int expected) {
++        for (int i = 0; i < 200; i++) {
++            if (engine.blp().positionQuantity(accountId, securityId) == expected) {
++                return;
++            }
++            sleep(20);
++        }
++        fail("position " + accountId + ":" + securityId + " did not reach " + expected + " within timeout");
++    }
++
++    private Trade awaitTrade(Predicate<Trade> condition) {
++        for (int i = 0; i < 200; i++) {
++            for (Trade trade : tradeRepository.findAll()) {
++                if (trade.getAccountId() != null && condition.test(trade)) {
++                    return trade;
++                }
++            }
++            sleep(20);
++        }
++        fail("no persisted trade matched within timeout");
++        return null;
++    }
++
++    private Position awaitPersistedPosition(int accountId, String security) {
++        for (int i = 0; i < 200; i++) {
++            for (Position position : positionRepository.findAll()) {
++                if (position.getAccountId() != null && position.getAccountId() == accountId
++                    && security.equals(position.getSecurity())) {
++                    return position;
++                }
++            }
++            sleep(20);
++        }
++        fail("no persisted position " + accountId + ":" + security + " within timeout");
 +        return null;
 +    }
 +
@@ -3701,6 +5313,382 @@ index 0000000..afcf399
 +            "traderx_hotpath_alloc_bytes_total",
 +            "traderx_order_match_latency_seconds"}) {
 +            assertTrue(metrics.contains(family), "missing metric family: " + family);
++        }
++    }
++}
+diff --git a/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/OutputDisruptorHandlersTest.java b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/OutputDisruptorHandlersTest.java
+new file mode 100644
+index 0000000..761034e
+--- /dev/null
++++ b/order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/OutputDisruptorHandlersTest.java
+@@ -0,0 +1,370 @@
++package finos.traderx.ordermatcher.lmax;
++
++import com.lmax.disruptor.RingBuffer;
++import finos.traderx.messaging.PubSubException;
++import finos.traderx.messaging.Publisher;
++import finos.traderx.ordermatcher.api.OrderResponse;
++import finos.traderx.ordermatcher.model.OrderSide;
++import org.junit.jupiter.api.Test;
++
++import java.math.BigDecimal;
++import java.util.ArrayList;
++import java.util.List;
++
++import static org.junit.jupiter.api.Assertions.assertEquals;
++import static org.junit.jupiter.api.Assertions.assertNull;
++import static org.junit.jupiter.api.Assertions.assertTrue;
++
++class OutputDisruptorHandlersTest {
++
++    @Test
++    void outputPublisherMapsOrderLifecycleKinds() {
++        RingBuffer<OutputEvent> ring = RingBuffer.createSingleProducer(OutputEvent::newInstance, 16);
++        OutputPublisher publisher = new OutputPublisher(ring);
++        RestingOrder order = order(RestingOrder.STATUS_NEW, 100);
++
++        publisher.emitOrderUpdate(order, 1, OutputEvent.FLAG_CREATE, true, Px.NONE, 100L);
++        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, ring.get(0).kind);
++
++        order.status = RestingOrder.STATUS_PARTIALLY_FILLED;
++        publisher.emitOrderUpdate(order, 2, OutputEvent.FLAG_PARTIAL_FILL, true, Px.NONE, 100L);
++        assertEquals(OutputEvent.KIND_ORDER_PARTIALLY_FILLED, ring.get(1).kind);
++
++        order.status = RestingOrder.STATUS_FILLED;
++        publisher.emitOrderUpdate(order, 3, OutputEvent.FLAG_FILL, true, Px.NONE, 100L);
++        assertEquals(OutputEvent.KIND_ORDER_FILLED, ring.get(2).kind);
++
++        order.status = RestingOrder.STATUS_CANCELED;
++        publisher.emitOrderUpdate(order, 4, OutputEvent.FLAG_CANCEL, true, Px.NONE, 100L);
++        assertEquals(OutputEvent.KIND_ORDER_CANCELED, ring.get(3).kind);
++
++        order.status = RestingOrder.STATUS_REJECTED;
++        publisher.emitOrderUpdate(order, 5, OutputEvent.FLAG_REJECT, true, Px.NONE, 100L);
++        assertEquals(OutputEvent.KIND_ORDER_REJECTED, ring.get(4).kind);
++    }
++
++    @Test
++    void emitFillWithTradeAndPositionPublishesOrderUpdateTradeBookedAndPositionUpdatedBatch() {
++        RingBuffer<OutputEvent> ring = RingBuffer.createSingleProducer(OutputEvent::newInstance, 16);
++        OutputPublisher publisher = new OutputPublisher(ring);
++        RestingOrder order = order(RestingOrder.STATUS_PARTIALLY_FILLED, 50);
++        order.lastExecPx = Px.toTicks(new BigDecimal("101.125"));
++        order.lastFillQty = 50;
++
++        publisher.emitFillWithTradeAndPosition(order, 50, Px.toTicks(new BigDecimal("101.125")), 7,
++            150, Px.toTicks(new BigDecimal("101.125")), 11, OutputEvent.FLAG_PARTIAL_FILL, Px.NONE, 100L);
++
++        OutputEvent update = ring.get(0);
++        assertEquals(OutputEvent.KIND_ORDER_PARTIALLY_FILLED, update.kind);
++        assertEquals(0, update.tradeQty);
++        OutputEvent trade = ring.get(1);
++        assertEquals(OutputEvent.KIND_TRADE_BOOKED, trade.kind);
++        assertEquals(50, trade.tradeQty);
++        assertEquals(11, trade.inputSeq);
++        OutputEvent position = ring.get(2);
++        assertEquals(OutputEvent.KIND_POSITION_UPDATED, position.kind);
++        assertEquals(150, position.positionQty);
++        assertEquals(0, new BigDecimal("101.125").compareTo(Px.toBigDecimal(position.averageCostBasisPx)));
++        assertEquals(11, position.inputSeq);
++    }
++
++    @Test
++    void blpFillEmitsTradeBookedPlusPositionUpdated() {
++        RingBuffer<OutputEvent> ring = RingBuffer.createSingleProducer(OutputEvent::newInstance, 16);
++        MatchingEngine blp = new MatchingEngine(new OutputPublisher(ring), new HotPathMetrics(), 16, 1000, 16);
++
++        InputEvent tick = new InputEvent();
++        tick.seq = 1;
++        tick.type = InputEvent.TYPE_PRICE_TICK;
++        tick.securityId = 0;
++        tick.priceTicks = Px.toTicks(new BigDecimal("101.125"));
++        tick.ingressNanos = System.nanoTime();
++        tick.eventTimeMillis = 1_700_000_000_000L;
++        blp.onEvent(tick, 1, true);
++
++        InputEvent order = new InputEvent();
++        order.seq = 2;
++        order.type = InputEvent.TYPE_ORDER_NEW;
++        order.orderRef = 42;
++        order.accountId = 22214;
++        order.securityId = 0;
++        order.side = InputEvent.SIDE_BUY;
++        order.qty = 100;
++        order.limitPx = Px.toTicks(new BigDecimal("102.000"));
++        order.ingressNanos = System.nanoTime();
++        order.eventTimeMillis = 1_700_000_000_001L;
++        blp.onEvent(order, 2, true);
++
++        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, ring.get(0).kind);
++        assertEquals(OutputEvent.KIND_ORDER_FILLED, ring.get(1).kind);
++        assertEquals(OutputEvent.KIND_TRADE_BOOKED, ring.get(2).kind);
++        assertEquals(OutputEvent.KIND_POSITION_UPDATED, ring.get(3).kind);
++        assertEquals(100, ring.get(3).positionQty);
++        assertEquals(0, new BigDecimal("101.125").compareTo(Px.toBigDecimal(ring.get(3).averageCostBasisPx)));
++    }
++
++    @Test
++    void natsBridgePublishesOnlyLifecycleEventsToOrderSubjects() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<OrderResponse> publisher = new RecordingPublisher<>();
++        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel);
++
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 0, true);
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_TRADE_BOOKED, true), 1, true);
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_CANCELED, false), 2, true);
++
++        assertEquals(List.of("/accounts/22214/orders", "/orders"), publisher.topics());
++        assertEquals(0, readModel.natsErrors().sum());
++    }
++
++    @Test
++    void natsBridgeFailuresIncrementOnlyNatsErrors() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<OrderResponse> publisher = new RecordingPublisher<>();
++        publisher.failOnPublish = true;
++        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel);
++
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 0, true);
++
++        assertEquals(1, readModel.natsErrors().sum());
++        assertEquals(0, readModel.counterValue("reject"));
++    }
++
++    @Test
++    void tradeSubmitPublishesTradeBookedOnlyToTrades() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<TradeOrder> publisher = new RecordingPublisher<>();
++        TradeSubmitHandler handler = new TradeSubmitHandler(publisher, symbols, readModel);
++
++        handler.onEvent(tradeEvent(symbols), 0, true);
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 1, true);
++
++        assertEquals(List.of("/trades"), publisher.topics());
++        TradeOrder trade = publisher.messages.getFirst();
++        assertEquals("ord-013-0042", trade.getId());
++        assertEquals(25, trade.getQuantity());
++        assertEquals(0, new BigDecimal("101.125").compareTo(trade.getPrice()));
++    }
++
++    @Test
++    void tradeSubmitFailureDoesNotIncrementBusinessRejectCounter() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<TradeOrder> publisher = new RecordingPublisher<>();
++        publisher.failOnPublish = true;
++        TradeSubmitHandler handler = new TradeSubmitHandler(publisher, symbols, readModel);
++
++        handler.onEvent(tradeEvent(symbols), 0, true);
++
++        assertEquals(1, readModel.tradeSubmitFailures().sum());
++        assertEquals(0, readModel.counterValue("reject"));
++    }
++
++    @Test
++    void accountTradePublishesTradeBookedOnlyToAccountTradeSubject() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<AccountTrade> publisher = new RecordingPublisher<>();
++        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel);
++
++        handler.onEvent(tradeEvent(symbols), 0, true);
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 1, true);
++
++        assertEquals(List.of("/accounts/22214/trades"), publisher.topics());
++        AccountTrade trade = publisher.messages.getFirst();
++        assertEquals("trd-09b-7", trade.getId());
++        assertEquals(22214, trade.getAccountId());
++        assertEquals("IBM", trade.getSecurity());
++        assertEquals("Settled", trade.getState());
++        assertEquals(25, trade.getQuantity());
++        assertEquals(0, new BigDecimal("101.125").compareTo(trade.getPrice()));
++        assertEquals(0, readModel.accountTradePublishFailures().sum());
++    }
++
++    @Test
++    void accountTradeFailuresIncrementDedicatedCounter() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<AccountTrade> publisher = new RecordingPublisher<>();
++        publisher.failOnPublish = true;
++        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel);
++
++        handler.onEvent(tradeEvent(symbols), 0, true);
++
++        assertEquals(1, readModel.accountTradePublishFailures().sum());
++        assertEquals(0, readModel.tradeSubmitFailures().sum());
++    }
++
++    @Test
++    void directUiTradeAndPositionFanoutDoesNotRequireTradesSubject() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<AccountTrade> accountTrades = new RecordingPublisher<>();
++        RecordingPublisher<PositionUpdate> positions = new RecordingPublisher<>();
++        RecordingPublisher<TradeOrder> legacyTrades = new RecordingPublisher<>();
++        AccountTradeHandler accountTradeHandler = new AccountTradeHandler(accountTrades, symbols, readModel);
++        PositionUpdateHandler positionUpdateHandler = new PositionUpdateHandler(positions, symbols, readModel);
++
++        accountTradeHandler.onEvent(tradeEvent(symbols), 0, true);
++        positionUpdateHandler.onEvent(positionEvent(symbols), 1, true);
++
++        assertEquals(List.of("/accounts/22214/trades"), accountTrades.topics());
++        assertEquals(List.of("/accounts/22214/positions"), positions.topics());
++        assertTrue(legacyTrades.topics().isEmpty());
++        assertEquals(0, readModel.tradeSubmitFailures().sum());
++    }
++
++    @Test
++    void positionUpdatePublishesOnlyPositionUpdatedToAccountPositionSubject() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<PositionUpdate> publisher = new RecordingPublisher<>();
++        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel);
++
++        handler.onEvent(positionEvent(symbols), 0, true);
++        handler.onEvent(tradeEvent(symbols), 1, true);
++
++        assertEquals(List.of("/accounts/22214/positions"), publisher.topics());
++        PositionUpdate position = publisher.messages.getFirst();
++        assertEquals(22214, position.getAccountId());
++        assertEquals("IBM", position.getSecurity());
++        assertEquals(175, position.getQuantity());
++        assertEquals(0, new BigDecimal("101.125").compareTo(position.getAverageCostBasis()));
++        assertTrue(position.getUpdated().getTime() > 0);
++    }
++
++    @Test
++    void positionUpdateFailuresIncrementDedicatedCounter() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        RecordingPublisher<PositionUpdate> publisher = new RecordingPublisher<>();
++        publisher.failOnPublish = true;
++        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel);
++
++        handler.onEvent(positionEvent(symbols), 0, true);
++
++        assertEquals(1, readModel.positionPublishFailures().sum());
++        assertEquals(0, readModel.natsErrors().sum());
++    }
++
++    @Test
++    void marshallerCountsPositionUpdatedSeparately() {
++        SymbolTable symbols = symbolsWith("IBM");
++        InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
++        MarshallerHandler handler = new MarshallerHandler(readModel, symbols, new HotPathMetrics());
++
++        handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 0, true);
++        handler.onEvent(tradeEvent(symbols), 1, true);
++        handler.onEvent(positionEvent(symbols), 2, true);
++
++        assertEquals(1, handler.orderUpdates());
++        assertEquals(1, handler.tradesBooked());
++        assertEquals(1, handler.positionsUpdated());
++        assertNull(readModel.get(9999));
++    }
++
++    private static SymbolTable symbolsWith(String ticker) {
++        SymbolTable symbols = new SymbolTable(16);
++        symbols.idFor(ticker);
++        return symbols;
++    }
++
++    private static RestingOrder order(byte status, int remaining) {
++        RestingOrder order = new RestingOrder();
++        order.orderRef = 42;
++        order.accountId = 22214;
++        order.securityId = 0;
++        order.side = (byte) OrderSide.Buy.ordinal();
++        order.quantity = 100;
++        order.remaining = remaining;
++        order.limitPx = Px.toTicks(new BigDecimal("102.000"));
++        order.status = status;
++        order.lastExecPx = Px.NONE;
++        order.createdAtMillis = 1_700_000_000_000L;
++        order.updatedAtMillis = 1_700_000_000_000L;
++        return order;
++    }
++
++    private static OutputEvent orderEvent(SymbolTable symbols, byte kind, boolean publishNats) {
++        OutputEvent e = new OutputEvent();
++        e.kind = kind;
++        e.flags = kind == OutputEvent.KIND_ORDER_ACCEPTED ? OutputEvent.FLAG_CREATE : 0;
++        e.publishNats = publishNats;
++        e.orderRef = 42;
++        e.accountId = 22214;
++        e.securityId = symbols.idFor("IBM");
++        e.side = (byte) OrderSide.Buy.ordinal();
++        e.quantity = 100;
++        e.remainingQty = 100;
++        e.limitPx = Px.toTicks(new BigDecimal("102.000"));
++        e.status = RestingOrder.STATUS_NEW;
++        e.lastExecPx = Px.NONE;
++        e.createdAtMillis = 1_700_000_000_000L;
++        e.updatedAtMillis = 1_700_000_000_000L;
++        e.marketPx = Px.NONE;
++        e.ingressNanos = System.nanoTime();
++        return e;
++    }
++
++    private static OutputEvent tradeEvent(SymbolTable symbols) {
++        OutputEvent e = orderEvent(symbols, OutputEvent.KIND_TRADE_BOOKED, false);
++        e.remainingQty = 75;
++        e.status = RestingOrder.STATUS_PARTIALLY_FILLED;
++        e.lastExecPx = Px.toTicks(new BigDecimal("101.125"));
++        e.lastFillQty = 25;
++        e.tradeQty = 25;
++        e.tradeSeq = 7;
++        e.tradePx = Px.toTicks(new BigDecimal("101.125"));
++        return e;
++    }
++
++    private static OutputEvent positionEvent(SymbolTable symbols) {
++        OutputEvent e = new OutputEvent();
++        e.kind = OutputEvent.KIND_POSITION_UPDATED;
++        e.accountId = 22214;
++        e.securityId = symbols.idFor("IBM");
++        e.positionQty = 175;
++        e.averageCostBasisPx = Px.toTicks(new BigDecimal("101.125"));
++        e.updatedAtMillis = 1_700_000_000_000L;
++        e.ingressNanos = System.nanoTime();
++        return e;
++    }
++
++    private static final class RecordingPublisher<T> implements Publisher<T> {
++        private final List<String> topics = new ArrayList<>();
++        private final List<T> messages = new ArrayList<>();
++        private boolean failOnPublish;
++
++        @Override
++        public void publish(T message) throws PubSubException {
++            publish("/default", message);
++        }
++
++        @Override
++        public void publish(String topic, T message) throws PubSubException {
++            if (failOnPublish) {
++                throw new PubSubException("publish failed");
++            }
++            topics.add(topic);
++            messages.add(message);
++        }
++
++        @Override
++        public boolean isConnected() {
++            return true;
++        }
++
++        @Override
++        public void connect() throws PubSubException {}
++
++        @Override
++        public void disconnect() throws PubSubException {}
++
++        private List<String> topics() {
++            return topics;
 +        }
 +    }
 +}
@@ -3769,18 +5757,18 @@ index 22e0cdb..565542a 100644
 +++ b/scripts/README.runtime-harness.md
 @@ -1,6 +1,6 @@
  # Generated Runtime Harness
- 
+
 -This directory is generated for state: 009-order-management-matcher
 +This directory is generated for state: 009b-lmax-sequencer-architecture
- 
+
  - Scripts in this folder are local-runtime wrappers for the generated codebase.
  - They are designed to run without invoking root pipeline generation.
 diff --git a/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..ebea0b9
+new file mode 100755
+index 0000000..eb131d7
 --- /dev/null
 +++ b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,17 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3791,18 +5779,19 @@ index 0000000..ebea0b9
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the LMAX hot-path overlay (patchset + order-matcher
++# overrides) is installed by generation. The runtime harness and compose project are
++# shared with the 009 lineage, so this delegates to the 009 lifecycle script (which
++# prefers the generated tree's local runtime scripts); state-native scripts replace
++# these delegates with T09B22.
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/start-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..50f2dda
+new file mode 100755
+index 0000000..49e1c90
 --- /dev/null
 +++ b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3813,18 +5802,17 @@ index 0000000..50f2dda
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the runtime (LMAX hot path installed by generation)
++# shares the 009 compose project and harness, so this delegates to the 009 lifecycle
++# script; state-native scripts replace these delegates with T09B22.
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/status-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
-new file mode 100644
-index 0000000..a450271
+new file mode 100755
+index 0000000..8ab8834
 --- /dev/null
 +++ b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
-@@ -0,0 +1,16 @@
+@@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
 +
@@ -3835,61 +5823,174 @@ index 0000000..a450271
 +  export TRADERX_GENERATED_ROOT
 +fi
 +
-+# State 009b: this generated runtime ships the LMAX hot path (overlay patchset +
-+# order-matcher overrides). The runtime harness and compose project are shared with
-+# the 009 lineage, so lifecycle handling delegates to the 009 script in this tree;
-+# state-native scripts replace these delegates with T09B22.
++# State 009b lifecycle wrapper: the runtime (LMAX hot path installed by generation)
++# shares the 009 compose project and harness, so this delegates to the 009 lifecycle
++# script; state-native scripts replace these delegates with T09B22.
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/stop-state-009-order-management-matcher-generated.sh" "$@"
 diff --git a/start-env.sh b/start-env.sh
-index a1cde6d..62ee5a2 100644
+index a1cde6d..62ee5a2 100755
 --- a/start-env.sh
 +++ b/start-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
- 
+
  # Wrapper purpose: stable, state-local start entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/start-state-009-order-management-matcher-generated.sh
 +# Execution flow: scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
- 
+
 -exec "${ROOT}/scripts/start-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/status-env.sh b/status-env.sh
-index 2d112e0..8fc992e 100644
+index 2d112e0..8fc992e 100755
 --- a/status-env.sh
 +++ b/status-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
- 
+
  # Wrapper purpose: stable, state-local status entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/status-state-009-order-management-matcher-generated.sh
 +# Execution flow: scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
- 
+
 -exec "${ROOT}/scripts/status-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/stop-env.sh b/stop-env.sh
-index a712c43..67ab977 100644
+index a712c43..67ab977 100755
 --- a/stop-env.sh
 +++ b/stop-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
- 
+
  # Wrapper purpose: stable, state-local stop entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/stop-state-009-order-management-matcher-generated.sh
 +# Execution flow: scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
- 
+
 -exec "${ROOT}/scripts/stop-state-009-order-management-matcher-generated.sh" "$@"
 +exec "${ROOT}/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
 diff --git a/test-env.sh b/test-env.sh
-index e05cf9b..520329b 100644
+index e05cf9b..520329b 100755
 --- a/test-env.sh
 +++ b/test-env.sh
 @@ -4,6 +4,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
- 
+
  # Wrapper purpose: stable, state-local test entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/test-state-009-order-management-matcher.sh
 +# Execution flow: scripts/test-state-009b-lmax-sequencer-architecture.sh
- 
+
 -exec "${ROOT}/scripts/test-state-009-order-management-matcher.sh" "$@"
 +exec "${ROOT}/scripts/test-state-009b-lmax-sequencer-architecture.sh" "$@"
+diff --git a/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java b/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java
+index be6ee41..bbb88a5 100644
+--- a/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java
++++ b/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java
+@@ -1,10 +1,8 @@
+ package finos.traderx.tradeservice.controller;
+
+-import finos.traderx.messaging.PubSubException;
+ import finos.traderx.messaging.Publisher;
+ import finos.traderx.tradeservice.exceptions.ResourceNotFoundException;
+ import finos.traderx.tradeservice.model.Account;
+-import finos.traderx.tradeservice.model.PriceQuote;
+ import finos.traderx.tradeservice.model.Security;
+ import finos.traderx.tradeservice.model.TradeOrder;
+ import io.swagger.v3.oas.annotations.Operation;
+@@ -18,16 +16,26 @@ import org.springframework.web.bind.annotation.RequestBody;
+ import org.springframework.web.bind.annotation.RequestMapping;
+ import org.springframework.web.bind.annotation.RestController;
+ import org.springframework.web.client.HttpClientErrorException;
++import org.springframework.web.client.RestClientException;
+ import org.springframework.web.client.RestTemplate;
+-import java.math.BigDecimal;
+-import java.math.RoundingMode;
+
++/**
++ * State 009b (FR-09B08): the trade ticket's market trades enter the LMAX sequencer instead of
++ * the {@code /trades} bus. trade-service stays the validating gateway edge — it still checks the
++ * ticker (reference-data) and account (account-service) exactly as in 009 — but on success it
++ * forwards the validated trade to the order-matcher gateway, where it is sequenced as a
++ * TRADE_NEW event and booked + position-kept by the single-writer BLP. trade-processor is no
++ * longer fed on this path (it stays deployed but idle). The REST request/response contract
++ * (POST /trade/, 200 with the echoed TradeOrder) is unchanged (FR-09B40).
++ */
+ @RestController
+ @RequestMapping(value = "/trade", produces = "application/json")
+ public class TradeOrderController {
+
+   private static final Logger log = LoggerFactory.getLogger(TradeOrderController.class);
+
++  // Retained for bean compatibility; the /trades publish is gone in 009b (booking moved to
++  // the sequencer), so this publisher is intentionally unused on the create path.
+   private final Publisher<TradeOrder> tradePublisher;
+   private final RestTemplate restTemplate = new RestTemplate();
+
+@@ -37,8 +45,8 @@ public class TradeOrderController {
+   @Value("${account.service.url}")
+   private String accountServiceAddress;
+
+-  @Value("${price.service.url}")
+-  private String priceServiceAddress;
++  @Value("${order.matcher.url:http://order-matcher:18110}")
++  private String orderMatcherAddress;
+
+   public TradeOrderController(Publisher<TradeOrder> tradePublisher) {
+     this.tradePublisher = tradePublisher;
+@@ -55,15 +63,24 @@ public class TradeOrderController {
+     } else if (!validateAccount(tradeOrder.getAccountId())) {
+       throw new ResourceNotFoundException(tradeOrder.getAccountId() + " not found in Account service.");
+     } else {
+-      try {
+-        BigDecimal executionPrice = fetchExecutionPrice(tradeOrder.getSecurity());
+-        tradeOrder.setPrice(executionPrice);
+-        log.info("Trade is valid. Submitting {}", tradeOrder);
+-        tradePublisher.publish("/trades", tradeOrder);
+-        return ResponseEntity.ok(tradeOrder);
+-      } catch (PubSubException e) {
+-        throw new RuntimeException("Failed to publish trade order", e);
+-      }
++      log.info("Trade is valid. Forwarding to sequencer {}", tradeOrder);
++      forwardToSequencer(tradeOrder);
++      return ResponseEntity.ok(tradeOrder);
++    }
++  }
++
++  /**
++   * Forward the validated market trade to the order-matcher gateway (POST /trades). Booking is
++   * asynchronous on the BLP — matching 009's fire-and-forget publish semantics — so we do not
++   * block on the booking result; order-matcher's MarketTradeRequest reads the overlapping
++   * fields (security, quantity, accountId, side) and ignores the rest.
++   */
++  private void forwardToSequencer(TradeOrder tradeOrder) {
++    String url = trimTrailingSlash(orderMatcherAddress) + "/trades";
++    try {
++      restTemplate.postForEntity(url, tradeOrder, Void.class);
++    } catch (RestClientException ex) {
++      throw new RuntimeException("Failed to forward trade order to order-matcher sequencer", ex);
+     }
+   }
+
+@@ -99,20 +116,10 @@ public class TradeOrderController {
+     }
+   }
+
+-  private BigDecimal fetchExecutionPrice(String ticker) {
+-    String url = this.priceServiceAddress + "/prices/" + ticker;
+-    try {
+-      ResponseEntity<PriceQuote> response = this.restTemplate.getForEntity(url, PriceQuote.class);
+-      PriceQuote quote = response.getBody();
+-      if (quote == null || quote.getPrice() == null) {
+-        throw new ResourceNotFoundException("Price quote missing for ticker " + ticker);
+-      }
+-      return quote.getPrice().setScale(3, RoundingMode.HALF_UP);
+-    } catch (HttpClientErrorException ex) {
+-      if (ex.getRawStatusCode() == 404) {
+-        throw new ResourceNotFoundException("Price quote unavailable for ticker " + ticker);
+-      }
+-      throw ex;
++  private static String trimTrailingSlash(String url) {
++    if (url == null || url.isEmpty()) {
++      return "";
+     }
++    return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+   }
+ }

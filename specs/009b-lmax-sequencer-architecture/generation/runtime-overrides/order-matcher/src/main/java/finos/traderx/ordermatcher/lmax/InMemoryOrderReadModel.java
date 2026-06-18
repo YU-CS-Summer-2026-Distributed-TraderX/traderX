@@ -31,6 +31,8 @@ public final class InMemoryOrderReadModel {
     private final ConcurrentHashMap<String, LongAdder> eventCounters = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Long, CompletableFuture<OrderSnapshot>> pendingAcks = new ConcurrentHashMap<>();
     private final LongAdder tradeSubmitFailures = new LongAdder();
+    private final LongAdder accountTradePublishFailures = new LongAdder();
+    private final LongAdder positionPublishFailures = new LongAdder();
     private final LongAdder natsErrors = new LongAdder();
 
     public InMemoryOrderReadModel() {
@@ -182,6 +184,14 @@ public final class InMemoryOrderReadModel {
 
     public LongAdder tradeSubmitFailures() {
         return tradeSubmitFailures;
+    }
+
+    public LongAdder accountTradePublishFailures() {
+        return accountTradePublishFailures;
+    }
+
+    public LongAdder positionPublishFailures() {
+        return positionPublishFailures;
     }
 
     public LongAdder natsErrors() {
