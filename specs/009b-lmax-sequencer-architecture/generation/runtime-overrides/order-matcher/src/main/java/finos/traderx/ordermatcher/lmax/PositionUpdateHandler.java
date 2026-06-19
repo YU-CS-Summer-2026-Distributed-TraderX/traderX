@@ -16,6 +16,9 @@ public final class PositionUpdateHandler implements EventHandler<OutputEvent> {
     private final Publisher<PositionUpdate> positionPublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final PositionUpdate payload = new PositionUpdate();
+    private final AccountTopicCache topics = new AccountTopicCache("/positions");
+    private final OutputValueCache values = new OutputValueCache();
 
     public PositionUpdateHandler(Publisher<PositionUpdate> positionPublisher, SymbolTable symbols,
                                  InMemoryOrderReadModel readModel) {
@@ -29,8 +32,8 @@ public final class PositionUpdateHandler implements EventHandler<OutputEvent> {
         if (e.kind != OutputEvent.KIND_POSITION_UPDATED) {
             return;
         }
-        PositionUpdate payload = PositionUpdate.fromEvent(e, symbols);
-        String accountTopic = "/accounts/" + e.accountId + "/positions";
+        payload.copyFromEvent(e, symbols, values);
+        String accountTopic = topics.topicFor(e.accountId);
         try {
             positionPublisher.publish(accountTopic, payload);
         } catch (PubSubException ex) {

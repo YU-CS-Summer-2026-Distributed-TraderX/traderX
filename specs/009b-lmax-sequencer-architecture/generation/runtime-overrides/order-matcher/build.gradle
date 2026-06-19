@@ -64,6 +64,7 @@ dependencies {
 
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+  systemProperty 'allocationAttribution', System.getProperty('allocationAttribution', 'false')
 }
 
 // No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
@@ -79,10 +80,29 @@ tasks.register('noGcTest', Test) {
   classpath = sourceSets.test.runtimeClasspath
   filter {
     includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputHandlerAllocationGateTest'
   }
   systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
   jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
-          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
+          '-Xms512m', '-Xmx512m', '-XX:+AlwaysPreTouch'
+}
+
+tasks.register('outputLatencyBenchmark', Test) {
+  description = 'Local output-handler latency microbenchmark for ODL-01/ODL-05.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputHandlerLatencyBenchmarkTest'
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.LmaxEndToEndLatencyBenchmarkTest'
+  }
+  systemProperty 'outputLatencyBenchmark', 'true'
+  systemProperty 'outputLatencyBenchmark.iterations', System.getProperty('outputLatencyBenchmark.iterations', '200000')
+  systemProperty 'endToEndLatencyBenchmark.iterations', System.getProperty('endToEndLatencyBenchmark.iterations', '1000')
+  jvmArgs '-Xms512m', '-Xmx512m'
+  testLogging {
+    showStandardStreams = true
+  }
 }
 
 configurations.configureEach {
