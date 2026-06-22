@@ -105,6 +105,29 @@ tasks.register('outputLatencyBenchmark', Test) {
   }
 }
 
+tasks.register('outputTopologyBenchmark', Test) {
+  description = 'Compare direct output-ring consumers with the synchronized external-edge worker.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputTopologyBenchmarkTest'
+  }
+  systemProperty 'outputTopologyBenchmark', 'true'
+  systemProperty 'outputTopologyBenchmark.fastEvents',
+      System.getProperty('outputTopologyBenchmark.fastEvents', '50000')
+  systemProperty 'outputTopologyBenchmark.delayedEvents',
+      System.getProperty('outputTopologyBenchmark.delayedEvents', '5000')
+  systemProperty 'outputTopologyBenchmark.stalledEvents',
+      System.getProperty('outputTopologyBenchmark.stalledEvents', '5000')
+  systemProperty 'outputTopologyBenchmark.ringSize',
+      System.getProperty('outputTopologyBenchmark.ringSize', '1024')
+  jvmArgs '-Xms512m', '-Xmx512m'
+  testLogging {
+    showStandardStreams = true
+  }
+}
+
 configurations.configureEach {
   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
   exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'

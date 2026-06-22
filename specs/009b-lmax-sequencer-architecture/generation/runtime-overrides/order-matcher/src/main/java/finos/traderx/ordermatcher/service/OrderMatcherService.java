@@ -171,10 +171,6 @@ public class OrderMatcherService {
         lmax.put("projectedSeq", engine.projectedSeq());
         lmax.put("inputRemainingCapacity", engine.inputRemainingCapacity());
         lmax.put("outputRemainingCapacity", engine.outputRemainingCapacity());
-        lmax.put("outputExternalSubmittedSeq", engine.outputExternalSubmittedSeq());
-        lmax.put("outputExternalProcessedSeq", engine.outputExternalProcessedSeq());
-        lmax.put("outputExternalPendingEvents", engine.outputExternalPendingEvents());
-        lmax.put("outputExternalRemainingCapacity", engine.outputExternalRemainingCapacity());
 
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("status", "ok");
@@ -269,17 +265,6 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
         sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
         sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
-        sb.append("# HELP traderx_output_external_pending_events Events queued for external NATS/projection edge.\n");
-        sb.append("# TYPE traderx_output_external_pending_events gauge\n");
-        sb.append("traderx_output_external_pending_events ").append(engine.outputExternalPendingEvents()).append('\n');
-        sb.append("# HELP traderx_output_external_remaining_capacity Free bounded external-edge slots.\n");
-        sb.append("# TYPE traderx_output_external_remaining_capacity gauge\n");
-        sb.append("traderx_output_external_remaining_capacity ").append(engine.outputExternalRemainingCapacity()).append('\n');
-        sb.append("# HELP traderx_output_external_lag_seq Submitted external-edge sequence minus processed sequence.\n");
-        sb.append("# TYPE traderx_output_external_lag_seq gauge\n");
-        sb.append("traderx_output_external_lag_seq ")
-            .append(Math.max(0, engine.outputExternalSubmittedSeq() - engine.outputExternalProcessedSeq()))
-            .append('\n');
         sb.append("# HELP traderx_output_events_total Output-ring events by kind.\n");
         sb.append("# TYPE traderx_output_events_total counter\n");
         sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');

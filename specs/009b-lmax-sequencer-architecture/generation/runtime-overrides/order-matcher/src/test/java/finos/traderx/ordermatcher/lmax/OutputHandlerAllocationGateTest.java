@@ -20,9 +20,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * with no-op publishers/repositories so the result is handler-local allocation, not
  * JSON/NATS serialization or database driver allocation.
  *
- * The output-ring handlers should stay allocation-free or bounded to tiny framework
- * overhead. The delegated publisher/projector handlers are still measured to keep their
- * current allocation visible while they remain behind the bounded external edge.
+ * Every independent output-ring handler should stay allocation-free or bounded to tiny
+ * framework overhead after warm-up.
  */
 class OutputHandlerAllocationGateTest {
     private static final int WARMUP = 500;
@@ -58,23 +57,7 @@ class OutputHandlerAllocationGateTest {
         ProjectorHandler projectorOrder = newNoFlushProjector(symbols);
         ProjectorHandler projectorTrade = newNoFlushProjector(symbols);
         ProjectorHandler projectorPosition = newNoFlushProjector(symbols);
-        OutputExternalEdgeHandler externalEdge = new OutputExternalEdgeHandler(
-            WARMUP + ITERATIONS + 16, new NoopOutputHandler());
-
         long marshallerBytes = allocatedBytes(threadMx, e -> marshaller.onEvent(e, 0, true), order);
-        long externalEdgeBytes;
-        try {
-            externalEdgeBytes = allocatedBytes(threadMx, e -> {
-                try {
-                    externalEdge.onEvent(e, 0, true);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(ex);
-                }
-            }, trade);
-        } finally {
-            externalEdge.close();
-        }
         long natsBridgeBytes = allocatedBytes(threadMx, e -> natsBridge.onEvent(e, 0, true), order);
         long accountTradeBytes = allocatedBytes(threadMx, e -> accountTrade.onEvent(e, 0, true), trade);
         long positionUpdateBytes = allocatedBytes(threadMx, e -> positionUpdate.onEvent(e, 0, true), position);
@@ -85,15 +68,14 @@ class OutputHandlerAllocationGateTest {
 
         System.out.printf(
             "ODL-05 output handler allocation bytes per %,d events: " +
-                "MarshallerHandler=%d, OutputExternalEdgeHandler=%d, NatsBridgeHandler=%d, AccountTradeHandler=%d, " +
+                "MarshallerHandler=%d, NatsBridgeHandler=%d, AccountTradeHandler=%d, " +
                 "PositionUpdateHandler=%d, TradeSubmitHandler=%d, ProjectorHandler(order)=%d, " +
                 "ProjectorHandler(trade)=%d, ProjectorHandler(position)=%d%n",
-            ITERATIONS, marshallerBytes, externalEdgeBytes, natsBridgeBytes, accountTradeBytes, positionUpdateBytes,
+            ITERATIONS, marshallerBytes, natsBridgeBytes, accountTradeBytes, positionUpdateBytes,
             tradeSubmitBytes, projectorOrderBytes, projectorTradeBytes, projectorPositionBytes);
 
         assertAll(
             () -> assertBudget("MarshallerHandler", marshallerBytes, 0),
-            () -> assertBudget("OutputExternalEdgeHandler", externalEdgeBytes, 1_024),
             () -> assertBudget("NatsBridgeHandler", natsBridgeBytes, 0),
             () -> assertBudget("AccountTradeHandler", accountTradeBytes, 0),
             () -> assertBudget("PositionUpdateHandler", positionUpdateBytes, 512),
@@ -131,22 +113,6 @@ class OutputHandlerAllocationGateTest {
         ProjectorHandler projectorOrder = newNoFlushProjector(symbols);
         ProjectorHandler projectorTrade = newNoFlushProjector(symbols);
         ProjectorHandler projectorPosition = newNoFlushProjector(symbols);
-        OutputExternalEdgeHandler externalEdge = new OutputExternalEdgeHandler(
-            WARMUP + ITERATIONS + 16, new NoopOutputHandler());
-
-        long externalEdgeBytes;
-        try {
-            externalEdgeBytes = allocatedBytes(threadMx, e -> {
-                try {
-                    externalEdge.onEvent(e, 0, true);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(ex);
-                }
-            }, trades);
-        } finally {
-            externalEdge.close();
-        }
         long natsBridgeBytes = allocatedBytes(threadMx, e -> natsBridge.onEvent(e, 0, true), orders);
         long accountTradeBytes = allocatedBytes(threadMx, e -> accountTrade.onEvent(e, 0, true), trades);
         long positionUpdateBytes = allocatedBytes(threadMx, e -> positionUpdate.onEvent(e, 0, true), positions);
@@ -157,15 +123,14 @@ class OutputHandlerAllocationGateTest {
 
         System.out.printf(
             "ODL-05 varied output allocation bytes per %,d events (%d-value set): " +
-                "OutputExternalEdgeHandler=%d, NatsBridgeHandler=%d, AccountTradeHandler=%d, " +
+                "NatsBridgeHandler=%d, AccountTradeHandler=%d, " +
                 "PositionUpdateHandler=%d, TradeSubmitHandler=%d, ProjectorHandler(order)=%d, " +
                 "ProjectorHandler(trade)=%d, ProjectorHandler(position)=%d%n",
-            ITERATIONS, VARIED_EVENTS, externalEdgeBytes, natsBridgeBytes, accountTradeBytes,
+            ITERATIONS, VARIED_EVENTS, natsBridgeBytes, accountTradeBytes,
             positionUpdateBytes, tradeSubmitBytes, projectorOrderBytes, projectorTradeBytes,
             projectorPositionBytes);
 
         assertAll(
-            () -> assertBudget("varied OutputExternalEdgeHandler", externalEdgeBytes, 1_024),
             () -> assertBudget("varied NatsBridgeHandler", natsBridgeBytes, 512),
             () -> assertBudget("varied AccountTradeHandler", accountTradeBytes, 512),
             () -> assertBudget("varied PositionUpdateHandler", positionUpdateBytes, 512),
@@ -174,11 +139,6 @@ class OutputHandlerAllocationGateTest {
             () -> assertBudget("varied ProjectorHandler trade path", projectorTradeBytes, 512),
             () -> assertBudget("varied ProjectorHandler position path", projectorPositionBytes, 512)
         );
-    }
-
-    private static final class NoopOutputHandler implements com.lmax.disruptor.EventHandler<OutputEvent> {
-        @Override
-        public void onEvent(OutputEvent event, long sequence, boolean endOfBatch) {}
     }
 
     private static long allocatedBytes(com.sun.management.ThreadMXBean threadMx, Consumer<OutputEvent> handler,

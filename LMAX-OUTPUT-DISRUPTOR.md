@@ -78,12 +78,11 @@ flowchart LR
   end
 
   OR --> M["MarshallerHandler"]
-  OR --> EDGE["OutputExternalEdgeHandler<br/>bounded pre-allocated handoff"]
-  EDGE --> NB["NatsBridgeHandler<br/>orders"]
-  EDGE --> AT["AccountTradeHandler<br/>account trades"]
-  EDGE --> PU["PositionUpdateHandler<br/>positions"]
-  EDGE --> TS["TradeSubmitHandler<br/>optional /trades"]
-  EDGE --> PRJ["ProjectorHandler<br/>batched DB writes"]
+  OR --> NB["NatsBridgeHandler<br/>orders"]
+  OR --> AT["AccountTradeHandler<br/>account trades"]
+  OR --> PU["PositionUpdateHandler<br/>positions"]
+  OR --> TS["TradeSubmitHandler<br/>optional /trades"]
+  OR --> PRJ["ProjectorHandler<br/>batched DB writes"]
 
   NB --> UI["Angular UI"]
   AT --> UI
@@ -165,15 +164,8 @@ public long ingressNanos;
 
 ## A4. The parallel output handlers
 
-The output ring fans every event out to two independent on-ring handlers:
-
-- `MarshallerHandler`, which updates the in-memory acknowledgement/read-model state and completes command
-  responses.
-- `OutputExternalEdgeHandler`, which copies the primitive output event into a pre-allocated bounded handoff
-  queue and lets a worker thread perform NATS publication and read-model projection.
-
-That keeps acknowledgement marshalling on the output ring while moving allocation-heavy external side effects
-behind a bounded, observable edge. The worker invokes these downstream handlers:
+The output ring multicasts every event to independent handlers. Each handler owns a Disruptor consumer thread,
+so NATS fan-out and projection progress in parallel rather than being serialized through one worker:
 
 | Handler | Events | Responsibility |
 | --- | --- | --- |
@@ -246,7 +238,6 @@ Current output-related capacity and wait strategy are configurable:
 
 - `disruptor.output.ring-size`
 - `disruptor.output.wait-strategy`
-- `output.external-edge.capacity`
 - `output.projector.batch-size`
 
 The demo profile defaults to a container-friendly blocking strategy. Low-latency deployments can select a
@@ -260,13 +251,13 @@ The BLP-to-output-ring emission path is allocation-free in steady state:
 - event fields are primitive ids, flags, quantities, ticks, and timestamps
 - the BLP does not allocate JSON, `String`, `BigDecimal`, or JPA entities while writing output events
 
-The on-ring output handlers are also part of the matcher JVM hot path for GC purposes. They therefore use
-reused payload objects, cached topics/ids/prices, mutable date fields, and a pre-allocated handoff queue
-instead of allocating per event. The no-GC gate measures both repeated single-event traffic and varied
+The output handlers are also part of the matcher JVM hot path for GC purposes. They therefore use reused
+payload objects, cached topics/ids/prices, and mutable date fields instead of allocating per event. The no-GC
+gate measures both repeated single-event traffic and varied
 account/security/order/trade/price values so cache misses remain visible.
 
-Allocation remains acceptable only after the bounded external-edge handoff, where real NATS serialization,
-publisher internals, and database drivers may allocate independently of the BLP thread:
+Real NATS serialization, publisher internals, and database drivers may still allocate on their dedicated
+consumer threads. Those allocations are outside the handler-local gate but share the matcher JVM heap:
 
 - JPA entities for projection
 - NATS client / JSON serialization internals
@@ -286,11 +277,10 @@ A fill flows through the system as follows:
 5. `OutputPublisher.emitFillWithTradeAndPosition(...)` writes three adjacent output slots:
    order lifecycle, `TradeBooked`, `PositionUpdated`.
 6. `MarshallerHandler` updates in-memory acknowledgement/read-model state and records latency.
-7. `OutputExternalEdgeHandler` copies the event into its pre-allocated bounded handoff queue.
-8. `NatsBridgeHandler` publishes order updates from the worker thread.
-9. `AccountTradeHandler` publishes the account trade update from the worker thread.
-10. `PositionUpdateHandler` publishes the account position update from the worker thread.
-11. `ProjectorHandler` asynchronously writes order/trade/position rows from the worker thread.
+7. `NatsBridgeHandler` publishes order updates on its consumer thread.
+8. `AccountTradeHandler` publishes the account trade update on its consumer thread.
+9. `PositionUpdateHandler` publishes the account position update on its consumer thread.
+10. `ProjectorHandler` asynchronously writes order/trade/position rows on its consumer thread.
 
 The acknowledgement is not waiting for NATS publish or database projection.
 
@@ -317,13 +307,11 @@ ProjectorHandler projector = new ProjectorHandler(orderRepository, tradeReposito
 
 if (legacyTradeSubmitEnabled) {
     TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-    externalEdge = new OutputExternalEdgeHandler(outputExternalEdgeCapacity, natsBridge,
-        accountTrade, positionUpdate, tradeSubmit, projector);
+    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+        tradeSubmit, projector);
 } else {
-    externalEdge = new OutputExternalEdgeHandler(outputExternalEdgeCapacity, natsBridge,
-        accountTrade, positionUpdate, projector);
+    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
 }
-outputDisruptor.handleEventsWith(marshaller, externalEdge);
 ```
 
 The implemented source files live under:
@@ -370,7 +358,6 @@ Primary output-disruptor files:
 - `src/main/java/finos/traderx/ordermatcher/lmax/LmaxEngine.java`
 - `src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java`
 - `src/main/java/finos/traderx/ordermatcher/lmax/MarshallerHandler.java`
-- `src/main/java/finos/traderx/ordermatcher/lmax/OutputExternalEdgeHandler.java`
 - `src/main/java/finos/traderx/ordermatcher/lmax/OutputValueCache.java`
 - `src/main/java/finos/traderx/ordermatcher/lmax/AccountTopicCache.java`
 - `src/main/java/finos/traderx/ordermatcher/lmax/NatsBridgeHandler.java`
@@ -456,7 +443,6 @@ generated/code/target-generated/order-matcher
 | --- | --- | --- |
 | `disruptor.output.ring-size` | `65536` | Output ring size, normalized to a power of two. |
 | `disruptor.output.wait-strategy` | `blocking` | Output consumer wait strategy for the demo profile. |
-| `output.external-edge.capacity` | `65536` | Bounded handoff capacity for external NATS/projection work. |
 | `output.projector.batch-size` | `500` | Projector flush threshold. |
 | `output.legacy-trades.enabled` | `false` | Enables optional `/trades` compatibility publishing. |
 | `blp.positions.capacity` | `8192` | In-memory position-book capacity owned by the BLP. |
@@ -468,7 +454,7 @@ The output stage exposes:
 - output ring remaining capacity
 - `marshalledSeq`
 - `projectedSeq`
-- external-edge submitted/processed sequence and pending queue depth
+- per-handler failure counters and projector sequence/pending rows
 - output egress latency
 - trade submit failures
 - account trade publish failures
@@ -518,7 +504,7 @@ The state includes:
 - output-side publisher wiring in `PubSubConfig` and `LmaxEngine`
 - optional `/trades` compatibility publishing
 - position projection support
-- bounded pre-allocated external-edge handoff
+- independent parallel output-ring consumers
 - output-handler value/topic caches
 - output publish failure counters
 - focused output handler tests, allocation gates, and latency benchmarks
@@ -529,7 +515,7 @@ The state includes:
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
 | NATS publish failure | UI misses an update. | Handler-specific failure counters and logs; BLP state remains authoritative. |
-| NATS stall | External-edge queue can fill and then backpressure the output ring and BLP. | Ring capacity metrics, external-edge pending/lag metrics, health checks, and message bus connectivity metrics. |
+| NATS stall | The NATS consumer can hold its gating sequence and eventually backpressure the BLP. | Output-ring capacity, handler failure metrics, health checks, and message bus connectivity metrics. |
 | Projector failure | Durable read model lags. | Failure metrics, bounded buffers, replay/reprojection from authoritative event stream. |
 | Subject contract drift | UI stops receiving expected updates. | Focused output handler tests for subjects and payloads. |
 | Handler allocation regression | Matcher JVM GC can affect the BLP even when the BLP itself does not allocate. | Output-handler allocation gate, varied-value cache coverage, and latency benchmark. |

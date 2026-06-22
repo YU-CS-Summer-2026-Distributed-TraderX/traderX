@@ -43,9 +43,8 @@ import java.util.regex.Pattern;
  *           -> journaler + replicator in parallel, BLP gated behind both
  *      -> single-threaded MatchingEngine (in-memory book; match + emit on one thread)
  *           -> output disruptor (single producer)
- *                -> marshaller | bounded external-edge handoff
- *                       -> order NATS bridge | account trade | position update
- *                          | optional legacy trade submit | read-model projector
+ *                -> marshaller | order NATS bridge | account trade | position update
+ *                   | optional legacy trade submit | read-model projector
  *
  * Demo profile defaults: BlockingWaitStrategy, loopback replicator, file journal, no core
  * pinning — container-safe per NFR-09B06. Recovery: read-model warm-start + journal
@@ -70,7 +69,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final String inputWaitStrategy;
     private final int outputRingSize;
     private final String outputWaitStrategy;
-    private final int outputExternalEdgeCapacity;
     private final boolean journalEnabled;
     private final String journalPath;
     private final int projectorBatchSize;
@@ -94,7 +92,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private ReplicatorStub replicator;
     private MarshallerHandler marshaller;
     private ProjectorHandler projector;
-    private OutputExternalEdgeHandler externalEdge;
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -111,7 +108,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${disruptor.input.wait-strategy:blocking}") String inputWaitStrategy,
         @Value("${disruptor.output.ring-size:65536}") int outputRingSize,
         @Value("${disruptor.output.wait-strategy:blocking}") String outputWaitStrategy,
-        @Value("${output.external-edge.capacity:65536}") int outputExternalEdgeCapacity,
         @Value("${journal.enabled:true}") boolean journalEnabled,
         @Value("${journal.path:./data/journal}") String journalPath,
         @Value("${output.projector.batch-size:500}") int projectorBatchSize,
@@ -135,7 +131,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.inputWaitStrategy = inputWaitStrategy;
         this.outputRingSize = outputRingSize;
         this.outputWaitStrategy = outputWaitStrategy;
-        this.outputExternalEdgeCapacity = outputExternalEdgeCapacity;
         this.journalEnabled = journalEnabled;
         this.journalPath = journalPath;
         this.projectorBatchSize = projectorBatchSize;
@@ -159,20 +154,18 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
-        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). The output ring
-        // keeps the marshaller on-ring for acks/read-model updates, while NATS publication and
-        // JPA projection run behind a bounded external-edge handoff.
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). Each optimized
+        // output handler consumes independently so NATS and projection remain parallel. The
+        // output ring itself provides bounded backpressure when any consumer falls behind.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
         if (legacyTradeSubmitEnabled) {
             TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-            externalEdge = new OutputExternalEdgeHandler(outputExternalEdgeCapacity, natsBridge,
-                accountTrade, positionUpdate, tradeSubmit, projector);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+                tradeSubmit, projector);
         } else {
-            externalEdge = new OutputExternalEdgeHandler(outputExternalEdgeCapacity, natsBridge,
-                accountTrade, positionUpdate, projector);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
         }
-        outputDisruptor.handleEventsWith(marshaller, externalEdge);
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
@@ -211,9 +204,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             }
         } catch (com.lmax.disruptor.TimeoutException ex) {
             outputDisruptor.halt();
-        }
-        if (externalEdge != null) {
-            externalEdge.close();
         }
         if (journaler != null) {
             journaler.close();
@@ -525,22 +515,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long projectorPendingRows() {
         return projector == null ? 0 : projector.pendingRows();
-    }
-
-    public long outputExternalSubmittedSeq() {
-        return externalEdge == null ? -1 : externalEdge.submittedSeq();
-    }
-
-    public long outputExternalProcessedSeq() {
-        return externalEdge == null ? -1 : externalEdge.processedSeq();
-    }
-
-    public int outputExternalPendingEvents() {
-        return externalEdge == null ? 0 : externalEdge.pendingEvents();
-    }
-
-    public int outputExternalRemainingCapacity() {
-        return externalEdge == null ? 0 : externalEdge.remainingCapacity();
     }
 
     public String runtimeProfile() {

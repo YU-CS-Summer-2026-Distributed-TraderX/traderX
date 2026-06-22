@@ -45,29 +45,15 @@ class OutputHandlerLatencyBenchmarkTest {
         TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, new InMemoryOrderReadModel());
         ProjectorHandler projectorTrade = newNoFlushProjector(symbols);
         ProjectorHandler projectorPosition = newNoFlushProjector(symbols);
-        OutputExternalEdgeHandler externalEdge = new OutputExternalEdgeHandler(
-            WARMUP + iterations + 16, new NoopOutputHandler());
-
         System.out.printf("ODL output handler latency benchmark: iterations=%d warmup=%d%n", iterations, WARMUP);
-        try {
-            report("OutputExternalEdgeHandler", measure(iterations, e -> {
-                try {
-                    externalEdge.onEvent(e, 0, true);
-                } catch (InterruptedException ex) {
-                    Thread.currentThread().interrupt();
-                    throw new AssertionError(ex);
-                }
-            }, trade));
-            report("NatsBridgeHandler(order)", measure(iterations, e -> natsBridge.onEvent(e, 0, true), order));
-            report("AccountTradeHandler", measure(iterations, e -> accountTrade.onEvent(e, 0, true), trade));
-            report("PositionUpdateHandler", measure(iterations, e -> positionUpdate.onEvent(e, 0, true), position));
-            report("TradeSubmitHandler", measure(iterations, e -> tradeSubmit.onEvent(e, 0, true), trade));
-            report("ProjectorHandler(trade,no-flush)", measure(iterations, e -> projectorTrade.onEvent(e, 0, false), trade));
-            report("ProjectorHandler(position,no-flush)",
-                measure(iterations, e -> projectorPosition.onEvent(e, 0, false), position));
-        } finally {
-            externalEdge.close();
-        }
+        report("NatsBridgeHandler(order)", measure(iterations, e -> natsBridge.onEvent(e, 0, true), order));
+        report("AccountTradeHandler", measure(iterations, e -> accountTrade.onEvent(e, 0, true), trade));
+        report("PositionUpdateHandler", measure(iterations, e -> positionUpdate.onEvent(e, 0, true), position));
+        report("TradeSubmitHandler", measure(iterations, e -> tradeSubmit.onEvent(e, 0, true), trade));
+        report("ProjectorHandler(trade,no-flush)",
+            measure(iterations, e -> projectorTrade.onEvent(e, 0, false), trade));
+        report("ProjectorHandler(position,no-flush)",
+            measure(iterations, e -> projectorPosition.onEvent(e, 0, false), position));
     }
 
     private static long[] measure(int iterations, Consumer<OutputEvent> handler, OutputEvent event) {
@@ -151,11 +137,6 @@ class OutputHandlerLatencyBenchmarkTest {
         e.updatedAtMillis = 1_700_000_000_000L;
         e.ingressNanos = System.nanoTime();
         return e;
-    }
-
-    private static final class NoopOutputHandler implements com.lmax.disruptor.EventHandler<OutputEvent> {
-        @Override
-        public void onEvent(OutputEvent event, long sequence, boolean endOfBatch) {}
     }
 
     private static final class NoopPublisher<T> implements Publisher<T> {

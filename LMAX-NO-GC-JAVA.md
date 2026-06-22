@@ -65,8 +65,8 @@ in two places only:
 
 - **Startup** — pre-allocate every ring slot, pooled object, and buffer once.
 - **The outermost edges** — the Gateway converting inbound JSON/`String`/`BigDecimal` to internal binary, and
-  external client/driver boundaries after a bounded handoff. Output-ring handlers still run inside the matcher
-  JVM and are part of the no-GC boundary until their work has crossed that bounded edge.
+  external client/driver internals. Output-ring handlers run inside the matcher JVM and remain part of the
+  no-GC boundary.
 
 Between those edges — the input ring, the BLP, the output ring — **nothing is `new`-ed per event**. That is
 the contract, and it is *enforced*, not hoped for (see [§A11](#a11-proving-it-the-allocation-gate)).
@@ -713,21 +713,19 @@ thread that allocates zero bytes can still suffer JVM-wide pauses if output hand
 The focused gate measures:
 
 - `MarshallerHandler`
-- `OutputExternalEdgeHandler`
 - `NatsBridgeHandler`
 - `AccountTradeHandler`
 - `PositionUpdateHandler`
 - `TradeSubmitHandler`
 - `ProjectorHandler`
 
-The measured handlers reuse payload objects, cached topic/id/price values, mutable date fields, and
-pre-allocated handoff slots. The test suite includes a repeated single-event path and a varied-value path
+The measured handlers reuse payload objects, cached topic/id/price values, and mutable date fields. The test
+suite includes a repeated single-event path and a varied-value path
 covering multiple account ids, securities, order refs, trade ids, prices, and timestamps. That varied path is
 important because it catches cache-miss allocation that a single warm event would hide.
 
-External client and driver internals may still allocate behind the bounded handoff, but that allocation is no
-longer performed by the output-ring handler itself. The matcher exposes external-edge pending/lag/capacity
-metrics so downstream stalls remain visible.
+External client and driver internals may still allocate while called by their dedicated consumer threads.
+Output-ring capacity, projector lag, and handler failure metrics keep downstream stalls visible.
 
 ---
 
@@ -765,7 +763,7 @@ docs) and any edge code (Gateway/Projector), which are explicitly *allowed* to a
 
 - **NGC-01** — Hot-path packages (input ring, BLP, output ring, and output handlers running in the matcher
   JVM) SHALL allocate **zero** bytes in the steady state; allocation is permitted only at startup and after a
-  bounded external edge such as client serialization or database driver work.
+  external client/driver internals such as serialization or database driver work.
 - **NGC-02** — A CI **allocation gate** SHALL run the hot path under `-XX:+UseEpsilonGC` with a small fixed
   heap and **fail** on any steady-state allocation.
 - **NGC-03** — Prices/quantities SHALL be `long` fixed-point on the hot path; `BigDecimal`/`String`
@@ -833,8 +831,7 @@ Three profiles, selected by env/launcher:
 | `traderx_hotpath_alloc_bytes_total{node=...}` | counter | Steady-state allocation per node (**must stay ~0**). |
 | `traderx_jvm_gc_pause_seconds` | histogram | GC pause distribution (should be empty/sub-ms). |
 | `traderx_hotpath_latency_seconds{node=...}` | histogram | Per-node latency (HdrHistogram-backed). |
-| `traderx_output_external_pending_events` | gauge | Events queued behind the bounded external-output handoff. |
-| `traderx_output_external_lag_seq` | gauge | Submitted minus processed external-edge sequence. |
+| `traderx_output_remaining_capacity` | gauge | Output-ring backpressure headroom across independent consumers. |
 | `traderx_jit_warmup_seconds` | gauge | Warm-up duration at startup. |
 | `traderx_nightly_bounce_seconds` | gauge | Last bounce (restart+replay) duration. |
 

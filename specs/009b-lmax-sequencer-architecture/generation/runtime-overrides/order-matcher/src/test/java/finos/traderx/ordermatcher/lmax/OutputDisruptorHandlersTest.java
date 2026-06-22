@@ -10,8 +10,6 @@ import org.junit.jupiter.api.Test;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -268,25 +266,6 @@ class OutputDisruptorHandlersTest {
         assertNull(readModel.get(9999));
     }
 
-    @Test
-    void externalEdgeCopiesEventsIntoBoundedWorker() throws Exception {
-        SymbolTable symbols = symbolsWith("IBM");
-        CapturingOutputHandler delegate = new CapturingOutputHandler();
-        try (OutputExternalEdgeHandler edge = new OutputExternalEdgeHandler(4, delegate)) {
-            OutputEvent trade = tradeEvent(symbols);
-
-            edge.onEvent(trade, 17, true);
-
-            assertTrue(delegate.processed.await(2, TimeUnit.SECONDS));
-            assertEquals(OutputEvent.KIND_TRADE_BOOKED, delegate.kind);
-            assertEquals(22214, delegate.accountId);
-            assertEquals(25, delegate.tradeQty);
-            assertEquals(7, delegate.tradeSeq);
-            assertTrue(edge.submittedSeq() >= 17);
-            assertTrue(edge.processedSeq() >= 0);
-        }
-    }
-
     private static SymbolTable symbolsWith(String ticker) {
         SymbolTable symbols = new SymbolTable(16);
         symbols.idFor(ticker);
@@ -389,20 +368,4 @@ class OutputDisruptorHandlersTest {
         }
     }
 
-    private static final class CapturingOutputHandler implements com.lmax.disruptor.EventHandler<OutputEvent> {
-        private final CountDownLatch processed = new CountDownLatch(1);
-        private byte kind;
-        private int accountId;
-        private int tradeQty;
-        private long tradeSeq;
-
-        @Override
-        public void onEvent(OutputEvent event, long sequence, boolean endOfBatch) {
-            kind = event.kind;
-            accountId = event.accountId;
-            tradeQty = event.tradeQty;
-            tradeSeq = event.tradeSeq;
-            processed.countDown();
-        }
-    }
 }

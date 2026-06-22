@@ -485,12 +485,10 @@ when SBE lands, `T09B12`):**
 ```java
 outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
     DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-// Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring keeps
-// the marshaller on-ring for acks/read-model state and hands NATS/projection work to a
-// bounded pre-allocated external edge. No trade-service round-trip is on the BLP path.
-externalEdge = new OutputExternalEdgeHandler(outputExternalEdgeCapacity, natsBridge,
-    accountTrade, positionUpdate, projector);
-outputDisruptor.handleEventsWith(marshaller, externalEdge);
+// Booking + position-keeping are fused into the BLP (FR-09B08/B10). Independent output
+// consumers keep acknowledgement, NATS fan-out, and projection parallel while the ring
+// provides bounded backpressure. No trade-service round-trip is on the BLP path.
+outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
 outputDisruptor.start();
 
 matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
@@ -553,8 +551,8 @@ single writer, long fixed-point), then emits `TradeBooked` (carrying the executi
 `POSITIONS.AVERAGECOSTBASIS` stay byte-identical to 009's `trade-processor`. The read-model **projector**
 writes the `TRADES` and `POSITIONS` rows (deterministic trade ids from a BLP-assigned trade number), while
 dedicated output handlers publish per-account trade and position updates. The optional global `/trades`
-compatibility publisher is disabled by default. External payload rendering happens behind the bounded
-external-edge handoff so UI contracts are preserved without putting NATS or database work on the BLP thread.
+compatibility publisher is disabled by default. Dedicated output consumers render external payloads so UI
+contracts are preserved without putting NATS or database work on the BLP thread.
 
 ---
 
