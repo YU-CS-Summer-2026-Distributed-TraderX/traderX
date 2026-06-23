@@ -48,8 +48,13 @@ public final class InMemoryOrderReadModel {
     }
 
     public void apply(OutputEvent e, SymbolTable symbols) {
-        OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
-        byRef.put(snapshot.orderRef, snapshot);
+        OrderSnapshot snapshot = byRef.get(e.orderRef);
+        if (snapshot == null) {
+            snapshot = OrderSnapshot.fromEvent(e, symbols);
+            byRef.put(snapshot.orderRef, snapshot);
+        } else {
+            snapshot.updateFromEvent(e, symbols);
+        }
         countFlags(e.flags);
         completeAck(e.inputSeq, snapshot);
     }
@@ -124,7 +129,7 @@ public final class InMemoryOrderReadModel {
     public long countUnfilled() {
         long count = 0;
         for (OrderSnapshot s : byRef.values()) {
-            if (s.isOpen() && s.remainingQuantity != null && s.remainingQuantity > 0) {
+            if (s.isOpen() && s.remainingQuantity > 0) {
                 count++;
             }
         }

@@ -15,6 +15,9 @@ public final class AccountTradeHandler implements EventHandler<OutputEvent> {
     private final Publisher<AccountTrade> accountTradePublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final AccountTrade payload = new AccountTrade();
+    private final AccountTopicCache topics = new AccountTopicCache("/trades");
+    private final OutputValueCache values = new OutputValueCache();
 
     public AccountTradeHandler(Publisher<AccountTrade> accountTradePublisher, SymbolTable symbols,
                                InMemoryOrderReadModel readModel) {
@@ -28,8 +31,8 @@ public final class AccountTradeHandler implements EventHandler<OutputEvent> {
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;
         }
-        AccountTrade payload = AccountTrade.fromEvent(e, symbols);
-        String accountTopic = "/accounts/" + e.accountId + "/trades";
+        payload.copyFromEvent(e, symbols, values);
+        String accountTopic = topics.topicFor(e.accountId);
         try {
             accountTradePublisher.publish(accountTopic, payload);
         } catch (PubSubException ex) {

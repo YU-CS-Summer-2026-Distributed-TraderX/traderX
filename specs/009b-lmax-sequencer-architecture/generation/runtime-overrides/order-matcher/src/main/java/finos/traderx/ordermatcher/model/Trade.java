@@ -111,6 +111,10 @@ public class Trade implements Serializable {
     this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
   }
 
+  public void setPreScaledPrice(BigDecimal price) {
+    this.price = price;
+  }
+
   public Date getUpdated() {
     return updated;
   }

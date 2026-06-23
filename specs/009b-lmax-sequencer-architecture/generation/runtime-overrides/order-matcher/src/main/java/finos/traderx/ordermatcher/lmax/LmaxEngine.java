@@ -154,14 +154,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
-        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans
-        // out to the marshaller, order bridge, direct account trade + position fan-out, optional
-        // legacy `/trades`, and the async projector.
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). Each optimized
+        // output handler consumes independently so NATS and projection remain parallel. The
+        // output ring itself provides bounded backpressure when any consumer falls behind.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
         if (legacyTradeSubmitEnabled) {
             TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, tradeSubmit, projector);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+                tradeSubmit, projector);
         } else {
             outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
         }

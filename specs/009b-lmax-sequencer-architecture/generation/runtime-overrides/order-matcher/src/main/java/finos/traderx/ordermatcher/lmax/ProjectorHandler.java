@@ -2,7 +2,8 @@ package finos.traderx.ordermatcher.lmax;
 
 import finos.traderx.ordermatcher.model.OrderRecord;
 import finos.traderx.ordermatcher.model.Position;
-import finos.traderx.ordermatcher.model.PositionID;
+import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.ordermatcher.model.OrderStatus;
 import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.model.TradeSide;
 import finos.traderx.ordermatcher.model.TradeState;
@@ -14,10 +15,8 @@ import org.slf4j.LoggerFactory;
 
 import com.lmax.disruptor.EventHandler;
 
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
@@ -31,6 +30,8 @@ import java.util.Map;
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
     private static final int MAX_BUFFERED_ROWS = 10_000;
+    private static final OrderSide[] ORDER_SIDES = OrderSide.values();
+    private static final OrderStatus[] ORDER_STATUSES = OrderStatus.values();
 
     private final OrderRepository orderRepository;
     private final TradeRepository tradeRepository;
@@ -38,10 +39,12 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private final SymbolTable symbols;
     private final int batchSize;
     private final HotPathMetrics metrics;
-    private final List<OrderRecord> orderBuffer = new ArrayList<>();
-    private final List<Trade> tradeBuffer = new ArrayList<>();
+    private final Map<Integer, OrderRecord> orderBuffer = new LinkedHashMap<>();
+    private final Map<Long, Trade> tradeBuffer = new LinkedHashMap<>();
     // Positions dedupe within a batch: only the latest net quantity per (account, security) needs writing.
-    private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
+    private final Map<PositionKey, Position> positionBuffer = new LinkedHashMap<>();
+    private final OutputValueCache values = new OutputValueCache();
+    private final PositionKeyCache positionKeys = new PositionKeyCache();
     private volatile long projectedSeq = -1;
     private volatile long pendingRows;
 
@@ -64,13 +67,32 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                  OutputEvent.KIND_ORDER_CANCELED -> {
                 // flags==0 updates are republished unchanged state (no persistence in 009 either)
                 if (e.flags != 0) {
-                    orderBuffer.add(OrderSnapshot.fromEvent(e, symbols).toRecord());
+                    Integer key = values.integerFor(e.orderRef);
+                    OrderRecord record = orderBuffer.get(key);
+                    if (record == null) {
+                        record = new OrderRecord();
+                        orderBuffer.put(key, record);
+                    }
+                    copyOrder(e, record);
                 }
             }
-            case OutputEvent.KIND_TRADE_BOOKED -> tradeBuffer.add(toTrade(e));
+            case OutputEvent.KIND_TRADE_BOOKED -> {
+                Long key = values.longFor(e.tradeSeq);
+                Trade trade = tradeBuffer.get(key);
+                if (trade == null) {
+                    trade = new Trade();
+                    tradeBuffer.put(key, trade);
+                }
+                copyTrade(e, trade);
+            }
             case OutputEvent.KIND_POSITION_UPDATED -> {
-                Position p = toPosition(e);
-                positionBuffer.put(new PositionID(p.getAccountId(), p.getSecurity()), p);
+                PositionKey key = positionKeys.keyFor(e.accountId, e.securityId);
+                Position position = positionBuffer.get(key);
+                if (position == null) {
+                    position = new Position();
+                    positionBuffer.put(key, position);
+                }
+                copyPosition(e, position);
             }
             default -> { /* KIND_ORDER_NOT_FOUND: nothing to persist */ }
         }
@@ -81,40 +103,62 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         pendingRows = orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
     }
 
-    private Trade toTrade(OutputEvent e) {
-        Trade trade = new Trade();
-        trade.setId(OrderSnapshot.tradeIdFor(e.tradeSeq));
-        trade.setAccountId(e.accountId);
-        trade.setSecurity(symbols.tickerFor(e.securityId));
-        trade.setSide(e.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
-        trade.setQuantity(e.tradeQty);
-        trade.setPrice(Px.toDecimalOrZero(e.tradePx));   // stamped execution price (0.000 if no tick), FR-09B40
-        trade.setState(TradeState.Settled);
-        Date when = new Date(e.updatedAtMillis);   // event-carried time (deterministic), not wall clock
-        trade.setCreated(when);
-        trade.setUpdated(when);
-        return trade;
+    private void copyOrder(OutputEvent e, OrderRecord record) {
+        record.setOrderId(values.orderIdFor(e.orderRef));
+        record.setAccountId(values.integerFor(e.accountId));
+        record.setSecurity(symbols.tickerFor(e.securityId));
+        record.setSide(ORDER_SIDES[e.side]);
+        record.setQuantity(values.integerFor(e.quantity));
+        record.setRemainingQuantity(values.integerFor(e.remainingQty));
+        record.setLimitPrice(values.priceFor(e.limitPx));
+        record.setStatus(ORDER_STATUSES[e.status]);
+        record.setCreatedAt(values.instantFor(e.createdAtMillis));
+        record.setUpdatedAt(values.instantFor(e.updatedAtMillis));
+        record.setLastExecutionPrice(values.priceFor(e.lastExecPx));
+        record.setLastFillQuantity(e.lastFillQty == 0 ? null : values.integerFor(e.lastFillQty));
     }
 
-    private Position toPosition(OutputEvent e) {
-        Position position = new Position();
-        position.setAccountId(e.accountId);
+    private void copyTrade(OutputEvent e, Trade trade) {
+        trade.setId(values.tradeIdFor(e.tradeSeq));
+        trade.setAccountId(values.integerFor(e.accountId));
+        trade.setSecurity(symbols.tickerFor(e.securityId));
+        trade.setSide(e.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
+        trade.setQuantity(values.integerFor(e.tradeQty));
+        trade.setPreScaledPrice(values.priceOrZeroFor(e.tradePx));   // stamped execution price (0.000 if no tick), FR-09B40
+        trade.setState(TradeState.Settled);
+        Date when = trade.getCreated();
+        if (when == null) {
+            when = new Date(e.updatedAtMillis);
+        } else {
+            when.setTime(e.updatedAtMillis);
+        }
+        trade.setCreated(when);
+        trade.setUpdated(when);
+    }
+
+    private void copyPosition(OutputEvent e, Position position) {
+        position.setAccountId(values.integerFor(e.accountId));
         position.setSecurity(symbols.tickerFor(e.securityId));
-        position.setQuantity(e.positionQty);
-        position.setAverageCostBasis(Px.toDecimalOrZero(e.positionAvgCostTicks));   // weighted cost basis, FR-09B40
-        position.setUpdated(new Date(e.updatedAtMillis));
-        return position;
+        position.setQuantity(values.integerFor(e.positionQty));
+        position.setPreScaledAverageCostBasis(values.priceOrZeroFor(e.positionAvgCostTicks));   // weighted cost basis, FR-09B40
+        Date updated = position.getUpdated();
+        if (updated == null) {
+            updated = new Date(e.updatedAtMillis);
+        } else {
+            updated.setTime(e.updatedAtMillis);
+        }
+        position.setUpdated(updated);
     }
 
     private void flush(long sequence) {
         try {
             int rows = orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
             if (!orderBuffer.isEmpty()) {
-                orderRepository.saveAll(orderBuffer);
+                orderRepository.saveAll(orderBuffer.values());
                 orderBuffer.clear();
             }
             if (!tradeBuffer.isEmpty()) {
-                tradeRepository.saveAll(tradeBuffer);
+                tradeRepository.saveAll(tradeBuffer.values());
                 tradeBuffer.clear();
             }
             if (!positionBuffer.isEmpty()) {
@@ -126,17 +170,11 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         } catch (Exception ex) {
             // DB unavailable: lag and catch up later (FR-09B24). Bound each buffer so a long
             // outage cannot exhaust memory; oldest rows drop first (superseded by newer snapshots).
-            trimToBound(orderBuffer);
-            trimToBound(tradeBuffer);
+            trimMapToBound(orderBuffer);
+            trimMapToBound(tradeBuffer);
             trimMapToBound(positionBuffer);
             log.warn("Read-model projection failed at seq {} ({}/{}/{} order/trade/position rows buffered): {}",
                 sequence, orderBuffer.size(), tradeBuffer.size(), positionBuffer.size(), ex.getMessage());
-        }
-    }
-
-    private static void trimToBound(List<?> buffer) {
-        if (buffer.size() > MAX_BUFFERED_ROWS) {
-            buffer.subList(0, buffer.size() - MAX_BUFFERED_ROWS).clear();
         }
     }
 
@@ -157,5 +195,57 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     public long pendingRows() {
         return pendingRows;
+    }
+
+    private static final class PositionKeyCache {
+        private static final int ACCOUNT_CAPACITY = 65_536;
+        private static final int SECURITY_CAPACITY = 256;
+
+        private final PositionKey[][] keys = new PositionKey[ACCOUNT_CAPACITY][];
+
+        PositionKey keyFor(int accountId, int securityId) {
+            if (accountId < 0 || accountId >= ACCOUNT_CAPACITY || securityId < 0 || securityId >= SECURITY_CAPACITY) {
+                return new PositionKey(accountId, securityId);
+            }
+            PositionKey[] bySecurity = keys[accountId];
+            if (bySecurity == null) {
+                bySecurity = new PositionKey[SECURITY_CAPACITY];
+                keys[accountId] = bySecurity;
+            }
+            PositionKey key = bySecurity[securityId];
+            if (key == null) {
+                key = new PositionKey(accountId, securityId);
+                bySecurity[securityId] = key;
+            }
+            return key;
+        }
+    }
+
+    private static final class PositionKey {
+        private final int accountId;
+        private final int securityId;
+        private final int hash;
+
+        private PositionKey(int accountId, int securityId) {
+            this.accountId = accountId;
+            this.securityId = securityId;
+            this.hash = 31 * accountId + securityId;
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof PositionKey that)) {
+                return false;
+            }
+            return accountId == that.accountId && securityId == that.securityId;
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
     }
 }
