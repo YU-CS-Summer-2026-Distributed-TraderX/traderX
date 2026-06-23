@@ -29,6 +29,27 @@ class BlpRiskStateTest {
     }
 
     @Test
+    void independentlyScreenedGatewayCommandsCannotOvershootBlpHeadroom() {
+        GatewayReplicaStore first = new GatewayReplicaStore("22214", "IBM", 10_000,
+            10_000_000_000L, 30_000L, 5_000L);
+        GatewayReplicaStore second = new GatewayReplicaStore("22214", "IBM", 10_000,
+            10_000_000_000L, 30_000L, 5_000L);
+        first.bootstrap();
+        second.bootstrap();
+        assertEquals(RiskReason.ACCEPTED,
+            first.screen(22214, "IBM", 10, java.math.BigDecimal.valueOf(100), false, 1_000L));
+        assertEquals(RiskReason.ACCEPTED,
+            second.screen(22214, "IBM", 10, java.math.BigDecimal.valueOf(100), false, 1_000L));
+
+        BlpRiskState blp = state(1_500_000_000L);
+        assertEquals(RiskReason.ACCEPTED,
+            blp.decideAndReserve(501L, 1, 22214, 0, 10, 100_000_000L, 1_000L));
+        assertEquals(RiskReason.CREDIT_LIMIT,
+            blp.decideAndReserve(502L, 2, 22214, 0, 10, 100_000_000L, 1_000L));
+        assertEquals(1_000_000_000L, blp.reservedNotional(22214));
+    }
+
+    @Test
     void duplicateDoesNotReserveTwice() {
         BlpRiskState state = state(5_000_000_000L);
         assertEquals(RiskReason.ACCEPTED,

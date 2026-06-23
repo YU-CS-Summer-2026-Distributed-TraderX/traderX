@@ -3,6 +3,7 @@ package finos.traderx.ordermatcher.risk;
 import jakarta.annotation.PostConstruct;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -42,6 +43,10 @@ public final class GatewayReplicaStore {
     private final long maxOrderNotionalTicks;
     private final long priceMaxAgeMillis;
     private final long priceCollarBps;
+    private final long controlStaleAfterMillis;
+    private final int maxAccounts;
+    private final int maxSecurities;
+    private final int maxEntitlements;
     private volatile boolean ready;
     private volatile boolean killSwitch;
     private volatile long sourceEpoch = 1L;
@@ -55,14 +60,25 @@ public final class GatewayReplicaStore {
     private volatile long securityEpoch = 1L;
     private volatile long securityVersion;
     private volatile long securityHighWatermark;
+    private volatile boolean riskReady = true;
+    private volatile long riskEpoch = 1L;
+    private volatile long riskVersion;
+    private volatile long riskHighWatermark;
+    private volatile boolean controlConnected = true;
+    private volatile long controlLastSeenMillis;
 
+    @Autowired
     public GatewayReplicaStore(
         @Value("${risk.seed.accounts:22214,44044,52355,10031,62654}") String seedAccounts,
         @Value("${risk.seed.securities:IBM,MSFT,JPM,GS,NVDA,C,META,MS,UBS,DB,COF,DFS,FIS,FNF,PARITYA,PARITYB,PARITYC,PARITYD,POSBUY,POSSELL,POSMKT}") String seedSecurities,
         @Value("${risk.max-order-quantity:1000000}") int maxOrderQuantity,
         @Value("${risk.max-order-notional-ticks:1000000000000000}") long maxOrderNotionalTicks,
         @Value("${risk.price.max-age-ms:30000}") long priceMaxAgeMillis,
-        @Value("${risk.price.collar-bps:5000}") long priceCollarBps
+        @Value("${risk.price.collar-bps:5000}") long priceCollarBps,
+        @Value("${risk.control.stale-after-ms:30000}") long controlStaleAfterMillis,
+        @Value("${risk.max-accounts:4096}") int maxAccounts,
+        @Value("${blp.books.max-securities:4096}") int maxSecurities,
+        @Value("${risk.max-entitlements:65536}") int maxEntitlements
     ) {
         this.seedAccounts = seedAccounts;
         this.seedSecurities = seedSecurities;
@@ -70,6 +86,17 @@ public final class GatewayReplicaStore {
         this.maxOrderNotionalTicks = maxOrderNotionalTicks;
         this.priceMaxAgeMillis = priceMaxAgeMillis;
         this.priceCollarBps = priceCollarBps;
+        this.controlStaleAfterMillis = controlStaleAfterMillis;
+        this.maxAccounts = maxAccounts;
+        this.maxSecurities = maxSecurities;
+        this.maxEntitlements = maxEntitlements;
+    }
+
+    public GatewayReplicaStore(String seedAccounts, String seedSecurities, int maxOrderQuantity,
+                               long maxOrderNotionalTicks, long priceMaxAgeMillis,
+                               long priceCollarBps) {
+        this(seedAccounts, seedSecurities, maxOrderQuantity, maxOrderNotionalTicks,
+            priceMaxAgeMillis, priceCollarBps, 30_000L, 4_096, 4_096, 65_536);
     }
 
     @PostConstruct
@@ -94,6 +121,7 @@ public final class GatewayReplicaStore {
         metrics.highWatermark(version);
         metrics.policyVersion(policyVersion);
         ready = version >= highWatermark.get();
+        controlLastSeenMillis = System.currentTimeMillis();
         accountVersion = version;
         accountHighWatermark = version;
         securityVersion = version;
@@ -111,7 +139,7 @@ public final class GatewayReplicaStore {
 
     public RiskReason screen(String principal, int accountId, String ticker, int quantity,
                              BigDecimal limitPrice, boolean marketTrade, long nowMillis) {
-        if (!ready) return reject(RiskReason.CONTROL_STATE_STALE);
+        if (!admissionReady(nowMillis)) return reject(RiskReason.CONTROL_STATE_STALE);
         if (killSwitch) return reject(RiskReason.KILL_SWITCH);
         AccountRecord account = accounts.get(accountId);
         if (account == null) return reject(RiskReason.UNKNOWN_ACCOUNT);
@@ -167,6 +195,7 @@ public final class GatewayReplicaStore {
 
     public synchronized void applyAccount(long epoch, long version, int accountId, boolean enabled) {
         requireNext(epoch, version);
+        requireCapacity(accounts.containsKey(accountId), accounts.size(), maxAccounts, "account");
         accounts.put(accountId, new AccountRecord(accountId, enabled, version));
         applied(version);
     }
@@ -175,6 +204,7 @@ public final class GatewayReplicaStore {
         requireNext(epoch, version);
         String normalized = normalize(ticker);
         SecurityRecord current = securities.get(normalized);
+        requireCapacity(current != null, securities.size(), maxSecurities, "security");
         int id = current == null ? nextSecurityId.getAndIncrement() : current.securityId();
         long px = current == null ? Long.MIN_VALUE : current.priceTicks();
         long pxTime = current == null ? 0L : current.priceTimeMillis();
@@ -202,13 +232,19 @@ public final class GatewayReplicaStore {
         externalMode = true;
         accountReady = false;
         securityReady = false;
+        riskReady = false;
         ready = false;
+        controlConnected = true;
+        controlLastSeenMillis = System.currentTimeMillis();
     }
 
     public synchronized void installAccountSnapshot(long epoch, long watermark, long observedHighWatermark,
                                                      List<AccountRecord> image,
                                                      List<EntitlementRecord> entitlementImage) {
         validateWatermark(epoch, watermark, observedHighWatermark, "account");
+        if (image.size() > maxAccounts || entitlementImage.size() > maxEntitlements) {
+            throw new IllegalArgumentException("account snapshot capacity exceeded");
+        }
         accounts.clear();
         entitlements.clear();
         for (AccountRecord account : image) accounts.put(account.accountId(), account);
@@ -225,6 +261,7 @@ public final class GatewayReplicaStore {
     public synchronized void installSecuritySnapshot(long epoch, long watermark, long observedHighWatermark,
                                                       List<SecurityRecord> image) {
         validateWatermark(epoch, watermark, observedHighWatermark, "security");
+        if (image.size() > maxSecurities) throw new IllegalArgumentException("security snapshot capacity exceeded");
         securities.clear();
         int highestSecurityId = -1;
         for (SecurityRecord security : image) {
@@ -239,11 +276,29 @@ public final class GatewayReplicaStore {
         updateExternalReadiness();
     }
 
+    public synchronized void installRiskSnapshot(long epoch, long watermark, long observedHighWatermark,
+                                                  long installedPolicyVersion,
+                                                  boolean installedKillSwitch,
+                                                  Map<String, Boolean> restrictionImage) {
+        validateWatermark(epoch, watermark, observedHighWatermark, "risk");
+        restrictions.clear();
+        restrictionImage.forEach((ticker, restricted) -> restrictions.put(normalize(ticker), restricted));
+        policyVersion = installedPolicyVersion;
+        killSwitch = installedKillSwitch;
+        metrics.policyVersion(installedPolicyVersion);
+        riskEpoch = epoch;
+        riskVersion = watermark;
+        riskHighWatermark = observedHighWatermark;
+        riskReady = watermark == observedHighWatermark;
+        updateExternalReadiness();
+    }
+
     public synchronized boolean applyExternalAccount(long epoch, long version, int accountId,
                                                      boolean enabled) {
         if (epoch != accountEpoch) return invalidateExternal("account epoch changed");
         if (version <= accountVersion) return false;
         if (version != accountVersion + 1L) return invalidateExternal("account version gap");
+        requireCapacity(accounts.containsKey(accountId), accounts.size(), maxAccounts, "account");
         accounts.put(accountId, new AccountRecord(accountId, enabled, version));
         accountVersion = version;
         accountHighWatermark = Math.max(accountHighWatermark, version);
@@ -257,9 +312,12 @@ public final class GatewayReplicaStore {
         if (epoch != accountEpoch) return invalidateExternal("account epoch changed");
         if (version <= accountVersion) return false;
         if (version != accountVersion + 1L) return invalidateExternal("account version gap");
+        String entitlementKey = entitlementKey(principal, accountId);
+        requireCapacity(entitlements.containsKey(entitlementKey), entitlements.size(), maxEntitlements,
+            "entitlement");
         EntitlementRecord record = new EntitlementRecord(normalizePrincipal(principal), accountId,
             enabled, version);
-        entitlements.put(entitlementKey(record.principal(), accountId), record);
+        entitlements.put(entitlementKey, record);
         accountVersion = version;
         accountHighWatermark = Math.max(accountHighWatermark, version);
         accountReady = accountVersion >= accountHighWatermark;
@@ -274,6 +332,7 @@ public final class GatewayReplicaStore {
         if (version != securityVersion + 1L) return invalidateExternal("security version gap");
         String normalized = normalize(ticker);
         SecurityRecord old = securities.get(normalized);
+        requireCapacity(old != null, securities.size(), maxSecurities, "security");
         long price = old == null ? Long.MIN_VALUE : old.priceTicks();
         long priceTime = old == null ? 0L : old.priceTimeMillis();
         securities.put(normalized, new SecurityRecord(securityId, normalized, enabled, halted,
@@ -281,6 +340,43 @@ public final class GatewayReplicaStore {
         securityVersion = version;
         securityHighWatermark = Math.max(securityHighWatermark, version);
         securityReady = securityVersion >= securityHighWatermark;
+        updateExternalReadiness();
+        return true;
+    }
+
+    public synchronized boolean applyExternalPolicy(long epoch, long version, long newPolicyVersion) {
+        if (!advanceRisk(epoch, version)) return false;
+        policyVersion = newPolicyVersion;
+        metrics.policyVersion(newPolicyVersion);
+        return true;
+    }
+
+    public synchronized boolean applyExternalKillSwitch(long epoch, long version, boolean enabled) {
+        if (!advanceRisk(epoch, version)) return false;
+        killSwitch = enabled;
+        return true;
+    }
+
+    public synchronized boolean applyExternalRestriction(long epoch, long version, String ticker,
+                                                         boolean restricted) {
+        if (!advanceRisk(epoch, version)) return false;
+        String normalized = normalize(ticker);
+        if (!securities.containsKey(normalized)) {
+            riskReady = false;
+            updateExternalReadiness();
+            throw new IllegalArgumentException("unknown authoritative security: " + normalized);
+        }
+        restrictions.put(normalized, restricted);
+        return true;
+    }
+
+    private boolean advanceRisk(long epoch, long version) {
+        if (epoch != riskEpoch) return invalidateExternal("risk epoch changed");
+        if (version <= riskVersion) return false;
+        if (version != riskVersion + 1L) return invalidateExternal("risk version gap");
+        riskVersion = version;
+        riskHighWatermark = Math.max(riskHighWatermark, version);
+        riskReady = riskVersion >= riskHighWatermark;
         updateExternalReadiness();
         return true;
     }
@@ -298,12 +394,41 @@ public final class GatewayReplicaStore {
         }
     }
 
+    private static void requireCapacity(boolean existing, int size, int capacity, String type) {
+        if (!existing && size >= capacity) throw new IllegalStateException(type + " capacity exceeded");
+    }
+
     private void updateExternalReadiness() {
-        if (externalMode) ready = accountReady && securityReady;
-        long applied = Math.min(accountVersion, securityVersion);
-        long high = Math.min(accountHighWatermark, securityHighWatermark);
+        if (externalMode) ready = accountReady && securityReady && riskReady;
+        long applied = Math.min(Math.min(accountVersion, securityVersion), riskVersion);
+        long high = Math.min(Math.min(accountHighWatermark, securityHighWatermark), riskHighWatermark);
         metrics.sourceVersion(applied);
         metrics.highWatermark(high);
+    }
+
+    public void markControlConnected(long nowMillis) {
+        controlConnected = true;
+        controlLastSeenMillis = nowMillis;
+    }
+
+    public void markControlActivity(long nowMillis) {
+        controlLastSeenMillis = nowMillis;
+    }
+
+    public void markControlDisconnected(long nowMillis) {
+        controlConnected = false;
+        if (controlLastSeenMillis == 0L) controlLastSeenMillis = nowMillis;
+    }
+
+    public synchronized void quarantineControlUpdate() {
+        ready = false;
+        metrics.controlRejected();
+    }
+
+    public boolean admissionReady(long nowMillis) {
+        if (!ready) return false;
+        if (!externalMode || controlConnected) return true;
+        return nowMillis - controlLastSeenMillis <= controlStaleAfterMillis;
     }
 
     /** Atomic install point for subscribe-buffer-snapshot bootstrap at watermark W. */
@@ -377,11 +502,12 @@ public final class GatewayReplicaStore {
         return new ArrayList<>(entitlements.values());
     }
 
-    public boolean ready() { return ready; }
+    public boolean ready() { return admissionReady(System.currentTimeMillis()); }
     public long policyVersion() { return policyVersion; }
     public long sourceVersion() { return sourceVersion.get(); }
     public long accountVersion() { return accountVersion; }
     public long securityVersion() { return securityVersion; }
+    public long riskVersion() { return riskVersion; }
     public RiskMetrics metrics() { return metrics; }
 
     public static String normalize(String ticker) {

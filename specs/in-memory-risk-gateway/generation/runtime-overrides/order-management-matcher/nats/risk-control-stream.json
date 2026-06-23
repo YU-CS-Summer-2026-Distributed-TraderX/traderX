@@ -4,7 +4,9 @@
     "traderx.control.account.*",
     "traderx.control.entitlement.*",
     "traderx.control.security.*",
-    "traderx.control.policy.*"
+    "traderx.control.risk-policy.*",
+    "traderx.control.restriction.*",
+    "traderx.control.kill-switch.*"
   ],
   "retention": "limits",
   "storage": "file",

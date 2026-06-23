@@ -1,17 +1,22 @@
 import { Injectable } from '@nestjs/common';
 import { loadCsvData } from '../data-loader/load-csv-data';
 import { Stock } from './stock.model';
+import { SecurityControlStore } from './security-control.store';
 
 @Injectable()
 export class StocksService {
   private readonly stocks: Promise<Stock[]>;
 
-  constructor() {
+  constructor(private readonly controls: SecurityControlStore) {
     const supportedTickers = this.parseSupportedTickers(
       process.env.REFERENCE_DATA_SUPPORTED_TICKERS
     );
     const maxTickers = this.parsePositiveInt(process.env.REFERENCE_DATA_MAX_TICKERS);
     this.stocks = loadCsvData({ supportedTickers, maxTickers });
+  }
+
+  private async initializeControls() {
+    await this.controls.initialize((await this.stocks).map((stock) => stock.ticker));
   }
 
   async findAll(): Promise<Stock[]> {
@@ -23,21 +28,19 @@ export class StocksService {
   }
 
   async controlSnapshot() {
-    const stocks = await this.stocks;
-    const securities = stocks.map((stock, securityId) => ({
-      securityId,
-      ticker: stock.ticker,
-      enabled: true,
-      halted: false,
-      version: securityId + 1,
-    }));
-    const watermark = securities.length;
-    return { sourceEpoch: 1, watermark, highWatermark: watermark, securities };
+    await this.initializeControls();
+    return this.controls.snapshot();
   }
 
   async controlDeltas(after: number) {
-    const snapshot = await this.controlSnapshot();
-    return snapshot.securities.filter((security) => security.version > after);
+    await this.initializeControls();
+    return this.controls.deltas(after);
+  }
+
+  async updateSecurity(ticker: string, enabled: boolean, halted: boolean,
+                       expectedVersion: number, operator: string) {
+    await this.initializeControls();
+    return this.controls.mutate(ticker, enabled, halted, expectedVersion, operator);
   }
 
   private parseSupportedTickers(input?: string): Set<string> | undefined {

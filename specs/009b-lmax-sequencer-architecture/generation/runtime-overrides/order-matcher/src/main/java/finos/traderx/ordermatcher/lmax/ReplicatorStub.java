@@ -11,13 +11,27 @@ import com.lmax.disruptor.EventHandler;
  */
 public final class ReplicatorStub implements EventHandler<InputEvent> {
     private volatile long replicatedSeq = -1;
+    private final MatchingEngine follower;
+
+    public ReplicatorStub() {
+        this(null);
+    }
+
+    public ReplicatorStub(MatchingEngine follower) {
+        this.follower = follower;
+    }
 
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
-        replicatedSeq = sequence; // loopback acknowledgement
+        if (follower != null) follower.onEvent(e, e.seq, endOfBatch);
+        replicatedSeq = e.seq; // loopback acknowledgement
     }
 
     public long replicatedSeq() {
         return replicatedSeq;
+    }
+
+    public MatchingEngine.Image followerImage() {
+        return follower == null ? null : follower.captureImage();
     }
 }

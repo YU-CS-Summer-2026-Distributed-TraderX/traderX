@@ -6,6 +6,7 @@ import finos.traderx.ordermatcher.risk.RiskReason;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
+import java.util.Arrays;
 
 /**
  * The Business Logic Processor (state 009b): single thread, entirely in memory,
@@ -25,6 +26,37 @@ import java.lang.invoke.VarHandle;
  * half rounded up — re-evaluated per relevant sequenced event instead of per polling tick.
  */
 public final class MatchingEngine implements EventHandler<InputEvent> {
+    public record Image(
+        int[] orderRefs,
+        int[] accountIds,
+        int[] securityIds,
+        byte[] sides,
+        int[] quantities,
+        int[] remainingQuantities,
+        long[] limitPrices,
+        byte[] statuses,
+        byte[] riskReasons,
+        long[] lastExecPrices,
+        int[] lastFillQuantities,
+        long[] createdAtMillis,
+        long[] updatedAtMillis,
+        long[] expiresAtMillis,
+        long[] lastPricesBySecurity,
+        PositionBook.Image positions,
+        int[] expiryOrderRefs,
+        long[] expiryTimes,
+        long tradeCounter,
+        long eventsProcessed,
+        long autoFillAttempts,
+        long autoFillSuccess,
+        long lastEventTimeMillis,
+        long ordersNew,
+        long ordersCancel,
+        long ordersForceFill,
+        long priceTicks,
+        long tradesNew
+    ) {}
+
     private final OutputPublisher out;
     private final HotPathMetrics metrics;
     private final int fillFullThreshold;
@@ -130,7 +162,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         lastEventTimeMillis = e.eventTimeMillis;
         // Release-store: publishes this event's plain counter/time writes to edge readers
         // without the full volatile-store fence on the BLP thread.
-        BLP_SEQ.setRelease(this, sequence);
+        BLP_SEQ.setRelease(this, e.seq);
         metrics.recordBlpEventLatency(System.nanoTime() - e.ingressNanos);
     }
 
@@ -392,7 +424,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     }
 
     private void onPolicyControl(InputEvent e) {
-        if (risk != null) risk.putPolicy(e.controlVersion, e.controlEnabled);
+        if (risk != null) {
+            risk.putPolicy(e.controlVersion, e.controlEnabled);
+            if (e.qty > 0 && e.limitPx > 0L) risk.putLimits(e.qty, e.limitPx);
+        }
     }
 
     private void onEntitlementControl(InputEvent e) {
@@ -590,5 +625,138 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     public long blpThreadId() {
         return blpThreadId;
+    }
+
+    public Image captureImage() {
+        int orderCount = 0;
+        for (RestingOrder order : ordersByRef) {
+            if (order != null) orderCount++;
+        }
+        int[] orderRefs = new int[orderCount];
+        int[] accountIds = new int[orderCount];
+        int[] securityIds = new int[orderCount];
+        byte[] sides = new byte[orderCount];
+        int[] quantities = new int[orderCount];
+        int[] remainingQuantities = new int[orderCount];
+        long[] limitPrices = new long[orderCount];
+        byte[] statuses = new byte[orderCount];
+        byte[] riskReasons = new byte[orderCount];
+        long[] lastExecPrices = new long[orderCount];
+        int[] lastFillQuantities = new int[orderCount];
+        long[] createdAtMillis = new long[orderCount];
+        long[] updatedAtMillis = new long[orderCount];
+        long[] expiresAtMillis = new long[orderCount];
+        int cursor = 0;
+        for (RestingOrder order : ordersByRef) {
+            if (order == null) {
+                continue;
+            }
+            orderRefs[cursor] = order.orderRef;
+            accountIds[cursor] = order.accountId;
+            securityIds[cursor] = order.securityId;
+            sides[cursor] = order.side;
+            quantities[cursor] = order.quantity;
+            remainingQuantities[cursor] = order.remaining;
+            limitPrices[cursor] = order.limitPx;
+            statuses[cursor] = order.status;
+            riskReasons[cursor] = order.riskReason;
+            lastExecPrices[cursor] = order.lastExecPx;
+            lastFillQuantities[cursor] = order.lastFillQty;
+            createdAtMillis[cursor] = order.createdAtMillis;
+            updatedAtMillis[cursor] = order.updatedAtMillis;
+            expiresAtMillis[cursor] = order.expiresAtMillis;
+            cursor++;
+        }
+        int[] heapRefs = new int[expiryHeapSize];
+        long[] heapTimes = new long[expiryHeapSize];
+        for (int i = 0; i < expiryHeapSize; i++) {
+            heapRefs[i] = expiryOrderRefs[i + 1];
+            heapTimes[i] = expiryTimes[i + 1];
+        }
+        return new Image(orderRefs, accountIds, securityIds, sides, quantities, remainingQuantities,
+            limitPrices, statuses, riskReasons, lastExecPrices, lastFillQuantities, createdAtMillis,
+            updatedAtMillis, expiresAtMillis, Arrays.copyOf(lastPxBySecurity, lastPxBySecurity.length),
+            positions.captureImage(), heapRefs, heapTimes, tradeCounter, eventsProcessed,
+            autoFillAttempts, autoFillSuccess, lastEventTimeMillis, ordersNew, ordersCancel,
+            ordersForceFill, priceTicks, tradesNew);
+    }
+
+    public void restoreImage(Image image) {
+        int maxRef = 0;
+        for (int orderRef : image.orderRefs()) {
+            maxRef = Math.max(maxRef, orderRef);
+        }
+        int orderCapacity = 16_384;
+        while (orderCapacity <= maxRef) {
+            orderCapacity <<= 1;
+        }
+        ordersByRef = new RestingOrder[orderCapacity];
+        Arrays.fill(openRefsBySecurity, null);
+        Arrays.fill(lastPxBySecurity, Px.NONE);
+        for (int i = 0; i < expiryOrderRefs.length; i++) {
+            expiryOrderRefs[i] = 0;
+            expiryTimes[i] = 0L;
+        }
+        expiryHeapSize = 0;
+        positions.restoreImage(image.positions());
+        tradeCounter = image.tradeCounter();
+        eventsProcessed = image.eventsProcessed();
+        autoFillAttempts = image.autoFillAttempts();
+        autoFillSuccess = image.autoFillSuccess();
+        lastEventTimeMillis = image.lastEventTimeMillis();
+        ordersNew = image.ordersNew();
+        ordersCancel = image.ordersCancel();
+        ordersForceFill = image.ordersForceFill();
+        priceTicks = image.priceTicks();
+        tradesNew = image.tradesNew();
+        System.arraycopy(image.lastPricesBySecurity(), 0, lastPxBySecurity, 0,
+            Math.min(lastPxBySecurity.length, image.lastPricesBySecurity().length));
+        for (int i = 0; i < image.orderRefs().length; i++) {
+            bootstrapRecoveredOrder(
+                image.orderRefs()[i],
+                image.accountIds()[i],
+                image.securityIds()[i],
+                image.sides()[i],
+                image.quantities()[i],
+                image.remainingQuantities()[i],
+                image.limitPrices()[i],
+                image.statuses()[i],
+                image.riskReasons()[i],
+                image.lastExecPrices()[i],
+                image.lastFillQuantities()[i],
+                image.createdAtMillis()[i],
+                image.updatedAtMillis()[i],
+                image.expiresAtMillis()[i]
+            );
+        }
+        for (int i = 0; i < image.expiryOrderRefs().length; i++) {
+            addExpiry(image.expiryOrderRefs()[i], image.expiryTimes()[i]);
+        }
+    }
+
+    private void bootstrapRecoveredOrder(int orderRef, int accountId, int securityId, byte side,
+                                         int quantity, int remaining, long limitPx, byte status,
+                                         byte riskReason, long lastExecPx, int lastFillQty,
+                                         long createdAtMillis, long updatedAtMillis,
+                                         long expiresAtMillis) {
+        RestingOrder order = takeFromPool();
+        order.orderRef = orderRef;
+        order.accountId = accountId;
+        order.securityId = securityId;
+        order.side = side;
+        order.quantity = quantity;
+        order.remaining = remaining;
+        order.limitPx = limitPx;
+        order.status = status;
+        order.riskReason = riskReason;
+        order.lastExecPx = lastExecPx;
+        order.lastFillQty = lastFillQty;
+        order.createdAtMillis = createdAtMillis;
+        order.updatedAtMillis = updatedAtMillis;
+        order.expiresAtMillis = expiresAtMillis;
+        index(order);
+        if (order.isOpen()) {
+            openRefs(securityId).add(orderRef);
+        }
     }
 }

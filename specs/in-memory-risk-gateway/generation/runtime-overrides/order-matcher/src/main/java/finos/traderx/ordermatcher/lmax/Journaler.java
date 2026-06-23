@@ -74,7 +74,7 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
     @Override
     public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
         if (!enabled || failed) {
-            journaledSeq = sequence;
+            journaledSeq = e.seq;
             return;
         }
         long start = System.nanoTime();
@@ -88,10 +88,10 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
             }
         } catch (IOException ex) {
             failed = true;
-            log.error("Journal append failed at seq {}; journaling disabled", sequence, ex);
+            log.error("Journal append failed at seq {}; journaling disabled", e.seq, ex);
         }
         metrics.recordJournalLatency(System.nanoTime() - start);
-        journaledSeq = sequence;
+        journaledSeq = e.seq;
     }
 
     public long journaledSeq() {

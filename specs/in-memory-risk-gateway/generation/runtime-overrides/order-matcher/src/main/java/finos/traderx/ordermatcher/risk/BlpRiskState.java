@@ -618,6 +618,15 @@ public final class BlpRiskState {
         int slot = accountSlot(accountId, false);
         return slot < 0 ? 0L : reservedNotional[slot];
     }
+
+    public long totalReservedNotional() {
+        long total = 0L;
+        for (long value : reservedNotional) {
+            if (Long.MAX_VALUE - total < value) return Long.MAX_VALUE;
+            total += value;
+        }
+        return total;
+    }
     public long reservedBuyNotional(int accountId) {
         int slot = accountSlot(accountId, false);
         return slot < 0 ? 0L : reservedBuyNotional[slot];

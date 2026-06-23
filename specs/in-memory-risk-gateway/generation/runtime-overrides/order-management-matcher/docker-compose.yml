@@ -29,6 +29,14 @@ services:
       MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED: "true"
       MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
       REFERENCE_DATA_SUPPORTED_TICKERS: "${SUPPORTED_TICKERS:-AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF}"
+      REFERENCE_DATA_CONTROL_PATH: "/opt/app/data/security-control.json"
+      REFERENCE_DATA_OUTBOX_CAPACITY: "100000"
+      REFERENCE_DATA_OUTBOX_RETAINED: "10000"
+      RISK_CONTROL_OUTBOX_ENABLED: "true"
+      RISK_CONTROL_TOKEN: "${RISK_CONTROL_TOKEN:-dev-risk-control}"
+      NATS_ADDRESS: "nats://control-source:control-source-local@nats-broker:4222"
+    volumes:
+      - reference_data_imrg_data:/opt/app/data
     ports:
       - "18085:18085"
     depends_on:
@@ -90,6 +98,8 @@ services:
       MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
       NATS_BROKER_HOST: "nats-broker"
       RISK_CONTROL_OUTBOX_ENABLED: "true"
+      RISK_CONTROL_TOKEN: "${RISK_CONTROL_TOKEN:-dev-risk-control}"
+      NATS_ADDRESS: "nats://control-source:control-source-local@nats-broker:4222"
     ports:
       - "18088:18088"
     depends_on:
@@ -133,6 +143,7 @@ services:
       DATABASE_DBUSER: "traderx"
       DATABASE_DBPASS: "traderx"
       NATS_BROKER_HOST: "nats-broker"
+      NATS_ADDRESS: "nats://order-matcher:order-matcher-local@nats-broker:4222"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-*}"
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,prometheus,info"
       MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED: "true"
@@ -209,6 +220,7 @@ services:
       RISK_CONTROL_STREAM_ENABLED: "true"
       RISK_ACCOUNT_SNAPSHOT_URL: "http://account-service:18088/account/control/snapshot"
       RISK_SECURITY_SNAPSHOT_URL: "http://reference-data:18085/stocks/control/snapshot"
+      RISK_POLICY_SNAPSHOT_URL: "http://account-service:18088/risk-admin/control/snapshot"
       RISK_SEED_SECURITIES: "${SUPPORTED_TICKERS:-AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF}"
       RISK_SNAPSHOT_ENABLED: "true"
       RISK_SNAPSHOT_PATH: "/opt/app/data/risk/blp-risk.snapshot"
@@ -339,4 +351,5 @@ services:
 volumes:
   postgres_state_009_data:
   nats_state_imrg_data:
+  reference_data_imrg_data:
   order_matcher_imrg_data:

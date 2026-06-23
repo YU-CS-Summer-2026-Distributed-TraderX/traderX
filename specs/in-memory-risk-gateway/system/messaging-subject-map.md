@@ -54,11 +54,11 @@ Decision-relevant controls add the event types in `contracts/contract-delta.md`.
 ## Existing Business Subjects (Unchanged)
 
 - `/orders`
-- `/accounts/{accountId}/orders`
+- `/accounts/<accountId>/orders`
 - `/trades`
-- `/accounts/{accountId}/trades`
-- `/accounts/{accountId}/positions`
-- inherited pricing subjects
+- `/accounts/<accountId>/trades`
+- `/accounts/<accountId>/positions`
+- `pricing.*`
 
 Only BLP-accepted commands produce accepted order/trade/position business outputs. Rejections are
 returned on the correlated request/response path and may emit bounded diagnostics; they do not publish
@@ -70,4 +70,3 @@ fake accepted business events.
 - Consumer lag is bounded by retained stream capacity and observed via replica lag metrics.
 - Bootstrap buffer overflow fails bootstrap and restarts from a new snapshot; it does not drop deltas.
 - Global input/output ring backpressure remains the inherited `009b` contract.
-

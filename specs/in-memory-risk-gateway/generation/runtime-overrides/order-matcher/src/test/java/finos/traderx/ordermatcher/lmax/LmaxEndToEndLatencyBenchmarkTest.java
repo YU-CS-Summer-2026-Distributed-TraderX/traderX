@@ -32,7 +32,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
     "order.matcher.trade-service-url=http://localhost:1/trade/"
 })
 class LmaxEndToEndLatencyBenchmarkTest {
-    private static final int WARMUP = 200;
+    private static final int WARMUP = Integer.getInteger("endToEndLatencyBenchmark.warmup", 5_000);
     private static final int[] ACCOUNTS = {22214, 44044, 52355, 10031, 62654};
 
     @Autowired

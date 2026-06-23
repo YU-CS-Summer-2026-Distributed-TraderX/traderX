@@ -1,8 +1,8 @@
 # Implementation Status: in-memory-risk-gateway
 
-**Status:** Admission, controls, reservations, expiry, versioned persistence, and durable account
-transport are implemented and clean-generation verified. Full crash replay and production control-plane
-hardening remain open.  
+**Status:** Admission, controls, reservations, expiry, versioned persistence, full startup recovery,
+and durable account transport are implemented and clean-generation verified. Production control-plane
+hardening and broader deployment validation remain open.
 **Parent:** `009b-lmax-sequencer-architecture`  
 **Branch:** `in-memory-risk-gateway`
 
@@ -27,10 +27,16 @@ hardening remain open.
 - Atomic versioned BLP risk snapshots covering controls, restrictions, prices, reservations,
   entitlements, exposures, limits, and idempotency state. Snapshot corruption and incompatible
   capacities fail startup; compose persists snapshot and journal data in a named volume.
+- Atomic full recovery snapshots now persist authoritative risk plus matcher/order/position/expiry
+  state together with the last applied global input sequence. Startup restores that image, replays
+  the checksummed journal tail through the BLP without re-emitting side effects, rebuilds the
+  in-memory read model from recovered matcher state, and resumes live sequencing at the next global
+  input sequence.
 - Stable `422`/`503` rejection body, command correlation, authenticated/audited control mutations,
   bounded Prometheus metrics, alerts, and provisioned Grafana dashboard.
-- Epsilon allocation coverage, risk unit/integration tests, race-free read snapshots, risk latency
-  benchmark, and inherited output latency/topology regression runs.
+- Epsilon allocation coverage, risk unit/integration tests, race-free read snapshots, recovery
+  snapshot/journal replay tests, risk latency benchmark, and inherited output latency/topology
+  regression runs.
 
 ## Verification Evidence (2026-06-22, macOS arm64)
 
@@ -54,11 +60,11 @@ hardening remain open.
 - Wire a durable security-status publisher and a transactional risk-policy/restriction/kill-switch
   owner/outbox. The consumer and direct authenticated sequenced administration path exist, but those
   two source owners are not yet end-to-end durable publishers.
-- Wire decoded journal tail replay into startup and persist the complete matching/position/expiry image
-  with the risk image. The reader, legacy upcasters, journal checksums, and risk snapshot codec are
-  implemented, but crash recovery is not yet complete to the last journaled sequence.
 - Add NATS subject ACL credentials and at-rest protection for production deployment; the demo stream is
   retained and durable but intentionally runs on the inherited unauthenticated local broker.
+- Decide whether crash-tail replay should also drive projector catch-up into the durable read-model
+  before live traffic resumes; runtime recovery is authoritative in-memory today, but persistent DB
+  convergence after crash replay is still a separate policy decision.
 - Complete bootstrap overflow/retention-loss/reorder tests, mixed snapshot-plus-tail byte-equivalence,
   and follower promotion.
 - Run the containerized state smoke including NATS/WS/UI paths and record a same-host `009b` admission

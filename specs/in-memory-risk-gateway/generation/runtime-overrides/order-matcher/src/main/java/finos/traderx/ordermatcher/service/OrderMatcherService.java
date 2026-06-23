@@ -97,8 +97,10 @@ public class OrderMatcherService {
         validateCreateRequest(request);
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
         int orderRef = engine.nextOrderRef();
+        long validationStarted = System.nanoTime();
         RiskReason preliminary = replicas.screen(principal, request.getAccountId(), ticker, request.getQuantity(),
             request.getLimitPrice(), false, System.currentTimeMillis());
+        replicas.metrics().gatewayValidationLatency(System.nanoTime() - validationStarted);
         if (preliminary != RiskReason.ACCEPTED) {
             throw new RiskRejectedException(request.getClientOrderId(), preliminary,
                 replicas.policyVersion(), -1L);
@@ -140,8 +142,10 @@ public class OrderMatcherService {
     public MarketTradeRequest bookMarketTrade(MarketTradeRequest request, String principal) {
         validateMarketTrade(request);
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
+        long validationStarted = System.nanoTime();
         RiskReason preliminary = replicas.screen(principal, request.getAccountId(), ticker, request.getQuantity(),
             null, true, System.currentTimeMillis());
+        replicas.metrics().gatewayValidationLatency(System.nanoTime() - validationStarted);
         if (preliminary != RiskReason.ACCEPTED) {
             throw new RiskRejectedException(request.getClientOrderId(), preliminary,
                 replicas.policyVersion(), -1L);
@@ -280,6 +284,9 @@ public class OrderMatcherService {
         HotPathMetrics.renderHistogram(sb, "traderx_blp_event_latency_seconds",
             "BLP event handling latency (ingress to onEvent completion).",
             metrics.blpEventHistogram(), new double[]{0.0001, 0.001, 0.01, 0.1, 1});
+        HotPathMetrics.renderHistogram(sb, "traderx_risk_decision_latency_seconds",
+            "Authoritative BLP decision, reservation, and decision emit latency.",
+            metrics.blpEventHistogram(), new double[]{0.000001, 0.000005, 0.00001, 0.000025, 0.0001, 0.001});
         HotPathMetrics.renderHistogram(sb, "traderx_journal_write_latency_seconds",
             "Journaler append latency.",
             metrics.journalHistogram(), new double[]{0.0001, 0.001, 0.01, 0.1});
@@ -334,6 +341,8 @@ public class OrderMatcherService {
         sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
         sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
         replicas.metrics().render(sb, replicas.ready());
+        sb.append("# TYPE traderx_risk_reserved_notional_total gauge\n")
+            .append("traderx_risk_reserved_notional_total ").append(engine.totalReservedNotional()).append('\n');
         return sb.toString();
     }
 

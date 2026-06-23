@@ -311,10 +311,12 @@ echo "[info] open orders via ingress=${orders_count}"
 
 echo "[check] user journey: create order from ticket flow"
 pre_open_count="$(curl -fsS "${INGRESS_URL}/order-matcher/orders/open-count" | jq -r '.openOrders')"
-create_payload='{"accountId":22214,"security":"IBM","side":"Buy","quantity":77,"limitPrice":1.000}'
+create_payload="{\"clientOrderId\":\"state-smoke-order-${RANDOM}-$$\",\"accountId\":22214,\"security\":\"IBM\",\"side\":\"Buy\",\"quantity\":77,\"limitPrice\":100.000}"
+echo "[info] create payload=${create_payload}"
 create_response="$(
   curl -sS -w '\n%{http_code}' \
     -H "Content-Type: application/json" \
+    -H "X-Principal-Id: user01" \
     -X POST \
     -d "${create_payload}" \
     "${INGRESS_URL}/order-matcher/orders"

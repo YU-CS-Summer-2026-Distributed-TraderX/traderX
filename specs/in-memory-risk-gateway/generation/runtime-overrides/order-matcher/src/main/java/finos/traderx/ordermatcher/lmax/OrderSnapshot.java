@@ -127,6 +127,31 @@ public final class OrderSnapshot {
         );
     }
 
+    public static OrderSnapshot fromRecoveredState(int orderRef, int accountId, String security, byte side,
+                                                   int quantity, int remainingQuantity, long limitPx,
+                                                   byte status, long createdAtMillis, long updatedAtMillis,
+                                                   long lastExecPx, int lastFillQuantity, byte riskReason,
+                                                   long commandSequence) {
+        OrderSnapshot snapshot = new OrderSnapshot(
+            orderRef,
+            orderIdFor(orderRef),
+            accountId,
+            security,
+            SIDES[side],
+            quantity,
+            remainingQuantity,
+            limitPx,
+            STATUSES[status],
+            createdAtMillis,
+            updatedAtMillis,
+            lastExecPx,
+            lastFillQuantity
+        );
+        snapshot.riskReason = RISK_REASONS[riskReason];
+        snapshot.commandSequence = commandSequence;
+        return snapshot;
+    }
+
     public boolean isOpen() {
         return status == OrderStatus.NEW || status == OrderStatus.PARTIALLY_FILLED;
     }

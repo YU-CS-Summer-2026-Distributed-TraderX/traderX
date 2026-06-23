@@ -6,6 +6,8 @@ import finos.traderx.accountservice.model.AccountUser;
 import finos.traderx.accountservice.repository.AccountControlEventRepository;
 import java.util.List;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 /** Watermarked snapshot plus retained deltas used to bootstrap admission replicas. */
 @Service
@@ -36,6 +38,7 @@ public class AccountControlFeedService {
         true, System.currentTimeMillis());
   }
 
+  @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
   public Snapshot snapshot() {
     long watermark = outbox.watermark();
     List<AccountImage> image = accounts.getAllAccount().stream()

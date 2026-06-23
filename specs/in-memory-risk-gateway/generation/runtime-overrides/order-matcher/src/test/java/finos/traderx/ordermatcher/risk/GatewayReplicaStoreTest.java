@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -79,9 +80,46 @@ class GatewayReplicaStoreTest {
         store.installAccountSnapshot(2L, 5L, 5L, current.accounts(), List.of(
             new GatewayReplicaStore.EntitlementRecord("alice", 22214, true, 5L)));
         store.installSecuritySnapshot(2L, 2L, 2L, current.securities());
+        store.installRiskSnapshot(2L, 0L, 0L, 1L, false, Map.of());
         assertEquals(RiskReason.ACCEPTED,
             store.screen("alice", 22214, "IBM", 1, BigDecimal.ONE, false, 1L));
         assertEquals(RiskReason.NOT_ENTITLED,
             store.screen("mallory", 22214, "IBM", 1, BigDecimal.ONE, false, 1L));
+    }
+
+    @Test
+    void riskGapAndEpochChangeFailClosedUntilAtomicRebootstrap() {
+        GatewayReplicaStore.Snapshot current = store.snapshot();
+        store.beginExternalBootstrap();
+        store.installAccountSnapshot(2L, 5L, 5L, current.accounts(), List.of(
+            new GatewayReplicaStore.EntitlementRecord("alice", 22214, true, 5L)));
+        store.installSecuritySnapshot(3L, 2L, 2L, current.securities());
+        store.installRiskSnapshot(4L, 7L, 7L, 9L, false, Map.of());
+        assertTrue(store.ready());
+
+        assertThrows(IllegalArgumentException.class,
+            () -> store.applyExternalRestriction(4L, 9L, "IBM", true));
+        assertFalse(store.ready());
+
+        store.installRiskSnapshot(5L, 10L, 10L, 10L, false, Map.of("IBM", true));
+        assertTrue(store.ready());
+        assertEquals(RiskReason.RESTRICTED,
+            store.screen("alice", 22214, "IBM", 1, BigDecimal.ONE, false, 1L));
+    }
+
+    @Test
+    void disconnectedControlFeedFailsClosedOnlyAfterConfiguredDeadline() {
+        GatewayReplicaStore.Snapshot current = store.snapshot();
+        store.beginExternalBootstrap();
+        store.installAccountSnapshot(2L, 1L, 1L, current.accounts(), List.of(
+            new GatewayReplicaStore.EntitlementRecord("alice", 22214, true, 1L)));
+        store.installSecuritySnapshot(3L, 1L, 1L, current.securities());
+        store.installRiskSnapshot(4L, 0L, 0L, 1L, false, Map.of());
+        store.markControlConnected(1_000L);
+        store.markControlDisconnected(1_000L);
+        assertTrue(store.admissionReady(30_999L));
+        assertFalse(store.admissionReady(31_001L));
+        store.markControlConnected(31_002L);
+        assertTrue(store.admissionReady(31_002L));
     }
 }

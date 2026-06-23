@@ -19,6 +19,8 @@ public final class PositionBook {
     private static final long EMPTY = Long.MIN_VALUE;
     private static final float LOAD_FACTOR = 0.7f;
 
+    public record Image(long[] keys, int[] quantities, long[] avgCostTicks) {}
+
     private long[] keys;
     private int[] values;             // net quantity
     private long[] avgCostTicks;      // weighted average cost basis, Px ticks (Px.NONE/0 when flat)
@@ -106,6 +108,40 @@ public final class PositionBook {
 
     public int size() {
         return size;
+    }
+
+    public Image captureImage() {
+        long[] imageKeys = new long[size];
+        int[] imageQuantities = new int[size];
+        long[] imageAvgCostTicks = new long[size];
+        int cursor = 0;
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] == EMPTY) {
+                continue;
+            }
+            imageKeys[cursor] = keys[i];
+            imageQuantities[cursor] = values[i];
+            imageAvgCostTicks[cursor] = avgCostTicks[i];
+            cursor++;
+        }
+        return new Image(imageKeys, imageQuantities, imageAvgCostTicks);
+    }
+
+    public void restoreImage(Image image) {
+        int required = Math.max(16, image.keys().length * 2);
+        int capacity = Integer.highestOneBit(required - 1) << 1;
+        allocate(capacity);
+        size = 0;
+        lastAvgCostTicks = 0L;
+        for (int i = 0; i < image.keys().length; i++) {
+            long key = image.keys()[i];
+            int idx = indexOf(key);
+            keys[idx] = key;
+            values[idx] = image.quantities()[i];
+            avgCostTicks[idx] = image.avgCostTicks()[i];
+            size++;
+            lastAvgCostTicks = image.avgCostTicks()[i];
+        }
     }
 
     private int indexOf(long k) {

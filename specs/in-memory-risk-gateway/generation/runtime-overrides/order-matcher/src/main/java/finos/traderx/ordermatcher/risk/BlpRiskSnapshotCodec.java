@@ -63,7 +63,7 @@ public final class BlpRiskSnapshotCodec {
         }
     }
 
-    private static byte[] encode(BlpRiskState.Image image) throws IOException {
+    static byte[] encode(BlpRiskState.Image image) throws IOException {
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         try (DataOutputStream output = new DataOutputStream(bytes)) {
             write(output, image.accountIds());
@@ -101,7 +101,7 @@ public final class BlpRiskSnapshotCodec {
         return bytes.toByteArray();
     }
 
-    private static BlpRiskState.Image decode(byte[] payload) throws IOException {
+    static BlpRiskState.Image decode(byte[] payload) throws IOException {
         try (DataInputStream input = new DataInputStream(new ByteArrayInputStream(payload))) {
             BlpRiskState.Image image = new BlpRiskState.Image(
                 readInts(input), readBytes(input), readLongs(input), readLongs(input), readLongs(input),

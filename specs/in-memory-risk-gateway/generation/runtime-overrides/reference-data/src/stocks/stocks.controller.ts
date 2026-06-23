@@ -1,4 +1,5 @@
-import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, Headers, NotFoundException,
+  Param, Post, Query, UnauthorizedException } from '@nestjs/common';
 import { Stock } from './stock.model';
 import { StocksService } from './stocks.service';
 
@@ -15,6 +16,25 @@ export class StocksController {
   async controlDeltas(@Query('after') after = '0') {
     const version = Number.parseInt(after, 10);
     return this.stocksService.controlDeltas(Number.isFinite(version) ? version : 0);
+  }
+
+  @Post('control/security/:ticker')
+  async updateSecurity(@Param('ticker') ticker: string,
+      @Headers('x-risk-control-token') token: string,
+      @Headers('x-risk-operator') operator: string,
+      @Body() body: { enabled: boolean; halted: boolean; expectedVersion: number }) {
+    if (token !== (process.env.RISK_CONTROL_TOKEN ?? 'dev-risk-control') || !operator?.trim()) {
+      throw new UnauthorizedException('invalid risk-control credentials');
+    }
+    try {
+      return await this.stocksService.updateSecurity(ticker, body.enabled, body.halted,
+        body.expectedVersion, operator.trim());
+    } catch (failure) {
+      const message = String((failure as Error).message ?? failure);
+      if (message.startsWith('stale expectedVersion=')) throw new ConflictException(message);
+      if (message.startsWith('unknown authoritative security:')) throw new NotFoundException(message);
+      throw failure;
+    }
   }
 
   @Get()

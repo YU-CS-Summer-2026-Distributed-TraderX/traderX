@@ -49,6 +49,20 @@ public final class InMemoryOrderReadModel {
         byRef.put(snapshot.orderRef, snapshot);
     }
 
+    public void reset() {
+        byRef.clear();
+        lastPrices.clear();
+        pendingAcks.clear();
+        pendingTradeAcks.clear();
+        tradeSubmitFailures.reset();
+        accountTradePublishFailures.reset();
+        positionPublishFailures.reset();
+        natsErrors.reset();
+        for (LongAdder adder : eventCounters.values()) {
+            adder.reset();
+        }
+    }
+
     public void apply(OutputEvent e, SymbolTable symbols) {
         OrderSnapshot snapshot = byRef.get(e.orderRef);
         if (snapshot == null) {

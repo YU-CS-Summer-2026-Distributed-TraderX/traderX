@@ -17,6 +17,7 @@ import finos.traderx.ordermatcher.repository.TradeRepository;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.BlpRiskSnapshotCodec;
 import finos.traderx.ordermatcher.risk.GatewayReplicaStore;
+import finos.traderx.ordermatcher.risk.InMemoryRiskGatewaySnapshotCodec;
 import finos.traderx.ordermatcher.risk.RiskReason;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -106,12 +107,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private Disruptor<OutputEvent> outputDisruptor;
     private RingBuffer<InputEvent> inputRing;
     private RingBuffer<OutputEvent> outputRing;
+    private OutputPublisher outputPublisher;
     private MatchingEngine matchingEngine;
     private BlpRiskState riskState;
     private Journaler journaler;
     private ReplicatorStub replicator;
+    private MatchingEngine followerMatchingEngine;
+    private BlpRiskState followerRiskState;
     private MarshallerHandler marshaller;
     private ProjectorHandler projector;
+    private long sequenceBase;
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -190,29 +195,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     public void afterPropertiesSet() {
         seedReadModelIfEmpty();
 
-        // Output ring first: the BLP needs its publisher before it can run.
-        marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
-            projectorBatchSize, metrics);
-        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
-        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
-
-        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). Each optimized
-        // output handler consumes independently so NATS and projection remain parallel. The
-        // output ring itself provides bounded backpressure when any consumer falls behind.
-        outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
-            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-        if (legacyTradeSubmitEnabled) {
-            TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
-                tradeSubmit, projector);
-        } else {
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
-        }
-        outputDisruptor.start();
-        outputRing = outputDisruptor.getRingBuffer();
-
         GatewayReplicaStore.Snapshot riskSnapshot = gatewayReplicas.snapshot();
         for (GatewayReplicaStore.SecurityRecord security : riskSnapshot.securities()) {
             symbols.registerAuthoritative(security.securityId(), security.ticker());
@@ -226,18 +208,47 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             blpRisk.putEntitlement(hashClientOrderId(entitlement.principal()), entitlement.accountId(),
                 entitlement.enabled());
         }
-        restoreRiskSnapshot(blpRisk);
         riskState = blpRisk;
-        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
+        outputPublisher = new OutputPublisher(null);
+        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
+            projectorBatchSize, metrics);
+        outputPublisher.attachRecoverySink(projector::onEvent);
+        matchingEngine = new MatchingEngine(outputPublisher,
             metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity, blpRisk,
             riskOrderExpiryMillis);
+        sequenceBase = restoreRecoveryState();
 
-        bootstrapFromReadModel();
+        followerRiskState = new BlpRiskState(riskMaxAccounts, maxSecurities, bookPoolSize,
+            riskIdempotencyCapacity, riskCreditLimitTicks, riskMaxOrderQuantity,
+            riskMaxOrderNotionalTicks, riskPriceMaxAgeMillis, new finos.traderx.ordermatcher.risk.RiskMetrics());
+        followerRiskState.restoreImage(riskState.captureImage());
+        followerMatchingEngine = new MatchingEngine(new OutputPublisher(null), new HotPathMetrics(),
+            maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity, followerRiskState,
+            riskOrderExpiryMillis);
+        followerMatchingEngine.restoreImage(matchingEngine.captureImage());
+
+        marshaller = new MarshallerHandler(readModel, symbols, metrics);
+        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
+        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
+        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
+
+        outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
+            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
+        if (legacyTradeSubmitEnabled) {
+            TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+                tradeSubmit, projector);
+        } else {
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
+        }
+        outputDisruptor.start();
+        outputRing = outputDisruptor.getRingBuffer();
+        outputPublisher.attach(outputRing);
 
         // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
         // (sequence barrier), so every event it acts on is already durable and replicated.
         journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics);
-        replicator = new ReplicatorStub();
+        replicator = new ReplicatorStub(followerMatchingEngine);
         inputDisruptor = new Disruptor<>(InputEvent::newInstance, normalizeRingSize(inputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.MULTI, waitStrategy(inputWaitStrategy));
         inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
@@ -258,7 +269,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (com.lmax.disruptor.TimeoutException ex) {
             inputDisruptor.halt();
         }
-        persistRiskSnapshot();
         try {
             if (outputDisruptor != null) {
                 outputDisruptor.shutdown(5, TimeUnit.SECONDS);
@@ -266,31 +276,22 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (com.lmax.disruptor.TimeoutException ex) {
             outputDisruptor.halt();
         }
+        // A recovery snapshot is a projector-consistent checkpoint: drain the output ring first so
+        // the next startup only needs to project the journal tail after this image.
+        persistRecoverySnapshot();
         if (journaler != null) {
             journaler.close();
         }
     }
 
-    private void restoreRiskSnapshot(BlpRiskState state) {
-        if (!riskSnapshotEnabled) return;
-        Path path = Path.of(riskSnapshotPath);
-        if (!Files.exists(path)) return;
-        try {
-            BlpRiskSnapshotCodec.restore(path, state);
-            log.info("Restored BLP risk snapshot from {}", path.toAbsolutePath());
-        } catch (IOException ex) {
-            throw new IllegalStateException("Unable to restore BLP risk snapshot " + path, ex);
-        }
-    }
-
-    private void persistRiskSnapshot() {
-        if (!riskSnapshotEnabled || riskState == null) return;
+    private void persistRecoverySnapshot() {
+        if (!riskSnapshotEnabled || riskState == null || matchingEngine == null) return;
         Path path = Path.of(riskSnapshotPath);
         try {
-            BlpRiskSnapshotCodec.write(path, riskState);
-            log.info("Persisted BLP risk snapshot to {}", path.toAbsolutePath());
+            InMemoryRiskGatewaySnapshotCodec.write(path, matchingEngine.blpSeq(), riskState, matchingEngine);
+            log.info("Persisted in-memory risk gateway snapshot to {}", path.toAbsolutePath());
         } catch (IOException ex) {
-            log.error("Unable to persist BLP risk snapshot to {}", path, ex);
+            log.error("Unable to persist in-memory risk gateway snapshot to {}", path, ex);
         }
     }
 
@@ -332,10 +333,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     public void submitPriceTick(String ticker, BigDecimal price) {
         int securityId = symbols.idForExisting(ticker);
         long priceTicks = Px.toTicks(price);
-        long seq = claimInputSlot();
+        long slotSeq = claimInputSlot();
+        long globalSeq = toGlobalSeq(slotSeq);
         try {
-            InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            InputEvent e = inputRing.get(slotSeq);
+            e.seq = globalSeq;
             e.type = InputEvent.TYPE_PRICE_TICK;
             e.orderRef = 0;
             e.accountId = 0;
@@ -351,7 +353,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             e.controlVersion = 0L;
             e.controlEnabled = false;
         } finally {
-            inputRing.publish(seq);
+            inputRing.publish(slotSeq);
         }
     }
 
@@ -373,11 +375,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     public RiskDecision executeTradeNew(int accountId, String ticker, OrderSide side, int quantity,
                                         String clientOrderId, String principal) {
         int securityId = symbols.idForExisting(ticker);
-        long seq = claimInputSlot();
-        CompletableFuture<RiskReason> ack = readModel.registerTradeAck(seq);
+        long slotSeq = claimInputSlot();
+        long globalSeq = toGlobalSeq(slotSeq);
+        CompletableFuture<RiskReason> ack = readModel.registerTradeAck(globalSeq);
         try {
-            InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            InputEvent e = inputRing.get(slotSeq);
+            e.seq = globalSeq;
             e.type = InputEvent.TYPE_TRADE_NEW;
             e.orderRef = 0;
             e.accountId = accountId;
@@ -393,19 +396,19 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             e.controlVersion = 0L;
             e.controlEnabled = false;
         } finally {
-            inputRing.publish(seq);
+            inputRing.publish(slotSeq);
         }
         try {
-            return new RiskDecision(ack.get(ackTimeoutMs, TimeUnit.MILLISECONDS), seq);
+            return new RiskDecision(ack.get(ackTimeoutMs, TimeUnit.MILLISECONDS), globalSeq);
         } catch (TimeoutException ex) {
-            readModel.abandonTradeAck(seq);
-            throw new GatewayTimeoutException("no trade acknowledgement for input seq " + seq);
+            readModel.abandonTradeAck(globalSeq);
+            throw new GatewayTimeoutException("no trade acknowledgement for input seq " + globalSeq);
         } catch (ExecutionException ex) {
             throw new IllegalStateException(ex.getCause());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            readModel.abandonTradeAck(seq);
-            throw new GatewayTimeoutException("interrupted awaiting trade input seq " + seq);
+            readModel.abandonTradeAck(globalSeq);
+            throw new GatewayTimeoutException("interrupted awaiting trade input seq " + globalSeq);
         }
     }
 
@@ -425,7 +428,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     }
 
     public void submitPolicyControl(boolean killSwitch, long version) {
-        submitControl(InputEvent.TYPE_POLICY_CONTROL, 0, 0, 0L, killSwitch, version);
+        submitPolicyControl(killSwitch, version, 0, 0L);
+    }
+
+    public void submitPolicyControl(boolean killSwitch, long version, int maxPositionQuantity,
+                                    long maxConcentrationNotionalTicks) {
+        submitControl(InputEvent.TYPE_POLICY_CONTROL, 0, 0, 0L, killSwitch, version,
+            maxPositionQuantity, maxConcentrationNotionalTicks);
     }
 
     public void submitEntitlementControl(String principal, int accountId, boolean enabled, long version) {
@@ -453,17 +462,23 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private void submitControl(byte type, int accountId, int securityId, long principalKey,
                                boolean enabled, long version) {
-        long seq = claimInputSlot();
+        submitControl(type, accountId, securityId, principalKey, enabled, version, 0, 0L);
+    }
+
+    private void submitControl(byte type, int accountId, int securityId, long principalKey,
+                               boolean enabled, long version, int quantity, long limit) {
+        long slotSeq = claimInputSlot();
+        long globalSeq = toGlobalSeq(slotSeq);
         try {
-            InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            InputEvent e = inputRing.get(slotSeq);
+            e.seq = globalSeq;
             e.type = type;
             e.orderRef = 0;
             e.accountId = accountId;
             e.securityId = securityId;
             e.side = 0;
-            e.qty = 0;
-            e.limitPx = 0L;
+            e.qty = quantity;
+            e.limitPx = limit;
             e.priceTicks = 0L;
             e.ingressNanos = System.nanoTime();
             e.eventTimeMillis = System.currentTimeMillis();
@@ -472,7 +487,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             e.controlVersion = version;
             e.controlEnabled = enabled;
         } finally {
-            inputRing.publish(seq);
+            inputRing.publish(slotSeq);
         }
     }
 
@@ -505,11 +520,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                                   int quantity, long limitPx, long priceTicks, long clientOrderKey,
                                   long principalKey) {
-        long seq = claimInputSlot();
-        CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
+        long slotSeq = claimInputSlot();
+        long globalSeq = toGlobalSeq(slotSeq);
+        CompletableFuture<OrderSnapshot> ack = readModel.registerAck(globalSeq);
         try {
-            InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            InputEvent e = inputRing.get(slotSeq);
+            e.seq = globalSeq;
             e.type = type;
             e.orderRef = orderRef;
             e.accountId = accountId;
@@ -525,13 +541,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             e.controlVersion = 0L;
             e.controlEnabled = false;
         } finally {
-            inputRing.publish(seq);
+            inputRing.publish(slotSeq);
         }
         try {
             return ack.get(ackTimeoutMs, TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
-            readModel.abandonAck(seq);
-            throw new GatewayTimeoutException("no acknowledgement for input seq " + seq);
+            readModel.abandonAck(globalSeq);
+            throw new GatewayTimeoutException("no acknowledgement for input seq " + globalSeq);
         } catch (ExecutionException ex) {
             if (ex.getCause() instanceof RuntimeException runtime) {
                 throw runtime;
@@ -539,9 +555,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             throw new IllegalStateException(ex.getCause());
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
-            readModel.abandonAck(seq);
-            throw new GatewayTimeoutException("interrupted awaiting input seq " + seq);
+            readModel.abandonAck(globalSeq);
+            throw new GatewayTimeoutException("interrupted awaiting input seq " + globalSeq);
         }
+    }
+
+    private long toGlobalSeq(long slotSeq) {
+        return sequenceBase + slotSeq;
     }
 
     public static final class GatewayTimeoutException extends RuntimeException {
@@ -659,6 +679,110 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         readModel.setCounter("force_fill", 0);
     }
 
+    private long restoreRecoveryState() {
+        Path snapshotPath = Path.of(riskSnapshotPath);
+        Path journalFile = Path.of(journalPath).resolve("input-events.journal");
+        long recoveredSeq = -1L;
+        boolean recovered = false;
+        boolean journalPresent = journalEnabled && Files.exists(journalFile);
+        if (riskSnapshotEnabled && Files.exists(snapshotPath)) {
+            try {
+                InMemoryRiskGatewaySnapshotCodec.Snapshot snapshot =
+                    InMemoryRiskGatewaySnapshotCodec.restore(snapshotPath, riskState);
+                matchingEngine.restoreImage(snapshot.matchingImage());
+                recoveredSeq = snapshot.lastAppliedSequence();
+                recovered = true;
+                log.info("Restored in-memory risk gateway snapshot from {} at input seq {}",
+                    snapshotPath.toAbsolutePath(), recoveredSeq);
+            } catch (IOException ex) {
+                tryLegacyRiskSnapshot(snapshotPath, journalPresent, ex);
+            }
+        }
+        if (journalPresent) {
+            try {
+                long replayed = InputEventJournalCodec.replay(journalFile, recoveredSeq,
+                    event -> matchingEngine.onEvent(event, event.seq, true));
+                if (replayed > recoveredSeq) {
+                    log.info("Replayed journal tail from {} through input seq {}",
+                        journalFile.toAbsolutePath(), replayed);
+                    recoveredSeq = replayed;
+                    recovered = true;
+                }
+            } catch (Exception ex) {
+                throw new IllegalStateException("Unable to replay input journal " + journalFile, ex);
+            }
+        }
+        if (recovered) {
+            rebuildReadModelFromRecovery();
+            return recoveredSeq + 1L;
+        }
+        bootstrapFromReadModel();
+        return 0L;
+    }
+
+    private void tryLegacyRiskSnapshot(Path snapshotPath, boolean journalPresent, IOException cause) {
+        if (journalPresent) {
+            log.warn("Ignoring incompatible pre-recovery snapshot at {}; journal replay will rebuild state",
+                snapshotPath.toAbsolutePath(), cause);
+            return;
+        }
+        try {
+            BlpRiskSnapshotCodec.restore(snapshotPath, riskState);
+            log.warn("Recovered legacy risk-only snapshot from {}; matcher state will fall back to bootstrap/replay",
+                snapshotPath.toAbsolutePath(), cause);
+        } catch (IOException legacyFailure) {
+            throw new IllegalStateException("Unable to restore recovery snapshot " + snapshotPath, cause);
+        }
+    }
+
+    private void rebuildReadModelFromRecovery() {
+        readModel.reset();
+        MatchingEngine.Image image = matchingEngine.captureImage();
+        int maxRef = 0;
+        for (int i = 0; i < image.orderRefs().length; i++) {
+            String ticker = symbols.tickerFor(image.securityIds()[i]);
+            if (ticker == null) {
+                log.warn("Skipping recovered order {} with unknown authoritative security id {}",
+                    image.orderRefs()[i], image.securityIds()[i]);
+                continue;
+            }
+            readModel.bootstrap(OrderSnapshot.fromRecoveredState(
+                image.orderRefs()[i],
+                image.accountIds()[i],
+                ticker,
+                image.sides()[i],
+                image.quantities()[i],
+                image.remainingQuantities()[i],
+                image.limitPrices()[i],
+                image.statuses()[i],
+                image.createdAtMillis()[i],
+                image.updatedAtMillis()[i],
+                image.lastExecPrices()[i],
+                image.lastFillQuantities()[i],
+                image.riskReasons()[i],
+                -1L
+            ));
+            maxRef = Math.max(maxRef, image.orderRefs()[i]);
+        }
+        for (int securityId = 0; securityId < image.lastPricesBySecurity().length; securityId++) {
+            long price = image.lastPricesBySecurity()[securityId];
+            if (price == Px.NONE) {
+                continue;
+            }
+            String ticker = symbols.tickerFor(securityId);
+            if (ticker != null) {
+                readModel.recordPrice(ticker, Px.toBigDecimal(price));
+            }
+        }
+        nextOrderRef.set(maxRef + 1);
+        readModel.setCounter("create", image.ordersNew());
+        readModel.setCounter("partial_fill", readModel.countByStatus(OrderStatus.PARTIALLY_FILLED));
+        readModel.setCounter("fill", readModel.countByStatus(OrderStatus.FILLED));
+        readModel.setCounter("cancel", readModel.countByStatus(OrderStatus.CANCELED));
+        readModel.setCounter("reject", readModel.countByStatus(OrderStatus.REJECTED));
+        readModel.setCounter("force_fill", image.ordersForceFill());
+    }
+
     // ----- wiring helpers ----------------------------------------------------------------------
 
     private static int normalizeRingSize(int requested) {
@@ -698,7 +822,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     }
 
     public long inputPublishedSeq() {
-        return inputRing == null ? -1 : inputRing.getCursor();
+        return inputRing == null ? sequenceBase - 1L : toGlobalSeq(inputRing.getCursor());
     }
 
     public long inputRemainingCapacity() {
@@ -715,6 +839,18 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long replicatedSeq() {
         return replicator == null ? -1 : replicator.replicatedSeq();
+    }
+
+    public boolean followerPromotable() {
+        return replicator != null && replicator.replicatedSeq() >= matchingEngine.blpSeq();
+    }
+
+    public MatchingEngine.Image followerImage() {
+        return replicator == null ? null : replicator.followerImage();
+    }
+
+    public long totalReservedNotional() {
+        return riskState == null ? 0L : riskState.totalReservedNotional();
     }
 
     public long gatingSeq() {

@@ -13,14 +13,38 @@ import finos.traderx.ordermatcher.risk.RiskReason;
  * one claim; a market trade emits {@code TradeBooked} + {@code PositionUpdated}.
  */
 public final class OutputPublisher {
-    private final RingBuffer<OutputEvent> ring;
+    @FunctionalInterface
+    public interface RecoverySink {
+        void onRecovered(OutputEvent event, long sequence, boolean endOfBatch);
+    }
+
+    private RingBuffer<OutputEvent> ring;
+    private RecoverySink recoverySink;
+    private final OutputEvent recoveryEvent = new OutputEvent();
+    private long recoverySequence;
 
     public OutputPublisher(RingBuffer<OutputEvent> ring) {
         this.ring = ring;
     }
 
+    public void attach(RingBuffer<OutputEvent> ring) {
+        this.ring = ring;
+        this.recoverySink = null;
+    }
+
+    public void attachRecoverySink(RecoverySink sink) {
+        this.recoverySink = sink;
+    }
+
     public void emitOrderUpdate(RestingOrder order, long inputSeq, int flags, boolean publishNats,
                                 long marketPx, long ingressNanos) {
+        if (ring == null) {
+            if (recoverySink != null) {
+                writeOrderUpdate(recoveryEvent, order, inputSeq, flags, publishNats, marketPx, ingressNanos);
+                recovered(true);
+            }
+            return;
+        }
         long seq = ring.next();
         try {
             writeOrderUpdate(ring.get(seq), order, inputSeq, flags, publishNats, marketPx, ingressNanos);
@@ -33,6 +57,19 @@ public final class OutputPublisher {
     public void emitFillWithTradeAndPosition(RestingOrder order, int fillQty, long tradePx, long tradeSeq,
                                              int newPosition, long avgCostTicks, long inputSeq, int flags,
                                              long marketPx, long ingressNanos) {
+        if (ring == null) {
+            if (recoverySink != null) {
+                writeOrderUpdate(recoveryEvent, order, inputSeq, flags, true, marketPx, ingressNanos);
+                recovered(false);
+                writeTradeBooked(recoveryEvent, order.accountId, order.securityId, order.side, fillQty,
+                    tradePx, tradeSeq, inputSeq, order.updatedAtMillis, ingressNanos);
+                recovered(false);
+                writePositionUpdated(recoveryEvent, order.accountId, order.securityId, newPosition,
+                    avgCostTicks, inputSeq, order.updatedAtMillis, ingressNanos);
+                recovered(true);
+            }
+            return;
+        }
         long hi = ring.next(3);
         long updateSlot = hi - 2;
         long tradeSlot = hi - 1;
@@ -52,6 +89,17 @@ public final class OutputPublisher {
     public void emitMarketTrade(int accountId, int securityId, byte side, int qty, long tradePx,
                                 long tradeSeq, int newPosition, long avgCostTicks, long inputSeq,
                                 long eventTimeMillis, long ingressNanos) {
+        if (ring == null) {
+            if (recoverySink != null) {
+                writeTradeBooked(recoveryEvent, accountId, securityId, side, qty, tradePx, tradeSeq,
+                    inputSeq, eventTimeMillis, ingressNanos);
+                recovered(false);
+                writePositionUpdated(recoveryEvent, accountId, securityId, newPosition, avgCostTicks,
+                    inputSeq, eventTimeMillis, ingressNanos);
+                recovered(true);
+            }
+            return;
+        }
         long hi = ring.next(2);
         long tradeSlot = hi - 1;
         long positionSlot = hi;
@@ -66,52 +114,77 @@ public final class OutputPublisher {
     }
 
     public void emitOrderNotFound(long inputSeq, long ingressNanos) {
+        if (ring == null) {
+            if (recoverySink != null) {
+                writeOrderNotFound(recoveryEvent, inputSeq, ingressNanos);
+                recovered(true);
+            }
+            return;
+        }
         long seq = ring.next();
         try {
-            OutputEvent e = ring.get(seq);
-            e.kind = OutputEvent.KIND_ORDER_NOT_FOUND;
-            e.inputSeq = inputSeq;
-            e.flags = 0;
-            e.publishNats = false;
-            e.orderRef = 0;
-            e.tradeQty = 0;
-            e.tradeSeq = 0;
-            e.tradePx = Px.NONE;
-            e.positionQty = 0;
-            e.positionAvgCostTicks = 0L;
-            e.averageCostBasisPx = Px.NONE;
-            e.riskReason = (byte) RiskReason.ACCEPTED.ordinal();
-            e.marketPx = Px.NONE;
-            e.ingressNanos = ingressNanos;
+            writeOrderNotFound(ring.get(seq), inputSeq, ingressNanos);
         } finally {
             ring.publish(seq);
         }
     }
 
     public void emitTradeDecision(long inputSeq, RiskReason decision, long ingressNanos) {
+        if (ring == null) {
+            if (recoverySink != null) {
+                writeTradeDecision(recoveryEvent, inputSeq, decision, ingressNanos);
+                recovered(true);
+            }
+            return;
+        }
         long seq = ring.next();
         try {
-            OutputEvent e = ring.get(seq);
-            e.kind = decision == RiskReason.ACCEPTED
-                ? OutputEvent.KIND_TRADE_ACCEPTED : OutputEvent.KIND_TRADE_REJECTED;
-            e.inputSeq = inputSeq;
-            e.flags = 0;
-            e.publishNats = false;
-            e.orderRef = 0;
-            e.accountId = 0;
-            e.securityId = 0;
-            e.quantity = 0;
-            e.remainingQty = 0;
-            e.status = 0;
-            e.riskReason = (byte) decision.ordinal();
-            e.tradeQty = 0;
-            e.tradeSeq = 0;
-            e.tradePx = Px.NONE;
-            e.marketPx = Px.NONE;
-            e.ingressNanos = ingressNanos;
+            writeTradeDecision(ring.get(seq), inputSeq, decision, ingressNanos);
         } finally {
             ring.publish(seq);
         }
+    }
+
+    private void recovered(boolean endOfBatch) {
+        recoverySink.onRecovered(recoveryEvent, recoverySequence++, endOfBatch);
+    }
+
+    private static void writeOrderNotFound(OutputEvent e, long inputSeq, long ingressNanos) {
+        e.kind = OutputEvent.KIND_ORDER_NOT_FOUND;
+        e.inputSeq = inputSeq;
+        e.flags = 0;
+        e.publishNats = false;
+        e.orderRef = 0;
+        e.tradeQty = 0;
+        e.tradeSeq = 0;
+        e.tradePx = Px.NONE;
+        e.positionQty = 0;
+        e.positionAvgCostTicks = 0L;
+        e.averageCostBasisPx = Px.NONE;
+        e.riskReason = (byte) RiskReason.ACCEPTED.ordinal();
+        e.marketPx = Px.NONE;
+        e.ingressNanos = ingressNanos;
+    }
+
+    private static void writeTradeDecision(OutputEvent e, long inputSeq, RiskReason decision,
+                                           long ingressNanos) {
+        e.kind = decision == RiskReason.ACCEPTED
+            ? OutputEvent.KIND_TRADE_ACCEPTED : OutputEvent.KIND_TRADE_REJECTED;
+        e.inputSeq = inputSeq;
+        e.flags = 0;
+        e.publishNats = false;
+        e.orderRef = 0;
+        e.accountId = 0;
+        e.securityId = 0;
+        e.quantity = 0;
+        e.remainingQty = 0;
+        e.status = 0;
+        e.riskReason = (byte) decision.ordinal();
+        e.tradeQty = 0;
+        e.tradeSeq = 0;
+        e.tradePx = Px.NONE;
+        e.marketPx = Px.NONE;
+        e.ingressNanos = ingressNanos;
     }
 
     private static void writeOrderUpdate(OutputEvent e, RestingOrder order, long inputSeq, int flags,
