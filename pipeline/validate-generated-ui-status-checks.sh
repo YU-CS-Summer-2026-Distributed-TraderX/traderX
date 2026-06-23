@@ -6,6 +6,7 @@ GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 STATE_ID="${1:-}"
 TARGET_ROOT="${2:-${GENERATED_ROOT}/code/target-generated}"
 COMPONENTS_ROOT="${3:-${GENERATED_ROOT}/code/components}"
+CATALOG="${ROOT}/catalog/state-catalog.json"
 
 if [[ -z "${STATE_ID}" ]]; then
   echo "usage: bash pipeline/validate-generated-ui-status-checks.sh <state-id> [target-root] [components-root]"
@@ -16,6 +17,7 @@ ROOT="${ROOT}" \
 STATE_ID="${STATE_ID}" \
 TARGET_ROOT="${TARGET_ROOT}" \
 COMPONENTS_ROOT="${COMPONENTS_ROOT}" \
+CATALOG="${CATALOG}" \
 node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -23,11 +25,18 @@ const path = require('node:path');
 const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
+const catalogPath = process.env.CATALOG;
 
 function stateNumber(value) {
   // Letter-suffixed sibling states (e.g. 009b-*) share their base number.
   const match = /^([0-9]{3})[a-z]?-/.exec(value || '');
-  return match ? Number.parseInt(match[1], 10) : 0;
+  if (match) return Number.parseInt(match[1], 10);
+  if (!catalogPath || !fs.existsSync(catalogPath)) return 0;
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  const state = (catalog.states || []).find((entry) => entry.id === value);
+  return state && /^\d+$/.test(String(state.numericBase || ''))
+    ? Number.parseInt(state.numericBase, 10)
+    : 0;
 }
 
 function fail(message) {

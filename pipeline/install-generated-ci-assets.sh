@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 CATALOG="${ROOT}/catalog/state-catalog.json"
+source "${ROOT}/pipeline/state-id-utils.sh"
 STATE_ID="${1:-}"
 TARGET_ROOT="${2:-${GENERATED_ROOT}/code/target-generated}"
 
@@ -20,12 +21,10 @@ fi
 # State ids are NNN-name, with an optional letter suffix for sibling branch
 # states (e.g. 009b-lmax-sequencer-architecture). Numeric ordering comparisons
 # use the digits only; the suffixed state sorts with its numeric base.
-state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+[a-z]?$ ]]; then
+if ! state_num="$(state_numeric_base "${STATE_ID}" "${CATALOG}")"; then
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
 fi
-state_num="${state_num%%[a-z]*}"
 
 if (( 10#${state_num} < 2 )); then
   echo "[info] skipping generated CI assets for ${STATE_ID} (policy starts at state 002)"

@@ -8,7 +8,7 @@ title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
 
 - Previous state(s): [009-order-management-matcher](/docs/learning/state-009-order-management-matcher)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [in-memory-risk-gateway](/docs/learning/state-in-memory-risk-gateway)
 
 ## Convergence Metadata
 

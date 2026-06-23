@@ -1,0 +1,21 @@
+groups:
+  - name: traderx-in-memory-risk-gateway
+    rules:
+      - alert: TraderXRiskReplicaNotReady
+        expr: traderx_replica_ready{replica="gateway"} == 0
+        for: 30s
+        labels: { severity: critical }
+        annotations: { summary: "Order admission replica is not ready" }
+      - alert: TraderXRiskReplicaLag
+        expr: traderx_replica_lag{replica="gateway"} > 0
+        for: 1m
+        labels: { severity: warning }
+        annotations: { summary: "Order admission replica is behind its high watermark" }
+      - alert: TraderXRiskControlGap
+        expr: increase(traderx_replica_gap_total{replica="gateway"}[5m]) > 0
+        labels: { severity: critical }
+        annotations: { summary: "A version gap invalidated risk-control readiness" }
+      - alert: TraderXGatewayBlpMismatch
+        expr: increase(traderx_gateway_blp_mismatch_total[5m]) > 0
+        labels: { severity: warning }
+        annotations: { summary: "Gateway preliminary screening disagreed with the BLP" }

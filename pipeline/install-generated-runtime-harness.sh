@@ -199,6 +199,22 @@ case "${STATE_ID}" in
     copy_script_if_exists "test-state-009b-lmax-sequencer-architecture.sh"
     copy_script_if_exists "test-messaging-009b-lmax-sequencer-architecture.sh"
     ;;
+  in-memory-risk-gateway)
+    copy_script_if_exists "start-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "stop-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "status-state-009-order-management-matcher-generated.sh"
+    copy_script_if_exists "test-state-009-order-management-matcher.sh"
+    copy_script_if_exists "test-messaging-009-order-management-matcher.sh"
+    copy_script_if_exists "start-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "stop-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "status-state-009b-lmax-sequencer-architecture-generated.sh"
+    copy_script_if_exists "test-state-009b-lmax-sequencer-architecture.sh"
+    copy_script_if_exists "test-messaging-009b-lmax-sequencer-architecture.sh"
+    copy_script_if_exists "start-state-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "stop-state-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "status-state-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "test-state-in-memory-risk-gateway.sh"
+    ;;
   010-kubernetes-runtime)
     copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
     copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
@@ -248,7 +264,7 @@ case "${STATE_ID}" in
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*)
+  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|in-memory-risk-gateway)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins

@@ -1,0 +1,15 @@
+{
+  "name": "TRADERX_RISK_CONTROL",
+  "subjects": [
+    "traderx.control.account.*",
+    "traderx.control.entitlement.*",
+    "traderx.control.security.*",
+    "traderx.control.policy.*"
+  ],
+  "retention": "limits",
+  "storage": "file",
+  "discard": "old",
+  "max_age": 604800000000000,
+  "max_msgs": 1000000,
+  "duplicate_window": 120000000000
+}

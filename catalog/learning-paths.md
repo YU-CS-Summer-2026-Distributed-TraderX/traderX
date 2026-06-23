@@ -26,6 +26,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `005-postgres-database-replacement`
 - `006-messaging-nats-replacement`
 - `009b-lmax-sequencer-architecture`
+- `in-memory-risk-gateway`
 
 ### Functional
 
@@ -40,6 +41,7 @@ This file is generated from `catalog/state-catalog.json`.
 ### Optional
 
 - `009b-lmax-sequencer-architecture`
+- `in-memory-risk-gateway`
 - `013-radius-kubernetes-platform`
 
 ### Convergence
@@ -63,6 +65,7 @@ This file is generated from `catalog/state-catalog.json`.
 | `008-pricing-awareness-market-data` | 007-observability-lgtm-compose | `none` | `false` | `canonical` | `specs/008-pricing-awareness-market-data/spec.md` |
 | `009-order-management-matcher` | 008-pricing-awareness-market-data | `C2` | `true` | `canonical` | `specs/009-order-management-matcher/spec.md` |
 | `009b-lmax-sequencer-architecture` | 009-order-management-matcher | `none` | `false` | `optional` | `specs/009b-lmax-sequencer-architecture/spec.md` |
+| `in-memory-risk-gateway` | 009b-lmax-sequencer-architecture | `none` | `false` | `optional` | `specs/in-memory-risk-gateway/spec.md` |
 | `010-kubernetes-runtime` | 009-order-management-matcher | `none` | `false` | `canonical` | `specs/010-kubernetes-runtime/spec.md` |
 | `011-tilt-kubernetes-dev-loop` | 010-kubernetes-runtime | `none` | `false` | `canonical` | `specs/011-tilt-kubernetes-dev-loop/spec.md` |
 | `012-platform-convergence-c3` | 011-tilt-kubernetes-dev-loop | `C3` | `true` | `canonical` | `specs/012-platform-convergence-c3/spec.md` |

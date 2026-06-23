@@ -1,0 +1,19 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "panels": [
+    { "type": "stat", "title": "Replica Ready", "targets": [{ "expr": "traderx_replica_ready{replica=\"gateway\"}" }], "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 } },
+    { "type": "stat", "title": "Replica Lag", "targets": [{ "expr": "traderx_replica_lag{replica=\"gateway\"}" }], "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 } },
+    { "type": "timeseries", "title": "Risk Decisions by Reason", "targets": [{ "expr": "rate(traderx_risk_decisions_total[5m])", "legendFormat": "{{reason}}" }], "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 } },
+    { "type": "timeseries", "title": "Gateway Rejections", "targets": [{ "expr": "rate(traderx_gateway_rejections_total[5m])", "legendFormat": "{{reason}}" }], "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 } },
+    { "type": "stat", "title": "Policy Version", "targets": [{ "expr": "traderx_risk_policy_version" }], "gridPos": { "h": 8, "w": 6, "x": 12, "y": 8 } },
+    { "type": "stat", "title": "Gateway/BLP Mismatches", "targets": [{ "expr": "traderx_gateway_blp_mismatch_total" }], "gridPos": { "h": 8, "w": 6, "x": 18, "y": 8 } }
+  ],
+  "schemaVersion": 39,
+  "tags": ["traderx", "risk", "in-memory-risk-gateway"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "title": "TraderX In-Memory Risk Gateway",
+  "uid": "traderx-imrg",
+  "version": 1
+}

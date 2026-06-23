@@ -1,0 +1,423 @@
+package finos.traderx.ordermatcher.service;
+
+import finos.traderx.ordermatcher.api.MarketTradeRequest;
+import finos.traderx.ordermatcher.api.OpenCountResponse;
+import finos.traderx.ordermatcher.api.OrderCreateRequest;
+import finos.traderx.ordermatcher.api.OrderResponse;
+import finos.traderx.ordermatcher.lmax.HotPathMetrics;
+import finos.traderx.ordermatcher.lmax.InMemoryOrderReadModel;
+import finos.traderx.ordermatcher.lmax.LmaxEngine;
+import finos.traderx.ordermatcher.lmax.OrderSnapshot;
+import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.ordermatcher.model.OrderStatus;
+import finos.traderx.ordermatcher.lmax.Px;
+import finos.traderx.ordermatcher.risk.GatewayReplicaStore;
+import finos.traderx.ordermatcher.risk.RiskReason;
+import finos.traderx.ordermatcher.risk.RiskRejectedException;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+import static org.springframework.http.HttpStatus.BAD_REQUEST;
+import static org.springframework.http.HttpStatus.GATEWAY_TIMEOUT;
+import static org.springframework.http.HttpStatus.NOT_FOUND;
+
+/**
+ * State 009b: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
+ *
+ * The public surface (REST semantics, payload shapes, metric families, NATS subjects) is
+ * parity-locked to 009 (FR-09B40). Internally, every state mutation is a sequenced input
+ * event handled by the single-threaded BLP; every read is served from the output-event-fed
+ * in-memory read model; the 009 polling tick, ReentrantLock, hot-path BigDecimal math, and
+ * inline JPA/REST calls are gone (FR-09B02/B03, NFR-09B04).
+ */
+@Service
+public class OrderMatcherService {
+    private static final String APP_NAME = "traderx-order-matcher";
+    private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ord-013-(\\d{4,})$");
+
+    private final LmaxEngine engine;
+    private final InMemoryOrderReadModel readModel;
+    private final GatewayReplicaStore replicas;
+    private final String priceServiceUrl;
+    private final String tradeServiceUrl;
+    private final Instant startedAt = Instant.now();
+
+    public OrderMatcherService(
+        LmaxEngine engine,
+        GatewayReplicaStore replicas,
+        @Value("${order.matcher.price-service-url:http://price-publisher:18100}") String priceServiceUrl,
+        @Value("${order.matcher.trade-service-url:http://trade-service:18092/trade/}") String tradeServiceUrl
+    ) {
+        this.engine = engine;
+        this.readModel = engine.readModel();
+        this.replicas = replicas;
+        this.priceServiceUrl = trimTrailingSlash(priceServiceUrl);
+        this.tradeServiceUrl = tradeServiceUrl;
+    }
+
+    // ----- gateway ingress (price ticks become sequenced PRICE_TICK events, FR-09B06) -----
+
+    public void onPriceTick(String ticker, BigDecimal marketPrice) {
+        if (!StringUtils.hasText(ticker) || marketPrice == null) {
+            return;
+        }
+        String normalizedTicker = ticker.trim().toUpperCase(Locale.ROOT);
+        BigDecimal normalizedPrice = roundPrice(marketPrice);
+        if (normalizedPrice == null) {
+            return;
+        }
+        readModel.recordPrice(normalizedTicker, normalizedPrice);
+        replicas.recordPrice(normalizedTicker, Px.toTicks(normalizedPrice), System.currentTimeMillis());
+        engine.submitPriceTick(normalizedTicker, normalizedPrice);
+    }
+
+    // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
+
+    public OrderResponse createOrder(OrderCreateRequest request) {
+        if (request != null && !StringUtils.hasText(request.getClientOrderId())) {
+            request.setClientOrderId("internal-" + System.nanoTime());
+        }
+        return createOrder(request, "*");
+    }
+
+    public OrderResponse createOrder(OrderCreateRequest request, String principal) {
+        validateCreateRequest(request);
+        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
+        int orderRef = engine.nextOrderRef();
+        RiskReason preliminary = replicas.screen(principal, request.getAccountId(), ticker, request.getQuantity(),
+            request.getLimitPrice(), false, System.currentTimeMillis());
+        if (preliminary != RiskReason.ACCEPTED) {
+            throw new RiskRejectedException(request.getClientOrderId(), preliminary,
+                replicas.policyVersion(), -1L);
+        }
+        OrderSnapshot snapshot = run(() -> engine.executeNewOrder(
+            orderRef, request.getAccountId(), ticker, request.getSide(),
+            request.getQuantity(), roundPrice(request.getLimitPrice()), request.getClientOrderId(), principal));
+        if (snapshot.riskReason != RiskReason.ACCEPTED) {
+            replicas.metrics().mismatch();
+            throw new RiskRejectedException(request.getClientOrderId(), snapshot.riskReason,
+                replicas.policyVersion(), snapshot.commandSequence);
+        }
+        return toResponse(snapshot);
+    }
+
+    public OrderResponse cancelOrder(String orderId) {
+        OrderSnapshot snapshot = run(() -> engine.executeCancel(parseOrderRef(orderId)));
+        return toResponse(snapshot);
+    }
+
+    public OrderResponse forceFillOrder(String orderId) {
+        OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
+        return toResponse(snapshot);
+    }
+
+    /**
+     * Market trade from the trade ticket (FR-09B08): trade-service has already validated the
+     * ticker/account; here we sequence a TRADE_NEW event so the BLP books it and updates the
+     * position (single writer). Fire-and-forget — 009's POST /trade/ booked asynchronously too —
+     * so the request is echoed back without waiting on the read model.
+     */
+    public MarketTradeRequest bookMarketTrade(MarketTradeRequest request) {
+        if (request != null && !StringUtils.hasText(request.getClientOrderId())) {
+            request.setClientOrderId("internal-trade-" + System.nanoTime());
+        }
+        return bookMarketTrade(request, "*");
+    }
+
+    public MarketTradeRequest bookMarketTrade(MarketTradeRequest request, String principal) {
+        validateMarketTrade(request);
+        String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
+        RiskReason preliminary = replicas.screen(principal, request.getAccountId(), ticker, request.getQuantity(),
+            null, true, System.currentTimeMillis());
+        if (preliminary != RiskReason.ACCEPTED) {
+            throw new RiskRejectedException(request.getClientOrderId(), preliminary,
+                replicas.policyVersion(), -1L);
+        }
+        LmaxEngine.RiskDecision decision = engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(),
+            request.getQuantity(), request.getClientOrderId(), principal);
+        if (decision.reason() != RiskReason.ACCEPTED) {
+            replicas.metrics().mismatch();
+            throw new RiskRejectedException(request.getClientOrderId(), decision.reason(),
+                replicas.policyVersion(), decision.commandSequence());
+        }
+        return request;
+    }
+
+    /**
+     * Retained for controller compatibility: in 009 the controller re-published command
+     * responses onto the order subjects. In 009b every lifecycle transition is published by
+     * the output-disruptor NATS bridge (exactly once), so this is intentionally a no-op.
+     */
+    public void publishOrderUpdate(OrderResponse order) {
+        // no-op: the output ring's NATS bridge owns subject publication (FR-09B21)
+    }
+
+    // ----- read path (in-memory read model; no DB on the request path) ----------------------
+
+    public List<OrderResponse> listOrders(String statusFilter, Integer accountIdFilter) {
+        String normalizedStatus = StringUtils.hasText(statusFilter)
+            ? statusFilter.trim().toLowerCase(Locale.ROOT) : "open";
+        return readModel.all().stream()
+            .filter(snapshot -> filterByStatus(snapshot, normalizedStatus))
+            .filter(snapshot -> accountIdFilter == null || accountIdFilter == snapshot.accountId)
+            .sorted(Comparator.comparingLong((OrderSnapshot snapshot) -> snapshot.updatedAtMillis).reversed())
+            .map(this::toResponse)
+            .toList();
+    }
+
+    public OrderResponse getOrder(String orderId) {
+        OrderSnapshot snapshot = readModel.get(parseOrderRef(orderId));
+        if (snapshot == null) {
+            throw new ResponseStatusException(NOT_FOUND, "order not found");
+        }
+        return toResponse(snapshot);
+    }
+
+    public OpenCountResponse openCounts() {
+        return new OpenCountResponse(readModel.countOpen(), readModel.countUnfilled());
+    }
+
+    public Map<String, Object> health() {
+        OpenCountResponse openCount = openCounts();
+        long lastEventMillis = engine.blp() == null ? 0 : engine.blp().lastEventTimeMillis();
+        Instant lastEventAt = lastEventMillis > 0 ? Instant.ofEpochMilli(lastEventMillis) : null;
+
+        Map<String, Object> matcher = new LinkedHashMap<>();
+        matcher.put("engine", "lmax-disruptor");
+        matcher.put("tickMs", 0);                       // event-driven: the 009 poll is gone
+        matcher.put("ticks", engine.blp() == null ? 0 : engine.blp().eventsProcessed());
+        matcher.put("lastTickAt", lastEventAt);
+        matcher.put("autoFillAttempts", engine.blp() == null ? 0 : engine.blp().autoFillAttempts());
+        matcher.put("autoFillSuccess", engine.blp() == null ? 0 : engine.blp().autoFillSuccess());
+        matcher.put("tradeSubmitFailures", readModel.tradeSubmitFailures().sum());
+        matcher.put("accountTradePublishFailures", readModel.accountTradePublishFailures().sum());
+        matcher.put("positionPublishFailures", readModel.positionPublishFailures().sum());
+
+        Map<String, Object> lmax = new LinkedHashMap<>();
+        lmax.put("profile", engine.runtimeProfile());
+        lmax.put("inputPublishedSeq", engine.inputPublishedSeq());
+        lmax.put("journaledSeq", engine.journaledSeq());
+        lmax.put("replicatedSeq", engine.replicatedSeq());
+        lmax.put("blpSeq", engine.blp() == null ? -1 : engine.blp().blpSeq());
+        lmax.put("marshalledSeq", engine.marshalledSeq());
+        lmax.put("projectedSeq", engine.projectedSeq());
+        lmax.put("inputRemainingCapacity", engine.inputRemainingCapacity());
+        lmax.put("outputRemainingCapacity", engine.outputRemainingCapacity());
+        lmax.put("riskReplicaReady", replicas.ready());
+        lmax.put("riskControlVersion", replicas.sourceVersion());
+        lmax.put("riskPolicyVersion", replicas.policyVersion());
+
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("status", "ok");
+        payload.put("service", APP_NAME);
+        payload.put("uptimeSeconds", Math.max(0, Instant.now().getEpochSecond() - startedAt.getEpochSecond()));
+        payload.put("priceServiceUrl", priceServiceUrl);
+        payload.put("tradeServiceUrl", tradeServiceUrl);
+        payload.put("matcher", matcher);
+        payload.put("lmax", lmax);
+        payload.put("openOrders", openCount.getOpenOrders());
+        payload.put("unfilledOrders", openCount.getUnfilledOrders());
+        return payload;
+    }
+
+    public String prometheusMetrics() {
+        StringBuilder sb = new StringBuilder(8192);
+        long openOrders = readModel.countOpen();
+        long unfilledOrders = readModel.countUnfilled();
+
+        sb.append("# HELP traderx_orders_open_total Total open orders (NEW + PARTIALLY_FILLED).\n");
+        sb.append("# TYPE traderx_orders_open_total gauge\n");
+        sb.append("traderx_orders_open_total ").append(openOrders).append('\n');
+        sb.append("# HELP traderx_orders_unfilled_total Total orders with remaining quantity > 0.\n");
+        sb.append("# TYPE traderx_orders_unfilled_total gauge\n");
+        sb.append("traderx_orders_unfilled_total ").append(unfilledOrders).append('\n');
+        sb.append("# HELP traderx_orders_pending_by_side Pending orders grouped by side.\n");
+        sb.append("# TYPE traderx_orders_pending_by_side gauge\n");
+        sb.append("traderx_orders_pending_by_side{side=\"Buy\"} ").append(readModel.countPendingBySide(OrderSide.Buy)).append('\n');
+        sb.append("traderx_orders_pending_by_side{side=\"Sell\"} ").append(readModel.countPendingBySide(OrderSide.Sell)).append('\n');
+        sb.append("# HELP traderx_order_events_total Order lifecycle events.\n");
+        sb.append("# TYPE traderx_order_events_total counter\n");
+        for (String event : List.of("create", "partial_fill", "fill", "cancel", "reject", "force_fill")) {
+            sb.append("traderx_order_events_total{event=\"").append(event).append("\"} ")
+                .append(readModel.counterValue(event)).append('\n');
+        }
+        sb.append("# HELP traderx_order_matcher_ticks_total Sequenced input events processed by the BLP (event-driven; 009 tick parity name).\n");
+        sb.append("# TYPE traderx_order_matcher_ticks_total counter\n");
+        sb.append("traderx_order_matcher_ticks_total ").append(engine.blp() == null ? 0 : engine.blp().eventsProcessed()).append('\n');
+        sb.append("# HELP traderx_order_autofill_attempts_total Auto-fill attempts.\n");
+        sb.append("# TYPE traderx_order_autofill_attempts_total counter\n");
+        sb.append("traderx_order_autofill_attempts_total ").append(engine.blp() == null ? 0 : engine.blp().autoFillAttempts()).append('\n');
+        sb.append("# HELP traderx_order_autofill_success_total Auto-fill successful fills/partial-fills.\n");
+        sb.append("# TYPE traderx_order_autofill_success_total counter\n");
+        sb.append("traderx_order_autofill_success_total ").append(engine.blp() == null ? 0 : engine.blp().autoFillSuccess()).append('\n');
+        sb.append("# HELP traderx_order_trade_submit_failures_total Trade submit failures on fill attempts.\n");
+        sb.append("# TYPE traderx_order_trade_submit_failures_total counter\n");
+        sb.append("traderx_order_trade_submit_failures_total ").append(readModel.tradeSubmitFailures().sum()).append('\n');
+        sb.append("# HELP traderx_account_trade_publish_failures_total Direct account trade publish failures.\n");
+        sb.append("# TYPE traderx_account_trade_publish_failures_total counter\n");
+        sb.append("traderx_account_trade_publish_failures_total ").append(readModel.accountTradePublishFailures().sum()).append('\n');
+        sb.append("# HELP traderx_position_publish_failures_total Direct position update publish failures.\n");
+        sb.append("# TYPE traderx_position_publish_failures_total counter\n");
+        sb.append("traderx_position_publish_failures_total ").append(readModel.positionPublishFailures().sum()).append('\n');
+
+        HotPathMetrics metrics = engine.metrics();
+        HotPathMetrics.renderHistogram(sb, "traderx_order_match_latency_seconds",
+            "Order eligible-to-fill latency (ingress to fill emission); real measurement in 009b.",
+            metrics.matchHistogram(), new double[]{0.01, 0.05, 0.1, 0.25, 0.5, 1});
+        HotPathMetrics.renderHistogram(sb, "traderx_blp_event_latency_seconds",
+            "BLP event handling latency (ingress to onEvent completion).",
+            metrics.blpEventHistogram(), new double[]{0.0001, 0.001, 0.01, 0.1, 1});
+        HotPathMetrics.renderHistogram(sb, "traderx_journal_write_latency_seconds",
+            "Journaler append latency.",
+            metrics.journalHistogram(), new double[]{0.0001, 0.001, 0.01, 0.1});
+        HotPathMetrics.renderHistogram(sb, "traderx_output_publish_latency_seconds",
+            "True end-to-end latency (ingress to output marshalling).",
+            metrics.egressHistogram(), new double[]{0.0001, 0.001, 0.01, 0.1, 1});
+
+        sb.append("# HELP traderx_disruptor_input_remaining_capacity Free input-ring slots (backpressure headroom).\n");
+        sb.append("# TYPE traderx_disruptor_input_remaining_capacity gauge\n");
+        sb.append("traderx_disruptor_input_remaining_capacity ").append(engine.inputRemainingCapacity()).append('\n');
+        sb.append("# HELP traderx_input_published_seq Input ring publisher cursor (global sequence).\n");
+        sb.append("# TYPE traderx_input_published_seq gauge\n");
+        sb.append("traderx_input_published_seq ").append(engine.inputPublishedSeq()).append('\n');
+        sb.append("# HELP traderx_input_gating_seq Min(journaled, replicated) sequence gating the BLP.\n");
+        sb.append("# TYPE traderx_input_gating_seq gauge\n");
+        sb.append("traderx_input_gating_seq ").append(engine.gatingSeq()).append('\n');
+        sb.append("# HELP traderx_input_seq_lag Published minus BLP-consumed sequence.\n");
+        sb.append("# TYPE traderx_input_seq_lag gauge\n");
+        long blpSeq = engine.blp() == null ? -1 : engine.blp().blpSeq();
+        sb.append("traderx_input_seq_lag ").append(Math.max(0, engine.inputPublishedSeq() - blpSeq)).append('\n');
+        sb.append("# HELP traderx_input_backpressure_events_total Producer waits for a free input-ring slot.\n");
+        sb.append("# TYPE traderx_input_backpressure_events_total counter\n");
+        sb.append("traderx_input_backpressure_events_total ").append(engine.metrics().backpressureWaits()).append('\n');
+        sb.append("# HELP traderx_input_events_total Sequenced input events by type.\n");
+        sb.append("# TYPE traderx_input_events_total counter\n");
+        sb.append("traderx_input_events_total{type=\"order_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersNew()).append('\n');
+        sb.append("traderx_input_events_total{type=\"order_cancel\"} ").append(engine.blp() == null ? 0 : engine.blp().countOrdersCancel()).append('\n');
+        sb.append("traderx_input_events_total{type=\"force_fill\"} ").append(engine.blp() == null ? 0 : engine.blp().countForceFills()).append('\n');
+        sb.append("traderx_input_events_total{type=\"price_tick\"} ").append(engine.blp() == null ? 0 : engine.blp().countPriceTicks()).append('\n');
+        sb.append("traderx_input_events_total{type=\"trade_new\"} ").append(engine.blp() == null ? 0 : engine.blp().countTradesNew()).append('\n');
+        sb.append("# HELP traderx_output_remaining_capacity Free output-ring slots (egress backpressure headroom).\n");
+        sb.append("# TYPE traderx_output_remaining_capacity gauge\n");
+        sb.append("traderx_output_remaining_capacity ").append(engine.outputRemainingCapacity()).append('\n');
+        sb.append("# HELP traderx_output_events_total Output-ring events by kind.\n");
+        sb.append("# TYPE traderx_output_events_total counter\n");
+        sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
+        sb.append("traderx_output_events_total{kind=\"trade_booked\"} ").append(engine.tradesBookedOut()).append('\n');
+        sb.append("traderx_output_events_total{kind=\"position_updated\"} ").append(engine.positionsUpdatedOut()).append('\n');
+        sb.append("# HELP traderx_output_nats_errors_total NATS bridge publish failures.\n");
+        sb.append("# TYPE traderx_output_nats_errors_total counter\n");
+        sb.append("traderx_output_nats_errors_total ").append(readModel.natsErrors().sum()).append('\n');
+        sb.append("# HELP traderx_projector_lag_seq Output sequence minus last projected sequence.\n");
+        sb.append("# TYPE traderx_projector_lag_seq gauge\n");
+        sb.append("traderx_projector_lag_seq ").append(Math.max(0, engine.marshalledSeq() - engine.projectedSeq())).append('\n');
+        sb.append("# HELP traderx_projector_pending_rows Read-model rows buffered awaiting projection.\n");
+        sb.append("# TYPE traderx_projector_pending_rows gauge\n");
+        sb.append("traderx_projector_pending_rows ").append(engine.projectorPendingRows()).append('\n');
+        HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
+            "Rows written per projector flush.",
+            metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});
+        sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
+        sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
+        sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
+        replicas.metrics().render(sb, replicas.ready());
+        return sb.toString();
+    }
+
+    // ----- helpers --------------------------------------------------------------------------
+
+    private OrderSnapshot run(java.util.function.Supplier<OrderSnapshot> command) {
+        try {
+            return command.get();
+        } catch (InMemoryOrderReadModel.OrderNotFoundException ex) {
+            throw new ResponseStatusException(NOT_FOUND, "order not found");
+        } catch (LmaxEngine.GatewayTimeoutException ex) {
+            throw new ResponseStatusException(GATEWAY_TIMEOUT, "order command not acknowledged");
+        }
+    }
+
+    private OrderResponse toResponse(OrderSnapshot snapshot) {
+        return OrderResponse.from(snapshot.toRecord(), readModel.lastPrice(snapshot.security));
+    }
+
+    private int parseOrderRef(String orderId) {
+        if (orderId != null) {
+            Matcher matcher = ORDER_ID_PATTERN.matcher(orderId);
+            if (matcher.matches()) {
+                return Integer.parseInt(matcher.group(1));
+            }
+        }
+        throw new ResponseStatusException(NOT_FOUND, "order not found");
+    }
+
+    private boolean filterByStatus(OrderSnapshot snapshot, String statusFilter) {
+        if ("open".equals(statusFilter)) {
+            return snapshot.isOpen();
+        }
+        if ("all".equals(statusFilter)) {
+            return true;
+        }
+        try {
+            OrderStatus status = OrderStatus.valueOf(statusFilter.toUpperCase(Locale.ROOT));
+            return snapshot.status == status;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
+
+    private void validateCreateRequest(OrderCreateRequest request) {
+        if (request == null
+            || request.getAccountId() == null || request.getAccountId() <= 0
+            || !StringUtils.hasText(request.getSecurity())
+            || request.getSide() == null
+            || request.getQuantity() == null || request.getQuantity() <= 0
+            || request.getLimitPrice() == null || request.getLimitPrice().compareTo(BigDecimal.ZERO) <= 0
+            || !validClientOrderId(request.getClientOrderId())) {
+            throw new ResponseStatusException(BAD_REQUEST, "invalid order payload");
+        }
+    }
+
+    private void validateMarketTrade(MarketTradeRequest request) {
+        if (request == null
+            || request.getAccountId() == null || request.getAccountId() <= 0
+            || !StringUtils.hasText(request.getSecurity())
+            || request.getSide() == null
+            || request.getQuantity() == null || request.getQuantity() <= 0
+            || !validClientOrderId(request.getClientOrderId())) {
+            throw new ResponseStatusException(BAD_REQUEST, "invalid market trade payload");
+        }
+    }
+
+    private static boolean validClientOrderId(String value) {
+        if (!StringUtils.hasText(value)) return false;
+        int length = value.trim().length();
+        return length >= 1 && length <= 128;
+    }
+
+    private BigDecimal roundPrice(BigDecimal input) {
+        if (input == null) {
+            return null;
+        }
+        return input.setScale(3, RoundingMode.HALF_UP);
+    }
+
+    private String trimTrailingSlash(String url) {
+        if (!StringUtils.hasText(url)) {
+            return "";
+        }
+        return url.endsWith("/") ? url.substring(0, url.length() - 1) : url;
+    }
+}

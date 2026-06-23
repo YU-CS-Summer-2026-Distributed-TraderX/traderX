@@ -6,6 +6,7 @@ GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 STATE_ID="${1:-}"
 TARGET_ROOT="${2:-${GENERATED_ROOT}/code/target-generated}"
 COMPONENTS_ROOT="${3:-${GENERATED_ROOT}/code/components}"
+BUILD_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${ROOT}" log -1 --format=%ct 2>/dev/null || printf '0')}"
 
 if [[ -z "${STATE_ID}" ]]; then
   echo "usage: bash pipeline/install-generated-ui-state-metadata.sh <state-id> [target-root] [components-root]"
@@ -17,6 +18,7 @@ STATE_ID="${STATE_ID}" \
 TARGET_ROOT="${TARGET_ROOT}" \
 COMPONENTS_ROOT="${COMPONENTS_ROOT}" \
 TRADERX_SOURCE_REPO_URL="${TRADERX_SOURCE_REPO_URL:-}" \
+BUILD_EPOCH="${BUILD_EPOCH}" \
 node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,6 +29,7 @@ const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
 const explicitRepoUrl = process.env.TRADERX_SOURCE_REPO_URL || '';
+const generatedAtUtc = new Date(Number(process.env.BUILD_EPOCH || '0') * 1000).toISOString();
 
 const stateCatalogPath = path.join(root, 'catalog', 'state-catalog.json');
 const stateCatalog = JSON.parse(fs.readFileSync(stateCatalogPath, 'utf8'));
@@ -41,7 +44,11 @@ if (!activeState) {
 function stateNumber(value) {
   // Letter-suffixed sibling states (e.g. 009b-*) share their base number.
   const match = /^([0-9]{3})[a-z]?-/.exec(value || '');
-  return match ? Number.parseInt(match[1], 10) : 0;
+  if (match) return Number.parseInt(match[1], 10);
+  const state = stateById.get(value);
+  return state && /^\d+$/.test(String(state.numericBase || ''))
+    ? Number.parseInt(state.numericBase, 10)
+    : 0;
 }
 
 function branchUrlEncode(branchName) {
@@ -167,7 +174,7 @@ const metadata = {
   stateId: activeState.id,
   stateTitle: activeState.title || activeState.id,
   stateTrack: activeState.track || 'unknown',
-  generatedAtUtc: new Date().toISOString(),
+  generatedAtUtc,
   sourceBranch: activeBranch,
   sourceBranchUrl: repoBaseUrl && activeBranch ? `${repoBaseUrl}/tree/${branchUrlEncode(activeBranch)}` : '',
   lineageLinkUrl: repoBaseUrl ? `${repoBaseUrl}/blob/main/docs/learning-paths/index.md` : '',

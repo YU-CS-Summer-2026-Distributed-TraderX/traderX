@@ -62,6 +62,9 @@ RSYNC_EXCLUDES=(
   # installers always rebuild them, so they are never patch content.
   "--exclude=/api-explorer"
   "--exclude=/ingress/api-explorer"
+  # API-explorer installation also rewrites this top-level ingress file after
+  # nested parent generation; the child installer deterministically rebuilds it.
+  "--exclude=/ingress/nginx.traderx.conf.template"
   "--exclude=/runtime"
   "--exclude=state-ui.json"
   "--exclude=.DS_Store"

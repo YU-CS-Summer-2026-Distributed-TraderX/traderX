@@ -1,0 +1,213 @@
+{
+  "title": "In-Memory Risk Gateway",
+  "stateId": "in-memory-risk-gateway",
+  "parentState": "009b-lmax-sequencer-architecture",
+  "description": "Adds gap-free Gateway validation replicas and authoritative sequenced BLP pre-trade risk while preserving the 009b input/output topology and accepted business contracts.",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "client",
+      "label": "Authenticated Client",
+      "kind": "actor",
+      "description": "Submits idempotent order and market-trade commands."
+    },
+    {
+      "id": "account_service",
+      "label": "Account Service",
+      "kind": "service",
+      "description": "Owns account status and principal entitlements; exposes watermarked snapshot and versioned changes."
+    },
+    {
+      "id": "reference_data",
+      "label": "Reference Data",
+      "kind": "service",
+      "description": "Owns numeric security identity and trading status; exposes watermarked snapshot and versioned changes."
+    },
+    {
+      "id": "risk_admin",
+      "label": "Risk Administration",
+      "kind": "service",
+      "description": "Owns authenticated, versioned limits, restrictions, kill switches, and audit provenance."
+    },
+    {
+      "id": "control_stream",
+      "label": "Durable Control Stream",
+      "kind": "service",
+      "description": "Retained versioned deltas with replay, consumer position, high watermark, and gap recovery."
+    },
+    {
+      "id": "gateway_replicas",
+      "label": "Gateway Replica Updater",
+      "kind": "service",
+      "description": "Builds consistent local images with subscribe-buffer-snapshot-catch-up and controls readiness."
+    },
+    {
+      "id": "gateway",
+      "label": "Gateway Local Screen",
+      "kind": "service",
+      "description": "Fast local preliminary validation, normalization, and correlated submitted-command ingress."
+    },
+    {
+      "id": "control_adapter",
+      "label": "Control Event Adapter",
+      "kind": "service",
+      "description": "Converts validated source deltas to complete globally sequenced BLP control events."
+    },
+    {
+      "id": "price_feed",
+      "label": "Price Feed",
+      "kind": "service",
+      "description": "Supplies sequenced price and source-time state inherited from 009b."
+    },
+    {
+      "id": "sequencer",
+      "label": "009b Sequencer + Journal",
+      "kind": "service",
+      "description": "Totally orders commands, controls, and prices and journals each before BLP processing."
+    },
+    {
+      "id": "blp",
+      "label": "BLP Risk + Matching",
+      "kind": "service",
+      "description": "Authoritative single-writer decision, reservation, idempotency, position, and executable book state."
+    },
+    {
+      "id": "output_disruptor",
+      "label": "009b Output Disruptor",
+      "kind": "service",
+      "description": "Unchanged output handlers for responses, NATS fan-out, and read-model projection."
+    },
+    {
+      "id": "nats",
+      "label": "NATS Business Fan-Out",
+      "kind": "service",
+      "description": "Existing accepted order, trade, and position realtime subjects."
+    },
+    {
+      "id": "projector",
+      "label": "Read-Model Projector",
+      "kind": "service",
+      "description": "Existing asynchronous query projection; never admission authority."
+    },
+    {
+      "id": "database",
+      "label": "Postgres Query Model",
+      "kind": "service",
+      "description": "Existing order/trade/position query schema."
+    },
+    {
+      "id": "prometheus",
+      "label": "Prometheus + Grafana",
+      "kind": "service",
+      "description": "Replica readiness/lag/gaps, decision latency/reasons, mismatch, capacity, and inherited hot-path telemetry."
+    }
+  ],
+  "edges": [
+    {
+      "from": "account_service",
+      "to": "control_stream",
+      "label": "Account/entitlement deltas"
+    },
+    {
+      "from": "reference_data",
+      "to": "control_stream",
+      "label": "Security/status deltas"
+    },
+    {
+      "from": "risk_admin",
+      "to": "control_stream",
+      "label": "Policy/restriction/kill-switch deltas"
+    },
+    {
+      "from": "control_stream",
+      "to": "gateway_replicas",
+      "label": "Retained deltas + high watermark"
+    },
+    {
+      "from": "account_service",
+      "to": "gateway_replicas",
+      "label": "Watermarked snapshot"
+    },
+    {
+      "from": "reference_data",
+      "to": "gateway_replicas",
+      "label": "Watermarked snapshot"
+    },
+    {
+      "from": "risk_admin",
+      "to": "gateway_replicas",
+      "label": "Watermarked snapshot"
+    },
+    {
+      "from": "gateway_replicas",
+      "to": "gateway",
+      "label": "Atomically published local images"
+    },
+    {
+      "from": "client",
+      "to": "gateway",
+      "label": "Authenticated idempotent command"
+    },
+    {
+      "from": "gateway",
+      "to": "sequencer",
+      "label": "Screened submitted command"
+    },
+    {
+      "from": "control_stream",
+      "to": "control_adapter",
+      "label": "Validated control delta"
+    },
+    {
+      "from": "control_adapter",
+      "to": "sequencer",
+      "label": "Complete control event"
+    },
+    {
+      "from": "price_feed",
+      "to": "sequencer",
+      "label": "Sequenced price event"
+    },
+    {
+      "from": "sequencer",
+      "to": "blp",
+      "label": "Durable ordered input"
+    },
+    {
+      "from": "blp",
+      "to": "output_disruptor",
+      "label": "Decision + accepted business events"
+    },
+    {
+      "from": "output_disruptor",
+      "to": "gateway",
+      "label": "Correlated decision response"
+    },
+    {
+      "from": "output_disruptor",
+      "to": "nats",
+      "label": "Unchanged accepted business subjects"
+    },
+    {
+      "from": "output_disruptor",
+      "to": "projector",
+      "label": "Unchanged projection feed"
+    },
+    {
+      "from": "projector",
+      "to": "database",
+      "label": "Asynchronous query rows"
+    },
+    {
+      "from": "prometheus",
+      "to": "gateway",
+      "label": "Scrapes replica/screen metrics"
+    },
+    {
+      "from": "prometheus",
+      "to": "blp",
+      "label": "Scrapes risk/hot-path metrics"
+    }
+  ]
+}
+

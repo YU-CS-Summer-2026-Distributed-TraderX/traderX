@@ -9,6 +9,7 @@ COMPONENTS_ROOT="${3:-${GENERATED_ROOT}/code/components}"
 EXPLORER_ROOT="${TARGET_ROOT}/api-explorer"
 CONTRACTS_ROOT="${EXPLORER_ROOT}/contracts"
 PUBSUB_INSPECTOR_ENABLED=0
+BUILD_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "${ROOT}" log -1 --format=%ct 2>/dev/null || printf '0')}"
 
 if [[ -z "${STATE_ID}" ]]; then
   echo "usage: bash pipeline/install-generated-api-explorer.sh <state-id> [target-root] [components-root]"
@@ -23,7 +24,7 @@ fi
 mkdir -p "${CONTRACTS_ROOT}"
 
 case "${STATE_ID}" in
-  006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*)
+  006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|in-memory-risk-gateway)
     PUBSUB_INSPECTOR_ENABLED=1
     ;;
 esac
@@ -790,7 +791,7 @@ else
   rm -rf "${EXPLORER_ROOT}/vendor/nats.ws"
 fi
 
-ROOT="${ROOT}" STATE_ID="${STATE_ID}" TARGET_ROOT="${TARGET_ROOT}" EXPLORER_ROOT="${EXPLORER_ROOT}" PUBSUB_INSPECTOR_ENABLED="${PUBSUB_INSPECTOR_ENABLED}" node <<'NODE'
+ROOT="${ROOT}" STATE_ID="${STATE_ID}" TARGET_ROOT="${TARGET_ROOT}" EXPLORER_ROOT="${EXPLORER_ROOT}" PUBSUB_INSPECTOR_ENABLED="${PUBSUB_INSPECTOR_ENABLED}" BUILD_EPOCH="${BUILD_EPOCH}" node <<'NODE'
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -798,6 +799,7 @@ const root = process.env.ROOT;
 const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const explorerRoot = process.env.EXPLORER_ROOT;
+const generatedAtUtc = new Date(Number(process.env.BUILD_EPOCH || '0') * 1000).toISOString();
 const contractsRoot = path.join(explorerRoot, 'contracts');
 const pubSubInspectorEnabled = String(process.env.PUBSUB_INSPECTOR_ENABLED || '0') === '1';
 
@@ -956,7 +958,7 @@ for (const def of serviceDefs) {
 }
 
 const runtimeCatalog = {
-  generatedAtUtc: new Date().toISOString(),
+  generatedAtUtc,
   stateId,
   mountPath,
   pubSubInspectorEnabled,
