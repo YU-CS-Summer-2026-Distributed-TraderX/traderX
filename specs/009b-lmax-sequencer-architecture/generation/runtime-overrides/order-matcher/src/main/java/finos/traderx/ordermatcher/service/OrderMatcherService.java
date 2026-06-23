@@ -270,6 +270,9 @@ public class OrderMatcherService {
         sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
         sb.append("traderx_output_events_total{kind=\"trade_booked\"} ").append(engine.tradesBookedOut()).append('\n');
         sb.append("traderx_output_events_total{kind=\"position_updated\"} ").append(engine.positionsUpdatedOut()).append('\n');
+        sb.append("# HELP traderx_trades_per_second_peak Peak trades booked per second, measured in-process over 100ms event-time windows (independent of the scrape interval; resets on matcher restart).\n");
+        sb.append("# TYPE traderx_trades_per_second_peak gauge\n");
+        sb.append("traderx_trades_per_second_peak ").append(engine.peakTradesPerSecondOut()).append('\n');
         sb.append("# HELP traderx_output_nats_errors_total NATS bridge publish failures.\n");
         sb.append("# TYPE traderx_output_nats_errors_total counter\n");
         sb.append("traderx_output_nats_errors_total ").append(readModel.natsErrors().sum()).append('\n');
@@ -279,6 +282,9 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_projector_pending_rows Read-model rows buffered awaiting projection.\n");
         sb.append("# TYPE traderx_projector_pending_rows gauge\n");
         sb.append("traderx_projector_pending_rows ").append(engine.projectorPendingRows()).append('\n');
+        sb.append("# HELP traderx_trades_persisted_total Trades committed to the database by the projector — the real (DB-bound) booking rate, unlike the marshaller-stage trade_booked counter which runs ahead via output-ring buffering.\n");
+        sb.append("# TYPE traderx_trades_persisted_total counter\n");
+        sb.append("traderx_trades_persisted_total ").append(engine.tradesPersistedOut()).append('\n');
         HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
             "Rows written per projector flush.",
             metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});

@@ -14,7 +14,7 @@
       "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
       "options": {
         "mode": "markdown",
-        "content": "**Hero metric = Trades/sec** — each order fill books a trade to trade-service. The *same* workload produces the *same* fills in both states; the difference is **how fast they clear**:\n\n- **009** (poll / lock / inline-JPA): trades dribble out as a low line over minutes (~single/tens per sec).\n- **009b** (LMAX hot path): the same trades clear in a brief, tall spike (sub-second).\n\nBoth states use the **same ports**, so run **one at a time** and compare across runs. Grafana is served at `/grafana/` (e.g. `http://localhost:8080/grafana/`).\n\n**Ticks/sec caveat:** for **009b** this is true sequenced input-event throughput (~10k–25k/s). For **009** it is only the **1 Hz scheduled poll** — 009 exposes no per-price-tick counter, so read **Trades/sec** for 009's effective throughput.\n\n> Tip: to watch 009b as a sustained line instead of a blip, drive a larger workload so its run lasts several seconds. The `order-matcher` scrape job runs at **1s** to capture the burst."
+        "content": "**Hero metric = Trades/sec** — each order fill books a trade to trade-service. The *same* workload produces the *same* fills in both states; the difference is **how fast they clear**:\n\n- **009** (poll / lock / inline-JPA): trades dribble out as a low line over minutes (~single/tens per sec).\n- **009b** (LMAX hot path): the same trades clear in a brief, tall spike (sub-second).\n\nBoth states use the **same ports**, so run **one at a time** and compare across runs. Grafana is served at `/grafana/` (e.g. `http://localhost:8080/grafana/`).\n\n**Ticks/sec caveat:** for **009b** this is true sequenced input-event throughput (~10k–25k/s). For **009** it is only the **1 Hz scheduled poll** — 009 exposes no per-price-tick counter, so read **Trades/sec** for 009's effective throughput.\n\n**Peak trades/sec** is computed server-side at **250ms** resolution via `max_over_time(...[$__range:250ms])` — step-independent, so it reports the busiest 250ms window in view regardless of panel width. The `order-matcher` scrape job runs at **250ms** to capture the burst; a burst shorter than 250ms is averaged to its 250ms-equivalent."
       }
     },
     {
@@ -24,7 +24,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 0, "y": 5 },
       "targets": [
-        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[30s]))" }
+        { "refId": "A", "interval": "250ms", "expr": "sum(irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[1s]))" }
       ],
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
       "fieldConfig": { "defaults": { "unit": "cps", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "green" } } }
@@ -32,14 +32,15 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Peak trades/sec (window)",
+      "title": "Peak trades booked/sec (sustained)",
+      "description": "Peak SUSTAINED booking rate — the highest 5s-average rate at which trades are committed to the database (the real bottleneck). On 009b: traderx_trades_persisted_total (projector → Postgres). On 009 (inline JPA): the fill counter, which IS the persist there. Same meaning on both → directly comparable, and DB-bounded so it reflects true throughput, not in-memory burst. (009b's raw matcher burst is still in traderx_trades_per_second_peak.)",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 5 },
       "targets": [
-        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[30s]))" }
+        { "refId": "A", "instant": true, "expr": "max_over_time(sum(rate(traderx_trades_persisted_total[5s]))[$__range:1s]) or max_over_time(sum(rate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[5s]))[$__range:1s])" }
       ],
-      "options": { "reduceOptions": { "calcs": ["max"] }, "colorMode": "value", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 1, "color": { "mode": "fixed", "fixedColor": "orange" } } }
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "orange" } } }
     },
     {
       "id": 3,
@@ -69,17 +70,18 @@
       "id": 5,
       "type": "timeseries",
       "title": "Trades per second (fills booked)",
-      "description": "Rate of order fills (each fill = one trade booked to trade-service). 009 = low line over minutes; 009b = brief tall spike. Same total fills in both states.",
+      "description": "Rate of order fills (each fill = one trade booked to trade-service). 009 = low line over minutes; 009b = brief tall spike. Same total fills in both states. Evaluated at 250ms min-step with linear interpolation so spikes are not visually distorted.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 9, "w": 24, "x": 0, "y": 10 },
+      "interval": "250ms",
       "targets": [
-        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[30s]))", "legendFormat": "trades/sec (total)" },
-        { "refId": "B", "expr": "sum by (event) (irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[30s]))", "legendFormat": "{{event}}" }
+        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[1s]))", "legendFormat": "trades/sec (total)" },
+        { "refId": "B", "expr": "sum by (event) (irate(traderx_order_events_total{event=~\"fill|partial_fill|force_fill\"}[1s]))", "legendFormat": "{{event}}" }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "cps",
-          "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" }
+          "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" }
         },
         "overrides": [
           { "matcher": { "id": "byName", "options": "trades/sec (total)" }, "properties": [ { "id": "custom.lineWidth", "value": 3 }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } } ] }
@@ -94,10 +96,11 @@
       "description": "Rate of accepted order create events (POST /orders).",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "interval": "250ms",
       "targets": [
-        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=\"create\"}[30s]))", "legendFormat": "submits/sec" }
+        { "refId": "A", "expr": "sum(irate(traderx_order_events_total{event=\"create\"}[1s]))", "legendFormat": "submits/sec" }
       ],
-      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" } } },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" } } },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "single" } }
     },
     {
@@ -107,10 +110,11 @@
       "description": "009b: sequenced input events processed by the BLP (true matcher throughput, ~10k–25k/s under load). 009: scheduled poll cadence only (~1/s) — 009 has no per-price-tick counter, so use Trades/sec for 009's real throughput.",
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "interval": "250ms",
       "targets": [
-        { "refId": "A", "expr": "irate(traderx_order_matcher_ticks_total[30s])", "legendFormat": "ticks/sec" }
+        { "refId": "A", "expr": "irate(traderx_order_matcher_ticks_total[1s])", "legendFormat": "ticks/sec" }
       ],
-      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" } } },
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2, "fillOpacity": 12, "showPoints": "never" } } },
       "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["max"] }, "tooltip": { "mode": "single" } }
     }
   ]

@@ -16,6 +16,17 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
     private volatile long tradesBooked;
     private volatile long positionsUpdated;
 
+    // Event-time peak-throughput tracker (NFR-09B08): count trades booked per fixed
+    // PEAK_WINDOW_NANOS window and publish the highest per-second rate observed. Single-writer —
+    // only the marshaller's Disruptor consumer thread runs onEvent — so the window accumulators are
+    // plain longs (no atomics/locks); only the published peak is volatile, for the scrape thread.
+    // Allocation-free and measured at event time, so the peak is independent of the Prometheus
+    // scrape interval (the scrape only ever samples an already-computed running max).
+    private static final long PEAK_WINDOW_NANOS = 100_000_000L; // 100ms
+    private long peakWindowStartNanos;
+    private long peakWindowTrades;
+    private volatile long peakTradesPerSecond;
+
     public MarshallerHandler(InMemoryOrderReadModel readModel, SymbolTable symbols, HotPathMetrics metrics) {
         this.readModel = readModel;
         this.symbols = symbols;
@@ -24,6 +35,7 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+        long nowNanos = System.nanoTime();
         switch (e.kind) {
             case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
                  OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
@@ -32,12 +44,40 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
                 readModel.apply(e, symbols);
             }
             case OutputEvent.KIND_ORDER_NOT_FOUND -> readModel.notFound(e.inputSeq);
-            case OutputEvent.KIND_TRADE_BOOKED -> tradesBooked++;
+            case OutputEvent.KIND_TRADE_BOOKED -> {
+                tradesBooked++;
+                peakWindowTrades++;
+            }
             case OutputEvent.KIND_POSITION_UPDATED -> positionsUpdated++;
             default -> { /* ignore */ }
         }
-        metrics.recordEgressLatency(System.nanoTime() - e.ingressNanos);
+        observePeakWindow(nowNanos);
+        metrics.recordEgressLatency(nowNanos - e.ingressNanos);
         marshalledSeq = sequence;
+    }
+
+    /**
+     * Roll the event-time peak-throughput window. Called once per output event on the marshaller
+     * thread (single writer): when the current window has spanned at least PEAK_WINDOW_NANOS,
+     * convert its trade count to a per-second rate, keep the running max, and start a fresh window.
+     * Steady-path cost is one timestamp comparison; it reuses the egress nanoTime, so it adds no
+     * syscall and no allocation to the hot path (preserves the no-GC budget, NFR-09B08).
+     */
+    private void observePeakWindow(long nowNanos) {
+        if (peakWindowStartNanos == 0L) {
+            peakWindowStartNanos = nowNanos;
+            return;
+        }
+        long elapsedNanos = nowNanos - peakWindowStartNanos;
+        if (elapsedNanos < PEAK_WINDOW_NANOS) {
+            return;
+        }
+        long ratePerSecond = peakWindowTrades * 1_000_000_000L / elapsedNanos;
+        if (ratePerSecond > peakTradesPerSecond) {
+            peakTradesPerSecond = ratePerSecond;
+        }
+        peakWindowStartNanos = nowNanos;
+        peakWindowTrades = 0L;
     }
 
     public long marshalledSeq() {
@@ -54,5 +94,10 @@ public final class MarshallerHandler implements EventHandler<OutputEvent> {
 
     public long positionsUpdated() {
         return positionsUpdated;
+    }
+
+    /** Highest trades-per-second observed over any {@link #PEAK_WINDOW_NANOS} window since start. */
+    public long peakTradesPerSecond() {
+        return peakTradesPerSecond;
     }
 }

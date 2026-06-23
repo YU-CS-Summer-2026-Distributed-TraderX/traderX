@@ -504,6 +504,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         return marshaller == null ? 0 : marshaller.tradesBooked();
     }
 
+    public long peakTradesPerSecondOut() {
+        return marshaller == null ? 0 : marshaller.peakTradesPerSecond();
+    }
+
     public long positionsUpdatedOut() {
         return marshaller == null ? 0 : marshaller.positionsUpdated();
     }
@@ -514,6 +518,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long projectorPendingRows() {
         return projector == null ? 0 : projector.pendingRows();
+    }
+
+    public long tradesPersistedOut() {
+        return projector == null ? 0 : projector.tradesPersisted();
     }
 
     public String runtimeProfile() {

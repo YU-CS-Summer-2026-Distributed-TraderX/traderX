@@ -44,6 +44,9 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
     private volatile long projectedSeq = -1;
     private volatile long pendingRows;
+    // Trades actually committed to the DB — the real booking rate (Postgres-bound). Single-writer
+    // (only the projector consumer thread runs flush); volatile for the scrape thread.
+    private volatile long tradesPersisted;
 
     public ProjectorHandler(OrderRepository orderRepository, TradeRepository tradeRepository,
                             PositionRepository positionRepository, SymbolTable symbols, int batchSize,
@@ -115,6 +118,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
             }
             if (!tradeBuffer.isEmpty()) {
                 tradeRepository.saveAll(tradeBuffer);
+                tradesPersisted += tradeBuffer.size();   // count AFTER a successful commit = real booking rate
                 tradeBuffer.clear();
             }
             if (!positionBuffer.isEmpty()) {
@@ -157,5 +161,10 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     public long pendingRows() {
         return pendingRows;
+    }
+
+    /** Trades committed to the DB since start — the real (Postgres-bound) booking counter. */
+    public long tradesPersisted() {
+        return tradesPersisted;
     }
 }

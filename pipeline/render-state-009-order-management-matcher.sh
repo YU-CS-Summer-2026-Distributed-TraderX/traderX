@@ -394,11 +394,11 @@ if ! rg -q "job_name: traderx-spring-boot-actuator" "${PROMETHEUS_FILE}"; then
   perl -0pi -e 's/(  - job_name: blackbox-exporter\n    static_configs:\n      - targets: \["blackbox-exporter:9115"\]\n\n)/$1  - job_name: traderx-spring-boot-actuator\n    metrics_path: \/actuator\/prometheus\n    static_configs:\n      - targets: ["account-service:18088", "position-service:18090", "trade-processor:18091", "trade-service:18092", "order-matcher:18110"]\n\n/s' "${PROMETHEUS_FILE}"
 fi
 
-# Fast-scrape the order-matcher /metrics job (1s) so the trades/sec dashboard
-# (traderx-trades-per-second) resolves per-second throughput — including 009b's
+# Fast-scrape the order-matcher /metrics job (250ms) so the trades/sec dashboard
+# (traderx-trades-per-second) resolves sub-second throughput — including 009b's
 # sub-second burst, which the default 15s scrape would miss. Idempotent.
-if ! rg -q "scrape_timeout: 1s" "${PROMETHEUS_FILE}"; then
-  perl -0pi -e 's/(  - job_name: order-matcher\n    metrics_path: \/metrics\n)(    static_configs:)/${1}    scrape_interval: 1s\n    scrape_timeout: 1s\n${2}/s' "${PROMETHEUS_FILE}"
+if ! rg -q "scrape_timeout: 250ms" "${PROMETHEUS_FILE}"; then
+  perl -0pi -e 's/(  - job_name: order-matcher\n    metrics_path: \/metrics\n)(    static_configs:)/${1}    scrape_interval: 250ms\n    scrape_timeout: 250ms\n${2}/s' "${PROMETHEUS_FILE}"
 fi
 
 GEN_DEPTH="${TRADERX_GENERATION_DEPTH:-1}"
