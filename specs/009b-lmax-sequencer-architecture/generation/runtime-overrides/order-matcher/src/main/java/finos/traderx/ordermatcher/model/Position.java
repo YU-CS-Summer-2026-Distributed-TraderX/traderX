@@ -74,6 +74,10 @@ public class Position implements Serializable {
     this.averageCostBasis = averageCostBasis == null ? null : averageCostBasis.setScale(3, RoundingMode.HALF_UP);
   }
 
+  public void setPreScaledAverageCostBasis(BigDecimal averageCostBasis) {
+    this.averageCostBasis = averageCostBasis;
+  }
+
   public Date getUpdated() {
     return updated;
   }

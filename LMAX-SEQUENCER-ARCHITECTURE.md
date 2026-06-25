@@ -4,7 +4,7 @@
 > **Target state base:** `009-order-management-matcher`.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-04
-> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> **Last code-sync:** 2026-06-19 — verbatim snippets verified against the `009b` overlay
 > (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
@@ -485,10 +485,10 @@ when SBE lands, `T09B12`):**
 ```java
 outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
     DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
-// Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans out to
-// the marshaller (acks/read-model), the NATS bridge (orders + trades + positions), and the
-// read-model projector (OrderBook + TRADES + POSITIONS). No trade-service round-trip on the path.
-outputDisruptor.handleEventsWith(marshaller, natsBridge, projector);
+// Booking + position-keeping are fused into the BLP (FR-09B08/B10). Independent output
+// consumers keep acknowledgement, NATS fan-out, and projection parallel while the ring
+// provides bounded backpressure. No trade-service round-trip is on the BLP path.
+outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
 outputDisruptor.start();
 
 matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
@@ -549,13 +549,10 @@ account's net position — net quantity **and** weighted average cost basis — 
 single writer, long fixed-point), then emits `TradeBooked` (carrying the execution price) + `PositionUpdated`
 (carrying the average cost basis). The same fusion happens on every order fill, so `TRADES.PRICE` and
 `POSITIONS.AVERAGECOSTBASIS` stay byte-identical to 009's `trade-processor`. The read-model **projector**
-writes the `TRADES` and `POSITIONS` rows (deterministic trade ids from a BLP-assigned trade number) and the
-**NATS bridge** publishes the booked trade onto both the global `/trades` (was `trade-service`) and the
-per-account `/accounts/{id}/trades` (was `trade-processor`), plus `/accounts/{id}/positions` — the exact 009
-subjects and payload shapes (price/decimal rendered at the edge) — so the UI is unchanged. The 009
-`trade-service → NATS → trade-processor` booking round-trip (and the old `TradeSubmitHandler`) is gone;
-`trade-processor` stays deployed but **idle** on this path (its REST read endpoints still serve),
-preserving the inherited smoke gate.
+writes the `TRADES` and `POSITIONS` rows (deterministic trade ids from a BLP-assigned trade number), while
+dedicated output handlers publish per-account trade and position updates. The optional global `/trades`
+compatibility publisher is disabled by default. Dedicated output consumers render external payloads so UI
+contracts are preserved without putting NATS or database work on the BLP thread.
 
 ---
 
@@ -604,10 +601,14 @@ flowchart LR
 > workload through full stacks of `009` and `009b` (demo profile, containerized): total wall time
 > 179.6 s vs 1.2 s (153×), identical business outcomes, BLP-thread allocation 4,776 B across the live
 > run. The zero-allocation contract itself is enforced by `AllocationGateTest` + the Epsilon `noGcTest`
-> gate (`pipeline/validate-no-gc-conformance.sh`).
+> gate (`pipeline/validate-no-gc-conformance.sh`). The generated order-matcher service also includes focused
+> output-handler allocation gates and a local in-process latency benchmark for service-to-marshaller
+> acknowledgement timing.
 
 - **HdrHistogram** for full latency distributions (record `now - ingressNanos` at the output stage) — report
   p50/p99/p99.9/max, never just the mean.
+- **Local output benchmarks** for handler-level output latency and in-process service-to-marshaller
+  acknowledgement latency (`./gradlew outputLatencyBenchmark` in the generated order-matcher service).
 - **JLBH** (Java Latency Benchmark Harness) for end-to-end pipeline latency under controlled load.
 - **JMH** for microbenchmarks of the codec, order book, and fixed-point math.
 - **jHiccup** to separate application latency from JVM/OS pauses.

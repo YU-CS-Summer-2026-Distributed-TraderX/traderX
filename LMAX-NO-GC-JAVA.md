@@ -9,7 +9,7 @@
 > the BLP, and the output ring rather than being a single component.
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
-> **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
+> **Last code-sync:** 2026-06-19 — verbatim snippets verified against the `009b` overlay
 > (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
@@ -65,8 +65,8 @@ in two places only:
 
 - **Startup** — pre-allocate every ring slot, pooled object, and buffer once.
 - **The outermost edges** — the Gateway converting inbound JSON/`String`/`BigDecimal` to internal binary, and
-  the output handlers converting back to JSON/SQL for the legacy UI and DB. These are *deliberately*
-  downstream of the latency-critical section.
+  external client/driver internals. Output-ring handlers run inside the matcher JVM and remain part of the
+  no-GC boundary.
 
 Between those edges — the input ring, the BLP, the output ring — **nothing is `new`-ed per event**. That is
 the contract, and it is *enforced*, not hoped for (see [§A11](#a11-proving-it-the-allocation-gate)).
@@ -683,7 +683,7 @@ public long blpAllocatedBytes() {
 }
 ```
 
-### A12.10 The Epsilon allocation gate — implemented (task `T09B18`, `AllocationGateTest`)
+### A12.10 The Epsilon allocation gate — implemented (`AllocationGateTest`)
 
 The gate (`src/test/java/.../lmax/AllocationGateTest.java`) drives the **real topology** — input ring →
 journaler + replicator → BLP → output ring — through a deterministic steady-state mix covering every BLP
@@ -695,7 +695,7 @@ not-found, in/out-of-the-money ticks), and enforces the contract twice over:
   journaler, and BLP threads across the measured events. A single stray `new` fails with
   `expected: <0> but was: <N>`.
 - **Heap-exhaustion proof** (Gradle `noGcTest` task, run by `pipeline/validate-no-gc-conformance.sh`):
-  the same test under `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms256m -Xmx256m
+  the same test under `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC -Xms512m -Xmx512m
   -XX:+AlwaysPreTouch` with a 3M-event budget — Epsilon never reclaims, so steady-state allocation
   exhausts the heap and crashes the run.
 
@@ -704,6 +704,28 @@ configured event budget, exactly as a production book is sized for the trading d
 `HotPathBannedApiTest` (SC-NGC-04) scans the compiled constant pools of the hot-path classes and fails on
 any reference to `BigDecimal`, `java.time`, `HashMap`/`ConcurrentHashMap`, streams, regex, `Atomic*`,
 `String.format`, string concatenation, SLF4J, Spring, or JPA.
+
+### A12.11 Output-handler allocation gate — implemented
+
+The output ring has its own focused allocation gate because output handlers run in the matcher JVM. A BLP
+thread that allocates zero bytes can still suffer JVM-wide pauses if output handlers allocate on every event.
+
+The focused gate measures:
+
+- `MarshallerHandler`
+- `NatsBridgeHandler`
+- `AccountTradeHandler`
+- `PositionUpdateHandler`
+- `TradeSubmitHandler`
+- `ProjectorHandler`
+
+The measured handlers reuse payload objects, cached topic/id/price values, and mutable date fields. The test
+suite includes a repeated single-event path and a varied-value path
+covering multiple account ids, securities, order refs, trade ids, prices, and timestamps. That varied path is
+important because it catches cache-miss allocation that a single warm event would hide.
+
+External client and driver internals may still allocate while called by their dedicated consumer threads.
+Output-ring capacity, projector lag, and handler failure metrics keep downstream stalls visible.
 
 ---
 
@@ -739,8 +761,9 @@ docs) and any edge code (Gateway/Projector), which are explicitly *allowed* to a
 
 ## B15. No-GC conformance requirements
 
-- **NGC-01** — Hot-path packages (input ring, BLP, output ring) SHALL allocate **zero** bytes in the steady
-  state; allocation is permitted only at startup and at the outermost edges (Gateway in, output handlers out).
+- **NGC-01** — Hot-path packages (input ring, BLP, output ring, and output handlers running in the matcher
+  JVM) SHALL allocate **zero** bytes in the steady state; allocation is permitted only at startup and after a
+  external client/driver internals such as serialization or database driver work.
 - **NGC-02** — A CI **allocation gate** SHALL run the hot path under `-XX:+UseEpsilonGC` with a small fixed
   heap and **fail** on any steady-state allocation.
 - **NGC-03** — Prices/quantities SHALL be `long` fixed-point on the hot path; `BigDecimal`/`String`
@@ -754,8 +777,8 @@ docs) and any edge code (Gateway/Projector), which are explicitly *allowed* to a
   bounce** (snapshot + replay restart).
 - **NGC-07** — Production run profile SHALL use **ZGC or Shenandoah** as a sub-ms safety net; the **demo/`C2`
   profile** MAY use defaults but MUST still pass the allocation gate in CI.
-- **NGC-08** — The allocation contract SHALL be validated by HdrHistogram (latency), JFR/async-profiler
-  (allocation attribution), and jHiccup (pause isolation).
+- **NGC-08** — The allocation contract SHALL be validated by HdrHistogram (latency), JFR/async-profiler or
+  ThreadMXBean attribution (allocation attribution), and jHiccup (pause isolation).
 
 ## B16. Build & dependency specs
 
@@ -777,7 +800,7 @@ Three profiles, selected by env/launcher:
 
 | Flag | `demo`/`C2` | `perf` (bare metal) | `noGcTest` (CI) |
 | --- | --- | --- | --- |
-| `-Xms` == `-Xmx` (fixed heap) | ✅ | ✅ | ✅ (small, e.g. 64–128m) |
+| `-Xms` == `-Xmx` (fixed heap) | ✅ | ✅ | ✅ (fixed, sized for the allocation-gate harness) |
 | `-XX:+AlwaysPreTouch` | ✅ | ✅ | ✅ |
 | `-XX:+UnlockExperimentalVMOptions -XX:+UseEpsilonGC` | ❌ | ❌ | ✅ (the gate) |
 | `-XX:+UseZGC` (or `+UseShenandoahGC`) | optional | ✅ | ❌ |
@@ -808,6 +831,7 @@ Three profiles, selected by env/launcher:
 | `traderx_hotpath_alloc_bytes_total{node=...}` | counter | Steady-state allocation per node (**must stay ~0**). |
 | `traderx_jvm_gc_pause_seconds` | histogram | GC pause distribution (should be empty/sub-ms). |
 | `traderx_hotpath_latency_seconds{node=...}` | histogram | Per-node latency (HdrHistogram-backed). |
+| `traderx_output_remaining_capacity` | gauge | Output-ring backpressure headroom across independent consumers. |
 | `traderx_jit_warmup_seconds` | gauge | Warm-up duration at startup. |
 | `traderx_nightly_bounce_seconds` | gauge | Last bounce (restart+replay) duration. |
 
@@ -816,8 +840,9 @@ per-node latency percentiles. These complement the component dashboards in the i
 
 ## B20. Success criteria & validation
 
-- **SC-NGC-01 (gate)** — `pipeline/validate-no-gc-conformance.sh` runs each hot-path node under Epsilon and
-  **fails** on any steady-state allocation; **passes** when allocation-free.
+- **SC-NGC-01 (gate)** — `pipeline/validate-no-gc-conformance.sh` and the generated service's `noGcTest`
+  run hot-path and output-handler allocation gates under Epsilon and **fail** on unbounded steady-state
+  allocation; **pass** when the measured paths are allocation-free or inside explicit tiny framework budgets.
 - **SC-NGC-02 (penny parity)** — `long` fixed-point arithmetic matches `009`'s `BigDecimal` outcomes across a
   rounding fixture.
 - **SC-NGC-03 (latency)** — HdrHistogram reports meet the per-stage budgets in
@@ -848,6 +873,7 @@ per-node latency percentiles. These complement the component dashboards in the i
 | --- | --- |
 | **Epsilon gate is flaky** (allocation from test scaffolding, not the hot path) | Isolate the measured region; warm up first; attribute via JFR; keep the heap small so real leaks fail fast. |
 | **`long` fixed-point penny drift** | Fix scale globally (`nogc.px.scale`), centralize edge conversions, penny-parity fixture (`SC-NGC-02`). |
+| **Output handler allocation regresses** | Keep output handlers in the no-GC gate; use varied-value allocation tests so cache misses are measured. |
 | **Busy-spin/pinning unavailable in containers** | `demo`/`C2` profile runs without them and still passes the allocation gate; perf knobs reserved for bare metal. |
 | **Discipline erosion over time** (a `new` creeps back in) | The gate is in CI on every change; static check for banned APIs (`SC-NGC-04`). |
 | **Over-engineering for a demo** | This is a faithful teaching implementation; the gate proves the property without requiring production hardware. |
