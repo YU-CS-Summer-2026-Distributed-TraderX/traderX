@@ -206,9 +206,13 @@ in their own handlers, which makes failures and metrics specific to the side eff
 - `TradeBooked` events become `Trade` rows
 - `PositionUpdated` events become `Position` rows
 
-Projection is batched. The handler buffers rows and flushes when the batch threshold is reached or when the
-Disruptor marks `endOfBatch`. Position projection deduplicates within a batch by `(accountId, security)` and
-writes only the latest net position for that key.
+Projection is decoupled from the output ring: the on-ring handler only converts each event to a detached
+row and enqueues it (O(1)) into a bounded queue (`output.projector.queue-capacity`); a separate
+`projector-drain` thread batches the rows out to the database. Database latency therefore becomes bounded
+queue depth, not output-ring backpressure. Trades are append-only and persist via one multi-row
+`INSERT … ON CONFLICT (id) DO NOTHING` per flush (no per-row JPA `merge` SELECT, idempotent on replay);
+order/position writes use Hibernate JDBC batching, and position projection deduplicates within a flush by
+`(accountId, security)`. The persisted-`seq` watermark advances only after a committed flush.
 
 The database is not the source of truth for the hot path. The BLP warms from the persisted read model on
 startup, while the journal remains the event-stream authority for recovery and replay work.
@@ -232,13 +236,17 @@ If an output handler fails, the BLP state and the journaled input event are not 
 ## A8. Wait strategy & backpressure
 
 The output ring is bounded. If a downstream handler stalls, the ring eventually fills and the BLP is
-backpressured on publication. That protects memory and keeps failure visible.
+backpressured on publication. That protects memory and keeps failure visible. The projector is the one
+consumer whose database lag is absorbed first by its own bounded queue: only when that queue fills does
+its enqueue block and the ring backpressure — a counted event (`traderx_projector_enqueue_blocks_total`),
+never a dropped row.
 
 Current output-related capacity and wait strategy are configurable:
 
 - `disruptor.output.ring-size`
 - `disruptor.output.wait-strategy`
 - `output.projector.batch-size`
+- `output.projector.queue-capacity`
 
 The demo profile defaults to a container-friendly blocking strategy. Low-latency deployments can select a
 more aggressive wait strategy once CPU pinning and runtime isolation are available.
@@ -302,8 +310,9 @@ MarshallerHandler marshaller = new MarshallerHandler(readModel, symbols, metrics
 NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
 AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
 PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
-ProjectorHandler projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository,
-    symbols, projectorBatchSize, metrics);
+ProjectorHandler projector = new ProjectorHandler(orderRepository, positionRepository, jdbcTemplate,
+    symbols, projectorBatchSize, projectorQueueCapacity, metrics);   // trades via JdbcTemplate ON CONFLICT
+// projector.start() launches the drain thread (decoupled async DB writes); started with the output ring
 
 if (legacyTradeSubmitEnabled) {
     TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
@@ -443,7 +452,8 @@ generated/code/target-generated/order-matcher
 | --- | --- | --- |
 | `disruptor.output.ring-size` | `65536` | Output ring size, normalized to a power of two. |
 | `disruptor.output.wait-strategy` | `blocking` | Output consumer wait strategy for the demo profile. |
-| `output.projector.batch-size` | `500` | Projector flush threshold. |
+| `output.projector.batch-size` | `500` | Projector drain flush threshold (rows per DB write). |
+| `output.projector.queue-capacity` | `1000000` | Bounded decoupling queue between the on-ring handler and the drain thread; full = counted enqueue backpressure. |
 | `output.legacy-trades.enabled` | `false` | Enables optional `/trades` compatibility publishing. |
 | `blp.positions.capacity` | `8192` | In-memory position-book capacity owned by the BLP. |
 

@@ -19,12 +19,14 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 import java.lang.management.ManagementFactory;
 import java.math.BigDecimal;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
@@ -58,6 +60,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final OrderRepository orderRepository;
     private final TradeRepository tradeRepository;
     private final PositionRepository positionRepository;
+    private final JdbcTemplate jdbcTemplate;
     private final Publisher<OrderResponse> orderPublisher;
     private final Publisher<TradeOrder> tradePublisher;
     private final Publisher<AccountTrade> accountTradePublisher;
@@ -72,6 +75,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final boolean journalEnabled;
     private final String journalPath;
     private final int projectorBatchSize;
+    private final int projectorQueueCapacity;
     private final int maxSecurities;
     private final int bookPoolSize;
     private final int positionCapacity;
@@ -97,6 +101,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         OrderRepository orderRepository,
         TradeRepository tradeRepository,
         PositionRepository positionRepository,
+        JdbcTemplate jdbcTemplate,
         Publisher<OrderResponse> orderPublisher,
         Publisher<TradeOrder> tradePublisher,
         Publisher<AccountTrade> accountTradePublisher,
@@ -111,6 +116,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${journal.enabled:true}") boolean journalEnabled,
         @Value("${journal.path:./data/journal}") String journalPath,
         @Value("${output.projector.batch-size:500}") int projectorBatchSize,
+        @Value("${output.projector.queue-capacity:1000000}") int projectorQueueCapacity,
         @Value("${blp.books.max-securities:4096}") int maxSecurities,
         @Value("${blp.book.pool-size:65536}") int bookPoolSize,
         @Value("${blp.positions.capacity:8192}") int positionCapacity,
@@ -120,6 +126,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.orderRepository = orderRepository;
         this.tradeRepository = tradeRepository;
         this.positionRepository = positionRepository;
+        this.jdbcTemplate = jdbcTemplate;
         this.orderPublisher = orderPublisher;
         this.tradePublisher = tradePublisher;
         this.accountTradePublisher = accountTradePublisher;
@@ -134,6 +141,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.journalEnabled = journalEnabled;
         this.journalPath = journalPath;
         this.projectorBatchSize = projectorBatchSize;
+        this.projectorQueueCapacity = projectorQueueCapacity;
         this.maxSecurities = maxSecurities;
         this.bookPoolSize = bookPoolSize;
         this.positionCapacity = positionCapacity;
@@ -148,8 +156,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Output ring first: the BLP needs its publisher before it can run.
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, symbols,
-            projectorBatchSize, metrics);
+        projector = new ProjectorHandler(orderRepository, positionRepository, jdbcTemplate, symbols,
+            projectorBatchSize, projectorQueueCapacity, metrics);
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
@@ -166,6 +174,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } else {
             outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
         }
+        projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
@@ -205,6 +214,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (com.lmax.disruptor.TimeoutException ex) {
             outputDisruptor.halt();
         }
+        if (projector != null) {
+            projector.stop();   // drain the queue to the DB after the ring has stopped feeding it
+        }
         if (journaler != null) {
             journaler.close();
         }
@@ -222,6 +234,78 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         long limitPx = Px.toTicks(limitPrice);
         return execute(InputEvent.TYPE_ORDER_NEW, orderRef, accountId, securityId,
             (byte) side.ordinal(), quantity, limitPx, 0L);
+    }
+
+    /** A validated new-order command ready for batch sequencing (throughput experiment, option 2). */
+    public record NewOrderCommand(int orderRef, int accountId, String ticker, OrderSide side,
+                                  int quantity, BigDecimal limitPrice) {}
+
+    /**
+     * Batch ingress (throughput experiment): sequence N new-order commands in one shot and block
+     * the calling gateway thread once for all N acks. The thread claims a contiguous run of input
+     * slots, registers every ack, fills every event, then publishes the whole run with a single
+     * cursor advance — so the per-order HTTP round-trip AND the per-order park/unpark on the ack
+     * future are amortised across the batch (the single-order {@link #execute} path pays both per
+     * order). Ordering within the batch is preserved (lo..hi); other producers (price ticks,
+     * concurrent batches) interleave between blocks safely on the multi-producer ring. Nothing is
+     * publishable until the final {@code publish(lo, hi)}, so no ack can complete before it is
+     * registered.
+     */
+    public List<OrderSnapshot> executeNewOrderBatch(List<NewOrderCommand> commands) {
+        int n = commands.size();
+        if (n == 0) {
+            return List.of();
+        }
+        long hi = claimInputSlots(n);
+        long lo = hi - (n - 1);
+        @SuppressWarnings("unchecked")
+        CompletableFuture<OrderSnapshot>[] acks = new CompletableFuture[n];
+        long ingressNanos = System.nanoTime();
+        long eventTimeMillis = System.currentTimeMillis();
+        for (int i = 0; i < n; i++) {
+            long seq = lo + i;
+            NewOrderCommand c = commands.get(i);
+            acks[i] = readModel.registerAck(seq);
+            InputEvent e = inputRing.get(seq);
+            e.seq = seq;
+            e.type = InputEvent.TYPE_ORDER_NEW;
+            e.orderRef = c.orderRef();
+            e.accountId = c.accountId();
+            e.securityId = symbols.idFor(c.ticker());
+            e.side = (byte) c.side().ordinal();
+            e.qty = c.quantity();
+            e.limitPx = Px.toTicks(c.limitPrice());
+            e.priceTicks = 0L;
+            e.ingressNanos = ingressNanos;
+            e.eventTimeMillis = eventTimeMillis;
+        }
+        inputRing.publish(lo, hi);
+
+        List<OrderSnapshot> out = new ArrayList<>(n);
+        long deadlineNanos = System.nanoTime() + ackTimeoutMs * 1_000_000L;
+        for (int i = 0; i < n; i++) {
+            long remaining = deadlineNanos - System.nanoTime();
+            try {
+                out.add(acks[i].get(Math.max(1L, remaining), TimeUnit.NANOSECONDS));
+            } catch (TimeoutException ex) {
+                for (int j = i; j < n; j++) {
+                    readModel.abandonAck(lo + j);
+                }
+                throw new GatewayTimeoutException("no acknowledgement for input seq " + (lo + i));
+            } catch (ExecutionException ex) {
+                if (ex.getCause() instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                throw new IllegalStateException(ex.getCause());
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                for (int j = i; j < n; j++) {
+                    readModel.abandonAck(lo + j);
+                }
+                throw new GatewayTimeoutException("interrupted awaiting input seq " + (lo + i));
+            }
+        }
+        return out;
     }
 
     public OrderSnapshot executeCancel(int orderRef) {
@@ -292,6 +376,20 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (InsufficientCapacityException ex) {
             metrics.recordBackpressureWait();
             return inputRing.next();
+        }
+    }
+
+    /**
+     * Claim a contiguous run of {@code n} input-ring slots (batch ingress). Same lock-free
+     * fast path / counted-backpressure fallback as {@link #claimInputSlot}; returns the
+     * sequence of the LAST slot (the run is {@code [returned - n + 1 .. returned]}).
+     */
+    private long claimInputSlots(int n) {
+        try {
+            return inputRing.tryNext(n);
+        } catch (InsufficientCapacityException ex) {
+            metrics.recordBackpressureWait();
+            return inputRing.next(n);
         }
     }
 
@@ -505,6 +603,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         return marshaller == null ? 0 : marshaller.tradesBooked();
     }
 
+    public long peakTradesPerSecondOut() {
+        return marshaller == null ? 0 : marshaller.peakTradesPerSecond();
+    }
+
     public long positionsUpdatedOut() {
         return marshaller == null ? 0 : marshaller.positionsUpdated();
     }
@@ -515,6 +617,22 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long projectorPendingRows() {
         return projector == null ? 0 : projector.pendingRows();
+    }
+
+    public long tradesPersistedOut() {
+        return projector == null ? 0 : projector.tradesPersisted();
+    }
+
+    public long projectorQueueDepth() {
+        return projector == null ? 0 : projector.queueDepth();
+    }
+
+    public long projectorQueueCapacity() {
+        return projector == null ? 0 : projector.queueCapacity();
+    }
+
+    public long projectorEnqueueBlocks() {
+        return projector == null ? 0 : projector.enqueueBlocks();
     }
 
     public String runtimeProfile() {

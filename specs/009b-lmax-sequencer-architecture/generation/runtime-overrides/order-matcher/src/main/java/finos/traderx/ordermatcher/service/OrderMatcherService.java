@@ -18,6 +18,7 @@ import org.springframework.web.server.ResponseStatusException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -43,6 +44,9 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 public class OrderMatcherService {
     private static final String APP_NAME = "traderx-order-matcher";
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ord-013-(\\d{4,})$");
+    // Batch ingress cap: a batch claims a contiguous run of input-ring slots, so it must stay
+    // well under the ring size (default 65536) to avoid a producer that can never be satisfied.
+    private static final int MAX_BATCH = 1024;
 
     private final LmaxEngine engine;
     private final InMemoryOrderReadModel readModel;
@@ -86,6 +90,35 @@ public class OrderMatcherService {
             orderRef, request.getAccountId(), ticker, request.getSide(),
             request.getQuantity(), roundPrice(request.getLimitPrice())));
         return toResponse(snapshot);
+    }
+
+    /**
+     * Batch create (throughput experiment, option 2): validate every order at the edge, then
+     * sequence the whole batch in one call so a single gateway thread amortises the HTTP
+     * round-trip and the ack-future block across all of them. Returns the per-order responses in
+     * request order; all-or-nothing on a gateway timeout (mirrors the single-order semantics).
+     */
+    public List<OrderResponse> createOrderBatch(List<OrderCreateRequest> requests) {
+        if (requests == null || requests.isEmpty()) {
+            throw new ResponseStatusException(BAD_REQUEST, "empty order batch");
+        }
+        if (requests.size() > MAX_BATCH) {
+            throw new ResponseStatusException(BAD_REQUEST, "batch too large (max " + MAX_BATCH + ")");
+        }
+        List<LmaxEngine.NewOrderCommand> commands = new ArrayList<>(requests.size());
+        for (OrderCreateRequest request : requests) {
+            validateCreateRequest(request);
+            String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
+            int orderRef = engine.nextOrderRef();
+            commands.add(new LmaxEngine.NewOrderCommand(orderRef, request.getAccountId(), ticker,
+                request.getSide(), request.getQuantity(), roundPrice(request.getLimitPrice())));
+        }
+        List<OrderSnapshot> snapshots = run(() -> engine.executeNewOrderBatch(commands));
+        List<OrderResponse> responses = new ArrayList<>(snapshots.size());
+        for (OrderSnapshot snapshot : snapshots) {
+            responses.add(toResponse(snapshot));
+        }
+        return responses;
     }
 
     public OrderResponse cancelOrder(String orderId) {
@@ -270,6 +303,9 @@ public class OrderMatcherService {
         sb.append("traderx_output_events_total{kind=\"order_update\"} ").append(engine.orderUpdatesOut()).append('\n');
         sb.append("traderx_output_events_total{kind=\"trade_booked\"} ").append(engine.tradesBookedOut()).append('\n');
         sb.append("traderx_output_events_total{kind=\"position_updated\"} ").append(engine.positionsUpdatedOut()).append('\n');
+        sb.append("# HELP traderx_trades_per_second_peak Peak trades booked per second, measured in-process over 100ms event-time windows (independent of the scrape interval; resets on matcher restart).\n");
+        sb.append("# TYPE traderx_trades_per_second_peak gauge\n");
+        sb.append("traderx_trades_per_second_peak ").append(engine.peakTradesPerSecondOut()).append('\n');
         sb.append("# HELP traderx_output_nats_errors_total NATS bridge publish failures.\n");
         sb.append("# TYPE traderx_output_nats_errors_total counter\n");
         sb.append("traderx_output_nats_errors_total ").append(readModel.natsErrors().sum()).append('\n');
@@ -279,6 +315,18 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_projector_pending_rows Read-model rows buffered awaiting projection.\n");
         sb.append("# TYPE traderx_projector_pending_rows gauge\n");
         sb.append("traderx_projector_pending_rows ").append(engine.projectorPendingRows()).append('\n');
+        sb.append("# HELP traderx_projector_queue_depth Rows in the decoupled projector queue (DB staleness window, in rows).\n");
+        sb.append("# TYPE traderx_projector_queue_depth gauge\n");
+        sb.append("traderx_projector_queue_depth ").append(engine.projectorQueueDepth()).append('\n');
+        sb.append("# HELP traderx_projector_queue_capacity Bounded capacity of the decoupled projector queue.\n");
+        sb.append("# TYPE traderx_projector_queue_capacity gauge\n");
+        sb.append("traderx_projector_queue_capacity ").append(engine.projectorQueueCapacity()).append('\n');
+        sb.append("# HELP traderx_projector_enqueue_blocks_total Times the projector queue was full and the hot path had to block (backpressure fallback; should stay 0 until the DB is the hard limit).\n");
+        sb.append("# TYPE traderx_projector_enqueue_blocks_total counter\n");
+        sb.append("traderx_projector_enqueue_blocks_total ").append(engine.projectorEnqueueBlocks()).append('\n');
+        sb.append("# HELP traderx_trades_persisted_total Trades committed to the database by the projector — the real (DB-bound) booking rate, unlike the marshaller-stage trade_booked counter which runs ahead via output-ring buffering.\n");
+        sb.append("# TYPE traderx_trades_persisted_total counter\n");
+        sb.append("traderx_trades_persisted_total ").append(engine.tradesPersistedOut()).append('\n');
         HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
             "Rows written per projector flush.",
             metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});
@@ -290,7 +338,7 @@ public class OrderMatcherService {
 
     // ----- helpers --------------------------------------------------------------------------
 
-    private OrderSnapshot run(java.util.function.Supplier<OrderSnapshot> command) {
+    private <T> T run(java.util.function.Supplier<T> command) {
         try {
             return command.get();
         } catch (InMemoryOrderReadModel.OrderNotFoundException ex) {

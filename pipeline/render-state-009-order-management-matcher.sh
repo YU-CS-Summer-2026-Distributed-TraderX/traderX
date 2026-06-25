@@ -380,6 +380,11 @@ perl -0pi -e 's/GF_SERVER_SERVE_FROM_SUB_PATH:\s*".*"/GF_SERVER_SERVE_FROM_SUB_P
 if ! rg -q "GF_SERVER_ROOT_URL" "${COMPOSE_FILE}"; then
   perl -0pi -e 's/(GF_AUTH_ANONYMOUS_ORG_ROLE:\s*".*"\n)/$1      GF_SERVER_ROOT_URL: "\${TRADERX_GRAFANA_ROOT_URL:-http:\/\/localhost:8080\/grafana\/}"\n      GF_SERVER_SERVE_FROM_SUB_PATH: "true"\n/' "${COMPOSE_FILE}"
 fi
+# Allow sub-5s dashboard auto-refresh (Grafana's default min_refresh_interval is 5s) so the
+# trades/sec dashboard can update at the 1s Prometheus scrape cadence. Idempotent.
+if ! rg -q "GF_DASHBOARDS_MIN_REFRESH_INTERVAL" "${COMPOSE_FILE}"; then
+  perl -0pi -e 's/(GF_SERVER_SERVE_FROM_SUB_PATH:\s*".*"\n)/$1      GF_DASHBOARDS_MIN_REFRESH_INTERVAL: "\${TRADERX_GRAFANA_MIN_REFRESH:-1s}"\n/' "${COMPOSE_FILE}"
+fi
 
 if ! rg -q "MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE" "${COMPOSE_FILE}"; then
   perl -0pi -e 's/(CORS_ALLOWED_ORIGINS: "http:\/\/localhost:8080"\n)/$1      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,prometheus,info"\n      MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED: "true"\n      MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"\n/g' "${COMPOSE_FILE}"
@@ -387,6 +392,13 @@ fi
 
 if ! rg -q "job_name: traderx-spring-boot-actuator" "${PROMETHEUS_FILE}"; then
   perl -0pi -e 's/(  - job_name: blackbox-exporter\n    static_configs:\n      - targets: \["blackbox-exporter:9115"\]\n\n)/$1  - job_name: traderx-spring-boot-actuator\n    metrics_path: \/actuator\/prometheus\n    static_configs:\n      - targets: ["account-service:18088", "position-service:18090", "trade-processor:18091", "trade-service:18092", "order-matcher:18110"]\n\n/s' "${PROMETHEUS_FILE}"
+fi
+
+# Fast-scrape the order-matcher /metrics job (250ms) so the trades/sec dashboard
+# (traderx-trades-per-second) resolves sub-second throughput — including 009b's
+# sub-second burst, which the default 15s scrape would miss. Idempotent.
+if ! rg -q "scrape_timeout: 250ms" "${PROMETHEUS_FILE}"; then
+  perl -0pi -e 's/(  - job_name: order-matcher\n    metrics_path: \/metrics\n)(    static_configs:)/${1}    scrape_interval: 250ms\n    scrape_timeout: 250ms\n${2}/s' "${PROMETHEUS_FILE}"
 fi
 
 GEN_DEPTH="${TRADERX_GENERATION_DEPTH:-1}"
