@@ -48,3 +48,54 @@ Knobs (env): `BENCH_ORDERS`, `BENCH_TICKS`, `BENCH_TICK_RATE`, `BENCH_TICKERS`,
 Requirements: Docker compose v2, Linux Node (nvm fine — generation pipeline and driver both
 need it), network for image builds. Every state cycle removes containers **and volumes**
 before and after.
+
+## Average peak throughput — `avg-max-load.mjs`
+
+Drives the **already-running** 009b order-matcher to saturation N times and reports the
+AVERAGE peak trades/sec (median / min / max / stddev) to the console and a text file under
+`results/` (git-ignored). It spawns `max-load.mjs` as the load generator.
+
+```bash
+# 10 cold-start runs (restarts the matcher between each to reset the peak gauge)
+node scripts/bench/avg-max-load.mjs --runs 10 --secs 25
+
+# single WARM steady-state ceiling (no restart, one long run)
+node scripts/bench/avg-max-load.mjs --no-reset --runs 1 --secs 60
+```
+
+**Measurement gotcha — why it does NOT just read Prometheus `irate`:** the matcher's REST
+listener is both the load target *and* the `/metrics` source, so under saturation every
+scrape is starved and `irate(fills)` mostly samples the quiet gaps and reads ~0 (you get a
+~7/10-zero sawtooth, not a peak). The only trustworthy peak is the in-process gauge
+`traderx_trades_per_second_peak` (a 100 ms event-time high-water mark that, per its own HELP
+text, "resets on matcher restart" *only*). So the driver **restarts the matcher before each
+run** and reads the gauge *after* the load (when HTTP is free again). Sustained `booked/s` is
+a fill-counter delta across the run (both counter reads happen while HTTP is idle), and
+`submit/s` is max-load's accepted-201 rate. Each restart is **cold** — the LMAX engine warms
+(JIT) during the run, so the warm steady-state ceiling (`--no-reset`) is higher than any
+single cold run.
+
+Knobs: `--runs`, `--secs`, `--cooldown`, `--out`, `--no-reset`, `--no-preflight`; env
+`RESET_CMD` / `MATCHER_COMPOSE_FILE` / `MATCHER_COMPOSE_PROJECT` / `MATCHER_SERVICE` to
+override how the gauge is reset; plus all `max-load.mjs` flags/env pass straight through.
+
+## Batch-ingress experiment — `batch-load.mjs` + `batch-experiment.mjs`
+
+Tests whether batching the HTTP ingress (`POST /orders/batch`, K orders + one ack-block per
+request) extracts more end-to-end throughput than the single-order path (`POST /orders`, one
+order + one ack-block per request).
+
+```bash
+node scripts/bench/batch-load.mjs --batch 100 --conc 8 --secs 20   # one batch loader
+node scripts/bench/batch-experiment.mjs --secs 15                   # single-vs-batch sweep
+```
+
+**Finding (see `results/batch-experiment-findings.md`): batching works at the ingress but does
+NOT raise end-to-end throughput.** It lifted raw order *acceptance* ~5× (≈8,000/s bursts vs
+≈1,400/s single), but booked/s stayed ~1–1.8k with rising HTTP 504s. The real ceiling is the
+**output-side projector → Postgres** write path at **~1,060 persisted rows/s**: it is the
+slowest of the 5 parallel output-ring consumers, so it gates the whole single-writer disruptor
+(`min(consumer sequences)`) — the output ring fills (`out_free`=0), the BLP stalls, acks time
+out. It is *not* DB CPU (Postgres ~0.57 cores) — it's per-row JPA `merge` round-trips
+(assigned `@Id`, no `hibernate.jdbc.batch_size`). The lever that would help is decoupling the
+projector from the ring and/or bulk/async persistence — not ingress batching.
