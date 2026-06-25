@@ -62,7 +62,8 @@ allocation gate):
 - Throughput headroom: single-threaded BLP capacity (LMAX reference: ~6M events/s/thread) is orders of
   magnitude beyond demo load; backpressure is bounded by ring capacity, never unbounded queues.
 - Batching: consumers drain to the highest available sequence and amortize per-batch costs
-  (journal flush, output flush, projector writes) on `endOfBatch`.
+  (journal flush, output flush) on `endOfBatch`; the projector enqueues on the ring and its separate
+  drain thread batches the DB writes off it.
 - All latency reporting is full-distribution (HdrHistogram p50/p99/p99.9/max) with jHiccup separating
   JVM/OS pauses from application latency.
 
