@@ -25,6 +25,13 @@ parity-locked to `009`; the delta is in how that behavior is produced.
   live, nightly bounce window, deterministic replay for diagnostics (FR-09B16, NFR-09B05).
 - Replication and warm-standby failover: follower BLPs consume the identical replicated input stream in
   lock-step with output suppressed; promotion at current sequence on leader failure (FR-09B30..32).
+- Optional batch ingress: `POST /orders/batch` accepts an array of new orders and sequences the whole
+  batch as one unit — one HTTP round-trip and one acknowledgement wait for all of them — claiming a
+  contiguous run of input-ring slots and publishing them with a single cursor advance. This amortizes
+  the synchronous request/reply-per-order gateway cost (a Tomcat thread parking on the ack future per
+  order). Additive only: the per-order `009` endpoints and their contracts are unchanged; ordering
+  within the batch is preserved and other producers interleave safely on the multi-producer ring
+  (FR-09B43).
 - No-GC conformance gate (cross-cutting): Epsilon-GC allocation gate, banned-API static check,
   penny-parity fixture (see `requirements/no-gc-conformance.md`).
 
@@ -46,6 +53,23 @@ parity-locked to `009`; the delta is in how that behavior is produced.
   sequenced `PRICE_TICK` input events in the same totally-ordered stream as orders (FR-09B06).
 - Source of truth: the input journal becomes authoritative; the `OrderBook` table and trade/position
   rows become an async, batched, checkpointed, rebuildable read-model (FR-09B22, FR-09B23).
+- Read-model projector decoupling: the projector no longer writes to the database on its output-ring
+  consumer thread. It converts each event to a detached row and hands it to a dedicated bounded queue
+  drained by a separate thread, so a slow database becomes bounded queue depth (observable staleness via
+  `traderx_projector_queue_depth`/`traderx_projector_lag_seq`) rather than output-ring backpressure — the
+  "a slow/down DB never stalls matching" guarantee (FR-09B24) now holds up to the queue capacity, far
+  beyond the output ring. A full queue degrades to counted enqueue backpressure (no row dropped, FIFO so
+  the DB stays a consistent prefix), and the persisted-`seq` watermark advances only after a committed
+  flush (FR-09B24, FR-09B44).
+- Read-model write path: trades (append-only) persist via a single multi-row
+  `INSERT … ON CONFLICT (id) DO NOTHING` per flush instead of per-row JPA `merge` (no pre-write SELECT;
+  idempotent on journal replay), and order/position writes use Hibernate JDBC batching
+  (`reWriteBatchedInserts`). Schema and row shapes are preserved bit-for-bit (NFR-09B11, FR-09B23,
+  FR-09B45).
+- Output NATS publication is fire-and-forget: the bridge no longer issues a synchronous `flush()`
+  (a broker round-trip) per message, so publication is not a per-event gate on the output ring; the
+  client writer flushes asynchronously. Subjects, payload shapes, and the at-most-once contract are
+  unchanged (FR-09B21, FR-09B46).
 - Numeric representation: prices/quantities are `long` fixed-point and securities `int securityId` on
   the hot path; `BigDecimal`/`String` only at the edges, with penny parity locked to `009` (FR-09B05).
 - Order ID and timestamp derivation: from the global sequence and event-carried time rather than

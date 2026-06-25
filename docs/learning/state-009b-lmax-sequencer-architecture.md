@@ -36,7 +36,7 @@ title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
 - **Added:** Asynchronous request/response event pattern for BLP cache misses (e.g.
 - **Added:** Event sourcing operability: snapshot + journal replay recovery, JIT warm-up replay before going
 - **Added:** Replication and warm-standby failover: follower BLPs consume the identical replicated input stream in
-- **Added:** No-GC conformance gate (cross-cutting): Epsilon-GC allocation gate, banned-API static check,
+- **Added:** Optional batch ingress: `POST /orders/batch` accepts an array of new orders and sequences the whole
 
 ## Run This State
 

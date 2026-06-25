@@ -1,9 +1,44 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
-Date: 2026-06-09 (updated 2026-06-11, twice). Scope of what
+Date: 2026-06-09 (updated 2026-06-11, twice; 2026-06-25 throughput refinements). Scope of what
 `generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to
 later milestones. Verified by compiling and running the module's test suite (15 tests green)
 plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
+
+## Throughput refinements: batch ingress + decoupled projector + write-path (2026-06-25)
+
+Output-side throughput work after the A/B benchmark. Each change removed a *synchronous per-item I/O*
+gate on the LMAX rings; all land in `generation/runtime-overrides/order-matcher/` (overlay-owned, so
+they supersede the captured patchset, which is intentionally not re-derived — same precedent as the
+Grafana/throughput dashboard overrides).
+
+- **Batch ingress (FR-09B43)** — new `POST /orders/batch` (`OrderController` + `OrderMatcherService`
+  + `LmaxEngine.executeNewOrderBatch`): claims a contiguous run of input-ring slots via `tryNext(n)`,
+  registers all acks, fills, publishes once with `publish(lo, hi)`, and blocks once for all acks.
+  Amortizes the request/reply-per-order gateway cost. Additive; the per-order 009 endpoints are unchanged.
+- **Decoupled projector (FR-09B44)** — `ProjectorHandler` is now an enqueue-only ring consumer feeding a
+  bounded `LinkedBlockingQueue` (`output.projector.queue-capacity`, default 1,000,000) drained by a
+  `projector-drain` thread; `start()`/`stop()` wired in `LmaxEngine`. New gauges/counter
+  `traderx_projector_queue_depth` / `_queue_capacity` / `_enqueue_blocks_total`; `projectedSeq` watermark
+  advances only on a committed flush; queue-full = counted enqueue backpressure (no row loss). Realizes
+  ADR-016 decision 6 ("a slow/down DB never stalls matching") up to the queue, not just the ring.
+- **Insert-only batched writes (FR-09B45)** — trades persist via one multi-row
+  `INSERT … ON CONFLICT (id) DO NOTHING` per flush through a `JdbcTemplate` (no per-row `merge` SELECT;
+  replay-idempotent). `application.properties` enables Hibernate `jdbc.batch_size`/`order_inserts`/
+  `order_updates` + `reWriteBatchedInserts` for the order/position writes. Schema unchanged (NFR-09B11).
+- **Async NATS publish (FR-09B46)** — `NatsJSONPublisher.publish` drops the per-message
+  `connection.flush()` (broker round-trip); the client writer flushes asynchronously. Order-matcher's own
+  copy only; subjects/payloads unchanged.
+
+Measured (demo profile, single laptop; fill-counter delta = sustained, in-process gauge = burst): sustained
+booking ~1,060/s → ~2,045/s → ~3,720/s across the three output-side fixes; the in-memory engine bursts to
+~34k/s until the projector queue fills, then throttles to the DB drain. Remaining sustained ceiling is the
+order/position `merge` per-row SELECT (next step: `ON CONFLICT … DO UPDATE` + per-flush order-row dedup).
+Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch-experiment.mjs`,
+`scripts/bench/results/` (repo-root dev tooling, not generated runtime). Overlay files touched:
+`lmax/ProjectorHandler.java`, `lmax/LmaxEngine.java`, `service/OrderMatcherService.java`,
+`controller/OrderController.java` (new), `messaging/nats/NatsJSONPublisher.java` (new),
+`resources/application.properties`.
 
 ## Hot-path optimization + allocation gate pass (2026-06-11, second update)
 
