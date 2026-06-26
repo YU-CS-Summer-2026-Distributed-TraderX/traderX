@@ -1,0 +1,113 @@
+plugins {
+  id 'java'
+  id 'org.springframework.boot' version '3.5.14'
+  id 'io.spring.dependency-management' version '1.1.7'
+}
+
+ext['tomcat.version'] = '10.1.55'
+
+group = 'finos.traderx.order-matcher-specfirst'
+version = '0.1.0'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_21
+}
+
+// In-place development of this overlay (specs/.../runtime-overrides): the
+// parent-state (009) sources live in .parent-src so the module compiles and
+// the IDE resolves imports without generating. Generated trees merge the
+// parent files directly into src/ and have no .parent-src; Gradle ignores
+// missing source dirs, so this is a no-op there.
+sourceSets {
+  main {
+    java {
+      srcDir '.parent-src/main/java'
+    }
+  }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+  implementation 'org.springframework.boot:spring-boot-starter-web'
+  implementation 'org.springframework.boot:spring-boot-starter-actuator'
+  runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+  runtimeOnly 'org.postgresql:postgresql:42.7.11'
+  implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:2.8.17'
+  implementation('org.json:json:20240303') {
+    because 'previous versions are affected by multiple CVE'
+  }
+  implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.3.20'
+  implementation('io.socket:socket.io-client:2.1.2') {
+    exclude group: 'org.json', module: 'json'
+  }
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  implementation ('ch.qos.logback:logback-core:1.5.32') {
+    because 'version brought in by spring boot 3.5.14 affected by CVE-2024-12798'
+  }
+  implementation 'ch.qos.logback:logback-classic:1.5.32'
+  implementation 'org.apache.logging.log4j:log4j-api:2.25.4'
+  implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.25.4'
+  implementation 'org.apache.commons:commons-lang3:3.20.0'
+  implementation 'io.nats:jnats:2.20.5'
+
+  // LMAX hot path (state 009b): ring buffers + latency histograms.
+  implementation 'com.lmax:disruptor:4.0.0'
+  implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
+
+  testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  testRuntimeOnly 'com.h2database:h2'
+}
+
+tasks.withType(Test).configureEach {
+  useJUnitPlatform()
+}
+
+// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
+// gate under Epsilon GC — a no-op collector on a small fixed pre-touched heap, so any
+// steady-state allocation exhausts the heap and fails the run. The same test also runs
+// in the regular `test` task under the default collector, where it asserts exact
+// zero-byte deltas per hot-path thread via ThreadMXBean. Invoked by
+// pipeline/validate-no-gc-conformance.sh (SC-NGC-01).
+tasks.register('noGcTest', Test) {
+  description = 'Hot-path allocation gate under Epsilon GC (zero steady-state allocation, NGC-02).'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+  }
+  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
+  jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
+          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
+}
+
+def benchProp = { String sysName, String projectName, String defaultValue ->
+  System.getProperty(sysName) ?: project.findProperty(projectName)?.toString() ?: defaultValue
+}
+
+tasks.register('blpBenchmark', JavaExec) {
+  description = 'Pure in-process benchmark for the LMAX input-ring -> BLP -> output-ring path (no HTTP, JSON, NATS, DB, or projector).'
+  group = 'verification'
+  dependsOn testClasses
+  classpath = sourceSets.test.runtimeClasspath
+  mainClass = 'finos.traderx.ordermatcher.lmax.InProcessBlpBenchmark'
+  workingDir = projectDir
+  jvmArgs '-Xms1g', '-Xmx1g'
+  systemProperty 'blp.bench.warmupOrders', benchProp('blp.bench.warmupOrders', 'blpWarmupOrders', '250000')
+  systemProperty 'blp.bench.measureOrders', benchProp('blp.bench.measureOrders', 'blpMeasureOrders', '2000000')
+  systemProperty 'blp.bench.securities', benchProp('blp.bench.securities', 'blpSecurities', '4')
+  systemProperty 'blp.bench.inputRingSize', benchProp('blp.bench.inputRingSize', 'blpInputRingSize', '65536')
+  systemProperty 'blp.bench.outputRingSize', benchProp('blp.bench.outputRingSize', 'blpOutputRingSize', '65536')
+  systemProperty 'blp.bench.out', System.getProperty('blp.bench.out')
+      ?: project.findProperty('blpOut')?.toString()
+      ?: "${project.buildDir}/reports/benchmarks/blp-benchmark-latest.txt"
+}
+
+configurations.configureEach {
+  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
