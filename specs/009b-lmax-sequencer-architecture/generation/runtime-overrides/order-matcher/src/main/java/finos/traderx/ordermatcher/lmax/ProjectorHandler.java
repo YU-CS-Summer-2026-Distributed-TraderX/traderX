@@ -6,16 +6,17 @@ import finos.traderx.ordermatcher.model.PositionID;
 import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.model.TradeSide;
 import finos.traderx.ordermatcher.model.TradeState;
-import finos.traderx.ordermatcher.repository.OrderRepository;
-import finos.traderx.ordermatcher.repository.PositionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.lmax.disruptor.EventHandler;
 
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,9 +58,8 @@ import java.util.concurrent.atomic.LongAdder;
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
 
-    private final OrderRepository orderRepository;
-    private final PositionRepository positionRepository;
     private final JdbcTemplate jdbcTemplate;
+    private final TransactionTemplate txTemplate;
     private final SymbolTable symbols;
     private final int batchSize;
     private final HotPathMetrics metrics;
@@ -74,7 +74,11 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private volatile boolean running;
 
     // Drain-thread-only state (single consumer): the in-flight flush batch.
-    private final List<OrderRecord> orderBuffer = new ArrayList<>();
+    // Orders are deduped by orderId (last write wins): one order can transition
+    // NEW->PARTIALLY_FILLED->FILLED inside a single flush window, and only its latest snapshot needs
+    // to reach the DB. One row per key also guarantees the multi-row upsert never carries a duplicate
+    // key within one INSERT (mirrors how positionBuffer already dedupes by PositionID).
+    private final Map<String, OrderRecord> orderBuffer = new LinkedHashMap<>();
     private final List<Trade> tradeBuffer = new ArrayList<>();
     private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
     private long pendingSeq = -1;
@@ -85,12 +89,12 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private volatile long tradesPersisted;      // trades actually committed (real DB booking rate)
     private final LongAdder enqueueBlocks = new LongAdder(); // times the bounded queue was full (ring stalled)
 
-    public ProjectorHandler(OrderRepository orderRepository, PositionRepository positionRepository,
-                            JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
+    public ProjectorHandler(JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
                             int queueCapacity, HotPathMetrics metrics) {
-        this.orderRepository = orderRepository;
-        this.positionRepository = positionRepository;
         this.jdbcTemplate = jdbcTemplate;
+        // One transaction manager over the same DataSource the JdbcTemplate uses, so the whole flush
+        // (orders + trades + positions) runs on a single connection and commits exactly once.
+        this.txTemplate = new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource()));
         this.symbols = symbols;
         this.batchSize = Math.max(1, batchSize);
         this.queueCapacity = Math.max(1024, queueCapacity);
@@ -206,7 +210,8 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     private void route(ProjectionItem it) {
         if (it.order() != null) {
-            orderBuffer.add(it.order());
+            // Dedupe by orderId within the flush: only the latest order snapshot is written.
+            orderBuffer.put(it.order().getOrderId(), it.order());
         } else if (it.trade() != null) {
             tradeBuffer.add(it.trade());
         } else if (it.position() != null) {
@@ -228,33 +233,43 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     /** Returns true on a successful commit (buffers cleared, watermark advanced); false leaves them to retry. */
     private boolean flush(long sequence) {
+        int rows = bufferedCount();
+        int trades = tradeBuffer.size();
         try {
-            int rows = bufferedCount();
-            if (!orderBuffer.isEmpty()) {
-                orderRepository.saveAll(orderBuffer);
-                orderBuffer.clear();
-            }
-            if (!tradeBuffer.isEmpty()) {
-                insertTradesBatch(tradeBuffer);   // insert-only multi-row upsert: no per-row merge SELECT
-                tradesPersisted += tradeBuffer.size();   // count AFTER a successful commit = real booking rate
-                tradeBuffer.clear();
-            }
-            if (!positionBuffer.isEmpty()) {
-                positionRepository.saveAll(positionBuffer.values());
-                positionBuffer.clear();
-            }
-            metrics.recordProjectorBatch(rows);
-            projectedSeq = sequence;   // durable watermark advances only after the commit succeeds
-            pendingSeq = -1;
-            return true;
+            // One transaction for the whole flush: orders + trades + positions for this sequence
+            // range commit as a single DB-visible unit on one connection, so the read-model always
+            // reflects a consistent PREFIX of the sequenced stream (never trades without the matching
+            // positions). All three are blind multi-row upserts -> no per-row merge SELECT.
+            txTemplate.executeWithoutResult(status -> {
+                if (!orderBuffer.isEmpty()) {
+                    insertOrdersBatch(orderBuffer.values());
+                }
+                if (!tradeBuffer.isEmpty()) {
+                    insertTradesBatch(tradeBuffer);
+                }
+                if (!positionBuffer.isEmpty()) {
+                    insertPositionsBatch(positionBuffer.values());
+                }
+            });
         } catch (Exception ex) {
-            // DB unavailable: keep the rows buffered and let the caller back off and retry
-            // (FR-09B24). Memory stays bounded because we stop draining the queue while down, and
-            // the queue itself is bounded (-> on-ring backpressure). Nothing is dropped.
+            // Transaction rolled back: nothing was written. Keep every buffer intact and let the
+            // caller back off and retry the same rows (FR-09B24). Memory stays bounded because we
+            // stop draining the queue while down, and the queue itself is bounded (-> on-ring
+            // backpressure). Nothing is dropped; the upserts make the retry idempotent.
             log.warn("Read-model projection failed at seq {} ({} rows buffered, {} queued): {}",
                 sequence, bufferedCount(), queue.size(), ex.getMessage());
             return false;
         }
+        // Commit succeeded: count trades (real booking rate), clear the buffers, advance the durable
+        // watermark — every event <= this sequence is now committed.
+        tradesPersisted += trades;
+        orderBuffer.clear();
+        tradeBuffer.clear();
+        positionBuffer.clear();
+        metrics.recordProjectorBatch(rows);
+        projectedSeq = sequence;
+        pendingSeq = -1;
+        return true;
     }
 
     // Option 2 — trades are append-only, so skip JPA merge's per-row SELECT entirely: one multi-row
@@ -286,6 +301,74 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime());
             }
             sql.append(" ON DUPLICATE KEY UPDATE id=id");
+            jdbcTemplate.update(sql.toString(), args);
+        }
+    }
+
+    // Positions and orders are absolute state snapshots keyed by their PK, so each read-model write
+    // is a blind multi-row upsert: overwrite the row with the event's values and never SELECT it
+    // first (what JPA merge did per row). Each buffer is already deduped to one row per key (see
+    // route()), so a key never repeats inside one statement. MariaDB's VALUES(col) references the
+    // would-be-inserted value in the ON DUPLICATE KEY UPDATE clause.
+    private static final int UPSERT_CHUNK = 500;
+
+    private static final String POSITION_COLS = "(accountid, security, quantity, averagecostbasis, updated)";
+
+    private void insertPositionsBatch(Collection<Position> positionsColl) {
+        List<Position> positions = new ArrayList<>(positionsColl);
+        for (int start = 0; start < positions.size(); start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, positions.size());
+            StringBuilder sql = new StringBuilder(96 + (end - start) * 14)
+                .append("INSERT INTO positions ").append(POSITION_COLS).append(" VALUES ");
+            Object[] args = new Object[(end - start) * 5];
+            int a = 0;
+            for (int i = start; i < end; i++) {
+                sql.append(i > start ? ",(?,?,?,?,?)" : "(?,?,?,?,?)");
+                Position p = positions.get(i);
+                args[a++] = p.getAccountId();
+                args[a++] = p.getSecurity();
+                args[a++] = p.getQuantity();
+                args[a++] = p.getAverageCostBasis();
+                args[a++] = p.getUpdated() == null ? null : new Timestamp(p.getUpdated().getTime());
+            }
+            sql.append(" ON DUPLICATE KEY UPDATE quantity=VALUES(quantity),"
+                + " averagecostbasis=VALUES(averagecostbasis), updated=VALUES(updated)");
+            jdbcTemplate.update(sql.toString(), args);
+        }
+    }
+
+    // Only the mutable columns are refreshed on conflict; orderid (PK), accountid, security, side,
+    // quantity and createdat are fixed at creation and stay out of the UPDATE clause.
+    private static final String ORDER_COLS = "(orderid, accountid, security, side, quantity,"
+        + " remainingquantity, limitprice, status, createdat, updatedat, lastexecutionprice, lastfillquantity)";
+
+    private void insertOrdersBatch(Collection<OrderRecord> ordersColl) {
+        List<OrderRecord> orders = new ArrayList<>(ordersColl);
+        for (int start = 0; start < orders.size(); start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, orders.size());
+            StringBuilder sql = new StringBuilder(176 + (end - start) * 28)
+                .append("INSERT INTO orderbook ").append(ORDER_COLS).append(" VALUES ");
+            Object[] args = new Object[(end - start) * 12];
+            int a = 0;
+            for (int i = start; i < end; i++) {
+                sql.append(i > start ? ",(?,?,?,?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?,?,?,?)");
+                OrderRecord o = orders.get(i);
+                args[a++] = o.getOrderId();
+                args[a++] = o.getAccountId();
+                args[a++] = o.getSecurity();
+                args[a++] = o.getSide() == null ? null : o.getSide().name();
+                args[a++] = o.getQuantity();
+                args[a++] = o.getRemainingQuantity();
+                args[a++] = o.getLimitPrice();
+                args[a++] = o.getStatus() == null ? null : o.getStatus().name();
+                args[a++] = o.getCreatedAt() == null ? null : new Timestamp(o.getCreatedAt().toEpochMilli());
+                args[a++] = o.getUpdatedAt() == null ? null : new Timestamp(o.getUpdatedAt().toEpochMilli());
+                args[a++] = o.getLastExecutionPrice();
+                args[a++] = o.getLastFillQuantity();
+            }
+            sql.append(" ON DUPLICATE KEY UPDATE status=VALUES(status),"
+                + " remainingquantity=VALUES(remainingquantity), updatedat=VALUES(updatedat),"
+                + " lastexecutionprice=VALUES(lastexecutionprice), lastfillquantity=VALUES(lastfillquantity)");
             jdbcTemplate.update(sql.toString(), args);
         }
     }
