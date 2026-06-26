@@ -86,13 +86,13 @@ wait_for_postgres() {
   local i
   for ((i=1; i<=attempts; i++)); do
     if docker compose -f "${COMPOSE_FILE}" --project-name "${COMPOSE_PROJECT_NAME}" exec -T database \
-      pg_isready -U traderx -d traderx >/dev/null 2>&1; then
-      echo "[ready] postgres database"
+      sh -c 'if command -v pg_isready >/dev/null 2>&1; then pg_isready -U traderx -d traderx; else mariadb-admin ping -h 127.0.0.1 -utraderx -ptraderx --silent; fi' >/dev/null 2>&1; then
+      echo "[ready] database"
       return 0
     fi
     sleep 2
   done
-  echo "[error] timeout waiting for postgres readiness"
+  echo "[error] timeout waiting for database readiness"
   return 1
 }
 

@@ -259,7 +259,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     // Option 2 — trades are append-only, so skip JPA merge's per-row SELECT entirely: one multi-row
     // INSERT per chunk (a single DB round-trip), made idempotent for journal replay with
-    // ON CONFLICT (id) DO NOTHING. The whole flush stays one DB-visible unit alongside the batched
+    // ON DUPLICATE KEY UPDATE id=id (a no-op on the PK). The whole flush stays one DB-visible unit alongside the batched
     // order/position writes (option 1).
     private static final int TRADE_INSERT_CHUNK = 500;
     private static final String TRADE_COLS =
@@ -285,7 +285,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = t.getCreated() == null ? null : new Timestamp(t.getCreated().getTime());
                 args[a++] = t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime());
             }
-            sql.append(" ON CONFLICT (id) DO NOTHING");
+            sql.append(" ON DUPLICATE KEY UPDATE id=id");
             jdbcTemplate.update(sql.toString(), args);
         }
     }
