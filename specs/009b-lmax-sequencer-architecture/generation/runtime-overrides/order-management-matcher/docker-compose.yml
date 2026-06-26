@@ -7,7 +7,7 @@ services:
     # (Accounts, Trades, OrderBook, and @Table("TRADES") vs "select ... from Trades").
     # Postgres folded unquoted identifiers to lowercase; MariaDB on Linux is case-sensitive,
     # so make table-name resolution case-insensitive to keep every consumer on one table.
-    command: ["--lower-case-table-names=1"]
+    command: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
     environment:
       MARIADB_DATABASE: "traderx"
       MARIADB_USER: "traderx"
