@@ -156,7 +156,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Output ring first: the BLP needs its publisher before it can run.
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, positionRepository, jdbcTemplate, symbols,
+        projector = new ProjectorHandler(orderRepository, tradeRepository, positionRepository, jdbcTemplate, symbols,
             projectorBatchSize, projectorQueueCapacity, metrics);
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);

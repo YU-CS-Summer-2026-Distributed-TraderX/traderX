@@ -21,26 +21,54 @@ public final class HotPathMetrics {
     // Incremented only when a producer finds the input ring full (degraded mode, off the
     // contention-free claim path), so the adder never touches the steady-state hot path.
     private final LongAdder backpressureWaits = new LongAdder();
+    private final boolean enabled;
+
+    public HotPathMetrics() {
+        this(true);
+    }
+
+    private HotPathMetrics(boolean enabled) {
+        this.enabled = enabled;
+    }
+
+    public static HotPathMetrics noop() {
+        return new HotPathMetrics(false);
+    }
 
     public void recordJournalLatency(long nanos) {
+        if (!enabled) {
+            return;
+        }
         record(journalNs, nanos);
     }
 
     public void recordBlpEventLatency(long nanos) {
+        if (!enabled) {
+            return;
+        }
         record(blpEventNs, nanos);
     }
 
     /** Order-eligible-to-fill latency: state 009's match-latency family, now a real measurement. */
     public void recordMatchLatency(long nanos) {
+        if (!enabled) {
+            return;
+        }
         record(matchNs, nanos);
     }
 
     public void recordEgressLatency(long nanos) {
+        if (!enabled) {
+            return;
+        }
         record(egressNs, nanos);
     }
 
     /** Rows written per successful projector flush (traderx_projector_batch_size). */
     public void recordProjectorBatch(long rows) {
+        if (!enabled) {
+            return;
+        }
         if (rows < 0) {
             return;
         }
@@ -49,6 +77,9 @@ public final class HotPathMetrics {
 
     /** A producer found the input ring full and waited (FR-09B07 backpressure). */
     public void recordBackpressureWait() {
+        if (!enabled) {
+            return;
+        }
         backpressureWaits.increment();
     }
 

@@ -2,6 +2,8 @@ package finos.traderx.ordermatcher.lmax;
 
 import com.lmax.disruptor.EventHandler;
 import finos.traderx.ordermatcher.model.OrderRecord;
+import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.ordermatcher.model.OrderStatus;
 import finos.traderx.ordermatcher.model.Position;
 import finos.traderx.ordermatcher.model.PositionID;
 import finos.traderx.ordermatcher.model.Trade;
@@ -26,15 +28,15 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Async read-model projector (FR-09B22..FR-09B24), decoupled from the output-ring
- * consumer sequence so database latency becomes queue depth instead of a hard gate on
- * the BLP.
+ * Async read-model projector that keeps DB I/O off the output-ring consumer thread.
  */
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
     private static final int TRADE_INSERT_CHUNK = 500;
     private static final String TRADE_COLS =
         "(id, accountid, security, side, state, quantity, price, created, updated)";
+    private static final OrderSide[] ORDER_SIDES = OrderSide.values();
+    private static final OrderStatus[] ORDER_STATUSES = OrderStatus.values();
 
     private final OrderRepository orderRepository;
     private final TradeRepository tradeRepository;
@@ -46,22 +48,23 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private final HotPathMetrics metrics;
     private final BlockingQueue<ProjectionItem> queue;
     private final Thread drainThread;
-    private final Map<Integer, OrderRecord> orderBuffer = new LinkedHashMap<>();
-    private final Map<Long, Trade> tradeBuffer = new LinkedHashMap<>();
+    private final Map<String, OrderRecord> orderBuffer = new LinkedHashMap<>();
+    private final Map<String, Trade> tradeBuffer = new LinkedHashMap<>();
     private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
+    private final OutputValueCache values = new OutputValueCache();
     private final LongAdder enqueueBlocks = new LongAdder();
 
-    private volatile long projectedSeq = -1;
-    private volatile long pendingRows;
-    private volatile long tradesPersisted;
     private volatile boolean running;
     private volatile boolean dbDown;
-    private long pendingSeq = -1;
+    private volatile long projectedSeq = -1;
+    private volatile long pendingSeq = -1;
+    private volatile long pendingRows;
+    private volatile long tradesPersisted;
 
     public ProjectorHandler(OrderRepository orderRepository, TradeRepository tradeRepository,
                             PositionRepository positionRepository, JdbcTemplate jdbcTemplate,
-                            SymbolTable symbols, int batchSize,
-                            int queueCapacity, HotPathMetrics metrics) {
+                            SymbolTable symbols, int batchSize, int queueCapacity,
+                            HotPathMetrics metrics) {
         this.orderRepository = orderRepository;
         this.tradeRepository = tradeRepository;
         this.positionRepository = positionRepository;
@@ -75,7 +78,16 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         this.drainThread.setDaemon(true);
     }
 
+    public ProjectorHandler(OrderRepository orderRepository, PositionRepository positionRepository,
+                            JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
+                            HotPathMetrics metrics) {
+        this(orderRepository, null, positionRepository, jdbcTemplate, symbols, batchSize, 1024, metrics);
+    }
+
     public void start() {
+        if (running) {
+            return;
+        }
         running = true;
         drainThread.start();
     }
@@ -91,8 +103,8 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     }
 
     @Override
-    public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        ProjectionItem item = toItem(e, sequence);
+    public void onEvent(OutputEvent event, long sequence, boolean endOfBatch) {
+        ProjectionItem item = toItem(event, sequence);
         if (item == null) {
             return;
         }
@@ -102,52 +114,47 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 queue.put(item);
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
+                return;
             }
         }
         pendingRows = queue.size() + bufferedCount();
     }
 
-    private ProjectionItem toItem(OutputEvent e, long sequence) {
-        return switch (e.kind) {
+    public long projectedSeq() {
+        return projectedSeq;
+    }
+
+    public long pendingRows() {
+        return pendingRows;
+    }
+
+    public long tradesPersisted() {
+        return tradesPersisted;
+    }
+
+    public long queueDepth() {
+        return queue.size();
+    }
+
+    public long queueCapacity() {
+        return queueCapacity;
+    }
+
+    public long enqueueBlocks() {
+        return enqueueBlocks.sum();
+    }
+
+    private ProjectionItem toItem(OutputEvent event, long sequence) {
+        return switch (event.kind) {
             case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
                  OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
-                 OutputEvent.KIND_ORDER_CANCELED ->
-                e.flags == 0 ? null : new ProjectionItem(sequence, e.orderRef,
-                    OrderSnapshot.fromEvent(e, symbols).toRecord(), null, null, null, null);
-            case OutputEvent.KIND_TRADE_BOOKED ->
-                new ProjectionItem(sequence, null, null, e.tradeSeq, toTrade(e), null, null);
-            case OutputEvent.KIND_POSITION_UPDATED -> {
-                Position position = toPosition(e);
-                yield new ProjectionItem(sequence, null, null, null, null,
-                    new PositionID(position.getAccountId(), position.getSecurity()), position);
-            }
+                 OutputEvent.KIND_ORDER_CANCELED -> event.flags == 0
+                    ? null
+                    : new ProjectionItem(sequence, toOrder(event), null, null);
+            case OutputEvent.KIND_TRADE_BOOKED -> new ProjectionItem(sequence, null, toTrade(event), null);
+            case OutputEvent.KIND_POSITION_UPDATED -> new ProjectionItem(sequence, null, null, toPosition(event));
             default -> null;
         };
-    }
-
-    private Trade toTrade(OutputEvent e) {
-        Trade trade = new Trade();
-        trade.setId(OrderSnapshot.tradeIdFor(e.tradeSeq));
-        trade.setAccountId(e.accountId);
-        trade.setSecurity(symbols.tickerFor(e.securityId));
-        trade.setSide(e.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
-        trade.setQuantity(e.tradeQty);
-        trade.setPrice(Px.toDecimalOrZero(e.tradePx));
-        trade.setState(TradeState.Settled);
-        Date when = new Date(e.updatedAtMillis);
-        trade.setCreated(when);
-        trade.setUpdated(when);
-        return trade;
-    }
-
-    private Position toPosition(OutputEvent e) {
-        Position position = new Position();
-        position.setAccountId(e.accountId);
-        position.setSecurity(symbols.tickerFor(e.securityId));
-        position.setQuantity(e.positionQty);
-        position.setAverageCostBasis(Px.toDecimalOrZero(e.positionAvgCostTicks));
-        position.setUpdated(new Date(e.updatedAtMillis));
-        return position;
     }
 
     private void drainLoop() {
@@ -194,23 +201,16 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     private void route(ProjectionItem item) {
         if (item.order() != null) {
-            orderBuffer.put(item.orderRef(), item.order());
+            orderBuffer.put(item.order().getOrderId(), item.order());
         } else if (item.trade() != null) {
-            tradeBuffer.put(item.tradeSeq(), item.trade());
+            tradeBuffer.put(item.trade().getId(), item.trade());
         } else if (item.position() != null) {
-            positionBuffer.put(item.positionKey(), item.position());
+            positionBuffer.put(new PositionID(item.position().getAccountId(), item.position().getSecurity()),
+                item.position());
         }
         if (item.sequence() > pendingSeq) {
             pendingSeq = item.sequence();
         }
-    }
-
-    private int bufferedCount() {
-        return orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
-    }
-
-    private boolean hasBuffered() {
-        return bufferedCount() > 0;
     }
 
     private boolean flush(long sequence) {
@@ -233,6 +233,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
             metrics.recordProjectorBatch(rows);
             projectedSeq = sequence;
             pendingSeq = -1;
+            pendingRows = queue.size();
             return true;
         } catch (Exception ex) {
             log.warn("Read-model projection failed at seq {} ({} rows buffered, {} queued): {}",
@@ -244,60 +245,89 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private void insertTradesBatch(List<Trade> trades) {
         for (int start = 0; start < trades.size(); start += TRADE_INSERT_CHUNK) {
             int end = Math.min(start + TRADE_INSERT_CHUNK, trades.size());
-            StringBuilder sql = new StringBuilder(64 + (end - start) * 20)
-                .append("INSERT INTO trades ").append(TRADE_COLS).append(" VALUES ");
-            Object[] args = new Object[(end - start) * 9];
-            int arg = 0;
-            for (int i = start; i < end; i++) {
-                sql.append(i > start ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
-                Trade trade = trades.get(i);
-                args[arg++] = trade.getId();
-                args[arg++] = trade.getAccountId();
-                args[arg++] = trade.getSecurity();
-                args[arg++] = trade.getSide() == null ? null : trade.getSide().name();
-                args[arg++] = trade.getState() == null ? null : trade.getState().name();
-                args[arg++] = trade.getQuantity();
-                args[arg++] = trade.getPrice();
-                args[arg++] = trade.getCreated() == null ? null : new Timestamp(trade.getCreated().getTime());
-                args[arg++] = trade.getUpdated() == null ? null : new Timestamp(trade.getUpdated().getTime());
-            }
-            sql.append(" ON CONFLICT (id) DO NOTHING");
+            List<Trade> chunk = trades.subList(start, end);
             try {
+                StringBuilder sql = new StringBuilder(64 + chunk.size() * 20)
+                    .append("INSERT INTO trades ").append(TRADE_COLS).append(" VALUES ");
+                Object[] args = new Object[chunk.size() * 9];
+                int a = 0;
+                for (int i = 0; i < chunk.size(); i++) {
+                    if (i > 0) {
+                        sql.append(',');
+                    }
+                    sql.append("(?,?,?,?,?,?,?,?,?)");
+                    Trade trade = chunk.get(i);
+                    args[a++] = trade.getId();
+                    args[a++] = trade.getAccountId();
+                    args[a++] = trade.getSecurity();
+                    args[a++] = trade.getSide() == null ? null : trade.getSide().name();
+                    args[a++] = trade.getState() == null ? null : trade.getState().name();
+                    args[a++] = trade.getQuantity();
+                    args[a++] = trade.getPrice();
+                    args[a++] = trade.getCreated() == null ? null : new Timestamp(trade.getCreated().getTime());
+                    args[a++] = trade.getUpdated() == null ? null : new Timestamp(trade.getUpdated().getTime());
+                }
+                sql.append(" ON CONFLICT (id) DO NOTHING");
                 jdbcTemplate.update(sql.toString(), args);
-            } catch (Exception ex) {
-                // The generated test profile uses H2 in PostgreSQL mode; keep the Postgres
-                // fast path for real runs but fall back so the verification suite remains valid.
-                tradeRepository.saveAll(trades.subList(start, end));
+            } catch (RuntimeException ex) {
+                if (tradeRepository == null) {
+                    throw ex;
+                }
+                tradeRepository.saveAll(chunk);
             }
         }
     }
 
-    public long projectedSeq() {
-        return projectedSeq;
+    private int bufferedCount() {
+        return orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
     }
 
-    public long pendingRows() {
-        return pendingRows;
+    private boolean hasBuffered() {
+        return bufferedCount() > 0;
     }
 
-    public long queueDepth() {
-        return queue.size();
+    private OrderRecord toOrder(OutputEvent event) {
+        OrderRecord record = new OrderRecord();
+        record.setOrderId(values.orderIdFor(event.orderRef));
+        record.setAccountId(values.integerFor(event.accountId));
+        record.setSecurity(symbols.tickerFor(event.securityId));
+        record.setSide(ORDER_SIDES[event.side]);
+        record.setQuantity(values.integerFor(event.quantity));
+        record.setRemainingQuantity(values.integerFor(event.remainingQty));
+        record.setLimitPrice(values.priceFor(event.limitPx));
+        record.setStatus(ORDER_STATUSES[event.status]);
+        record.setCreatedAt(values.instantFor(event.createdAtMillis));
+        record.setUpdatedAt(values.instantFor(event.updatedAtMillis));
+        record.setLastExecutionPrice(values.priceFor(event.lastExecPx));
+        record.setLastFillQuantity(event.lastFillQty == 0 ? null : values.integerFor(event.lastFillQty));
+        return record;
     }
 
-    public long queueCapacity() {
-        return queueCapacity;
+    private Trade toTrade(OutputEvent event) {
+        Trade trade = new Trade();
+        trade.setId(values.tradeIdFor(event.tradeSeq));
+        trade.setAccountId(values.integerFor(event.accountId));
+        trade.setSecurity(symbols.tickerFor(event.securityId));
+        trade.setSide(event.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
+        trade.setState(TradeState.Settled);
+        trade.setQuantity(values.integerFor(event.tradeQty));
+        trade.setPreScaledPrice(values.priceOrZeroFor(event.tradePx));
+        Date when = new Date(event.updatedAtMillis);
+        trade.setCreated(when);
+        trade.setUpdated(when);
+        return trade;
     }
 
-    public long enqueueBlocks() {
-        return enqueueBlocks.sum();
+    private Position toPosition(OutputEvent event) {
+        Position position = new Position();
+        position.setAccountId(values.integerFor(event.accountId));
+        position.setSecurity(symbols.tickerFor(event.securityId));
+        position.setQuantity(values.integerFor(event.positionQty));
+        position.setPreScaledAverageCostBasis(values.priceOrZeroFor(event.positionAvgCostTicks));
+        position.setUpdated(new Date(event.updatedAtMillis));
+        return position;
     }
 
-    public long tradesPersisted() {
-        return tradesPersisted;
-    }
-
-    private record ProjectionItem(long sequence, Integer orderRef, OrderRecord order,
-                                  Long tradeSeq, Trade trade, PositionID positionKey,
-                                  Position position) {
+    private record ProjectionItem(long sequence, OrderRecord order, Trade trade, Position position) {
     }
 }

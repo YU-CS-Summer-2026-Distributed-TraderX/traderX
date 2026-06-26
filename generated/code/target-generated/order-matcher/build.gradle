@@ -64,6 +64,7 @@ dependencies {
 
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+  systemProperty 'allocationAttribution', System.getProperty('allocationAttribution', 'false')
 }
 
 // No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
@@ -79,32 +80,52 @@ tasks.register('noGcTest', Test) {
   classpath = sourceSets.test.runtimeClasspath
   filter {
     includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputHandlerAllocationGateTest'
   }
   systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
   jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
-          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
+          '-Xms512m', '-Xmx512m', '-XX:+AlwaysPreTouch'
 }
 
-def benchProp = { String sysName, String projectName, String defaultValue ->
-  System.getProperty(sysName) ?: project.findProperty(projectName)?.toString() ?: defaultValue
-}
-
-tasks.register('blpBenchmark', JavaExec) {
-  description = 'Pure in-process benchmark for the LMAX input-ring -> BLP -> output-ring path (no HTTP, JSON, NATS, DB, or projector).'
+tasks.register('outputLatencyBenchmark', Test) {
+  description = 'Local output-handler latency microbenchmark for ODL-01/ODL-05.'
   group = 'verification'
-  dependsOn testClasses
+  testClassesDirs = sourceSets.test.output.classesDirs
   classpath = sourceSets.test.runtimeClasspath
-  mainClass = 'finos.traderx.ordermatcher.lmax.InProcessBlpBenchmark'
-  workingDir = projectDir
-  jvmArgs '-Xms1g', '-Xmx1g'
-  systemProperty 'blp.bench.warmupOrders', benchProp('blp.bench.warmupOrders', 'blpWarmupOrders', '250000')
-  systemProperty 'blp.bench.measureOrders', benchProp('blp.bench.measureOrders', 'blpMeasureOrders', '2000000')
-  systemProperty 'blp.bench.securities', benchProp('blp.bench.securities', 'blpSecurities', '4')
-  systemProperty 'blp.bench.inputRingSize', benchProp('blp.bench.inputRingSize', 'blpInputRingSize', '65536')
-  systemProperty 'blp.bench.outputRingSize', benchProp('blp.bench.outputRingSize', 'blpOutputRingSize', '65536')
-  systemProperty 'blp.bench.out', System.getProperty('blp.bench.out')
-      ?: project.findProperty('blpOut')?.toString()
-      ?: "${project.buildDir}/reports/benchmarks/blp-benchmark-latest.txt"
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputHandlerLatencyBenchmarkTest'
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.LmaxEndToEndLatencyBenchmarkTest'
+  }
+  systemProperty 'outputLatencyBenchmark', 'true'
+  systemProperty 'outputLatencyBenchmark.iterations', System.getProperty('outputLatencyBenchmark.iterations', '200000')
+  systemProperty 'endToEndLatencyBenchmark.iterations', System.getProperty('endToEndLatencyBenchmark.iterations', '1000')
+  jvmArgs '-Xms512m', '-Xmx512m'
+  testLogging {
+    showStandardStreams = true
+  }
+}
+
+tasks.register('outputTopologyBenchmark', Test) {
+  description = 'Compare direct output-ring consumers with the synchronized external-edge worker.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.OutputTopologyBenchmarkTest'
+  }
+  systemProperty 'outputTopologyBenchmark', 'true'
+  systemProperty 'outputTopologyBenchmark.fastEvents',
+      System.getProperty('outputTopologyBenchmark.fastEvents', '50000')
+  systemProperty 'outputTopologyBenchmark.delayedEvents',
+      System.getProperty('outputTopologyBenchmark.delayedEvents', '5000')
+  systemProperty 'outputTopologyBenchmark.stalledEvents',
+      System.getProperty('outputTopologyBenchmark.stalledEvents', '5000')
+  systemProperty 'outputTopologyBenchmark.ringSize',
+      System.getProperty('outputTopologyBenchmark.ringSize', '1024')
+  jvmArgs '-Xms512m', '-Xmx512m'
+  testLogging {
+    showStandardStreams = true
+  }
 }
 
 configurations.configureEach {

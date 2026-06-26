@@ -96,6 +96,11 @@ public class NatsJSONPublisher<T> implements Publisher<T>, InitializingBean {
       NatsEnvelope<T> envelope = new NatsEnvelope<>(topic, message, sender);
       byte[] payload = OBJECT_MAPPER.writeValueAsBytes(envelope);
       connection.publish(topic, payload);
+      // No per-publish flush: a synchronous flush() is a broker round-trip on every message, which
+      // on the LMAX output ring makes this consumer a per-item-I/O gate (~2k/s) exactly like the
+      // old inline projector. The jnats client buffers and its writer thread flushes asynchronously,
+      // so publishes are fire-and-forget here — correct for a best-effort notification bus (the
+      // durable record is the journal + DB, not NATS). Throughput experiment: see findings.
     } catch (Exception x) {
       throw new PubSubException("Unable to publish on topic " + topic, x);
     }

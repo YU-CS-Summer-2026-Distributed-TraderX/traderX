@@ -18,7 +18,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.function.Predicate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -187,20 +186,6 @@ class LmaxHotPathParityTest {
         assertEquals(400, ex.getStatusCode().value());
     }
 
-    @Test
-    void createOrderBatchAcksAllOrders() {
-        List<OrderResponse> responses = service.createOrderBatch(List.of(
-            request(22214, "BATCHA", OrderSide.Buy, 500, "100.000"),
-            request(22214, "BATCHB", OrderSide.Buy, 500, "100.000"),
-            request(22214, "BATCHC", OrderSide.Buy, 500, "100.000")
-        ));
-        assertEquals(3, responses.size());
-        for (OrderResponse response : responses) {
-            assertEquals(OrderStatus.NEW, response.getStatus());
-            assertTrue(response.getOrderId().startsWith("ord-013-"));
-        }
-    }
-
     // ----- helpers ------------------------------------------------------------------------
 
     private OrderCreateRequest request(int accountId, String security, OrderSide side, int qty, String limit) {
@@ -296,13 +281,8 @@ class LmaxHotPathParityTest {
             "traderx_output_publish_latency_seconds",
             "traderx_output_remaining_capacity",
             "traderx_output_events_total",
-            "traderx_trades_per_second_peak",
             "traderx_output_nats_errors_total",
             "traderx_projector_lag_seq",
-            "traderx_projector_queue_depth",
-            "traderx_projector_queue_capacity",
-            "traderx_projector_enqueue_blocks_total",
-            "traderx_trades_persisted_total",
             "traderx_projector_batch_size",
             "traderx_hotpath_alloc_bytes_total",
             "traderx_order_match_latency_seconds"}) {

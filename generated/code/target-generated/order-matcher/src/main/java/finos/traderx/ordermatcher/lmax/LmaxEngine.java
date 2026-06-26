@@ -162,18 +162,19 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
-        // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the output ring fans
-        // out to the marshaller, order bridge, direct account trade + position fan-out, optional
-        // legacy `/trades`, and the async projector.
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). Each optimized
+        // output handler consumes independently so NATS and projection remain parallel. The
+        // output ring itself provides bounded backpressure when any consumer falls behind.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
         if (legacyTradeSubmitEnabled) {
             TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, tradeSubmit, projector);
+            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
+                tradeSubmit, projector);
         } else {
             outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
         }
-        projector.start();
+        projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
@@ -214,7 +215,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             outputDisruptor.halt();
         }
         if (projector != null) {
-            projector.stop();
+            projector.stop();   // drain the queue to the DB after the ring has stopped feeding it
         }
         if (journaler != null) {
             journaler.close();
@@ -235,47 +236,59 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             (byte) side.ordinal(), quantity, limitPx, 0L);
     }
 
+    /** A validated new-order command ready for batch sequencing (throughput experiment, option 2). */
     public record NewOrderCommand(int orderRef, int accountId, String ticker, OrderSide side,
                                   int quantity, BigDecimal limitPrice) {}
 
+    /**
+     * Batch ingress (throughput experiment): sequence N new-order commands in one shot and block
+     * the calling gateway thread once for all N acks. The thread claims a contiguous run of input
+     * slots, registers every ack, fills every event, then publishes the whole run with a single
+     * cursor advance — so the per-order HTTP round-trip AND the per-order park/unpark on the ack
+     * future are amortised across the batch (the single-order {@link #execute} path pays both per
+     * order). Ordering within the batch is preserved (lo..hi); other producers (price ticks,
+     * concurrent batches) interleave between blocks safely on the multi-producer ring. Nothing is
+     * publishable until the final {@code publish(lo, hi)}, so no ack can complete before it is
+     * registered.
+     */
     public List<OrderSnapshot> executeNewOrderBatch(List<NewOrderCommand> commands) {
-        int count = commands.size();
-        if (count == 0) {
+        int n = commands.size();
+        if (n == 0) {
             return List.of();
         }
-        long hi = claimInputSlots(count);
-        long lo = hi - (count - 1L);
+        long hi = claimInputSlots(n);
+        long lo = hi - (n - 1);
         @SuppressWarnings("unchecked")
-        CompletableFuture<OrderSnapshot>[] acks = new CompletableFuture[count];
+        CompletableFuture<OrderSnapshot>[] acks = new CompletableFuture[n];
         long ingressNanos = System.nanoTime();
         long eventTimeMillis = System.currentTimeMillis();
-        for (int i = 0; i < count; i++) {
+        for (int i = 0; i < n; i++) {
             long seq = lo + i;
-            NewOrderCommand command = commands.get(i);
+            NewOrderCommand c = commands.get(i);
             acks[i] = readModel.registerAck(seq);
-            InputEvent event = inputRing.get(seq);
-            event.seq = seq;
-            event.type = InputEvent.TYPE_ORDER_NEW;
-            event.orderRef = command.orderRef();
-            event.accountId = command.accountId();
-            event.securityId = symbols.idFor(command.ticker());
-            event.side = (byte) command.side().ordinal();
-            event.qty = command.quantity();
-            event.limitPx = Px.toTicks(command.limitPrice());
-            event.priceTicks = 0L;
-            event.ingressNanos = ingressNanos;
-            event.eventTimeMillis = eventTimeMillis;
+            InputEvent e = inputRing.get(seq);
+            e.seq = seq;
+            e.type = InputEvent.TYPE_ORDER_NEW;
+            e.orderRef = c.orderRef();
+            e.accountId = c.accountId();
+            e.securityId = symbols.idFor(c.ticker());
+            e.side = (byte) c.side().ordinal();
+            e.qty = c.quantity();
+            e.limitPx = Px.toTicks(c.limitPrice());
+            e.priceTicks = 0L;
+            e.ingressNanos = ingressNanos;
+            e.eventTimeMillis = eventTimeMillis;
         }
         inputRing.publish(lo, hi);
 
-        List<OrderSnapshot> snapshots = new ArrayList<>(count);
+        List<OrderSnapshot> out = new ArrayList<>(n);
         long deadlineNanos = System.nanoTime() + ackTimeoutMs * 1_000_000L;
-        for (int i = 0; i < count; i++) {
-            long remainingNanos = deadlineNanos - System.nanoTime();
+        for (int i = 0; i < n; i++) {
+            long remaining = deadlineNanos - System.nanoTime();
             try {
-                snapshots.add(acks[i].get(Math.max(1L, remainingNanos), TimeUnit.NANOSECONDS));
+                out.add(acks[i].get(Math.max(1L, remaining), TimeUnit.NANOSECONDS));
             } catch (TimeoutException ex) {
-                for (int j = i; j < count; j++) {
+                for (int j = i; j < n; j++) {
                     readModel.abandonAck(lo + j);
                 }
                 throw new GatewayTimeoutException("no acknowledgement for input seq " + (lo + i));
@@ -286,13 +299,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 throw new IllegalStateException(ex.getCause());
             } catch (InterruptedException ex) {
                 Thread.currentThread().interrupt();
-                for (int j = i; j < count; j++) {
+                for (int j = i; j < n; j++) {
                     readModel.abandonAck(lo + j);
                 }
                 throw new GatewayTimeoutException("interrupted awaiting input seq " + (lo + i));
             }
         }
-        return snapshots;
+        return out;
     }
 
     public OrderSnapshot executeCancel(int orderRef) {
@@ -366,12 +379,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
     }
 
-    private long claimInputSlots(int count) {
+    /**
+     * Claim a contiguous run of {@code n} input-ring slots (batch ingress). Same lock-free
+     * fast path / counted-backpressure fallback as {@link #claimInputSlot}; returns the
+     * sequence of the LAST slot (the run is {@code [returned - n + 1 .. returned]}).
+     */
+    private long claimInputSlots(int n) {
         try {
-            return inputRing.tryNext(count);
+            return inputRing.tryNext(n);
         } catch (InsufficientCapacityException ex) {
             metrics.recordBackpressureWait();
-            return inputRing.next(count);
+            return inputRing.next(n);
         }
     }
 
