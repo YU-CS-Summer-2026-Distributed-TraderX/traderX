@@ -32,9 +32,14 @@ import java.util.concurrent.atomic.LongAdder;
  */
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
-    private static final int TRADE_INSERT_CHUNK = 500;
+    private static final int SQL_WRITE_CHUNK = 500;
+    private static final String ORDER_COLS =
+        "(orderid, accountid, security, side, quantity, remainingquantity, limitprice, status, " +
+            "createdat, updatedat, lastexecutionprice, lastfillquantity)";
     private static final String TRADE_COLS =
         "(id, accountid, security, side, state, quantity, price, created, updated)";
+    private static final String POSITION_COLS =
+        "(accountid, security, quantity, averagecostbasis, updated)";
     private static final OrderSide[] ORDER_SIDES = OrderSide.values();
     private static final OrderStatus[] ORDER_STATUSES = OrderStatus.values();
 
@@ -59,7 +64,11 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private volatile long projectedSeq = -1;
     private volatile long pendingSeq = -1;
     private volatile long pendingRows;
+    private volatile long ordersPersisted;
     private volatile long tradesPersisted;
+    private volatile long positionsPersisted;
+    private volatile long flushes;
+    private volatile long flushFailures;
 
     public ProjectorHandler(OrderRepository orderRepository, TradeRepository tradeRepository,
                             PositionRepository positionRepository, JdbcTemplate jdbcTemplate,
@@ -130,6 +139,22 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     public long tradesPersisted() {
         return tradesPersisted;
+    }
+
+    public long ordersPersisted() {
+        return ordersPersisted;
+    }
+
+    public long positionsPersisted() {
+        return positionsPersisted;
+    }
+
+    public long flushes() {
+        return flushes;
+    }
+
+    public long flushFailures() {
+        return flushFailures;
     }
 
     public long queueDepth() {
@@ -214,10 +239,13 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     }
 
     private boolean flush(long sequence) {
+        long startedNanos = System.nanoTime();
         try {
             int rows = bufferedCount();
             if (!orderBuffer.isEmpty()) {
-                orderRepository.saveAll(orderBuffer.values());
+                List<OrderRecord> orders = new ArrayList<>(orderBuffer.values());
+                upsertOrdersBatch(orders);
+                ordersPersisted += orders.size();
                 orderBuffer.clear();
             }
             if (!tradeBuffer.isEmpty()) {
@@ -227,24 +255,79 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 tradeBuffer.clear();
             }
             if (!positionBuffer.isEmpty()) {
-                positionRepository.saveAll(positionBuffer.values());
+                List<Position> positions = new ArrayList<>(positionBuffer.values());
+                upsertPositionsBatch(positions);
+                positionsPersisted += positions.size();
                 positionBuffer.clear();
             }
             metrics.recordProjectorBatch(rows);
+            metrics.recordProjectorFlushLatency(System.nanoTime() - startedNanos);
             projectedSeq = sequence;
             pendingSeq = -1;
             pendingRows = queue.size();
+            flushes++;
             return true;
         } catch (Exception ex) {
+            flushFailures++;
             log.warn("Read-model projection failed at seq {} ({} rows buffered, {} queued): {}",
                 sequence, bufferedCount(), queue.size(), ex.getMessage());
             return false;
         }
     }
 
+    private void upsertOrdersBatch(List<OrderRecord> orders) {
+        for (int start = 0; start < orders.size(); start += SQL_WRITE_CHUNK) {
+            int end = Math.min(start + SQL_WRITE_CHUNK, orders.size());
+            List<OrderRecord> chunk = orders.subList(start, end);
+            try {
+                StringBuilder sql = new StringBuilder(128 + chunk.size() * 28)
+                    .append("INSERT INTO orderbook ").append(ORDER_COLS).append(" VALUES ");
+                Object[] args = new Object[chunk.size() * 12];
+                int a = 0;
+                for (int i = 0; i < chunk.size(); i++) {
+                    if (i > 0) {
+                        sql.append(',');
+                    }
+                    sql.append("(?,?,?,?,?,?,?,?,?,?,?,?)");
+                    OrderRecord order = chunk.get(i);
+                    args[a++] = order.getOrderId();
+                    args[a++] = order.getAccountId();
+                    args[a++] = order.getSecurity();
+                    args[a++] = order.getSide() == null ? null : order.getSide().name();
+                    args[a++] = order.getQuantity();
+                    args[a++] = order.getRemainingQuantity();
+                    args[a++] = order.getLimitPrice();
+                    args[a++] = order.getStatus() == null ? null : order.getStatus().name();
+                    args[a++] = order.getCreatedAt() == null ? null : Timestamp.from(order.getCreatedAt());
+                    args[a++] = order.getUpdatedAt() == null ? null : Timestamp.from(order.getUpdatedAt());
+                    args[a++] = order.getLastExecutionPrice();
+                    args[a++] = order.getLastFillQuantity();
+                }
+                sql.append(" ON CONFLICT (orderid) DO UPDATE SET ")
+                    .append("accountid = EXCLUDED.accountid, ")
+                    .append("security = EXCLUDED.security, ")
+                    .append("side = EXCLUDED.side, ")
+                    .append("quantity = EXCLUDED.quantity, ")
+                    .append("remainingquantity = EXCLUDED.remainingquantity, ")
+                    .append("limitprice = EXCLUDED.limitprice, ")
+                    .append("status = EXCLUDED.status, ")
+                    .append("createdat = EXCLUDED.createdat, ")
+                    .append("updatedat = EXCLUDED.updatedat, ")
+                    .append("lastexecutionprice = EXCLUDED.lastexecutionprice, ")
+                    .append("lastfillquantity = EXCLUDED.lastfillquantity");
+                jdbcTemplate.update(sql.toString(), args);
+            } catch (RuntimeException ex) {
+                if (orderRepository == null) {
+                    throw ex;
+                }
+                orderRepository.saveAll(chunk);
+            }
+        }
+    }
+
     private void insertTradesBatch(List<Trade> trades) {
-        for (int start = 0; start < trades.size(); start += TRADE_INSERT_CHUNK) {
-            int end = Math.min(start + TRADE_INSERT_CHUNK, trades.size());
+        for (int start = 0; start < trades.size(); start += SQL_WRITE_CHUNK) {
+            int end = Math.min(start + SQL_WRITE_CHUNK, trades.size());
             List<Trade> chunk = trades.subList(start, end);
             try {
                 StringBuilder sql = new StringBuilder(64 + chunk.size() * 20)
@@ -274,6 +357,41 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                     throw ex;
                 }
                 tradeRepository.saveAll(chunk);
+            }
+        }
+    }
+
+    private void upsertPositionsBatch(List<Position> positions) {
+        for (int start = 0; start < positions.size(); start += SQL_WRITE_CHUNK) {
+            int end = Math.min(start + SQL_WRITE_CHUNK, positions.size());
+            List<Position> chunk = positions.subList(start, end);
+            try {
+                StringBuilder sql = new StringBuilder(96 + chunk.size() * 18)
+                    .append("INSERT INTO positions ").append(POSITION_COLS).append(" VALUES ");
+                Object[] args = new Object[chunk.size() * 5];
+                int a = 0;
+                for (int i = 0; i < chunk.size(); i++) {
+                    if (i > 0) {
+                        sql.append(',');
+                    }
+                    sql.append("(?,?,?,?,?)");
+                    Position position = chunk.get(i);
+                    args[a++] = position.getAccountId();
+                    args[a++] = position.getSecurity();
+                    args[a++] = position.getQuantity();
+                    args[a++] = position.getAverageCostBasis();
+                    args[a++] = position.getUpdated() == null ? null : new Timestamp(position.getUpdated().getTime());
+                }
+                sql.append(" ON CONFLICT (accountid, security) DO UPDATE SET ")
+                    .append("quantity = EXCLUDED.quantity, ")
+                    .append("averagecostbasis = EXCLUDED.averagecostbasis, ")
+                    .append("updated = EXCLUDED.updated");
+                jdbcTemplate.update(sql.toString(), args);
+            } catch (RuntimeException ex) {
+                if (positionRepository == null) {
+                    throw ex;
+                }
+                positionRepository.saveAll(chunk);
             }
         }
     }

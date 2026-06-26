@@ -623,6 +623,22 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         return projector == null ? 0 : projector.tradesPersisted();
     }
 
+    public long ordersPersistedOut() {
+        return projector == null ? 0 : projector.ordersPersisted();
+    }
+
+    public long positionsPersistedOut() {
+        return projector == null ? 0 : projector.positionsPersisted();
+    }
+
+    public long projectorFlushes() {
+        return projector == null ? 0 : projector.flushes();
+    }
+
+    public long projectorFlushFailures() {
+        return projector == null ? 0 : projector.flushFailures();
+    }
+
     public long projectorQueueDepth() {
         return projector == null ? 0 : projector.queueDepth();
     }

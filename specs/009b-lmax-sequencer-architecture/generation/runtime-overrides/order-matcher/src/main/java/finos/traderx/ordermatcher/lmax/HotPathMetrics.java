@@ -18,6 +18,7 @@ public final class HotPathMetrics {
     private final ConcurrentHistogram matchNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     private final ConcurrentHistogram egressNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     private final ConcurrentHistogram projectorBatchRows = new ConcurrentHistogram(HIGHEST_TRACKABLE_ROWS, 3);
+    private final ConcurrentHistogram projectorFlushNs = new ConcurrentHistogram(HIGHEST_TRACKABLE_NS, 3);
     // Incremented only when a producer finds the input ring full (degraded mode, off the
     // contention-free claim path), so the adder never touches the steady-state hot path.
     private final LongAdder backpressureWaits = new LongAdder();
@@ -75,6 +76,14 @@ public final class HotPathMetrics {
         projectorBatchRows.recordValue(Math.min(rows, HIGHEST_TRACKABLE_ROWS));
     }
 
+    /** Flush latency for a full projector DB write cycle. */
+    public void recordProjectorFlushLatency(long nanos) {
+        if (!enabled) {
+            return;
+        }
+        record(projectorFlushNs, nanos);
+    }
+
     /** A producer found the input ring full and waited (FR-09B07 backpressure). */
     public void recordBackpressureWait() {
         if (!enabled) {
@@ -97,16 +106,17 @@ public final class HotPathMetrics {
     /** Render a Prometheus cumulative histogram from an HdrHistogram in nanoseconds. */
     public static void renderHistogram(StringBuilder sb, String name, String help,
                                        ConcurrentHistogram histogram, double[] bucketSeconds) {
+        var snapshot = histogram.copy();
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snapshot.getTotalCount();
         for (double edge : bucketSeconds) {
             long upperNs = (long) (edge * 1_000_000_000.0);
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
+            long count = total == 0 ? 0 : snapshot.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
             sb.append(name).append("_bucket{le=\"").append(trimEdge(edge)).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sumSeconds = total == 0 ? 0.0 : histogram.getMean() * total / 1_000_000_000.0;
+        double sumSeconds = total == 0 ? 0.0 : safeMean(snapshot) * total / 1_000_000_000.0;
         sb.append(name).append("_sum ").append(sumSeconds).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
     }
@@ -114,17 +124,29 @@ public final class HotPathMetrics {
     /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. */
     public static void renderCountHistogram(StringBuilder sb, String name, String help,
                                             ConcurrentHistogram histogram, long[] bucketEdges) {
+        var snapshot = histogram.copy();
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snapshot.getTotalCount();
         for (long edge : bucketEdges) {
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
+            long count = total == 0 ? 0 : snapshot.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
             sb.append(name).append("_bucket{le=\"").append(edge).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sum = total == 0 ? 0.0 : histogram.getMean() * total;
+        double sum = total == 0 ? 0.0 : safeMean(snapshot) * total;
         sb.append(name).append("_sum ").append(sum).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
+    }
+
+    private static double safeMean(org.HdrHistogram.Histogram histogram) {
+        if (histogram.getTotalCount() == 0) {
+            return 0.0;
+        }
+        try {
+            return histogram.getMean();
+        } catch (java.util.NoSuchElementException ignored) {
+            return 0.0;
+        }
     }
 
     private static String trimEdge(double edge) {
@@ -152,5 +174,9 @@ public final class HotPathMetrics {
 
     public ConcurrentHistogram projectorBatchHistogram() {
         return projectorBatchRows;
+    }
+
+    public ConcurrentHistogram projectorFlushHistogram() {
+        return projectorFlushNs;
     }
 }

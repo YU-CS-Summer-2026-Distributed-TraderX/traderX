@@ -324,12 +324,27 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_projector_enqueue_blocks_total Times the projector queue was full and the hot path had to block (backpressure fallback; should stay 0 until the DB is the hard limit).\n");
         sb.append("# TYPE traderx_projector_enqueue_blocks_total counter\n");
         sb.append("traderx_projector_enqueue_blocks_total ").append(engine.projectorEnqueueBlocks()).append('\n');
+        sb.append("# HELP traderx_orders_persisted_total Order read-model rows committed by the projector.\n");
+        sb.append("# TYPE traderx_orders_persisted_total counter\n");
+        sb.append("traderx_orders_persisted_total ").append(engine.ordersPersistedOut()).append('\n');
         sb.append("# HELP traderx_trades_persisted_total Trades committed to the database by the projector — the real (DB-bound) booking rate, unlike the marshaller-stage trade_booked counter which runs ahead via output-ring buffering.\n");
         sb.append("# TYPE traderx_trades_persisted_total counter\n");
         sb.append("traderx_trades_persisted_total ").append(engine.tradesPersistedOut()).append('\n');
+        sb.append("# HELP traderx_positions_persisted_total Position read-model rows committed by the projector.\n");
+        sb.append("# TYPE traderx_positions_persisted_total counter\n");
+        sb.append("traderx_positions_persisted_total ").append(engine.positionsPersistedOut()).append('\n');
+        sb.append("# HELP traderx_projector_flush_total Successful projector DB flushes.\n");
+        sb.append("# TYPE traderx_projector_flush_total counter\n");
+        sb.append("traderx_projector_flush_total ").append(engine.projectorFlushes()).append('\n');
+        sb.append("# HELP traderx_projector_flush_failures_total Failed projector DB flush attempts.\n");
+        sb.append("# TYPE traderx_projector_flush_failures_total counter\n");
+        sb.append("traderx_projector_flush_failures_total ").append(engine.projectorFlushFailures()).append('\n');
         HotPathMetrics.renderCountHistogram(sb, "traderx_projector_batch_size",
             "Rows written per projector flush.",
             metrics.projectorBatchHistogram(), new long[]{1, 10, 50, 100, 500, 1000, 10000});
+        HotPathMetrics.renderHistogram(sb, "traderx_projector_flush_latency_seconds",
+            "Projector DB flush latency in seconds.",
+            metrics.projectorFlushHistogram(), new double[]{0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 5});
         sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
         sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
         sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
