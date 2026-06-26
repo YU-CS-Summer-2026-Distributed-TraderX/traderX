@@ -1,73 +1,75 @@
 # Implementation Status: in-memory-risk-gateway
 
-**Status:** Admission, controls, reservations, expiry, versioned persistence, full startup recovery,
-and durable account transport are implemented and clean-generation verified. Production control-plane
-hardening and broader deployment validation remain open.
+**Status:** Core implementation is present. Startup recovery, durable control sources, replica consumption,
+BLP-side policy enforcement, and core tests were implemented. Final container verification, regeneration,
+and performance acceptance remain open.  
 **Parent:** `009b-lmax-sequencer-architecture`  
 **Branch:** `in-memory-risk-gateway`
 
 ## Implemented
 
-- Named-state generation, renderer, lifecycle/test delegates, numeric-base handling, deterministic
-  generated timestamps, UI/catalog registration, and captured overlay patchset.
-- Account-service transactional JDBC account/entitlement outbox, scheduled JetStream ack-before-delete
-  drainer, and watermarked snapshot/delta API; reference-data watermarked security snapshot/delta API;
-  file-backed JetStream stream and durable pull consumer with seven-day retention.
-- Versioned Gateway replicas with atomic snapshot installation, high-watermark readiness, gap/epoch
-  fail-closed behavior, durable account/entitlement/security delta application, authoritative security
-  ids, local entitlement/account/security/restriction/price/policy screening, and no remote admission
-  lookup.
-- BLP-owned account/security/entitlement/restriction/policy state, checked fixed-point notional, exact
-  directional reservations, credit/position/concentration limits, fill conversion, cancel/expiry
-  release, explicit restriction-driven resting-order cancellation, bounded idempotency with a
-  deterministic retention frontier, stable precedence, and synchronous acknowledgements.
-- Required bounded external `clientOrderId` with UI/trade-service generation; versioned/checksummed
-  input-journal records, explicit 009b/pre-version legacy upcasters, corruption diagnostics, and a
-  locked SBE contract artifact.
-- Atomic versioned BLP risk snapshots covering controls, restrictions, prices, reservations,
-  entitlements, exposures, limits, and idempotency state. Snapshot corruption and incompatible
-  capacities fail startup; compose persists snapshot and journal data in a named volume.
-- Atomic full recovery snapshots now persist authoritative risk plus matcher/order/position/expiry
-  state together with the last applied global input sequence. Startup restores that image, replays
-  the checksummed journal tail through the BLP without re-emitting side effects, rebuilds the
-  in-memory read model from recovered matcher state, and resumes live sequencing at the next global
-  input sequence.
-- Stable `422`/`503` rejection body, command correlation, authenticated/audited control mutations,
-  bounded Prometheus metrics, alerts, and provisioned Grafana dashboard.
-- Epsilon allocation coverage, risk unit/integration tests, race-free read snapshots, recovery
-  snapshot/journal replay tests, risk latency benchmark, and inherited output latency/topology
-  regression runs.
+- Named-state generation, renderer wiring, catalog/runtime registration, and state scaffolding for the
+  `in-memory-risk-gateway` line.
+- Full startup recovery through persisted snapshots plus journal-tail replay, including restoration of
+  matcher state, risk state, positions, expiry state, read-model rebuild, and continuation from the next
+  global input sequence.
+- Durable account-service control ownership for policy, restriction, and kill-switch state with
+  PostgreSQL-backed persistence, optimistic versioning, operator provenance, snapshot/delta APIs, and
+  outbox-driven JetStream publication.
+- Durable reference-data security/status ownership with persisted state, bounded outbox, snapshot/delta
+  APIs, and JetStream publication.
+- Gateway/matcher control consumption for account, entitlement, security, policy, restriction, and
+  kill-switch updates.
+- Gap and epoch invalidation, poison-event quarantine, automatic rebootstrap, stale-feed handling, and
+  fail-closed admission behavior.
+- Dynamic policy-limit sequencing through the BLP journal.
+- Recovery-safe projector catch-up path that avoids replay-side external re-publication.
+- Warm follower state/image path and follower promotability checks.
+- Configured replica and entitlement capacity enforcement.
+- NATS subject ACL wiring, production TLS/auth template, and production at-rest security preflight.
+- Metrics for Gateway validation latency, BLP decision latency, reservations, replica rebootstrap, and
+  control-update rejection.
+- Expanded tests for aggregate-limit correctness across Gateways, follower equivalence, stale-control-feed
+  handling, gap/epoch recovery, mixed-path zero allocation, recovery correctness, and production security
+  requirements.
 
-## Verification Evidence (2026-06-22, macOS arm64)
+## Verification Evidence
 
-- Full clean generation with lockfile refresh:
-  `TRADERX_GENERATED_ROOT=/private/tmp/traderx-imrg-final bash pipeline/generate-state-in-memory-risk-gateway.sh`
-- Clean generated order-matcher: `./gradlew --no-daemon test` — passed.
-- Clean generated account-service: `./gradlew --no-daemon test` — passed (`NO-SOURCE`).
-- Clean generated order-matcher: `./gradlew --no-daemon noGcTest -Dgate.steadyStateEvents=100000`
-  — passed under Epsilon GC.
-- Generated Angular production bundle — passed with the bundled LTS Node runtime; inherited bundle-size
-  and legacy selector warnings remain.
-- Snapshot round-trip/corruption and journal v2/legacy/corruption tests — passed in the full suite.
-- Risk latency (20,000 iterations): Gateway p99 `375 ns`; BLP decide/reserve p99 `416 ns`.
-- Inherited output latency/topology tasks — passed. In-process create p99 was `167,959 ns` in this
-  non-perf-profile run; this exceeds the `<150 us` target and requires a controlled perf-profile rerun.
-- Spec expressiveness, root Spec Kit gates, state-doc consistency, UI metadata, and `git diff --check`
-  passed. The broad coverage gate still reports the pre-existing state-004 convergence-rationale delta.
+Previously demonstrated on this branch:
 
-## Explicit Remaining Production Gaps
+- clean generated Java suites passed
+- `noGcTest` passed
+- account-service tests passed
+- reference-data production build passed
+- risk latency benchmark passed comfortably
+- output latency and topology benchmarks passed in non-perf-profile runs
+- NATS ACL config passed broker validation
+- full Docker runtime built and started
+- matcher restart recovery was demonstrated
+- a durable policy mutation committed successfully to the authoritative outbox
+- manual risk-aware order submission returned `201`
 
-- Wire a durable security-status publisher and a transactional risk-policy/restriction/kill-switch
-  owner/outbox. The consumer and direct authenticated sequenced administration path exist, but those
-  two source owners are not yet end-to-end durable publishers.
-- Add NATS subject ACL credentials and at-rest protection for production deployment; the demo stream is
-  retained and durable but intentionally runs on the inherited unauthenticated local broker.
-- Decide whether crash-tail replay should also drive projector catch-up into the durable read-model
-  before live traffic resumes; runtime recovery is authoritative in-memory today, but persistent DB
-  convergence after crash replay is still a separate policy decision.
-- Complete bootstrap overflow/retention-loss/reorder tests, mixed snapshot-plus-tail byte-equivalence,
-  and follower promotion.
-- Run the containerized state smoke including NATS/WS/UI paths and record a same-host `009b` admission
-  baseline plus perf-profile rerun.
+Representative benchmark notes from prior runs:
 
-These gaps remain unchecked in `tasks.md`; class presence is not treated as proof of completion.
+- Gateway p99 previously recorded at `625 ns`
+- BLP p99 previously recorded at `459 ns`
+- the last noted demo-profile end-to-end p99 was `271,625 ns`, so end-to-end perf acceptance remains open
+
+## Still Open
+
+- finish the full container smoke, starting with the unresolved order-create `400` discrepancy
+- complete the remaining smoke stages after order-create succeeds:
+  cancel/fill, projector convergence, NATS events, WebSocket delivery, UI checks, and risk assertions
+- verify durable control propagation end to end:
+  policy, security-status, restriction enforcement, kill-switch enforcement, and NATS ACL denial behavior
+- rerun clean generation after the late changes to runtime, config, and smoke files
+- rerun the full post-generation gates
+- capture the final same-host `009b` baseline and controlled perf-profile rerun
+- refresh publication artifacts and docs:
+  `tasks.md`, final status docs, overlay patchset, and `git diff --check`
+
+## Caution
+
+This branch was interrupted due to usage limits while late verification work was still in progress.
+Treat current code as largely implemented but not fully re-verified for publication until the remaining
+smoke, regeneration, and acceptance steps are completed.
