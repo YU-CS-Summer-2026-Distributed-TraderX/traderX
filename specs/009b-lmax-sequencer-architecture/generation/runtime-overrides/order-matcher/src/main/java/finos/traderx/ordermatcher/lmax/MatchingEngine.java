@@ -49,6 +49,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long tradesNew;
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
+    private volatile int pinCpu = -1;   // perf profile: BLP CPU to pin on start (<0 = unpinned)
+    private Runnable snapshotTrigger;   // recovery: invoked on the BLP thread at a SNAPSHOT marker
 
     private static final VarHandle BLP_SEQ;
 
@@ -85,6 +87,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     @Override
     public void onStart() {
         blpThreadId = Thread.currentThread().threadId();
+        CpuAffinity.pinCurrentThread(pinCpu);   // perf profile only; pinCpu < 0 is a no-op
+    }
+
+    /** Pin the BLP thread to this CPU on start (perf profile); &lt; 0 = no pinning. Set before the ring starts. */
+    public void setPinCpu(int cpu) {
+        this.pinCpu = cpu;
     }
 
     @Override
@@ -95,6 +103,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
             case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
             case InputEvent.TYPE_TRADE_NEW -> { tradesNew++; onTradeNew(e); }
+            case InputEvent.TYPE_SNAPSHOT -> {
+                if (snapshotTrigger != null) {   // null during recovery replay (markers are no-ops then)
+                    snapshotTrigger.run();
+                }
+            }
             default -> { /* ignore unknown event types */ }
         }
         eventsProcessed++;
@@ -139,6 +152,127 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public void bootstrapTradeCounter(long lastTradeSeq) {
         if (lastTradeSeq > tradeCounter) {
             tradeCounter = lastTradeSeq;
+        }
+    }
+
+    // ----- recovery verification (startup only; NOT hot-path) ---------------------------------
+
+    /** Canonical, iteration-order-independent snapshot of the recoverable BLP state, used to verify
+     *  that journal replay reconstructs the same state as the DB warm-start (state 009b, step 1). */
+    public record RecoveryDigest(int openOrders, int positions, long tradeCounter,
+                                 long orderHash, long positionHash, int pricedSecurities) {}
+
+    /**
+     * Digest the recoverable state: the open order book (orderRef/status/remaining/limit/account/
+     * security), net positions, and the trade counter. {@code lastPxBySecurity} is reported as a
+     * count only ({@code pricedSecurities}) and deliberately excluded from the compared hashes — the
+     * DB warm-start cannot restore prices, so replay legitimately recovers more than the DB.
+     */
+    public RecoveryDigest recoveryDigest() {
+        long orderHash = 0L;
+        int openOrders = 0;
+        for (int sec = 0; sec < openRefsBySecurity.length; sec++) {
+            IntList refs = openRefsBySecurity[sec];
+            if (refs == null) {
+                continue;
+            }
+            for (int i = 0; i < refs.size(); i++) {
+                RestingOrder o = lookup(refs.get(i));
+                if (o == null) {
+                    continue;
+                }
+                long h = 1125899906842597L;
+                h = h * 31 + o.orderRef;
+                h = h * 31 + o.status;
+                h = h * 31 + o.remaining;
+                h = h * 31 + o.limitPx;
+                h = h * 31 + o.accountId;
+                h = h * 31 + o.securityId;
+                orderHash ^= avalanche(h);
+                openOrders++;
+            }
+        }
+        long[] pos = positions.recoveryDigest();
+        int priced = 0;
+        for (int s = 0; s < lastPxBySecurity.length; s++) {
+            if (lastPxBySecurity[s] != Px.NONE) {
+                priced++;
+            }
+        }
+        return new RecoveryDigest(openOrders, (int) pos[1], tradeCounter, orderHash, pos[0], priced);
+    }
+
+    private static long avalanche(long h) {
+        h ^= h >>> 33;
+        h *= 0xff51afd7ed558ccdL;
+        h ^= h >>> 33;
+        h *= 0xc4ceb9fe1a85ec53L;
+        h ^= h >>> 33;
+        return h;
+    }
+
+    /** Open orders as {orderRef, status, remaining, limitPx, accountId, securityId} (debug/verify only). */
+    public java.util.List<long[]> openOrderTuples() {
+        java.util.List<long[]> out = new java.util.ArrayList<>();
+        for (int sec = 0; sec < openRefsBySecurity.length; sec++) {
+            IntList refs = openRefsBySecurity[sec];
+            if (refs == null) {
+                continue;
+            }
+            for (int i = 0; i < refs.size(); i++) {
+                RestingOrder o = lookup(refs.get(i));
+                if (o == null) {
+                    continue;
+                }
+                out.add(new long[] { o.orderRef, o.status, o.remaining, o.limitPx, o.accountId, o.securityId });
+            }
+        }
+        return out;
+    }
+
+    /** Net positions as {accountId, securityId, quantity, avgCostTicks} (debug/verify only). */
+    public java.util.List<long[]> positionTuples() {
+        return positions.tuples();
+    }
+
+    // ----- snapshot/recovery (single-threaded: BLP thread, before/at the marker) ---------------
+
+    public void setSnapshotTrigger(Runnable trigger) {
+        this.snapshotTrigger = trigger;
+    }
+
+    public long tradeCounter() {
+        return tradeCounter;
+    }
+
+    /** Every order still addressable in the book (open AND terminal), as
+     *  {ref, acct, sec, side, qty, rem, limitPx, status, lastExecPx, lastFillQty, createdMs, updatedMs}. */
+    public java.util.List<long[]> allOrderTuples() {
+        java.util.List<long[]> out = new java.util.ArrayList<>();
+        for (RestingOrder o : ordersByRef) {
+            if (o != null && o.orderRef != 0) {
+                out.add(new long[] { o.orderRef, o.accountId, o.securityId, o.side, o.quantity, o.remaining,
+                    o.limitPx, o.status, o.lastExecPx, o.lastFillQty, o.createdAtMillis, o.updatedAtMillis });
+            }
+        }
+        return out;
+    }
+
+    /** Known last prices as {securityId, ticks} — the state the DB read-model cannot hold. */
+    public java.util.List<long[]> priceTuples() {
+        java.util.List<long[]> out = new java.util.ArrayList<>();
+        for (int s = 0; s < lastPxBySecurity.length; s++) {
+            if (lastPxBySecurity[s] != Px.NONE) {
+                out.add(new long[] { s, lastPxBySecurity[s] });
+            }
+        }
+        return out;
+    }
+
+    /** Restore a last price on snapshot load (recovery), keyed by securityId. */
+    public void bootstrapPrice(int securityId, long ticks) {
+        if (securityId >= 0 && securityId < lastPxBySecurity.length) {
+            lastPxBySecurity[securityId] = ticks;
         }
     }
 

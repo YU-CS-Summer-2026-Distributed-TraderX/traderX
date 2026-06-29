@@ -28,6 +28,9 @@ public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+        if (readModel.isReplaying()) {
+            return;   // recovery replay: do not re-broadcast historical events to NATS
+        }
         if (!e.publishNats || !OutputEvent.isOrderLifecycleKind(e.kind)) {
             return;
         }

@@ -191,8 +191,26 @@ services:
     build:
       context: ../order-matcher
       dockerfile: Dockerfile.compose
+    # Perf profile: pin the BLP to a core (BLP_PIN_CPU) + busy-spin the input ring. Deliberately NO
+    # cpuset cap — the A/B showed capping the container's cores HURTS peak throughput (starves the
+    # output ring / GC / JIT) far more than pinning helps; add `cpuset: "1-5"` only for hard isolation.
+    # Demo/container-safe profile: BLP_PIN_CPU=-1 and DISRUPTOR_INPUT_WAIT_STRATEGY=blocking. Note
+    # busy-spin pegs ~3 cores (journaler+replicator+BLP) continuously while the stack is up.
     environment:
       ORDER_MATCHER_PORT: "18110"
+      BLP_PIN_CPU: "${BLP_PIN_CPU:-2}"
+      DISRUPTOR_INPUT_WAIT_STRATEGY: "${DISRUPTOR_INPUT_WAIT_STRATEGY:-busyspin}"
+      # Periodic full-state snapshot to bound journal replay (0 = off). Recovery loads snapshot.dat
+      # and replays only the journal tail after it.
+      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-0}"
+      # Cutover: recovery.source=journal makes snapshot+journal authoritative (no DB warm-start);
+      # output.projector.db.enabled=false stops all DB writes. Together the matcher needs no database.
+      RECOVERY_SOURCE: "${RECOVERY_SOURCE:-db}"
+      OUTPUT_PROJECTOR_DB_ENABLED: "${OUTPUT_PROJECTOR_DB_ENABLED:-true}"
+      # No-DB boot knobs (set together with the two above to run with the database fully stopped).
+      SPRING_JPA_DDL_AUTO: "${SPRING_JPA_DDL_AUTO:-update}"
+      HIKARI_INIT_FAIL_TIMEOUT: "${HIKARI_INIT_FAIL_TIMEOUT:-30000}"
+      MANAGEMENT_HEALTH_DB_ENABLED: "${MANAGEMENT_HEALTH_DB_ENABLED:-true}"
       DATABASE_PG_HOST: "database"
       DATABASE_PG_PORT: "3306"
       DATABASE_NAME: "traderx"
@@ -209,6 +227,10 @@ services:
       ORDER_FILL_FULL_THRESHOLD: "${ORDER_FILL_FULL_THRESHOLD:-1000}"
     ports:
       - "18110:18110"
+    volumes:
+      # Durable input journal (state 009b recovery): the BLP's source of truth must survive
+      # container recreate, not just restart, so it can replace the DB as the durable store.
+      - order_matcher_journal:/opt/app/data
     depends_on:
       database:
         condition: service_healthy
@@ -331,3 +353,4 @@ services:
 
 volumes:
   mariadb_state_009_data:
+  order_matcher_journal:

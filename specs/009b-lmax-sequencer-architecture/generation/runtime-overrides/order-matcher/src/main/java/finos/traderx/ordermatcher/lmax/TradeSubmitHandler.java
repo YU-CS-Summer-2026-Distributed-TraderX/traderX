@@ -29,6 +29,9 @@ public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+        if (readModel.isReplaying()) {
+            return;   // recovery replay: do not re-submit historical trades to the legacy endpoint
+        }
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;
         }

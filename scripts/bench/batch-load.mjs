@@ -35,6 +35,11 @@ const cfg = {
   conc: Number(flag('--conc', 'CONC', 16)),
   batch: Math.max(1, Number(flag('--batch', 'BATCH', 50))),
   durationSecs: Number(flag('--secs', 'DURATION_SECS', 0)),
+  // Per-request backstop. A saturated matcher blocks server-side in claimInputSlots()
+  // (Disruptor next(n) has NO timeout) BEFORE the 5s gateway ack-timeout even starts, so a
+  // batch response can be delayed indefinitely. Without this cap a worker would park forever
+  // on one starved request and the run would never end. Tune with --req-timeout / REQ_TIMEOUT_MS.
+  reqTimeoutMs: Math.max(1000, Number(flag('--req-timeout', 'REQ_TIMEOUT_MS', 30000))),
   qty: Number(process.env.QTY || 500),
   limit: Number(process.env.LIMIT || 1_000_000),
   tickers: (process.env.TICKERS || 'JPM,GS,COF,DFS').split(',').map((t) => t.trim().toUpperCase()),
@@ -46,7 +51,9 @@ const agent = new http.Agent({ keepAlive: true, maxSockets: Math.max(cfg.conc, 6
 let submitted = 0; // accepted ORDERS (batch * accepted requests)
 let failed = 0;    // orders in rejected/errored requests
 let running = true;
+let stopping = false;
 let rr = 0;
+const inflight = new Set(); // live requests, so shutdown can abort whatever the matcher is starving
 
 // Pre-render one batch body per ticker rotation so the hot loop only pays the socket cost,
 // not JSON.stringify of K objects every request. Each body is `--batch` orders; we rotate
@@ -63,24 +70,53 @@ const bodies = cfg.tickers.map((_, offset) => {
 });
 
 function postBatch() {
+  if (stopping) return Promise.resolve(); // don't start new work once we're tearing down
   const data = bodies[rr++ % bodies.length];
   return new Promise((resolve) => {
-    const req = http.request(
+    let settled = false;
+    let req;
+    const settle = (outcome) => { // 'ok' | 'fail' | 'abort'
+      if (settled) return;
+      settled = true;
+      inflight.delete(req);
+      if (outcome === 'ok') submitted += cfg.batch;
+      else if (outcome === 'fail') failed += cfg.batch;
+      // 'abort' = shutdown teardown: don't pollute the failed count with our own cancellations
+      resolve();
+    };
+    req = http.request(
       { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', agent,
         headers: { 'content-type': 'application/json', 'content-length': data.length } },
       (res) => {
-        if (res.statusCode === 201) submitted += cfg.batch; else failed += cfg.batch;
+        const ok = res.statusCode === 201;
         res.resume();
-        res.on('end', resolve);
+        res.on('end', () => settle(ok ? 'ok' : 'fail'));
+        res.on('error', () => settle(ok ? 'ok' : 'fail'));
       },
     );
-    req.on('error', () => { failed += cfg.batch; resolve(); });
+    // Cap the wait so a worker can never park forever on a starved batch (see cfg.reqTimeoutMs).
+    req.setTimeout(cfg.reqTimeoutMs, () => req.destroy(new Error('request timeout')));
+    req.on('error', () => settle(stopping ? 'abort' : 'fail'));
+    inflight.add(req);
     req.end(data);
   });
 }
 
 async function worker() {
   while (running) await postBatch();
+}
+
+// Stop accepting work and unblock every worker: a batch the matcher is starving (no response)
+// would otherwise keep `await postBatch()` parked past --secs, so we destroy the in-flight
+// requests (their 'error' settles each promise as an abort) and the keep-alive sockets.
+function stop(reason) {
+  if (stopping) return;
+  stopping = true;
+  running = false;
+  if (reason) console.log(`\n[batch] ${reason}`);
+  for (const req of inflight) req.destroy(new Error('shutdown'));
+  agent.destroy();
+  setTimeout(() => process.exit(0), 3000).unref(); // failsafe: never linger past shutdown
 }
 
 let lastSubmitted = 0;
@@ -97,8 +133,8 @@ function printStats() {
 console.log(`[batch] matcher=${cfg.matcherUrl}/orders/batch  batch=${cfg.batch} conc=${cfg.conc} qty=${cfg.qty}  tickers=${cfg.tickers.join(',')}  ${cfg.durationSecs ? `for ${cfg.durationSecs}s` : '(Ctrl-C to stop)'}`);
 
 const statsTimer = setInterval(printStats, 2000);
-process.on('SIGINT', () => { console.log('\n[batch] stopping…'); running = false; });
-if (cfg.durationSecs > 0) setTimeout(() => { running = false; }, cfg.durationSecs * 1000);
+process.on('SIGINT', () => stop('stopping…'));
+if (cfg.durationSecs > 0) setTimeout(() => stop(null), cfg.durationSecs * 1000);
 
 await Promise.all(Array.from({ length: cfg.conc }, worker));
 

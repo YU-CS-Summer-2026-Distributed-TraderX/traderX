@@ -174,6 +174,11 @@ public class OrderMatcherService {
         return toResponse(snapshot);
     }
 
+    /** Net positions from the BLP's in-memory book (no DB) — the cutover read-side repoint. */
+    public List<finos.traderx.ordermatcher.lmax.PositionUpdate> listPositions(Integer accountIdFilter) {
+        return engine.listPositions(accountIdFilter);
+    }
+
     public OpenCountResponse openCounts() {
         return new OpenCountResponse(readModel.countOpen(), readModel.countUnfilled());
     }

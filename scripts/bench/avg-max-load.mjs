@@ -91,6 +91,14 @@ if (!Number.isFinite(perRunSecs) || perRunSecs <= 0) {
   process.exit(2);
 }
 
+// Generator: pass --batch K to drive BATCH ingress (POST /orders/batch via batch-load.mjs) — one HTTP
+// round-trip + one ack-block per K orders, so the per-order REST/ack overhead is amortised and the
+// engine's real throughput is exposed instead of the ~9k synchronous-REST ceiling. Default stays
+// max-load.mjs (one POST + one ack per order). peak/booked are read from the matcher either way.
+const useBatch = passthrough.includes('--batch');
+const GENERATOR = useBatch ? path.join(here, 'batch-load.mjs') : MAX_LOAD;
+const GENERATOR_NAME = useBatch ? 'batch-load.mjs' : 'max-load.mjs';
+
 const matcherUrl = (process.env.MATCHER_URL || 'http://localhost:18110').replace(/\/$/, '');
 const metricsUrl = `${matcherUrl}/metrics`;
 const composeFile = process.env.MATCHER_COMPOSE_FILE
@@ -215,13 +223,37 @@ async function runOnce(idx) {
   const t0 = Date.now();
 
   const buf = await new Promise((resolve) => {
-    child = spawn(process.execPath, [MAX_LOAD, ...passthrough], {
+    let b = '';
+    let settled = false;
+    let killTimer, forceTimer;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killTimer);
+      clearTimeout(forceTimer);
+      child = null;
+      resolve(b);
+    };
+    const proc = spawn(process.execPath, [GENERATOR, ...passthrough], {
       env: process.env,
       stdio: ['ignore', 'pipe', 'inherit'],
     });
-    let b = '';
-    child.stdout.on('data', (d) => { const s = d.toString(); b += s; process.stdout.write(s); });
-    child.on('close', () => { child = null; resolve(b); });
+    child = proc;
+    proc.stdout.on('data', (d) => { const s = d.toString(); b += s; process.stdout.write(s); });
+    proc.on('close', finish);
+    proc.on('error', finish); // spawn failure — don't hang the run
+    // Watchdog: the generator is time-bounded by --secs, so it must exit shortly after. If a
+    // saturated matcher starves the responses, a generator that lacks a request timeout could
+    // otherwise hang here forever — bound the wait, then SIGINT, then SIGKILL.
+    const graceSecs = Math.round(perRunSecs) + 30;
+    killTimer = setTimeout(() => {
+      console.log(`\n[avg]   watchdog: generator still alive ${graceSecs}s after launch (run is ${perRunSecs}s) — sending SIGINT`);
+      proc.kill('SIGINT');
+    }, graceSecs * 1000);
+    forceTimer = setTimeout(() => {
+      console.log('[avg]   watchdog: generator ignored SIGINT — SIGKILL');
+      proc.kill('SIGKILL');
+    }, (graceSecs + 10) * 1000);
   });
 
   const elapsed = (Date.now() - t0) / 1000;
@@ -245,7 +277,7 @@ process.on('SIGINT', () => {
 // ---- main ----------------------------------------------------------------------
 await preflight();
 
-const cmdLine = `node max-load.mjs ${passthrough.join(' ')}`.trim();
+const cmdLine = `node ${GENERATOR_NAME} ${passthrough.join(' ')}`.trim();
 const envEcho = ['ACCOUNT', 'TICKERS', 'QTY', 'LIMIT', 'CONC', 'RATE']
   .filter((k) => process.env[k] !== undefined).map((k) => `${k}=${process.env[k]}`).join('  ');
 

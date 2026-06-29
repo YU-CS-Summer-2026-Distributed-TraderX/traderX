@@ -37,6 +37,14 @@ public class OrderController {
         return orderMatcherService.getOrder(orderId);
     }
 
+    /** Net positions from the matcher's in-memory book — read-side repoint for the no-DB cutover. */
+    @GetMapping("/positions")
+    public List<finos.traderx.ordermatcher.lmax.PositionUpdate> listPositions(
+        @RequestParam(value = "accountId", required = false) Integer accountId
+    ) {
+        return orderMatcherService.listPositions(accountId);
+    }
+
     @PostMapping("/orders")
     @ResponseStatus(HttpStatus.CREATED)
     public OrderResponse createOrder(@RequestBody OrderCreateRequest request) {

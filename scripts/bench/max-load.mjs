@@ -41,6 +41,9 @@ const cfg = {
   rampSecs: Number(flag('--ramp-secs', 'RAMP_SECS', 4)),
   rampTo: Number(flag('--ramp-to', 'RAMP_TO', 8000)),
   durationSecs: Number(flag('--secs', 'DURATION_SECS', 0)),
+  // Per-request backstop so a worker can never park forever on a starved response (the matcher
+  // can block server-side with no timeout under saturation). Tune with --req-timeout / REQ_TIMEOUT_MS.
+  reqTimeoutMs: Math.max(1000, Number(flag('--req-timeout', 'REQ_TIMEOUT_MS', 30000))),
   qty: Number(process.env.QTY || 500),
   limit: Number(process.env.LIMIT || 1_000_000),
   tickers: (process.env.TICKERS || 'JPM,GS,COF,DFS').split(',').map((t) => t.trim().toUpperCase()),
@@ -52,30 +55,61 @@ const agent = new http.Agent({ keepAlive: true, maxSockets: Math.max(cfg.conc, 5
 let submitted = 0;
 let failed = 0;
 let running = true;
+let stopping = false;
 let rr = 0;
+const inflight = new Set(); // live requests, so shutdown can abort whatever the matcher is starving
 
 function postOrder() {
+  if (stopping) return Promise.resolve(); // don't start new work once we're tearing down
   const ticker = cfg.tickers[rr++ % cfg.tickers.length];
   const data = Buffer.from(JSON.stringify({
     accountId: cfg.account, security: ticker, side: 'Buy', quantity: cfg.qty, limitPrice: cfg.limit,
   }));
   return new Promise((resolve) => {
-    const req = http.request(
+    let settled = false;
+    let req;
+    const settle = (outcome) => { // 'ok' | 'fail' | 'abort'
+      if (settled) return;
+      settled = true;
+      inflight.delete(req);
+      if (outcome === 'ok') submitted++;
+      else if (outcome === 'fail') failed++;
+      // 'abort' = shutdown teardown: don't pollute the failed count with our own cancellations
+      resolve();
+    };
+    req = http.request(
       { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', agent,
         headers: { 'content-type': 'application/json', 'content-length': data.length } },
       (res) => {
-        if (res.statusCode === 201) submitted++; else failed++;
+        const ok = res.statusCode === 201;
         res.resume();
-        res.on('end', resolve);
+        res.on('end', () => settle(ok ? 'ok' : 'fail'));
+        res.on('error', () => settle(ok ? 'ok' : 'fail'));
       },
     );
-    req.on('error', () => { failed++; resolve(); });
+    // Cap the wait so a worker can never park forever on a starved order (see cfg.reqTimeoutMs).
+    req.setTimeout(cfg.reqTimeoutMs, () => req.destroy(new Error('request timeout')));
+    req.on('error', () => settle(stopping ? 'abort' : 'fail'));
+    inflight.add(req);
     req.end(data);
   });
 }
 
 async function worker() {
   while (running) await postOrder();
+}
+
+// Stop accepting work and unblock every worker: an order the matcher is starving (no response)
+// would otherwise keep `await postOrder()` parked past --secs, so we destroy the in-flight
+// requests (their 'error' settles each promise as an abort) and the keep-alive sockets.
+function stop(reason) {
+  if (stopping) return;
+  stopping = true;
+  running = false;
+  if (reason) console.log(`\n[max] ${reason}`);
+  for (const req of inflight) req.destroy(new Error('shutdown'));
+  agent.destroy();
+  setTimeout(() => process.exit(0), 3000).unref(); // failsafe: never linger past shutdown
 }
 
 async function promScalar(query) {
@@ -127,8 +161,8 @@ console.log(`[max] mode: ${mode}`);
 console.log('[max] dashboard: http://localhost:8080/grafana/d/traderx-trades-per-second  (set refresh to 1s)');
 
 const statsTimer = setInterval(printStats, 2000);
-process.on('SIGINT', () => { console.log('\n[max] stopping…'); running = false; });
-if (cfg.durationSecs > 0) setTimeout(() => { running = false; }, cfg.durationSecs * 1000);
+process.on('SIGINT', () => stop('stopping…'));
+if (cfg.durationSecs > 0) setTimeout(() => stop(null), cfg.durationSecs * 1000);
 
 if (cfg.rate > 0 || cfg.ramp) {
   // Paced/ramp mode: offer a controlled orders/sec so the matcher's output ring never

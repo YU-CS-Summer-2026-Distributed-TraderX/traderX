@@ -57,6 +57,9 @@ dependencies {
   // LMAX hot path (state 009b): ring buffers + latency histograms.
   implementation 'com.lmax:disruptor:4.0.0'
   implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
+  // Optional BLP core pinning (perf profile, NFR-09B06): bind the single-writer thread to a
+  // dedicated CPU. Used only at thread start; demo profile leaves blp.pin.cpu=-1 (no pinning).
+  implementation 'net.openhft:affinity:3.23.3'
 
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
   testRuntimeOnly 'com.h2database:h2'
