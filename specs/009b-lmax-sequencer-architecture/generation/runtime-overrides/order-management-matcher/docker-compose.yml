@@ -202,7 +202,7 @@ services:
       DISRUPTOR_INPUT_WAIT_STRATEGY: "${DISRUPTOR_INPUT_WAIT_STRATEGY:-busyspin}"
       # Periodic full-state snapshot to bound journal replay (0 = off). Recovery loads snapshot.dat
       # and replays only the journal tail after it.
-      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-0}"
+      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-60000}"
       # Cutover: recovery.source=journal makes snapshot+journal authoritative (no DB warm-start);
       # output.projector.db.enabled=false stops all DB writes. Together the matcher needs no database.
       RECOVERY_SOURCE: "${RECOVERY_SOURCE:-db}"
