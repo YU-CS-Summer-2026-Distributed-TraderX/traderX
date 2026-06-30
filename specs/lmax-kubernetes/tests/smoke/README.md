@@ -1,0 +1,13 @@
+# Smoke Tests: lmax-kubernetes
+
+Current status: initial generated-state contract smoke is implemented in `scripts/test-state-lmax-kubernetes.sh`.
+
+Smoke split:
+
+1. inherited `014` Kubernetes/C3/FDC3 regression checks
+2. generated-state contract checks for:
+   - Postgres-backed matcher/trade-service overlays
+   - LMAX readiness probe wiring
+   - persistent `order-matcher` storage manifest presence
+3. live LMAX replay/readiness checks once a cluster is running
+4. messaging and UI regression checks after the trading-path port lands

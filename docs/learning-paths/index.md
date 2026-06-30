@@ -50,6 +50,7 @@ flowchart TB
   S012_platform_convergence_c3["012: Platform Convergence C3 [C3]"]
   S013_radius_kubernetes_platform["013: Radius Platform on Kubernetes (Optional)"]
   S014_fdc3_intent_interoperability["014: FDC3 Intent Interoperability on C3"]
+  Slmax_kubernetes["lmax-kubernetes: LMAX Kubernetes"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -64,6 +65,7 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S014_fdc3_intent_interoperability -.-> Slmax_kubernetes
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -80,6 +82,7 @@ flowchart TB
   click S012_platform_convergence_c3 href "/specs/platform-convergence-c3" "Open State 012 Spec Pack"
   click S013_radius_kubernetes_platform href "/specs/radius-kubernetes-platform" "Open State 013 Spec Pack"
   click S014_fdc3_intent_interoperability href "/specs/fdc3-intent-interoperability" "Open State 014 Spec Pack"
+  click Slmax_kubernetes href "/specs/lmax-kubernetes" "Open State lmax-kubernetes Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -106,6 +109,7 @@ flowchart TB
 | **[`012-platform-convergence-c3`](pathname:///specs/platform-convergence-c3)** [(C3)](pathname:///docs/spec-kit/convergence-states#c3) | [link](pathname:///specs/platform-convergence-c3) | [link](pathname:///specs/platform-convergence-c3/system/architecture) | [link](pathname:///specs/platform-convergence-c3/system/runtime-topology) | [link](pathname:///docs/learning/state-012-platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/tree/code/generated-state-012-platform-convergence-c3) |
 | [`013-radius-kubernetes-platform`](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform/system/architecture) | [link](pathname:///specs/radius-kubernetes-platform/system/runtime-topology) | [link](pathname:///docs/learning/state-013-radius-kubernetes-platform) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform) |
 | [`014-fdc3-intent-interoperability`](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability/system/architecture) | [link](pathname:///specs/fdc3-intent-interoperability/system/runtime-topology) | [link](pathname:///docs/learning/state-014-fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) |
+| [`lmax-kubernetes`](pathname:///specs/lmax-kubernetes) | [link](pathname:///specs/lmax-kubernetes) | [link](pathname:///specs/lmax-kubernetes/system/architecture) | [link](pathname:///specs/lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-lmax-kubernetes) | [code/generated-state-lmax-kubernetes](https://github.com/finos/traderX/tree/code/generated-state-lmax-kubernetes) |
 
 ## Swimlane View
 
@@ -123,6 +127,7 @@ flowchart TB
     S005_postgres_database_replacement["005: PostgreSQL Database Replacement"]
     S006_messaging_nats_replacement["006: Messaging Layer Replacement with NATS"]
     S009b_lmax_sequencer_architecture["009b: LMAX Sequencer Architecture (Trading Hot Path)"]
+    Slmax_kubernetes["lmax-kubernetes: LMAX Kubernetes"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -152,6 +157,7 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S014_fdc3_intent_interoperability -.-> Slmax_kubernetes
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

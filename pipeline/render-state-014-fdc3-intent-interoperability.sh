@@ -491,10 +491,6 @@ else
   exit 1
 fi
 
-# State 014 overlays can update package manifests, so refresh lockfiles after
-# overlay copy to keep generated Docker/npm-ci builds deterministic.
-bash "${ROOT}/pipeline/refresh-generated-node-lockfiles.sh" "${TARGET_FRONTEND_DIR}"
-
 # Ensure state-014 FDC3 agent bootstrap dependency is present in generated web UI.
 # Also pin a temporary scoped override for transitive uuid to mitigate
 # GHSA-w5hq-g745-h8pq until upstream fdc3-get-agent releases without uuid<14.
@@ -514,6 +510,10 @@ if (!fdc3Override || typeof fdc3Override !== 'object' || Array.isArray(fdc3Overr
 doc.overrides['@robmoffat/fdc3-get-agent'].uuid = '^14.0.0';
 fs.writeFileSync(path, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
 NODE
+
+# State 014 overlays and FDC3 bootstrap injection can both mutate package
+# manifests, so refresh lockfiles only after all package.json edits complete.
+bash "${ROOT}/pipeline/refresh-generated-node-lockfiles.sh" "${TARGET_FRONTEND_DIR}"
 
 chmod +x \
   "${SAIL_BOOTSTRAP_DIR}/run-sail.sh" \

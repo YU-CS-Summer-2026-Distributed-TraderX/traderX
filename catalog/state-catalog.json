@@ -418,6 +418,29 @@
         "branch": "code/generated-state-014-fdc3-intent-interoperability",
         "tag": "generated/014-fdc3-intent-interoperability/v1"
       }
+    },
+    {
+      "id": "lmax-kubernetes",
+      "title": "LMAX Kubernetes",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/lmax-kubernetes",
+      "previous": [
+        "014-fdc3-intent-interoperability"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh lmax-kubernetes",
+        "runtime": "./scripts/start-state-lmax-kubernetes-generated.sh"
+      },
+      "publish": {
+        "branch": "code/generated-state-lmax-kubernetes",
+        "tag": "generated/lmax-kubernetes/v1"
+      }
     }
   ]
 }

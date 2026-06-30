@@ -46,7 +46,8 @@ const emitFile = (filePath, content) => {
 const repoWebBase = 'https://github.com/finos/traderX'
 const sourceAuthoringBranch = process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'main'
 const stripNumericPrefix = (stateId) => stateId.replace(/^[0-9]{3}[a-z]?-/, '')
-const stateNumber = (stateId) => stateId.match(/^([0-9]{3}[a-z]?)-/)?.[1] ?? stateId
+const parsedStateNumber = (stateId) => stateId.match(/^([0-9]{3}[a-z]?)-/)?.[1] ?? ''
+const stateDisplayToken = (stateId) => parsedStateNumber(stateId) || stateId
 const specRouteFor = (stateId) => `/specs/${stripNumericPrefix(stateId)}`
 
 const normalizeSiteRoot = (value) => {
@@ -100,6 +101,24 @@ const adrRouteFor = (recordPath) => {
 const stateById = new Map(states.map((state) => [state.id, state]))
 const orderedStates = [...states]
 const convergenceStates = orderedStates.filter((state) => state.isConvergence === true)
+
+const effectiveNumericStateNumber = (stateId) => {
+  const visited = new Set()
+  let cursor = stateId
+
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor)
+    const direct = parsedStateNumber(cursor)
+    if (direct) {
+      return direct
+    }
+    const state = stateById.get(cursor)
+    const previous = Array.isArray(state?.previous) ? state.previous : []
+    cursor = previous[0] || ''
+  }
+
+  return ''
+}
 
 const nextStateIdsFor = (stateId) =>
   states.filter((candidate) => (candidate.previous ?? []).includes(stateId)).map((state) => state.id)
@@ -320,10 +339,10 @@ const writeLearningGuides = () => {
     expectedGuideFiles.add(path.basename(routePath))
 
     const body = `---
-title: "State ${stateNumber(state.id)}: ${state.title}"
+title: "State ${stateDisplayToken(state.id)}: ${state.title}"
 ---
 
-# State ${stateNumber(state.id)} Learning Guide
+# State ${stateDisplayToken(state.id)} Learning Guide
 
 ## Position In Learning Graph
 
@@ -476,7 +495,7 @@ const writeStateDocs = () => {
     const convergenceLevel = convergenceLevelFor(state)
     const dottedInline = dottedParentIds.length === 0
       ? ''
-      : `<br/>Dotted: ${dottedParentIds.map((id) => `[${stateNumber(id)}](${learningRouteFor(id)})`).join(', ')}`
+      : `<br/>Dotted: ${dottedParentIds.map((id) => `[${stateDisplayToken(id)}](${learningRouteFor(id)})`).join(', ')}`
     const convergenceCell = `${isConvergenceState(state) ? `\`${convergenceLevel}\`` : '`none`'}${dottedInline}`
     const adrRoute = adrRouteFor(state.decisionRecord)
     const adrCell = adrRoute ? `[link](${adrRoute})` : '`n/a`'
@@ -565,7 +584,7 @@ const trackLabelFor = (trackKey) => {
 const mermaidNodeIdFor = (stateId) => `S${stateId.replace(/[^a-zA-Z0-9]/g, '_')}`
 const mermaidLabelFor = (state) => {
   const convergenceBadge = isConvergenceState(state) ? ` [${convergenceLevelFor(state)}]` : ''
-  return `${stateNumber(state.id)}: ${state.title}${convergenceBadge}`.replace(/"/g, '\\"')
+  return `${stateDisplayToken(state.id)}: ${state.title}${convergenceBadge}`.replace(/"/g, '\\"')
 }
 
 const writeVisualLearningGraphs = () => {
@@ -589,7 +608,7 @@ const writeVisualLearningGraphs = () => {
   }
 
   const clickLines = sortedStates.map((state) =>
-    `  click ${mermaidNodeIdFor(state.id)} href "${specRouteForLearningPathsMermaid(state.id)}" "Open State ${stateNumber(state.id)} Spec Pack"`
+    `  click ${mermaidNodeIdFor(state.id)} href "${specRouteForLearningPathsMermaid(state.id)}" "Open State ${stateDisplayToken(state.id)} Spec Pack"`
   )
 
   const trackOrder = ['prelude', 'baseline', 'architecture', 'nonfunctional', 'functional', 'devex']

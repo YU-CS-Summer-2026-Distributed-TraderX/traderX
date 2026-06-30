@@ -245,10 +245,27 @@ case "${STATE_ID}" in
     copy_script_if_exists "test-state-012-platform-convergence-c3.sh"
     copy_script_if_exists "test-state-014-fdc3-intent-interoperability.sh"
     ;;
+  lmax-kubernetes)
+    copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "status-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "start-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "stop-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "status-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "start-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "stop-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "status-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "start-state-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "stop-state-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "status-state-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "test-state-012-platform-convergence-c3.sh"
+    copy_script_if_exists "test-state-014-fdc3-intent-interoperability.sh"
+    copy_script_if_exists "test-state-lmax-kubernetes.sh"
+    ;;
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*)
+  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|lmax-kubernetes)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins

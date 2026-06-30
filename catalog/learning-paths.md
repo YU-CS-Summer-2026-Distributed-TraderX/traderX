@@ -26,6 +26,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `005-postgres-database-replacement`
 - `006-messaging-nats-replacement`
 - `009b-lmax-sequencer-architecture`
+- `lmax-kubernetes`
 
 ### Functional
 
@@ -41,6 +42,7 @@ This file is generated from `catalog/state-catalog.json`.
 
 - `009b-lmax-sequencer-architecture`
 - `013-radius-kubernetes-platform`
+- `lmax-kubernetes`
 
 ### Convergence
 
@@ -68,3 +70,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `012-platform-convergence-c3` | 011-tilt-kubernetes-dev-loop | `C3` | `true` | `canonical` | `specs/012-platform-convergence-c3/spec.md` |
 | `013-radius-kubernetes-platform` | 012-platform-convergence-c3 | `none` | `false` | `optional` | `specs/013-radius-kubernetes-platform/spec.md` |
 | `014-fdc3-intent-interoperability` | 012-platform-convergence-c3 | `none` | `false` | `canonical` | `specs/014-fdc3-intent-interoperability/spec.md` |
+| `lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/lmax-kubernetes/spec.md` |

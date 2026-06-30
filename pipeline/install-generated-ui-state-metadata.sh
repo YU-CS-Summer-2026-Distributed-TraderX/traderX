@@ -44,6 +44,24 @@ function stateNumber(value) {
   return match ? Number.parseInt(match[1], 10) : 0;
 }
 
+function effectiveStateNumber(value) {
+  const visited = new Set();
+  let cursor = value;
+
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const direct = stateNumber(cursor);
+    if (direct > 0) {
+      return direct;
+    }
+    const state = stateById.get(cursor);
+    const previous = Array.isArray(state?.previous) ? state.previous : [];
+    cursor = previous[0] || '';
+  }
+
+  return 0;
+}
+
 function branchUrlEncode(branchName) {
   return String(branchName)
     .split('/')
@@ -108,7 +126,7 @@ function buildLineage(stateEntry) {
 
 const repoBaseUrl = deriveRepoBaseUrl();
 const activeBranch = activeState.publish?.branch || '';
-const stateNo = stateNumber(activeState.id);
+const stateNo = effectiveStateNumber(activeState.id);
 const statusEnabled = stateNo >= 2;
 const apiExplorerEnabled = stateNo >= 2;
 const pubSubInspectorEnabled = stateNo >= 8;

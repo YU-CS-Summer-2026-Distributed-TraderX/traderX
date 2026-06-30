@@ -17,26 +17,6 @@ if [[ ! -d "${TARGET_ROOT}" ]]; then
   exit 1
 fi
 
-# State ids are NNN-name, with an optional letter suffix for sibling branch
-# states (e.g. 009b-lmax-sequencer-architecture). Numeric ordering comparisons
-# use the digits only; the suffixed state sorts with its numeric base.
-state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+[a-z]?$ ]]; then
-  echo "[fail] invalid state id format: ${STATE_ID}"
-  exit 1
-fi
-state_num="${state_num%%[a-z]*}"
-
-if (( 10#${state_num} < 2 )); then
-  echo "[info] skipping generated CI assets for ${STATE_ID} (policy starts at state 002)"
-  exit 0
-fi
-
-enable_container_ci=0
-if (( 10#${state_num} >= 4 )); then
-  enable_container_ci=1
-fi
-
 if [[ ! -f "${CATALOG}" ]]; then
   echo "[fail] missing state catalog: ${CATALOG}"
   exit 1
@@ -46,6 +26,43 @@ state_entry="$(jq -c --arg id "${STATE_ID}" '.states[] | select(.id == $id)' "${
 if [[ -z "${state_entry}" ]]; then
   echo "[fail] state ${STATE_ID} not found in catalog"
   exit 1
+fi
+
+derive_state_num() {
+  local cursor="$1"
+  local visited=""
+  while [[ -n "${cursor}" ]]; do
+    if [[ ",${visited}," == *",${cursor},"* ]]; then
+      break
+    fi
+    visited="${visited},${cursor}"
+
+    local direct="${cursor%%-*}"
+    if [[ "${direct}" =~ ^[0-9]+[a-z]?$ ]]; then
+      direct="${direct%%[a-z]*}"
+      printf '%s\n' "${direct}"
+      return 0
+    fi
+
+    cursor="$(jq -r --arg id "${cursor}" '.states[] | select(.id == $id) | (.previous[0] // "")' "${CATALOG}")"
+  done
+
+  return 1
+}
+
+state_num="$(derive_state_num "${STATE_ID}")" || {
+  echo "[fail] invalid state id format: ${STATE_ID}"
+  exit 1
+}
+
+if (( 10#${state_num} < 2 )); then
+  echo "[info] skipping generated CI assets for ${STATE_ID} (policy starts at state 002)"
+  exit 0
+fi
+
+enable_container_ci=0
+if (( 10#${state_num} >= 4 )); then
+  enable_container_ci=1
 fi
 
 is_convergence="$(jq -r '.isConvergence // false' <<<"${state_entry}")"
@@ -189,6 +206,9 @@ case "${STATE_ID}" in
     ;;
   014-fdc3-intent-interoperability)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability")
+    ;;
+  lmax-kubernetes)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "lmax-kubernetes")
     ;;
 esac
 
