@@ -24,6 +24,7 @@ SKIP_GENERATE=0
 K8S_PROVIDER="${K8S_PROVIDER:-kind}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-}"
 MINIKUBE_PROFILE=""
+HOST_LOOPBACK="${TRADERX_HOST_LOOPBACK:-127.0.0.1}"
 MINIKUBE_DRIVER="${MINIKUBE_DRIVER:-docker}"
 USE_PUBLISHED_IMAGES="${TRADERX_USE_PUBLISHED_IMAGES:-0}"
 PUBLISHED_REGISTRY="${TRADERX_PUBLISHED_REGISTRY:-ghcr.io/finos}"
@@ -391,17 +392,17 @@ wait_for_http() {
   return 1
 }
 
-wait_for_http "edge-health" "http://localhost:${host_port}/health"
-wait_for_http "edge-ui" "http://localhost:${host_port}/"
-wait_for_http "grafana-health" "http://localhost:${host_port}/grafana/api/health"
-wait_for_http "prometheus-ready" "http://localhost:${host_port}/prometheus/-/ready"
+wait_for_http "edge-health" "http://${HOST_LOOPBACK}:${host_port}/health"
+wait_for_http "edge-ui" "http://${HOST_LOOPBACK}:${host_port}/"
+wait_for_http "grafana-health" "http://${HOST_LOOPBACK}:${host_port}/grafana/api/health"
+wait_for_http "prometheus-ready" "http://${HOST_LOOPBACK}:${host_port}/prometheus/-/ready"
 
 echo "[done] state 010 kubernetes runtime started"
 echo "[provider] ${K8S_PROVIDER}"
 if (( USE_PUBLISHED_IMAGES == 1 )); then
   echo "[images] published namespace=${PUBLISHED_NAMESPACE} tag=${PUBLISHED_TAG}"
 fi
-echo "[ui] http://localhost:${host_port}"
-echo "[api-explorer] http://localhost:${host_port}/api/docs"
-echo "[grafana] http://localhost:${host_port}/grafana (local login credentials)"
-echo "[prometheus] http://localhost:${host_port}/prometheus"
+echo "[ui] http://${HOST_LOOPBACK}:${host_port}"
+echo "[api-explorer] http://${HOST_LOOPBACK}:${host_port}/api/docs"
+echo "[grafana] http://${HOST_LOOPBACK}:${host_port}/grafana (local login credentials)"
+echo "[prometheus] http://${HOST_LOOPBACK}:${host_port}/prometheus"
