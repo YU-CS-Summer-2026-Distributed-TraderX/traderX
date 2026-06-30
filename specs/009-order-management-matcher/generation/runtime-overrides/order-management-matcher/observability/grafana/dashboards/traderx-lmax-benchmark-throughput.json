@@ -1,0 +1,118 @@
+{
+  "id": null,
+  "uid": "traderx-lmax-benchmark-throughput",
+  "title": "TraderX LMAX Benchmark Throughput",
+  "tags": ["traderx", "lmax", "benchmark", "throughput", "blp", "provisioned"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to run it",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**This dashboard shows the pure in-process benchmark path, not the live REST platform path.**\n\nRun it with:\n\n```bash\nbash /scripts/bench/run-blp-dashboard-bench.sh\n```\n\nDirect trigger endpoint:\n\n```bash\ncurl -X POST 'http://localhost:18110/system/benchmarks/blp/run?warmupOrders=500000&measuredOrders=40000000&waitStrategy=yielding'\n```\n\nThe benchmark uses the input ring, single-threaded BLP, and output ring only. It removes HTTP order ingress, JSON, NATS, DB, projector, and journal I/O from the measured path."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Benchmark Running",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 6 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_benchmark_blp_running)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "none", "decimals": 0 } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Benchmark BLP (current)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 6 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_benchmark_blp_events_per_second_current)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "green" } } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Benchmark BLP (peak)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 6 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_benchmark_blp_events_per_second_peak)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "dark-green" } } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Sustained Orders/sec",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 6 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_benchmark_blp_last_sustained_orders_per_second)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "orange" } } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Benchmark Input Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_benchmark_input_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_benchmark_input_events_per_second_peak)", "legendFormat": "peak" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Benchmark BLP Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_benchmark_blp_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_benchmark_blp_events_per_second_peak)", "legendFormat": "peak" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Benchmark Output Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_benchmark_output_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_benchmark_output_events_per_second_peak)", "legendFormat": "peak" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Benchmark Trades/sec",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_benchmark_trades_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_benchmark_trades_per_second_peak)", "legendFormat": "peak" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "cps", "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" } } },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}

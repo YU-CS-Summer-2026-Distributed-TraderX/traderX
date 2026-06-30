@@ -1,0 +1,141 @@
+{
+  "id": null,
+  "uid": "traderx-lmax-throughput",
+  "title": "TraderX LMAX Throughput",
+  "tags": ["traderx", "lmax", "throughput", "disruptor", "orders", "provisioned"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["1s", "2s", "5s", "10s", "30s", "1m"]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "How to read this",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "**These are in-process throughput gauges, not reconstructed Prometheus irate spikes.**\n\n- **Input disruptor throughput** = input events consumed through the input ring into the BLP.\n- **BLP throughput** = events completed by the single-threaded business logic processor.\n- **Output disruptor throughput** = output events consumed from the output ring.\n- **Trades/sec** = booked trades only.\n\nAll four are measured inside the matcher over rolling **100 ms** windows and exported as live gauges plus peak-since-restart gauges. Because the values are computed in-process, Grafana can show short bursts more accurately than panels built only from `rate(...)` or `irate(...)` on the service's own `/metrics` endpoint.\n\n**Important:** input-ring throughput and BLP throughput should be very close in healthy steady state because the BLP is the sole input-ring consumer."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Input Disruptor (current)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 5 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_input_events_per_second_current)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "blue" } } }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "BLP (current)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 5 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_blp_events_per_second_current)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "green" } } }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Output Disruptor (current)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 5 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_output_events_per_second_current)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "orange" } } }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Trades/sec (current)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 5 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_trades_per_second_current)" }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area" },
+      "fieldConfig": { "defaults": { "unit": "cps", "decimals": 0, "color": { "mode": "fixed", "fixedColor": "purple" } } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Input Disruptor Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_input_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_input_events_per_second_peak)", "legendFormat": "peak since restart" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "BLP Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_blp_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_blp_events_per_second_peak)", "legendFormat": "peak since restart" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Output Disruptor Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_output_events_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_output_events_per_second_peak)", "legendFormat": "peak since restart" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Booked Trades Throughput",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        { "refId": "A", "expr": "max(traderx_trades_per_second_current)", "legendFormat": "current" },
+        { "refId": "B", "expr": "max(traderx_trades_per_second_peak)", "legendFormat": "peak since restart" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "cps",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "never" }
+        }
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi" } }
+    }
+  ]
+}
