@@ -16,6 +16,7 @@ RUN_DIR="${GENERATED_ROOT}/code/target-generated/kubernetes-runtime/.run/state-0
 K8S_PROVIDER="${K8S_PROVIDER:-kind}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-}"
 MINIKUBE_PROFILE=""
+HOST_LOOPBACK="${TRADERX_HOST_LOOPBACK:-127.0.0.1}"
 
 while (( "$#" )); do
   case "$1" in
@@ -122,12 +123,12 @@ echo
 printf "%-20s %-8s %s\n" "endpoint" "http" "url"
 printf "%-20s %-8s %s\n" "--------------------" "--------" "---"
 for target in \
-  "edge-health|http://localhost:${host_port}/health" \
-  "edge-ui|http://localhost:${host_port}/" \
-  "grafana|http://localhost:${host_port}/grafana/api/health" \
-  "prometheus|http://localhost:${host_port}/prometheus/-/ready" \
-  "account|http://localhost:${host_port}/account-service/account/22214" \
-  "reference-data|http://localhost:${host_port}/reference-data/stocks"; do
+  "edge-health|http://${HOST_LOOPBACK}:${host_port}/health" \
+  "edge-ui|http://${HOST_LOOPBACK}:${host_port}/" \
+  "grafana|http://${HOST_LOOPBACK}:${host_port}/grafana/api/health" \
+  "prometheus|http://${HOST_LOOPBACK}:${host_port}/prometheus/-/ready" \
+  "account|http://${HOST_LOOPBACK}:${host_port}/account-service/account/22214" \
+  "reference-data|http://${HOST_LOOPBACK}:${host_port}/reference-data/stocks"; do
   name="${target%%|*}"
   url="${target#*|}"
   code="$(http_code_for "${url}")"

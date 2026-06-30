@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${REPO_ROOT}/generated}"
+if [[ -n "${TRADERX_GENERATED_ROOT:-}" ]]; then
+  GENERATED_ROOT="${TRADERX_GENERATED_ROOT}"
+else
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  GENERATED_ROOT="${REPO_ROOT}/generated"
+fi
 STATE_DIR="${GENERATED_ROOT}/code/target-generated/lmax-kubernetes"
 UPSTREAM_STATUS_SCRIPT="${GENERATED_ROOT}/code/target-generated/scripts/status-state-014-fdc3-intent-interoperability-generated.sh"
 

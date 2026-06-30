@@ -2,6 +2,19 @@
 
 Current status: initial generated-state contract smoke is implemented in `scripts/test-state-lmax-kubernetes.sh`.
 
+Verified closeout commands:
+
+```bash
+bash pipeline/generate-state.sh lmax-kubernetes
+bash generated/code/target-generated/scripts/test-state-lmax-kubernetes.sh
+```
+
+Most recent result:
+
+- generation completed successfully
+- generated-state contract smoke passed
+- runtime harness still delegates to `014-fdc3-intent-interoperability`
+
 Smoke split:
 
 1. inherited `014` Kubernetes/C3/FDC3 regression checks

@@ -20,6 +20,13 @@ Check the generated state contract:
 bash scripts/test-state-lmax-kubernetes.sh
 ```
 
+Validated closeout path:
+
+```bash
+bash pipeline/generate-state.sh lmax-kubernetes
+bash generated/code/target-generated/scripts/test-state-lmax-kubernetes.sh
+```
+
 Current runtime notes:
 
 - The runtime still reuses the `014` lifecycle harness.

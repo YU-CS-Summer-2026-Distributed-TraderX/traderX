@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-export TRADERX_LOCAL_RUNTIME_SCRIPT=1
-
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${REPO_ROOT}/generated}"
+if [[ -n "${TRADERX_GENERATED_ROOT:-}" ]]; then
+  GENERATED_ROOT="${TRADERX_GENERATED_ROOT}"
+  REPO_ROOT="$(cd "${GENERATED_ROOT}/.." && pwd)"
+else
+  REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  GENERATED_ROOT="${REPO_ROOT}/generated"
+fi
 EXPECTED_STATE="lmax-kubernetes"
 ORDER_MATCHER_PROPS="${GENERATED_ROOT}/code/target-generated/order-matcher/src/main/resources/application.properties"
 K8S_ORDER_MATCHER_DEPLOY="${GENERATED_ROOT}/code/target-generated/kubernetes-runtime/manifests/base/order-matcher-deployment.yaml"

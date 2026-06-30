@@ -279,7 +279,7 @@ esac
 # Mark copied scripts as local-runtime scripts and disable re-generation there.
 for script in "${SCRIPTS_DST}"/*.sh; do
   [[ -f "${script}" ]] || continue
-  if ! rg -q '^export TRADERX_LOCAL_RUNTIME_SCRIPT=1$' "${script}"; then
+  if ! rg -q '^export TRADERX_SKIP_GENERATE=1$' "${script}"; then
     perl -0pi -e 's#set -euo pipefail\n#set -euo pipefail\n\nexport TRADERX_LOCAL_RUNTIME_SCRIPT=1\nexport TRADERX_SKIP_GENERATE=1\nif [[ -z "\${TRADERX_GENERATED_ROOT:-}" ]]; then\n  TRADERX_GENERATED_ROOT="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")/../../.." && pwd)"\n  export TRADERX_GENERATED_ROOT\nfi\n#' "${script}"
   fi
   chmod +x "${script}"
