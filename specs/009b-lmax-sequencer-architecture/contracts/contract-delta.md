@@ -34,18 +34,24 @@ seams or metrics.
   (`ORDER_ACCEPTED|ORDER_REJECTED|ORDER_PARTIALLY_FILLED|ORDER_FILLED|ORDER_CANCELED|TRADE_BOOKED|
   POSITION_UPDATED`), `accountId:int32`, `securityId:int32`, `side:uint8`, `qty:int64`,
   `pxTicks:int64`, `remainingQty:int64`, `status:uint8`, `ingressNanos:int64`.
-- **Journal format contract**: append-only `(seq, type, raw SBE bytes, ingressNanos)`; same bytes as
-  the wire/ring (zero re-serialization); Chronicle Queue (demo) / Aeron Archive (perf) layout,
-  retention, and roll policy documented with the implementation; schema-versioned for forward replay.
-- **Snapshot contract**: serialized BLP state (books, positions, caches) + reflected `seq`.
+- **Journal format contract**: append-only fixed **64-byte little-endian** record `(seq, type, side,
+  orderRef, accountId, securityId, qty, limitPx, priceTicks, eventTimeMillis)` to `input-events.journal`;
+  `ingressNanos` is not journaled (latency field, not state); a torn trailing record (< 64 bytes) is
+  discarded on replay. (SBE-as-wire-bytes + schema-versioning is the deferred perf-profile form; today the
+  record is typed fields, not SBE.)
+- **Snapshot contract**: `snapshot.dat` — full BLP state (orders, net positions, last prices,
+  `nextOrderRef`, `tradeCounter`) + `coveredOffset` (journal byte offset the snapshot covers); written
+  atomically (temp + atomic rename) on the BLP thread at a sequenced `SNAPSHOT` marker; recovery loads it
+  and replays only the journal tail after `coveredOffset`.
 - **Replication contract**: followers receive the identical sequenced input stream; follower output is
   suppressed until promotion; promotion occurs at the follower's current sequence (Aeron Cluster in the
   perf profile; loopback/stub in demo).
 - **Request/response event contract** for BLP cache misses (e.g. `AccountLookupRequest` ->
   `AccountLookupResponse` re-entering as a sequenced input event); a timeout/failure is itself an event.
-- **Projection checkpoint contract**: last projected `seq` persisted at
-  `output.projector.checkpoint-path`; projection is idempotent from the checkpoint; full rebuild from
-  the journal must reproduce identical rows (SC-09B11).
+- **Projection checkpoint contract**: last projected `seq` (`projectedSeq`), advanced only on a committed
+  flush so projection is idempotent; full rebuild from the journal must reproduce identical rows
+  (SC-09B11). In 009b this watermark is in-memory; persisting it to `output.projector.checkpoint-path` is
+  deferred (the snapshot's `coveredOffset` is the durable recovery boundary).
 - **Symbol table contract**: `ticker <-> securityId` owned by the Gateway; `securityId -> ticker`
   rendering only in output handlers.
 
@@ -76,14 +82,16 @@ Added keys (demo-safe defaults):
 | `price.input.via-ring` | `true` | Price ticks through the ring (vs `009` out-of-band). |
 | `blp.books.max-securities` | `4096` | Pre-size `OrderBook[]`. |
 | `blp.book.pool-size` | `65536` | Pooled resting-order entries. |
-| `blp.snapshot.interval` | `nightly` | Snapshot cadence. |
-| `blp.snapshot.path` | `./data/snapshots` | Snapshot location. |
-| `blp.cache.account.warm-on-start` | `true` | Warm account cache from read-model at startup. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `60000`) | Periodic full-state snapshot cadence in ms; `0` = off. `snapshot.dat` lives under `journal.path`. |
+| `recovery.source` (env `RECOVERY_SOURCE`) | `db` | `db` (warm-start + journal-replay verify) or `journal` (snapshot+journal authoritative, no DB). |
+| `output.projector.db.enabled` (env `OUTPUT_PROJECTOR_DB_ENABLED`) | `true` | `false` drops all DB writes (no-DB cutover). |
+| `journal.replay.verify` | `true` | In `db` mode, verify journal replay reconstructs the warm-start state. |
+| `blp.cache.account.warm-on-start` | `true` | Warm account cache from read-model at startup *(not yet wired)*. |
 | `output.nats.enabled` | `true` | Toggle the NATS bridge. |
 | `output.projector.enabled` | `true` | Toggle DB projection. |
 | `output.projector.batch-size` | `500` | Max rows per flush. |
 | `output.projector.flush-interval-ms` | `200` | Time-based flush bound. |
-| `output.projector.checkpoint-path` | `./data/projection.ckpt` | Last projected `seq`. |
+| `output.projector.checkpoint-path` | `./data/projection.ckpt` | Last projected `seq` *(not yet wired; `projectedSeq` watermark is in-memory)*. |
 | `affinity.enabled` | `false` | Core pinning (perf only). |
 | `affinity.blp-core` / `affinity.journaler-core` | (unset) | Pinned core IDs. |
 | `nogc.*` | see `requirements/no-gc-conformance.md` | No-GC profile keys. |
@@ -119,7 +127,8 @@ Prometheus metric names required for this state (full table with types/meanings 
   `traderx_replication_ack_latency_seconds`.
 - BLP: `traderx_blp_event_latency_seconds`, `traderx_blp_book_depth{security=...}`,
   `traderx_blp_positions_total`, `traderx_blp_cache_miss_total{cache=...}`,
-  `traderx_blp_snapshot_seconds`, `traderx_blp_replay_seconds`.
+  `traderx_blp_snapshot_seconds`, `traderx_blp_replay_seconds` *(snapshot/replay durations are
+  currently logged via `JOURNAL-REPLAY VERIFY` / `LIVE RECOVERY`, not yet metered)*.
 - Output stage: `traderx_output_publish_latency_seconds`, `traderx_output_remaining_capacity`,
   `traderx_output_events_total{kind=...}`, `traderx_output_nats_errors_total`,
   `traderx_projector_lag_seq`, `traderx_projector_batch_size`.

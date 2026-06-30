@@ -46,7 +46,7 @@ These were confirmed before writing and bound the rest of the document:
 | --- | --- | --- |
 | **Scope of nodes** | **Trade hot path only** | Sequencer + matching BLP + trade ingest/booking are redesigned. `account-service`, `position-service`, `people-service`, `reference-data`, the Angular UI, ingress, and the LGTM observability stack stay on the current stack — exactly as LMAX kept everything except the BLP conventional. |
 | **Sequencer topology** | **Global platform sequencer** | One sequenced, journaled, replicated input stream → one single-threaded BLP → output disruptor fan-out. Strongest fidelity to the article. |
-| **Source of truth** | **Event journal is authoritative; Postgres is an async read-model** | BLP state is rebuilt by replay + nightly snapshot. Postgres is fed asynchronously, off the critical path, purely for queries/UI/reporting. |
+| **Source of truth** | **Event journal is authoritative; the database is an async read-model** | BLP state is rebuilt by **periodic snapshot + journal-tail replay**. As implemented in 009b this is a switch (`recovery.source`): the default `db` warm-starts from the read-model and *verifies* the journal rebuilds the same state, while `recovery.source=journal` makes snapshot+journal authoritative so the matcher needs no database at all. The database is fed asynchronously, off the critical path, purely for queries/UI/reporting. |
 | **Latency goal** | **Aggressive: sub-ms in-node, single-digit-ms end-to-end** | Justifies the full no-GC toolkit: pre-allocated rings, off-heap/flyweight events, `long` fixed-point prices, busy-spin wait strategy, pinned cores. |
 
 **Out of scope / unchanged:** trader-facing CRUD reads, the `people-service` (.NET) and `reference-data`/`price-publisher` (Node.js) nodes, the Angular UI contract, and observability. They feed or consume the hot path but are not rebuilt.
@@ -92,7 +92,7 @@ Key facts from the article that drive this design:
 - **Input handlers run in parallel**: journaler (durable), replicator (cluster), un-marshaller. The BLP only
   runs once all three have passed a given sequence.
 - **No external calls from the BLP** — long-latency work is split into request/response events.
-- **Replay = recovery**: nightly snapshots, **restart in < 1 minute**, deterministic replay for diagnostics.
+- **Replay = recovery**: periodic snapshots + journal-tail replay (bounded restart), deterministic replay for diagnostics.
 - **Failover**: **two BLPs in the main data center + one at DR**; replicas process the same input but suppress
   output until promoted — **microsecond failover**.
 - **GC discipline**: avoid mid-life-promoted objects, reuse pre-allocated objects, cache-friendly custom
@@ -114,7 +114,7 @@ flowchart TD
   TS -->|"GET /prices  (REST, blocking)"| PP["price-publisher :18100"]
   TS -->|"publish /trades (JSON)"| NATS["NATS :4222"]
   NATS --> TP["trade-processor :18091"]
-  TP -->|"JPA / Hibernate writes"| PG[("Postgres :18083")]
+  TP -->|"JPA / Hibernate writes"| PG[("MariaDB :18083")]
 
   ING --> OM["order-matcher :18110"]
   OM -->|"@Scheduled 1000ms poll<br/>ReentrantLock · BigDecimal · streams"| OM
@@ -137,7 +137,7 @@ Concrete observations from the snapshot, each mapped to the LMAX remedy this des
 | `OrderMatcherService.submitTrade(...)` | **REST `POST /trade/` inside the match loop** | Matching and booking are **fused into one in-memory BLP** — a method call, not a network hop. |
 | `BigDecimal` prices everywhere; `ConcurrentHashMap lastPrices`; `.stream().filter().toList()` per tick | Allocation- and GC-heavy, cache-unfriendly | **`long` fixed-point** prices, **Agrona primitive collections**, **zero-allocation** steady state. |
 | JSON over NATS (`NatsJSONSubscriber` Jackson `ObjectMapper`) | Per-message parse/allocate | **SBE / flyweight** binary codec; zero-copy decode into pre-allocated ring slots. |
-| `trade-processor` + `order-matcher` write Postgres on the hot path | DB latency + locks on the critical path | **Journal is source of truth**; Postgres becomes an **async read-model** fed off the output disruptor. |
+| `trade-processor` + `order-matcher` write MariaDB on the hot path | DB latency + locks on the critical path | **Journal is source of truth**; MariaDB becomes an **async read-model** fed off the output disruptor. |
 | String `security` symbols flow end-to-end | String hashing/equality, allocation on hot path | **Symbol → `int` securityId** mapping at the Gateway; the BLP never sees a `String`. |
 
 ---
@@ -147,7 +147,7 @@ Concrete observations from the snapshot, each mapped to the LMAX remedy this des
 Everything that can change the trading state — **new orders, cancels, force-fills, and price ticks** — enters
 through **one Gateway**, is stamped with a **single global sequence number**, journaled and replicated in
 parallel, then handed to **one single-threaded BLP** that holds the order book and positions in memory. Results
-leave via an **output disruptor** that fans out to the existing NATS/UI contract and to an async Postgres
+leave via an **output disruptor** that fans out to the existing NATS/UI contract and to an async MariaDB
 read-model.
 
 ```mermaid
@@ -182,7 +182,7 @@ flowchart TB
   subgraph DOWN["Downstream — async, off critical path"]
     NATS["NATS fan-out"]
     PRJ["Read-model Projector"]
-    PG[("Postgres read-model :18083")]
+    PG[("MariaDB read-model :18083")]
   end
 
   JSTORE[("Journal<br/>Chronicle Queue / Aeron Archive")]
@@ -259,7 +259,7 @@ sequenceDiagram
   participant R as Replicator
   participant B as BLP (1 thread)
   participant O as Output Disruptor
-  participant P as Projector → Postgres
+  participant P as Projector → MariaDB
   participant N as NATS → UI
 
   U->>G: submit order (REST / WS)
@@ -286,7 +286,7 @@ Notes:
   near-instant.
 - The **BLP never blocks**. If matching needed something it doesn't have in memory (it shouldn't, given the
   caches), it would emit a request event and continue — the response returns later as another sequenced event.
-- **Output is asynchronous to the user.** Postgres writes and even NATS fan-out happen downstream of the BLP;
+- **Output is asynchronous to the user.** MariaDB writes and even NATS fan-out happen downstream of the BLP;
   they never sit on the order-acknowledgement path.
 
 ---
@@ -310,7 +310,7 @@ on the hot path (Gateway, Sequencer, Journaler, Replicator, BLP, Output publishe
 | **`-XX:+AlwaysPreTouch`, `-Xms == -Xmx`, large pages, NUMA-aware** | Default heap growth | No page faults / heap resize jitter at runtime. |
 | **GC: Epsilon in zero-alloc tests; ZGC/Shenandoah in prod** | G1 defaults | Epsilon (no-op) proves zero-alloc and fails fast if violated; ZGC/Shenandoah give sub-ms pauses as a safety net. The modern equivalent of LMAX's tuned CMS + nightly bounce. |
 | **JIT warm-up replay at startup** | Cold Hotspot on first live orders | Replay a synthetic workload so hot methods are C2-compiled before going live. |
-| **Nightly bounce** | n/a | Restart in a quiet window, replay snapshot+journal (< 1 min), wipe any accumulated state — straight from the article. |
+| **Nightly bounce** | n/a | Restart in a quiet window, reload the latest snapshot + replay only the journal tail, wipe any accumulated state — straight from the article. (009b does snapshot+tail replay on every restart; a *scheduled* bounce window is still aspirational.) |
 
 > **Discipline, not just config.** The GC flags are a safety net. The real work is writing allocation-free code
 > and proving it — see [§15](#15-how-we-will-validate-latency). Running tests under **Epsilon GC** turns any
@@ -326,11 +326,11 @@ on the hot path (Gateway, Sequencer, Journaler, Replicator, BLP, Output publishe
 | `order-matcher` matching logic (`OrderMatcherService`) | **BLP — matching engine** | In-memory order book per `securityId`; **event-driven** (no `@Scheduled` poll); no lock; `long` prices. |
 | `trade-processor` booking + position keeping | **BLP — booking & position keeping** | Fused into the same single thread as matching; emits `TradeBooked` / `PositionUpdated` output events instead of writing the DB inline. |
 | `price-publisher` | **Input producer** (unchanged node) | Price ticks become **sequenced input events** through the Gateway, not out-of-band NATS messages, so they are part of the deterministic stream. |
-| Postgres (system of record) | **Async read-model** | Fed by the **Read-model Projector** off the output disruptor. Authoritative state is the journal. |
+| MariaDB (system of record) | **Async read-model** | Fed by the **Read-model Projector** off the output disruptor. Authoritative state is the journal. |
 | NATS `/orders`, `/accounts/{id}/orders`, `/trades` | **Output fan-out** (unchanged bus) | A publisher on the output disruptor bridges BLP output events onto the existing NATS topics, so the **UI contract is preserved**. |
 | — (new) | **Sequencer** | Assigns the global sequence number; the heart of ordering and determinism. |
 | — (new) | **Journaler + Replicator** | Durable, replicated input log (Chronicle Queue / Aeron Archive; Aeron Cluster for consensus). |
-| — (new) | **Read-model Projector** | Consumes output events, batches writes to Postgres, serves nothing on the critical path. |
+| — (new) | **Read-model Projector** | Consumes output events, batches writes to MariaDB, serves nothing on the critical path. |
 | `account-service`, `position-service`, `people-service`, `reference-data`, UI, ingress, LGTM | **Unchanged** | Out of scope; they feed caches or consume fan-out. |
 
 ---
@@ -338,25 +338,38 @@ on the hot path (Gateway, Sequencer, Journaler, Replicator, BLP, Output publishe
 ## 9. Event sourcing, replay, snapshots
 
 The journal of sequenced **input** events is the single source of truth. BLP state is a pure function of that
-stream, so it can always be rebuilt.
+stream, so it can always be rebuilt. To keep replay bounded as the journal grows, the BLP periodically
+**checkpoints** its whole state and recovery replays only the journal *tail* after that checkpoint.
 
 ```mermaid
 stateDiagram-v2
   [*] --> ColdStart
-  ColdStart --> LoadSnapshot: load last nightly snapshot
-  LoadSnapshot --> ReplayJournal: replay events since snapshot
-  ReplayJournal --> WarmUp: JIT warm-up workload
-  WarmUp --> Live: caches hot, go live
+  ColdStart --> LoadSnapshot: load latest snapshot.dat
+  LoadSnapshot --> ReplayTail: replay journal tail after coveredOffset
+  ReplayTail --> Live: read model rebuilt, go live
   Live --> Live: process sequenced events (zero-alloc)
+  Live --> Snapshot: SNAPSHOT marker on the interval
+  Snapshot --> Live: write snapshot.dat (atomic), record tail boundary
   Live --> NightlyBounce: low-activity window
   NightlyBounce --> ColdStart: restart, wipe heap
 ```
 
-- **Snapshot**: periodically (e.g. nightly) serialize BLP state + the sequence number it reflects.
-- **Recovery**: load latest snapshot, replay journal from that sequence forward — the article reports
-  **restart in under a minute**.
+- **Snapshot**: a `snapshot-scheduler` thread sequences a `SNAPSHOT` marker every `snapshot.interval.ms`
+  (env `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` = off). The marker rides the input ring, so the BLP
+  serializes its whole state — book, net positions, last prices, `nextOrderRef`/`tradeCounter` — on its own
+  thread at a consistent sequence point, written to `snapshot.dat` **atomically** (temp + atomic rename). The
+  journaler fsyncs through the marker and records the journal byte offset the snapshot covers (`coveredOffset`).
+- **Recovery (after-failure startup)**: load the latest `snapshot.dat`, then replay **only the journal tail
+  after `coveredOffset`** (no snapshot yet ⇒ seed the initial condition and replay the whole journal). Restart
+  time is bounded by the snapshot interval, not the lifetime journal. As implemented in 009b this is a switch:
+  - `recovery.source=db` (default) — warm-start the live BLP from the persisted read-model, then *verify* in an
+    isolated shadow engine that snapshot+tail replay reconstructs the identical state (logs
+    `JOURNAL-REPLAY VERIFY: PASS`).
+  - `recovery.source=journal` — reconstruct the **live** BLP from snapshot+tail directly, with the output NATS
+    bridges gated so history is not re-broadcast. Combined with `output.projector.db.enabled=false` and the
+    no-DB boot knobs, the matcher recovers and trades **with the database stopped**.
 - **Diagnostics**: replay a production journal in a dev environment to reproduce any bug deterministically.
-- **Postgres is rebuildable too**: if the read-model is lost or schema-migrated, re-project it from the journal.
+- **The database is rebuildable too**: if the read-model is lost or schema-migrated, re-project it from the journal.
 
 ---
 
@@ -369,7 +382,7 @@ flowchart TB
   SEQ -->|"replicated input log"| F["BLP-Primary-B<br/>follower · output suppressed"]
   SEQ -->|"replicated input log"| DR["BLP-DR<br/>disaster-recovery site"]
   L -. "promote on failure" .-> F
-  L --> JNL[("Replicated journal +<br/>nightly snapshot")]
+  L --> JNL[("Replicated journal +<br/>periodic snapshot")]
   F --> JNL
 ```
 
@@ -384,7 +397,7 @@ is the modern, off-the-shelf realization of LMAX's hand-rolled sequencer + repli
 ## 11. Latency budget
 
 Sized for the aggressive target. "In-node compute" excludes network and durable/replication acknowledgement;
-"end-to-end" includes them. Price-tick handling and Postgres projection are **off** the user's
+"end-to-end" includes them. Price-tick handling and MariaDB projection are **off** the user's
 order-acknowledgement path.
 
 | Stage | Mechanism | Typical | p99 budget |
@@ -506,6 +519,9 @@ inputDisruptor.start();
 
 Ring sizes and wait strategies come from configuration (`disruptor.input.ring-size=65536`,
 `disruptor.input.wait-strategy=blocking` in the demo profile; `busyspin`/`yielding` for the perf profile).
+Note the shipped 009b compose overrides the env defaults to `busyspin` + `BLP_PIN_CPU=2`, so the
+containerized stack runs the pinned busy-spin BLP by default; reset them to `blocking` / `-1` for the pure
+demo profile.
 
 **The BLP — single thread, no locks, no allocation, switch on event type — `MatchingEngine.java`:**
 
@@ -569,7 +585,7 @@ flowchart LR
   P0["Phase 0<br/>Baseline + latency harness<br/>HdrHistogram · JLBH · jHiccup"] --> P1
   P1["Phase 1<br/>Disruptor inside order-matcher<br/>drop poll + lock · long fixed-point"] --> P2
   P2["Phase 2<br/>Fuse match + book + position into BLP<br/>move REST off hot path via caches"] --> P3
-  P3["Phase 3<br/>Sequencer + journal + replay<br/>Postgres → async read-model"] --> P4
+  P3["Phase 3<br/>Sequencer + journal + replay<br/>MariaDB → async read-model"] --> P4
   P4["Phase 4<br/>Replication + failover + DR<br/>nightly bounce"]
 ```
 
@@ -578,8 +594,9 @@ flowchart LR
   event-driven handler; swap `BigDecimal` for `long` fixed-point. Biggest latency win for least structural risk.
 - **Phase 2** — Fuse matching + booking + position-keeping into one in-memory BLP; replace the blocking REST
   validations with locally-maintained caches (request/response events for cache misses).
-- **Phase 3** — Introduce the Sequencer + journal; make the journal authoritative and turn Postgres into an
-  async read-model fed by a Projector. Add snapshot + replay recovery.
+- **Phase 3** — Introduce the Sequencer + journal; make the journal authoritative and turn the database into an
+  async read-model fed by a Projector. Add snapshot + replay recovery. *(Implemented in 009b: periodic
+  `snapshot.dat` + bounded journal-tail replay, with a `recovery.source=journal` no-DB cutover.)*
 - **Phase 4** — Add replicas + DR (Aeron Cluster), promotion-based failover, and the nightly bounce.
 
 ---
@@ -591,7 +608,7 @@ flowchart LR
 | **Operational complexity** | Sequencer, journal, replicas, snapshots, replay are real moving parts. Mitigate by adopting **Aeron Cluster / Chronicle Queue** rather than hand-rolling, and by phasing. |
 | **Programming-model shift** | "No external calls from the BLP" forces async request/response thinking. The article calls this initially unfamiliar but ultimately *easier* for error handling. Codify patterns + examples. |
 | **Single-thread ceiling** | One BLP core caps throughput. LMAX hit ~6M orders/s on one thread — orders of magnitude beyond TraderX's needs — so this is ample headroom, not a constraint, here. Shard by instrument later only if ever needed. |
-| **Loss of ACID DB on the write path** | Mitigated by event sourcing: the journal is durable and replicated before the BLP acts; Postgres remains for queries and is rebuildable by replay. |
+| **Loss of ACID DB on the write path** | Mitigated by event sourcing: the journal is durable and replicated before the BLP acts; MariaDB remains for queries and is rebuildable by replay. |
 | **`long` fixed-point pitfalls** | Fix the scale globally, centralize conversions at the edges, and unit-test rounding against the current `BigDecimal` behavior to avoid penny drift. |
 | **Busy-spin burns CPU** | Acceptable for the aggressive target; pin to isolated cores. Use `YieldingWaitStrategy` on non-critical consumers. |
 | **Over-engineering for a demo** | TraderX is a reference app. This is a faithful *teaching* implementation of LMAX; right-size deployment (e.g. single replica) for non-production use. |
