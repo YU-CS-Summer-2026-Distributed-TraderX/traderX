@@ -258,11 +258,14 @@ happens off-thread. The BLP thread never blocks on or allocates for logging.
 ## A10. Warm-up & the nightly bounce
 
 - **JIT warm-up.** A cold HotSpot interprets bytecode until C2 compiles the hot methods; the first live
-  orders would pay that cost. So at startup the node **replays a synthetic workload** (or a slice of the
-  journal) to force C2 compilation of the hot path *before* going live.
-- **Nightly bounce.** In a quiet window, restart the node, reload the latest snapshot, and replay the journal
-  (< 1 minute) — wiping any slowly-accumulated heap state and any fragmentation. Straight from the article;
-  it keeps a long-running node as pristine as a freshly-started one.
+  orders would pay that cost. So at startup the node should **replay a synthetic workload** (or a slice of the
+  journal) to force C2 compilation of the hot path *before* going live. *(Aspirational — 009b boots straight
+  into live after recovery; no warm-up replay yet.)*
+- **Nightly bounce.** In a quiet window, restart the node, reload the latest snapshot, and replay **only the
+  journal tail after it** (bounded) — wiping any slowly-accumulated heap state and fragmentation. Straight from
+  the article; it keeps a long-running node as pristine as a freshly-started one. *(009b performs the
+  snapshot+tail replay on every restart via `recovery.source`; a cron-scheduled bounce window is still
+  aspirational.)*
 
 ## A11. Proving it: the allocation gate
 
@@ -628,7 +631,9 @@ private OrderSnapshot execute(byte type, int orderRef, int accountId, int securi
 ### A12.8 Batch-amortized durability (`Journaler.onEvent`)
 
 The journaler writes each event into **one reused direct `ByteBuffer`** (allocated once in the
-constructor) and fsyncs once per drained batch — `endOfBatch` is the Disruptor's batching hook:
+constructor) and fsyncs once per drained batch — `endOfBatch` is the Disruptor's batching hook. A `SNAPSHOT`
+marker additionally forces the fsync immediately and records the journal byte offset just past it
+(`lastSnapshotOffset`), the tail boundary recovery replays from after loading `snapshot.dat`:
 
 ```java
 private final ByteBuffer buffer = ByteBuffer.allocateDirect(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
@@ -654,8 +659,12 @@ public void onEvent(InputEvent e, long sequence, boolean endOfBatch) {
     while (buffer.hasRemaining()) {
         channel.write(buffer);
     }
-    if (endOfBatch) {
-        channel.force(false); // durability amortized across the drained batch
+    writtenBytes += RECORD_SIZE;
+    if (e.type == InputEvent.TYPE_SNAPSHOT) {
+        channel.force(false);              // force through the marker…
+        lastSnapshotOffset = writtenBytes; // …and record the tail boundary recovery replays from
+    } else if (endOfBatch) {
+        channel.force(false);              // durability amortized across the drained batch
     }
     // …
     journaledSeq = sequence;

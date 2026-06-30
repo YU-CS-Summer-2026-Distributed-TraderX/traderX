@@ -93,7 +93,7 @@ Everything about the BLP follows from four rules taken straight from the article
 1. **Single-threaded.** Exactly one thread runs the business logic. It is the **sole writer** of the order
    book and positions, so there are **no locks** — the `ReentrantLock` from `009` disappears entirely.
 2. **In-memory.** "There is no database or other persistent store" on the hot path; current state lives in
-   RAM and is **entirely derivable by replaying the input events**. Postgres/H2 becomes a downstream
+   RAM and is **entirely derivable by replaying the input events**. MariaDB becomes a downstream
    read-model, not a dependency of the logic.
 3. **Event-sourced.** State is a pure function of the ordered input stream. Same inputs ⇒ same state ⇒ same
    outputs, always.
@@ -244,11 +244,18 @@ protocol described for the input ring, but with the BLP as the sole writer.
 
 Because BLP state is a pure function of the journaled input stream:
 
-- **Snapshot**: periodically (e.g., nightly) serialize the whole BLP state — books, positions, caches — plus
-  the sequence number it reflects.
-- **Recovery**: load the latest snapshot, then replay journal events from that sequence forward; the article
-  reports **restart in under a minute**. Then run a **JIT warm-up** replay so hot methods are C2-compiled
-  before going live.
+- **Snapshot**: on the `snapshot.interval.ms` cadence (env `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` =
+  off) a scheduler sequences a `SNAPSHOT` marker; the BLP serializes its whole state — book, net positions,
+  last prices, `nextOrderRef`/`tradeCounter` — on its own thread at that sequence point and writes
+  `snapshot.dat` **atomically** (temp + rename), recording the journal byte offset (`coveredOffset`) the
+  snapshot covers.
+- **Recovery (after-failure startup)**: load the latest `snapshot.dat` and replay **only the journal tail
+  after `coveredOffset`** (no snapshot ⇒ seed the initial book/positions and replay the whole journal), so
+  restart time is bounded by the interval, not the lifetime journal. Two sources: `recovery.source=db`
+  (default) warm-starts the live BLP from the persisted read-model and verifies snapshot+tail replay matches
+  it in an isolated shadow engine; `recovery.source=journal` rebuilds the live BLP from snapshot+tail
+  directly, needing no database. (A **JIT warm-up** replay before going live remains aspirational — see
+  `LMAX-NO-GC-JAVA.md`.)
 - **Diagnostics**: replay any production journal in a dev box to reproduce a bug deterministically.
 
 ## A11. How this replaces `009`'s matcher logic
@@ -428,10 +435,15 @@ lifecycle/wiring/actuator only, never on the per-event path.
 | --- | --- | --- |
 | `blp.books.max-securities` | `4096` | Pre-size `OrderBook[]`. |
 | `blp.book.pool-size` | `65536` | Pooled resting-order entries per book set. |
-| `blp.snapshot.interval` | `nightly` | Snapshot cadence. |
-| `blp.snapshot.path` | `./data/snapshots` | Snapshot location. |
-| `blp.warmup.replay-events` | `100000` | Synthetic warm-up workload size for JIT before going live. |
-| `blp.cache.account.warm-on-start` | `true` | Pre-load account cache from read-model at startup. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `60000`) | Periodic full-state snapshot cadence in ms; `0` = off. |
+| `recovery.source` (env `RECOVERY_SOURCE`) | `db` | Recovery mode: `db` (warm-start + journal-replay verify) or `journal` (snapshot+journal authoritative, no DB). |
+| `output.projector.db.enabled` (env `OUTPUT_PROJECTOR_DB_ENABLED`) | `true` | `false` drops all DB writes (no-DB cutover, paired with `recovery.source=journal`). |
+| `journal.replay.verify` | `true` | In `db` mode, verify journal replay reconstructs the warm-start state (shadow engine). |
+| `blp.warmup.replay-events` | `100000` | Synthetic warm-up workload size for JIT before going live *(not yet wired)*. |
+| `blp.cache.account.warm-on-start` | `true` | Pre-load account cache from read-model at startup *(not yet wired)*. |
+
+`snapshot.dat` is written under `journal.path` (default `./data/journal`), the same durable volume as the
+input journal, so the checkpoint survives container recreate, not just restart.
 
 Removed from `009`: `order.matcher.tick-ms`, `order.matcher.price-service-url`,
 `order.matcher.trade-service-url` (no more blocking REST from the matcher).
@@ -445,12 +457,14 @@ Removed from `009`: `order.matcher.tick-ms`, `order.matcher.price-service-url`,
 | `traderx_blp_positions_total` | gauge | Distinct positions held in memory. |
 | `traderx_blp_cache_miss_total{cache=...}` | counter | Request/response events emitted for misses. |
 | `traderx_blp_alloc_bytes_total` | counter | Steady-state allocation (**must stay ~0**). |
-| `traderx_blp_snapshot_seconds` | histogram | Snapshot duration. |
-| `traderx_blp_replay_seconds` | gauge | Last recovery replay duration. |
+| `traderx_journal_write_latency_seconds` | histogram | Journaler append latency per sequenced event (implemented). |
+| `traderx_input_gating_seq` | gauge | `min(journaled, replicated)` sequence gating the BLP (implemented). |
 
 Existing `009` order metrics (`traderx_orders_open_total`, `…_events_total`) are retained, now sourced from
 in-memory state. The `009` `traderx_order_match_latency_seconds` histogram (currently zero-filled) becomes a
-**real** measurement here.
+**real** measurement here. Snapshot-write and recovery-replay durations are currently surfaced via log lines
+(`JOURNAL-REPLAY VERIFY: PASS`, `LIVE RECOVERY [journal]`), not yet as
+`traderx_blp_snapshot_seconds`/`traderx_blp_replay_seconds` metrics.
 
 ## B21. Success criteria & validation
 
@@ -480,7 +494,7 @@ in-memory state. The `009` `traderx_order_match_latency_seconds` histogram (curr
 | Validation data (account/stocks/price) | ✅ via REST | **in-memory caches** + request/response events |
 | Single-thread, lock-free engine | ❌ (`ReentrantLock`, `@Scheduled`) | **build** |
 | Deterministic, clock-free hot path | ❌ (`Instant.now()` everywhere) | **build** |
-| Snapshot + replay recovery | ❌ | **build** |
+| Snapshot + replay recovery | ❌ | ✅ built in `009b` — periodic `snapshot.dat` + bounded journal-tail replay; `recovery.source=db` (verify) / `journal` (no-DB) |
 | Typed output events | ❌ (direct NATS/JPA writes) | **build** (feeds state `012`) |
 
 ## B23. Risks specific to the BLP

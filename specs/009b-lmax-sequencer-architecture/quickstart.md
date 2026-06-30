@@ -13,8 +13,11 @@ bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
 ./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
 ```
 
-The hot-path node warm-starts from the persisted read-model (orders re-indexed into the BLP at
-boot); snapshot files, journal replay, and JIT warm-up land with T09B14.
+The hot-path node warm-starts from the persisted read-model (orders + net positions re-indexed into
+the BLP at boot) and, on the demo profile, periodically checkpoints full state to `snapshot.dat`
+(`SNAPSHOT_INTERVAL_MS`, default 60 s); on restart it loads the latest snapshot and replays only the
+journal tail after it. JIT warm-up still lands with T09B14. See §7 to switch `recovery.source` to the
+DB-less `journal` mode.
 
 ## 3) Run Smoke Tests
 
@@ -56,7 +59,7 @@ curl -s "http://localhost:${ORDER_MATCHER_PORT}/metrics" | rg "traderx_disruptor
 # retained 009 order gauges (now sourced from in-memory BLP state)
 curl -s "http://localhost:${ORDER_MATCHER_PORT}/metrics" | rg "traderx_orders_open_total|traderx_orders_unfilled_total"
 
-# hot-path node health (ready only after replay + warm-up)
+# hot-path node health (ready after recovery: snapshot load + journal-tail replay)
 curl -s "http://localhost:${ORDER_MATCHER_PORT}/health"
 
 # dashboard landing (hot-path dashboards incl. allocation alert + GC-pause panels)
@@ -66,11 +69,22 @@ open http://localhost:3001
 ## 7) Exercise Recovery and Decoupling
 
 ```bash
-# snapshot + replay recovery: restart the node and watch traderx_blp_replay_seconds
+ORDER_MATCHER_PORT="${ORDER_MATCHER_PORT:-18110}"
+
+# Snapshot + journal-tail recovery (default recovery.source=db): restart the node, then read the
+# recovery log — "JOURNAL-REPLAY VERIFY: PASS" proves the journal alone rebuilds the warm-start state.
 ./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh --only order-matcher
 ./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --only order-matcher --skip-build
+docker logs "$(docker ps -qf name=order-matcher)" 2>&1 | grep -E "JOURNAL-REPLAY VERIFY|LIVE RECOVERY"
 
-# decoupling: stop the database, keep trading, restart it, watch traderx_projector_lag_seq drain
+# DB-less cutover (recovery.source=journal): the matcher recovers from snapshot+journal and serves
+# /orders + /positions from memory with the database STOPPED.
+RECOVERY_SOURCE=journal OUTPUT_PROJECTOR_DB_ENABLED=false \
+  SPRING_JPA_DDL_AUTO=none HIKARI_INIT_FAIL_TIMEOUT=-1 MANAGEMENT_HEALTH_DB_ENABLED=false \
+  ./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --only order-matcher --skip-build
+
+# Decoupling (db mode): stop the database, keep trading, restart it, watch the projector queue drain
+curl -s "http://localhost:${ORDER_MATCHER_PORT}/metrics" | rg "traderx_projector_queue_depth|traderx_projector_enqueue_blocks_total"
 ```
 
 ## Notes

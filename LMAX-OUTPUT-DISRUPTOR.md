@@ -302,19 +302,26 @@ The output ring is wired in `LmaxEngine`:
 
 ```java
 MarshallerHandler marshaller = new MarshallerHandler(readModel, symbols, metrics);
+// With the DB dropped (output.projector.db.enabled=false) the projector is simply absent — no DB writes.
+ProjectorHandler projector = projectorDbEnabled
+    ? new ProjectorHandler(jdbcTemplate, symbols, projectorBatchSize, projectorQueueCapacity, metrics)
+    : null;   // trades via JdbcTemplate INSERT … ON CONFLICT; orders/positions via Hibernate JDBC batch
 NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
 AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
 PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
-ProjectorHandler projector = new ProjectorHandler(orderRepository, positionRepository, jdbcTemplate,
-    symbols, projectorBatchSize, projectorQueueCapacity, metrics);   // trades via JdbcTemplate ON CONFLICT
-// projector.start() launches the drain thread (decoupled async DB writes); started with the output ring
 
+// Fan-out: marshaller + NATS bridges + optional legacy /trades + optional async DB projector.
+List<EventHandler<OutputEvent>> handlers = new ArrayList<>(List.of(
+    marshaller, natsBridge, accountTrade, positionUpdate));
 if (legacyTradeSubmitEnabled) {
-    TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
-        tradeSubmit, projector);
-} else {
-    outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
+    handlers.add(new TradeSubmitHandler(tradePublisher, symbols, readModel));
+}
+if (projector != null) {
+    handlers.add(projector);
+}
+outputDisruptor.handleEventsWith(handlers.toArray(new EventHandler[0]));
+if (projector != null) {
+    projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
 }
 ```
 

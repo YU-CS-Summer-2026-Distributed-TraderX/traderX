@@ -262,6 +262,13 @@ The aggressive target uses **busy-spin on the BLP and Journaler** (pinned to iso
 elsewhere. The **demo/CI profile** uses `BlockingWaitStrategy` so the build doesn't peg every core — this
 profile split is itself a spec item (see [§B22](#b22-configuration-keys)).
 
+> **As shipped (009b):** the application *default* is `blocking` + no pinning (`blp.pin.cpu=-1`), but the
+> 009b `order-management-matcher/docker-compose.yml` overrides the env to
+> `DISRUPTOR_INPUT_WAIT_STRATEGY=busyspin` + `BLP_PIN_CPU=2`, so the containerized stack runs the **pinned
+> busy-spin BLP by default** (it pegs ~3 cores: journaler + replicator + BLP). The core-pinning A/B found
+> pin + busy-spin *without* a cpuset cap wins on latency consistency; set both env vars back to
+> `blocking` / `-1` for the pure demo profile.
+
 ## A7. Batching for free
 
 When the BLP falls behind under a burst, the barrier reports the **highest available sequence**, and the
@@ -319,9 +326,12 @@ spec consequences:
 Because the BLP is gated behind the Journaler, the journal is a **complete, ordered record of every input
 the BLP ever processed**. From that:
 
-- **Snapshot + replay.** Periodically serialise BLP state plus the sequence it reflects. On restart, load
-  the latest snapshot and replay journal events from that sequence forward — the article reports restart in
-  **under a minute**.
+- **Snapshot + replay.** A scheduler sequences a `SNAPSHOT` marker every `snapshot.interval.ms` (env
+  `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` = off); the journaler fsyncs through the marker and records
+  the journal byte offset it covers, and the BLP serialises its whole state to `snapshot.dat` atomically. On
+  restart, load the latest `snapshot.dat` and replay **only the journal tail after that offset** — bounded
+  restart as the journal grows. `recovery.source=db` (default) warm-starts from the read-model and *verifies*
+  the tail replay matches; `recovery.source=journal` rebuilds the live BLP from snapshot+tail with no database.
 - **Deterministic replay.** Because state is a pure function of the ordered input stream, replaying a
   captured production journal in a dev box reproduces any bug exactly. This requires the BLP to be
   **deterministic** (no wall-clock reads, no `HashMap` iteration order, no RNG on the hot path) — a testable
@@ -363,7 +373,7 @@ direct:
 | `ConcurrentHashMap<String,BigDecimal> lastPrices` updated out-of-band by `onPriceTick(...)` | Price ticks become **ordered `PRICE_TICK` events** in the same ring; "last price" is plain BLP state, no concurrent map. |
 | `BigDecimal` everywhere (`roundPrice`, `setScale`), `compareTo` for in-the-money | **`long` fixed-point** comparisons; `BigDecimal` only at the Gateway/Projector edges. |
 | `restTemplate.postForEntity(tradeServiceUrl, …)` **inside** the match path (`submitTrade`) | Booking is **fused into the BLP** as an in-memory call; the trade is emitted as an **output event**, not a blocking REST hop. (Output stage — see the sequencer doc.) |
-| `orderRepository.save(...)` (JPA/H2) on the hot path | Journal is authoritative; the `OrderBook` table becomes an **async read-model** fed downstream. *(Optionally deferred — see scope options in [§B14](#b14-proposed-state--scope).)* |
+| `orderRepository.save(...)` (JPA/MariaDB) on the hot path | Journal is authoritative; the `OrderBook` table becomes an **async read-model** fed downstream. *(Optionally deferred — see scope options in [§B14](#b14-proposed-state--scope).)* |
 | `String security` flowing end-to-end; `findAllByOrderByUpdatedAtDesc().stream().filter(...)` per tick | `int securityId`; **array-indexed order book**; no per-tick stream allocation. |
 
 ## A13. The wiring as implemented in state `009b`
@@ -547,8 +557,11 @@ Author these in `spec.md` / `requirements/functional-delta.md` (illustrative IDs
   PRICE_TICK|FORCE_FILL`), `accountId:int`, `securityId:int`, `side:byte`, `qty:long`,
   `limitPx:long` (×1e6), `priceTicks:long`, `ingressNanos:long`.
 - **Symbol table**: `ticker:String ↔ securityId:int` mapping owned by the Gateway.
-- **Journal record**: append-only `(seq, type, raw SBE bytes, ingressNanos)`.
-- **Snapshot**: serialized BLP state + the `seq` it reflects.
+- **Journal record**: append-only fixed **64-byte** record `(seq, type, side, orderRef, accountId,
+  securityId, qty, limitPx, priceTicks, eventTimeMillis)` — `ingressNanos` is not journaled. (SBE bytes
+  are the deferred perf-profile form.)
+- **Snapshot** (`snapshot.dat`): full BLP state (orders, positions, prices, counters) + the journal byte
+  offset (`coveredOffset`) it covers; recovery loads it and replays only the journal tail after it.
 - `OrderBook` table: **unchanged (Option A)** or **demoted to read-model (Option B)**.
 
 **`contracts/contract-delta.md` additions** (mostly **internal** seams; external surface unchanged):
@@ -636,8 +649,11 @@ New keys for the `order-matcher` module (with demo-safe defaults):
 | `disruptor.input.wait-strategy` | `blocking` | `blocking` (demo/CI) / `yielding` / `busyspin` (perf). |
 | `disruptor.input.producer-type` | `multi` | Gateway + price feed. |
 | `journal.enabled` | `true` | Toggle the Journaler handler. |
-| `journal.type` | `chronicle` | `chronicle` / `aeron-archive` / `file`. |
-| `journal.path` | `./data/journal` | Durable log location. |
+| `journal.type` | `chronicle` | `chronicle` / `aeron-archive` / `file` *(demo uses `file`)*. |
+| `journal.path` | `./data/journal` | Durable log location (also holds `snapshot.dat` + `symbols.tab`). |
+| `journal.replay.verify` | `true` | In `db` recovery, verify journal replay reconstructs the warm-start state. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (demo `60000`) | Periodic snapshot to bound journal-tail replay; `0` = off. |
+| `recovery.source` (env `RECOVERY_SOURCE`) | `db` | `db` (warm-start + verify) or `journal` (snapshot+journal authoritative, no DB). |
 | `replication.enabled` | `false` | Option A stubs the Replicator. |
 | `replication.endpoints` | `(empty)` | Replica/DR addresses (Option B). |
 | `affinity.enabled` | `false` | Core pinning (perf profile only). |
@@ -691,7 +707,7 @@ latency percentiles, allocation-rate (alert if `> 0`).
 | --- | --- | --- |
 | Order domain + lifecycle (`NEW…REJECTED`) | ✅ `OrderRecord`, `OrderStatus` | reuse as BLP in-memory state |
 | Matching/auto-fill policy | ✅ in `OrderMatcherService` | re-cast as `EventHandler.onEvent` (no poll/lock) |
-| Persistence (`OrderBook`/H2/JPA) | ✅ | keep (Opt A) or demote to read-model (Opt B) |
+| Persistence (`OrderBook` via JPA/MariaDB) | ✅ | keep (Opt A) or demote to read-model (Opt B) |
 | NATS publish of order updates | ✅ `/orders`, `/accounts/{id}/orders` | move emission to BLP output; **contract unchanged** |
 | Price awareness | ✅ from `008` (`onPriceTick`, `lastPrices`) | convert ticks into ordered `PRICE_TICK` ring events |
 | Observability (LGTM, Prometheus, Grafana) | ✅ from `007`/`009` | add input-stage metrics + panels ([§B23](#b23-observability-deltas)) |
@@ -700,7 +716,7 @@ latency percentiles, allocation-rate (alert if `> 0`).
 | `long` fixed-point + `int securityId` | ❌ (`BigDecimal`/`String` today) | **build** |
 | SBE codec + generation task | ❌ | **build** |
 | No-GC discipline + Epsilon gate | ❌ | **build** |
-| Snapshot + replay recovery | ❌ | **build** |
+| Snapshot + replay recovery | ❌ | ✅ built in `009b` — `snapshot.dat` + bounded journal-tail replay |
 
 ## B26. Risks specific to the input stage
 

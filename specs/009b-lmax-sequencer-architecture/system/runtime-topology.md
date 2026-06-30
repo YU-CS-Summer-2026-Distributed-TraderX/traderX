@@ -26,8 +26,11 @@ Describe runtime topology and network/data flow changes introduced by this state
   fixed-point conversion, SBE encode, sequence submission); REST/WS contract unchanged.
 - Optional replica hot-path node (warm standby, output suppressed) — loopback/stub in `demo` profile,
   real second node + DR in `perf` profile.
-- New durable local state: journal directory, snapshot directory, projection checkpoint file (mounted
-  volumes in containerized profiles).
+- New durable local state: the journal directory (`journal.path`, default `./data/journal`) holds the
+  append-only `input-events.journal`, the periodic `snapshot.dat` checkpoint, and the `symbols.tab`
+  ticker->id map — one mounted volume (`order_matcher_journal` -> `/opt/app/data`) in containerized
+  profiles, durable across container recreate. (A standalone projection checkpoint file is not yet
+  implemented; the projector's `projectedSeq` watermark is in-memory, advanced on a committed DB flush.)
 
 ## Networking
 
@@ -47,9 +50,10 @@ Describe runtime topology and network/data flow changes introduced by this state
 ## Startup / Health Order
 
 1. Start inherited `009` runtime baseline (database, NATS, LGTM, edge services).
-2. Start the hot-path node (`order-matcher`): load latest snapshot -> replay journal from the snapshot
-   sequence -> run JIT warm-up replay (`nogc.warmup.events`) -> mark ready. The node reports unhealthy
-   until replay + warm-up complete.
+2. Start the hot-path node (`order-matcher`): restore the `symbols.tab` ticker map -> recover state ->
+   mark ready. Recovery is `recovery.source`-driven: `db` (default) warm-starts the BLP from the persisted
+   read-model and *verifies* snapshot+journal-tail replay matches it; `journal` rebuilds the live BLP from
+   `snapshot.dat` + the journal tail with no DB. (A JIT warm-up replay before going live is not yet wired.)
 3. Start/verify the Gateway role in `trade-service`: warm account/reference/price caches
    (`blp.cache.account.warm-on-start`), verify input ring connectivity.
 4. Start the replica node (perf profile) and verify it tracks the leader sequence with output
@@ -61,9 +65,10 @@ Describe runtime topology and network/data flow changes introduced by this state
 
 ## Operational Windows
 
-- Nightly bounce (`nogc.bounce.cron`): restart the hot-path node in a quiet window; recovery is
-  snapshot + replay (< 1 minute target) and re-runs warm-up before going live.
-- Snapshot cadence (`blp.snapshot.interval`): nightly by default; snapshots also taken before planned
-  bounces.
+- Snapshot cadence (`snapshot.interval.ms`, env `SNAPSHOT_INTERVAL_MS`): periodic full-state `snapshot.dat`
+  checkpoint, demo default 60 s (`0` = off); each snapshot bounds the journal tail recovery must replay.
+- Nightly bounce: restart the hot-path node in a quiet window; recovery is snapshot + journal-tail replay.
+  009b performs that replay on every restart; a cron-scheduled bounce window (`nogc.bounce.cron`) and a
+  warm-up replay before going live remain aspirational.
 - Failover drill (perf profile): kill the leader; the follower promotes at its current sequence and
   un-suppresses output; the Gateway re-targets producers.

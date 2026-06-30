@@ -6,8 +6,8 @@
 
 Planned smoke checks:
 
-- Runtime starts cleanly with the inherited `009` stack; hot-path node becomes ready only after
-  snapshot load + journal replay + JIT warm-up.
+- Runtime starts cleanly with the inherited `009` stack; the hot-path node becomes ready after recovery
+  (snapshot load + journal-tail replay; `recovery.source=db` default, or `journal` for the no-DB cutover).
 - Parity journeys (must behave identically to `009` — SC-09B03):
   - create order through ingress API; query account-filtered open orders; user cancel
   - admin force-fill via admin endpoint

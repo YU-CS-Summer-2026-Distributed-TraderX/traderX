@@ -31,8 +31,9 @@
       `/accounts/{id}/trades` and `/accounts/{id}/positions`. trade-service forwards market trades to
       the gateway; the old `TradeSubmitHandler` round-trip is removed and `trade-processor` is idle on
       this path (still deployed for read endpoints + smoke parity).
-- [~] T09B14 Recovery: persisted read-model warm-start + input-event journal implemented; snapshot
-      files, journal replay tooling, JIT warm-up, and nightly bounce deferred.
+- [~] T09B14 Recovery: persisted read-model warm-start + input-event journal + periodic `snapshot.dat`
+      checkpoint + bounded journal-tail replay + journal-replay verify + DB-less `recovery.source=journal`
+      cutover implemented (2026-06-30); JIT warm-up replay and a cron-scheduled nightly bounce deferred.
 - [x] T09B15 Implement the output disruptor (Marshaller/read-model, NATS bridge preserving `009`
       subjects/payloads, TradeBooked bridge, batched Read-model Projector).
 - [~] T09B16 Replication seam implemented as loopback stub gating the BLP (demo profile); real
