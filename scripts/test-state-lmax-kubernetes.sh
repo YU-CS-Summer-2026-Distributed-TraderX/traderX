@@ -29,13 +29,13 @@ traderx_report_generated_state "${EXPECTED_STATE}" "${GENERATED_ROOT}" >/dev/nul
   exit 1
 }
 
-echo "[check] Postgres-backed matcher config"
+echo "[check] MariaDB-backed matcher config"
 [[ -f "${ORDER_MATCHER_PROPS}" ]] || {
   echo "[error] missing generated order-matcher properties: ${ORDER_MATCHER_PROPS}"
   exit 1
 }
-rg -q 'jdbc:postgresql://' "${ORDER_MATCHER_PROPS}" || {
-  echo "[error] order-matcher is not configured for Postgres"
+rg -q 'jdbc:mariadb://' "${ORDER_MATCHER_PROPS}" || {
+  echo "[error] order-matcher is not configured for MariaDB"
   exit 1
 }
 rg -q 'management.endpoint.health.group.readiness.include=readinessState,lmaxRecovery' "${ORDER_MATCHER_PROPS}" || {
@@ -44,6 +44,14 @@ rg -q 'management.endpoint.health.group.readiness.include=readinessState,lmaxRec
 }
 rg -q 'snapshot.interval.ms=' "${ORDER_MATCHER_PROPS}" || {
   echo "[error] order-matcher snapshot interval configuration missing"
+  exit 1
+}
+rg -q 'journal.batch.records=' "${ORDER_MATCHER_PROPS}" || {
+  echo "[error] order-matcher journal batch records configuration missing"
+  exit 1
+}
+rg -q 'blp.terminal.retain=' "${ORDER_MATCHER_PROPS}" || {
+  echo "[error] order-matcher BLP terminal retain configuration missing"
   exit 1
 }
 

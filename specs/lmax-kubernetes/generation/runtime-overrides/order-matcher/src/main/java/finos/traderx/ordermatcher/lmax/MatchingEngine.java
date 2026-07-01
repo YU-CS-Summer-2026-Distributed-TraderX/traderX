@@ -34,6 +34,19 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private final PositionBook positions;        // net positions, single-writer (FR-09B08/B10)
     private long tradeCounter;                    // global trade number, single-writer (deterministic ids)
 
+    // Bounded terminal-order retention (state 009b Tier 2-B / milestone T09B14). Terminal orders stay
+    // addressable so cancel/force-fill of a completed order reproduces 009's "return it unchanged"
+    // semantics — but only the most recent `terminalCap` of them. Older terminals are evicted from
+    // ordersByRef and their RestingOrder recycled to the pool, so steady-state memory is bounded
+    // (open book + last `terminalCap` terminals) instead of growing without limit (the prior leak that
+    // paced sustained throughput via GC and eventually OOM'd). FIFO of terminal orderRefs in transition
+    // order; BLP thread only, allocation-free. An aged-out ref resolves to not-found (404), as one never
+    // created — the durable record lives in the journal. terminalCap <= 0 disables eviction (unbounded).
+    private final int[] terminalRing;
+    private final int terminalCap;
+    private int terminalHead;
+    private int terminalCount;
+
     // Single-writer telemetry: only the BLP thread writes, edge threads (REST /health,
     // /metrics) read racily-but-safely. The counters are plain longs published by the
     // once-per-event release-store of blpSeq (the Disruptor Sequence.set idiom); readers
@@ -62,8 +75,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    private static final int DEFAULT_TERMINAL_RETAIN = 262_144;
+
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
-                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
+                          int fillFullThreshold, int initialPoolSize, int positionCapacity,
+                          int terminalRetain) {
         this.out = out;
         this.metrics = metrics;
         this.fillFullThreshold = Math.max(1, fillFullThreshold);
@@ -71,11 +87,19 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         this.openRefsBySecurity = new IntList[maxSecurities];
         this.lastPxBySecurity = new long[maxSecurities];
         this.positions = new PositionBook(positionCapacity);
+        this.terminalCap = Math.max(0, terminalRetain);
+        this.terminalRing = this.terminalCap > 0 ? new int[this.terminalCap] : null;
         for (int i = 0; i < initialPoolSize; i++) {
             RestingOrder pooled = new RestingOrder();
             pooled.nextFree = freeList;
             freeList = pooled;
         }
+    }
+
+    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
+                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
+        this(out, metrics, maxSecurities, fillFullThreshold, initialPoolSize, positionCapacity,
+            DEFAULT_TERMINAL_RETAIN);
     }
 
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
@@ -140,6 +164,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         if (o.isOpen()) {
             openRefs(securityId).add(orderRef);
+        } else {
+            markTerminal(orderRef);   // terminal warm-start rows are evictable too (bounded retention)
         }
     }
 
@@ -318,6 +344,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             o.remaining = 0;
             o.updatedAtMillis = e.eventTimeMillis;
             openRefs(o.securityId).removeValueUnordered(o.orderRef);
+            markTerminal(o.orderRef);   // bounded retention: evicts the oldest terminal when full
             out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CANCEL, true, px, e.ingressNanos);
         } else {
             // 009 parity: canceling a terminal order returns (and re-publishes) it unchanged.
@@ -421,6 +448,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
         if (!o.isOpen()) {
             removeOpenRef(o, openIndex);
+            markTerminal(o.orderRef);   // bounded retention: evicts the oldest terminal when full
         }
 
         // Booking + position-keeping are fused into the BLP (FR-09B08/B10): the fill books the
@@ -490,6 +518,45 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         o.nextFree = null;
         o.reset();
         return o;
+    }
+
+    /**
+     * Record that {@code orderRef} just became terminal and, if the retention cap is full, evict the
+     * oldest terminal order first. FIFO, BLP-thread only, allocation-free. Called exactly once per order
+     * at the open→terminal transition (fill-to-zero, cancel of an open order, or a terminal warm-start
+     * row) — republished terminal orders do not re-enter the ring.
+     */
+    private void markTerminal(int orderRef) {
+        if (terminalRing == null) {
+            return;   // eviction disabled (terminalCap <= 0): unbounded retention, pre-Tier-2B behavior
+        }
+        if (terminalCount == terminalCap) {
+            int oldest = terminalRing[terminalHead];
+            terminalHead = terminalHead + 1 == terminalCap ? 0 : terminalHead + 1;
+            terminalCount--;
+            evictOrder(oldest);
+        }
+        int tail = terminalHead + terminalCount;
+        if (tail >= terminalCap) {
+            tail -= terminalCap;
+        }
+        terminalRing[tail] = orderRef;
+        terminalCount++;
+    }
+
+    /** Drop an aged-out terminal order from the dense index and return its entry to the pool (BLP thread).
+     *  It was already off the open index (removed at the terminal transition), so this only frees memory. */
+    private void evictOrder(int orderRef) {
+        if (orderRef < 0 || orderRef >= ordersByRef.length) {
+            return;
+        }
+        RestingOrder o = ordersByRef[orderRef];
+        if (o == null) {
+            return;
+        }
+        ordersByRef[orderRef] = null;
+        o.nextFree = freeList;   // recycle; takeFromPool resets fields on reuse
+        freeList = o;
     }
 
     // ----- edge-readable telemetry ----------------------------------------------------------

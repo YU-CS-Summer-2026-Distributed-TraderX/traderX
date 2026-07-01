@@ -29,7 +29,7 @@ spec:
             - name: DATABASE_PG_HOST
               value: "database"
             - name: DATABASE_PG_PORT
-              value: "5432"
+              value: "3306"
             - name: DATABASE_NAME
               value: "traderx"
             - name: DATABASE_DBUSER

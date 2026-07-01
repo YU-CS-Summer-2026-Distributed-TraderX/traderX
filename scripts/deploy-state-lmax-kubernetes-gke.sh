@@ -30,17 +30,5 @@ echo "[status] services"
 kubectl get svc -n "${NAMESPACE}"
 
 echo
-echo "[wait] edge-proxy external endpoint"
-for ((i=1; i<=60; i++)); do
-  endpoint="$(kubectl get svc edge-proxy -n "${NAMESPACE}" -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || true)"
-  if [[ -n "${endpoint}" ]]; then
-    echo "[done] edge-proxy endpoint: ${endpoint}"
-    echo "[ui] http://${endpoint}:8080"
-    echo "[api-explorer] http://${endpoint}:8080/api/docs"
-    exit 0
-  fi
-  sleep 10
-done
-
-echo "[warn] edge-proxy does not have an external IP yet"
-echo "[hint] run: kubectl get svc edge-proxy -n ${NAMESPACE} -w"
+echo "[info] edge-proxy is ClusterIP; external access is via ingress-nginx"
+echo "[hint] check ingress: kubectl get svc ingress-nginx-controller -n ingress-nginx"
