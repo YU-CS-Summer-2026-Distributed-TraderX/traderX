@@ -34,7 +34,7 @@ title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
 - **Added:** Single-threaded, in-memory, event-sourced Business Logic Processor fusing matching + trade booking +
 - **Added:** Typed output events (`OrderAccepted|Rejected|PartiallyFilled|Filled|Canceled`, `TradeBooked`,
 - **Added:** Asynchronous request/response event pattern for BLP cache misses (e.g.
-- **Added:** Event sourcing operability: periodic `snapshot.dat` full-state checkpoint + bounded journal-tail replay recovery, with a `recovery.source` switch (`db` warm-start+verify / `journal` no-DB cutover); deterministic replay for diagnostics
+- **Added:** Event sourcing operability: periodic full-state snapshot (`snapshot.dat`) + bounded journal-tail replay
 - **Added:** Replication and warm-standby failover: follower BLPs consume the identical replicated input stream in
 - **Added:** Optional batch ingress: `POST /orders/batch` accepts an array of new orders and sequences the whole
 

@@ -86,6 +86,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final boolean projectorDbEnabled;   // false => no DB writes at all (cutover)
     private final long ackTimeoutMs;
     private final String runtimeProfile;
+    private final int journalBatchRecords;   // journal write-coalescing buffer depth (Tier 3-D)
+    private final int terminalRetain;        // bounded terminal-order retention cap (Tier 2-B)
 
     private final SymbolTable symbols;
     private final HotPathMetrics metrics = new HotPathMetrics();
@@ -133,7 +135,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${recovery.source:db}") String recoverySource,
         @Value("${output.projector.db.enabled:true}") boolean projectorDbEnabled,
         @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
-        @Value("${runtime.profile:demo}") String runtimeProfile
+        @Value("${runtime.profile:demo}") String runtimeProfile,
+        @Value("${journal.batch.records:1024}") int journalBatchRecords,
+        @Value("${blp.terminal.retain:262144}") int terminalRetain
     ) {
         this.orderRepository = orderRepository;
         this.tradeRepository = tradeRepository;
@@ -164,6 +168,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.projectorDbEnabled = projectorDbEnabled;
         this.ackTimeoutMs = ackTimeoutMs;
         this.runtimeProfile = runtimeProfile;
+        this.journalBatchRecords = journalBatchRecords;
+        this.terminalRetain = terminalRetain;
         this.symbols = new SymbolTable(maxSecurities);
     }
 
@@ -214,7 +220,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         outputRing = outputDisruptor.getRingBuffer();
 
         matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity, terminalRetain);
         matchingEngine.setPinCpu(blpPinCpu);   // perf profile: pin the BLP thread on ring start
 
         // Recovery: DB warm-start (+ shadow verify) OR snapshot+journal authoritative (no DB).
@@ -233,7 +239,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
         // (sequence barrier), so every event it acts on is already durable and replicated.
-        journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics);
+        journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics, journalBatchRecords);
         replicator = new ReplicatorStub();
         inputDisruptor = new Disruptor<>(InputEvent::newInstance, normalizeRingSize(inputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.MULTI, waitStrategy(inputWaitStrategy));

@@ -191,6 +191,10 @@ services:
     build:
       context: ../order-matcher
       dockerfile: Dockerfile.compose
+    # Tier 1: consume $JAVA_OPTS (set in environment below) so the JVM flags actually apply — the image's
+    # default ENTRYPOINT is a bare `java -jar`. `exec` keeps java as PID 1 so SIGTERM reaches it and
+    # LmaxEngine.destroy() drains the rings + journal cleanly on `compose down`.
+    entrypoint: ["sh", "-c", "exec java $$JAVA_OPTS -jar /opt/app/app.jar"]
     # Perf profile: pin the BLP to a core (BLP_PIN_CPU) + busy-spin the input ring. Deliberately NO
     # cpuset cap — the A/B showed capping the container's cores HURTS peak throughput (starves the
     # output ring / GC / JIT) far more than pinning helps; add `cpuset: "1-5"` only for hard isolation.
@@ -200,6 +204,18 @@ services:
       ORDER_MATCHER_PORT: "18110"
       BLP_PIN_CPU: "${BLP_PIN_CPU:-2}"
       DISRUPTOR_INPUT_WAIT_STRATEGY: "${DISRUPTOR_INPUT_WAIT_STRATEGY:-busyspin}"
+      # Tier 3-E: the output ring was left at blocking even in the perf profile (only the input ring was
+      # busy-spun), so egress consumers woke via lock/condition. `yielding` spins-then-yields for lower
+      # egress latency without hard-pegging cores (use `busyspin` for max consistency, `blocking` for the
+      # container-safe demo). The output ring fans out to ~4 consumers, so busyspin here pegs ~4 more cores.
+      DISRUPTOR_OUTPUT_WAIT_STRATEGY: "${DISRUPTOR_OUTPUT_WAIT_STRATEGY:-yielding}"
+      # Tier 1: JVM runtime profile (override with JAVA_OPTS=...). Default = deterministic low-pause:
+      # fixed pre-touched 4g heap + Generational ZGC (JDK 21) so output-side allocation never paces the
+      # BLP and the ~2x cold-run variance collapses; PerfDisableSharedMem removes safepoint jitter;
+      # ExitOnOutOfMemoryError makes the (still-unbounded-until-Tier-2B) retention OOM exit cleanly.
+      # Throughput-headline A/B (higher peak, sawtooth latency): "-XX:+UseParallelGC -Xmn5g -Xms8g -Xmx8g
+      # -XX:+AlwaysPreTouch". Raise the heap past 4g only after freeing RAM (the whole stack shares ~15 GB).
+      JAVA_OPTS: "${JAVA_OPTS:--XX:+UseZGC -XX:+ZGenerational -Xms4g -Xmx4g -XX:+AlwaysPreTouch -XX:+PerfDisableSharedMem -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/opt/app/data/gc.log:t,uptime,tags:filecount=5,filesize=20m}"
       # Periodic full-state snapshot to bound journal replay (0 = off). Recovery loads snapshot.dat
       # and replays only the journal tail after it.
       SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-60000}"

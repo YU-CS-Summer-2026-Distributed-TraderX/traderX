@@ -35,6 +35,16 @@ public final class InMemoryOrderReadModel {
     private final LongAdder positionPublishFailures = new LongAdder();
     private final LongAdder natsErrors = new LongAdder();
 
+    // Bounded terminal retention mirror of the BLP (state 009b Tier 2-B): the marshaller is the only
+    // runtime writer of byRef, so a plain FIFO of the most recent TERMINAL_RETAIN terminal orderRefs
+    // (no sync) bounds the read model the same way the BLP bounds ordersByRef. Older terminal orders are
+    // removed from byRef; a GET for one then returns null (404), matching the BLP's aged-out behavior.
+    // Mirrors the blp.terminal.retain default; reads stay correct for open orders + recent terminals.
+    private static final int TERMINAL_RETAIN = 262_144;
+    private final int[] terminalRing = new int[TERMINAL_RETAIN];
+    private int terminalHead;
+    private int terminalCount;
+
     // True while the live engine is reconstructing from snapshot+journal at startup: the NATS-publishing
     // output handlers check this and skip, so recovery does not re-broadcast historical events.
     private volatile boolean replaying;
@@ -62,8 +72,33 @@ public final class InMemoryOrderReadModel {
     public void apply(OutputEvent e, SymbolTable symbols) {
         OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
         byRef.put(snapshot.orderRef, snapshot);
+        if (isTerminalTransition(e.flags)) {
+            trackTerminal(snapshot.orderRef);   // bound retention: evict the oldest terminal when full
+        }
         countFlags(e.flags);
         completeAck(e.inputSeq, snapshot);
+    }
+
+    /** A terminal lifecycle transition (fill-to-zero, cancel of an open order, or reject). A republished
+     *  terminal order carries flags=0, so it is not re-tracked. Marshaller thread only (single writer). */
+    private static boolean isTerminalTransition(int flags) {
+        return (flags & (OutputEvent.FLAG_FILL | OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_REJECT)) != 0;
+    }
+
+    /** FIFO-track a terminal order, evicting the oldest from byRef when the cap is full. Single-writer. */
+    private void trackTerminal(int orderRef) {
+        if (terminalCount == TERMINAL_RETAIN) {
+            int oldest = terminalRing[terminalHead];
+            terminalHead = terminalHead + 1 == TERMINAL_RETAIN ? 0 : terminalHead + 1;
+            terminalCount--;
+            byRef.remove(oldest);
+        }
+        int tail = terminalHead + terminalCount;
+        if (tail >= TERMINAL_RETAIN) {
+            tail -= TERMINAL_RETAIN;
+        }
+        terminalRing[tail] = orderRef;
+        terminalCount++;
     }
 
     public void notFound(long inputSeq) {
