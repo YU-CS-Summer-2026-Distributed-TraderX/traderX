@@ -189,6 +189,30 @@ under `specs/lmax-kubernetes/generation/runtime-overrides/` or the prepare scrip
 
 ---
 
+## Deploy discipline
+
+CI/CD does not exist yet, so deployed state drifts from committed source unless deploys are done
+deliberately. Every production bug found on 2026-07-02 (broken MariaDB projector, Postgres driver +
+`DATABASE_PG_PORT=5432` against MariaDB) had the same shape: the fix was already in git/`generated/`,
+but GKE was running an older image built before the fix. Rules to prevent recurrence:
+
+- **Rebuild and redeploy from `generated/` after any merge that touches a service.** What runs on
+  GKE must match what's committed. Do not leave a merged code change undeployed.
+- **Use unique, dated image tags per build** (e.g. `state009-fixed-20260702`), never reuse a fixed
+  tag like `state009`. Reused tags make it impossible to tell which build is live without comparing
+  Artifact Registry push timestamps against commit timestamps.
+- To audit for drift: compare each deployed pod's image digest push time
+  (`gcloud artifacts docker images list <img> --include-tags --format="value(version,createTime)"`)
+  against the git log for that service's source.
+
+## Repo hygiene
+
+- **Never commit local handoff / scratch docs** (files like `HANDOFF-*.md`, `*-HANDOFF.md`, `STATE.md`,
+  `LEARNING.md`, and similar working notes). They are local working artifacts, not project source.
+  Leave them untracked; do not `git add` them even when staging related changes.
+
+---
+
 ## Observability
 
 Grafana, Prometheus, Loki, Tempo, and OpenTelemetry Collector are all deployed. Grafana has an
