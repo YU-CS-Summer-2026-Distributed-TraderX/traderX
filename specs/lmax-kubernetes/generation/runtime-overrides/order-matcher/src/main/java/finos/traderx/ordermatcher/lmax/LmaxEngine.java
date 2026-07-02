@@ -92,6 +92,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final int journalBatchRecords;   // journal write-coalescing buffer depth (Tier 3-D)
     private final int terminalRetain;        // bounded terminal-order retention cap (Tier 2-B)
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final boolean replicationEnabled;
+    private final String podName;
+    private final String natsAddress;
+    private final ReplicationRole replicationRole;
 
     private final SymbolTable symbols;
     private final HotPathMetrics metrics = new HotPathMetrics();
@@ -108,11 +112,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private RingBuffer<OutputEvent> outputRing;
     private MatchingEngine matchingEngine;
     private Journaler journaler;
-    private ReplicatorStub replicator;
+    private DelegatingReplicator delegatingReplicator;   // always in the ring; delegates to stub or NATS
+    private NatsJournalReplicator natsReplicator;
     private MarshallerHandler marshaller;
     private ProjectorHandler projector;
     private SnapshotStore snapshotStore;
     private java.util.concurrent.ScheduledExecutorService snapshotScheduler;
+    private io.nats.client.Connection replicationConn;
+    private ReplicationFollower replicationFollower;
+    private LeaderElection leaderElection;
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -146,7 +154,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${runtime.profile:demo}") String runtimeProfile,
         @Value("${journal.batch.records:1024}") int journalBatchRecords,
         @Value("${blp.terminal.retain:262144}") int terminalRetain,
-        ApplicationEventPublisher applicationEventPublisher
+        @Value("${blp.replication.enabled:false}") boolean replicationEnabled,
+        @Value("${blp.pod.name:order-matcher-0}") String podName,
+        @Value("${nats.address:nats://localhost:4222}") String natsAddress,
+        ApplicationEventPublisher applicationEventPublisher,
+        ReplicationRole replicationRole
     ) {
         this.orderRepository = orderRepository;
         this.tradeRepository = tradeRepository;
@@ -179,7 +191,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.runtimeProfile = runtimeProfile;
         this.journalBatchRecords = journalBatchRecords;
         this.terminalRetain = terminalRetain;
+        this.replicationEnabled = replicationEnabled;
+        this.podName = podName;
+        this.natsAddress = natsAddress;
         this.applicationEventPublisher = applicationEventPublisher;
+        this.replicationRole = replicationRole;
         this.symbols = new SymbolTable(maxSecurities);
     }
 
@@ -208,9 +224,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             projector = new ProjectorHandler(jdbcTemplate, symbols,
                 projectorBatchSize, projectorQueueCapacity, metrics);
         }
-        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
-        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
-        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
+        // Replication: determine role before wiring handlers (role gates their output).
+        if (replicationEnabled) {
+            initReplication();
+        } else {
+            replicationRole.set(ReplicationRole.Role.PRIMARY);
+        }
+
+        NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel, replicationRole);
+        AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel, replicationRole);
+        PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel, replicationRole);
 
         // Output ring fans out to the marshaller (rebuilds the read model), the NATS bridges, the
         // optional legacy `/trades`, and the optional async DB projector. With the DB dropped
@@ -255,21 +278,36 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
         // (sequence barrier), so every event it acts on is already durable and replicated.
+        // DelegatingReplicator is always wired; its inner delegate is hot-swapped on role change
+        // without restarting the Disruptor (see onRoleChange).
         journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics, journalBatchRecords);
-        replicator = new ReplicatorStub();
         inputDisruptor = new Disruptor<>(InputEvent::newInstance, normalizeRingSize(inputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.MULTI, waitStrategy(inputWaitStrategy));
-        inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
+        EventHandler<InputEvent> initialDelegate = (replicationEnabled && replicationRole.isPrimary() && natsReplicator != null)
+            ? natsReplicator
+            : new ReplicatorStub();
+        delegatingReplicator = new DelegatingReplicator(initialDelegate);
+        inputDisruptor.handleEventsWith(journaler, delegatingReplicator).then(matchingEngine);
         inputDisruptor.start();
         inputRing = inputDisruptor.getRingBuffer();
+        if (replicationFollower != null) {
+            replicationFollower.setInputRing(inputRing);
+        }
         startSnapshotScheduler();
 
-        log.info("LMAX hot path live: profile={} inputRing={} outputRing={} journal={} ({} orders warm)",
-            runtimeProfile, normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
+        log.info("LMAX hot path live: profile={} role={} inputRing={} outputRing={} journal={} ({} orders warm)",
+            runtimeProfile, replicationRole.get(), normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
             journalEnabled ? journalPath : "disabled", readModel.totalOrders());
+        if (replicationEnabled && replicationRole.isFollower() && replicationFollower != null) {
+            // Follower: start JetStream subscription (blocks until caught up, then signals readiness).
+            recoveryStatus = "follower-catching-up";
+            replicationFollower.start();
+        } else {
             recoveryReady = true;
             recoveryStatus = journalRecovery ? "recovered-journal-tail" : "warm-started-from-postgres";
             publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+            if (leaderElection != null) leaderElection.start();
+        }
         } catch (RuntimeException ex) {
             recoveryError = ex.toString();
             recoveryStatus = "startup-failed";
@@ -283,11 +321,135 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
     }
 
+    // ----- replication -----------------------------------------------------------------------
+
+    /**
+     * Determine PRIMARY/FOLLOWER role via Kubernetes Lease, then wire the appropriate NATS
+     * connection: primary gets a publisher (NatsJournalReplicator), follower gets a subscriber
+     * (ReplicationFollower). Called before output/input ring construction.
+     */
+    private void initReplication() {
+        try {
+            replicationConn = io.nats.client.Nats.connect(
+                io.nats.client.Options.builder().server(natsAddress)
+                    .connectionTimeout(java.time.Duration.ofSeconds(10))
+                    .build());
+        } catch (Exception ex) {
+            log.warn("Replication NATS connect failed: {} — falling back to single-node primary", ex.getMessage());
+            replicationRole.set(ReplicationRole.Role.PRIMARY);
+            return;
+        }
+
+        String namespace = readK8sNamespace();
+        leaderElection = new LeaderElection(podName, namespace, replicationRole, this::onRoleChange, replicationConn);
+        boolean isPrimary = leaderElection.tryAcquire();
+
+        if (isPrimary) {
+            replicationRole.set(ReplicationRole.Role.PRIMARY);
+            boolean streamReady = NatsJournalReplicator.ensureStream(replicationConn);
+            if (streamReady) {
+                try {
+                    natsReplicator = new NatsJournalReplicator(replicationConn.jetStream(),
+                        NatsJournalReplicator.SUBJECT);
+                    natsReplicator.startAckListener(replicationConn);
+                } catch (Exception ex) {
+                    log.warn("Could not create JetStream publisher — running without NATS replication: {}", ex.getMessage());
+                }
+            }
+            leaderElection.start();
+            log.info("BLP role: PRIMARY (pod={} natsReplication={})", podName, natsReplicator != null);
+        } else {
+            replicationRole.set(ReplicationRole.Role.FOLLOWER);
+            // Follower: will recover from snapshot+JetStream after ring is started.
+            // Determine start JetStream sequence from snapshot (if available).
+            long startSeq = -1L;
+            if (snapshotStore != null) {
+                try {
+                    SnapshotStore.Data snap = snapshotStore.read();
+                    if (snap != null && snap.jetsStreamSeq() > 0) {
+                        startSeq = snap.jetsStreamSeq();
+                        log.info("Follower snapshot covers JetStream seq={}", startSeq);
+                    }
+                } catch (Exception ex) {
+                    log.warn("Could not read snapshot for follower start seq: {}", ex.getMessage());
+                }
+            }
+            replicationFollower = new ReplicationFollower(replicationConn, podName, startSeq,
+                readModel, this::followerReady);
+            leaderElection.start();
+            log.info("BLP role: FOLLOWER (pod={} startSeq={})", podName, startSeq);
+        }
+    }
+
+    /** Called when a FOLLOWER has caught up to the JetStream tail. Signal readiness. */
+    private void followerReady() {
+        recoveryReady = true;
+        recoveryStatus = "follower-live";
+        publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+        log.info("Follower caught up and ready (pod={})", podName);
+    }
+
+    /** Called by LeaderElection when role changes (e.g. follower promoted, primary demoted). */
+    private void onRoleChange(ReplicationRole.Role newRole) {
+        log.info("BLP role transition → {} (pod={})", newRole, podName);
+        if (newRole == ReplicationRole.Role.PRIMARY) {
+            // Stop follower subscription.
+            if (replicationFollower != null) {
+                replicationFollower.stop();
+                replicationFollower = null;
+            }
+            // Stop ACK listener from the old replicator (if any).
+            if (natsReplicator != null) natsReplicator.stopAckListener();
+
+            // Create a fresh NatsJournalReplicator and hot-swap it into the running Disruptor
+            // via DelegatingReplicator — no ring restart needed.
+            try {
+                NatsJournalReplicator.ensureStream(replicationConn);
+                natsReplicator = new NatsJournalReplicator(replicationConn.jetStream(),
+                    NatsJournalReplicator.SUBJECT);
+                natsReplicator.startAckListener(replicationConn);
+                if (delegatingReplicator != null) {
+                    delegatingReplicator.swapDelegate(natsReplicator);
+                }
+            } catch (Exception ex) {
+                log.warn("Post-promotion replicator init failed — continuing with loopback: {}", ex.getMessage());
+            }
+            recoveryReady = true;
+            publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+        } else {
+            // Transitioning to FOLLOWER: stop ACK listener, swap to loopback stub.
+            if (natsReplicator != null) {
+                natsReplicator.stopAckListener();
+                natsReplicator = null;
+            }
+            if (delegatingReplicator != null) {
+                delegatingReplicator.swapDelegate(new ReplicatorStub());
+            }
+            publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+        }
+    }
+
+    private static String readK8sNamespace() {
+        try {
+            return java.nio.file.Files.readString(
+                java.nio.file.Path.of("/var/run/secrets/kubernetes.io/serviceaccount/namespace")).strip();
+        } catch (Exception ex) {
+            return "traderx";
+        }
+    }
+
     @Override
     public void destroy() {
         recoveryReady = false;
         recoveryStatus = "stopped";
         publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+        if (replicationFollower != null) replicationFollower.stop();
+        if (leaderElection != null) leaderElection.stop();
+        if (replicationConn != null) {
+            try { replicationConn.close(); } catch (Exception ex) {
+                log.warn("Replication NATS close error: {}", ex.getMessage());
+            }
+        }
         if (snapshotScheduler != null) {
             snapshotScheduler.shutdownNow();   // stop emitting snapshot markers before the rings stop
         }
@@ -843,9 +1005,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private void writeSnapshot() {
         try {
             long offset = journaler == null ? 0L : journaler.lastSnapshotOffset();
+            long jsSeq = (replicationFollower != null) ? replicationFollower.lastJetsStreamSeq() : -1L;
             snapshotStore.write(new SnapshotStore.Data(offset, nextOrderRef.get(),
                 matchingEngine.tradeCounter(), matchingEngine.priceTuples(),
-                matchingEngine.positionTuples(), matchingEngine.allOrderTuples()));
+                matchingEngine.positionTuples(), matchingEngine.allOrderTuples(), jsSeq));
         } catch (Exception ex) {
             log.warn("Snapshot write failed (continuing): {}", ex.toString());
         }
@@ -1068,7 +1231,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     }
 
     public long replicatedSeq() {
-        return replicator == null ? -1 : replicator.replicatedSeq();
+        return delegatingReplicator != null ? delegatingReplicator.replicatedSeq() : -1;
     }
 
     public long gatingSeq() {

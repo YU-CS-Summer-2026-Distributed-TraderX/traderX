@@ -16,18 +16,20 @@ public final class PositionUpdateHandler implements EventHandler<OutputEvent> {
     private final Publisher<PositionUpdate> positionPublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final ReplicationRole replicationRole;
 
     public PositionUpdateHandler(Publisher<PositionUpdate> positionPublisher, SymbolTable symbols,
-                                 InMemoryOrderReadModel readModel) {
+                                 InMemoryOrderReadModel readModel, ReplicationRole replicationRole) {
         this.positionPublisher = positionPublisher;
         this.symbols = symbols;
         this.readModel = readModel;
+        this.replicationRole = replicationRole;
     }
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        if (readModel.isReplaying()) {
-            return;   // recovery replay: do not re-broadcast historical position updates
+        if (readModel.isReplaying() || replicationRole.isFollower()) {
+            return;   // recovery replay or follower: do not emit output
         }
         if (e.kind != OutputEvent.KIND_POSITION_UPDATED) {
             return;

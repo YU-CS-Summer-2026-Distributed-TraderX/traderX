@@ -375,6 +375,8 @@ stateDiagram-v2
 
 ## 10. Replication & failover
 
+### Original LMAX design (aspirational)
+
 ```mermaid
 flowchart TB
   GW["Gateways"] --> SEQ["Sequencer (leader)"]
@@ -391,6 +393,37 @@ replicated input stream** and stay in lock-step; **followers compute identical s
 On leader failure a follower is already warm and at the same sequence, so promotion is **near-instant
 (microseconds)** — no cold replay needed. [Aeron Cluster](https://aeron.io/) (Raft consensus + replicated log)
 is the modern, off-the-shelf realization of LMAX's hand-rolled sequencer + replicator + journaler.
+
+### Implemented in `lmax-kubernetes` branch
+
+The `lmax-kubernetes` branch implements a cloud-native realization of this design on GKE. The transport
+and consensus primitives are swapped for Kubernetes-native equivalents, keeping the same logical contract
+(all replicas consume the same ordered stream; followers suppress output; promotion is driven by detecting
+leader loss):
+
+```mermaid
+flowchart TB
+  TS["trade-service"] -->|"HTTP to order-matcher-primary"| SVC["k8s Service<br/>order-matcher-primary<br/>(selector: blp-role=primary)"]
+  SVC --> P["order-matcher-0 or -1<br/>PRIMARY · emits output · renews Lease"]
+  P -->|"InputEvent records<br/>NATS JetStream"| F["order-matcher-1 or -0<br/>FOLLOWER · output gated"]
+  P -->|"every 5s"| LEASE[("k8s Coordination Lease<br/>order-matcher-leader")]
+  F -->|"watches every 5s"| LEASE
+  F -."expire detected → promote".-> P2["new PRIMARY<br/>patches blp-role label"]
+  P --> J[("per-pod PVC<br/>journal + snapshot")]
+  F --> J2[("per-pod PVC<br/>own journal + snapshot")]
+```
+
+Key components:
+
+| Concern | LMAX article | `lmax-kubernetes` implementation |
+|---|---|---|
+| Replication transport | Hand-rolled / Aeron | NATS JetStream stream `TRADERX_BLP_REPLICATION` |
+| Leader election | Sequencer consensus | Kubernetes `coordination.k8s.io/v1` Lease (15 s duration, 5 s renew) |
+| Traffic routing | Manual failover | k8s Service `order-matcher-primary` with label selector `blp-role=primary` |
+| Follower warm state | In lock-step, instant promotion | Journal-based: follower replays its own journal on startup, then subscribes JetStream for live events |
+| Snapshot versioning | N/A | `SnapshotStore` v2 adds `jetsStreamSeq` so a promoted follower resumes from the right JetStream offset |
+
+See `LMAX-BLP-FAILOVER.md` for the full design rationale, tradeoffs, and failover timeline.
 
 ---
 

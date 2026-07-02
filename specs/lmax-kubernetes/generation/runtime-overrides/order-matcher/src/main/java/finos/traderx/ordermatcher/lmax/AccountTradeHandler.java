@@ -15,18 +15,20 @@ public final class AccountTradeHandler implements EventHandler<OutputEvent> {
     private final Publisher<AccountTrade> accountTradePublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final ReplicationRole replicationRole;
 
     public AccountTradeHandler(Publisher<AccountTrade> accountTradePublisher, SymbolTable symbols,
-                               InMemoryOrderReadModel readModel) {
+                               InMemoryOrderReadModel readModel, ReplicationRole replicationRole) {
         this.accountTradePublisher = accountTradePublisher;
         this.symbols = symbols;
         this.readModel = readModel;
+        this.replicationRole = replicationRole;
     }
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        if (readModel.isReplaying()) {
-            return;   // recovery replay: do not re-broadcast historical trades
+        if (readModel.isReplaying() || replicationRole.isFollower()) {
+            return;   // recovery replay or follower: do not emit output
         }
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;

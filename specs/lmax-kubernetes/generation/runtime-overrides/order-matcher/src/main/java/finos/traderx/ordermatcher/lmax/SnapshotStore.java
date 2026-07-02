@@ -30,6 +30,7 @@ public final class SnapshotStore {
     private static final Logger log = LoggerFactory.getLogger(SnapshotStore.class);
     private static final int MAGIC = 0x534E4150;   // "SNAP"
     private static final int VERSION = 1;
+    private static final int VERSION_WITH_JETSTREAM = 2;
 
     private final Path file;
     private final Path tmp;
@@ -40,9 +41,16 @@ public final class SnapshotStore {
     }
 
     /** prices: {securityId, ticks}; positions: {acct, sec, qty, avgTicks};
-     *  orders: {ref, acct, sec, side, qty, rem, limitPx, status, lastExecPx, lastFillQty, createdMs, updatedMs}. */
+     *  orders: {ref, acct, sec, side, qty, rem, limitPx, status, lastExecPx, lastFillQty, createdMs, updatedMs}.
+     *  jetsStreamSeq: JetStream sequence number of the last event covered by this snapshot (-1 if primary/unknown). */
     public record Data(long coveredOffset, int nextOrderRef, long tradeCounter,
-                       List<long[]> prices, List<long[]> positions, List<long[]> orders) {}
+                       List<long[]> prices, List<long[]> positions, List<long[]> orders,
+                       long jetsStreamSeq) {
+        public Data(long coveredOffset, int nextOrderRef, long tradeCounter,
+                    List<long[]> prices, List<long[]> positions, List<long[]> orders) {
+            this(coveredOffset, nextOrderRef, tradeCounter, prices, positions, orders, -1L);
+        }
+    }
 
     public boolean exists() {
         return Files.exists(file);
@@ -54,10 +62,11 @@ public final class SnapshotStore {
                 Files.newOutputStream(tmp, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
                     StandardOpenOption.TRUNCATE_EXISTING)))) {
             out.writeInt(MAGIC);
-            out.writeInt(VERSION);
+            out.writeInt(VERSION_WITH_JETSTREAM);
             out.writeLong(d.coveredOffset);
             out.writeInt(d.nextOrderRef);
             out.writeLong(d.tradeCounter);
+            out.writeLong(d.jetsStreamSeq);
             out.writeInt(d.prices.size());
             for (long[] p : d.prices) {
                 out.writeInt((int) p[0]);
@@ -100,10 +109,11 @@ public final class SnapshotStore {
             if (in.readInt() != MAGIC) {
                 throw new IOException("bad snapshot magic in " + file);
             }
-            in.readInt();   // version (only v1 today)
+            int version = in.readInt();
             long coveredOffset = in.readLong();
             int nextOrderRef = in.readInt();
             long tradeCounter = in.readLong();
+            long jetsStreamSeq = (version >= VERSION_WITH_JETSTREAM) ? in.readLong() : -1L;
             int np = in.readInt();
             List<long[]> prices = new ArrayList<>(Math.max(0, np));
             for (int i = 0; i < np; i++) {
@@ -121,7 +131,7 @@ public final class SnapshotStore {
                     in.readInt(), in.readInt(), in.readLong(), in.readByte(), in.readLong(),
                     in.readInt(), in.readLong(), in.readLong() });
             }
-            return new Data(coveredOffset, nextOrderRef, tradeCounter, prices, positions, orders);
+            return new Data(coveredOffset, nextOrderRef, tradeCounter, prices, positions, orders, jetsStreamSeq);
         }
     }
 }

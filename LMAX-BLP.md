@@ -257,6 +257,10 @@ Because BLP state is a pure function of the journaled input stream:
   directly, needing no database. (A **JIT warm-up** replay before going live remains aspirational — see
   `LMAX-NO-GC-JAVA.md`.)
 - **Diagnostics**: replay any production journal in a dev box to reproduce a bug deterministically.
+- **Snapshot version 2** (`lmax-kubernetes`): adds a `jetsStreamSeq` field. When a follower takes a snapshot
+  (or when the primary writes one), the last-consumed NATS JetStream sequence is embedded in the snapshot
+  header. On the next startup as follower, this allows the pod to subscribe to JetStream from that offset
+  instead of replaying the entire stream from the beginning, bounding catch-up time to the snapshot interval.
 
 ## A11. How this replaces `009`'s matcher logic
 
@@ -441,6 +445,8 @@ lifecycle/wiring/actuator only, never on the per-event path.
 | `journal.replay.verify` | `true` | In `db` mode, verify journal replay reconstructs the warm-start state (shadow engine). |
 | `blp.warmup.replay-events` | `100000` | Synthetic warm-up workload size for JIT before going live *(not yet wired)*. |
 | `blp.cache.account.warm-on-start` | `true` | Pre-load account cache from read-model at startup *(not yet wired)*. |
+| `blp.replication.enabled` (env `BLP_REPLICATION_ENABLED`) | `false` | Enable NATS JetStream replication and k8s Lease-based leader election (`lmax-kubernetes` branch). |
+| `blp.pod.name` (env `BLP_POD_NAME`) | `""` | Pod name injected by Kubernetes `fieldRef: fieldPath: metadata.name`; used as the Lease holder identity. |
 
 `snapshot.dat` is written under `journal.path` (default `./data/journal`), the same durable volume as the
 input journal, so the checkpoint survives container recreate, not just restart.
@@ -496,6 +502,7 @@ in-memory state. The `009` `traderx_order_match_latency_seconds` histogram (curr
 | Deterministic, clock-free hot path | ❌ (`Instant.now()` everywhere) | **build** |
 | Snapshot + replay recovery | ❌ | ✅ built in `009b` — periodic `snapshot.dat` + bounded journal-tail replay; `recovery.source=db` (verify) / `journal` (no-DB) |
 | Typed output events | ❌ (direct NATS/JPA writes) | **build** (feeds state `012`) |
+| HA failover (multi-replica BLP) | ❌ | ✅ built in `lmax-kubernetes` — StatefulSet×2, k8s Lease leader election, NATS JetStream replication; see `LMAX-BLP-FAILOVER.md` |
 
 ## B23. Risks specific to the BLP
 

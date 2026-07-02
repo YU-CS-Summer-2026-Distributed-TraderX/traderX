@@ -264,9 +264,8 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         }
     }
 
-    // Option 2 — trades are append-only, so skip JPA merge's per-row SELECT entirely: one multi-row
-    // INSERT per chunk (a single DB round-trip), made idempotent for journal replay with
-    // ON CONFLICT (id) DO NOTHING. The whole flush stays one DB-visible unit alongside the batched
+    // Option 2 — trades are append-only: one multi-row INSERT IGNORE per chunk (single DB round-trip),
+    // idempotent for journal replay. The whole flush stays one DB-visible unit alongside the batched
     // order/position writes (option 1).
     private static final int TRADE_INSERT_CHUNK = 500;
     private static final String TRADE_COLS =
@@ -276,7 +275,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         for (int start = 0; start < trades.size(); start += TRADE_INSERT_CHUNK) {
             int end = Math.min(start + TRADE_INSERT_CHUNK, trades.size());
             StringBuilder sql = new StringBuilder(64 + (end - start) * 20)
-                .append("INSERT INTO trades ").append(TRADE_COLS).append(" VALUES ");
+                .append("INSERT IGNORE INTO trades ").append(TRADE_COLS).append(" VALUES ");
             Object[] args = new Object[(end - start) * 9];
             int a = 0;
             for (int i = start; i < end; i++) {
@@ -292,16 +291,13 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = t.getCreated() == null ? null : new Timestamp(t.getCreated().getTime());
                 args[a++] = t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime());
             }
-            sql.append(" ON CONFLICT (id) DO NOTHING");
             jdbcTemplate.update(sql.toString(), args);
         }
     }
 
-    // Positions and orders are absolute state snapshots keyed by their PK, so each read-model write
-    // is a blind multi-row upsert: overwrite the row with the event's values and never SELECT it
-    // first (what JPA merge did per row). Each buffer is already deduped to one row per key, so a key
-    // never repeats inside one statement. Postgres EXCLUDED.col references the would-be-inserted value
-    // in the ON CONFLICT DO UPDATE clause.
+    // Positions and orders are absolute state snapshots keyed by their PK: blind multi-row upsert,
+    // never SELECT first. Each buffer is already deduped to one row per key, so a key never repeats
+    // inside one statement. MariaDB VALUES(col) references the would-be-inserted value.
     private static final int UPSERT_CHUNK = 500;
 
     private static final String POSITION_COLS = "(accountid, security, quantity, averagecostbasis, updated)";
@@ -323,14 +319,14 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = p.getAverageCostBasis();
                 args[a++] = p.getUpdated() == null ? null : new Timestamp(p.getUpdated().getTime());
             }
-            sql.append(" ON CONFLICT (accountid, security) DO UPDATE SET quantity=EXCLUDED.quantity,"
-                + " averagecostbasis=EXCLUDED.averagecostbasis, updated=EXCLUDED.updated");
+            sql.append(" ON DUPLICATE KEY UPDATE quantity=VALUES(quantity),"
+                + " averagecostbasis=VALUES(averagecostbasis), updated=VALUES(updated)");
             jdbcTemplate.update(sql.toString(), args);
         }
     }
 
-    // Only the mutable columns are refreshed on conflict; orderid (PK), accountid, security, side,
-    // quantity and createdat are fixed at creation and stay out of the UPDATE clause.
+    // Only mutable columns in the UPDATE clause; orderid (PK), accountid, security, side,
+    // quantity and createdat are fixed at creation.
     private static final String ORDER_COLS = "(orderid, accountid, security, side, quantity,"
         + " remainingquantity, limitprice, status, createdat, updatedat, lastexecutionprice, lastfillquantity)";
 
@@ -358,9 +354,9 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = o.getLastExecutionPrice();
                 args[a++] = o.getLastFillQuantity();
             }
-            sql.append(" ON CONFLICT (orderid) DO UPDATE SET status=EXCLUDED.status,"
-                + " remainingquantity=EXCLUDED.remainingquantity, updatedat=EXCLUDED.updatedat,"
-                + " lastexecutionprice=EXCLUDED.lastexecutionprice, lastfillquantity=EXCLUDED.lastfillquantity");
+            sql.append(" ON DUPLICATE KEY UPDATE status=VALUES(status),"
+                + " remainingquantity=VALUES(remainingquantity), updatedat=VALUES(updatedat),"
+                + " lastexecutionprice=VALUES(lastexecutionprice), lastfillquantity=VALUES(lastfillquantity)");
             jdbcTemplate.update(sql.toString(), args);
         }
     }

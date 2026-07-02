@@ -25,18 +25,20 @@ public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
     private final Publisher<OrderResponse> orderPublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final ReplicationRole replicationRole;
 
     public NatsBridgeHandler(Publisher<OrderResponse> orderPublisher, SymbolTable symbols,
-                             InMemoryOrderReadModel readModel) {
+                             InMemoryOrderReadModel readModel, ReplicationRole replicationRole) {
         this.orderPublisher = orderPublisher;
         this.symbols = symbols;
         this.readModel = readModel;
+        this.replicationRole = replicationRole;
     }
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        if (readModel.isReplaying()) {
-            return;   // recovery replay: do not re-broadcast historical events to NATS
+        if (readModel.isReplaying() || replicationRole.isFollower()) {
+            return;   // recovery replay or follower: do not emit output
         }
         if (!e.publishNats || !OutputEvent.isOrderLifecycleKind(e.kind)) {
             return;

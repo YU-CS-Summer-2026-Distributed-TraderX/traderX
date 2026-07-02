@@ -87,6 +87,10 @@ rg -q 'ORDER_MATCHER_URL' "${TRADE_SERVICE_DEPLOY}" || {
   echo "[error] trade-service deployment does not route to order-matcher"
   exit 1
 }
+rg -q 'order-matcher-primary' "${TRADE_SERVICE_DEPLOY}" || {
+  echo "[error] trade-service does not route to order-matcher-primary (replication service not wired)"
+  exit 1
+}
 rg -q 'path: /actuator/health/readiness' "${TILT_ORDER_MATCHER_DEPLOY}" || {
   echo "[error] Tilt order-matcher readiness probe missing"
   exit 1

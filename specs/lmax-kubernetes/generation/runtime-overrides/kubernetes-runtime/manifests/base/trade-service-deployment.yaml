@@ -37,7 +37,7 @@ spec:
             - name: PRICE_SERVICE_HOST
               value: "price-publisher"
             - name: ORDER_MATCHER_URL
-              value: "http://order-matcher:18110"
+              value: "http://order-matcher-primary:18110"
             - name: CORS_ALLOWED_ORIGINS
               value: "http://localhost:8080"
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
