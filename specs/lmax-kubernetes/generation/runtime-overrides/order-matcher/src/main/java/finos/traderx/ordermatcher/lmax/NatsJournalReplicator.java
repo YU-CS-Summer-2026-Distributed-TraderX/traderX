@@ -11,10 +11,17 @@ import io.nats.client.api.StreamInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import io.nats.client.api.PublishAck;
+
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -45,6 +52,20 @@ public final class NatsJournalReplicator implements EventHandler<InputEvent> {
 
     /** If no follower ACK arrives within this window, fall back to solo (publish-ack) mode. */
     private static final long ACK_TIMEOUT_NS = 500_000_000L; // 500 ms
+
+    /**
+     * Max broker-publish ACKs in flight before we drain, bounding memory and matching jnats'
+     * default pending-ack window. Publishes within a Disruptor batch pipeline concurrently;
+     * we wait for their ACKs at the batch boundary (or when this cap is hit) rather than paying a
+     * full JetStream round-trip per event — the difference between ~1k/s and tens of k/s under load.
+     */
+    private static final int MAX_IN_FLIGHT = 256;
+    /** Per-ACK wait budget when draining the pipeline. */
+    private static final long PUBLISH_ACK_WAIT_MS = 2000L;
+
+    // Single-writer: onEvent runs only on the replicator's Disruptor consumer thread, so this plain
+    // ArrayList needs no synchronization.
+    private final List<CompletableFuture<PublishAck>> inFlight = new ArrayList<>(MAX_IN_FLIGHT);
 
     private final JetStream js;
     private final String subject;
@@ -86,23 +107,30 @@ public final class NatsJournalReplicator implements EventHandler<InputEvent> {
         b.putInt(0);                    // pad (offset 52)
         b.putLong(sequence);            // Disruptor ring seq at offset 56 (was: 0-pad)
         b.flip();
+        // The ThreadLocal buffer is reused on the next event, so an async publish must own its own
+        // copy — publishAsync serializes the bytes off-thread after onEvent returns.
+        byte[] data = Arrays.copyOf(b.array(), RECORD_BYTES);
         try {
-            js.publish(subject, b.array());
+            inFlight.add(js.publishAsync(subject, data));
         } catch (Exception ex) {
             log.warn("Replication publish failed at seq {}: {}", sequence, ex.getMessage());
         }
-        publishedSeq = sequence;
 
         // Synchronous-replication gate — batch boundary only (matching how LMAX actually works).
         //
-        // We publish every event to NATS immediately as it arrives, but only BLOCK at the end
-        // of a Disruptor batch. Within a batch the primary races ahead freely; the follower ACKs
-        // the last sequence in each batch. This means one network round-trip per batch, not per
-        // event — the throughput ceiling is (batch_size / round_trip_latency) rather than
-        // (1 / round_trip_latency), which is orders of magnitude better under load.
-        //
-        // Falls back to solo mode (no spin) if no follower ACK has arrived in ACK_TIMEOUT_NS,
+        // Previously every event paid a synchronous js.publish() round-trip, capping throughput at
+        // (1 / round_trip_latency) ≈ ~1k/s. Now events publish ASYNC as they arrive and we drain
+        // their broker ACKs once per Disruptor batch (or when the in-flight window fills), so the
+        // ceiling becomes (batch_size / round_trip_latency). Two-stage barrier at endOfBatch:
+        //   1. drainInFlight — wait for this batch's broker-publish ACKs, advance publishedSeq
+        //      (the solo-mode durability watermark).
+        //   2. if a follower is active, spin until it has confirmed the batch's last sequence
+        //      (the strong synchronous-replication gate — unchanged, MUST stay batch-boundary only).
+        // Falls back to solo mode (no follower spin) if no follower ACK arrived in ACK_TIMEOUT_NS,
         // so a single-replica deployment never stalls.
+        if (endOfBatch || inFlight.size() >= MAX_IN_FLIGHT) {
+            drainInFlight(sequence);
+        }
         if (endOfBatch) {
             long now = System.nanoTime();
             long ackNs = lastAckNs.get();
@@ -114,6 +142,22 @@ public final class NatsJournalReplicator implements EventHandler<InputEvent> {
                 }
             }
         }
+    }
+
+    /** Wait for all pending broker-publish ACKs, then advance the durable watermark to {@code seq}. */
+    private void drainInFlight(long seq) {
+        for (int i = 0; i < inFlight.size(); i++) {
+            try {
+                inFlight.get(i).get(PUBLISH_ACK_WAIT_MS, TimeUnit.MILLISECONDS);
+            } catch (Exception ex) {
+                // Best-effort, non-stalling (mirrors solo-mode fallback): a lost/slow broker ACK is
+                // logged but does not wedge the input ring. When a follower is active its ACK spin
+                // above remains the strong durability signal.
+                log.warn("Replication ACK wait failed near seq {}: {}", seq, ex.getMessage());
+            }
+        }
+        inFlight.clear();
+        publishedSeq = seq;
     }
 
     /**

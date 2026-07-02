@@ -6,7 +6,12 @@ metadata:
   labels:
     app: order-matcher
 spec:
-  replicas: 1
+  # HA mode: 2 replicas (leader-elected PRIMARY + FOLLOWER) across the 2 blp-pool nodes.
+  # For max single-BLP throughput instead, scale to 1 and set BLP_REPLICATION_ENABLED=false
+  # (single-BLP ~42k booked/s vs HA ~22k, but no failover). blp-pool must have >=2 nodes for HA
+  # (required anti-affinity below): gcloud container clusters resize traderx-lmax
+  #   --node-pool blp-pool --num-nodes 2 --zone us-east1-b
+  replicas: 2
   serviceName: order-matcher-headless
   selector:
     matchLabels:
@@ -16,6 +21,14 @@ spec:
       labels:
         app: order-matcher
     spec:
+      # Spread the two BLP replicas across different nodes so a node loss can't take both.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: order-matcher
+              topologyKey: kubernetes.io/hostname
       # Pin the BLP to the dedicated c2-standard-4 node pool (created with:
       #   gcloud container node-pools create blp-pool --machine-type=c2-standard-4 \
       #     --disk-type=pd-standard --disk-size=50 \
@@ -42,6 +55,9 @@ spec:
             # Size the JVM heap to the container memory limit (container-aware).
             - name: JAVA_TOOL_OPTIONS
               value: "-XX:MaxRAMPercentage=65.0"
+            # HA leader election + NATS JetStream replication. Set false for single-BLP mode.
+            - name: BLP_REPLICATION_ENABLED
+              value: "true"
             - name: DATABASE_PG_HOST
               value: "database"
             - name: DATABASE_PG_PORT
