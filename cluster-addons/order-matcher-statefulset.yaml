@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher
+  namespace: traderx
+  labels:
+    app: order-matcher
+spec:
+  replicas: 1
+  serviceName: order-matcher-headless
+  selector:
+    matchLabels:
+      app: order-matcher
+  template:
+    metadata:
+      labels:
+        app: order-matcher
+    spec:
+      # Pin the BLP to the dedicated c2-standard-4 node pool (created with:
+      #   gcloud container node-pools create blp-pool --machine-type=c2-standard-4 \
+      #     --disk-type=pd-standard --disk-size=50 \
+      #     --node-labels=workload=blp --node-taints=workload=blp:NoSchedule)
+      # so the single-threaded hot loop gets high-clock cores with no noisy neighbours. The taint
+      # keeps other workloads off; this toleration + nodeSelector puts order-matcher on it.
+      nodeSelector:
+        workload: blp
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: blp
+          effect: NoSchedule
+      containers:
+        - name: order-matcher
+          image: traderx/order-matcher:state009
+          ports:
+            - name: http
+              containerPort: 18110
+              protocol: TCP
+          env:
+            - name: ORDER_MATCHER_PORT
+              value: "18110"
+            # Size the JVM heap to the container memory limit (container-aware).
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=65.0"
+            - name: DATABASE_PG_HOST
+              value: "database"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              value: "traderx"
+            - name: DATABASE_DBPASS
+              value: "traderx"
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "*"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: TRADE_SERVICE_URL
+              value: "http://trade-service:18092/trade/"
+            - name: ORDER_FILL_FULL_THRESHOLD
+              value: "1000"
+            - name: RUNTIME_PROFILE
+              value: "demo"
+            - name: DISRUPTOR_INPUT_RING_SIZE
+              value: "65536"
+            - name: DISRUPTOR_OUTPUT_RING_SIZE
+              value: "65536"
+            - name: ORDER_MATCHER_JOURNAL_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_PATH
+              value: "/var/lib/traderx-lmax/journal"
+            - name: JOURNAL_REPLAY_VERIFY
+              value: "true"
+            - name: OUTPUT_LEGACY_TRADES_ENABLED
+              value: "false"
+            - name: OUTPUT_PROJECTOR_BATCH_SIZE
+              value: "500"
+            - name: OUTPUT_PROJECTOR_QUEUE_CAPACITY
+              value: "1000000"
+            - name: OUTPUT_PROJECTOR_DB_ENABLED
+              value: "true"
+            - name: BLP_MAX_SECURITIES
+              value: "4096"
+            - name: BLP_BOOK_POOL_SIZE
+              value: "65536"
+            - name: BLP_GATEWAY_ACK_TIMEOUT_MS
+              value: "5000"
+            - name: SNAPSHOT_INTERVAL_MS
+              value: "300000"
+            - name: RECOVERY_SOURCE
+              value: "journal"
+            - name: ORDER_MATCHER_JOURNAL_BATCH_RECORDS
+              value: "1024"
+            - name: BLP_TERMINAL_RETAIN
+              value: "262144"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+            - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_LIVENESSSTATE_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_READINESSSTATE_ENABLED
+              value: "true"
+          # The single-threaded BLP is CPU-bound; give it a strong core floor and no CPU limit
+          # (a CPU limit would CFS-throttle the hot loop). It runs on a dedicated c2-standard-4
+          # node pool (see nodeSelector/tolerations below), so cpu=2 request reserves cores it can
+          # burst beyond. Memory is capped to protect the node, with headroom for the gateway's
+          # in-flight ack futures under high concurrency. On the shared default-pool this maxed ~13k
+          # booked/s; on the dedicated c2 node it reaches ~42k.
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              memory: 4Gi
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 24
+          # Probes are deliberately tolerant: under saturating load the CPU-bound pod is alive but
+          # slow to answer, and a tight 1s/3-failure liveness probe was killing a healthy-but-busy
+          # pod (SIGTERM/143) mid-benchmark. Wider timeout + threshold prevents that.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: lmax-runtime-data
+              mountPath: /var/lib/traderx-lmax
+  volumeClaimTemplates:
+    - metadata:
+        name: lmax-runtime-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 2Gi

@@ -47,14 +47,22 @@ Common ancestor of lmax-kubernetes and gridgain-research: `da2f9e2`.
 
 | Item | Value |
 |------|-------|
-| Cluster | 3-node, single-zone GKE |
+| Cluster | GKE, single-zone; `default-pool` 3× e2-standard-2 + `blp-pool` 1× c2-standard-4 |
 | Static IP | bound to `yaakovseif.dev` via DNS A record |
 | TLS | cert-manager + Let's Encrypt (`cluster-addons/letsencrypt-issuer.yaml`) |
 | Ingress | ingress-nginx → edge-proxy on port 8080 (`cluster-addons/traderx-ingress.yaml`) |
-| BLP | StatefulSet (`cluster-addons/order-matcher-statefulset.yaml`), 2 replicas, leader election via k8s Lease |
+| BLP | StatefulSet (`cluster-addons/order-matcher-statefulset.yaml`); **currently single-BLP** (1 replica, `BLP_REPLICATION_ENABLED=false`) pinned to `blp-pool` for throughput. Scale to 2 + replication=true to re-enable HA. |
+| BLP node pool | `blp-pool` = 1× c2-standard-4, `pd-standard`/50Gi boot disk, label `workload=blp`, taint `workload=blp:NoSchedule`. Dedicated high-clock cores for the single-threaded BLP: ~42k booked/s vs ~13k on the shared default-pool. |
 | Recovery | `RECOVERY_SOURCE=journal`, `SNAPSHOT_INTERVAL_MS=300000` (5 min) |
 | DB | MariaDB 11.4 (port 3306; `--lower-case-table-names=1`) |
 | Grafana | `grafana.yaakovseif.dev` ingress added; DNS A record still needed |
+
+> **Perf note (2026-07-02):** order-matcher throughput is CPU-bound on the single-threaded BLP,
+> not message-bus-bound. The biggest wins were: (1) getting off BestEffort QoS with a CPU floor +
+> memory headroom + tolerant health probes (a tight 1s liveness probe was SIGTERM-killing a
+> busy-but-alive pod), and (2) a dedicated c2 node pool. NATS→Aeron was considered and rejected —
+> it only touches the HA replication path and needs spare cores it doesn't have. See
+> `HANDOFF-ha-throughput-improvements.md` for the HA-replication levers (batchRecords, pipelined ACK).
 
 ### Deploy
 
