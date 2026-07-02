@@ -67,6 +67,11 @@ dependencies {
 
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+  // Forward benchmark flags so @EnabledIfSystemProperty guards work correctly.
+  systemProperty 'replicationThroughputBenchmark', System.getProperty('replicationThroughputBenchmark', 'false')
+  systemProperty 'outputLatencyBenchmark', System.getProperty('outputLatencyBenchmark', 'false')
+  systemProperty 'outputTopologyBenchmark', System.getProperty('outputTopologyBenchmark', 'false')
+  systemProperty 'outputHandlerLatencyBenchmark', System.getProperty('outputHandlerLatencyBenchmark', 'false')
 }
 
 // No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation

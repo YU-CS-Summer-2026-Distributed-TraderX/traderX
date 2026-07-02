@@ -63,35 +63,47 @@ public final class HotPathMetrics {
         histogram.recordValue(Math.min(nanos, HIGHEST_TRACKABLE_NS));
     }
 
-    /** Render a Prometheus cumulative histogram from an HdrHistogram in nanoseconds. */
+    /**
+     * Render a Prometheus cumulative histogram from an HdrHistogram in nanoseconds.
+     *
+     * <p>Takes a {@code copy()} first: {@code ConcurrentHistogram} makes {@code recordValue}
+     * safe against concurrent writers, but iteration-based reads ({@code getMean},
+     * {@code getCountBetweenValues}) are not safe to call on the live instance while the hot
+     * path is concurrently recording into it — doing so intermittently threw
+     * {@code ConcurrentModificationException}/{@code NoSuchElementException} from a scrape
+     * racing the BLP. {@code copy()} is the HdrHistogram-supported safe snapshot operation.
+     */
     public static void renderHistogram(StringBuilder sb, String name, String help,
                                        ConcurrentHistogram histogram, double[] bucketSeconds) {
+        ConcurrentHistogram snapshot = histogram.copy();
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snapshot.getTotalCount();
         for (double edge : bucketSeconds) {
             long upperNs = (long) (edge * 1_000_000_000.0);
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
+            long count = total == 0 ? 0 : snapshot.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
             sb.append(name).append("_bucket{le=\"").append(trimEdge(edge)).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sumSeconds = total == 0 ? 0.0 : histogram.getMean() * total / 1_000_000_000.0;
+        double sumSeconds = total == 0 ? 0.0 : snapshot.getMean() * total / 1_000_000_000.0;
         sb.append(name).append("_sum ").append(sumSeconds).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
     }
 
-    /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. */
+    /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. See
+     *  {@link #renderHistogram} for why this snapshots via {@code copy()} first. */
     public static void renderCountHistogram(StringBuilder sb, String name, String help,
                                             ConcurrentHistogram histogram, long[] bucketEdges) {
+        ConcurrentHistogram snapshot = histogram.copy();
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snapshot.getTotalCount();
         for (long edge : bucketEdges) {
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
+            long count = total == 0 ? 0 : snapshot.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
             sb.append(name).append("_bucket{le=\"").append(edge).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sum = total == 0 ? 0.0 : histogram.getMean() * total;
+        double sum = total == 0 ? 0.0 : snapshot.getMean() * total;
         sb.append(name).append("_sum ").append(sum).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
     }

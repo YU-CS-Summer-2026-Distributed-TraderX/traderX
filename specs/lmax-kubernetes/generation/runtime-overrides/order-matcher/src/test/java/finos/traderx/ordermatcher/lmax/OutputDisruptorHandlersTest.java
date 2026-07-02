@@ -108,7 +108,7 @@ class OutputDisruptorHandlersTest {
         SymbolTable symbols = symbolsWith("IBM");
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<OrderResponse> publisher = new RecordingPublisher<>();
-        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel);
+        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 0, true);
         handler.onEvent(orderEvent(symbols, OutputEvent.KIND_TRADE_BOOKED, true), 1, true);
@@ -124,7 +124,7 @@ class OutputDisruptorHandlersTest {
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<OrderResponse> publisher = new RecordingPublisher<>();
         publisher.failOnPublish = true;
-        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel);
+        NatsBridgeHandler handler = new NatsBridgeHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 0, true);
 
@@ -168,7 +168,7 @@ class OutputDisruptorHandlersTest {
         SymbolTable symbols = symbolsWith("IBM");
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<AccountTrade> publisher = new RecordingPublisher<>();
-        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel);
+        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(tradeEvent(symbols), 0, true);
         handler.onEvent(orderEvent(symbols, OutputEvent.KIND_ORDER_ACCEPTED, true), 1, true);
@@ -190,7 +190,7 @@ class OutputDisruptorHandlersTest {
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<AccountTrade> publisher = new RecordingPublisher<>();
         publisher.failOnPublish = true;
-        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel);
+        AccountTradeHandler handler = new AccountTradeHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(tradeEvent(symbols), 0, true);
 
@@ -205,8 +205,8 @@ class OutputDisruptorHandlersTest {
         RecordingPublisher<AccountTrade> accountTrades = new RecordingPublisher<>();
         RecordingPublisher<PositionUpdate> positions = new RecordingPublisher<>();
         RecordingPublisher<TradeOrder> legacyTrades = new RecordingPublisher<>();
-        AccountTradeHandler accountTradeHandler = new AccountTradeHandler(accountTrades, symbols, readModel);
-        PositionUpdateHandler positionUpdateHandler = new PositionUpdateHandler(positions, symbols, readModel);
+        AccountTradeHandler accountTradeHandler = new AccountTradeHandler(accountTrades, symbols, readModel, primaryRole());
+        PositionUpdateHandler positionUpdateHandler = new PositionUpdateHandler(positions, symbols, readModel, primaryRole());
 
         accountTradeHandler.onEvent(tradeEvent(symbols), 0, true);
         positionUpdateHandler.onEvent(positionEvent(symbols), 1, true);
@@ -222,7 +222,7 @@ class OutputDisruptorHandlersTest {
         SymbolTable symbols = symbolsWith("IBM");
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<PositionUpdate> publisher = new RecordingPublisher<>();
-        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel);
+        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(positionEvent(symbols), 0, true);
         handler.onEvent(tradeEvent(symbols), 1, true);
@@ -242,7 +242,7 @@ class OutputDisruptorHandlersTest {
         InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
         RecordingPublisher<PositionUpdate> publisher = new RecordingPublisher<>();
         publisher.failOnPublish = true;
-        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel);
+        PositionUpdateHandler handler = new PositionUpdateHandler(publisher, symbols, readModel, primaryRole());
 
         handler.onEvent(positionEvent(symbols), 0, true);
 
@@ -331,6 +331,12 @@ class OutputDisruptorHandlersTest {
         e.updatedAtMillis = 1_700_000_000_000L;
         e.ingressNanos = System.nanoTime();
         return e;
+    }
+
+    private static ReplicationRole primaryRole() {
+        ReplicationRole role = new ReplicationRole();
+        role.set(ReplicationRole.Role.PRIMARY);
+        return role;
     }
 
     private static final class RecordingPublisher<T> implements Publisher<T> {
