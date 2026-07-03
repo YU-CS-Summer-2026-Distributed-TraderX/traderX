@@ -2,12 +2,12 @@
 
 **For:** teammate's Claude session, onboarding onto this work cold.
 **Repo:** `YU-CS-Summer-2026-Distributed-TraderX/traderX` on GitHub.
-**Active branch:** `lmax-kubernetes-blp-ha`
+**Active branch:** `lmax-kubernetes-blp-ha` — pushed and up to date as of 2026-07-03.
 
-> ⚠️ **Before using this doc:** confirm `lmax-kubernetes-blp-ha` is actually pushed to `origin`
-> (`git ls-remote --heads origin lmax-kubernetes-blp-ha`). As of 2026-07-02 it existed only on
-> Yaakov's machine — if you're reading this and can't find the branch on GitHub, ask him to push it
-> first; nothing below is fetchable until then.
+> You already have GCP project access (`tanidiament@gmail.com`: Editor + `clouddeploy.approver`)
+> and a Cloud Build CI/CD pipeline exists for order-matcher — **read §7 before doing any manual
+> `kubectl`/`docker push` against the shared cluster.** Both of us pushing directly to the same
+> live pods is exactly the collision this pipeline exists to avoid.
 
 ---
 
@@ -37,6 +37,7 @@ main
                  b44efaf  Document deploy discipline + repo hygiene in CLAUDE.md
                  90ff61d  Dedicated c2-standard-4 node pool + resources/probes tuning
                  493e058  Async-pipelined NATS JetStream replication (HA throughput fix)
+                 4c0633c  Add CI/CD pipeline: Cloud Build -> Cloud Deploy (order-matcher)
 ```
 
 **Important:** `lmax-kubernetes` (no `-blp-ha` suffix) is a **different, older, stale branch**.
@@ -50,7 +51,7 @@ It still has the bugs listed below unfixed and deploys as a plain single-replica
 
 - **Cluster:** `traderx-lmax`, zone `us-east1-b`, project `traderx-501015`.
 - **Live at:** `https://yaakovseif.dev`
-- **Deployed from:** `lmax-kubernetes-blp-ha` @ `493e058` (verify with `git log -1` after you pull).
+- **Deployed from:** `lmax-kubernetes-blp-ha` @ `4c0633c` or later (verify with `git log -1` after you pull).
 - **order-matcher (the BLP)** is currently in **HA mode**: 2 replicas, leader-elected
   PRIMARY/FOLLOWER, NATS JetStream replication, on a dedicated node pool.
 
@@ -156,11 +157,11 @@ Pick any of these — they're the natural next steps:
 git clone https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX.git
 cd traderX
 git checkout lmax-kubernetes-blp-ha
-git log -1   # sanity check: should show 493e058 or later
+git log -1   # sanity check: should show 4c0633c (CI/CD pipeline) or later
 ```
 
-You'll also need GCP access (Yaakov has to grant this via IAM — see the console steps he has
-separately) and then:
+You already have GCP project access (`tanidiament@gmail.com`: Editor + `clouddeploy.approver`).
+Set it up locally:
 
 ```bash
 gcloud auth login
@@ -168,12 +169,46 @@ gcloud config set project traderx-501015
 gcloud container clusters get-credentials traderx-lmax --zone us-east1-b
 kubectl config use-context gke_traderx-501015_us-east1-b_traderx-lmax
 kubectl get pods -n traderx -l app=order-matcher   # confirm you can see the cluster
+gcloud auth configure-docker us-east1-docker.pkg.dev   # one-time, for manual docker pushes
 ```
-
-Docker push to Artifact Registry needs `gcloud auth configure-docker us-east1-docker.pkg.dev`
-(one-time) plus the IAM role below.
 
 Read `CLAUDE.md` in full before making changes — it has the deploy discipline rule this session
 established (rebuild+redeploy from `generated/` after every merge, unique dated tags) plus the
 repo hygiene rule (don't commit scratch/handoff docs like this one — this file itself should
 **not** end up committed; it's meant to be read and then discarded or kept locally).
+
+---
+
+## 7. CI/CD — how deploys actually happen now (read before touching the cluster)
+
+order-matcher has a **Cloud Build → Cloud Deploy** pipeline as of 2026-07-03. This exists
+specifically so we don't collide by both running `kubectl set image`/`docker push` against the
+same live StatefulSet — **use this instead of manual deploys for order-matcher.**
+
+**Flow:** push to `lmax-kubernetes-blp-ha` → Cloud Build trigger `order-matcher-cicd` fires →
+regenerates `generated/` from committed `specs/`, builds the jar, builds+pushes a uniquely-tagged
+image, creates a Cloud Deploy release → release sits at `PENDING_APPROVAL` — **nothing touches the
+cluster until someone approves it.**
+
+**To approve/reject a release** (you have `clouddeploy.approver`, so either of us can):
+```bash
+gcloud deploy rollouts list --delivery-pipeline=order-matcher-pipeline --region=us-east1
+gcloud deploy rollouts approve <rollout-name> \
+  --release=<release-name> --delivery-pipeline=order-matcher-pipeline --region=us-east1
+# or reject:
+gcloud deploy rollouts reject <rollout-name> \
+  --release=<release-name> --delivery-pipeline=order-matcher-pipeline --region=us-east1
+```
+Or use the console: **Cloud Deploy → order-matcher-pipeline**.
+
+**To trigger a build without a git push** (e.g. testing locally before committing):
+```bash
+gcloud builds submit --config=cloudbuild.yaml --project=traderx-501015 .
+```
+
+Full details — exact IAM setup, why the artifact bucket had to be custom, the config files
+(`cloudbuild.yaml`/`clouddeploy.yaml`/`skaffold.yaml`) — are in `CLOUD-ARCHITECTURE.md` §6.
+
+**Scope:** order-matcher only right now. Other services (`account-service`, `trade-processor`,
+etc.) still deploy via the manual commands in `CLOUD-ARCHITECTURE.md` §5 — extending CI/CD to
+those is a reasonable next task if you want one.

@@ -42,7 +42,7 @@ from both pushing to the same live pods at once.
 
 - **Yaakov** — GKE cluster, manifests, ingress, TLS, StatefulSet, deploy pipeline, CI/CD, BLP
   multi-replica failover infrastructure.
-- **Teammate** (`tanidiament@gmail.com`) — BLP performance work: snapshot improvements, journal
+- **Tani** — (`tanidiament@gmail.com`) — BLP performance work: snapshot improvements, journal
   batch coalescing, bounded terminal-order retention. Has GCP project access (Editor +
   `clouddeploy.approver`, so he can approve releases too) and pushes to `lmax-kubernetes-blp-ha`
   same as Yaakov.
@@ -53,17 +53,17 @@ from both pushing to the same live pods at once.
 
 **Live at:** `https://yaakovseif.dev`
 
-| Item | Value |
-|------|-------|
-| Cluster | GKE, single-zone; `default-pool` 3× e2-standard-2 + `blp-pool` 1× c2-standard-4 |
-| Static IP | bound to `yaakovseif.dev` via DNS A record |
-| TLS | cert-manager + Let's Encrypt (`cluster-addons/letsencrypt-issuer.yaml`) |
-| Ingress | ingress-nginx → edge-proxy on port 8080 (`cluster-addons/traderx-ingress.yaml`) |
-| BLP | StatefulSet (`cluster-addons/order-matcher-statefulset.yaml`); **currently single-BLP** (1 replica, `BLP_REPLICATION_ENABLED=false`) pinned to `blp-pool` for throughput. Scale to 2 + replication=true to re-enable HA. |
+| Item | Value                                                                                                                                                                                                                         |
+|------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Cluster | GKE, single-zone; `default-pool` 3× e2-standard-2 + `blp-pool` 1× c2-standard-4                                                                                                                                               |
+| Static IP | bound to `yaakovseif.dev` via DNS A record                                                                                                                                                                                    |
+| TLS | cert-manager + Let's Encrypt (`cluster-addons/letsencrypt-issuer.yaml`)                                                                                                                                                       |
+| Ingress | ingress-nginx → edge-proxy on port 8080 (`cluster-addons/traderx-ingress.yaml`)                                                                                                                                               |
+| BLP | StatefulSet (`cluster-addons/order-matcher-statefulset.yaml`); **currently single-BLP** (1 replica, `BLP_REPLICATION_ENABLED=false`) pinned to `blp-pool` for throughput. Scale to 2 + replication=true to re-enable HA.      |
 | BLP node pool | `blp-pool` = 1× c2-standard-4, `pd-standard`/50Gi boot disk, label `workload=blp`, taint `workload=blp:NoSchedule`. Dedicated high-clock cores for the single-threaded BLP: ~42k booked/s vs ~13k on the shared default-pool. |
-| Recovery | `RECOVERY_SOURCE=journal`, `SNAPSHOT_INTERVAL_MS=300000` (5 min) |
-| DB | MariaDB 11.4 (port 3306; `--lower-case-table-names=1`) |
-| Grafana | `grafana.yaakovseif.dev` ingress added; DNS A record still needed |
+| Recovery | `RECOVERY_SOURCE=journal`, `SNAPSHOT_INTERVAL_MS=300000` (5 min)                                                                                                                                                              |
+| DB | MariaDB 11.4 (port 3306; `--lower-case-table-names=1`)                                                                                                                                                                        |
+| Grafana | `grafana.yaakovseif.dev` ingress added; DNS A exists                                                                                                                                                                          |
 
 > **Perf note (2026-07-02):** order-matcher throughput is CPU-bound on the single-threaded BLP,
 > not message-bus-bound. The biggest wins were: (1) getting off BestEffort QoS with a CPU floor +
