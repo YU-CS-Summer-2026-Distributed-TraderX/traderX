@@ -84,7 +84,8 @@ public final class JournalReader {
         return count;
     }
 
-    private static void decode(ByteBuffer b, InputEvent e) {
+    /** Package-shared with {@link JournalFollower}, which tails the same record layout live. */
+    static void decode(ByteBuffer b, InputEvent e) {
         e.seq = b.getLong();
         e.type = b.get();
         e.side = b.get();

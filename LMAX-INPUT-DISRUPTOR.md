@@ -327,7 +327,7 @@ Because the BLP is gated behind the Journaler, the journal is a **complete, orde
 the BLP ever processed**. From that:
 
 - **Snapshot + replay.** A scheduler sequences a `SNAPSHOT` marker every `snapshot.interval.ms` (env
-  `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` = off); the journaler fsyncs through the marker and records
+  `SNAPSHOT_INTERVAL_MS`; demo default 30 s, `0` = off); the journaler fsyncs through the marker and records
   the journal byte offset it covers, and the BLP serialises its whole state to `snapshot.dat` atomically. On
   restart, load the latest `snapshot.dat` and replay **only the journal tail after that offset** — bounded
   restart as the journal grows. `recovery.source=db` (default) warm-starts from the read-model and *verifies*
@@ -489,6 +489,13 @@ journal-authoritative storage to a later state, faithful to the strangler plan's
 Out of scope either way: the output disruptor internals, replica/DR failover, account/position/people/
 reference-data services, the Angular UI contract, and the LGTM stack — all carried forward unchanged from
 `009`/`007`.
+
+> **Status update (2026-07-03):** the "out of scope" failover line above is the original scoping
+> decision, since overtaken — 009b now ships a same-host warm-standby follower BLP with
+> promotion-based failover, realized by tailing the shared journal (the in-ring Replicator remains
+> the loopback stub; the journal itself is the replication stream). See
+> `LMAX-SEQUENCER-ARCHITECTURE.md` §10.1 and the 009b `implementation-status.md`. Cross-host DR via
+> a real network replicator is still the deferred remainder.
 
 ## B15. Spec-kit artifacts to author
 
@@ -652,7 +659,7 @@ New keys for the `order-matcher` module (with demo-safe defaults):
 | `journal.type` | `chronicle` | `chronicle` / `aeron-archive` / `file` *(demo uses `file`)*. |
 | `journal.path` | `./data/journal` | Durable log location (also holds `snapshot.dat` + `symbols.tab`). |
 | `journal.replay.verify` | `true` | In `db` recovery, verify journal replay reconstructs the warm-start state. |
-| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (demo `60000`) | Periodic snapshot to bound journal-tail replay; `0` = off. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `30000`) | Periodic snapshot to bound journal-tail replay; `0` = off. |
 | `recovery.source` (env `RECOVERY_SOURCE`) | `db` | `db` (warm-start + verify) or `journal` (snapshot+journal authoritative, no DB). |
 | `replication.enabled` | `false` | Option A stubs the Replicator. |
 | `replication.endpoints` | `(empty)` | Replica/DR addresses (Option B). |

@@ -114,6 +114,11 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
         return journaledSeq;
     }
 
+    /** True while appends are actually reaching the journal (enabled and not failed). */
+    public boolean isWriting() {
+        return enabled && !failed;
+    }
+
     /** Journal byte offset just past the most recent SNAPSHOT marker (the tail start for recovery). */
     public long lastSnapshotOffset() {
         return lastSnapshotOffset;

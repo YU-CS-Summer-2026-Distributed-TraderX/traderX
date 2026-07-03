@@ -157,6 +157,8 @@ services:
       PEOPLE_SERVICE_HOST: "people-service"
       NATS_BROKER_HOST: "nats-broker"
       PRICE_SERVICE_HOST: "price-publisher"
+      # Order routing goes through the matcher VIP so a failover is transparent to trading.
+      ORDER_MATCHER_URL: "http://order-matcher-vip:18110"
       CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-*}"
       MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,prometheus,info"
       MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED: "true"
@@ -198,11 +200,17 @@ services:
     # busy-spin pegs ~3 cores (journaler+replicator+BLP) continuously while the stack is up.
     environment:
       ORDER_MATCHER_PORT: "18110"
+      # Failover pair (FR-09B30..B32): this node PREFERS leadership but the leader.lock on the
+      # shared journal volume decides — restarted after a failover it rejoins as a follower,
+      # watching the promoted node so auto-failover still works in the reverse direction.
+      BLP_ROLE: "primary"
+      FAILOVER_WATCH_URL: "http://order-matcher-standby:18110/health"
       BLP_PIN_CPU: "${BLP_PIN_CPU:-2}"
       DISRUPTOR_INPUT_WAIT_STRATEGY: "${DISRUPTOR_INPUT_WAIT_STRATEGY:-busyspin}"
       # Periodic full-state snapshot to bound journal replay (0 = off). Recovery loads snapshot.dat
-      # and replays only the journal tail after it.
-      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-0}"
+      # and replays only the journal tail after it. Default ON: it bounds leader restart, standby
+      # catch-up, AND stops the unbounded-journal OOM a long bench run used to leave behind.
+      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-30000}"
       # Cutover: recovery.source=journal makes snapshot+journal authoritative (no DB warm-start);
       # output.projector.db.enabled=false stops all DB writes. Together the matcher needs no database.
       RECOVERY_SOURCE: "${RECOVERY_SOURCE:-db}"
@@ -226,10 +234,14 @@ services:
       ORDER_MATCHER_TICK_MS: "${ORDER_MATCHER_TICK_MS:-1000}"
       ORDER_FILL_FULL_THRESHOLD: "${ORDER_FILL_FULL_THRESHOLD:-1000}"
     ports:
-      - "18110:18110"
+      # The VIP owns host 18110 (the well-known matcher port); the primary is reachable
+      # directly on 18111 for debugging and single-node benching.
+      - "18111:18110"
     volumes:
       # Durable input journal (state 009b recovery): the BLP's source of truth must survive
       # container recreate, not just restart, so it can replace the DB as the durable store.
+      # SHARED with order-matcher-standby: the journal doubles as the replication stream the
+      # follower tails, and leader.lock on it is the split-brain fence.
       - order_matcher_journal:/opt/app/data
     depends_on:
       database:
@@ -239,6 +251,71 @@ services:
       trade-service:
         condition: service_started
       nats-broker:
+        condition: service_started
+
+  # Warm standby BLP (FR-09B30..B32): boots as a FOLLOWER — recovers from snapshot+journal, then
+  # tails the leader's journal continuously, so its book/positions/read-model track the leader
+  # within milliseconds. Writes answer 503 and NATS output is gated until promotion; reads are
+  # served warm the whole time. Its watchdog probes the primary's /health and promotes itself
+  # (after winning leader.lock) when the primary process dies; the restarted primary then rejoins
+  # as a follower. Follower-profile knobs: no core pinning / no busy-spin (the standby should be
+  # nearly free until it is promoted) and no DB dependency at all (journal is authoritative).
+  order-matcher-standby:
+    build:
+      context: ../order-matcher
+      dockerfile: Dockerfile.compose
+    environment:
+      ORDER_MATCHER_PORT: "18110"
+      BLP_ROLE: "standby"
+      FAILOVER_WATCH_URL: "http://order-matcher:18110/health"
+      FAILOVER_PROBE_INTERVAL_MS: "${FAILOVER_PROBE_INTERVAL_MS:-1000}"
+      FAILOVER_PROBE_FAILURES: "${FAILOVER_PROBE_FAILURES:-3}"
+      BLP_PIN_CPU: "-1"
+      DISRUPTOR_INPUT_WAIT_STRATEGY: "blocking"
+      SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-30000}"
+      RECOVERY_SOURCE: "journal"
+      OUTPUT_PROJECTOR_DB_ENABLED: "false"
+      SPRING_JPA_DDL_AUTO: "none"
+      HIKARI_INIT_FAIL_TIMEOUT: "-1"
+      MANAGEMENT_HEALTH_DB_ENABLED: "false"
+      DATABASE_PG_HOST: "database"
+      DATABASE_PG_PORT: "3306"
+      DATABASE_NAME: "traderx"
+      DATABASE_DBUSER: "traderx"
+      DATABASE_DBPASS: "traderx"
+      CORS_ALLOWED_ORIGINS: "${CORS_ALLOWED_ORIGINS:-*}"
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: "health,prometheus,info"
+      MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED: "true"
+      MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED: "true"
+      PRICE_SERVICE_URL: "http://price-publisher:18100"
+      TRADE_SERVICE_URL: "http://trade-service:18092/trade/"
+      NATS_BROKER_HOST: "nats-broker"
+      ORDER_FILL_FULL_THRESHOLD: "${ORDER_FILL_FULL_THRESHOLD:-1000}"
+    ports:
+      - "18112:18110"
+    volumes:
+      - order_matcher_journal:/opt/app/data
+    depends_on:
+      order-matcher:
+        condition: service_started
+      nats-broker:
+        condition: service_started
+
+  # Stable VIP for the matcher pair: every client (trade-service, ingress, host port 18110)
+  # addresses order-matcher-vip; haproxy routes commands to whichever node reports
+  # /admin/ready=200 (the leader) and lets reads fall back to the warm follower while a
+  # failover is in flight. Stats UI on http://localhost:18404/.
+  order-matcher-vip:
+    image: haproxy:2.9-alpine
+    volumes:
+      - ./failover/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "18110:18110"
+      - "18404:8404"
+    depends_on:
+      order-matcher:
+        condition: service_started
+      order-matcher-standby:
         condition: service_started
 
   ingress:
@@ -255,7 +332,7 @@ services:
       TRADE_PROCESSOR_URL: "http://trade-processor:18091/"
       TRADE_SERVICE_URL: "http://trade-service:18092/"
       PRICE_PUBLISHER_URL: "http://price-publisher:18100/"
-      ORDER_MATCHER_URL: "http://order-matcher:18110/"
+      ORDER_MATCHER_URL: "http://order-matcher-vip:18110/"
       WEB_FRONTEND_URL: "http://web-front-end-angular:18093/"
     ports:
       - "8080:8080"
@@ -269,6 +346,7 @@ services:
       - nats-broker
       - price-publisher
       - order-matcher
+      - order-matcher-vip
 
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.103.1

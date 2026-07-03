@@ -24,8 +24,13 @@ Describe runtime topology and network/data flow changes introduced by this state
   - output ring (single producer) with marshaller, NATS bridge, and read-model projector
 - `trade-service` gains the Gateway/Receptionist role (in-memory validation, symbol mapping,
   fixed-point conversion, SBE encode, sequence submission); REST/WS contract unchanged.
-- Optional replica hot-path node (warm standby, output suppressed) — loopback/stub in `demo` profile,
-  real second node + DR in `perf` profile.
+- Replica hot-path node (warm standby, output suppressed) — since 2026-07-03 the `demo` compose runs
+  the pair by default: `order-matcher-standby` tails the shared journal volume in lock-step (reads
+  served warm, writes 503), a `leader.lock` file lock on the journal volume fences the single
+  appender, and an `order-matcher-vip` haproxy holds the well-known matcher address (host 18110;
+  primary direct 18111, standby direct 18112, stats 18404) routing commands to whichever node reports
+  `/admin/ready`. In-ring replication itself remains the loopback stub; a real network replicator +
+  DR site stays `perf`-profile scope.
 - New durable local state: the journal directory (`journal.path`, default `./data/journal`) holds the
   append-only `input-events.journal`, the periodic `snapshot.dat` checkpoint, and the `symbols.tab`
   ticker->id map — one mounted volume (`order_matcher_journal` -> `/opt/app/data`) in containerized
@@ -66,7 +71,7 @@ Describe runtime topology and network/data flow changes introduced by this state
 ## Operational Windows
 
 - Snapshot cadence (`snapshot.interval.ms`, env `SNAPSHOT_INTERVAL_MS`): periodic full-state `snapshot.dat`
-  checkpoint, demo default 60 s (`0` = off); each snapshot bounds the journal tail recovery must replay.
+  checkpoint, demo default 30 s (`0` = off); each snapshot bounds the journal tail recovery must replay.
 - Nightly bounce: restart the hot-path node in a quiet window; recovery is snapshot + journal-tail replay.
   009b performs that replay on every restart; a cron-scheduled bounce window (`nogc.bounce.cron`) and a
   warm-up replay before going live remain aspirational.

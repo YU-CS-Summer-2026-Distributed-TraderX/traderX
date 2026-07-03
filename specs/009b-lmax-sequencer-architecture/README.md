@@ -27,7 +27,9 @@ Primary intent:
 - make the journal the authoritative store with Postgres/H2 demoted to an async read-model,
 - preserve all `009` REST/WS/NATS/UI/schema contracts verbatim (the migration is invisible at the edge),
 - enforce zero steady-state allocation on the hot path via an Epsilon-GC CI gate,
-- add replication + warm-standby failover, demo-right-sized (single replica in the `demo`/`C2` profile),
+- add replication + warm-standby failover, demo-right-sized (implemented 2026-07-03: an active/passive
+  matcher pair over the shared journal with lock-fenced promotion and an haproxy VIP on port 18110;
+  in-ring replication itself stays the loopback stub in the `demo`/`C2` profile),
 - capture explicit requirement deltas for this transition,
 - define architecture/runtime topology updates for this state,
 - keep generation fully spec-first,

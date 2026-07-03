@@ -36,8 +36,12 @@
       cutover implemented (2026-06-30); JIT warm-up replay and a cron-scheduled nightly bounce deferred.
 - [x] T09B15 Implement the output disruptor (Marshaller/read-model, NATS bridge preserving `009`
       subjects/payloads, TradeBooked bridge, batched Read-model Projector).
-- [~] T09B16 Replication seam implemented as loopback stub gating the BLP (demo profile); real
-      follower BLP + promotion failover deferred to the perf profile.
+- [~] T09B16 Replication seam implemented as loopback stub gating the BLP (demo profile). Warm-standby
+      failover implemented 2026-07-03 (FR-09B30..B32): follower BLP tails the shared journal
+      (lock-step state, outputs gated, warm reads), `leader.lock` file-lock fencing, watchdog
+      auto-promotion (~5-6s kill→ready) + `POST /admin/promote`, haproxy VIP holding port 18110;
+      verified live by `scripts/verify-009b-failover.sh` (16 checks). Remaining for the perf/DR
+      profile: a real network replicator (Aeron) + consensus lease for cross-host failover.
 - [~] T09B17 Wait-strategy/ring-size/journal config keys implemented with demo-safe defaults
       (`blocking`); `perf`/`noGcTest` JVM launch profiles deferred.
 - [~] T09B18 No-GC gate implemented (2026-06-11): `pipeline/validate-no-gc-conformance.sh` runs the

@@ -355,7 +355,7 @@ stateDiagram-v2
 ```
 
 - **Snapshot**: a `snapshot-scheduler` thread sequences a `SNAPSHOT` marker every `snapshot.interval.ms`
-  (env `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` = off). The marker rides the input ring, so the BLP
+  (env `SNAPSHOT_INTERVAL_MS`; demo default 30 s, `0` = off). The marker rides the input ring, so the BLP
   serializes its whole state — book, net positions, last prices, `nextOrderRef`/`tradeCounter` — on its own
   thread at a consistent sequence point, written to `snapshot.dat` **atomically** (temp + atomic rename). The
   journaler fsyncs through the marker and records the journal byte offset the snapshot covers (`coveredOffset`).
@@ -391,6 +391,34 @@ replicated input stream** and stay in lock-step; **followers compute identical s
 On leader failure a follower is already warm and at the same sequence, so promotion is **near-instant
 (microseconds)** — no cold replay needed. [Aeron Cluster](https://aeron.io/) (Raft consensus + replicated log)
 is the modern, off-the-shelf realization of LMAX's hand-rolled sequencer + replicator + journaler.
+
+### 10.1 As implemented in state `009b` (2026-07-03): warm standby over the journal
+
+The demo stack ships a working **active/passive matcher pair** that realizes FR-09B30..B32 with the
+**journal as the replication stream** instead of a network replicator — the journal already carries the
+identical sequenced input, so a follower that tails the file is in lock-step for free, with zero added
+work on the leader's hot path:
+
+- `order-matcher-standby` boots with `blp.role=standby`: it recovers from snapshot+journal, then a
+  `JournalFollower` thread keeps tailing `input-events.journal`, applying every record to its own BLP.
+  Output handlers stay gated (the recovery `replaying` flag), so the follower **computes identical state
+  but suppresses output** — exactly the article's follower contract — while serving warm reads.
+  Measured follower lag under an ~84k trades/s saturation load: p50 = 0, worst ≈ 0.45 s.
+- **Leadership is an OS file lock** (`leader.lock` on the shared journal volume), released by the kernel
+  when the holder dies. The health-probe watchdog is only the failover *trigger*; the lock is the
+  *arbiter* (an alive-but-slow leader stays fenced in). A restarted ex-leader finds the lock held and
+  demotes itself to follower. Promotion = win the lock → drain the journal tail → un-gate outputs →
+  start the live input path; acks sit behind the journaler, so nothing acked is ever lost.
+- An haproxy VIP holds the well-known `order-matcher` address (host port 18110; nodes direct on
+  18111/18112): commands route only to the node whose `GET /admin/ready` is 200, reads fall back to the
+  warm follower during the failover window. Kill-to-ready measured ≈ 5–6 s (3 × 1 s probes + drain) —
+  seconds, not the paper's microseconds: the demo trades the Aeron-class replicator for zero moving
+  parts. `scripts/verify-009b-failover.sh` proves the lifecycle end-to-end (16 checks: replication,
+  SIGKILL promotion, state continuity, id-collision freedom, lock-fenced failback).
+
+What separates this from the diagram above (and stays on the perf/DR roadmap): a real **network
+replicator** (Aeron) for cross-host/DR followers, and a **consensus lease** in place of the file lock —
+file-lock fencing is only sound while both nodes share one kernel (the compose named volume).
 
 ---
 
@@ -469,6 +497,9 @@ public final class InputEvent {
     public static final byte TYPE_FORCE_FILL = 3;
     public static final byte TYPE_PRICE_TICK = 4;
     public static final byte TYPE_TRADE_NEW = 5;   // market trade from the trade ticket (FR-09B08)
+    /** Snapshot marker (state 009b recovery): sequenced so the BLP checkpoints its state at a
+     *  consistent point, bounding journal replay. Carries no business payload. */
+    public static final byte TYPE_SNAPSHOT = 6;
 
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;
@@ -598,6 +629,9 @@ flowchart LR
   async read-model fed by a Projector. Add snapshot + replay recovery. *(Implemented in 009b: periodic
   `snapshot.dat` + bounded journal-tail replay, with a `recovery.source=journal` no-DB cutover.)*
 - **Phase 4** — Add replicas + DR (Aeron Cluster), promotion-based failover, and the nightly bounce.
+  *(Partially implemented in 009b, 2026-07-03: a same-host warm-standby pair with promotion-based
+  failover over the shared journal — see §10.1. Still open: Aeron network replication for cross-host
+  DR, and the nightly bounce.)*
 
 ---
 

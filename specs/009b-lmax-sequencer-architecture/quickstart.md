@@ -15,9 +15,21 @@ bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
 
 The hot-path node warm-starts from the persisted read-model (orders + net positions re-indexed into
 the BLP at boot) and, on the demo profile, periodically checkpoints full state to `snapshot.dat`
-(`SNAPSHOT_INTERVAL_MS`, default 60 s); on restart it loads the latest snapshot and replays only the
+(`SNAPSHOT_INTERVAL_MS`, default 30 s); on restart it loads the latest snapshot and replays only the
 journal tail after it. JIT warm-up still lands with T09B14. See §7 to switch `recovery.source` to the
 DB-less `journal` mode.
+
+Since 2026-07-03 the stack runs an **active/passive matcher pair** behind an haproxy VIP:
+
+| Host port | What it is |
+| --- | --- |
+| `18110` | **VIP** — the stable matcher address every client (and this doc's `curl`s) uses; routes commands to the live node, falls back to the warm follower for reads during a failover |
+| `18111` | primary matcher directly |
+| `18112` | standby matcher directly (warm follower: reads OK, writes 503 until promoted) |
+| `18404` | haproxy stats UI |
+
+`curl localhost:1811{1,2}/admin/role` shows each node's role, leader-lock, journal-writing state and
+follower lag. See §8 to exercise a failover.
 
 ## 3) Run Smoke Tests
 
@@ -68,6 +80,13 @@ open http://localhost:3001
 
 ## 7) Exercise Recovery and Decoupling
 
+> Failover interaction (2026-07-03): restarting `order-matcher` while the standby is running triggers
+> the standby's watchdog to PROMOTE (~3 s of failed probes), and the restarted primary then rejoins as
+> a follower — so the leader-boot recovery log lines below won't appear on it. To exercise the
+> single-node recovery paths as written, stop the standby first
+> (`docker compose stop order-matcher-standby`), or start the stack with
+> `FAILOVER_PROBE_FAILURES=999999`. §8 exercises the failover itself.
+
 ```bash
 ORDER_MATCHER_PORT="${ORDER_MATCHER_PORT:-18110}"
 
@@ -87,8 +106,39 @@ RECOVERY_SOURCE=journal OUTPUT_PROJECTOR_DB_ENABLED=false \
 curl -s "http://localhost:${ORDER_MATCHER_PORT}/metrics" | rg "traderx_projector_queue_depth|traderx_projector_enqueue_blocks_total"
 ```
 
+## 8) Exercise Warm-Standby Failover (FR-09B30..B32)
+
+```bash
+# The full scripted proof (16 checks: warm replication, SIGKILL promotion ~5-6s, state continuity,
+# no order-id collision, lock-fenced failback-as-follower). Stack must be up.
+./scripts/verify-009b-failover.sh
+
+# Or by hand — watch the roles…
+curl -s http://localhost:18111/admin/role   # {"role":"primary","live":true,"leaderLockHeld":true,...}
+curl -s http://localhost:18112/admin/role   # {"role":"standby","live":false,"followerLagBytes":0,...}
+
+# …kill the leader with no goodbye…
+docker kill -s KILL traderx-state-009-order-matcher-1
+
+# …and within a few seconds the standby wins leader.lock, drains the journal tail, and goes live;
+# the VIP (18110) resumes routing orders to it. All acked state survives (acks sit behind the journal).
+curl -s http://localhost:18112/admin/role   # {"role":"promoted","live":true,"journalWriting":true,...}
+curl -s http://localhost:18110/orders | head -c 300
+
+# Restart the old primary: it finds leader.lock held and REJOINS AS A FOLLOWER (no split-brain).
+docker start traderx-state-009-order-matcher-1
+```
+
+Prometheus (1 s scrape on both nodes) charts the timeline: `traderx_blp_role`, `traderx_blp_live`,
+`traderx_follower_lag_bytes`, `traderx_failover_promotions_total`. haproxy's view: http://localhost:18404.
+
 ## Notes
 
-- The `demo` profile (default in containers/CI) uses `BlockingWaitStrategy`, no core pinning, and a
-  single replica. Latency budgets are validated on the `perf` profile (bare metal); see
-  `requirements/no-gc-conformance.md` for the JVM flag matrix.
+- The `demo` profile (default in containers/CI) uses `BlockingWaitStrategy` and no core pinning on the
+  standby; the primary defaults to a pinned busy-spin BLP (`BLP_PIN_CPU`,
+  `DISRUPTOR_INPUT_WAIT_STRATEGY`). Latency budgets are validated on the `perf` profile (bare metal);
+  see `requirements/no-gc-conformance.md` for the JVM flag matrix.
+- Benchmarking: target the primary directly (`MATCHER_URL=http://localhost:18111`) and bring the stack
+  up with `FAILOVER_PROBE_FAILURES=999999` — the bench driver's per-run matcher restarts would
+  otherwise trigger the standby to promote mid-run. A live follower costs ~20% sustained throughput at
+  saturation (host CPU contention, not hot-path gating); stop `order-matcher-standby` for ceiling runs.

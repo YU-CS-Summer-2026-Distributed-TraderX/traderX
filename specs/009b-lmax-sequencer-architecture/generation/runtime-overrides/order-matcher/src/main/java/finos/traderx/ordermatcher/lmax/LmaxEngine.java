@@ -51,6 +51,14 @@ import java.util.regex.Pattern;
  * Demo profile defaults: BlockingWaitStrategy, loopback replicator, file journal, no core
  * pinning — container-safe per NFR-09B06. Recovery: read-model warm-start + journal
  * (the persisted read-model acts as the snapshot; the journal captures the event stream).
+ *
+ * Warm standby (FR-09B30..B32): with {@code blp.role=standby} this engine boots as a FOLLOWER —
+ * it recovers from snapshot+journal, then a {@link JournalFollower} keeps applying the leader's
+ * journal so book/positions/read-model stay warm (NATS bridges gated the whole time via the
+ * replaying flag). A {@link PrimaryWatchdog} probes the leader and calls {@link #promote} when it
+ * dies; promotion must win the {@link LeaderLock} on the shared journal volume (split-brain
+ * fence), drains the journal tail, then starts the normal live input path. A node configured
+ * primary that finds the lock held (restart after a failover) demotes itself to follower.
  */
 @Component
 public class LmaxEngine implements InitializingBean, DisposableBean {
@@ -86,6 +94,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final boolean projectorDbEnabled;   // false => no DB writes at all (cutover)
     private final long ackTimeoutMs;
     private final String runtimeProfile;
+    private final String configuredRole;        // "primary" (default) or "standby" — a preference, not a verdict
+    private final String failoverWatchUrl;      // standby: leader health URL the watchdog probes
+    private final long probeIntervalMs;
+    private final int probeFailures;
+    private final boolean autoPromote;
+    private final long followerPollMs;
+    private final long leaderAcquireTimeoutMs;
 
     private final SymbolTable symbols;
     private final HotPathMetrics metrics = new HotPathMetrics();
@@ -103,6 +118,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private ProjectorHandler projector;
     private SnapshotStore snapshotStore;
     private java.util.concurrent.ScheduledExecutorService snapshotScheduler;
+
+    // Failover state (FR-09B30..B32). `live` is the single gate the gateways check: false means
+    // follower (reads OK, writes 503, price ticks dropped — they arrive via the journal instead).
+    private volatile boolean live;
+    private volatile String role = "primary";
+    private LeaderLock leaderLock;
+    private volatile JournalFollower follower;
+    private volatile PrimaryWatchdog watchdog;
+    private final java.util.concurrent.atomic.AtomicLong promotions = new java.util.concurrent.atomic.AtomicLong();
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -133,7 +157,14 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${recovery.source:db}") String recoverySource,
         @Value("${output.projector.db.enabled:true}") boolean projectorDbEnabled,
         @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
-        @Value("${runtime.profile:demo}") String runtimeProfile
+        @Value("${runtime.profile:demo}") String runtimeProfile,
+        @Value("${blp.role:primary}") String configuredRole,
+        @Value("${failover.watch-url:}") String failoverWatchUrl,
+        @Value("${failover.probe-interval-ms:1000}") long probeIntervalMs,
+        @Value("${failover.probe-failures:3}") int probeFailures,
+        @Value("${failover.auto-promote:true}") boolean autoPromote,
+        @Value("${failover.follower-poll-ms:10}") long followerPollMs,
+        @Value("${blp.leader.acquire-timeout-ms:10000}") long leaderAcquireTimeoutMs
     ) {
         this.orderRepository = orderRepository;
         this.tradeRepository = tradeRepository;
@@ -164,25 +195,61 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.projectorDbEnabled = projectorDbEnabled;
         this.ackTimeoutMs = ackTimeoutMs;
         this.runtimeProfile = runtimeProfile;
+        this.configuredRole = configuredRole == null ? "primary" : configuredRole.trim().toLowerCase(Locale.ROOT);
+        this.failoverWatchUrl = failoverWatchUrl == null ? "" : failoverWatchUrl.trim();
+        this.probeIntervalMs = probeIntervalMs;
+        this.probeFailures = probeFailures;
+        this.autoPromote = autoPromote;
+        this.followerPollMs = followerPollMs;
+        this.leaderAcquireTimeoutMs = leaderAcquireTimeoutMs;
         this.symbols = new SymbolTable(maxSecurities);
     }
 
     @Override
     public void afterPropertiesSet() {
+        boolean standbyRequested = "standby".equals(configuredRole);
         // Restore the durable ticker->securityId mapping FIRST (before any idFor): the journal stores
         // ids, so replay must resolve them to the same tickers the original run used (FR-09B05 recovery).
+        // Loaded read-only here; the node that WINS leadership turns appends on (beginPersisting).
         if (journalEnabled) {
-            symbols.enablePersistence(Path.of(journalPath).resolve("symbols.tab"));
+            symbols.enableReadOnly(Path.of(journalPath).resolve("symbols.tab"));
             snapshotStore = new SnapshotStore(Path.of(journalPath));
-        }
-        boolean journalRecovery = "journal".equalsIgnoreCase(recoverySource);
-        if (!journalRecovery && projectorDbEnabled) {
-            seedReadModelIfEmpty();   // DB is the source of truth: seed it
+            leaderLock = new LeaderLock(Path.of(journalPath).resolve("leader.lock"));
+        } else if (standbyRequested) {
+            throw new IllegalStateException(
+                "blp.role=standby requires journal.enabled=true (the journal is the replication stream)");
         }
 
-        // Output ring first: the BLP needs its publisher before it can run.
+        // Decide leadership BEFORE wiring the output side: a follower must not carry the DB
+        // projector (it would shadow-write the database while replaying the leader's journal).
+        // The lock, not the config, is the verdict — a primary restarted after a failover finds
+        // the promoted standby holding it and must rejoin as a follower, not split-brain.
+        boolean lead = !standbyRequested;
+        if (lead && leaderLock != null && !leaderLock.acquireWithin(leaderAcquireTimeoutMs, "boot:" + configuredRole)) {
+            log.warn("Leader lock is held by another node; joining as FOLLOWER instead of primary");
+            lead = false;
+        }
+
+        buildOutputSide(!lead);
+
+        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
+            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+        matchingEngine.setPinCpu(blpPinCpu);   // perf profile: pin the BLP thread on ring start
+
+        if (lead) {
+            goLiveFromBoot();
+        } else {
+            goStandby();
+        }
+    }
+
+    /** Output ring + handlers; identical for leader and follower (the follower's read model is
+     *  rebuilt through the same marshaller, with NATS gated by the replaying flag). The DB
+     *  projector is never attached on a follower — it must not shadow-write the database while
+     *  replaying the leader's journal, and post-promotion the journal is authoritative. */
+    private void buildOutputSide(boolean follower) {
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        if (projectorDbEnabled) {
+        if (projectorDbEnabled && !follower) {
             projector = new ProjectorHandler(jdbcTemplate, symbols,
                 projectorBatchSize, projectorQueueCapacity, metrics);
         }
@@ -212,25 +279,40 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
+    }
 
-        matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
-        matchingEngine.setPinCpu(blpPinCpu);   // perf profile: pin the BLP thread on ring start
-
+    /** Normal leader boot: recover, then start the live input path (this node owns the journal). */
+    private void goLiveFromBoot() {
+        // Persistence on BEFORE the seed registration, so a fresh volume's symbols.tab starts with
+        // the seed ids — every later node then restores them from the file instead of re-deriving.
+        symbols.beginPersisting();
+        registerSeedSymbols();
         // Recovery: DB warm-start (+ shadow verify) OR snapshot+journal authoritative (no DB).
+        boolean journalRecovery = "journal".equalsIgnoreCase(recoverySource);
         if (journalRecovery) {
             recoverLiveFromJournal();
         } else {
+            if (projectorDbEnabled) {
+                seedReadModelIfEmpty();   // DB is the source of truth: seed it
+            }
             bootstrapFromReadModel();
             verifyJournalReplay();   // prove the journal alone reconstructs the same state (verify-only)
         }
+        startLiveInputPath();
+        role = "primary";
+        log.info("LMAX hot path live: profile={} role=primary inputRing={} outputRing={} journal={} ({} orders warm)",
+            runtimeProfile, normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
+            journalEnabled ? journalPath : "disabled", readModel.totalOrders());
+    }
 
+    /** The live-node input path: journaler + replicator ahead of the BLP, snapshots on a timer.
+     *  Shared by leader boot and standby promotion (recovery/drain must be complete first). */
+    private void startLiveInputPath() {
         // Set the snapshot trigger only AFTER recovery, so SNAPSHOT markers replayed from the journal
         // tail are no-ops and do not overwrite snapshot.dat with mid-recovery state.
         if (snapshotStore != null) {
             matchingEngine.setSnapshotTrigger(this::writeSnapshot);
         }
-
         // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
         // (sequence barrier), so every event it acts on is already durable and replicated.
         journaler = new Journaler(journalEnabled, Path.of(journalPath), metrics);
@@ -241,14 +323,146 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         inputDisruptor.start();
         inputRing = inputDisruptor.getRingBuffer();
         startSnapshotScheduler();
+        live = true;
+    }
 
-        log.info("LMAX hot path live: profile={} inputRing={} outputRing={} journal={} ({} orders warm)",
-            runtimeProfile, normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
-            journalEnabled ? journalPath : "disabled", readModel.totalOrders());
+    // ----- warm standby: follow the leader's journal; promote on its death (FR-09B30..B32) -----
+
+    /** Boot (or demote) into follower mode: recover from snapshot+journal, then tail the journal
+     *  continuously. Outputs stay gated (replaying=true) — the LEADER publishes to NATS, not us —
+     *  but the read model is fully warm, so reads can be served the whole time. */
+    private void goStandby() {
+        role = "standby";
+        readModel.setReplaying(true);
+        // Pin the seed ids (registration only — never persisted from a follower). If the leader
+        // already wrote symbols.tab this is a no-op (the file was loaded first and wins); if we
+        // raced a fresh leader, both derive the identical fixed assignment from an empty table.
+        registerSeedSymbols();
+        long startOffset = 0;
+        SnapshotStore.Data snap = null;
+        try {
+            snap = snapshotStore == null ? null : snapshotStore.read();
+        } catch (Exception ex) {
+            log.warn("Snapshot read failed on standby; following from the full journal: {}", ex.toString());
+        }
+        if (snap != null) {
+            loadSnapshotInto(matchingEngine, snap);
+            for (long[] o : snap.orders()) {
+                readModel.bootstrap(snapshotOrderToReadModel(o));
+            }
+            nextOrderRef.set(snap.nextOrderRef());
+            startOffset = snap.coveredOffset();
+        } else {
+            // Same fixed initial condition the leader seeds; the journal replays on top of it.
+            seedLiveInitialCondition();
+        }
+        follower = new JournalFollower(Path.of(journalPath), symbols, this::applyFollowedEvent,
+            startOffset, followerPollMs);
+        follower.start();
+        if (autoPromote && !failoverWatchUrl.isEmpty()) {
+            watchdog = new PrimaryWatchdog(failoverWatchUrl, probeIntervalMs, probeFailures, this::promote);
+            watchdog.start();
+        }
+        log.info("LMAX standby FOLLOWER: tailing journal from byte {} ({} orders warm from {}); watchdog={}",
+            startOffset, readModel.totalOrders(), snap != null ? "snapshot" : "seed",
+            watchdog != null ? failoverWatchUrl : "disabled (promote via POST /admin/promote)");
+    }
+
+    /** Apply one journaled event to this node's BLP (follower tail, and the promotion drain). */
+    private void applyFollowedEvent(InputEvent e) {
+        if (e.type == InputEvent.TYPE_ORDER_NEW) {
+            bumpNextOrderRef(e.orderRef);
+        }
+        matchingEngine.onEvent(e, e.seq, true);
+        if (e.type == InputEvent.TYPE_PRICE_TICK) {
+            // Keep the gateway price cache warm too (follower thread; not a no-GC path).
+            String ticker = symbols.tickerFor(e.securityId);
+            if (ticker != null) {
+                readModel.recordPrice(ticker, Px.toBigDecimal(e.priceTicks));
+            }
+        }
+    }
+
+    private void bumpNextOrderRef(int seenRef) {
+        int next = seenRef + 1;
+        while (true) {
+            int current = nextOrderRef.get();
+            if (current >= next || nextOrderRef.compareAndSet(current, next)) {
+                return;
+            }
+        }
+    }
+
+    /**
+     * Standby -> live cutover. Idempotent; called by the watchdog or POST /admin/promote. Order
+     * matters: (1) WIN THE LEADER LOCK first — it fences out a primary that is alive-but-slow (the
+     * kernel only releases it when the holder process dies), and once held nobody can append to the
+     * journal; (2) stop the follower; (3) drain the remaining journal tail, after which this node
+     * holds every event the old leader ever acked (acks are gated behind the journaler, so acked
+     * implies journaled); (4) un-gate outputs and start the normal live input path.
+     */
+    public synchronized boolean promote() {
+        if (live) {
+            return true;
+        }
+        if (follower == null) {
+            log.warn("promote() called but this node is not following a journal");
+            return false;
+        }
+        if (leaderLock == null || !leaderLock.acquireWithin(3000, "promoted-standby")) {
+            log.warn("Promotion refused: leader lock still held — the primary process is alive");
+            return false;
+        }
+        follower.stopAndJoin();
+        // stopAndJoin's interrupt etiquette (and a watchdog self-close) can leave this thread's
+        // interrupt flag set — which would close every NIO channel we open next (the tail drain,
+        // the journaler). Clear it: nothing here is waiting to be interrupted anymore.
+        Thread.interrupted();
+        long tailFrom = follower.appliedOffset();
+        long drained;
+        try {
+            drained = new JournalReader(Path.of(journalPath)).replayFrom(tailFrom, this::applyFollowedEvent);
+        } catch (Exception ex) {
+            // Going live without the tail would silently drop acked events. Abort: give the lock
+            // back and resume following from where we stopped; the watchdog will retry.
+            log.error("Promotion ABORTED: journal tail drain failed at byte {}: {}", tailFrom, ex.toString(), ex);
+            leaderLock.close();
+            follower = new JournalFollower(Path.of(journalPath), symbols, this::applyFollowedEvent,
+                tailFrom, followerPollMs);
+            follower.start();
+            return false;
+        }
+        if (watchdog != null) {
+            watchdog.close();   // self-close safe: it never interrupts its own thread
+            watchdog = null;
+        }
+        drainOutputRing();               // read model catches up before acks/reads go live
+        readModel.setReplaying(false);   // from here on, output events publish to NATS again
+        symbols.beginPersisting();
+        refreshCounters();
+        startLiveInputPath();
+        if (journalEnabled && !journaler.isWriting()) {
+            // The whole point of promotion is to own the durable stream. Demo profile keeps
+            // serving (availability over durability, as the Journaler documents) but this must
+            // never pass silently — the verify harness asserts journalWriting on the new leader.
+            log.error("PROMOTED LEADER IS NOT JOURNALING (append unavailable at {}) — acks are not durable", journalPath);
+        }
+        follower = null;
+        role = "promoted";
+        promotions.incrementAndGet();
+        log.warn("PROMOTED to live BLP: drained {} tail events from byte {}; {} orders warm, nextRef {}, tradeCounter {}",
+            drained, tailFrom, readModel.totalOrders(), nextOrderRef.get(), matchingEngine.tradeCounter());
+        return true;
     }
 
     @Override
     public void destroy() {
+        if (watchdog != null) {
+            watchdog.close();
+        }
+        if (follower != null) {
+            follower.stopAndJoin();
+        }
         if (snapshotScheduler != null) {
             snapshotScheduler.shutdownNow();   // stop emitting snapshot markers before the rings stop
         }
@@ -271,6 +485,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         if (journaler != null) {
             journaler.close();
+        }
+        if (leaderLock != null) {
+            leaderLock.close();   // last: nothing of ours appends to the journal after this point
         }
     }
 
@@ -495,6 +712,24 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             return;
         }
         orderRepository.saveAll(seedOrders());
+    }
+
+    /**
+     * Assign the seed tickers' securityIds FIRST, in one fixed order, on every node. The DB
+     * warm-start path otherwise assigns ids in DB iteration order (updatedAt DESC, ties arbitrary),
+     * which can differ between a leader and a standby seeding independently — and they MUST agree,
+     * because the journal speaks securityIds (FR-09B05). Mappings already restored from symbols.tab
+     * win (it is loaded before this); fresh nodes converge on this deterministic assignment.
+     */
+    private void registerSeedSymbols() {
+        if (!seedEnabled) {
+            return;
+        }
+        for (OrderRecord r : seedOrders()) {
+            symbols.idFor(r.getSecurity());
+        }
+        symbols.idFor("MS");    // the seed positions (initialSchema.sql) reference these two
+        symbols.idFor("BAC");   // beyond the seed order book
     }
 
     /** The fixed initial book (state 009b). Single source for both the DB seed and the journal-replay
@@ -858,7 +1093,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 offset = 0;
                 mode = "seed+full-journal";
             }
-            replayed = reader.replayFrom(offset, e -> matchingEngine.onEvent(e, e.seq, true));
+            // applyFollowedEvent also advances nextOrderRef past every replayed ORDER_NEW: orders
+            // created after the snapshot boundary must not have their refs re-issued (id collisions).
+            replayed = reader.replayFrom(offset, this::applyFollowedEvent);
             drainOutputRing();   // let the marshaller rebuild the read model from the replayed tail
         } catch (Exception ex) {
             log.error("Journal recovery failed: {}", ex.toString(), ex);
@@ -1030,6 +1267,44 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long gatingSeq() {
         return Math.min(journaledSeq(), replicatedSeq());
+    }
+
+    // ----- failover telemetry (FR-09B30..B32) ---------------------------------------------------
+
+    /** True once this node is the leader: accepting commands, journaling, publishing outputs. */
+    public boolean isLive() {
+        return live;
+    }
+
+    /** "primary" | "standby" | "promoted" (a standby that took over). */
+    public String role() {
+        return role;
+    }
+
+    public long promotions() {
+        return promotions.get();
+    }
+
+    public boolean leaderLockHeld() {
+        LeaderLock lock = leaderLock;
+        return lock != null && lock.held();
+    }
+
+    /** True when this node's appends are actually reaching the journal (leaders only). */
+    public boolean journalWriting() {
+        Journaler j = journaler;
+        return j != null && j.isWriting();
+    }
+
+    /** Follower staleness bound: journal bytes the leader wrote that we have not applied yet. */
+    public long followerLagBytes() {
+        JournalFollower f = follower;
+        return f == null ? 0 : f.lagBytes();
+    }
+
+    public long followerAppliedEvents() {
+        JournalFollower f = follower;
+        return f == null ? 0 : f.appliedEvents();
     }
 
     public long marshalledSeq() {

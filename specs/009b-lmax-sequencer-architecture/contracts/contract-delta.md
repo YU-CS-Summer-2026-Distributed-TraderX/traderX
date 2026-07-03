@@ -9,10 +9,16 @@ seams or metrics.
 
 ## OpenAPI Changes
 
-- None. Order-management endpoints (`POST /orders`, `GET /orders`, `GET /orders/{orderId}`,
-  `POST /orders/{orderId}/cancel`, `POST /orders/{orderId}/force-fill`), matcher health/metrics
-  endpoints, and all trade/position/pricing endpoints keep the `009` paths, request/response shapes,
-  and status semantics (FR-09B40).
+- None to the `009` surface. Order-management endpoints (`POST /orders`, `GET /orders`,
+  `GET /orders/{orderId}`, `POST /orders/{orderId}/cancel`, `POST /orders/{orderId}/force-fill`),
+  matcher health/metrics endpoints, and all trade/position/pricing endpoints keep the `009` paths,
+  request/response shapes, and status semantics (FR-09B40).
+- Additive (2026-07-03, failover surface, FR-09B30..B32): `GET /admin/role` (role/live/lock/journal/
+  follower-lag JSON), `GET /admin/ready` (200 on the live node, 503 on a follower — the VIP health
+  check), `POST /admin/promote` (manual promotion; 409 when the leader lock is still held). On a
+  FOLLOWER node, the `009` mutating endpoints answer `503 Service Unavailable` until promotion; the
+  stable client address is the VIP, which only routes commands to the live node, so `009` clients
+  never observe the 503s in normal operation.
 
 ## Messaging Contract
 
@@ -82,10 +88,15 @@ Added keys (demo-safe defaults):
 | `price.input.via-ring` | `true` | Price ticks through the ring (vs `009` out-of-band). |
 | `blp.books.max-securities` | `4096` | Pre-size `OrderBook[]`. |
 | `blp.book.pool-size` | `65536` | Pooled resting-order entries. |
-| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `60000`) | Periodic full-state snapshot cadence in ms; `0` = off. `snapshot.dat` lives under `journal.path`. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `30000`) | Periodic full-state snapshot cadence in ms; `0` = off. `snapshot.dat` lives under `journal.path`. |
 | `recovery.source` (env `RECOVERY_SOURCE`) | `db` | `db` (warm-start + journal-replay verify) or `journal` (snapshot+journal authoritative, no DB). |
 | `output.projector.db.enabled` (env `OUTPUT_PROJECTOR_DB_ENABLED`) | `true` | `false` drops all DB writes (no-DB cutover). |
 | `journal.replay.verify` | `true` | In `db` mode, verify journal replay reconstructs the warm-start state. |
+| `blp.role` (env `BLP_ROLE`) | `primary` | Failover role PREFERENCE (2026-07-03); the `leader.lock` file lock on the journal volume decides — a primary that finds it held demotes to follower. `standby` boots the journal-tail follower. |
+| `failover.watch-url` (env `FAILOVER_WATCH_URL`) | (empty) | Peer health URL the follower's watchdog probes; empty disables auto-promotion (manual `POST /admin/promote` still works). |
+| `failover.probe-interval-ms` / `failover.probe-failures` | `1000` / `3` | Consecutive connect-failures before the watchdog attempts promotion (any HTTP status counts as alive). |
+| `failover.follower-poll-ms` | `10` | Journal tail poll cadence on the follower. |
+| `blp.leader.acquire-timeout-ms` | `10000` | How long a configured primary waits for `leader.lock` at boot before demoting itself. |
 | `blp.cache.account.warm-on-start` | `true` | Warm account cache from read-model at startup *(not yet wired)*. |
 | `output.nats.enabled` | `true` | Toggle the NATS bridge. |
 | `output.projector.enabled` | `true` | Toggle DB projection. |
@@ -134,6 +145,10 @@ Prometheus metric names required for this state (full table with types/meanings 
   `traderx_projector_lag_seq`, `traderx_projector_batch_size`.
 - No-GC: `traderx_hotpath_alloc_bytes_total{node=...}`, `traderx_jvm_gc_pause_seconds`,
   `traderx_jit_warmup_seconds`, `traderx_nightly_bounce_seconds`.
+- Failover (wired 2026-07-03): `traderx_blp_role{role=...}`, `traderx_blp_live`,
+  `traderx_leader_lock_held`, `traderx_follower_lag_bytes`,
+  `traderx_follower_applied_events_total`, `traderx_failover_promotions_total` — exposed by both
+  matcher nodes; Prometheus scrapes `order-matcher:18110` and `order-matcher-standby:18110`.
 
 All `009` order metric families are retained (FR-09B41); `traderx_order_match_latency_seconds` becomes
 a real measurement.

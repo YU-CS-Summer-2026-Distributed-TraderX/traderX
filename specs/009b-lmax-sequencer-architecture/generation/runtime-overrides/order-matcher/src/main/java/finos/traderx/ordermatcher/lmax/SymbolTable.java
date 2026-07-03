@@ -33,6 +33,7 @@ public final class SymbolTable {
     private final int maxSecurities;
 
     private volatile Path persistFile;          // null => persistence disabled
+    private volatile Path tableFile;            // the durable file, whether or not we may write it
     private final Object persistLock = new Object();
 
     public SymbolTable(int maxSecurities) {
@@ -46,6 +47,7 @@ public final class SymbolTable {
      * called before any {@link #idFor} so the restored ids win over fresh assignment.
      */
     public void enablePersistence(Path file) {
+        this.tableFile = file;
         this.persistFile = file;
         try {
             if (file.getParent() != null) {
@@ -57,6 +59,29 @@ public final class SymbolTable {
             return;
         }
         load(file);
+    }
+
+    /**
+     * Follower mode (state 009b warm standby): load the leader's mapping and remember the file for
+     * {@link #reload()}, but never append — the leader is the sole writer of symbols.tab. A later
+     * {@link #beginPersisting()} (promotion) turns appends on without reloading.
+     */
+    public void enableReadOnly(Path file) {
+        this.tableFile = file;
+        load(file);
+    }
+
+    /** Promotion: this node is the leader now, so new registrations must be persisted. */
+    public void beginPersisting() {
+        this.persistFile = tableFile;
+    }
+
+    /** Re-read the durable mapping to pick up ids the leader registered since the last load. */
+    public void reload() {
+        Path file = tableFile;
+        if (file != null) {
+            load(file);
+        }
     }
 
     private void load(Path file) {
@@ -79,7 +104,12 @@ public final class SymbolTable {
                 if (id < 0 || id >= maxSecurities) {
                     continue;
                 }
-                idByTicker.put(ticker, id);
+                Integer prior = idByTicker.put(ticker, id);
+                if (prior != null && prior.intValue() != id) {
+                    // The durable file is authoritative (it is what the journal's ids mean).
+                    log.warn("Ticker {} locally had id {} but symbols.tab says {}; file wins", ticker, prior, id);
+                    tickerById.compareAndSet(prior, ticker, null);
+                }
                 tickerById.set(id, ticker);
                 if (id >= nextId.get()) {
                     nextId.set(id + 1);

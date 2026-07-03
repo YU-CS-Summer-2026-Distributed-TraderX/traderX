@@ -1,9 +1,102 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
 Date: 2026-06-09 (updated 2026-06-11, twice; 2026-06-25 throughput refinements; 2026-06-30 snapshot
-+ journal-replay recovery). Scope of what `generation/runtime-overrides/order-matcher/` implements
-today versus what the spec defers to later milestones. Verified by compiling and running the
-module's test suite (15 tests green) plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
++ journal-replay recovery; 2026-07-03 warm-standby failover). Scope of what
+`generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to later
+milestones. Verified by compiling and running the module's test suite (35 tests; 33 green — the two
+`LmaxHotPathParityTest` trade-persistence cases fail on a PRE-EXISTING H2-vs-MariaDB projector SQL
+mismatch, see "Known test issue" below) plus the Epsilon allocation gate against Java 21 /
+Gradle 8.14.5, plus the live failover suite `scripts/verify-009b-failover.sh` (16 checks green).
+
+## Warm-standby failover: follower BLP + promotion + VIP (2026-07-03, FR-09B30..B32)
+
+The failover requirements are no longer deferred: the demo stack now runs an active/passive matcher
+PAIR with automatic promotion, realized over the journal rather than a network replicator (the
+journal already carries the identical sequenced input stream, so tailing it gives a lock-step
+follower with ZERO added cost on the leader's hot path). All overlay-owned.
+
+- **Follower BLP (`lmax/JournalFollower` (new), `LmaxEngine.goStandby`)** — `blp.role=standby`
+  (env `BLP_ROLE`) boots a follower: it recovers from snapshot+journal exactly like journal
+  recovery, then keeps TAILING `input-events.journal` (fixed 64-byte records; a partial record at
+  the tail is simply left until its bytes arrive), applying every event to its own MatchingEngine.
+  The read model is rebuilt through the same output ring/marshaller with the NATS bridges gated by
+  the existing `replaying` flag, so the follower publishes nothing — but serves warm READS
+  (`/orders`, `/positions`, `/health`) the whole time. Commands answer 503 until promoted; NATS
+  price ticks are dropped (they arrive via the journal instead — never applied twice). Unknown
+  securityIds trigger a `symbols.tab` reload (the leader persists a mapping before sequencing the
+  first event that uses it). Measured under saturation (~84k booked/s): follower lag p50 = 0 bytes,
+  worst ≈ 38k events ≈ 0.45 s.
+- **Leader election / split-brain fence (`lmax/LeaderLock` (new))** — an OS file lock on
+  `leader.lock` in the journal dir. The LIVE node (sole appender of journal/symbols.tab/snapshot)
+  holds it; the kernel releases it exactly when the holder process dies. `blp.role` is only a
+  PREFERENCE: a configured primary that finds the lock held (restart after a failover) demotes
+  itself to follower (`blp.leader.acquire-timeout-ms`, default 10 s wait). Same-kernel scope only
+  (compose named volume); a cross-host DR profile needs a real lease (Aeron Cluster/Raft).
+- **Failure detection + promotion (`lmax/PrimaryWatchdog` (new), `LmaxEngine.promote`)** — the
+  follower probes `failover.watch-url` (env `FAILOVER_WATCH_URL`; compose wires each node to watch
+  the other) every `failover.probe-interval-ms` (1000); after `failover.probe-failures` (3)
+  consecutive CONNECT failures (any HTTP status counts as alive — a degraded leader is still the
+  leader) it promotes: win the lock FIRST (fences an alive-but-slow leader out; nothing can append
+  after), stop the tailer, drain the remaining journal tail, un-gate outputs, then start the normal
+  journaler+replicator+BLP input path. Acks are gated behind the journaler, so everything the dead
+  leader ever acked is reconstructed; `nextOrderRef` is advanced past every replayed ORDER_NEW (no
+  id collisions — this also fixed a pre-existing journal-recovery bug). If the tail drain fails,
+  promotion ABORTS: the lock is released and following resumes. Manual promotion:
+  `POST /admin/promote` (still lock-checked, so it cannot split-brain a healthy leader). Verified
+  kill→ready ≈ 5–6 s with `FAILOVER_PROBE_FAILURES=3`.
+- **VIP (`order-management-matcher/failover/haproxy.cfg` (new), compose `order-matcher-vip`)** —
+  haproxy holds the well-known address for every client (trade-service `ORDER_MATCHER_URL`, ingress,
+  host port **18110**): commands (POST/PUT/PATCH/DELETE) route only to a node whose
+  `GET /admin/ready` is 200 (the live node — followers answer 503 there); reads prefer the live node
+  and fall back to any process answering `/health` (the warm follower) while a failover is in
+  flight. Docker DNS re-resolution (`resolvers` + `init-addr libc,none`) survives container
+  recreation. Host ports: 18110 = VIP, 18111 = primary direct, 18112 = standby direct,
+  18404 = haproxy stats. In-network, `order-matcher:18110` / `order-matcher-standby:18110` are the
+  real nodes (Prometheus scrapes both at 1 s).
+- **Failover surface (`controller/FailoverController` (new))** — `GET /admin/role` (role, live,
+  leaderLockHeld, journalWriting, followerLagBytes, followerAppliedEvents, promotions),
+  `GET /admin/ready` (VIP health check), `POST /admin/promote`. `/health` (`lmax` block) and
+  `/metrics` expose the same: `traderx_blp_role{role=...}`, `traderx_blp_live`,
+  `traderx_leader_lock_held`, `traderx_follower_lag_bytes`,
+  `traderx_follower_applied_events_total`, `traderx_failover_promotions_total`.
+- **Deterministic seed securityIds (`LmaxEngine.registerSeedSymbols`)** — the leader turns
+  `symbols.tab` persistence on and registers the seed tickers FIRST in one fixed order, so a fresh
+  volume's file starts with the seed ids and every later node restores the identical mapping
+  (previously the DB warm-start assigned seed ids in DB iteration order and never persisted them —
+  two nodes could disagree on id→ticker, which is fatal when the journal speaks ids). Volumes
+  created before 2026-07-03 lack the seed block: reset them (`docker compose down -v`) once.
+- **Gotcha worth remembering (fixed)** — `promote()` runs ON the watchdog's own thread; a
+  self-interrupting `close()` left the thread's interrupt flag set, which made every subsequent NIO
+  channel open throw `ClosedByInterruptException` — the promoted leader ran UNJOURNALED. The
+  watchdog no longer self-interrupts, `promote()` clears the flag before channel work, and the
+  verify suite asserts `journalWriting` on the new leader.
+- **Compose defaults** — `SNAPSHOT_INTERVAL_MS` now defaults to `30000` on both matcher services
+  (bounds leader restart AND standby catch-up); the standby runs the follower profile
+  (`BLP_PIN_CPU=-1`, blocking wait, no DB dependency at all: projector never attached on a
+  follower, `SPRING_JPA_DDL_AUTO=none`, `HIKARI_INIT_FAIL_TIMEOUT=-1`). For max-throughput bench
+  runs set `SNAPSHOT_INTERVAL_MS=0` and `FAILOVER_PROBE_FAILURES=999999` (the bench driver's
+  per-run matcher restarts would otherwise trigger promotion), and target the primary directly at
+  `:18111`. Measured cost of the live follower on a 16-core host at saturation: ~20% sustained
+  (84k vs 105k booked/s) — host CPU contention, not gating.
+
+Overlay files: `lmax/JournalFollower.java`, `lmax/LeaderLock.java`, `lmax/PrimaryWatchdog.java`,
+`controller/FailoverController.java` (all new), `lmax/LmaxEngine.java`, `lmax/Journaler.java`
+(`isWriting`), `lmax/JournalReader.java` (shared decode), `lmax/SymbolTable.java` (read-only mode +
+`reload()` + `beginPersisting()`), `service/OrderMatcherService.java` (role gating + telemetry),
+`application.properties` (failover keys), `order-management-matcher/docker-compose.yml`
+(standby + VIP services), `order-management-matcher/failover/haproxy.cfg`,
+`order-management-matcher/observability/prometheus/prometheus.yml` (both nodes + VIP probe),
+plus `src/test/java/.../lmax/FailoverPrimitivesTest.java` and repo-root
+`scripts/verify-009b-failover.sh`.
+
+## Known test issue (pre-existing, 2026-07-02 diagnosis)
+
+`LmaxHotPathParityTest.marketTradeBooksAndUpdatesPosition` and
+`.buyFillIncreasesNetPositionInTheBlp` fail at the committed baseline too: the raw-JDBC
+`ProjectorHandler` emits MariaDB `INSERT ... ON DUPLICATE KEY UPDATE` upserts, which the H2 test
+database (PostgreSQL mode) rejects, so no trade ever persists and the tests time out. 33/35 is the
+real green baseline. Fix options: H2 MariaDB compatibility mode in the test properties,
+dialect-aware upsert SQL, or asserting against the read model instead of the DB.
 
 ## Recovery: periodic snapshot + bounded journal-tail replay + no-DB cutover (2026-06-30)
 
@@ -14,7 +107,7 @@ as the throughput overrides).
 
 - **Periodic snapshot (`SnapshotStore` (new), `LmaxEngine.writeSnapshot`)** — a `snapshot-scheduler`
   thread sequences a `TYPE_SNAPSHOT` marker (`InputEvent`) every `snapshot.interval.ms` (env
-  `SNAPSHOT_INTERVAL_MS`; compose demo default `60000`, `0` = off). The marker rides the input ring
+  `SNAPSHOT_INTERVAL_MS`; compose demo default `30000` since 2026-07-03, `0` = off). The marker rides the input ring
   like any other event, so the BLP writes the checkpoint **on its own thread at a consistent sequence
   point** — full book + net positions + last prices + `nextOrderRef`/`tradeCounter` — to
   `snapshot.dat` in `journal.path`, **atomically** (temp file + atomic rename, so a crash mid-write
@@ -211,7 +304,9 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   FR-09B23 — T09B14/T09B22). `order.matcher.trade-service-url` is retained (contract delta lists
   it as removed) because the TradeBooked bridge still feeds trade-service until booking fusion.
 - **Metric families tied to deferred features**: `traderx_replication_ack_latency_seconds`
-  (T09B16), `traderx_blp_book_depth` / `traderx_blp_positions_total` /
+  (T09B16 network-replicator remainder; the failover metrics `traderx_blp_role`/`traderx_blp_live`/
+  `traderx_leader_lock_held`/`traderx_follower_lag_bytes`/`traderx_follower_applied_events_total`/
+  `traderx_failover_promotions_total` ARE wired, 2026-07-03), `traderx_blp_book_depth` / `traderx_blp_positions_total` /
   `traderx_blp_cache_miss_total` / `traderx_blp_snapshot_seconds` / `traderx_blp_replay_seconds`
   (T09B13-fusion/T09B14), `traderx_jvm_gc_pause_seconds`, `traderx_jit_warmup_seconds`,
   `traderx_nightly_bounce_seconds` (T09B14/T09B18/T09B20).
@@ -228,7 +323,10 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
 - **JIT warm-up replay + cron-scheduled nightly bounce** (T09B14 remainder). Snapshot files
   (`snapshot.dat`) and journal-replay recovery landed 2026-06-30 (section above); the JIT warm-up
   replay before going live and a scheduled bounce window remain deferred.
-- **Real replication/failover** (T09B16): loopback stub only; no follower BLP yet.
+- **Network replicator (Aeron) for cross-host DR** (T09B16 remainder): the warm-standby follower,
+  promotion, and lock fencing landed 2026-07-03 (section above) realized over the SHARED journal —
+  same-host scope. The in-ring `ReplicatorStub` is still the loopback ack; a real network replicator
+  (and a consensus lease instead of the file lock) is what a multi-host DR profile still needs.
 - **`perf`/`noGcTest` launch profiles for the packaged service** (T09B17): the demo profile uses
   BlockingWaitStrategy and standard GC. The Epsilon allocation gate itself is implemented (see the
   2026-06-11 second update above); `traderx_hotpath_alloc_bytes_total` additionally exposes the BLP

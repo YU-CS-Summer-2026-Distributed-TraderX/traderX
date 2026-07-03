@@ -244,7 +244,7 @@ protocol described for the input ring, but with the BLP as the sole writer.
 
 Because BLP state is a pure function of the journaled input stream:
 
-- **Snapshot**: on the `snapshot.interval.ms` cadence (env `SNAPSHOT_INTERVAL_MS`; demo default 60 s, `0` =
+- **Snapshot**: on the `snapshot.interval.ms` cadence (env `SNAPSHOT_INTERVAL_MS`; demo default 30 s, `0` =
   off) a scheduler sequences a `SNAPSHOT` marker; the BLP serializes its whole state — book, net positions,
   last prices, `nextOrderRef`/`tradeCounter` — on its own thread at that sequence point and writes
   `snapshot.dat` **atomically** (temp + rename), recording the journal byte offset (`coveredOffset`) the
@@ -361,7 +361,8 @@ emit typed output events instead of REST/DB writes — while preserving every ex
 
 In scope: the single-thread `EventHandler`, the in-memory order book + positions + caches, request/response
 event pattern for cache misses, determinism, snapshot/replay. Out of scope: the output ring internals
-(state `012`), failover/DR (later), and the unchanged edge/UI/LGTM stack.
+(state `012`), failover/DR (landed later — 2026-07-03, journal-tail warm standby; see
+`LMAX-SEQUENCER-ARCHITECTURE.md` §10.1), and the unchanged edge/UI/LGTM stack.
 
 ## B14. Spec-kit artifacts to author
 
@@ -435,7 +436,7 @@ lifecycle/wiring/actuator only, never on the per-event path.
 | --- | --- | --- |
 | `blp.books.max-securities` | `4096` | Pre-size `OrderBook[]`. |
 | `blp.book.pool-size` | `65536` | Pooled resting-order entries per book set. |
-| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `60000`) | Periodic full-state snapshot cadence in ms; `0` = off. |
+| `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `30000`) | Periodic full-state snapshot cadence in ms; `0` = off. |
 | `recovery.source` (env `RECOVERY_SOURCE`) | `db` | Recovery mode: `db` (warm-start + journal-replay verify) or `journal` (snapshot+journal authoritative, no DB). |
 | `output.projector.db.enabled` (env `OUTPUT_PROJECTOR_DB_ENABLED`) | `true` | `false` drops all DB writes (no-DB cutover, paired with `recovery.source=journal`). |
 | `journal.replay.verify` | `true` | In `db` mode, verify journal replay reconstructs the warm-start state (shadow engine). |

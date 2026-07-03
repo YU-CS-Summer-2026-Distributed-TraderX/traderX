@@ -30,6 +30,7 @@ import java.util.regex.Pattern;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.GATEWAY_TIMEOUT;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 
 /**
  * State 009b: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
@@ -68,6 +69,9 @@ public class OrderMatcherService {
     // ----- gateway ingress (price ticks become sequenced PRICE_TICK events, FR-09B06) -----
 
     public void onPriceTick(String ticker, BigDecimal marketPrice) {
+        if (!engine.isLive()) {
+            return;   // follower: price ticks arrive through the leader's journal, never twice
+        }
         if (!StringUtils.hasText(ticker) || marketPrice == null) {
             return;
         }
@@ -83,6 +87,7 @@ public class OrderMatcherService {
     // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
 
     public OrderResponse createOrder(OrderCreateRequest request) {
+        requireLive();
         validateCreateRequest(request);
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
         int orderRef = engine.nextOrderRef();
@@ -99,6 +104,7 @@ public class OrderMatcherService {
      * request order; all-or-nothing on a gateway timeout (mirrors the single-order semantics).
      */
     public List<OrderResponse> createOrderBatch(List<OrderCreateRequest> requests) {
+        requireLive();
         if (requests == null || requests.isEmpty()) {
             throw new ResponseStatusException(BAD_REQUEST, "empty order batch");
         }
@@ -122,11 +128,13 @@ public class OrderMatcherService {
     }
 
     public OrderResponse cancelOrder(String orderId) {
+        requireLive();
         OrderSnapshot snapshot = run(() -> engine.executeCancel(parseOrderRef(orderId)));
         return toResponse(snapshot);
     }
 
     public OrderResponse forceFillOrder(String orderId) {
+        requireLive();
         OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
         return toResponse(snapshot);
     }
@@ -138,6 +146,7 @@ public class OrderMatcherService {
      * so the request is echoed back without waiting on the read model.
      */
     public MarketTradeRequest bookMarketTrade(MarketTradeRequest request) {
+        requireLive();
         validateMarketTrade(request);
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
         engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(), request.getQuantity());
@@ -201,6 +210,12 @@ public class OrderMatcherService {
 
         Map<String, Object> lmax = new LinkedHashMap<>();
         lmax.put("profile", engine.runtimeProfile());
+        lmax.put("role", engine.role());
+        lmax.put("live", engine.isLive());
+        lmax.put("leaderLockHeld", engine.leaderLockHeld());
+        lmax.put("followerLagBytes", engine.followerLagBytes());
+        lmax.put("followerAppliedEvents", engine.followerAppliedEvents());
+        lmax.put("promotions", engine.promotions());
         lmax.put("inputPublishedSeq", engine.inputPublishedSeq());
         lmax.put("journaledSeq", engine.journaledSeq());
         lmax.put("replicatedSeq", engine.replicatedSeq());
@@ -338,10 +353,37 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
         sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
         sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
+        sb.append("# HELP traderx_blp_role Failover role of this node (one-hot by role label).\n");
+        sb.append("# TYPE traderx_blp_role gauge\n");
+        sb.append("traderx_blp_role{role=\"").append(engine.role()).append("\"} 1\n");
+        sb.append("# HELP traderx_blp_live 1 when this node is the leader (accepting commands, journaling, publishing).\n");
+        sb.append("# TYPE traderx_blp_live gauge\n");
+        sb.append("traderx_blp_live ").append(engine.isLive() ? 1 : 0).append('\n');
+        sb.append("# HELP traderx_leader_lock_held 1 when this process holds the journal leader lock.\n");
+        sb.append("# TYPE traderx_leader_lock_held gauge\n");
+        sb.append("traderx_leader_lock_held ").append(engine.leaderLockHeld() ? 1 : 0).append('\n');
+        sb.append("# HELP traderx_follower_lag_bytes Journal bytes the leader wrote that this follower has not applied yet.\n");
+        sb.append("# TYPE traderx_follower_lag_bytes gauge\n");
+        sb.append("traderx_follower_lag_bytes ").append(engine.followerLagBytes()).append('\n');
+        sb.append("# HELP traderx_follower_applied_events_total Journaled events applied by this follower since it started tailing.\n");
+        sb.append("# TYPE traderx_follower_applied_events_total counter\n");
+        sb.append("traderx_follower_applied_events_total ").append(engine.followerAppliedEvents()).append('\n');
+        sb.append("# HELP traderx_failover_promotions_total Times this node promoted itself to leader.\n");
+        sb.append("# TYPE traderx_failover_promotions_total counter\n");
+        sb.append("traderx_failover_promotions_total ").append(engine.promotions()).append('\n');
         return sb.toString();
     }
 
     // ----- helpers --------------------------------------------------------------------------
+
+    /** Followers serve reads from the warm read model but never mutate state (FR-09B30 failover):
+     *  the single-writer invariant lives with the leader until promotion flips this node live. */
+    private void requireLive() {
+        if (!engine.isLive()) {
+            throw new ResponseStatusException(SERVICE_UNAVAILABLE,
+                "standby follower (role=" + engine.role() + ") — not accepting commands until promoted");
+        }
+    }
 
     private <T> T run(java.util.function.Supplier<T> command) {
         try {
