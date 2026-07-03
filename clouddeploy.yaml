@@ -1,0 +1,30 @@
+apiVersion: deploy.cloud.google.com/v1
+kind: DeliveryPipeline
+metadata:
+  name: order-matcher-pipeline
+description: >
+  order-matcher (BLP) CI/CD. Single target (the live traderx-lmax cluster) with a required
+  manual-approval gate before anything is applied, so a push never silently changes what's
+  running in production.
+serialPipeline:
+  stages:
+    - targetId: production
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: production
+description: traderx-lmax GKE cluster, traderx namespace
+requireApproval: true
+gke:
+  cluster: projects/traderx-501015/locations/us-east1-b/clusters/traderx-lmax
+executionConfigs:
+  - usages:
+      - RENDER
+      - DEPLOY
+    serviceAccount: traderx-cicd@traderx-501015.iam.gserviceaccount.com
+    # Default execution-config artifact bucket uses App Engine's domain-verified naming
+    # convention (<region>.deploy-artifacts.<project>.appspot.com), which only Cloud Deploy's
+    # own internal identity can provision — not creatable via a normal gcloud storage call.
+    # Use a plain project-owned bucket instead.
+    artifactStorage: gs://traderx-501015-clouddeploy-artifacts

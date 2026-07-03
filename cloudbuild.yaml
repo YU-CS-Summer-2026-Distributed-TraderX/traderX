@@ -1,0 +1,59 @@
+# Triggered on push to lmax-kubernetes-blp-ha. Rebuilds order-matcher from committed source
+# (specs/ -> generated/ via the generation pipeline, matching the "deploy discipline" rule in
+# CLAUDE.md: never build from a hand-edited generated/ directory, always regenerate fresh), tags
+# the image uniquely (never a mutable tag), and creates a Cloud Deploy release. The release sits
+# behind the `production` target's requireApproval gate — nothing touches the live cluster until
+# someone approves it in the console or via `gcloud deploy releases approve`.
+steps:
+  - id: generate-and-build-jar
+    # eclipse-temurin guarantees the exact JDK 21 the project needs (Debian's default apt repos
+    # don't reliably carry OpenJDK 21 — confirmed the hard way: "Unable to locate package
+    # openjdk-21-jdk-headless" on node:22/bookworm). Layer Node on via NodeSource's official
+    # install script instead of apt, since the generation pipeline also touches non-order-matcher
+    # services (price-publisher, reference-data, web-front-end) that need it.
+    name: eclipse-temurin:21-jdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq curl git ca-certificates jq python3 rsync zip unzip ripgrep > /dev/null
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null
+        apt-get install -y -qq nodejs > /dev/null
+        bash pipeline/generate-state.sh lmax-kubernetes
+        cd generated/code/target-generated/order-matcher
+        ./gradlew bootJar --no-daemon
+
+  - id: build-and-push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA
+      - generated/code/target-generated/order-matcher
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA
+
+  - id: create-release
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - deploy
+      - releases
+      - create
+      - release-$SHORT_SHA
+      - --delivery-pipeline=order-matcher-pipeline
+      - --region=us-east1
+      - --source=.
+      - --images=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/traderx-cicd@${PROJECT_ID}.iam.gserviceaccount.com

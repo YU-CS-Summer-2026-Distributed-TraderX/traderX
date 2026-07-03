@@ -1,0 +1,18 @@
+apiVersion: skaffold/v4beta14
+kind: Config
+metadata:
+  name: order-matcher
+build:
+  # Cloud Build runs `./gradlew bootJar` + `docker build`/push explicitly (see cloudbuild.yaml) —
+  # Gradle isn't something skaffold's docker builder knows how to invoke. This artifact entry
+  # exists so skaffold/Cloud Deploy know which `image:` field in the manifest below to substitute;
+  # the actual built image reference is passed in via `gcloud deploy releases create --images=...`,
+  # which skips skaffold's own build step.
+  artifacts:
+    - image: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher
+      context: generated/code/target-generated/order-matcher
+manifests:
+  rawYaml:
+    - cluster-addons/order-matcher-statefulset.yaml
+deploy:
+  kubectl: {}
