@@ -163,7 +163,93 @@ curl -s https://yaakovseif.dev/order-matcher/health | jq .lmax   # seq watermark
 
 ---
 
-## 6. Known issues / next levers
+## 6. CI/CD pipeline (order-matcher only, set up 2026-07-03)
+
+**Cloud Build → Cloud Deploy**, GitOps-style, so both of us can push without stepping on each
+other's manual `kubectl`/`docker` commands on the shared cluster. Git is the source of truth;
+nothing reaches the live cluster without an explicit manual approval.
+
+### Flow
+
+```
+push to lmax-kubernetes-blp-ha
+        │  (GitHub webhook, 1st-gen Cloud Build repo connection)
+        ▼
+Cloud Build trigger "order-matcher-cicd"  (cloudbuild.yaml)
+        │  1. regenerate generated/ from committed specs/ (never build from a stale local copy —
+        │     generated/ is gitignored)
+        │  2. ./gradlew bootJar
+        │  3. docker build + push → order-matcher:ci-$SHORT_SHA  (unique tag, never reused)
+        │  4. gcloud deploy releases create
+        ▼
+Cloud Deploy release  →  PENDING_APPROVAL   (production target has requireApproval: true)
+        │
+        │  someone with roles/clouddeploy.approver approves
+        ▼
+skaffold renders cluster-addons/order-matcher-statefulset.yaml
+(substitutes the built image into the manifest's image: field)
+        ▼
+applied to traderx-lmax / order-matcher StatefulSet
+```
+
+### Config files (repo root)
+
+| File | Purpose |
+|---|---|
+| `cloudbuild.yaml` | Build steps: generate, build jar, build+push image, create release |
+| `clouddeploy.yaml` | `DeliveryPipeline` (order-matcher-pipeline) + `Target` (production, `requireApproval: true`, points at the traderx-lmax cluster) |
+| `skaffold.yaml` | Declares the order-matcher build artifact + `cluster-addons/order-matcher-statefulset.yaml` as the deploy manifest, so Cloud Deploy/skaffold know which `image:` field to substitute |
+
+### IAM / infra (not in git)
+
+- **`traderx-cicd@traderx-501015.iam.gserviceaccount.com`** — dedicated service account for the
+  whole pipeline. Roles: `artifactregistry.writer`, `clouddeploy.releaser`, `clouddeploy.jobRunner`,
+  `container.developer`, `logging.logWriter`, `cloudbuild.builds.builder`, plus a
+  **self-referential** `iam.serviceAccountUser` binding (Cloud Deploy's "ActAs" check applies even
+  when the triggering and executing SA are the same principal — without this the release-create
+  step fails with `PERMISSION_DENIED: ActAs permissions required`).
+- Cloud Build's own service agent (`service-397259609626@gcp-sa-cloudbuild.iam.gserviceaccount.com`)
+  has `iam.serviceAccountTokenCreator` on `traderx-cicd`, so builds can actually run as it.
+- **`gs://traderx-501015-clouddeploy-artifacts`** — Cloud Deploy's rendered-manifest storage.
+  Deliberately *not* Cloud Deploy's default bucket (`<region>.deploy-artifacts.<project>.appspot.com`)
+  — that name uses App Engine's domain-verified naming convention, which only Cloud Deploy's own
+  internal identity can provision; a normal `gcloud storage buckets create` gets a 403.
+- **Approvers** (`roles/clouddeploy.approver`): `yaakov.traderx@gmail.com`, `tanidiament@gmail.com`.
+
+### Operating it
+
+```bash
+# Approve a pending release (or use the console: Cloud Deploy → order-matcher-pipeline)
+gcloud deploy rollouts list --delivery-pipeline=order-matcher-pipeline --region=us-east1
+gcloud deploy rollouts approve <rollout-name> \
+  --release=<release-name> --delivery-pipeline=order-matcher-pipeline --region=us-east1
+
+# Reject instead
+gcloud deploy rollouts reject <rollout-name> \
+  --release=<release-name> --delivery-pipeline=order-matcher-pipeline --region=us-east1
+
+# Manually trigger a build without a git push (e.g. to test a local change)
+gcloud builds submit --config=cloudbuild.yaml --project=traderx-501015 .
+
+# Fetch build logs (options.logging: CLOUD_LOGGING_ONLY means `gcloud builds submit`'s own log
+# tail doesn't show output — pull from Cloud Logging instead)
+gcloud logging read 'resource.type="build" AND resource.labels.build_id="<id>"' \
+  --project=traderx-501015 --format="value(textPayload)" --order=asc
+```
+
+### Scope and validation
+
+Order-matcher only for now — the highest-value, most fragile service. Other services
+(`account-service`, `trade-processor`, etc.) still deploy via the manual path in §5. Extend the
+same skaffold/Cloud Deploy pattern to them if this proves out.
+
+Validated by running the full pipeline manually twice via `gcloud builds submit` before wiring up
+the trigger: confirmed the approval gate genuinely holds (release sat at `PENDING_APPROVAL`, live
+StatefulSet pods unchanged — same image, same creation timestamps) until explicitly approved.
+
+---
+
+## 7. Known issues / next levers
 
 - **HA lease starvation under load** *(not yet fixed)*: at conc≥24 the CPU-saturating load starves
   the leader-election lease renewal → the PRIMARY false-demotes (409 lease conflict) → transient

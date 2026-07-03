@@ -20,24 +20,32 @@ Key reading: `LMAX-SEQUENCER-ARCHITECTURE.md`, `LMAX-BLP.md`, `LMAX-INPUT-DISRUP
 
 | Branch | Based on | Purpose |
 |--------|----------|---------|
-| `lmax-kubernetes` | gridgain-research + state 014 | **Active work.** GKE cloud deployment with HA. |
-| `gridgain-research` | lmax-sequencer-no-gc (state 009b) | Teammate's perf research branch. |
+| `lmax-kubernetes-blp-ha` | lmax-kubernetes @ f0dd482 | **Active branch — CI/CD deploys from this one.** HA (leader election, NATS JetStream replication), plus all bug fixes and perf tuning from 2026-07-02 (see git log for the full list — projector/HdrHistogram/DB-port fixes, dedicated c2 node pool, async replication). |
+| `lmax-kubernetes` | gridgain-research + state 014 | **Stale — do not build/deploy from this.** Frozen at f0dd482; missing every fix and the HA feature. Kept for reference only. |
+| `gridgain-research` | lmax-sequencer-no-gc (state 009b) | Teammate's perf research branch. Frozen at `d70f703`; its work was folded into `lmax-kubernetes` at f0dd482 and hasn't diverged further. |
 | `lmax-sequencer-no-gc` | state 009 | State 009b: LMAX Disruptor BLP implementation. |
 
 Worktrees:
-- `lmax-kubernetes` → `/Users/yaakov/Desktop/Summer 26/lmax/traderX`
+- `lmax-kubernetes-blp-ha` (active) → `/Users/yaakov/Desktop/Summer 26/lmax/traderX`
 - `gridgain-research` → `/Users/yaakov/Desktop/Summer 26/lmax/traderX-gridgain-research`
 
-Common ancestor of lmax-kubernetes and gridgain-research: `da2f9e2`.
+`lmax-kubernetes-blp-ha` diverged from `lmax-kubernetes` at `f0dd482`. Common ancestor of
+`lmax-kubernetes` and `gridgain-research`: `da2f9e2`.
 
 ---
 
 ## Team split
 
-- **Yaakov** — GKE cluster, manifests, ingress, TLS, StatefulSet, deploy pipeline, and
-  BLP multi-replica failover infrastructure (planned — not yet implemented).
-- **Teammate** — BLP performance work: snapshot improvements, journal batch coalescing,
-  bounded terminal-order retention. Works on `gridgain-research` branch.
+Both of us now work on `lmax-kubernetes-blp-ha`, coordinated through the CI/CD pipeline (see
+below) rather than direct `kubectl`/`docker push` to the shared cluster — that avoids collisions
+from both pushing to the same live pods at once.
+
+- **Yaakov** — GKE cluster, manifests, ingress, TLS, StatefulSet, deploy pipeline, CI/CD, BLP
+  multi-replica failover infrastructure.
+- **Teammate** (`tanidiament@gmail.com`) — BLP performance work: snapshot improvements, journal
+  batch coalescing, bounded terminal-order retention. Has GCP project access (Editor +
+  `clouddeploy.approver`, so he can approve releases too) and pushes to `lmax-kubernetes-blp-ha`
+  same as Yaakov.
 
 ---
 
@@ -133,23 +141,51 @@ generated/code/target-generated/kubernetes-runtime/manifests/
 
 ## Pending work
 
-All items from `GRIDGAIN-TO-LMAX-KUBERNETES-HANDOFF.md` are now complete:
+All items from `GRIDGAIN-TO-LMAX-KUBERNETES-HANDOFF.md` are complete, plus everything from
+2026-07-02/03 (bug fixes, perf tuning, CI/CD — see git log on `lmax-kubernetes-blp-ha` and
+`CLOUD-ARCHITECTURE.md`):
 
 - ✅ MariaDB 11.4 replacing PostgreSQL across all 4 services + database image + init SQL
 - ✅ BLP code merge from gridgain commit `d70f703` (journal batch coalescing, bounded terminal retention)
-- ✅ Docs cherry-pick from gridgain commit `111848c`
-- ✅ Deployment/StatefulSet conflict resolved: StatefulSet + headless service folded into kustomization
-- ✅ Grafana ingress added (`grafana.yaakovseif.dev`); DNS A record still needed
-- ✅ Failover tested: `kubectl delete pod order-matcher-0` → replayed journal, restored state in < 2s
-- ✅ BLP multi-replica HA: StatefulSet×2, k8s Lease leader election, NATS JetStream replication, `order-matcher-primary` Service
+- ✅ Deployment/StatefulSet conflict resolved: orphaned Deployment deleted, StatefulSet is the only
+  order-matcher controller now
+- ✅ Failover tested: killed the PRIMARY pod under `lmax-kubernetes-blp-ha`'s async-replication
+  fix → FOLLOWER promoted in ~25s, no split-brain, state intact
+- ✅ BLP multi-replica HA implemented (StatefulSet×2, k8s Lease leader election, NATS JetStream
+  replication, `order-matcher-primary` Service) — **but not the current deployed mode**, see below
+- ✅ CI/CD: Cloud Build → Cloud Deploy for order-matcher (see "CI/CD pipeline" section)
+
+### Current live mode: single-BLP, not HA
+
+As of 2026-07-02, `order-matcher` is deployed **single-replica** (`BLP_REPLICATION_ENABLED=false`)
+for throughput (~42k booked/s vs ~22k HA). HA works and is failover-tested, but is not what's
+currently serving `yaakovseif.dev`. Check `kubectl get pods -n traderx -l app=order-matcher` —
+one pod (single-BLP) vs two with PRIMARY/FOLLOWER roles (HA) tells you which mode is live. Switch
+commands are in `CLOUD-ARCHITECTURE.md` §5.
 
 ### Remaining
 
 - **DNS A record** for `grafana.yaakovseif.dev` pointing to the same static IP as `yaakovseif.dev`
 - **Node failover test**: `kubectl drain <node> --ignore-daemonsets --delete-emptydir-data`
   (single-zone GKE only has 1 zone so this tests node replacement, not zone failover)
-- **Orphaned Deployment cleanup** (one-time): `kubectl delete deployment order-matcher -n traderx`
-  (pre-StatefulSet artifact — does not affect failover)
+- **HA lease starvation under load** (real bug, not yet fixed): at high concurrency the
+  leader-election lease renewal starves and the PRIMARY false-demotes. See
+  `HANDOFF-ha-throughput-improvements.md` / `CLOUD-ARCHITECTURE.md` §7.
+- **Extend CI/CD** to the other services (currently order-matcher only).
+
+---
+
+## GCP project access
+
+Project `traderx-501015`. Current human members:
+
+| Account | Key roles |
+|---|---|
+| `yaakov.traderx@gmail.com` | Owner |
+| `tanidiament@gmail.com` | Editor, `clouddeploy.approver` |
+
+Both can approve Cloud Deploy releases. To add someone else or change roles: IAM & Admin → IAM in
+the console, or `gcloud projects add-iam-policy-binding traderx-501015 --member=user:<email> --role=<role>`.
 
 ---
 
@@ -197,12 +233,64 @@ under `specs/lmax-kubernetes/generation/runtime-overrides/` or the prepare scrip
 
 ---
 
+## CI/CD pipeline (order-matcher)
+
+Set up 2026-07-03. **Cloud Build → Cloud Deploy**, GitOps-style: git is the source of truth, a
+push triggers a build, and nothing touches the live cluster without an explicit manual approval.
+
+**How it works:**
+1. Push to `lmax-kubernetes-blp-ha` → GitHub webhook fires the Cloud Build trigger
+   (`order-matcher-cicd`, 1st-gen GitHub connection, watches `^lmax-kubernetes-blp-ha$`).
+2. `cloudbuild.yaml` runs as `traderx-cicd@traderx-501015.iam.gserviceaccount.com`:
+   - `generate-and-build-jar`: regenerates `generated/` from committed `specs/` (fresh every
+     time — `generated/` is gitignored, never build from a stale local copy), then
+     `./gradlew bootJar` for order-matcher. Runs in `eclipse-temurin:21-jdk` with Node layered on
+     via NodeSource (the generation pipeline touches other services too); apt needs
+     `curl git ca-certificates jq python3 rsync zip unzip ripgrep`.
+   - `docker build`/`push` → `us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher:ci-$SHORT_SHA`
+     (unique tag per build, never reused).
+   - `gcloud deploy releases create` — creates a Cloud Deploy release referencing that image.
+3. The release sits at `PENDING_APPROVAL` (`clouddeploy.yaml`'s `production` target has
+   `requireApproval: true`) — **nothing is applied to the cluster yet.**
+4. Someone with `roles/clouddeploy.approver` (currently Yaakov + teammate) approves it —
+   console (Cloud Deploy → order-matcher-pipeline) or
+   `gcloud deploy rollouts approve <rollout> --release=<release> --delivery-pipeline=order-matcher-pipeline --region=us-east1`.
+5. Cloud Deploy renders `cluster-addons/order-matcher-statefulset.yaml` via `skaffold.yaml`
+   (substitutes the built image into the manifest's `image:` field) and applies it to the
+   `traderx-lmax` cluster.
+
+**Config files:** `cloudbuild.yaml` (build), `clouddeploy.yaml` (pipeline + target),
+`skaffold.yaml` (render/deploy manifest mapping) — all at repo root.
+
+**IAM setup (not in git):** dedicated `traderx-cicd@traderx-501015.iam.gserviceaccount.com`
+service account with `artifactregistry.writer`, `clouddeploy.releaser`, `clouddeploy.jobRunner`,
+`container.developer`, `logging.logWriter`, `cloudbuild.builds.builder`, plus a **self-referential**
+`iam.serviceAccountUser` binding on itself (required — Cloud Deploy's "ActAs" check applies even
+when the triggering and executing SA are the same). Cloud Build's own service agent
+(`service-397259609626@gcp-sa-cloudbuild.iam.gserviceaccount.com`) has `iam.serviceAccountTokenCreator`
+on `traderx-cicd` so it can act as it. Artifacts land in `gs://traderx-501015-clouddeploy-artifacts`
+(a plain project-owned bucket — Cloud Deploy's *default* artifact bucket uses App Engine's
+domain-verified `<region>.deploy-artifacts.<project>.appspot.com` naming, which only Cloud Deploy's
+own internal identity can provision, not a normal `gcloud storage buckets create`).
+
+**Scope:** currently order-matcher only (the highest-value, most fragile service). The other
+services (`account-service`, `trade-processor`, etc.) still deploy via the manual path below —
+extend the same skaffold/Cloud Deploy pattern to them if this proves out.
+
+**Validated:** ran the full pipeline manually twice (`gcloud builds submit --config=cloudbuild.yaml`)
+before wiring up the trigger — confirmed the approval gate actually holds (`PENDING_APPROVAL`
+state) and does not touch the live StatefulSet pods until approved.
+
+---
+
 ## Deploy discipline
 
-CI/CD does not exist yet, so deployed state drifts from committed source unless deploys are done
-deliberately. Every production bug found on 2026-07-02 (broken MariaDB projector, Postgres driver +
-`DATABASE_PG_PORT=5432` against MariaDB) had the same shape: the fix was already in git/`generated/`,
-but GKE was running an older image built before the fix. Rules to prevent recurrence:
+The CI/CD pipeline above is now the preferred path for order-matcher — use it instead of manual
+`kubectl set image`/`docker push`. For anything CI/CD doesn't cover yet (other services, node
+pool changes, manifest fields outside the image tag), the same rules from before still apply, since
+this is exactly the drift class of bug CI/CD exists to close: every production bug found on
+2026-07-02 (broken MariaDB projector, Postgres driver + `DATABASE_PG_PORT=5432` against MariaDB)
+had the fix already in git/`generated/`, but GKE running an older image built before the fix.
 
 - **Rebuild and redeploy from `generated/` after any merge that touches a service.** What runs on
   GKE must match what's committed. Do not leave a merged code change undeployed.
