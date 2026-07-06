@@ -88,6 +88,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final int maxSecurities;
     private final int bookPoolSize;
     private final int positionCapacity;
+    private final int maxRetainedTerminal;
     private final int blpPinCpu;
     private final long snapshotIntervalMs;
     private final String recoverySource;        // "db" (warm-start) or "journal" (snapshot+replay)
@@ -104,7 +105,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private final SymbolTable symbols;
     private final HotPathMetrics metrics = new HotPathMetrics();
-    private final InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
+    private final InMemoryOrderReadModel readModel;
     private final AtomicInteger nextOrderRef = new AtomicInteger(1);
 
     private Disruptor<InputEvent> inputDisruptor;
@@ -152,6 +153,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.books.max-securities:4096}") int maxSecurities,
         @Value("${blp.book.pool-size:65536}") int bookPoolSize,
         @Value("${blp.positions.capacity:8192}") int positionCapacity,
+        @Value("${blp.orders.max-retained:262144}") int maxRetainedTerminal,
         @Value("${blp.pin.cpu:-1}") int blpPinCpu,
         @Value("${snapshot.interval.ms:0}") long snapshotIntervalMs,
         @Value("${recovery.source:db}") String recoverySource,
@@ -189,6 +191,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.maxSecurities = maxSecurities;
         this.bookPoolSize = bookPoolSize;
         this.positionCapacity = positionCapacity;
+        this.maxRetainedTerminal = maxRetainedTerminal;
         this.blpPinCpu = blpPinCpu;
         this.snapshotIntervalMs = snapshotIntervalMs;
         this.recoverySource = recoverySource;
@@ -203,6 +206,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.followerPollMs = followerPollMs;
         this.leaderAcquireTimeoutMs = leaderAcquireTimeoutMs;
         this.symbols = new SymbolTable(maxSecurities);
+        this.readModel = new InMemoryOrderReadModel(maxRetainedTerminal);
     }
 
     @Override
@@ -233,7 +237,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         buildOutputSide(!lead);
 
         matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
-            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+            metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity, maxRetainedTerminal);
         matchingEngine.setPinCpu(blpPinCpu);   // perf profile: pin the BLP thread on ring start
 
         if (lead) {
@@ -845,7 +849,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         shadowOut.start();
         try {
             MatchingEngine shadow = new MatchingEngine(new OutputPublisher(shadowOut.getRingBuffer()),
-                new HotPathMetrics(), maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+                new HotPathMetrics(), maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity,
+                maxRetainedTerminal);
             SnapshotStore.Data snap = snapshotStore != null ? snapshotStore.read() : null;
             long t0 = System.nanoTime();
             long replayed;

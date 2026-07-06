@@ -35,13 +35,39 @@ public final class InMemoryOrderReadModel {
     private final LongAdder positionPublishFailures = new LongAdder();
     private final LongAdder natsErrors = new LongAdder();
 
+    // Bounded terminal-order retention, mirroring the BLP's: refs in terminal-transition order,
+    // written only by the single writer (bootstrap thread, then the marshaller handler). Without
+    // it every terminal OrderSnapshot is retained forever and GC pressure collapses sustained
+    // throughput. Evicted (ancient, terminal) refs answer not-found on GET; open orders are
+    // never evicted.
+    private final int[] terminalFifo;   // null = retain everything (cap <= 0)
+    private final int terminalFifoMask;
+    private int terminalHead;
+    private int terminalCount;
+    private final LongAdder evictedOrders = new LongAdder();
+
     // True while the live engine is reconstructing from snapshot+journal at startup: the NATS-publishing
     // output handlers check this and skip, so recovery does not re-broadcast historical events.
     private volatile boolean replaying;
 
     public InMemoryOrderReadModel() {
+        this(MatchingEngine.DEFAULT_MAX_RETAINED_TERMINAL);
+    }
+
+    public InMemoryOrderReadModel(int maxRetainedTerminal) {
         for (String event : List.of("create", "partial_fill", "fill", "cancel", "reject", "force_fill")) {
             eventCounters.put(event, new LongAdder());
+        }
+        if (maxRetainedTerminal > 0) {
+            int capacity = Integer.highestOneBit(maxRetainedTerminal);
+            if (capacity < maxRetainedTerminal) {
+                capacity <<= 1;
+            }
+            this.terminalFifo = new int[capacity];
+            this.terminalFifoMask = capacity - 1;
+        } else {
+            this.terminalFifo = null;
+            this.terminalFifoMask = 0;
         }
     }
 
@@ -56,14 +82,42 @@ public final class InMemoryOrderReadModel {
     // ----- writes (bootstrap thread, then marshaller handler only) -----------------------
 
     public void bootstrap(OrderSnapshot snapshot) {
-        byRef.put(snapshot.orderRef, snapshot);
+        OrderSnapshot previous = byRef.put(snapshot.orderRef, snapshot);
+        if (!snapshot.isOpen() && (previous == null || previous.isOpen())) {
+            retainTerminal(snapshot.orderRef);
+        }
     }
 
     public void apply(OutputEvent e, SymbolTable symbols) {
         OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
-        byRef.put(snapshot.orderRef, snapshot);
+        OrderSnapshot previous = byRef.put(snapshot.orderRef, snapshot);
+        // Push on the transition INTO terminal only: refs never reuse and a terminal order never
+        // reopens, so each ref enters the FIFO at most once (re-publishes of an already-terminal
+        // order, e.g. cancel-of-filled, must not double-enter).
+        if (!snapshot.isOpen() && (previous == null || previous.isOpen())) {
+            retainTerminal(snapshot.orderRef);
+        }
         countFlags(e.flags);
         completeAck(e.inputSeq, snapshot);
+    }
+
+    /** Single-writer (bootstrap thread, then marshaller handler only). */
+    private void retainTerminal(int orderRef) {
+        if (terminalFifo == null) {
+            return;
+        }
+        if (terminalCount == terminalFifo.length) {
+            int victimRef = terminalFifo[terminalHead];
+            terminalHead = (terminalHead + 1) & terminalFifoMask;
+            terminalCount--;
+            OrderSnapshot victim = byRef.get(victimRef);
+            if (victim != null && !victim.isOpen()) {
+                byRef.remove(victimRef);
+                evictedOrders.increment();
+            }
+        }
+        terminalFifo[(terminalHead + terminalCount) & terminalFifoMask] = orderRef;
+        terminalCount++;
     }
 
     public void notFound(long inputSeq) {
@@ -208,5 +262,10 @@ public final class InMemoryOrderReadModel {
 
     public LongAdder natsErrors() {
         return natsErrors;
+    }
+
+    /** Terminal orders dropped from the read model by bounded retention since start. */
+    public long evictedOrders() {
+        return evictedOrders.sum();
     }
 }

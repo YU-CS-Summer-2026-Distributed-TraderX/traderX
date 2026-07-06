@@ -1,12 +1,39 @@
 # Implementation Status: 009b LMAX Hot Path (runtime overrides)
 
 Date: 2026-06-09 (updated 2026-06-11, twice; 2026-06-25 throughput refinements; 2026-06-30 snapshot
-+ journal-replay recovery; 2026-07-03 warm-standby failover). Scope of what
-`generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to later
-milestones. Verified by compiling and running the module's test suite (35 tests; 33 green — the two
-`LmaxHotPathParityTest` trade-persistence cases fail on a PRE-EXISTING H2-vs-MariaDB projector SQL
-mismatch, see "Known test issue" below) plus the Epsilon allocation gate against Java 21 /
-Gradle 8.14.5, plus the live failover suite `scripts/verify-009b-failover.sh` (16 checks green).
++ journal-replay recovery; 2026-07-03 warm-standby failover; 2026-07-06 bounded order retention).
+Scope of what `generation/runtime-overrides/order-matcher/` implements today versus what the spec
+defers to later milestones. Verified by compiling and running the module's test suite (39 tests;
+37 green — the two `LmaxHotPathParityTest` trade-persistence cases fail on a PRE-EXISTING
+H2-vs-MariaDB projector SQL mismatch, see "Known test issue" below) plus the Epsilon allocation
+gate against Java 21 / Gradle 8.14.5, plus the live failover suite `scripts/verify-009b-failover.sh`
+(16 checks green).
+
+## Bounded terminal-order retention + /metrics histogram race (2026-07-06)
+
+Re-landed durably in the overlay (an earlier working-tree-only version of this fix was lost to a
+regenerate). Two changes:
+
+- **Bounded terminal-order retention** (`blp.orders.max-retained`, default `262144`, env
+  `BLP_ORDERS_MAX_RETAINED`): the BLP (`MatchingEngine`) and the in-memory read model each keep a
+  FIFO of refs in terminal-transition order; past the cap the oldest FILLED/CANCELED order is
+  dropped (BLP entry recycled to the resting-order pool, read-model snapshot removed). Previously
+  every terminal order was retained forever — under sustained load the old-gen GC pressure this
+  builds collapsed booked throughput (measured ~86k/s decaying to ~18k/s; with eviction, flat
+  ~114k/s). Open orders are never evicted; each ref enters the FIFO at most once (refs never reuse,
+  terminal orders never reopen); terminal orders loaded at recovery/bootstrap enter the FIFO too, so
+  warm-started state stays bounded — this also bounds `snapshot.dat`. Deterministic across the
+  failover pair when the cap matches (leader and follower apply the same sequenced events).
+  Documented semantic drift vs `009`: GET/cancel/force-fill of an *evicted* ref answers not-found
+  instead of re-publishing the terminal order unchanged (see `contracts/contract-delta.md`).
+  New telemetry: `traderx_blp_terminal_orders_retained` gauge,
+  `traderx_orders_evicted_total{store="blp"|"readmodel"}` counter.
+  Tests: `OrderRetentionEvictionTest` (4 cases: FIFO cap + not-found after eviction, open orders
+  never evicted, read-model parity, terminal re-publish does not double-enter the FIFO).
+- **/metrics scrape race fixed**: `HotPathMetrics.renderHistogram`/`renderCountHistogram` iterated
+  the live `ConcurrentHistogram`s while the hot path records (auto-resize) —
+  `ConcurrentModificationException` under load. Both now render from a point-in-time `copy()`
+  (scrape-path allocation only, never hot-path).
 
 ## Warm-standby failover: follower BLP + promotion + VIP (2026-07-03, FR-09B30..B32)
 

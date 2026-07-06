@@ -31,6 +31,16 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private final IntList[] openRefsBySecurity;  // per-security open-order index
     private final long[] lastPxBySecurity;       // long fixed-point; Px.NONE = unknown
     private RestingOrder freeList;               // pre-allocated pool (BLP thread only)
+    // Bounded terminal-order retention: refs in terminal-transition order; when full, the oldest
+    // terminal order is dropped from ordersByRef and its entry recycled to the pool. Without this
+    // every FILLED/CANCELED order is retained forever and old-gen GC pressure collapses sustained
+    // throughput. Open orders are never evicted. Semantic drift vs 009: a cancel/force-fill/GET of
+    // an evicted (ancient, terminal) ref answers not-found instead of re-publishing it unchanged.
+    private final int[] terminalFifo;            // null = retain everything (cap <= 0)
+    private final int terminalFifoMask;
+    private int terminalHead;
+    private int terminalCount;
+    private long ordersEvicted;
     private final PositionBook positions;        // net positions, single-writer (FR-09B08/B10)
     private long tradeCounter;                    // global trade number, single-writer (deterministic ids)
 
@@ -62,8 +72,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    /** Terminal orders kept addressable before FIFO eviction; rounded up to a power of two. */
+    public static final int DEFAULT_MAX_RETAINED_TERMINAL = 262_144;
+
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
-                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
+                          int fillFullThreshold, int initialPoolSize, int positionCapacity,
+                          int maxRetainedTerminal) {
         this.out = out;
         this.metrics = metrics;
         this.fillFullThreshold = Math.max(1, fillFullThreshold);
@@ -71,11 +85,28 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         this.openRefsBySecurity = new IntList[maxSecurities];
         this.lastPxBySecurity = new long[maxSecurities];
         this.positions = new PositionBook(positionCapacity);
+        if (maxRetainedTerminal > 0) {
+            int capacity = Integer.highestOneBit(maxRetainedTerminal);
+            if (capacity < maxRetainedTerminal) {
+                capacity <<= 1;
+            }
+            this.terminalFifo = new int[capacity];
+            this.terminalFifoMask = capacity - 1;
+        } else {
+            this.terminalFifo = null;
+            this.terminalFifoMask = 0;
+        }
         for (int i = 0; i < initialPoolSize; i++) {
             RestingOrder pooled = new RestingOrder();
             pooled.nextFree = freeList;
             freeList = pooled;
         }
+    }
+
+    public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
+                          int fillFullThreshold, int initialPoolSize, int positionCapacity) {
+        this(out, metrics, maxSecurities, fillFullThreshold, initialPoolSize, positionCapacity,
+            DEFAULT_MAX_RETAINED_TERMINAL);
     }
 
     public MatchingEngine(OutputPublisher out, HotPathMetrics metrics, int maxSecurities,
@@ -140,6 +171,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         if (o.isOpen()) {
             openRefs(securityId).add(orderRef);
+        } else {
+            retainTerminal(o);
         }
     }
 
@@ -319,6 +352,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             o.updatedAtMillis = e.eventTimeMillis;
             openRefs(o.securityId).removeValueUnordered(o.orderRef);
             out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_CANCEL, true, px, e.ingressNanos);
+            retainTerminal(o);
         } else {
             // 009 parity: canceling a terminal order returns (and re-publishes) it unchanged.
             out.emitOrderUpdate(o, e.seq, 0, true, px, e.ingressNanos);
@@ -434,6 +468,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         long tradeSeq = ++tradeCounter;
         out.emitFillWithTradeAndPosition(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks,
             e.seq, flags, marketPx, e.ingressNanos);
+        if (remainingAfter == 0) {
+            retainTerminal(o);
+        }
         metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
     }
 
@@ -490,6 +527,34 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         o.nextFree = null;
         o.reset();
         return o;
+    }
+
+    /**
+     * Record a transition into a terminal status (FILLED/CANCELED); at capacity, drop the
+     * oldest terminal order and recycle its entry. BLP thread only, zero allocation. Refs are
+     * never reused and a terminal order never reopens, so each ref enters the FIFO at most once
+     * and the victim is always safe to unindex. Callers must invoke this only AFTER the order's
+     * final output events have been emitted (emit copies the fields into the ring synchronously,
+     * so the recycled entry is never observed by output handlers).
+     */
+    private void retainTerminal(RestingOrder o) {
+        if (terminalFifo == null) {
+            return;
+        }
+        if (terminalCount == terminalFifo.length) {
+            int victimRef = terminalFifo[terminalHead];
+            terminalHead = (terminalHead + 1) & terminalFifoMask;
+            terminalCount--;
+            RestingOrder victim = lookup(victimRef);
+            if (victim != null && !victim.isOpen()) {
+                ordersByRef[victimRef] = null;
+                victim.nextFree = freeList;
+                freeList = victim;
+                ordersEvicted++;
+            }
+        }
+        terminalFifo[(terminalHead + terminalCount) & terminalFifoMask] = o.orderRef;
+        terminalCount++;
     }
 
     // ----- edge-readable telemetry ----------------------------------------------------------
@@ -550,6 +615,18 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long countTradesNew() {
         readFence();
         return tradesNew;
+    }
+
+    /** Terminal orders currently retained (bounded by blp.orders.max-retained). */
+    public long terminalOrdersRetained() {
+        readFence();
+        return terminalCount;
+    }
+
+    /** Terminal orders dropped from the book by bounded retention since start. */
+    public long ordersEvicted() {
+        readFence();
+        return ordersEvicted;
     }
 
     /**

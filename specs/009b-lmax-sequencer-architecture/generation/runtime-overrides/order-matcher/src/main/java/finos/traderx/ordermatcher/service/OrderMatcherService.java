@@ -268,6 +268,13 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_order_autofill_success_total Auto-fill successful fills/partial-fills.\n");
         sb.append("# TYPE traderx_order_autofill_success_total counter\n");
         sb.append("traderx_order_autofill_success_total ").append(engine.blp() == null ? 0 : engine.blp().autoFillSuccess()).append('\n');
+        sb.append("# HELP traderx_blp_terminal_orders_retained Terminal orders currently retained by the BLP (bounded by blp.orders.max-retained).\n");
+        sb.append("# TYPE traderx_blp_terminal_orders_retained gauge\n");
+        sb.append("traderx_blp_terminal_orders_retained ").append(engine.blp() == null ? 0 : engine.blp().terminalOrdersRetained()).append('\n');
+        sb.append("# HELP traderx_orders_evicted_total Terminal orders dropped by bounded retention, per store.\n");
+        sb.append("# TYPE traderx_orders_evicted_total counter\n");
+        sb.append("traderx_orders_evicted_total{store=\"blp\"} ").append(engine.blp() == null ? 0 : engine.blp().ordersEvicted()).append('\n');
+        sb.append("traderx_orders_evicted_total{store=\"readmodel\"} ").append(readModel.evictedOrders()).append('\n');
         sb.append("# HELP traderx_order_trade_submit_failures_total Trade submit failures on fill attempts.\n");
         sb.append("# TYPE traderx_order_trade_submit_failures_total counter\n");
         sb.append("traderx_order_trade_submit_failures_total ").append(readModel.tradeSubmitFailures().sum()).append('\n');

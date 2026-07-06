@@ -88,6 +88,7 @@ Added keys (demo-safe defaults):
 | `price.input.via-ring` | `true` | Price ticks through the ring (vs `009` out-of-band). |
 | `blp.books.max-securities` | `4096` | Pre-size `OrderBook[]`. |
 | `blp.book.pool-size` | `65536` | Pooled resting-order entries. |
+| `blp.orders.max-retained` (env `BLP_ORDERS_MAX_RETAINED`) | `262144` | Bounded terminal-order retention (2026-07-06): beyond the cap the oldest FILLED/CANCELED orders are evicted from the BLP and the read model, and the entry is recycled; retaining every terminal order forever was the sustained-throughput GC limiter. `<=0` retains all. Keep identical on primary + standby (both apply the same events, so eviction stays deterministic across the pair). |
 | `snapshot.interval.ms` (env `SNAPSHOT_INTERVAL_MS`) | `0` (compose demo `30000`) | Periodic full-state snapshot cadence in ms; `0` = off. `snapshot.dat` lives under `journal.path`. |
 | `recovery.source` (env `RECOVERY_SOURCE`) | `db` | `db` (warm-start + journal-replay verify) or `journal` (snapshot+journal authoritative, no DB). |
 | `output.projector.db.enabled` (env `OUTPUT_PROJECTOR_DB_ENABLED`) | `true` | `false` drops all DB writes (no-DB cutover). |
@@ -145,6 +146,8 @@ Prometheus metric names required for this state (full table with types/meanings 
   `traderx_projector_lag_seq`, `traderx_projector_batch_size`.
 - No-GC: `traderx_hotpath_alloc_bytes_total{node=...}`, `traderx_jvm_gc_pause_seconds`,
   `traderx_jit_warmup_seconds`, `traderx_nightly_bounce_seconds`.
+- Bounded retention (wired 2026-07-06): `traderx_blp_terminal_orders_retained` (gauge),
+  `traderx_orders_evicted_total{store="blp"|"readmodel"}` (counter).
 - Failover (wired 2026-07-03): `traderx_blp_role{role=...}`, `traderx_blp_live`,
   `traderx_leader_lock_held`, `traderx_follower_lag_bytes`,
   `traderx_follower_applied_events_total`, `traderx_failover_promotions_total` — exposed by both
@@ -156,6 +159,11 @@ a real measurement.
 ## Compatibility Notes
 
 - Existing trade/position/pricing APIs remain backward-compatible from `008`/`009`.
+- Bounded terminal-order retention (2026-07-06, `blp.orders.max-retained`): a GET / cancel /
+  force-fill referencing an *evicted* order (terminal, and older than the newest ~262k terminal
+  orders) answers `404 Not Found` instead of `009`'s re-publish-unchanged. Open orders are never
+  evicted, and the retention window is far larger than any UI-visible history, so `009` clients
+  are unaffected in practice; the drift exists only under sustained synthetic load.
 - The UI requires zero changes; ADR-013 push semantics are preserved by the NATS bridge.
 - Eventual consistency between push streams (immediate) and the relational read-model (projector lag)
   is a documented property of this state, not a regression.

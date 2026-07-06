@@ -66,16 +66,20 @@ public final class HotPathMetrics {
     /** Render a Prometheus cumulative histogram from an HdrHistogram in nanoseconds. */
     public static void renderHistogram(StringBuilder sb, String name, String help,
                                        ConcurrentHistogram histogram, double[] bucketSeconds) {
+        // Iterating count/mean queries on the live histogram races hot-path recordValue
+        // (auto-resize) and throws ConcurrentModificationException under load; render a
+        // point-in-time copy instead (scrape-path allocation only, never hot-path).
+        ConcurrentHistogram snap = histogram.copy();
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snap.getTotalCount();
         for (double edge : bucketSeconds) {
             long upperNs = (long) (edge * 1_000_000_000.0);
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
+            long count = total == 0 ? 0 : snap.getCountBetweenValues(0, Math.min(upperNs, HIGHEST_TRACKABLE_NS));
             sb.append(name).append("_bucket{le=\"").append(trimEdge(edge)).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sumSeconds = total == 0 ? 0.0 : histogram.getMean() * total / 1_000_000_000.0;
+        double sumSeconds = total == 0 ? 0.0 : snap.getMean() * total / 1_000_000_000.0;
         sb.append(name).append("_sum ").append(sumSeconds).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
     }
@@ -83,15 +87,16 @@ public final class HotPathMetrics {
     /** Render a Prometheus cumulative histogram from an HdrHistogram of unit-less counts. */
     public static void renderCountHistogram(StringBuilder sb, String name, String help,
                                             ConcurrentHistogram histogram, long[] bucketEdges) {
+        ConcurrentHistogram snap = histogram.copy();   // see renderHistogram: avoid CME vs recordValue
         sb.append("# HELP ").append(name).append(' ').append(help).append('\n');
         sb.append("# TYPE ").append(name).append(" histogram\n");
-        long total = histogram.getTotalCount();
+        long total = snap.getTotalCount();
         for (long edge : bucketEdges) {
-            long count = total == 0 ? 0 : histogram.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
+            long count = total == 0 ? 0 : snap.getCountBetweenValues(0, Math.min(edge, HIGHEST_TRACKABLE_ROWS));
             sb.append(name).append("_bucket{le=\"").append(edge).append("\"} ").append(count).append('\n');
         }
         sb.append(name).append("_bucket{le=\"+Inf\"} ").append(total).append('\n');
-        double sum = total == 0 ? 0.0 : histogram.getMean() * total;
+        double sum = total == 0 ? 0.0 : snap.getMean() * total;
         sb.append(name).append("_sum ").append(sum).append('\n');
         sb.append(name).append("_count ").append(total).append('\n');
     }

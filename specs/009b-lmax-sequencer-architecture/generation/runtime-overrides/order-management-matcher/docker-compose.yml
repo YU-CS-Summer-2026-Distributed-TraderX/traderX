@@ -211,6 +211,8 @@ services:
       # and replays only the journal tail after it. Default ON: it bounds leader restart, standby
       # catch-up, AND stops the unbounded-journal OOM a long bench run used to leave behind.
       SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-30000}"
+      # Bounded terminal-order retention (GC limiter fix): keep identical on primary + standby.
+      BLP_ORDERS_MAX_RETAINED: "${BLP_ORDERS_MAX_RETAINED:-262144}"
       # Cutover: recovery.source=journal makes snapshot+journal authoritative (no DB warm-start);
       # output.projector.db.enabled=false stops all DB writes. Together the matcher needs no database.
       RECOVERY_SOURCE: "${RECOVERY_SOURCE:-db}"
@@ -273,6 +275,7 @@ services:
       BLP_PIN_CPU: "-1"
       DISRUPTOR_INPUT_WAIT_STRATEGY: "blocking"
       SNAPSHOT_INTERVAL_MS: "${SNAPSHOT_INTERVAL_MS:-30000}"
+      BLP_ORDERS_MAX_RETAINED: "${BLP_ORDERS_MAX_RETAINED:-262144}"
       RECOVERY_SOURCE: "journal"
       OUTPUT_PROJECTOR_DB_ENABLED: "false"
       SPRING_JPA_DDL_AUTO: "none"
