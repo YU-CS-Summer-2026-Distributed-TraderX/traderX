@@ -450,7 +450,9 @@ public class OrderMatcherService {
     }
 
     private OrderResponse toResponse(OrderSnapshot snapshot) {
-        return OrderResponse.from(snapshot.toRecord(), readModel.lastPrice(snapshot.security));
+        String riskReason = snapshot.riskReason == null || snapshot.riskReason == RiskReason.ACCEPTED
+            ? null : snapshot.riskReason.name();
+        return OrderResponse.from(snapshot.toRecord(), readModel.lastPrice(snapshot.security), riskReason);
     }
 
     private int parseOrderRef(String orderId) {

@@ -43,7 +43,13 @@
       Stable across repeated runs — 0 failures from the latency assertion itself in 6+ runs (the
       known unrelated 72-byte allocation flake still fires independently ~1-in-3).
 - [ ] T-24 Multi-Gateway deployment + concurrency-overshoot test (FR-IMRG25).
-- [ ] T-25 UI: surface rejection reasons + `clientOrderId` (FR-IMRG44).
+- [x] T-25 UI: surface rejection reasons + `clientOrderId` (FR-IMRG44). `OrderResponse` gained a
+      `riskReason` field (both the REST create-order response and the NATS live-blotter bridge);
+      the order ticket has an optional Client Order ID field; the create-order alert now shows
+      the actual rejection reason for both the BLP-level (200 OK, status=REJECTED) and edge-level
+      (422/503, `RiskRejectionBody.reason`) paths -- the edge path was previously reading the
+      wrong JSON field (`error.error.error` instead of `error.error.reason`) and silently falling
+      through to a generic message.
 - [ ] T-26 Full container smoke: order/cancel/fill, projector convergence, NATS/WS delivery,
       durable control propagation, kill-switch/restriction enforcement end to end.
 - [ ] T-27 k8s manifest env plumbing for `RISK_*` knobs (defaults are live-safe today).

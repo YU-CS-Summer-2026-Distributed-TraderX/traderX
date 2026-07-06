@@ -56,6 +56,16 @@ control-plane API, and journaled startup bootstrap. Deliberately kept off the pr
   exercised on the real GKE production cluster's order-matcher directly — a submitted order
   with an off-market limit price was correctly rejected with `PRICE_COLLAR`, reflected live in
   `traderx_gateway_rejections_total{reason="price_collar"}`.
+- UI (FR-IMRG44): `OrderResponse.riskReason` threaded through both the REST create-order
+  response and the NATS live-blotter bridge (`NatsBridgeHandler`); order ticket has an
+  optional Client Order ID field; the create-order alert surfaces the actual reason for both
+  the BLP-level (200 OK, status=REJECTED) and edge-level (422/503) rejection paths. Verified:
+  Angular production build compiles clean, the new field renders correctly (screenshot), and
+  all 5 response/error shapes (BLP reject, success, edge reject, legacy error fallback,
+  network error) produce the correct alert message when exercised against the exact
+  `createOrderTicket` logic. Fixed a real bug along the way: the edge-rejection error handler
+  read `error.error.error`, but `RiskRejectionBody`'s actual field is `reason` — a risk
+  rejection was silently falling through to a generic "Failed to create order." message.
 
 ## Still open (next commits of this roadmap item)
 
@@ -66,4 +76,3 @@ control-plane API, and journaled startup bootstrap. Deliberately kept off the pr
 - Alert rules for the risk metric set (NFR-IMRG08) — the dashboard (`traderx-risk-gateway.json`,
   provisioned in the Grafana dashboards ConfigMap) is done; alert thresholds are a paging-policy
   decision, not defined yet.
-- UI: surface rejection reasons + clientOrderId plumbing (FR-IMRG44).
