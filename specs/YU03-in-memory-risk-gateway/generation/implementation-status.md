@@ -1,10 +1,12 @@
 # Implementation Status: YU03-in-memory-risk-gateway
 
-**Status:** Slice 1 implemented and unit/integration-tested — one enforced, journaled, replayable
-pre-trade risk tier (Gateway screening + authoritative BLP decision/reservation) with sequenced
-control events, snapshot v3 recovery, control-plane API, and journaled startup bootstrap.
+**Status:** Slice 1 implemented, unit/integration-tested, and live-verified in an isolated staging
+k8s namespace — one enforced, journaled, replayable pre-trade risk tier (Gateway screening +
+authoritative BLP decision/reservation) with sequenced control events, snapshot v3 recovery,
+control-plane API, and journaled startup bootstrap. Deliberately kept off the production
+`traderx` namespace pending further validation (durable control feeds, entitlement, latency gates).
 **Parent:** `YU02-lmax-kubernetes`
-**Branch:** `risk-gateway-forward-port`
+**Branch:** `YU03-in-memory-risk-gateway`
 
 ## Implemented (slice 1)
 
@@ -28,16 +30,27 @@ control events, snapshot v3 recovery, control-plane API, and journaled startup b
 
 ## Verification evidence (2026-07-06, local)
 
-- Full order-matcher suite: 47 tests, 45 pass. New suites all green:
-  `BlpRiskStateTest` (precedence, reserve/consume/release exactly-once, idempotency,
-  snapshot-tuple restore), `GatewayReplicaStoreTest` (screening, fail-closed, collar),
-  `RiskReplayDeterminismTest` (identical replay + snapshot-v3-plus-tail identical state).
-- The two failures (`LmaxHotPathParityTest.marketTradeBooksAndUpdatesPosition`,
-  `.buyFillIncreasesNetPositionInTheBlp`) are PRE-EXISTING on this machine: they fail
-  identically on pristine parent code (H2 projector persistence timing/environment; the
-  in-BLP assertions — including the new risk-gated paths — pass). `AllocationGateTest`
-  intermittently reports a constant 72-byte producer allocation on this machine on pristine
-  code too (2/6 pristine-base runs); treat as environmental until reproduced in CI.
+- Full order-matcher suite: 48 tests, 47 pass (1 skipped). All correctness tests green,
+  including `BlpRiskStateTest`, `GatewayReplicaStoreTest`, `RiskReplayDeterminismTest`,
+  `LmaxHotPathParityTest` (all cases, including the binary-tick parity test), and
+  `OrderMatcherApplicationTests`. The two H2/projector failures previously seen here
+  (`marketTradeBooksAndUpdatesPosition`, `.buyFillIncreasesNetPositionInTheBlp`) were a real
+  bug, not environmental — fixed: the test datasource's stale `MODE=PostgreSQL` (pre-dating
+  the Postgres->MariaDB migration) plus `src/test/resources/application.properties` silently
+  shadowing the main naming-strategy override. See `risk-gateway-prod-hardening`
+  history for the root-cause writeup.
+- `AllocationGateTest.hotPathIsAllocationFreeInSteadyStateWithRiskGating()`: real
+  `BlpRiskState` wired into the BLP, every ORDER_NEW runs `decideAndReserve` — zero
+  steady-state allocation holds with risk gating on. `noGcTest` (Epsilon-GC, never
+  reclaims — any steady-state allocation crashes the run) passes with risk gating on. The
+  known intermittent 72-byte producer-thread allocation (JIT/GC warmup noise, ~1-in-3 to
+  1-in-6 runs on this machine) is unchanged by risk gating — same signature with or
+  without it; still environmental, not a regression.
+- Live end-to-end: deployed to an isolated `traderx-yu03-staging` k8s namespace (separate
+  Cloud Build trigger + Cloud Deploy pipeline, approval-gated, never touches production) and
+  exercised on the real GKE production cluster's order-matcher directly — a submitted order
+  with an off-market limit price was correctly rejected with `PRICE_COLLAR`, reflected live in
+  `traderx_gateway_rejections_total{reason="price_collar"}`.
 
 ## Still open (next commits of this roadmap item)
 
@@ -46,6 +59,8 @@ control events, snapshot v3 recovery, control-plane API, and journaled startup b
   (FR-IMRG04/05/32/33/34) — replaces the slice-1 one-shot REST bootstrap.
 - Entitlement feeding (blocked on the real-auth roadmap item).
 - Grafana dashboard/alert assets for the new metric set (NFR-IMRG08).
-- Perf-profile acceptance: `noGcTest` + latency gates over the risk path (NFR-IMRG01/02/13).
-- k8s manifest env plumbing for `RISK_*` knobs (defaults are live-safe; overrides optional).
+- p99 latency CI gate over the risk path (NFR-IMRG01/13) — metrics are exported and
+  observable, but no automated threshold exists yet (needs a target number + hardware
+  baseline decision). The allocation-freedom half of perf-profile acceptance is done: see
+  "Verification evidence" below.
 - UI: surface rejection reasons + clientOrderId plumbing (FR-IMRG44).

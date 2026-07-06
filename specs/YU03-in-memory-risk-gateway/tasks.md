@@ -28,8 +28,13 @@
       subscribe-buffer-snapshot bootstrap, gap/epoch/staleness detection (ADR-019, FR-IMRG04/05/32/33/34).
 - [ ] T-21 Entitlement replica fed from the real-auth roadmap item (principalKey path already wired).
 - [ ] T-22 Grafana dashboard + alerts for the risk metric set (NFR-IMRG08).
-- [ ] T-23 Extend `AllocationGateTest` to a risk-gated workload; run perf-profile p99 + `noGcTest`
-      acceptance over the risk path (NFR-IMRG01/02/13).
+- [x] T-23a `AllocationGateTest` extended with `hotPathIsAllocationFreeInSteadyStateWithRiskGating()`
+      — real `BlpRiskState` wired into the BLP so every ORDER_NEW runs `decideAndReserve`;
+      `noGcTest` (Epsilon-GC, never reclaims) passes with risk gating on (NFR-IMRG02).
+- [ ] T-23b p99 latency CI gate over the risk path (NFR-IMRG01/13): `traderx_risk_decision_latency_seconds`
+      / `traderx_gateway_validation_latency_seconds` are exported and observable, but no automated
+      pass/fail threshold exists yet — needs a target number + hardware baseline decision, not
+      something to invent unilaterally.
 - [ ] T-24 Multi-Gateway deployment + concurrency-overshoot test (FR-IMRG25).
 - [ ] T-25 UI: surface rejection reasons + `clientOrderId` (FR-IMRG44).
 - [ ] T-26 Full container smoke: order/cancel/fill, projector convergence, NATS/WS delivery,
