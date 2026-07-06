@@ -58,7 +58,9 @@ control-plane API, and journaled startup bootstrap. Deliberately kept off the pr
   watermarked subscribe-buffer-snapshot bootstrap and gap/epoch invalidation
   (FR-IMRG04/05/32/33/34) — replaces the slice-1 one-shot REST bootstrap.
 - Entitlement feeding (blocked on the real-auth roadmap item).
-- Grafana dashboard/alert assets for the new metric set (NFR-IMRG08).
+- Alert rules for the risk metric set (NFR-IMRG08) — the dashboard (`traderx-risk-gateway.json`,
+  provisioned in the Grafana dashboards ConfigMap) is done; alert thresholds are a paging-policy
+  decision, not defined yet.
 - p99 latency CI gate over the risk path (NFR-IMRG01/13) — metrics are exported and
   observable, but no automated threshold exists yet (needs a target number + hardware
   baseline decision). The allocation-freedom half of perf-profile acceptance is done: see

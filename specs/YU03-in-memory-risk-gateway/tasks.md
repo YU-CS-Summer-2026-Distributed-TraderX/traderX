@@ -27,7 +27,12 @@
 - [ ] T-20 Durable account-service/reference-data control feeds (outbox → JetStream), watermarked
       subscribe-buffer-snapshot bootstrap, gap/epoch/staleness detection (ADR-019, FR-IMRG04/05/32/33/34).
 - [ ] T-21 Entitlement replica fed from the real-auth roadmap item (principalKey path already wired).
-- [ ] T-22 Grafana dashboard + alerts for the risk metric set (NFR-IMRG08).
+- [x] T-22a Grafana dashboard for the risk metric set (`traderx-risk-gateway.json`): decisions/
+      rejections by reason, control-update rejections, gateway/BLP decision latency p99,
+      replica rebootstrap events.
+- [ ] T-22b Alerts for the risk metric set (NFR-IMRG08) — no alert rules defined yet; needs
+      threshold decisions (e.g. what rejection rate or replica-rebootstrap rate pages someone),
+      same reasoning as the T-23b latency gate.
 - [x] T-23a `AllocationGateTest` extended with `hotPathIsAllocationFreeInSteadyStateWithRiskGating()`
       — real `BlpRiskState` wired into the BLP so every ORDER_NEW runs `decideAndReserve`;
       `noGcTest` (Epsilon-GC, never reclaims) passes with risk gating on (NFR-IMRG02).
