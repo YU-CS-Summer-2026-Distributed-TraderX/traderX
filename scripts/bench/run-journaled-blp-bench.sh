@@ -12,7 +12,7 @@
 #   POLL_INTERVAL_S   — seconds between status polls (default: 5)
 #
 # Usage examples:
-#   # Journaling only (lmax-kubernetes topology):
+#   # Journaling only (YU02-lmax-kubernetes topology):
 #   BASE_URL=http://localhost:18110 bash scripts/bench/run-journaled-blp-bench.sh
 #
 #   # Simulate 2ms NATS RTT (HA branch ceiling estimate):

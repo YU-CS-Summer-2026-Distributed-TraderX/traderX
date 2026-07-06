@@ -1,6 +1,6 @@
 # TraderX — BLP Failover in Kubernetes: Design, Choices & Tradeoffs
 
-> **Branch:** `lmax-kubernetes`
+> **Branch:** `YU02-lmax-kubernetes`
 > **Date:** 2026-07-01
 > **Companion docs:** `LMAX-BLP.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, `CLAUDE.md`
 
@@ -50,14 +50,14 @@ This document explains every design decision, why it was made, and what it costs
 
 | Component | What it is | Where it lives |
 |---|---|---|
-| `LeaderElection.java` | Runs a single-threaded 5 s tick loop; manages Lease create/renew/watch | `specs/lmax-kubernetes/.../lmax/LeaderElection.java` |
+| `LeaderElection.java` | Runs a single-threaded 5 s tick loop; manages Lease create/renew/watch | `specs/YU02-lmax-kubernetes/.../lmax/LeaderElection.java` |
 | `NatsJournalReplicator.java` | Disruptor `EventHandler` on the PRIMARY's input ring; publishes each `InputEvent` to JetStream | same package |
 | `LmaxEngine.java` | Wires it together: reads `BLP_REPLICATION_ENABLED`, starts `LeaderElection`, conditionally installs the replicator | same package |
 | `ProjectorHandler.java` | Output-ring handler; gates DB writes and NATS output publishing on `replicationRole.isFollower()` | same package |
 | `order-matcher-statefulset.yaml` | `replicas: 2`, `volumeClaimTemplates`, pod anti-affinity, env vars | `cluster-addons/` |
 | `order-matcher-primary-service.yaml` | ClusterIP Service with `selector: { app: order-matcher, blp-role: primary }` | `cluster-addons/` |
 | `order-matcher-rbac.yaml` | ServiceAccount + Role (get/create/update Lease) + RoleBinding | `cluster-addons/` |
-| `nats-configmap.yaml` | Adds `jetstream { max_memory_store: 512MB }` to the NATS broker | `specs/lmax-kubernetes/.../kubernetes-runtime/manifests/base/` |
+| `nats-configmap.yaml` | Adds `jetstream { max_memory_store: 512MB }` to the NATS broker | `specs/YU02-lmax-kubernetes/.../kubernetes-runtime/manifests/base/` |
 
 ---
 
@@ -351,7 +351,7 @@ Key differences in our implementation:
 ## Files Changed for This Feature
 
 ```
-specs/lmax-kubernetes/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/
+specs/YU02-lmax-kubernetes/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/
   LeaderElection.java          ← NATS heartbeat (100ms publish/watch), leaseDuration=5s, 100ms tick
   NatsJournalReplicator.java   ← follower ACK listener, synchronous replicatedSeq(), Disruptor seq in msg
   ReplicationFollower.java     ← ACK publish to traderx.blp.replication.ack after each inject()
@@ -360,7 +360,7 @@ specs/lmax-kubernetes/generation/runtime-overrides/order-matcher/src/main/java/f
   ProjectorHandler.java        ← gates DB/NATS output on isFollower()
   ReplicationRole.java         ← thread-safe PRIMARY/FOLLOWER/UNKNOWN enum bean
 
-specs/lmax-kubernetes/generation/runtime-overrides/kubernetes-runtime/manifests/base/
+specs/YU02-lmax-kubernetes/generation/runtime-overrides/kubernetes-runtime/manifests/base/
   nats-configmap.yaml          ← NEW: enables JetStream in NATS broker
 
 cluster-addons/
@@ -368,5 +368,5 @@ cluster-addons/
   order-matcher-primary-service.yaml  ← NEW: ClusterIP, selector blp-role=primary
   order-matcher-rbac.yaml             ← NEW: ServiceAccount + Role + RoleBinding for Lease API
 
-traderX/scripts/test-state-lmax-kubernetes.sh  ← modified: checks trade-service routes to order-matcher-primary
+traderX/scripts/test-state-YU02-lmax-kubernetes.sh  ← modified: checks trade-service routes to order-matcher-primary
 ```

@@ -207,8 +207,8 @@ case "${STATE_ID}" in
   014-fdc3-intent-interoperability)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability")
     ;;
-  lmax-kubernetes)
-    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "lmax-kubernetes")
+  YU02-lmax-kubernetes)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes")
     ;;
 esac
 

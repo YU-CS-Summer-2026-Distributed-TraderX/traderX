@@ -52,7 +52,7 @@ REPORT="${RESULTS_DIR}/REPORT.txt"
 log() { echo "$@" | tee -a "${REPORT}"; }
 
 log "============================================================"
-log " lmax-kubernetes throughput tier comparison"
+log " YU02-lmax-kubernetes throughput tier comparison"
 log " $(date)"
 log " target   : ${BASE_URL}"
 log "============================================================"
