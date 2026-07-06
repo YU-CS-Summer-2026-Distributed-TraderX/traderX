@@ -1,0 +1,9 @@
+# Self-contained YU03 staging namespace: an isolated order-matcher + database + nats-broker so a
+# risk-gateway branch can be built and deployed for real (not just unit-tested) without touching
+# the production traderx namespace/StatefulSet. The RISK_CONTROL_TOKEN secret is provisioned
+# out-of-band (see ../../scripts/provision-yu03-staging-secret.sh) — never checked into git.
+resources:
+  - namespace.yaml
+  - database.yaml
+  - nats-broker.yaml
+  - order-matcher.yaml

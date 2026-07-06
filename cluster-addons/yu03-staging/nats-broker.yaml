@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats-broker
+  namespace: traderx-yu03-staging
+  labels:
+    app: nats-broker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats-broker
+  template:
+    metadata:
+      labels:
+        app: nats-broker
+    spec:
+      containers:
+        - name: nats-broker
+          image: nats:2.10-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: client
+              containerPort: 4222
+              protocol: TCP
+            - name: monitor
+              containerPort: 8222
+              protocol: TCP
+            - name: ws
+              containerPort: 8081
+              protocol: TCP
+          args: ["-c", "/etc/nats/nats.conf"]
+          volumeMounts:
+            - name: nats-config
+              mountPath: /etc/nats/nats.conf
+              subPath: nats.conf
+      volumes:
+        - name: nats-config
+          configMap:
+            name: nats-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats-broker
+  namespace: traderx-yu03-staging
+  labels:
+    app: nats-broker
+spec:
+  type: ClusterIP
+  selector:
+    app: nats-broker
+  ports:
+    - name: client
+      protocol: TCP
+      port: 4222
+      targetPort: 4222
+    - name: monitor
+      protocol: TCP
+      port: 8222
+      targetPort: 8222
+    - name: ws
+      protocol: TCP
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-config
+  namespace: traderx-yu03-staging
+data:
+  nats.conf: |
+    port: 4222
+    http: 8222
+
+    websocket {
+      port: 8081
+      no_tls: true
+    }

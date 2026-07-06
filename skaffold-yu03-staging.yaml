@@ -1,0 +1,20 @@
+apiVersion: skaffold/v4beta14
+kind: Config
+metadata:
+  name: order-matcher-yu03-staging
+build:
+  # Cloud Build runs `./gradlew bootJar` + `docker build`/push explicitly (see
+  # cloudbuild-yu03-staging.yaml) — this artifact entry exists only so skaffold/Cloud Deploy know
+  # which `image:` field in the manifests below to substitute; the built image reference is passed
+  # in via `gcloud deploy releases create --images=...`, which skips skaffold's own build step.
+  artifacts:
+    - image: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher-yu03-staging
+      context: generated/code/target-generated/order-matcher
+manifests:
+  rawYaml:
+    - cluster-addons/yu03-staging/namespace.yaml
+    - cluster-addons/yu03-staging/database.yaml
+    - cluster-addons/yu03-staging/nats-broker.yaml
+    - cluster-addons/yu03-staging/order-matcher.yaml
+deploy:
+  kubectl: {}

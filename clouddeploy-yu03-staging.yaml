@@ -1,0 +1,27 @@
+apiVersion: deploy.cloud.google.com/v1
+kind: DeliveryPipeline
+metadata:
+  name: order-matcher-yu03-staging-pipeline
+description: >
+  YU03 risk-gateway order-matcher CI/CD. Single target: an isolated traderx-yu03-staging
+  namespace on the same traderx-lmax cluster, kept separate from the production traderx
+  namespace/StatefulSet. Same required manual-approval gate as production, so a push never
+  silently changes what's running even in staging.
+serialPipeline:
+  stages:
+    - targetId: yu03-staging
+---
+apiVersion: deploy.cloud.google.com/v1
+kind: Target
+metadata:
+  name: yu03-staging
+description: traderx-lmax GKE cluster, traderx-yu03-staging namespace (isolated from production)
+requireApproval: true
+gke:
+  cluster: projects/traderx-501015/locations/us-east1-b/clusters/traderx-lmax
+executionConfigs:
+  - usages:
+      - RENDER
+      - DEPLOY
+    serviceAccount: traderx-cicd@traderx-501015.iam.gserviceaccount.com
+    artifactStorage: gs://traderx-501015-clouddeploy-artifacts

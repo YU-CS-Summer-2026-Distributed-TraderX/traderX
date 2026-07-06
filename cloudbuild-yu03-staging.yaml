@@ -1,0 +1,54 @@
+# Triggered on push to YU03-in-memory-risk-gateway. Rebuilds order-matcher from committed source
+# (specs/ -> generated/ via the generation pipeline) with the YU03 risk-gateway overlay, tags the
+# image uniquely, and creates a Cloud Deploy release into the isolated traderx-yu03-staging
+# namespace — never the production traderx namespace/StatefulSet. Release sits behind the
+# `staging` target's requireApproval gate, same pattern as the production pipeline.
+steps:
+  - id: generate-and-build-jar
+    name: eclipse-temurin:21-jdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get update -qq
+        apt-get install -y -qq curl git ca-certificates jq python3 rsync zip unzip ripgrep > /dev/null
+        curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null
+        apt-get install -y -qq nodejs > /dev/null
+        bash pipeline/generate-state.sh YU03-in-memory-risk-gateway
+        cd generated/code/target-generated/order-matcher
+        ./gradlew bootJar --no-daemon
+
+  - id: build-and-push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher-yu03-staging:ci-$SHORT_SHA
+      - generated/code/target-generated/order-matcher
+  - id: push-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher-yu03-staging:ci-$SHORT_SHA
+
+  - id: create-release
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - deploy
+      - releases
+      - create
+      - release-$SHORT_SHA
+      - --delivery-pipeline=order-matcher-yu03-staging-pipeline
+      - --region=us-east1
+      - --source=.
+      - --skaffold-file=skaffold-yu03-staging.yaml
+      - --images=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher-yu03-staging=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher-yu03-staging:ci-$SHORT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+serviceAccount: projects/${PROJECT_ID}/serviceAccounts/traderx-cicd@${PROJECT_ID}.iam.gserviceaccount.com
