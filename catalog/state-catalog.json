@@ -420,7 +420,7 @@
       }
     },
     {
-      "id": "lmax-kubernetes",
+      "id": "YU02-lmax-kubernetes",
       "title": "LMAX Kubernetes",
       "status": "draft",
       "track": "architecture",
@@ -428,18 +428,41 @@
       "isConvergence": false,
       "dottedParents": [],
       "primaryLineageRole": "optional",
-      "featurePack": "specs/lmax-kubernetes",
+      "featurePack": "specs/YU02-lmax-kubernetes",
       "previous": [
         "014-fdc3-intent-interoperability"
       ],
       "generation": {
         "mode": "specified",
-        "entrypoint": "bash pipeline/generate-state.sh lmax-kubernetes",
-        "runtime": "./scripts/start-state-lmax-kubernetes-generated.sh"
+        "entrypoint": "bash pipeline/generate-state.sh YU02-lmax-kubernetes",
+        "runtime": "./scripts/start-state-YU02-lmax-kubernetes-generated.sh"
       },
       "publish": {
-        "branch": "code/generated-state-lmax-kubernetes",
-        "tag": "generated/lmax-kubernetes/v1"
+        "branch": "code/generated-state-YU02-lmax-kubernetes",
+        "tag": "generated/YU02-lmax-kubernetes/v1"
+      }
+    },
+    {
+      "id": "YU03-in-memory-risk-gateway",
+      "title": "In-Memory Risk Gateway",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU03-in-memory-risk-gateway",
+      "previous": [
+        "YU02-lmax-kubernetes"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU03-in-memory-risk-gateway",
+        "runtime": "inherits YU02-lmax-kubernetes runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU03-in-memory-risk-gateway",
+        "tag": "generated/YU03-in-memory-risk-gateway/v1"
       }
     }
   ]

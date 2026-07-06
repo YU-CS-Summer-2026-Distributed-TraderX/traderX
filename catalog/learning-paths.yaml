@@ -28,7 +28,7 @@ tracks:
       - 005-postgres-database-replacement
       - 006-messaging-nats-replacement
       - 009b-lmax-sequencer-architecture
-      - lmax-kubernetes
+      - YU02-lmax-kubernetes
   functional:
     description: "Functional capability expansion states."
     states:
@@ -44,7 +44,7 @@ tracks:
     states:
       - 009b-lmax-sequencer-architecture
       - 013-radius-kubernetes-platform
-      - lmax-kubernetes
+      - YU02-lmax-kubernetes
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -158,10 +158,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: canonical
     spec: specs/014-fdc3-intent-interoperability/spec.md
-  - id: lmax-kubernetes
+  - id: YU02-lmax-kubernetes
     previous:
       - 014-fdc3-intent-interoperability
     convergenceLevel: none
     isConvergence: false
     lineageRole: optional
-    spec: specs/lmax-kubernetes/spec.md
+    spec: specs/YU02-lmax-kubernetes/spec.md

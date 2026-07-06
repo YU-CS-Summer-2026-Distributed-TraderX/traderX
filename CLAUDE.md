@@ -76,18 +76,18 @@ from both pushing to the same live pods at once.
 
 ```bash
 # Full deploy (rebuild manifests + kubectl apply -k)
-bash scripts/deploy-state-lmax-kubernetes-gke.sh us-east1-docker.pkg.dev/traderx-501015/traderx
+bash scripts/deploy-state-YU02-lmax-kubernetes-gke.sh us-east1-docker.pkg.dev/traderx-501015/traderx
 
 # Apply cluster-addons (ingress, TLS issuer; StatefulSet + headless are now in kustomization)
 kubectl apply -f cluster-addons/
 
 # Build images and push to Artifact Registry
-bash scripts/push-state-lmax-kubernetes-gke-images.sh us-east1-docker.pkg.dev/traderx-501015/traderx
+bash scripts/push-state-YU02-lmax-kubernetes-gke-images.sh us-east1-docker.pkg.dev/traderx-501015/traderx
 ```
 
 ### Manifest pipeline
 
-`scripts/prepare-state-lmax-kubernetes-gke-manifests.sh` takes the base manifests in
+`scripts/prepare-state-YU02-lmax-kubernetes-gke-manifests.sh` takes the base manifests in
 `generated/.../manifests/base/`, rewrites them for GKE, and writes to
 `generated/.../manifests/gke-rendered/`. Changes it makes:
 - Copies `cluster-addons/order-matcher-statefulset.yaml` + headless service into the output;
@@ -111,7 +111,7 @@ docker exec traderx-state-014-control-plane ctr -n k8s.io images tag \
 ## Key directories
 
 ```
-specs/lmax-kubernetes/generation/runtime-overrides/
+specs/YU02-lmax-kubernetes/generation/runtime-overrides/
   order-matcher/          ← BLP Java source overrides (Journaler, MatchingEngine, LmaxEngine, …)
   trade-processor/        ← DB driver + app config overrides
   account-service/        ← DB driver + app config overrides
@@ -128,9 +128,9 @@ cluster-addons/
   order-matcher-rbac.yaml            ← ServiceAccount + Role + RoleBinding for Lease API access
 
 scripts/
-  deploy-state-lmax-kubernetes-gke.sh          ← prepare + kubectl apply -k
-  prepare-state-lmax-kubernetes-gke-manifests.sh ← manifest rewriting
-  push-state-lmax-kubernetes-gke-images.sh     ← docker build + push to Artifact Registry
+  deploy-state-YU02-lmax-kubernetes-gke.sh          ← prepare + kubectl apply -k
+  prepare-state-YU02-lmax-kubernetes-gke-manifests.sh ← manifest rewriting
+  push-state-YU02-lmax-kubernetes-gke-images.sh     ← docker build + push to Artifact Registry
 
 generated/code/target-generated/kubernetes-runtime/manifests/
   base/        ← source manifests (copied from kubernetes-runtime/manifests/base/ by pipeline)
@@ -225,11 +225,11 @@ See `LMAX-BLP-FAILOVER.md` for a full explanation of design choices and tradeoff
 The `generated/` directory is an ephemeral build output. To rebuild it:
 
 ```bash
-bash pipeline/generate-state.sh lmax-kubernetes
+bash pipeline/generate-state.sh YU02-lmax-kubernetes
 ```
 
 Do not manually edit files under `generated/` — they will be overwritten. Edit the source overrides
-under `specs/lmax-kubernetes/generation/runtime-overrides/` or the prepare script instead.
+under `specs/YU02-lmax-kubernetes/generation/runtime-overrides/` or the prepare script instead.
 
 ---
 
