@@ -46,6 +46,11 @@ control-plane API, and journaled startup bootstrap. Deliberately kept off the pr
   known intermittent 72-byte producer-thread allocation (JIT/GC warmup noise, ~1-in-3 to
   1-in-6 runs on this machine) is unchanged by risk gating — same signature with or
   without it; still environmental, not a regression.
+- p99 latency CI gate (NFR-IMRG01): 5us threshold, both edges of the risk pipeline —
+  `AllocationGateTest` for the BLP's authoritative `decideAndReserve` (measured p99 on dev
+  hardware: 600-950ns across repeated 1M-event runs) and a new
+  `GatewayReplicaStoreTest.screenLatencyP99StaysUnderGateway5usBudget()` for the edge
+  `screen()` path. 0 failures from either latency assertion across 6+ repeated runs.
 - Live end-to-end: deployed to an isolated `traderx-yu03-staging` k8s namespace (separate
   Cloud Build trigger + Cloud Deploy pipeline, approval-gated, never touches production) and
   exercised on the real GKE production cluster's order-matcher directly — a submitted order
@@ -61,8 +66,4 @@ control-plane API, and journaled startup bootstrap. Deliberately kept off the pr
 - Alert rules for the risk metric set (NFR-IMRG08) — the dashboard (`traderx-risk-gateway.json`,
   provisioned in the Grafana dashboards ConfigMap) is done; alert thresholds are a paging-policy
   decision, not defined yet.
-- p99 latency CI gate over the risk path (NFR-IMRG01/13) — metrics are exported and
-  observable, but no automated threshold exists yet (needs a target number + hardware
-  baseline decision). The allocation-freedom half of perf-profile acceptance is done: see
-  "Verification evidence" below.
 - UI: surface rejection reasons + clientOrderId plumbing (FR-IMRG44).

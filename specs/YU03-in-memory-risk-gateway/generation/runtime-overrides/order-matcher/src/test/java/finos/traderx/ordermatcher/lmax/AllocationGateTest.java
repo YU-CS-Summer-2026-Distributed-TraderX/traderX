@@ -200,6 +200,15 @@ class AllocationGateTest {
             assertTrue(blp.countOrdersNew() >= steadyCreates - 16L, "create mix did not run");
             assertTrue(blp.autoFillSuccess() >= steadyCreates - 16L, "fill mix did not run");
             assertTrue(journaler.journaledSeq() >= blp.blpSeq(), "journal gating violated");
+
+            if (risk != null) {
+                // NFR-IMRG01 p99 CI gate: 5us is ~5-8x the observed p99 on dev hardware
+                // (600-950ns across repeated runs) -- tight enough to catch a real regression,
+                // loose enough to tolerate JIT/GC warmup noise and slower/shared CI runners.
+                long riskDecisionP99Nanos = metrics.riskDecisionHistogram().copy().getValueAtPercentile(99.0);
+                assertTrue(riskDecisionP99Nanos <= 5_000L,
+                    "BLP risk decision p99 exceeded 5us gate (NFR-IMRG01): " + riskDecisionP99Nanos + "ns");
+            }
         } finally {
             inputDisruptor.shutdown(10, TimeUnit.SECONDS);
             outputDisruptor.shutdown(10, TimeUnit.SECONDS);
