@@ -8,7 +8,7 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 - Previous state(s): [014-fdc3-intent-interoperability](/docs/learning/state-014-fdc3-intent-interoperability)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU03-in-memory-risk-gateway](/docs/learning/state-YU03-in-memory-risk-gateway)
 
 ## Convergence Metadata
 

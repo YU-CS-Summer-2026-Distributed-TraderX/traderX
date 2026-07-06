@@ -27,6 +27,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `006-messaging-nats-replacement`
 - `009b-lmax-sequencer-architecture`
 - `YU02-lmax-kubernetes`
+- `YU03-in-memory-risk-gateway`
 
 ### Functional
 
@@ -43,6 +44,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `009b-lmax-sequencer-architecture`
 - `013-radius-kubernetes-platform`
 - `YU02-lmax-kubernetes`
+- `YU03-in-memory-risk-gateway`
 
 ### Convergence
 
@@ -71,3 +73,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `013-radius-kubernetes-platform` | 012-platform-convergence-c3 | `none` | `false` | `optional` | `specs/013-radius-kubernetes-platform/spec.md` |
 | `014-fdc3-intent-interoperability` | 012-platform-convergence-c3 | `none` | `false` | `canonical` | `specs/014-fdc3-intent-interoperability/spec.md` |
 | `YU02-lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/YU02-lmax-kubernetes/spec.md` |
+| `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |

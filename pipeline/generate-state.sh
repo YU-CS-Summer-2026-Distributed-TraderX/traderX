@@ -125,8 +125,11 @@ bash "${ROOT}/pipeline/prune-generated-state-removed-assets.sh" "${STATE_ID}" "$
 # Validate dependency version targets across generated outputs. Dependency
 # versions are canonical in templates/patches and catalog/dependency-version-targets.json.
 # Optional apply mode is provided only for explicit bulk remediation.
+OVERRIDE_SYNC_UPDATED_FILE=""
 if (( GEN_DEPTH == 1 )) || [[ "${TRADERX_REFRESH_JAVA_BASELINE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
-  bash "${ROOT}/pipeline/sync-node-dependency-overrides.sh" "${COMPONENTS_ROOT}" "${TARGET_ROOT}"
+  OVERRIDE_SYNC_UPDATED_FILE="$(mktemp)"
+  TRADERX_OVERRIDE_SYNC_UPDATED_FILE="${OVERRIDE_SYNC_UPDATED_FILE}" \
+    bash "${ROOT}/pipeline/sync-node-dependency-overrides.sh" "${COMPONENTS_ROOT}" "${TARGET_ROOT}"
   if [[ "${TRADERX_APPLY_JAVA_DEPENDENCY_TARGETS:-0}" == "1" ]]; then
     bash "${ROOT}/pipeline/refresh-generated-java-dependency-baseline.sh" "${COMPONENTS_ROOT}" "${TARGET_ROOT}"
   fi
@@ -145,12 +148,26 @@ bash "${ROOT}/pipeline/sync-gradle-wrapper-assets.sh" "${TARGET_ROOT}"
 # left intact to avoid unnecessary regeneration churn.
 if [[ "${TRADERX_SKIP_LOCKFILE_REFRESH:-0}" == "1" ]]; then
   echo "[info] TRADERX_SKIP_LOCKFILE_REFRESH=1; skipping lockfile refresh"
+  # Dependency-override sync above can mutate package.json unconditionally (it
+  # is not gated by this flag), which would otherwise leave package-lock.json
+  # permanently out of sync with npm ci once the skip flag is set anywhere in
+  # the call chain (e.g. the test-state-* scripts). Force-refresh exactly the
+  # manifests the override sync touched so a skipped "full" refresh can never
+  # produce a generated tree that fails `npm ci`.
+  if [[ -n "${OVERRIDE_SYNC_UPDATED_FILE}" && -s "${OVERRIDE_SYNC_UPDATED_FILE}" ]]; then
+    echo "[info] dependency overrides changed package manifests; forcing lockfile refresh for affected modules"
+    while IFS= read -r updated_dir; do
+      [[ -n "${updated_dir}" ]] || continue
+      bash "${ROOT}/pipeline/refresh-generated-node-lockfiles.sh" "${updated_dir}"
+    done < "${OVERRIDE_SYNC_UPDATED_FILE}"
+  fi
 elif (( GEN_DEPTH == 1 )) || [[ "${TRADERX_REFRESH_LOCKFILES_IN_NESTED_GENERATION:-0}" == "1" ]]; then
   bash "${ROOT}/pipeline/refresh-generated-node-lockfiles.sh" "${COMPONENTS_ROOT}"
   bash "${ROOT}/pipeline/refresh-generated-node-lockfiles.sh" "${TARGET_ROOT}"
 else
   echo "[info] nested generation depth=${GEN_DEPTH}; skipping lockfile refresh"
 fi
+[[ -z "${OVERRIDE_SYNC_UPDATED_FILE}" ]] || rm -f "${OVERRIDE_SYNC_UPDATED_FILE}"
 
 # Install self-contained runtime scripts alongside the generated codebase.
 # API explorer install mutates runtime ingress/proxy configs, so avoid applying

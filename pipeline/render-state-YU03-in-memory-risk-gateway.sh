@@ -46,8 +46,18 @@ for source in \
   README.md \
   spec.md \
   plan.md \
+  research.md \
+  data-model.md \
+  contracts/contract-delta.md \
   requirements/functional-delta.md \
   requirements/nonfunctional-delta.md \
+  requirements/no-gc-conformance.md \
+  system/architecture.md \
+  system/runtime-topology.md \
+  system/adr-018-two-stage-validation.md \
+  system/adr-019-watermarked-replica-bootstrap.md \
+  system/adr-020-control-events-in-global-journal.md \
+  tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do
   src_path="${STATE_SPEC_DIR}/${source}"

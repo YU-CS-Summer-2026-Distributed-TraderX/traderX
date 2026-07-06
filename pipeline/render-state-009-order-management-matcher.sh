@@ -348,6 +348,18 @@ EOF
   else
     printf 'order.matcher.pricing-subscriber.enabled=false\n' >> "${test_app_props}"
   fi
+
+  # src/test/resources/application.properties shadows src/main/resources/application.properties
+  # on the test classpath instead of merging with it (Spring Boot loads only the first
+  # classpath:/application.properties it resolves), so the naming-strategy override that keeps
+  # Hibernate's ddl-auto schema aligned with the hand-authored MariaDB read-model schema (no
+  # snake_case column/table splitting) must be duplicated here too, or every test that relies on
+  # the projector's raw SQL against a JPA-managed schema breaks with "table not found".
+  if rg -q '^spring.jpa.hibernate.naming.physical-strategy=' "${test_app_props}" 2>/dev/null; then
+    perl -0pi -e 's/^spring\.jpa\.hibernate\.naming\.physical-strategy=.*$/spring.jpa.hibernate.naming.physical-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl/m' "${test_app_props}"
+  else
+    printf 'spring.jpa.hibernate.naming.physical-strategy=org.hibernate.boot.model.naming.PhysicalNamingStrategyStandardImpl\n' >> "${test_app_props}"
+  fi
 }
 
 require_file "${COMPOSE_FILE}"

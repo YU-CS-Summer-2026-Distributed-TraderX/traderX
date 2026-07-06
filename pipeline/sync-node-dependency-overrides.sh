@@ -92,6 +92,10 @@ sync_package_manifest() {
   mv "${tmp_file}" "${package_file}"
   updated=$((updated + 1))
   echo "[info] synced npm overrides: ${module_dir}"
+
+  if [[ -n "${TRADERX_OVERRIDE_SYNC_UPDATED_FILE:-}" ]]; then
+    echo "${module_dir}" >> "${TRADERX_OVERRIDE_SYNC_UPDATED_FILE}"
+  fi
 }
 
 for scan_root in "$@"; do

@@ -132,11 +132,24 @@ for package_file in "${package_files[@]}"; do
   fi
 
   echo "[info] refreshing package-lock.json (${reason}): ${module_dir}"
-  (
+  # npm's package-lock-only resolution occasionally throws a transient ENOENT/registry
+  # error on the just-deleted lock file (observed in practice, not reproducible on
+  # retry); a full generation run is expensive and this step is idempotent, so retry
+  # a couple of times before giving up rather than aborting the whole pipeline run.
+  attempt=1
+  until (
     cd "${module_dir}"
     rm -f "${lock_file}"
     npm install --package-lock-only --ignore-scripts --no-audit --no-fund
-  )
+  ); do
+    if (( attempt >= 3 )); then
+      echo "[fail] npm install --package-lock-only failed after ${attempt} attempts: ${module_dir}"
+      exit 1
+    fi
+    echo "[warn] npm install --package-lock-only failed (attempt ${attempt}); retrying: ${module_dir}"
+    attempt=$((attempt + 1))
+    sleep 2
+  done
   annotate_lockfile_hash "${lock_file}" "${package_hash}"
   refresh_count=$((refresh_count + 1))
 done
