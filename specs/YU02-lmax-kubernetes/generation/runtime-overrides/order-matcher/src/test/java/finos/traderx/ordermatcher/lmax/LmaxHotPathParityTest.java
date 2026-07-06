@@ -148,6 +148,23 @@ class LmaxHotPathParityTest {
     }
 
     @Test
+    void onPriceTickRawMatchesDecimalTickForSameFillOutcome() {
+        // The binary NATS tick subscriber calls onPriceTickRaw(ticker, priceTicks, sourceEpochMillis)
+        // with a price already in Px fixed-point ticks; it must drive the same auto-fill outcome as
+        // the JSON/BigDecimal path (onPriceTick) for the identical price.
+        int account = 62654;
+        OrderResponse created = service.createOrder(request(account, "GS", OrderSide.Buy, 400, "50.000"));
+        long priceTicks = Px.toTicks(new BigDecimal("49.750")); // in the money, 400 < 1000 -> full fill
+        service.onPriceTickRaw("GS", priceTicks, System.currentTimeMillis());
+        OrderResponse filled = awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
+        assertEquals(0, filled.getRemainingQuantity());
+        assertEquals(400, filled.getLastFillQuantity());
+        assertEquals(0, new BigDecimal("49.750").compareTo(filled.getLastExecutionPrice()));
+        int securityId = engine.symbols().idFor("GS");
+        assertEquals(400, engine.blp().positionQuantity(account, securityId));
+    }
+
+    @Test
     void marketTradeBooksAndUpdatesPosition() {
         // FR-09B08: a market trade from the trade ticket is sequenced as TRADE_NEW and booked
         // by the BLP (no matching), moving the position through the single-writer path.

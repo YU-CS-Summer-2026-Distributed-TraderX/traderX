@@ -642,8 +642,14 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     }
 
     public void submitPriceTick(String ticker, BigDecimal price) {
+        submitPriceTick(ticker, Px.toTicks(price));
+    }
+
+    /** Same as {@link #submitPriceTick(String, BigDecimal)} but for a caller that already has
+     * the price in fixed-point ticks (e.g. the binary NATS tick subscriber) — skips the
+     * BigDecimal parse/round entirely on the ingestion path. */
+    public void submitPriceTick(String ticker, long priceTicks) {
         int securityId = symbols.idFor(ticker);
-        long priceTicks = Px.toTicks(price);
         long seq = claimInputSlot();
         try {
             InputEvent e = inputRing.get(seq);

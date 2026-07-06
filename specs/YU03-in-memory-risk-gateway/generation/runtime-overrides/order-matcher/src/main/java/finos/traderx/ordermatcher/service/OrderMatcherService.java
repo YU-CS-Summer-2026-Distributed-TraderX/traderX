@@ -95,6 +95,22 @@ public class OrderMatcherService {
         engine.submitPriceTick(normalizedTicker, normalizedPrice);
     }
 
+    /** Same as {@link #onPriceTick(String, BigDecimal)} but for the binary tick subscriber,
+     * which already has the price as fixed-point ticks and the source publish time — no
+     * BigDecimal parse on the hot path. sourceEpochMillis feeds the replica's price-freshness
+     * state (FR-IMRG09) directly instead of stamping local receive time. */
+    public void onPriceTickRaw(String ticker, long priceTicks, long sourceEpochMillis) {
+        if (!StringUtils.hasText(ticker) || priceTicks == Px.NONE) {
+            return;
+        }
+        String normalizedTicker = ticker.trim().toUpperCase(Locale.ROOT);
+        readModel.recordPrice(normalizedTicker, Px.toBigDecimal(priceTicks));
+        if (riskEnabled) {
+            replicas.recordPrice(normalizedTicker, priceTicks, sourceEpochMillis);
+        }
+        engine.submitPriceTick(normalizedTicker, priceTicks);
+    }
+
     // ----- Gateway preliminary screening (in-memory-risk-gateway, FR-IMRG06/07) --------------
 
     /** Screen against local replica state only; a pass is preliminary — the BLP repeats every
