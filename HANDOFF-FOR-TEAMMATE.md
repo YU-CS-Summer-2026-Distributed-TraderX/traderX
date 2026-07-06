@@ -2,7 +2,7 @@
 
 **For:** teammate's Claude session, onboarding onto this work cold.
 **Repo:** `YU-CS-Summer-2026-Distributed-TraderX/traderX` on GitHub.
-**Active branch:** `lmax-kubernetes-blp-ha` — pushed and up to date as of 2026-07-03.
+**Active branch:** `YU02-lmax-kubernetes-blp-ha` — pushed and up to date as of 2026-07-03.
 
 > You already have GCP project access (`tanidiament@gmail.com`: Editor + `clouddeploy.approver`)
 > and a Cloud Build CI/CD pipeline exists for order-matcher — **read §7 before doing any manual
@@ -27,7 +27,7 @@ main
             │
       lmax-kubernetes  ──(no further commits since f0dd482 — STALE)──
             │
-            └─ lmax-kubernetes-blp-ha   ← YOU ARE HERE (active branch)
+            └─ YU02-lmax-kubernetes-blp-ha   ← YOU ARE HERE (active branch)
                  diverged from lmax-kubernetes at f0dd482, then:
                  2a0244b  Add BLP high-availability (leader election, NATS JetStream
                           replication, heartbeat failover) — 2026-07-01 23:04
@@ -43,7 +43,7 @@ main
 **Important:** `lmax-kubernetes` (no `-blp-ha` suffix) is a **different, older, stale branch**.
 It still has the bugs listed below unfixed and deploys as a plain single-replica `Deployment`
 (no HA, no StatefulSet). Don't build/deploy from it by mistake — always confirm you're on
-`lmax-kubernetes-blp-ha`.
+`YU02-lmax-kubernetes-blp-ha`.
 
 ---
 
@@ -51,7 +51,7 @@ It still has the bugs listed below unfixed and deploys as a plain single-replica
 
 - **Cluster:** `traderx-lmax`, zone `us-east1-b`, project `traderx-501015`.
 - **Live at:** `https://yaakovseif.dev`
-- **Deployed from:** `lmax-kubernetes-blp-ha` @ `4c0633c` or later (verify with `git log -1` after you pull).
+- **Deployed from:** `YU02-lmax-kubernetes-blp-ha` @ `4c0633c` or later (verify with `git log -1` after you pull).
 - **order-matcher (the BLP)** is currently in **HA mode**: 2 replicas, leader-elected
   PRIMARY/FOLLOWER, NATS JetStream replication, on a dedicated node pool.
 
@@ -156,7 +156,7 @@ Pick any of these — they're the natural next steps:
 ```bash
 git clone https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX.git
 cd traderX
-git checkout lmax-kubernetes-blp-ha
+git checkout YU02-lmax-kubernetes-blp-ha
 git log -1   # sanity check: should show 4c0633c (CI/CD pipeline) or later
 ```
 
@@ -185,7 +185,7 @@ order-matcher has a **Cloud Build → Cloud Deploy** pipeline as of 2026-07-03. 
 specifically so we don't collide by both running `kubectl set image`/`docker push` against the
 same live StatefulSet — **use this instead of manual deploys for order-matcher.**
 
-**Flow:** push to `lmax-kubernetes-blp-ha` → Cloud Build trigger `order-matcher-cicd` fires →
+**Flow:** push to `YU02-lmax-kubernetes-blp-ha` → Cloud Build trigger `order-matcher-cicd` fires →
 regenerates `generated/` from committed `specs/`, builds the jar, builds+pushes a uniquely-tagged
 image, creates a Cloud Deploy release → release sits at `PENDING_APPROVAL` — **nothing touches the
 cluster until someone approves it.**

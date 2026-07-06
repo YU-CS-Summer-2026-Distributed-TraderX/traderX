@@ -1,4 +1,4 @@
-# Triggered on push to lmax-kubernetes-blp-ha. Rebuilds order-matcher from committed source
+# Triggered on push to YU02-lmax-kubernetes-blp-ha. Rebuilds order-matcher from committed source
 # (specs/ -> generated/ via the generation pipeline, matching the "deploy discipline" rule in
 # CLAUDE.md: never build from a hand-edited generated/ directory, always regenerate fresh), tags
 # the image uniquely (never a mutable tag), and creates a Cloud Deploy release. The release sits

@@ -1,6 +1,6 @@
 # TraderX on GKE — Cloud Architecture
 
-Live at **https://yaakovseif.dev** · Branch: `lmax-kubernetes-blp-ha` · Cluster: `traderx-lmax` (zone `us-east1-b`, project `traderx-501015`)
+Live at **https://yaakovseif.dev** · Branch: `YU02-lmax-kubernetes-blp-ha` · Cluster: `traderx-lmax` (zone `us-east1-b`, project `traderx-501015`)
 
 This document describes the deployed GKE architecture: node pools, what runs where, the
 order-matcher (BLP) HA/single-BLP modes, throughput characteristics, and the operational commands.
@@ -172,7 +172,7 @@ nothing reaches the live cluster without an explicit manual approval.
 ### Flow
 
 ```
-push to lmax-kubernetes-blp-ha
+push to YU02-lmax-kubernetes-blp-ha
         │  (GitHub webhook, 1st-gen Cloud Build repo connection)
         ▼
 Cloud Build trigger "order-matcher-cicd"  (cloudbuild.yaml)

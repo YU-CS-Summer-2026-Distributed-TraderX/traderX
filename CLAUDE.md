@@ -20,23 +20,23 @@ Key reading: `LMAX-SEQUENCER-ARCHITECTURE.md`, `LMAX-BLP.md`, `LMAX-INPUT-DISRUP
 
 | Branch | Based on | Purpose |
 |--------|----------|---------|
-| `lmax-kubernetes-blp-ha` | lmax-kubernetes @ f0dd482 | **Active branch — CI/CD deploys from this one.** HA (leader election, NATS JetStream replication), plus all bug fixes and perf tuning from 2026-07-02 (see git log for the full list — projector/HdrHistogram/DB-port fixes, dedicated c2 node pool, async replication). |
+| `YU02-lmax-kubernetes-blp-ha` | lmax-kubernetes @ f0dd482 | **Active branch — CI/CD deploys from this one.** HA (leader election, NATS JetStream replication), plus all bug fixes and perf tuning from 2026-07-02 (see git log for the full list — projector/HdrHistogram/DB-port fixes, dedicated c2 node pool, async replication). |
 | `lmax-kubernetes` | gridgain-research + state 014 | **Stale — do not build/deploy from this.** Frozen at f0dd482; missing every fix and the HA feature. Kept for reference only. |
 | `gridgain-research` | lmax-sequencer-no-gc (state 009b) | Teammate's perf research branch. Frozen at `d70f703`; its work was folded into `lmax-kubernetes` at f0dd482 and hasn't diverged further. |
 | `lmax-sequencer-no-gc` | state 009 | State 009b: LMAX Disruptor BLP implementation. |
 
 Worktrees:
-- `lmax-kubernetes-blp-ha` (active) → `/Users/yaakov/Desktop/Summer 26/lmax/traderX`
+- `YU02-lmax-kubernetes-blp-ha` (active) → `/Users/yaakov/Desktop/Summer 26/lmax/traderX`
 - `gridgain-research` → `/Users/yaakov/Desktop/Summer 26/lmax/traderX-gridgain-research`
 
-`lmax-kubernetes-blp-ha` diverged from `lmax-kubernetes` at `f0dd482`. Common ancestor of
+`YU02-lmax-kubernetes-blp-ha` diverged from `lmax-kubernetes` at `f0dd482`. Common ancestor of
 `lmax-kubernetes` and `gridgain-research`: `da2f9e2`.
 
 ---
 
 ## Team split
 
-Both of us now work on `lmax-kubernetes-blp-ha`, coordinated through the CI/CD pipeline (see
+Both of us now work on `YU02-lmax-kubernetes-blp-ha`, coordinated through the CI/CD pipeline (see
 below) rather than direct `kubectl`/`docker push` to the shared cluster — that avoids collisions
 from both pushing to the same live pods at once.
 
@@ -44,7 +44,7 @@ from both pushing to the same live pods at once.
   multi-replica failover infrastructure.
 - **Tani** — (`tanidiament@gmail.com`) — BLP performance work: snapshot improvements, journal
   batch coalescing, bounded terminal-order retention. Has GCP project access (Editor +
-  `clouddeploy.approver`, so he can approve releases too) and pushes to `lmax-kubernetes-blp-ha`
+  `clouddeploy.approver`, so he can approve releases too) and pushes to `YU02-lmax-kubernetes-blp-ha`
   same as Yaakov.
 
 ---
@@ -142,14 +142,14 @@ generated/code/target-generated/kubernetes-runtime/manifests/
 ## Pending work
 
 All items from `GRIDGAIN-TO-LMAX-KUBERNETES-HANDOFF.md` are complete, plus everything from
-2026-07-02/03 (bug fixes, perf tuning, CI/CD — see git log on `lmax-kubernetes-blp-ha` and
+2026-07-02/03 (bug fixes, perf tuning, CI/CD — see git log on `YU02-lmax-kubernetes-blp-ha` and
 `CLOUD-ARCHITECTURE.md`):
 
 - ✅ MariaDB 11.4 replacing PostgreSQL across all 4 services + database image + init SQL
 - ✅ BLP code merge from gridgain commit `d70f703` (journal batch coalescing, bounded terminal retention)
 - ✅ Deployment/StatefulSet conflict resolved: orphaned Deployment deleted, StatefulSet is the only
   order-matcher controller now
-- ✅ Failover tested: killed the PRIMARY pod under `lmax-kubernetes-blp-ha`'s async-replication
+- ✅ Failover tested: killed the PRIMARY pod under `YU02-lmax-kubernetes-blp-ha`'s async-replication
   fix → FOLLOWER promoted in ~25s, no split-brain, state intact
 - ✅ BLP multi-replica HA implemented (StatefulSet×2, k8s Lease leader election, NATS JetStream
   replication, `order-matcher-primary` Service) — **but not the current deployed mode**, see below
@@ -239,8 +239,8 @@ Set up 2026-07-03. **Cloud Build → Cloud Deploy**, GitOps-style: git is the so
 push triggers a build, and nothing touches the live cluster without an explicit manual approval.
 
 **How it works:**
-1. Push to `lmax-kubernetes-blp-ha` → GitHub webhook fires the Cloud Build trigger
-   (`order-matcher-cicd`, 1st-gen GitHub connection, watches `^lmax-kubernetes-blp-ha$`).
+1. Push to `YU02-lmax-kubernetes-blp-ha` → GitHub webhook fires the Cloud Build trigger
+   (`order-matcher-cicd`, 1st-gen GitHub connection, watches `^YU02-lmax-kubernetes-blp-ha$`).
 2. `cloudbuild.yaml` runs as `traderx-cicd@traderx-501015.iam.gserviceaccount.com`:
    - `generate-and-build-jar`: regenerates `generated/` from committed `specs/` (fresh every
      time — `generated/` is gitignored, never build from a stale local copy), then
