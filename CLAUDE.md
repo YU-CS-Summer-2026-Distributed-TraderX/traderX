@@ -34,6 +34,26 @@ Worktrees:
 
 ---
 
+## Spec-kit state lineage (YU02 → YU05)
+
+This branch (`lmax-kubernetes-blp-ha`) is spec-kit state `YU02-lmax-kubernetes` — the GKE
+deployment baseline described in this document. Three further states extend it, each with its own
+spec pack under `specs/YUxx-<name>/` and its own same-named branch (never merged back into this
+one — see each branch's own worktree):
+
+| State | Branch | Parent | Status |
+|---|---|---|---|
+| `YU03-in-memory-risk-gateway` | `YU03-in-memory-risk-gateway` | YU02 | Done — pre-trade risk gateway (SEC 15c3-5, two-tier: hot-path gate + async limit sync) |
+| `YU04-durable-control-feeds` | `YU04-durable-control-feeds` | YU03 | In progress (parallel session, shared `traderX` worktree) — outbox → JetStream durable control-plane feeds |
+| `YU05-post-trade-compliance` | `YU05-post-trade-compliance` | YU03 | Done — settlement + reconciliation (incl. full-history orphan detection), regulatory reporting, TCA, real JWT-based auth/entitlements |
+
+Full detail lives in each state's own spec pack (`spec.md`, `research.md`, ADRs under `system/`,
+`generation/implementation-status.md`) — not duplicated here.
+`HANDOFF-idea-INDEX.md` is the consolidated backlog of production-realism work still open beyond
+these three states.
+
+---
+
 ## Team split
 
 Both of us now work on `lmax-kubernetes-blp-ha`, coordinated through the CI/CD pipeline (see

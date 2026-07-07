@@ -264,3 +264,11 @@ StatefulSet pods unchanged — same image, same creation timestamps) until expli
   crash/partition durability test is recommended before production trust.
 - See `HANDOFF-ha-throughput-improvements.md` for further HA replication levers (larger batchRecords,
   deeper pipelining).
+
+None of the above was touched by YU03 (risk gateway), YU04 (durable control feeds), or YU05
+(post-trade compliance) — they're all business-logic states layered on top of this GKE baseline
+and don't overlap with the BLP HA/replication layer. This section's items are tracked as their own
+backlog entry in `HANDOFF-idea-INDEX.md` (the consolidated production-realism backlog) and detailed
+in `HANDOFF-idea-blp-ha-hardening.md` — check there before picking any of this up, and note that
+**Tani is already actively working BLP performance** (see `CLAUDE.md`'s team split), so coordinate
+with him first given the adjacency.
