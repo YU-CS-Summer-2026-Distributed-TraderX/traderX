@@ -1,0 +1,54 @@
+plugins {
+  id 'java'
+  id 'org.springframework.boot' version '3.5.14'
+  id 'io.spring.dependency-management' version '1.1.7'
+}
+
+ext['tomcat.version'] = '10.1.55'
+
+group = 'finos.traderx.account-service-specfirst'
+version = '0.1.0'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+  mavenCentral()
+}
+
+// This project's test sources live at src/main/test/java (a pre-existing convention across
+// several TraderX services), which Gradle's Java plugin does not pick up by default (its
+// default test source dir is src/test/java) — without this, `./gradlew test` silently reports
+// NO-SOURCE and every test here (including the pre-existing smoke test) never actually runs.
+sourceSets {
+  test {
+    java.srcDirs = ['src/main/test/java']
+    resources.srcDirs = ['src/main/test/resources']
+  }
+}
+
+dependencies {
+  implementation 'org.springframework.boot:spring-boot-starter-web'
+  implementation 'org.springframework.boot:spring-boot-starter-actuator'
+  runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+  implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+  runtimeOnly 'org.mariadb.jdbc:mariadb-java-client:3.5.9'
+  implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:2.8.17'
+  implementation 'io.nats:jnats:2.20.5'
+
+  implementation ('ch.qos.logback:logback-core:1.5.32') {
+    because 'version brought in by spring boot 3.5.14 affected by CVE-2024-12798'
+  }
+  implementation 'ch.qos.logback:logback-classic:1.5.32'
+  implementation 'org.apache.logging.log4j:log4j-api:2.25.4'
+  implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.25.4'
+  implementation 'org.apache.commons:commons-lang3:3.20.0'
+
+  testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  testRuntimeOnly 'com.h2database:h2:2.3.232'
+}
+
+tasks.withType(Test).configureEach {
+  useJUnitPlatform()
+}

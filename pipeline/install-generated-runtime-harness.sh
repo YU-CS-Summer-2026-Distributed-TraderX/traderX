@@ -284,10 +284,37 @@ case "${STATE_ID}" in
     copy_script_if_exists "test-state-YU02-lmax-kubernetes.sh"
     copy_script_if_exists "test-state-YU03-in-memory-risk-gateway.sh"
     ;;
+  YU04-durable-control-feeds)
+    # Inherits the YU03 (=> YU02 => 014) runtime harness; only order-matcher/account-service/
+    # reference-data image content differs (durable outbox -> JetStream control feeds).
+    copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "status-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "start-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "stop-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "status-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "start-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "stop-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "status-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "start-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "stop-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "status-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "start-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "stop-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "status-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "start-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "stop-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "status-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "test-state-012-platform-convergence-c3.sh"
+    copy_script_if_exists "test-state-014-fdc3-intent-interoperability.sh"
+    copy_script_if_exists "test-state-YU02-lmax-kubernetes.sh"
+    copy_script_if_exists "test-state-YU03-in-memory-risk-gateway.sh"
+    copy_script_if_exists "test-state-YU04-durable-control-feeds.sh"
+    ;;
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway)
+  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins

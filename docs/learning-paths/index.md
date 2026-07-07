@@ -52,6 +52,7 @@ flowchart TB
   S014_fdc3_intent_interoperability["014: FDC3 Intent Interoperability on C3"]
   SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
   SYU03_in_memory_risk_gateway["YU03-in-memory-risk-gateway: In-Memory Risk Gateway"]
+  SYU04_durable_control_feeds["YU04-durable-control-feeds: Durable Control Feeds"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -68,6 +69,7 @@ flowchart TB
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
   S014_fdc3_intent_interoperability -.-> SYU02_lmax_kubernetes
   SYU02_lmax_kubernetes -.-> SYU03_in_memory_risk_gateway
+  SYU03_in_memory_risk_gateway -.-> SYU04_durable_control_feeds
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -86,6 +88,7 @@ flowchart TB
   click S014_fdc3_intent_interoperability href "/specs/fdc3-intent-interoperability" "Open State 014 Spec Pack"
   click SYU02_lmax_kubernetes href "/specs/YU02-lmax-kubernetes" "Open State YU02-lmax-kubernetes Spec Pack"
   click SYU03_in_memory_risk_gateway href "/specs/YU03-in-memory-risk-gateway" "Open State YU03-in-memory-risk-gateway Spec Pack"
+  click SYU04_durable_control_feeds href "/specs/YU04-durable-control-feeds" "Open State YU04-durable-control-feeds Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -114,6 +117,7 @@ flowchart TB
 | [`014-fdc3-intent-interoperability`](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability/system/architecture) | [link](pathname:///specs/fdc3-intent-interoperability/system/runtime-topology) | [link](pathname:///docs/learning/state-014-fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) |
 | [`YU02-lmax-kubernetes`](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes/system/architecture) | [link](pathname:///specs/YU02-lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-YU02-lmax-kubernetes) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/finos/traderX/tree/code/generated-state-YU02-lmax-kubernetes) |
 | [`YU03-in-memory-risk-gateway`](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/architecture) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/runtime-topology) | [link](pathname:///docs/learning/state-YU03-in-memory-risk-gateway) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/finos/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) |
+| [`YU04-durable-control-feeds`](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds/system/architecture) | [link](pathname:///specs/YU04-durable-control-feeds/system/runtime-topology) | [link](pathname:///docs/learning/state-YU04-durable-control-feeds) | [code/generated-state-YU04-durable-control-feeds](https://github.com/finos/traderX/tree/code/generated-state-YU04-durable-control-feeds) |
 
 ## Swimlane View
 
@@ -133,6 +137,7 @@ flowchart TB
     S009b_lmax_sequencer_architecture["009b: LMAX Sequencer Architecture (Trading Hot Path)"]
     SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
     SYU03_in_memory_risk_gateway["YU03-in-memory-risk-gateway: In-Memory Risk Gateway"]
+    SYU04_durable_control_feeds["YU04-durable-control-feeds: Durable Control Feeds"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -164,6 +169,7 @@ flowchart TB
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
   S014_fdc3_intent_interoperability -.-> SYU02_lmax_kubernetes
   SYU02_lmax_kubernetes -.-> SYU03_in_memory_risk_gateway
+  SYU03_in_memory_risk_gateway -.-> SYU04_durable_control_feeds
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

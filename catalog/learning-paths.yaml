@@ -30,6 +30,7 @@ tracks:
       - 009b-lmax-sequencer-architecture
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
+      - YU04-durable-control-feeds
   functional:
     description: "Functional capability expansion states."
     states:
@@ -47,6 +48,7 @@ tracks:
       - 013-radius-kubernetes-platform
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
+      - YU04-durable-control-feeds
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -174,3 +176,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU03-in-memory-risk-gateway/spec.md
+  - id: YU04-durable-control-feeds
+    previous:
+      - YU03-in-memory-risk-gateway
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU04-durable-control-feeds/spec.md

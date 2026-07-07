@@ -8,7 +8,7 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 
 - Previous state(s): [YU02-lmax-kubernetes](/docs/learning/state-YU02-lmax-kubernetes)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU04-durable-control-feeds](/docs/learning/state-YU04-durable-control-feeds)
 
 ## Convergence Metadata
 

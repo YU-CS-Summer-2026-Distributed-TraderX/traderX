@@ -213,6 +213,9 @@ case "${STATE_ID}" in
   YU03-in-memory-risk-gateway)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway")
     ;;
+  YU04-durable-control-feeds)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds")
+    ;;
 esac
 
 state_allows_dir() {

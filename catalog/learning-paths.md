@@ -28,6 +28,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `009b-lmax-sequencer-architecture`
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
+- `YU04-durable-control-feeds`
 
 ### Functional
 
@@ -45,6 +46,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `013-radius-kubernetes-platform`
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
+- `YU04-durable-control-feeds`
 
 ### Convergence
 
@@ -74,3 +76,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `014-fdc3-intent-interoperability` | 012-platform-convergence-c3 | `none` | `false` | `canonical` | `specs/014-fdc3-intent-interoperability/spec.md` |
 | `YU02-lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/YU02-lmax-kubernetes/spec.md` |
 | `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |
+| `YU04-durable-control-feeds` | YU03-in-memory-risk-gateway | `none` | `false` | `optional` | `specs/YU04-durable-control-feeds/spec.md` |
