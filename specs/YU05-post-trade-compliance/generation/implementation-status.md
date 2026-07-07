@@ -1,96 +1,147 @@
 # Implementation Status: YU05-post-trade-compliance
 
-**Status:** Slice 1 (deterministic trade identity, settlement, reconciliation) implemented and
-unit/integration-tested locally. Regulatory reporting, TCA, and real auth/entitlements are
-specified (requirements, data model, ADRs) but not yet implemented — see "Still open" below.
-Not yet deployed to any staging namespace (no isolated Cloud Build/Deploy pipeline stood up for
-this state yet — requires explicit user go-ahead per repo convention).
+**Status:** All five sub-capabilities implemented and verified locally — deterministic trade
+identity (foundational fix), settlement + reconciliation (incl. full-history orphan detection),
+regulatory reporting, TCA, and real JWT-based auth/entitlements. Not yet deployed to any staging
+namespace (no isolated Cloud Build/Deploy pipeline stood up — requires explicit user go-ahead per
+repo convention). FR-PTC42 (principalKey wiring into order admission) and VWAP remain deferred.
 **Parent:** `YU03-in-memory-risk-gateway`
-**Branch:** `YU03-in-memory-risk-gateway` (spec-pack authored here; not yet split to its own branch)
+**Branch:** `YU05-post-trade-compliance` (isolated worktree — see "Environment notes" below)
 
-## Implemented (slice 1)
+## Implemented
 
-- **Deterministic trade identity** (order-matcher): `TradeOrder.fromEvent()` now sets `id =
-  OrderSnapshot.tradeIdFor(e.tradeSeq)` instead of `orderIdFor(e.orderRef)` — wiring up a helper
-  that already existed but was never called at the one place that mattered.
-- **Trade blotter** (order-matcher, `lmax/TradeBlotter` + `lmax/TradeBlotterHandler`): bounded
-  (`recon.blotter.capacity`, default 500,000), replay-safe in-memory record of every
-  `KIND_TRADE_BOOKED` event, wired into `LmaxEngine`'s output-ring handler chain.
-- **Recon read API** (order-matcher, `controller/ReconController`): `GET
-  /recon/trades/blotter?sinceSeq=`, authenticated via `X-Recon-Control-Token`/`X-Recon-Operator`
-  (same pattern as `/risk/control/*`).
-- **Idempotent trade booking** (trade-processor, `TradeService`): `processTrade`/`processTrades`
-  now check the deterministic id before booking; a duplicate delivery is a logged no-op instead of
-  double-booking a position. Fixed a real, pre-existing shortcut along the way: `bookTrade` had a
-  comment reading "Booking is synchronous and always settles immediately in this model" and set
-  `TradeState.Settled` directly — there was no real settlement lifecycle at all before this slice.
-- **Settlement state machine** (trade-processor, `SettlementService`): a booked trade now starts
-  `Processing` with `settlementDate = created + settlement.t-plus-days business days` (default
-  T+1); a scheduled sweep (`@Scheduled`, default every 5s) advances due trades to `Settled`;
-  `POST /trades/{id}/settlement/force` (via `SettlementController`) is the operator override.
-- **`settlementdate` column**: added to the *real* runtime MariaDB schema — the k8s init
-  ConfigMap (`kubernetes-runtime/manifests/base/database-init-configmap.yaml`), not the legacy
-  `database/initialSchema.sql` at the repo root (confirmed by diffing the two; they differ
-  materially — MariaDB vs. Postgres flavor, different column casing, different batch-tuning
-  comments — the ConfigMap is what `prepare-state-*-gke-manifests.sh` actually renders).
-- **Reconciliation sweep** (trade-processor, `ReconciliationService`): scheduled (default every
-  10s) HTTP poll of order-matcher's blotter (JDK `HttpClient` + Jackson, no new dependency, same
-  pattern as order-matcher's own `ReplicaBootstrap`), classifying each entry as `MATCHED`,
-  `MISSING_IN_PROJECTION`, or `FIELD_MISMATCH` against the local MariaDB row; forward cursor
-  persisted in-memory. `GET /recon/status` (via `ReconStatusController`) exposes the summary.
-- **Tests**: `TradeBlotterTest` (order-matcher: capture keyed by deterministic id, ascending
-  pagination, bounded oldest-first eviction, handler correctness including non-trade-kind
-  filtering), `TradeServiceIdempotencyTest` (duplicate-delivery no-op for both single and batch
-  booking paths, T+N business-day computation), `SettlementServiceTest` (sweep + force-settle
-  transitions and edge cases), `ReconciliationServiceTest` (real HTTP + JSON path against a JDK
-  `HttpServer` stub, proving all three classifications, cursor advancement across sweeps, and
-  graceful skip-on-unreachable behavior).
-- **Fixed one existing test's stale assumption**: `OutputDisruptorHandlersTest.tradeSubmitPublishesTradeBookedOnlyToTrades()`
-  asserted the old `ord-013-0042` id format; updated to `trd-09b-7` (the fixture's `tradeSeq`),
-  matching the intentional, documented behavioral tightening (contract-delta.md #1) — not a
-  masked regression.
-- **State packaging**: this spec pack, pipeline hooks (`generate-state-YU05-post-trade-compliance.sh`
-  / `render-state-YU05-post-trade-compliance.sh`), catalog registration
-  (`state-catalog.json`, `learning-paths.yaml`), runtime-harness wiring
-  (`install-generated-runtime-harness.sh`, `install-generated-ci-assets.sh`, `scripts/*-state-YU05-*.sh`).
+### Deterministic trade identity (ADR-022)
 
-## Verification evidence (2026-07-06, local)
+- **Live path** (`ProjectorHandler.toTrade()`, order-matcher): already used
+  `OrderSnapshot.tradeIdFor(tradeSeq)` correctly and was already idempotent via `INSERT IGNORE` —
+  no bug here. The real live gap was settlement (below).
+- **Legacy path** (`TradeOrder.fromEvent()` + trade-processor `TradeService`, only active if
+  `output.legacy-trades.enabled=true`, default `false`): fixed to match — `tradeIdFor` instead of
+  `orderIdFor`; idempotent booking (single + batch) keyed on the id.
 
-- `bash pipeline/generate-state.sh YU05-post-trade-compliance` exits 0 (verified against an
-  isolated `TRADERX_GENERATED_ROOT` to avoid colliding with a concurrent generation run from a
-  parallel session working on `YU04-durable-control-feeds` against the shared `generated/`
-  directory — generation is documented as exclusive/single-writer, so this state's own
-  verification used a separate output root rather than waiting indefinitely or interrupting the
-  other session).
-- Confirmed every override is actually live in the generated output (not just present in
-  `runtime-overrides/`) by grepping the generated tree directly: `tradeIdFor(e.tradeSeq)` in the
-  generated `TradeOrder.java`, `TradeBlotter.java`/`TradeBlotterHandler.java`/`ReconController.java`
-  present under the generated `order-matcher` tree, `settlementdate` present in the generated
-  database-init ConfigMap.
-- **order-matcher**: full suite green — 58 tests (54 pre-existing + 4 new `TradeBlotterTest`
-  cases), 1 skipped (pre-existing, unrelated). One transient failure seen on a single run
-  (`AllocationGateTest.hotPathIsAllocationFreeInSteadyStateWithRiskGating`, "72 bytes") —
-  confirmed environmental, not a regression, by rerunning 3x (all green) and by matching exactly
-  the flake YU03's own `implementation-status.md` already documented ("known intermittent 72-byte
-  producer-thread allocation... ~1-in-3 to 1-in-6 runs on this machine").
-- **trade-processor**: `TradeBlotterTest`-equivalent suite — `TradeServiceIdempotencyTest` (4/4),
-  `SettlementServiceTest` (5/5), `ReconciliationServiceTest` (3/3) all green; full `./gradlew test`
-  build successful. (Note: `TradeProcessorApplicationTests` lives under the non-standard
-  `src/main/test/` path in this codebase, pre-dating this state, and is not picked up by Gradle's
-  default `test` source set either with or without this state's changes — not a regression
-  introduced here.)
+### Settlement + reconciliation (ADR-022, FR-PTC01-09)
+
+- **`ProjectorHandler.toTrade()` fix** (the one that matters in production): no longer sets
+  `Settled` instantly — sets `Processing` + a real `settlementDate` (`created +
+  settlement.t-plus-days` business days, default T+1). `settlementdate` column added to the real
+  runtime MariaDB schema (k8s init ConfigMap, not the legacy `database/initialSchema.sql`).
+- `SettlementService` (trade-processor): scheduled T+N sweep + `POST /trades/{id}/settlement/force`.
+- `TradeBlotter`/`TradeBlotterHandler` (order-matcher): bounded, replay-safe trade record on the
+  output ring; `GET /recon/trades/blotter`.
+- `ReconciliationService` (trade-processor): scheduled forward sweep, `MATCHED`/
+  `MISSING_IN_PROJECTION`/`FIELD_MISMATCH` classification, `GET /recon/status`.
+
+### Full-history orphan detection (FR-PTC10)
+
+- `LmaxEngine.reindexFullHistory()`: on-demand shadow-engine full journal replay (reuses
+  `verifyJournalReplay()`'s construction) into an unbounded `TradeBlotter`.
+  `POST /recon/full-history/reindex` + `GET /recon/full-history/trades`.
+- `ReconciliationService.runOrphanSweep()`: triggers the reindex, diffs every local trade id
+  against it, flags `ORPHAN_IN_PROJECTION`. `POST /recon/orphan-sweep` + `GET /recon/orphan-sweep/last`.
+
+### Regulatory reporting (ADR-023, FR-PTC20-22)
+
+- `AuditRecord`/`AuditLogHandler` (order-matcher): captures every reportable output kind (order
+  accept/reject/partial-fill/fill/cancel, trade booked), filtered by `OutputEvent.inputSeq` range.
+- `LmaxEngine.generateRegulatoryReport(fromSeq, toSeq)` + `GET /regulatory/report`: reuses the
+  same shadow-engine replay skeleton as `reindexFullHistory`; reproducible byte-for-byte.
+
+### TCA (ADR-024, FR-PTC30-32)
+
+- `PriceHistoryStore`/`PriceTickHandler` (trade-processor): bounded per-ticker price history fed
+  by price-publisher's existing `pricing.*` NATS feed — no new data source, zero BLP involvement.
+- `TcaService`: arrival price + TWAP benchmark + signed slippage-bps (positive always means
+  "worse than benchmark," regardless of side). `GET /tca/report/{tradeId}`.
+- VWAP genuinely deferred (FR-PTC32): the synthetic feed carries no per-tick volume.
+
+### Real auth/entitlements (ADR-025, FR-PTC40/41; FR-PTC42 deferred)
+
+- `JwtAuthenticator`/`JwtPrincipal`/`JwtTokenMinter` (order-matcher and trade-processor, separate
+  copies — no shared library between the Gradle modules): real HS256 signature verification via
+  JDK `javax.crypto` + Jackson. No live OIDC provider in this environment — documented explicitly
+  as JWT, not full OIDC.
+- Every new endpoint from this state requires a valid JWT: `ReconController`/
+  `RegulatoryReportController` (order-matcher, `admin`-only — cross-account data),
+  `SettlementController`/`TcaController` (trade-processor, entitled-to-account-or-admin),
+  `ReconStatusController`'s orphan-sweep endpoints (trade-processor, `admin`-only). `/risk/control/*`
+  (YU03) is unchanged, out of scope for this ADR.
+- `ReconciliationService` mints its own long-lived, `admin`-scoped service-account JWT at
+  construction for its machine-to-machine calls into order-matcher.
+- `POST /auth/dev-token` (trade-processor): local dev/test token minting, own master secret.
+- FR-PTC42 (feeding YU03's risk-gateway `principalKey`) deferred — needs wiring into order
+  *submission* (`OrderMatcherService`/`GatewayReplicaStore`), a hot-path-adjacent surface this
+  state deliberately never touched.
+
+### Observability
+
+- Real Micrometer gauges (trade-processor, mirrors the existing `SystemController` pattern):
+  `traderx_recon_matched_total`, `traderx_recon_missing_in_projection_total`,
+  `traderx_recon_field_mismatch_total`, `traderx_recon_cursor`, `traderx_recon_orphan_total`,
+  `traderx_settlement_swept_total`.
+- `traderx-post-trade-compliance.json` Grafana dashboard, added to the same aggregated
+  observability ConfigMap every other dashboard in this lineage uses. Order-matcher's blotter
+  size/evictions remain JSON-only (order-matcher's own metrics use a separate hand-rolled
+  hot-path exporter, not Micrometer — adding a second parallel mechanism there for two counters
+  wasn't judged worth the inconsistency).
+
+## State packaging
+
+Spec pack (spec, requirements, ADRs 022-025, architecture, runtime-topology, data-model,
+contract-delta, plan, research, tasks, this file); pipeline hooks
+(`generate-state-YU05-post-trade-compliance.sh` / `render-state-YU05-post-trade-compliance.sh`);
+catalog registration (`state-catalog.json`, `learning-paths.yaml`/`.md`, `specs/README.md`);
+runtime-harness wiring (`install-generated-runtime-harness.sh`, `install-generated-ci-assets.sh`,
+`scripts/*-state-YU05-*.sh`).
+
+## Verification evidence (2026-07-07, local)
+
+- `bash pipeline/generate-state.sh YU05-post-trade-compliance` exits 0, run repeatedly across every
+  change in this state (each new class/endpoint/fix triggered a fresh regenerate+test cycle).
+- Every override confirmed live in generated output via grep markers (`tradeIdFor(e.tradeSeq)`,
+  `TradeBlotter.java`/`ReconController.java`/`RegulatoryReportController.java`/auth classes present
+  under the generated tree, `settlementdate` in the generated database-init ConfigMap, the new
+  Grafana dashboard JSON parses and is present in the generated aggregated ConfigMap).
+- **order-matcher**: full suite green across every iteration (grew from 54 to 66+ tests as
+  `TradeBlotterTest`, `ProjectorHandlerTest`, `AuditLogHandlerTest`, and `JwtAuthenticatorTest`
+  were added), 1 pre-existing skip (unrelated). The known intermittent `AllocationGateTest`
+  72-byte allocation flake (documented in YU03's own implementation-status.md, ~1-in-3 to 1-in-6
+  runs) appeared several times across this session's many regenerate cycles — confirmed
+  environmental every time via immediate clean reruns, never a regression.
+- **trade-processor**: full suite green (idempotency, settlement, reconciliation, orphan sweep,
+  price-history/TWAP math, TCA slippage sign convention, JWT round-trip/tamper/expiry rejection).
+- Fixed two real bugs surfaced by the test suite along the way (not masked, fixed at the root):
+  (1) two existing `LmaxHotPathParityTest` integration tests asserted instant-`Settled` — updated
+  to `Processing`, which is what *proved* the settlement fix landed on the actual live write path,
+  not just the code I originally (incorrectly) assumed was live; (2) `JwtTokenMinter`'s TTL
+  contract silently treated any non-positive `ttlSeconds` as "non-expiring," which meant an
+  intentionally-expired test token was accepted — fixed so `0` means non-expiring and any other
+  value (including negative, for tests) computes a real `exp` claim.
+
+## Environment notes (this session)
+
+- **Corrected assumption, not a regression**: initial slice-1 work assumed `TradeOrder.fromEvent`/
+  trade-processor's `TradeService` were the live write path. Investigation (confirmed via the
+  actual deployed `order-matcher-deployment.yaml` showing `OUTPUT_LEGACY_TRADES_ENABLED=false`,
+  and `ProjectorHandler`'s own doc comment) established `ProjectorHandler` is the real writer. The
+  fix was relocated there; the original fixes were kept as correct improvements to the legacy path.
+- **Isolated worktree**: this state's work was done in a dedicated git worktree
+  (`/Users/yaakov/Desktop/Summer 26/lmax/traderX-YU05-post-trade-compliance`, branch
+  `YU05-post-trade-compliance`, based off `YU03-in-memory-risk-gateway`) after the shared
+  `traderX` working directory was found to be actively branch-switched by a parallel session
+  working on `YU04-durable-control-feeds` — generation is single-writer, and an earlier attempt in
+  the shared directory had already cost several tracked-file edits when that session checked out
+  its own branch mid-session.
+- **`~/Desktop` is iCloud-synced**, which caused very slow/occasionally-stalled `git` operations
+  (mmap timeouts, stale lock files) during commits earlier in this work — unrelated to the code
+  itself, just a filesystem characteristic worth knowing about for future sessions in this repo.
 
 ## Still open (next commits of this roadmap item)
 
-- Full-history `ORPHAN_IN_PROJECTION` detection (FR-PTC10) — needs unbounded/spillover blotter
-  retention or a direct journal-replay comparator; the current blotter is bounded and forward-only.
-- Regulatory reporting (FR-PTC20/21/22, ADR-023) — journal-sourced CAT/TRACE-style audit export.
-- TCA (FR-PTC30/31/32, ADR-024) — execution-quality computation behind a pluggable benchmark
-  source (synthetic today, real TAQ data later).
-- Real auth/entitlements (FR-PTC40/41/42, ADR-025) — OIDC principal resolution gating every
-  settlement/recon/reporting/TCA API; currently gated by the same shared-token stopgap as
-  `/risk/control/*`.
-- Grafana dashboard for the settlement/recon metric set (mirrors YU03's `traderx-risk-gateway.json`).
-- Full container smoke (order fill → blotter → recon sweep → settlement sweep against a real
-  MariaDB) and isolated staging Cloud Build/Deploy pipeline — **requires explicit user go-ahead**
-  before touching any live CI/CD resource, same rule as every prior state.
+- FR-PTC42: feed the risk gateway's `principalKey` from real entitlement resolution — needs order-
+  admission wiring (`OrderMatcherService`/`GatewayReplicaStore`), with its own hot-path
+  allocation/latency verification, deliberately not touched by this state.
+- VWAP (FR-PTC32) — needs a real per-tick-volume data source (e.g. the professor's TAQ dataset).
+- Order-matcher-side Micrometer metrics for the trade blotter (currently JSON-only).
+- Full container smoke test and an isolated staging Cloud Build/Deploy pipeline for YU05 — same
+  discipline as YU03/YU04, **requires explicit user go-ahead** before touching any live CI/CD
+  resource.

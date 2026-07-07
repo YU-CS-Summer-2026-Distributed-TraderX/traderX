@@ -39,8 +39,10 @@ is more involved than a simple SQL query over a projection table.
 
 ## Status in YU05
 
-**Deferred** — specified only (FR-PTC20/21/22). Not implemented in slice 1; sequenced after
-reconciliation (see `plan.md`).
+**Implemented** (FR-PTC20/21/22). `LmaxEngine.generateRegulatoryReport(fromSeq, toSeq)` reuses the
+shadow-engine replay skeleton with a new `AuditLogHandler` capturing every reportable output kind
+in range, exposed via `GET /regulatory/report`. Own token namespace
+(`regulatory.control.token`) — real OIDC (ADR-025) still pending.
 
 ## Validation (future)
 

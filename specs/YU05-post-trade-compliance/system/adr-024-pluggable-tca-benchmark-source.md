@@ -42,8 +42,12 @@ already-named future requirement (the professor's dataset), not a hypothetical o
 
 ## Status in YU05
 
-**Deferred** — specified only (FR-PTC30/31/32). Not implemented in slice 1; sequenced after
-reconciliation and regulatory reporting (see `plan.md`).
+**Implemented, TWAP only** (FR-PTC30/31, FR-PTC32 partial). `PriceHistoryStore` (fed by
+price-publisher's existing `pricing.*` feed) + `TcaService` compute arrival price, TWAP, and
+signed slippage-bps via `GET /tca/report/{tradeId}`. VWAP genuinely deferred — the synthetic feed
+carries no per-tick volume; the benchmark-source interface this ADR called for is
+`PriceHistoryStore`'s `record`/`twap`/`priceAtOrBefore` contract, which a real-volume source (the
+TAQ dataset) would feed identically.
 
 ## Validation (future)
 

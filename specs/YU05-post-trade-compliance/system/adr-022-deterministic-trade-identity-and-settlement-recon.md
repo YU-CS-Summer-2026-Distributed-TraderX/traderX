@@ -55,15 +55,25 @@ reporting and TCA (later commits of this state) inherit the same stable id for f
 Costs: `TradeOrder.id`'s semantics changed (order id → trade id) — no identified consumer depended
 on the old value's format, but any future consumer must not assume the `ord-013-` prefix.
 
-## Status in YU05 slice 1
+## Status in YU05
 
 - **Implemented.** `TradeBlotterHandler` captures every `KIND_TRADE_BOOKED` event (including during
   recovery replay, since the output-ring handler chain runs during recovery — see research.md) into
   a bounded, in-memory store keyed by the same deterministic id. `SettlementService` and
   `ReconciliationService` (trade-processor) both key off it.
-- **Full-history orphan detection deferred** (FR-PTC10) — the blotter is bounded, so proving a
-  MariaDB row has no corresponding fill *anywhere* in a long-lived journal needs either unbounded
-  blotter retention or a direct journal-replay comparator, neither built in slice 1.
+- **Full-history orphan detection implemented** (FR-PTC10): `LmaxEngine.reindexFullHistory()`
+  reuses the shadow-engine replay pattern to build an unbounded index on demand
+  (`POST /recon/full-history/reindex`); `ReconciliationService.runOrphanSweep()` cross-checks every
+  local trade id against it.
+- **Correction discovered during implementation**: the context above (`TradeOrder.fromEvent`,
+  trade-processor's `TradeService`) describes the *optional*, disabled-by-default legacy `/trades`
+  NATS path. The actual live writer of MariaDB `TRADES` — `ProjectorHandler.toTrade()` — already
+  used `tradeIdFor` correctly and was already idempotent via `INSERT IGNORE`; there was no live
+  trade-identity bug. The real live-system gap this ADR's settlement/recon work exposed was that
+  `ProjectorHandler` set `Settled` immediately with no lifecycle at all — fixed there directly (see
+  research.md for the full account). This ADR's original context section is left as originally
+  written since it accurately describes the reasoning that led to the fix, just not on the path
+  that turned out to be live.
 
 ## Validation
 

@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 import finos.traderx.tradeprocessor.model.Trade;
 import finos.traderx.tradeprocessor.model.TradeState;
 import finos.traderx.tradeprocessor.repository.TradeRepository;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -28,7 +29,7 @@ class SettlementServiceTest {
         when(tradeRepository.findByStateAndSettlementDateLessThanEqual(eq(TradeState.Processing), any()))
             .thenReturn(List.of(due));
 
-        SettlementService settlementService = new SettlementService(tradeRepository);
+        SettlementService settlementService = new SettlementService(tradeRepository, new SimpleMeterRegistry());
         settlementService.sweep();
 
         assertEquals(TradeState.Settled, due.getState());
@@ -42,7 +43,7 @@ class SettlementServiceTest {
         when(tradeRepository.findByStateAndSettlementDateLessThanEqual(eq(TradeState.Processing), any()))
             .thenReturn(List.of());
 
-        SettlementService settlementService = new SettlementService(tradeRepository);
+        SettlementService settlementService = new SettlementService(tradeRepository, new SimpleMeterRegistry());
         settlementService.sweep();
 
         verify(tradeRepository, times(0)).saveAll(any());
@@ -57,7 +58,7 @@ class SettlementServiceTest {
         trade.setState(TradeState.Processing);
         when(tradeRepository.findById("trd-09b-2")).thenReturn(Optional.of(trade));
 
-        SettlementService settlementService = new SettlementService(tradeRepository);
+        SettlementService settlementService = new SettlementService(tradeRepository, new SimpleMeterRegistry());
         SettlementService.ForceResult result = settlementService.forceSettle("trd-09b-2");
 
         assertEquals(SettlementService.ForceResult.SETTLED, result);
@@ -74,7 +75,7 @@ class SettlementServiceTest {
         trade.setSettlementDate(originalSettlementDate);
         when(tradeRepository.findById("trd-09b-3")).thenReturn(Optional.of(trade));
 
-        SettlementService settlementService = new SettlementService(tradeRepository);
+        SettlementService settlementService = new SettlementService(tradeRepository, new SimpleMeterRegistry());
         SettlementService.ForceResult result = settlementService.forceSettle("trd-09b-3");
 
         assertEquals(SettlementService.ForceResult.ALREADY_SETTLED, result);
@@ -86,7 +87,7 @@ class SettlementServiceTest {
         TradeRepository tradeRepository = mock(TradeRepository.class);
         when(tradeRepository.findById("missing")).thenReturn(Optional.empty());
 
-        SettlementService settlementService = new SettlementService(tradeRepository);
+        SettlementService settlementService = new SettlementService(tradeRepository, new SimpleMeterRegistry());
         SettlementService.ForceResult result = settlementService.forceSettle("missing");
 
         assertEquals(SettlementService.ForceResult.NOT_FOUND, result);

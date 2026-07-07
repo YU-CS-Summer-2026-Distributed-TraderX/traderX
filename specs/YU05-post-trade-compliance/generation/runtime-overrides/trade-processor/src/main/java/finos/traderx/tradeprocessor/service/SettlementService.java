@@ -3,6 +3,8 @@ package finos.traderx.tradeprocessor.service;
 import finos.traderx.tradeprocessor.model.Trade;
 import finos.traderx.tradeprocessor.model.TradeState;
 import finos.traderx.tradeprocessor.repository.TradeRepository;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import java.util.Date;
 import java.util.List;
 import java.util.Optional;
@@ -27,8 +29,9 @@ public class SettlementService {
     private final TradeRepository tradeRepository;
     private final LongAdder sweptCount = new LongAdder();
 
-    public SettlementService(TradeRepository tradeRepository) {
+    public SettlementService(TradeRepository tradeRepository, MeterRegistry meterRegistry) {
         this.tradeRepository = tradeRepository;
+        Gauge.builder("traderx_settlement_swept_total", sweptCount, LongAdder::sum).register(meterRegistry);
     }
 
     @Scheduled(fixedDelayString = "${settlement.sweep.interval-ms:5000}")

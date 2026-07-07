@@ -18,6 +18,8 @@ import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.repository.OrderRepository;
 import finos.traderx.ordermatcher.repository.PositionRepository;
 import finos.traderx.ordermatcher.repository.TradeRepository;
+import finos.traderx.ordermatcher.reporting.AuditLogHandler;
+import finos.traderx.ordermatcher.reporting.AuditRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.DisposableBean;
@@ -106,6 +108,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     // Post-trade compliance (state YU05, ADR-022): replay-safe trade blotter feeding
     // reconciliation; rebuilt during recovery replay (see TradeBlotterHandler doc).
     private final TradeBlotter tradeBlotter;
+    // Post-trade compliance (state YU05, FR-PTC10): the most recent on-demand full-journal
+    // reindex, if one has ever been run (see reindexFullHistory()). Null until first triggered.
+    private volatile TradeBlotter fullHistoryIndex;
+    // Post-trade compliance (state YU05, FR-PTC02): passed through to ProjectorHandler, which
+    // stamps each booked trade's initial settlementDate (the Projector is the live TRADES writer,
+    // not trade-processor — see research.md's corrected write-path finding).
+    private final int settlementTPlusDays;
     private final int riskMaxAccounts;
     private final int riskIdempotencyCapacity;
     private final long riskCreditLimitTicks;
@@ -188,6 +197,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${risk.max-concentration-notional-ticks:5000000000000000}") long riskMaxConcentrationNotionalTicks,
         GatewayReplicaStore gatewayReplicas,
         TradeBlotter tradeBlotter,
+        @Value("${settlement.t-plus-days:1}") int settlementTPlusDays,
         ApplicationEventPublisher applicationEventPublisher,
         ReplicationRole replicationRole
     ) {
@@ -236,6 +246,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.riskMaxConcentrationNotionalTicks = riskMaxConcentrationNotionalTicks;
         this.gatewayReplicas = gatewayReplicas;
         this.tradeBlotter = tradeBlotter;
+        this.settlementTPlusDays = settlementTPlusDays;
         this.applicationEventPublisher = applicationEventPublisher;
         this.replicationRole = replicationRole;
         this.symbols = new SymbolTable(maxSecurities);
@@ -264,7 +275,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
         if (projectorDbEnabled) {
             projector = new ProjectorHandler(jdbcTemplate, symbols,
-                projectorBatchSize, projectorQueueCapacity, metrics);
+                projectorBatchSize, projectorQueueCapacity, metrics, settlementTPlusDays);
         }
         // Replication: determine role before wiring handlers (role gates their output).
         if (replicationEnabled) {
@@ -1052,6 +1063,106 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 shadowOut.halt();
             }
         }
+    }
+
+    /**
+     * YU05 (post-trade-compliance, FR-PTC10): on-demand, admin-triggered full journal replay for
+     * full-history reconciliation. Unlike {@link #verifyJournalReplay()} (a lightweight digest-only
+     * check that discards output), this captures every historical trade into an unbounded {@link
+     * TradeBlotter} so trade-processor's reconciliation can detect {@code ORPHAN_IN_PROJECTION}
+     * rows (a MariaDB row with no corresponding journal fill) with full confidence, not just the
+     * forward window the live bounded blotter covers.
+     *
+     * <p>Expensive (replays the ENTIRE journal from empty-seed, same as verify's "no snapshot"
+     * path) and synchronized to prevent overlapping runs — never on the hot path, never scheduled,
+     * always explicitly triggered via {@code POST /recon/full-history/reindex}.
+     */
+    public synchronized TradeBlotter reindexFullHistory() throws java.io.IOException {
+        if (!journalEnabled) {
+            throw new IllegalStateException("journal disabled; full-history reindex unavailable");
+        }
+        JournalReader reader = new JournalReader(Path.of(journalPath));
+        TradeBlotter fullHistory = new TradeBlotter(Integer.MAX_VALUE);
+        Disruptor<OutputEvent> shadowOut = new Disruptor<>(OutputEvent::newInstance, 16384,
+            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, new BlockingWaitStrategy());
+        shadowOut.handleEventsWith(new TradeBlotterHandler(fullHistory, symbols));
+        shadowOut.start();
+        long t0 = System.nanoTime();
+        long replayed = 0;
+        try {
+            BlpRiskState shadowRisk = null;
+            if (riskEnabled) {
+                shadowRisk = newRiskState(new RiskMetrics());
+                shadowRisk.bootstrap(gatewayReplicas.snapshot());
+                shadowRisk.putLimits(riskMaxPositionQuantity, riskMaxConcentrationNotionalTicks);
+            }
+            MatchingEngine shadow = new MatchingEngine(new OutputPublisher(shadowOut.getRingBuffer()),
+                new HotPathMetrics(), maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity,
+                terminalRetain, shadowRisk);
+            seedShadow(shadow);
+            replayed = reader.replay(e -> shadow.onEvent(e, e.seq, true));
+        } finally {
+            try {
+                shadowOut.shutdown(30, TimeUnit.SECONDS);
+            } catch (com.lmax.disruptor.TimeoutException ex) {
+                shadowOut.halt();
+            }
+        }
+        long ms = (System.nanoTime() - t0) / 1_000_000L;
+        log.info("FULL-HISTORY REINDEX: replayed {} journal events in {} ms; {} historical trades indexed",
+            replayed, ms, fullHistory.size());
+        this.fullHistoryIndex = fullHistory;
+        return fullHistory;
+    }
+
+    /** Result of the most recent {@link #reindexFullHistory()} run, or {@code null} if never run. */
+    public TradeBlotter fullHistoryIndex() {
+        return fullHistoryIndex;
+    }
+
+    /**
+     * YU05 (post-trade-compliance, ADR-023, FR-PTC20/21): journal-sourced audit-trail report over
+     * an input-sequence range {@code [fromSeq, toSeq]} ({@code toSeq <= 0} means "to the end").
+     * Reproducible byte-for-byte: same journal + same range always produces the same records,
+     * because it is a pure replay, never a query against the mutable MariaDB projection.
+     * Synchronized with {@link #reindexFullHistory()} (both replay the whole journal into a shadow
+     * engine) so the two admin operations cannot run concurrently and thrash the disk/CPU.
+     */
+    public synchronized List<AuditRecord> generateRegulatoryReport(long fromSeq, long toSeq) throws java.io.IOException {
+        if (!journalEnabled) {
+            throw new IllegalStateException("journal disabled; regulatory report unavailable");
+        }
+        JournalReader reader = new JournalReader(Path.of(journalPath));
+        List<AuditRecord> records = new ArrayList<>();
+        Disruptor<OutputEvent> shadowOut = new Disruptor<>(OutputEvent::newInstance, 16384,
+            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, new BlockingWaitStrategy());
+        shadowOut.handleEventsWith(new AuditLogHandler(records, symbols, fromSeq, toSeq));
+        shadowOut.start();
+        long t0 = System.nanoTime();
+        long replayed;
+        try {
+            BlpRiskState shadowRisk = null;
+            if (riskEnabled) {
+                shadowRisk = newRiskState(new RiskMetrics());
+                shadowRisk.bootstrap(gatewayReplicas.snapshot());
+                shadowRisk.putLimits(riskMaxPositionQuantity, riskMaxConcentrationNotionalTicks);
+            }
+            MatchingEngine shadow = new MatchingEngine(new OutputPublisher(shadowOut.getRingBuffer()),
+                new HotPathMetrics(), maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity,
+                terminalRetain, shadowRisk);
+            seedShadow(shadow);
+            replayed = reader.replay(e -> shadow.onEvent(e, e.seq, true));
+        } finally {
+            try {
+                shadowOut.shutdown(30, TimeUnit.SECONDS);
+            } catch (com.lmax.disruptor.TimeoutException ex) {
+                shadowOut.halt();
+            }
+        }
+        long ms = (System.nanoTime() - t0) / 1_000_000L;
+        log.info("REGULATORY REPORT: replayed {} journal events in {} ms; {} records in range [{}, {}]",
+            replayed, ms, records.size(), fromSeq, toSeq <= 0 ? "end" : toSeq);
+        return records;
     }
 
     /** Seed the shadow engine with the same fixed initial condition the DB is seeded with — the

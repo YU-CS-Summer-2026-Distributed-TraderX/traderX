@@ -25,6 +25,29 @@ regulatory reporting (needs a stable audit-trail id), and TCA (needs a stable id
 benchmark to) — so wiring up the id that already exists is the correct, minimal slice 1, not scope
 creep.
 
+**Correction found immediately after, before the first test run: `TradeOrder.fromEvent` is not
+the live write path.** `output.legacy-trades.enabled` defaults to `false` (confirmed in the actual
+deployed `order-matcher-deployment.yaml`), so `TradeSubmitHandler` — the only publisher of the
+`/trades` subject `TradeOrder.fromEvent` builds — never runs, and trade-processor's
+`TradeFeedHandler`/`TradeService` never receive anything in the default configuration. **The
+real, live writer of the MariaDB `TRADES` table is order-matcher's own `ProjectorHandler`**
+(`output.projector.db.enabled=true` by default), which does a direct `INSERT IGNORE INTO trades`
+straight off the output ring — its own doc comment already said as much: "written by the
+order-matcher read-model Projector off the output ring... instead of inline by trade-processor."
+`ProjectorHandler.toTrade()` was *already* using `OrderSnapshot.tradeIdFor(e.tradeSeq)` correctly,
+and `INSERT IGNORE` already made it idempotent against duplicate ids — there was no live trade-
+identity bug at all.
+
+**The real live-system gap was settlement, not identity**: `ProjectorHandler.toTrade()` set
+`TradeState.Settled` immediately, with no settlement lifecycle whatsoever — confirmed by two
+existing integration tests (`LmaxHotPathParityTest`) that asserted `Settled` right after booking
+against a real H2-backed projector flush. Fixed there (not in trade-processor): `toTrade()` now
+sets `Processing` + a real T+N `settlementDate`, computed with the same business-day math
+`SettlementService`'s sweep already expected. The `TradeOrder.fromEvent`/`TradeService` fixes
+described above remain correct, tested improvements — they just apply to the *optional, disabled-
+by-default* legacy path, not the one actually running in production. Left in place (not reverted)
+since turning that flag on later should not resurrect the old bugs.
+
 ## Why the trade blotter doesn't need a snapshot format change
 
 YU03's risk state needed a new snapshot v3 section because gateway/BLP admission decisions must be
@@ -68,10 +91,46 @@ adds the new column there, and the change was verified empirically (marker strin
 grep the generated output) before trusting it — see `generation/implementation-status.md` for the
 verification record.
 
+## Full-history reconciliation reuses the shadow-replay pattern, not a new mechanism (FR-PTC10)
+
+`LmaxEngine` already had a shadow-engine journal replay for `verifyJournalReplay()` (a digest-only
+integrity check). `reindexFullHistory()` is the same construction (new `MatchingEngine` + discarding
+output ring + `seedShadow` + `JournalReader.replay`), swapping the discarding handler for a
+`TradeBlotterHandler` writing into an unbounded `TradeBlotter`. Deliberately on-demand
+(`POST /recon/full-history/reindex`) and `synchronized` with itself — replaying a potentially large
+journal is expensive and must never be scheduled or run concurrently with another replay.
+
+## Regulatory reporting is the same shadow-replay pattern again, generalized (ADR-023, FR-PTC20-22)
+
+`generateRegulatoryReport(fromSeq, toSeq)` reuses the identical shadow-replay skeleton a third time,
+this time with `AuditLogHandler` capturing *every* reportable output kind (accept/reject/partial-
+fill/fill/cancel/trade-booked), not just trades, filtered to an input-sequence range via
+`OutputEvent.inputSeq`. Reproducible byte-for-byte because it is a pure function of (journal range,
+seed) — no wall-clock, no external query. Three admin operations now share this skeleton
+(`verifyJournalReplay`, `reindexFullHistory`, `generateRegulatoryReport`); a shared private helper
+was considered and rejected for this slice — the three call sites differ enough (digest-only vs.
+open-ended trade capture vs. range-filtered audit capture) that extracting one now would be
+premature; revisit if a fourth consumer appears.
+
+## TCA benchmark source: reusing the existing price feed, not a new one (ADR-024, FR-PTC30-32)
+
+Order-matcher's BLP tracks `lastPrice`/`lastPriceTime` per security internally, but nothing external
+observes price *history* — there is no output-ring event for a price tick at all (`OutputEvent` has
+no `KIND_PRICE_UPDATED`), so capturing history from the BLP side would mean adding a new event kind
+to the hot path, which is exactly the kind of hot-path risk this project avoids without a specific
+need. Instead, `PriceHistoryStore` (trade-processor) subscribes to price-publisher's *existing*
+`pricing.<ticker>` NATS JSON feed (the same one the Angular front-end's live ticker already
+consumes) via a wildcard `pricing.*` subscription — zero BLP involvement, zero new data source.
+
+VWAP is deferred (FR-PTC32): the synthetic feed carries a price but no per-tick traded volume to
+weight by, so only TWAP (time-weighted) is computed in slice 1. Both benchmarks compute the same
+way once real trade-and-volume data (e.g. the professor's TAQ dataset) is available — swapping the
+feed only changes what feeds `PriceHistoryStore.record`, never `TcaService`'s contract.
+
 ## Deferred source-side work
 
-Regulatory reporting, TCA, and real auth/entitlements are specified (requirements, data model,
-ADRs) in this same state but not implemented in slice 1 — see `plan.md` "Sequencing after slice 1."
-None of them are blocked on external infrastructure the way YU03's durable control feeds were; they
-are deferred purely for slice-size discipline (one real, complete capability per commit, same as
-every prior state in this lineage).
+Real auth/entitlements is specified (requirements, data model, ADR-025) in this same state but not
+implemented — see `plan.md` "Sequencing after slice 1." Not blocked on external infrastructure the
+way YU03's durable control feeds were; deferred purely for slice-size discipline (one real, complete
+capability per commit, same as every prior state in this lineage) and because it is the largest,
+most cross-cutting piece (it gates every endpoint the other four sub-capabilities added).
