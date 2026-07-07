@@ -44,5 +44,5 @@ inherits YU02-lmax-kubernetes runtime harness
 - Flows / topology: [/specs/YU03-in-memory-risk-gateway/system/runtime-topology](/specs/YU03-in-memory-risk-gateway/system/runtime-topology)
 - Research: [link](/specs/YU03-in-memory-risk-gateway/research)
 - Data model: [link](/specs/YU03-in-memory-risk-gateway/data-model)
-- Quickstart: `n/a`
+- Quickstart: [link](/specs/YU03-in-memory-risk-gateway/quickstart)
 
