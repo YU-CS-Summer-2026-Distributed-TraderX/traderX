@@ -29,6 +29,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
+- `YU05-post-trade-compliance`
 
 ### Functional
 
@@ -47,6 +48,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
+- `YU05-post-trade-compliance`
 
 ### Convergence
 
@@ -77,3 +79,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU02-lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/YU02-lmax-kubernetes/spec.md` |
 | `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |
 | `YU04-durable-control-feeds` | YU03-in-memory-risk-gateway | `none` | `false` | `optional` | `specs/YU04-durable-control-feeds/spec.md` |
+| `YU05-post-trade-compliance` | YU04-durable-control-feeds | `none` | `false` | `optional` | `specs/YU05-post-trade-compliance/spec.md` |
