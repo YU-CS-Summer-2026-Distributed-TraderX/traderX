@@ -8,7 +8,7 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 - Previous state(s): [YU03-in-memory-risk-gateway](/docs/learning/state-YU03-in-memory-risk-gateway)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU05-post-trade-compliance](/docs/learning/state-YU05-post-trade-compliance)
 
 ## Convergence Metadata
 
