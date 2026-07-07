@@ -31,6 +31,7 @@ tracks:
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
+      - YU05-post-trade-compliance
   functional:
     description: "Functional capability expansion states."
     states:
@@ -49,6 +50,7 @@ tracks:
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
+      - YU05-post-trade-compliance
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -183,3 +185,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU04-durable-control-feeds/spec.md
+  - id: YU05-post-trade-compliance
+    previous:
+      - YU04-durable-control-feeds
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU05-post-trade-compliance/spec.md

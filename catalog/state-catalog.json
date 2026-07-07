@@ -487,6 +487,29 @@
         "branch": "code/generated-state-YU04-durable-control-feeds",
         "tag": "generated/YU04-durable-control-feeds/v1"
       }
+    },
+    {
+      "id": "YU05-post-trade-compliance",
+      "title": "Post-Trade Compliance Bundle",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU05-post-trade-compliance",
+      "previous": [
+        "YU04-durable-control-feeds"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU05-post-trade-compliance",
+        "runtime": "inherits YU04-durable-control-feeds runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU05-post-trade-compliance",
+        "tag": "generated/YU05-post-trade-compliance/v1"
+      }
     }
   ]
 }
