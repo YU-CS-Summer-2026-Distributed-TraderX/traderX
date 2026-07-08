@@ -46,7 +46,12 @@ import static org.junit.jupiter.api.Assertions.fail;
     "order.matcher.seed-enabled=true",
     "journal.enabled=false",
     // unreachable trade-service: booking bridge failures are counted, never block matching
-    "order.matcher.trade-service-url=http://localhost:1/trade/"
+    "order.matcher.trade-service-url=http://localhost:1/trade/",
+    // YU04: this test exercises BLP/matching hot-path parity, not the durable-feed bootstrap
+    // protocol (that has its own dedicated tests — ControlFeedBootstrapStateTest). Disabling
+    // bootstrap grants Gateway readiness on seeds immediately (ReplicaBootstrap.start()) instead
+    // of waiting on a JetStream/account-service/reference-data connection this test never provides.
+    "risk.bootstrap.enabled=false"
 })
 class LmaxHotPathParityTest {
 

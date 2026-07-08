@@ -1,7 +1,8 @@
 # Feature Specification: Post-Trade Compliance Bundle (state YU05)
 
 **State id**: `YU05-post-trade-compliance`
-**Parent state**: `YU03-in-memory-risk-gateway`
+**Parent state**: `YU04-durable-control-feeds` (reparented 2026-07-08; was originally a sibling of
+YU04 off `YU03-in-memory-risk-gateway` directly — see "Reparenting" note below)
 **Created**: 2026-07-06
 **Status**: All five sub-capabilities implemented — settlement/reconciliation (incl. full-history
 orphan detection), regulatory reporting, TCA, and real JWT-based auth/entitlements gating every
@@ -30,6 +31,24 @@ consumer for book depth.
 
 The professor's ~3TB historical NYSE TAQ dataset (trades + NBBO quotes, not L2) is a natural,
 *optional* future input to TCA's benchmark computation — it does not drive scope here.
+
+## Reparenting (2026-07-08)
+
+This state originally branched directly off `YU03-in-memory-risk-gateway`, as a sibling of
+`YU04-durable-control-feeds` (both parented on YU03). Per explicit request, the lineage was
+changed to a straight chain — `YU03 -> YU04 -> YU05` — so YU05 now depends on YU04 rather than
+bypassing it. Mechanically: `git rebase --onto YU04-durable-control-feeds <old-fork-point>
+YU05-post-trade-compliance`, plus a manual 3-way content merge (base = the pre-YU04 file, "ours" =
+YU05's existing override, "other" = YU04's override, via `git merge-file`) for the three files both
+states independently override at the same path — `LmaxEngine.java`, order-matcher's
+`application.properties`, and `LmaxHotPathParityTest.java` — since each state stores a full copy
+of its overrides rather than a diff, and a plain history rebase alone would have let YU05's
+pre-YU04 copy of those files silently clobber YU04's control-feed additions during generation.
+One genuine (not just additive) conflict surfaced: YU04 renamed the REST-based
+`risk.bootstrap.accounts-url`/`securities-url` properties to a JetStream-based property set
+(`risk.bootstrap.account-stream`, `-snapshot-url`, etc., consumed by `ReplicaBootstrap.java`) —
+resolved by keeping YU04's new property names (confirmed via the actual Java `@Value` bindings)
+and dropping the now-dead old ones, with YU05's own properties appended after unchanged.
 
 ## Requirements
 

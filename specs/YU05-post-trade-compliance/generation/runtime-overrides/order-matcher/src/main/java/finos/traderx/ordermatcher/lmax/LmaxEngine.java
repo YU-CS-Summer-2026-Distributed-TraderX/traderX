@@ -314,7 +314,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
-        // In-memory risk gateway (state YU03): align the replica's security ids to the (possibly
+        // In-memory risk gateway: align the replica's security ids to the (possibly
         // journal-restored) SymbolTable, then build the BLP's authoritative risk state from the
         // replica's seeded initial condition (deterministic; sequenced control events layer on top).
         if (riskEnabled) {
@@ -322,9 +322,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             riskState = newRiskState(gatewayReplicas.metrics());
             riskState.bootstrap(gatewayReplicas.snapshot());
             riskState.putLimits(riskMaxPositionQuantity, riskMaxConcentrationNotionalTicks);
-            // Seeds + aligned ids form a complete known-good admission image; ReplicaBootstrap
-            // enriches with the fetched account/security universe in the background.
-            gatewayReplicas.markReady();
+            // YU04 (ADR-019/FR-IMRG05): readiness is no longer granted here unconditionally on
+            // seeds+aligned-ids alone — ReplicaBootstrap now grants it only once BOTH durable
+            // control feeds (account, security) have installed a valid snapshot and caught up to
+            // their observed high watermark. Until then the replica stays not-ready (fail-closed,
+            // CONTROL_STATE_STALE) even though the seed image + aligned ids are already installed.
         }
 
         matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),

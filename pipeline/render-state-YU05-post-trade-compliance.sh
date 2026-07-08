@@ -5,13 +5,13 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_SPEC_DIR="${ROOT}/specs/YU05-post-trade-compliance"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 TARGET_ROOT="${GENERATED_ROOT}/code/target-generated"
-PARENT_STATE_DIR="${TARGET_ROOT}/YU03-in-memory-risk-gateway"
+PARENT_STATE_DIR="${TARGET_ROOT}/YU04-durable-control-feeds"
 STATE_DIR="${TARGET_ROOT}/YU05-post-trade-compliance"
 SPEC_SOURCE_DIR="${STATE_DIR}/spec-source"
 RUNTIME_OVERRIDES_DIR="${STATE_SPEC_DIR}/generation/runtime-overrides"
 
 [[ -d "${PARENT_STATE_DIR}" ]] || {
-  echo "[fail] required parent YU03-in-memory-risk-gateway artifact missing for YU05 render: ${PARENT_STATE_DIR}"
+  echo "[fail] required parent YU04-durable-control-feeds artifact missing for YU05 render: ${PARENT_STATE_DIR}"
   exit 1
 }
 
@@ -33,7 +33,7 @@ overlay_dir() {
       | tar -C "${dst}" -xf -
     echo "[render] overlaid ${label} from ${src}"
   else
-    echo "[info] no ${label} overrides present (${src}); keeping YU03-in-memory-risk-gateway parity"
+    echo "[info] no ${label} overrides present (${src}); keeping YU04-durable-control-feeds parity"
   fi
 }
 
@@ -71,14 +71,14 @@ cat > "${STATE_DIR}/README.md" <<'EOF'
 
 Bundled post-trade compliance state: deterministic trade identity + settlement + reconciliation
 (slice 1, implemented), regulatory reporting / TCA / real auth (specified, deferred), onto the
-`YU03-in-memory-risk-gateway` runtime.
+`YU04-durable-control-feeds` runtime.
 
 Parent lineage:
 
-- parent state: `YU03-in-memory-risk-gateway` (which renders onto `YU02-lmax-kubernetes` ->
-  `014-fdc3-intent-interoperability`)
+- parent state: `YU04-durable-control-feeds` (which renders onto `YU03-in-memory-risk-gateway` ->
+  `YU02-lmax-kubernetes` -> `014-fdc3-intent-interoperability`)
 
 All slice-1 changes are order-matcher + trade-processor runtime overrides plus a database-init
 ConfigMap column addition; the deploy/runtime harness is inherited unchanged from
-`YU03-in-memory-risk-gateway` (see `spec-source/spec.md` for scope and deferrals).
+`YU04-durable-control-feeds` (see `spec-source/spec.md` for scope and deferrals).
 EOF
