@@ -63,8 +63,11 @@ row back to the journal fill that produced it.
 - All five capabilities implemented and unit-tested in-tree (blotter capture/eviction/replay,
   settlement transitions, reconciliation classification, full-history orphan sweep, audit-log kind
   coverage, TWAP/slippage math, JWT round-trip/rejection/entitlement).
-- Two follow-ons remain open and are tracked in `tasks.md`: feeding the risk gateway's `principalKey`
-  path from real entitlement resolution (FR-PTC42 — needs order-admission wiring this state
-  deliberately never touched) and VWAP (FR-PTC32 — blocked on a real per-tick-volume source).
+- Entitlement resolution is now wired into the admission path (FR-PTC42): `EntitlementGate` on every
+  command entry point, gated by `risk.entitlement.enforced` (default off). Closes FR-IMRG02/FR-IMRG30.
+  Verified: order-matcher suite green (85 tests; `EntitlementGateTest` 7/7; the only failure is the
+  pre-existing environmental allocation flake on untouched code).
+- One follow-on remains open (tracked in `tasks.md`): VWAP (FR-PTC32 — blocked on a real
+  per-tick-volume source).
 - Full container smoke and an isolated staging CI/CD pipeline are open and require explicit user
   go-ahead before touching any live Cloud Build/Deploy resource.

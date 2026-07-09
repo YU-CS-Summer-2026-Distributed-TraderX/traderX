@@ -75,13 +75,22 @@
       settlement rate, TCA/regulatory-report request rate), added to the aggregated dashboards
       ConfigMap.
 
+### Entitlement resolution into the admission path (FR-PTC42)
+
+- [x] T-42 `EntitlementGate` on every command entry point: `OrderMatcherService.createOrder`/
+      `createOrderBatch`/`bookMarketTrade` resolve the caller's JWT principal (reusing YU05's
+      `JwtAuthenticator`) and reject a caller not entitled to the order's account (401 if the token
+      is missing/invalid, 403 if valid-but-unentitled; admin claim passes any account).
+      `OrderController`/`MarketTradeController` thread the `Authorization` header through. Gated by
+      `risk.entitlement.enforced` (default false), so the existing token-less UI is unaffected until
+      enforcement is enabled. Closes FR-IMRG02/FR-IMRG30 for real. Tests: `EntitlementGateTest`
+      (7 cases: disabled, missing/invalid/wrong-secret token → 401, entitled → pass, unentitled →
+      403, admin → pass). Full order-matcher suite green (85 tests; the only failure is the
+      pre-existing environmental 72-byte NGC-01 allocation flake in `AllocationGateTest`, on code
+      this change does not touch).
+
 ## Still open
 
-- [ ] Feed the risk gateway's `principalKey` path from real entitlement resolution (FR-PTC42) —
-      needs wiring into order *submission* (`OrderMatcherService`/`GatewayReplicaStore`), a
-      hot-path-adjacent surface this state deliberately never touched. The `principalKey` path is
-      already wired in YU03, still unfed; the real JWT auth built here (`JwtAuthenticator`) unblocks
-      it. This is the same gap tracked in YU03's and YU04's backlogs.
 - [ ] VWAP (FR-PTC32) — needs a real per-tick-volume data source; `PriceHistoryStore`'s contract
       doesn't change to add it later.
 - [ ] Full container smoke: order fill → blotter → recon sweep → settlement sweep, end to end

@@ -74,6 +74,13 @@ never mutates journal or BLP state.
 - FR-PTC41: Account-scoped endpoints (settlement force, TCA) SHALL check the caller's entitlement
   against the trade's own account; cross-account endpoints (blotter, full-history, orphan-sweep,
   regulatory report) SHALL require an `admin` claim.
+- FR-PTC42: The order-admission path (`OrderMatcherService.createOrder`/`createOrderBatch`/
+  `bookMarketTrade`) SHALL resolve the caller's JWT principal and reject a caller not entitled to
+  the order's account before the command is screened or sequenced — a memory-only check against the
+  token claim, adding no synchronous lookup to the admission path (FR-IMRG01). Enforcement is gated
+  by `risk.entitlement.enforced` (default off) so the token-less UI is unaffected until it is
+  enabled; the mechanism closes FR-IMRG02 (entitlement resolution) and FR-IMRG30 (full authn on the
+  command path).
 
 ## Non-Functional Requirements
 
@@ -89,8 +96,9 @@ never mutates journal or BLP state.
   build/publish/deploy harness is unchanged.
 - NFR-PTC07: No new runtime dependency SHALL be added (JDK crypto/HttpClient, existing
   Jackson/Micrometer/Spring).
-- NFR-PTC09: No file in this state's scope SHALL modify order submission/admission
-  (`OrderMatcherService`, `GatewayReplicaStore`, `BlpRiskState`), verified by review.
+- NFR-PTC09: The only admission-path change SHALL be the entitlement gate (an authn/authz check
+  before screening); the BLP decision path, risk screening logic, journal/replication wire format,
+  and snapshot format SHALL be unchanged (`GatewayReplicaStore.screen`/`BlpRiskState` untouched).
 
 ## Success Criteria
 

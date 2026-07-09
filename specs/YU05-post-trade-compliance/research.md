@@ -140,8 +140,19 @@ live provider later changes only where the token comes from, not how it is check
   weight by, so only TWAP (time-weighted) is computed today. Both benchmarks compute the same way
   once a real per-tick-volume feed is available — swapping the feed only changes what feeds
   `PriceHistoryStore.record`, never `TcaService`'s contract.
-- **FR-PTC42 (`principalKey` wiring)**: feeding the risk gateway's already-wired-but-unfed
-  `principalKey` path from real entitlement resolution needs wiring into order *submission*
-  (`OrderMatcherService`/`GatewayReplicaStore`), a hot-path-adjacent surface this state deliberately
-  never touched (NFR-PTC09). The JWT auth built here is the missing prerequisite; the wiring itself
-  is the one cross-state gap tracked in YU03's, YU04's, and this state's backlogs.
+## Entitlement resolution into the admission path (FR-PTC42)
+
+The one cross-state gap tracked in YU03's, YU04's, and this state's backlogs: YU03 built the risk
+gateway and YU05 built real JWT auth, but nothing checked a caller's entitlement to the order's
+account before the command was sequenced — order submission was wide open. `EntitlementGate` closes
+it. Because YU05's auth carries entitlements *in the token* (`JwtPrincipal.entitledAccounts`), the
+check is a memory-only lookup against the resolved principal — no synchronous lookup on the
+admission path (FR-IMRG01), and no need for the control-fed entitlement replica FR-IMRG02's original
+design sketched (that remains the upgrade path only if entitlements ever need revoking independently
+of a token's lifetime). It lives at the `OrderMatcherService` edge (an authn/authz decision, 401/403
+— distinct from a risk screening rejection's 422 `RiskRejectionBody`) rather than in the BLP, so the
+BLP decision path, journal, and snapshot format are untouched. Gated by `risk.entitlement.enforced`
+(default off, same live-safe-default discipline as YU03's risk knobs) so the existing token-less UI
+keeps working until enforcement is turned on and callers send a Bearer token.
+
+VWAP (FR-PTC32) remains the one open follow-on — see above.
