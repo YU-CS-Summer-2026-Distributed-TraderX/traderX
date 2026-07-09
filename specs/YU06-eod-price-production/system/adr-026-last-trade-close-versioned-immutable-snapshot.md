@@ -1,6 +1,6 @@
 # ADR-026: Last-Trade Closing Price + Versioned Immutable EOD Snapshot
 
-**Status:** Accepted, implemented (slice 1)
+**Status:** Accepted, implemented
 **Date:** 2026-07-08
 **State:** `YU06-eod-price-production` (parent `YU05-post-trade-compliance`)
 

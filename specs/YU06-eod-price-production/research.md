@@ -49,7 +49,7 @@ session close). Alternatives considered:
 
 ## Decision 4 — versioned immutable snapshot, not "read latest at job start" (ADR-026)
 
-Every consumer must read the *same* prices or downstream numbers are irreconcilable (deck 02 s24).
+Every consumer must read the *same* prices or downstream numbers are irreconcilable.
 A mutable "current EOD price" row fails this: two jobs reading it around a correction see different
 values. So the snapshot is **append-only and versioned**:
 
@@ -64,13 +64,13 @@ construction), applied to prices.
 
 ## Decision 5 — orchestration is a NATS event chain, not a workflow engine (ADR-027)
 
-The deck names Airflow/Control-M, but for TraderX a small JetStream event chain is the right size:
+For TraderX a small JetStream event chain is the right size:
 `session-close → (produce/quality/publish) → eod.prices.ready → position-service marks → eod.pnl.done`.
 Each stage publishes a durable `*_DONE`-style event the next stage subscribes to; ops watches the
-chain via per-stage metrics + timestamps. Airflow would dwarf the system it orchestrates — **not
-introduced.** Plain k8s Jobs with an ordering controller were also considered; the event chain is
-lazier (no new controller, reuses the JetStream infra YU04 already stood up) and matches the deck's
-"each job subscribes to the prior job's completion" description directly.
+chain via per-stage metrics + timestamps. A full workflow engine (Airflow/Control-M) would dwarf the
+system it orchestrates — **not introduced.** Plain k8s Jobs with an ordering controller were also
+considered; the event chain is lazier (no new controller, reuses the JetStream infra YU04 already
+stood up) and lets each job simply subscribe to the prior job's completion event.
 
 ## Decision 6 — durability: reuse YU04's JetStream publish pattern (ADR-027)
 

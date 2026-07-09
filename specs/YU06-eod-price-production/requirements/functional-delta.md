@@ -19,7 +19,7 @@ New requirement namespace `EOD`.
 | FR-EOD22 event emitted only after commit | **Done** | Publish sequence: write rows → status `PUBLISHED` → emit event. The event can never reference an uncommitted version. |
 | FR-EOD23 producer-side fail-safe | **Done** | `POST /eod/prices/{date}/publish` returns **409** if any instrument is unresolved `STALE`/`SPIKE`/`MISSING`; no event emitted. All-clean close auto-publishes (`eod.session.auto-publish`). |
 | FR-EOD30 downstream consumer gated by the event | **Done** | position-service durable JetStream consumer on `eod.prices.ready` — the first real overnight job. |
-| FR-EOD31 consumer reads only the versioned snapshot | **Done** | Marks positions against the exact `(session_date, version)` the event names — never live ticks (the deck's consistency invariant). |
+| FR-EOD31 consumer reads only the versioned snapshot | **Done** | Marks positions against the exact `(session_date, version)` the event names — never live ticks. |
 | FR-EOD32 consumer-side fail-safe | **Done** | A held security missing/flagged in the snapshot halts *that account's* marking, increments `eod_pnl_halted_total`, and logs an alert; the account gets no `eod_position_pnl` rows. |
 | FR-EOD33 chain link emitted | **Done** | On completion the consumer emits `eod.pnl.done` `(sessionDate, version, accountsMarked, accountsHalted)` — the next link (VaR/NAV subscribe later, out of scope here). |
 | FR-EOD40 batch-chain observability | **Done** | Micrometer counters/gauges (quality flags, sessions published, accounts marked/halted, per-stage timestamps) + `traderx-eod-batch-chain.json` Grafana dashboard showing end-to-end chain latency. |

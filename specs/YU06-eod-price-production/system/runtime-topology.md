@@ -1,39 +1,54 @@
-# Runtime Topology: YU06
+# Runtime Topology: YU06-eod-price-production
 
-## Deployment topology
+Parent state: `YU05-post-trade-compliance`
 
-Unchanged services from `YU05-post-trade-compliance`: order-matcher BLP StatefulSet, trade-processor
-Deployment, position-service Deployment — no new pods for the producer or consumer (they are code
-additions to existing services). **One new k8s object:** a `CronJob` that posts to
-`/eod/session/close` on a demo schedule. **One new JetStream stream:** `TRADERX_EOD` (file storage),
-created on producer startup if absent (same as YU04's control-feed stream provisioning).
+## Entrypoints
 
-## New runtime behavior
+- `POST /eod/session/close`, `GET /eod/prices/{date}[/versions/{v}]`, `POST /eod/prices/{date}/override`,
+  `POST /eod/prices/{date}/publish` — `trade-processor`, admin-JWT gated.
+- `eod-session-close` CronJob (k8s) — calls `/eod/session/close` on a schedule, using the same
+  admin-token mint + call path an operator uses manually.
+- No new HTTP entrypoint on `position-service`; it is driven entirely by the `eod.prices.ready`
+  JetStream subscription.
 
-- **trade-processor**: new admin endpoints `/eod/*`; reads the existing `PriceHistoryStore`; writes
-  `eod_price_session`/`eod_price_snapshot`; publishes `EOD_PRICES_READY` to JetStream. New config:
-  `eod.quality.*`, `eod.universe`, `eod.session.auto-publish`, `eod.stream`,
-  `eod.subject.prices-ready`. No new outbound service-to-service HTTP dependency (unlike YU05's
-  recon poll) — it only touches NATS + MariaDB it already uses.
-- **position-service**: gains its first NATS dependency — a durable JetStream consumer
-  (`eod.consumer.durable = eod-pnl`) on `eod.prices.ready`; reads `eod_price_snapshot`; writes
-  `eod_position_pnl`; publishes `eod.pnl.done`. New config: `eod.stream`, `eod.subject.*`,
-  `eod.consumer.durable`, plus the NATS connection URL (mirrors trade-processor's `PubSubConfig`).
-- **CronJob**: authenticates with a service-account admin JWT (minted via the same
-  `auth.dev-token` mechanism / a mounted secret) and calls `/eod/session/close` hourly by default
-  (`eod.cron.schedule`).
+## Components
 
-## Startup / degraded behavior
+- Inherits the Kubernetes/C3/FDC3 runtime components already present in `YU05-post-trade-compliance`.
+- `trade-processor` gains the EOD producer: quality classifier, versioned snapshot repository,
+  durable event publisher, and the `/eod/*` controller — all reading from its existing
+  `PriceHistoryStore` price feed and writing to its existing MariaDB datasource.
+- `position-service` gains the EOD consumer: a durable JetStream subscriber, a read-only snapshot
+  reader, and an idempotent P&L writer against its own MariaDB datasource.
+- `NATS JetStream` gains one new stream, `TRADERX_EOD` (file storage), carrying `eod.prices.ready`
+  and `eod.pnl.done`.
+- MariaDB gains three tables (`eod_price_session`, `eod_price_snapshot`, `eod_position_pnl`) added
+  to the shared runtime schema alongside every table prior states already defined there.
+
+## Networking
+
+- `trade-processor` and `position-service` each connect directly to the NATS broker; no new
+  service-to-service HTTP calls are introduced between them.
+- Publication order in `trade-processor` is always snapshot rows committed, then status flipped to
+  published, then the event emitted — the event can never reference an uncommitted version.
+- `position-service` never queries live prices; it reads only the exact `(session_date, version)`
+  named in the event it received.
+
+## Startup / Health Order
+
+1. Generate and verify the inherited `YU05-post-trade-compliance` baseline assets.
+2. Start MariaDB, NATS, and inherited support services as in the parent state.
+3. Start `trade-processor` and `position-service`; both connect to NATS in a background thread and
+   retry independently of application readiness, so neither blocks on broker availability at boot.
+4. The `TRADERX_EOD` JetStream stream is created on first publish/subscribe if it does not already
+   exist.
+5. The `eod-session-close` CronJob becomes active on its configured schedule once the cluster is up.
+
+## Degraded Behavior
 
 | Condition | Effect |
 |---|---|
-| position-service down at publish time | Durable JetStream retains `EOD_PRICES_READY`; the consumer receives it on reconnect (redelivery) and marks the session late — the core durability guarantee (NFR-EOD02). |
-| NATS/JetStream unreachable from trade-processor at publish | Publish fails (409-adjacent 5xx after commit-then-emit ordering); the version stays `PUBLISHED` in MariaDB but no event fires — operator re-runs `/publish` (idempotent no-op re-emits the event). |
-| Held security missing/flagged in the snapshot | Consumer halts *that account's* marking, increments `eod_pnl_halted_total`, logs an alert; other accounts still mark (FR-EOD32). |
-| Duplicate `EOD_PRICES_READY` delivery | No-op — `eod_position_pnl` upsert is idempotent on `(date, version, account, security)` (NFR-EOD05). |
-| MariaDB unreachable | Producer/consumer fail their current operation (Spring datasource retry/backoff); no impact on order-matcher or the BLP. |
-| Snapshot has unresolved flags | No event ever fires (producer fail-safe FR-EOD23); consumers simply never run for that session until an override + publish clears it. |
-
-## Deferred
-
-VaR/NAV chain stages; closing-auction pricing; front-end override panel.
+| `position-service` unreachable/down at publish time | `EOD_PRICES_READY` is retained on the durable stream; the consumer receives it on reconnect and marks the session. |
+| NATS unreachable from `trade-processor` at publish time | The snapshot version is committed as published in MariaDB but the event publish fails; re-running `/publish` is an idempotent retry that re-emits the (deduplicated) event. |
+| A held security is missing or unresolved in the snapshot | The consumer halts that account's marking and increments an alert counter; other accounts in the same session are still marked. |
+| Duplicate `EOD_PRICES_READY` delivery | The consumer's write is an idempotent upsert keyed by `(session_date, version, account_id, security)`. |
+| MariaDB unreachable | The current producer or consumer operation fails its cycle via the existing datasource retry/backoff; no impact on order-matcher or the BLP. |

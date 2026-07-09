@@ -9,8 +9,7 @@ import org.springframework.stereotype.Repository;
 /**
  * YU06 (eod-price-production, FR-EOD31): read-only access to the versioned closing-price snapshot.
  * The consumer reads exactly the {@code (session_date, version)} the {@code EOD_PRICES_READY} event
- * named — never live prices — so every downstream job agrees on the same closing prices (the deck's
- * consistency invariant, NFR-EOD01).
+ * named — never live prices — so every downstream job agrees on the same closing prices (NFR-EOD01).
  */
 @Repository
 public class EodPriceSnapshotReader {

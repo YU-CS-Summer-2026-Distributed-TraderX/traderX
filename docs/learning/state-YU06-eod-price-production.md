@@ -44,5 +44,5 @@ inherits YU05-post-trade-compliance runtime harness
 - Flows / topology: [/specs/YU06-eod-price-production/system/runtime-topology](/specs/YU06-eod-price-production/system/runtime-topology)
 - Research: [link](/specs/YU06-eod-price-production/research)
 - Data model: [link](/specs/YU06-eod-price-production/data-model)
-- Quickstart: `n/a`
+- Quickstart: [link](/specs/YU06-eod-price-production/quickstart)
 

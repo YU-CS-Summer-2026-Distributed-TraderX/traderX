@@ -1,67 +1,48 @@
-# Architecture: YU06 — EOD Price Production + Overnight Batch Chain
+# EOD Price Production and Overnight Batch Chain
 
-Parent: `YU05-post-trade-compliance`. This state adds an overnight batch spine downstream of the
-BLP. Like YU05 it never sits on the order-admission path and never mutates journal/BLP state
-(NFR-EOD03) — the producer reads an existing NATS price feed, the consumer is a separate process.
+Versioned, immutable end-of-day closing-price production gated behind a durable event, driving one downstream position-marking consumer.
 
-## Data flow
+- Inherits architectural baseline from: `YU05-post-trade-compliance`
+- Generated from: `system/architecture.model.json`
+- Canonical flows: `../001-baseline-uncontainerized-parity/system/end-to-end-flows.md`
 
-```
-  price-publisher ── pricing.* (last-trade prints) ──▶ trade-processor: PriceHistoryStore (YU05, reused)
-                                                                   │  newest sample per ticker
-   POST /eod/session/close (CronJob or operator, admin JWT)        ▼
-                          └──────────────▶ EodPriceService.produce(sessionDate)
-                                              │  classify: OK / STALE / SPIKE / MISSING
-                                              ▼
-                        MariaDB  eod_price_session (DRAFT, v)  +  eod_price_snapshot (immutable rows)
-                                              │
-              override (admin) ─▶ new version │  publish (admin, or auto if 0 flags)
-                                              ▼  fail-safe: 409 if any unresolved flag
-                        eod_price_session.status = PUBLISHED  ──▶ EodEventPublisher
-                                                                     │  durable JetStream
-                                                                     ▼  stream TRADERX_EOD
-                                                            EOD_PRICES_READY {sessionDate, version}
-                                                                     │
-                                    ┌────────────────────────────────┘  (durable — late/restarted
-                                    ▼                                     consumers still receive it)
-                    position-service: EodPnlConsumer (durable sub)
-                       reads ONLY eod_price_snapshot (sessionDate, version)  ── never live ticks
-                       per account × holding: mark = qty × closing_price
-                       fail-safe: held security MISSING/flagged ─▶ halt account, alert, no rows
-                                    │
-                                    ▼
-                    MariaDB eod_position_pnl (immutable, per (date,version,account,security))
-                                    │
-                                    ▼  eod.pnl.done {sessionDate, version, accountsMarked, accountsHalted}
-                             (next stage: VaR / NAV — subscribe later, out of scope)
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+  ops["Ops / Admin"]
+  cron["EOD Session-Close CronJob"]
+  price_publisher["Price Publisher"]
+  trade_processor["Trade Processor"]
+  mariadb["MariaDB"]
+  nats["NATS JetStream"]
+  position_service["Position Service"]
+  prometheus["Prometheus"]
+  grafana["Grafana"]
+  ops -->|"Triggers close / override / publish (admin JWT)"| trade_processor
+  cron -->|"Triggers scheduled session close"| trade_processor
+  price_publisher -->|"Last-trade prices (pricing.*)"| trade_processor
+  trade_processor -->|"Writes versioned closing-price snapshot"| mariadb
+  trade_processor -->|"Publishes EOD_PRICES_READY (durable)"| nats
+  nats -->|"Delivers EOD_PRICES_READY (durable, redelivered)"| position_service
+  position_service -->|"Reads positions, writes eod_position_pnl"| mariadb
+  position_service -->|"Publishes eod.pnl.done"| nats
+  prometheus -->|"Scrapes /actuator/prometheus"| trade_processor
+  prometheus -->|"Scrapes /actuator/prometheus"| position_service
+  grafana -->|"Queries EOD chain metrics"| prometheus
 ```
 
-## Components
+## Node Catalog
 
-| Component | Location | Role |
-|---|---|---|
-| `PriceHistoryStore` (reused, YU05) | trade-processor | Per-ticker `(price, timestampMillis)` samples; newest = closing price. Read-only. |
-| `EodQualityChecker` (new) | trade-processor | `OK`/`STALE`/`SPIKE`/`MISSING` from `eod.quality.*` + prior published close. |
-| `EodPriceSnapshotRepository` (new) | trade-processor | Versioned read/append over `eod_price_session` + `eod_price_snapshot`. |
-| `EodPriceService` (new) | trade-processor | `produce` / `override` / `publish`; owns the fail-safe gate + versioning. |
-| `EodEventPublisher` (new) | trade-processor | Durable JetStream publish of `EOD_PRICES_READY` (reuses YU04 pattern). |
-| `EodController` (new) | trade-processor | `/eod/session/close`, `/eod/prices/{date}`, `/override`, `/publish` — admin JWT. |
-| `PubSubConfig` (new) | position-service | NATS connection (mirrors trade-processor's). |
-| `EodPriceSnapshotReader` (new) | position-service | Read-only access to `eod_price_snapshot` for a `(date, version)`. |
-| `EodPnlRepository` (new) | position-service | Idempotent upsert into `eod_position_pnl`. |
-| `EodPnlConsumer` (new) | position-service | Durable subscriber; marks positions fail-safely; emits `eod.pnl.done`. |
-| `Position`/`PositionRepository` (reused) | position-service | Positions to mark. |
+| Node | Kind | Label | Notes |
+| --- | --- | --- | --- |
+| `ops` | actor | Ops / Admin | Triggers session close, resolves flagged prices via override, publishes. |
+| `cron` | service | EOD Session-Close CronJob | Scheduled trigger calling the same session-close endpoint an operator uses. |
+| `price_publisher` | service | Price Publisher | Existing last-trade feed (pricing.*) that EOD production reads from. |
+| `trade_processor` | service | Trade Processor | Hosts EOD price production: classify, version, override, publish, emit gate event. |
+| `mariadb` | service | MariaDB | Versioned closing-price snapshot tables and the consumer's P&L result table. |
+| `nats` | service | NATS JetStream | Durable stream carrying EOD_PRICES_READY and eod.pnl.done. |
+| `position_service` | service | Position Service | EOD consumer: marks positions against the published snapshot version, fail-safe per account. |
+| `prometheus` | service | Prometheus | Scrapes EOD chain metrics from both services. |
+| `grafana` | service | Grafana | EOD batch chain dashboard: published/flagged/marked/halted, chain latency. |
 
-## Correctness boundary (unchanged invariant, extended)
-
-The BLP decision path is untouched. The producer reads a NATS feed already consumed by YU05 and
-writes its own MariaDB tables; the consumer is a separate process reading a versioned snapshot.
-MariaDB remains a downstream projection. The consistency guarantee is structural: consumers read a
-fixed `(session_date, version)`, so no two consumers can disagree on a closing price (NFR-EOD01).
-Durability is structural too: the gate event is on a file-storage JetStream stream with a durable
-consumer (NFR-EOD02).
-
-## Deferred
-
-Overnight VaR/ES (teammate-owned, consumes `EOD_PRICES_READY`); closing-auction price source
-(stretch); front-end override panel (REST-only v1); wiring YU05 NAV/recon onto `eod.pnl.done`.

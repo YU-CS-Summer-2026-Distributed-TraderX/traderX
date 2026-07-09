@@ -48,11 +48,14 @@ for source in \
   plan.md \
   research.md \
   data-model.md \
+  quickstart.md \
   contracts/contract-delta.md \
   requirements/functional-delta.md \
   requirements/nonfunctional-delta.md \
   system/architecture.md \
+  system/architecture.model.json \
   system/runtime-topology.md \
+  system/messaging-subject-map.md \
   system/adr-026-last-trade-close-versioned-immutable-snapshot.md \
   system/adr-027-jetstream-event-chain-orchestration.md \
   system/adr-028-producer-consumer-split-failsafe.md \

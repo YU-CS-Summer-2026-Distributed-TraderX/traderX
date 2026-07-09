@@ -15,9 +15,9 @@
 2. Generate parent `YU05-post-trade-compliance` from a clean target root.
 3. Overlay the trade-processor EOD producer overrides (`EodPriceService`, `EodQualityChecker`,
    `EodPriceSnapshotRepository`, `EodEventPublisher`, `EodController`, model classes, config, tests).
-4. Overlay the position-service EOD consumer overrides (`PubSubConfig`, `EodPnlConsumer`,
-   `EodPriceSnapshotReader`, `EodPnlRepository`, model classes, `build.gradle` NATS dep, config,
-   tests).
+4. Overlay the position-service EOD consumer overrides (`EodPnlConsumer` — self-contained NATS
+   wiring, no separate config bean — `EodPriceSnapshotReader`, `EodPnlRepository`, model classes,
+   `build.gradle` NATS dep, config, tests).
 5. Overlay the k8s database-init ConfigMap with the new `eod_price_session` / `eod_price_snapshot` /
    `eod_position_pnl` tables, and the new `eod-session-close` CronJob manifest + the
    `traderx-eod-batch-chain.json` Grafana dashboard ConfigMap.
@@ -32,7 +32,7 @@ These files are overridden by an ancestor **and** by YU06; each YU06 copy must s
 latest ancestor version and add on top, never replace:
 
 - `trade-processor/src/main/resources/application.properties` (YU02 driver + YU05 auth/tca/recon → + `eod.*`)
-- `trade-processor/.../TradeProcessorApplication.java`, `PubSubConfig.java` (YU05) — only if touched
+- `trade-processor/.../service/PriceHistoryStore.java` (YU05 `record`/`twap`/`priceAtOrBefore` → + `tickers()`)
 - `position-service/.../application.properties`, `build.gradle` (009b/YU02 → + NATS dep + `eod.*`)
 - `kubernetes-runtime/manifests/base/database-init-configmap.yaml` (YU05 `settlementdate` → + EOD tables)
 

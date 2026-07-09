@@ -1,6 +1,6 @@
 # ADR-028: Producer/Consumer Service Split + Fail-Safe Halt-and-Alert
 
-**Status:** Accepted, implemented (slice 1)
+**Status:** Accepted, implemented
 **Date:** 2026-07-08
 **State:** `YU06-eod-price-production` (parent `YU05-post-trade-compliance`)
 
@@ -25,8 +25,7 @@ gated by the durable event, which is exactly the pattern being demonstrated. Put
 in trade-processor (subscribing to its own event in-process) would be a weaker demo and would still
 need position data it doesn't own.
 
-**Fail-safe halt-and-alert at both ends** (deck 07 s43–45 — never proceed on a stale/missing
-price):
+**Fail-safe halt-and-alert at both ends** — never proceed on a stale/missing price:
 
 - *Producer:* `publish` refuses (409) if any instrument is unresolved `STALE`/`SPIKE`/`MISSING`; no
   event is emitted. An all-clean close auto-publishes.
@@ -41,7 +40,7 @@ price):
 - **Consumer in trade-processor** — rejected (in-process self-subscription is a weak demonstration
   of an event *gate*, and trade-processor doesn't own positions).
 - **Mark missing/flagged instruments at last-known/zero** — rejected outright: silently proceeding
-  on a bad price is the exact failure the deck's fail-safe exists to prevent.
+  on a bad price is the exact failure this fail-safe exists to prevent.
 
 ## Consequences
 
@@ -49,5 +48,5 @@ Positive: minimal new infra (producer is a few classes in an existing service); 
 real cross-process, durable-event-gated job — the honest version of the pattern. Fail-safe means a
 data-quality problem surfaces as a halted, alerted account, never as a wrong number downstream.
 
-Costs: position-service gains its first messaging dependency (NATS client + `PubSubConfig`) — the
+Costs: position-service gains its first messaging dependency (an `io.nats` client connection) — the
 one genuinely new piece of infrastructure, and it *is* the feature, so it's warranted.
