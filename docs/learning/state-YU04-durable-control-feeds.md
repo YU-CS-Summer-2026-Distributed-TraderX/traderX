@@ -44,5 +44,5 @@ inherits YU03-in-memory-risk-gateway runtime harness
 - Flows / topology: [/specs/YU04-durable-control-feeds/system/runtime-topology](/specs/YU04-durable-control-feeds/system/runtime-topology)
 - Research: [link](/specs/YU04-durable-control-feeds/research)
 - Data model: [link](/specs/YU04-durable-control-feeds/data-model)
-- Quickstart: `n/a`
+- Quickstart: [link](/specs/YU04-durable-control-feeds/quickstart)
 
