@@ -146,3 +146,35 @@ data:
 
     INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-52355-AABBCC', NOW(), NOW(), 'BAC', 'Sell', 2400, 41.125, 'Settled', 52355);
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (52355, 'BAC', NOW(), -2400, 41.125);
+
+    -- YU04 durable control feeds: account-service and reference-data outbox/epoch tables + the
+    -- reference-data stocks table (previously CSV-only). Inherited from YU04; needed here so the
+    -- control feeds bootstrap on kind. Both *_source_epoch tables self-seed to epoch=1 on first boot.
+    CREATE TABLE account_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      display_name VARCHAR(50),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE account_source_epoch (
+      epoch BIGINT NOT NULL
+    );
+
+    CREATE TABLE stocks (
+      ticker VARCHAR(16) PRIMARY KEY,
+      company_name VARCHAR(120)
+    );
+
+    CREATE TABLE stocks_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticker VARCHAR(16) NOT NULL,
+      company_name VARCHAR(120),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE stocks_source_epoch (
+      epoch BIGINT NOT NULL
+    );
