@@ -510,6 +510,29 @@
         "branch": "code/generated-state-YU05-post-trade-compliance",
         "tag": "generated/YU05-post-trade-compliance/v1"
       }
+    },
+    {
+      "id": "YU06-eod-price-production",
+      "title": "EOD Price Production + Overnight Batch Chain",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU06-eod-price-production",
+      "previous": [
+        "YU05-post-trade-compliance"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU06-eod-price-production",
+        "runtime": "inherits YU05-post-trade-compliance runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU06-eod-price-production",
+        "tag": "generated/YU06-eod-price-production/v1"
+      }
     }
   ]
 }

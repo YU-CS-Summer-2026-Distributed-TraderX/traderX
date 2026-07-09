@@ -30,6 +30,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
 - `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
 
 ### Functional
 
@@ -49,6 +50,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
 - `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
 
 ### Convergence
 
@@ -80,3 +82,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |
 | `YU04-durable-control-feeds` | YU03-in-memory-risk-gateway | `none` | `false` | `optional` | `specs/YU04-durable-control-feeds/spec.md` |
 | `YU05-post-trade-compliance` | YU04-durable-control-feeds | `none` | `false` | `optional` | `specs/YU05-post-trade-compliance/spec.md` |
+| `YU06-eod-price-production` | YU05-post-trade-compliance | `none` | `false` | `optional` | `specs/YU06-eod-price-production/spec.md` |

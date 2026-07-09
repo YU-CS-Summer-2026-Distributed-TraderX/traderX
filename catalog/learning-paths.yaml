@@ -32,6 +32,7 @@ tracks:
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
       - YU05-post-trade-compliance
+      - YU06-eod-price-production
   functional:
     description: "Functional capability expansion states."
     states:
@@ -51,6 +52,7 @@ tracks:
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
       - YU05-post-trade-compliance
+      - YU06-eod-price-production
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -192,3 +194,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU05-post-trade-compliance/spec.md
+  - id: YU06-eod-price-production
+    previous:
+      - YU05-post-trade-compliance
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU06-eod-price-production/spec.md

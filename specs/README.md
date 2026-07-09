@@ -24,6 +24,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `014-fdc3-intent-interoperability`
 - `YU03-in-memory-risk-gateway`
 - `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
 
 ## References
 

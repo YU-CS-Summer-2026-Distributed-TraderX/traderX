@@ -219,6 +219,9 @@ case "${STATE_ID}" in
   YU05-post-trade-compliance)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance")
     ;;
+  YU06-eod-price-production)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production")
+    ;;
 esac
 
 state_allows_dir() {
