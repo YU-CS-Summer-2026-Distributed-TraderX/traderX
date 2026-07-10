@@ -22,16 +22,23 @@ spec:
           env:
             - name: TICKSTORE_NATS_URL
               value: "nats://nats-broker:4222"
+            # GCS Standard tier, traderx-501015 project, us-east1 (research.md Decision 6).
             - name: TICKSTORE_OUT_DIR
-              value: "/data/ticks"
+              value: "gs://traderx-501015-tick-store/ticks"
             - name: TICKSTORE_FLUSH_INTERVAL_SECONDS
               value: "30"
             - name: TICKSTORE_FLUSH_MAX_ROWS
               value: "5000"
-          volumeMounts:
-            - name: tick-store-data
-              mountPath: /data/ticks
-      volumes:
-        - name: tick-store-data
-          persistentVolumeClaim:
-            claimName: tick-store-data
+            # HMAC credential for the bucket-scoped tick-store-gcs service account (DuckDB's GCS
+            # auth is HMAC key/secret, not Workload Identity — see quickstart.md). The
+            # tick-store-gcs-hmac Secret is created out-of-band, never committed to this repo.
+            - name: GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: access-key-id
+            - name: GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: secret-access-key

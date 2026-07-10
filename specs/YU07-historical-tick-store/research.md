@@ -71,7 +71,7 @@ capacity reason to extract: DuckDB's CSV reader accepts `/dev/stdin`, so the ing
 plain Unix pipeline —
 
 ```bash
-unzip -p taq_quotes_20250211_csv.zip <entry>.csv | python3 ingest_taq_quotes.py --date 2025-02-11 --out /data/ticks
+unzip -p taq_quotes_20250211_csv.zip <entry>.csv | python3 ingest_taq_quotes.py --date 2025-02-11 --out gs://traderx-501015-tick-store/ticks
 ```
 
 `unzip` (already present, no new dependency) decompresses straight into the pipe; DuckDB reads
@@ -79,15 +79,32 @@ unzip -p taq_quotes_20250211_csv.zip <entry>.csv | python3 ingest_taq_quotes.py 
 a bounded read-ahead buffer rather than seeking) and writes Parquet directly. Peak extra disk usage
 for ingesting a 76GB day is the size of that day's own output Parquet partition, nothing more.
 
-## Decision 6 — storage: local PersistentVolumeClaim in v1, not GCS yet
+## Decision 6 — storage: GCS Standard tier, `traderx-501015`, bucket-scoped HMAC credential
 
-The parent handoff flags ~650GB in GCS as a real, non-trivial monthly cost and asks for the user's
-budget comfort and standard-vs-coldline tier before any bulk upload — neither has been confirmed as
-of this state. `tick-store` writes to a local PVC-backed path (`/data/ticks`) so capture and TAQ
-ingestion work end-to-end today without committing to a cloud spend decision that belongs to the
-user. The unified schema and partitioning scheme do not change when the storage backend does — only
-the `--out` path does (DuckDB's Parquet writer and reader work identically against a local path, a
-mounted GCS FUSE volume, or `gs://` via the `httpfs` extension).
+Confirmed with the user: GCP, Standard storage class (not Nearline/Coldline — this is actively
+queried research data, feeding VWAP and the user's own future VaR/ES iteration; a single DuckDB
+range query re-scanning a month of Parquet would eat any storage-cost savings in retrieval fees on
+a colder tier), in the existing `traderx-501015` project (same project as the GKE cluster, reusing
+billing/IAM rather than standing up a second project). Bucket: `gs://traderx-501015-tick-store`,
+`us-east1` (matching the cluster's region), uniform bucket-level access.
+
+Auth: DuckDB's GCS support is HMAC key/secret (`CREATE SECRET (TYPE gcs, KEY_ID ..., SECRET ...)`),
+the same credential shape as S3 — not Kubernetes/GKE Workload Identity, which DuckDB has no native
+concept of. A dedicated service account (`tick-store-gcs@traderx-501015.iam.gserviceaccount.com`)
+holds `roles/storage.objectAdmin` scoped to *only* this bucket (bucket-level IAM binding, not a
+project-level one) — least-privilege: a compromised HMAC key can read/write/delete objects in this
+one bucket and nothing else in the project. The HMAC key pair is provided to `tick-store` via a
+Kubernetes Secret (`tick-store-gcs-hmac`), created out-of-band with `kubectl create secret` — never
+committed to this repo (see `quickstart.md`).
+
+`capture.py`/`ingest_taq_quotes.py` both take the `gs://` URI as their `--out`/`TICKSTORE_OUT_DIR`
+value unchanged — the unified schema and partitioning scheme are identical to the local-PVC design
+this state started with; only the destination path and one `CREATE SECRET` call at startup differ
+(`tick-store/gcs.py`, shared by both entrypoints, opt-in on the `gs://` prefix so local/PVC paths
+are unaffected). Verified structurally against the real bucket (dummy HMAC credentials against the
+real `gs://traderx-501015-tick-store` path correctly produced an auth-style 403, not a
+scheme/routing error, confirming the mechanism resolves correctly before a real key was ever
+involved).
 
 ## Decision 7 — Parquet compression: ZSTD
 
@@ -102,7 +119,8 @@ tree, not an override of a file YU02–YU06 already touch. The one shared file t
 is `kubernetes-runtime/manifests/base/kustomization.yaml` (every ancestor state through YU06 already
 overrides this file to add its own resources) — YU07's copy starts from YU06's current version
 (`generation/runtime-overrides/kubernetes-runtime/manifests/base/kustomization.yaml` in
-`specs/YU06-eod-price-production/`) and appends `tick-store-deployment.yaml` +
-`tick-store-data-pvc.yaml`, never replacing it. Verified empirically post-generation (see
-`generation/implementation-status.md`): every ancestor resource entry (`eod-session-close-cronjob.yaml`,
-`order-matcher-lmax-data-pvc.yaml`, etc.) survives alongside the two new entries.
+`specs/YU06-eod-price-production/`) and appends `tick-store-deployment.yaml`, never replacing it
+(no PVC — `tick-store` writes straight to GCS, Decision 6). Verified empirically post-generation
+(see `generation/implementation-status.md`): every ancestor resource entry
+(`eod-session-close-cronjob.yaml`, `order-matcher-lmax-data-pvc.yaml`, etc.) survives alongside the
+new entry.

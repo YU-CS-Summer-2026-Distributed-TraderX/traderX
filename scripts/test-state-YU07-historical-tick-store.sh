@@ -28,11 +28,13 @@ echo "[check] tick-store component present"
 for f in \
   "capture.py" \
   "ingest_taq_quotes.py" \
+  "gcs.py" \
   "duckdb_query_examples.sql" \
   "requirements.txt" \
   "Dockerfile" \
   "tests/test_capture.py" \
-  "tests/test_ingest_taq_quotes.py"; do
+  "tests/test_ingest_taq_quotes.py" \
+  "tests/test_gcs.py"; do
   [[ -f "${TICK_STORE_DIR}/${f}" ]] || { echo "[error] missing generated tick-store file: ${TICK_STORE_DIR}/${f}"; exit 1; }
 done
 
@@ -44,10 +46,17 @@ for marker in \
   'eod-session-close-cronjob.yaml' \
   'order-matcher-lmax-data-pvc.yaml' \
   'price-publisher-deployment.yaml' \
-  'tick-store-data-pvc.yaml' \
   'tick-store-deployment.yaml'; do
   rg -q "${marker}" "${KUST}" || { echo "[error] kustomization.yaml missing (clobber?): ${marker}"; exit 1; }
 done
+
+echo "[check] tick-store deployment wired for GCS (no local PVC, research.md Decision 6)"
+DEPLOY="${GENERATED_ROOT}/code/target-generated/kubernetes-runtime/manifests/base/tick-store-deployment.yaml"
+rg -q 'gs://traderx-501015-tick-store' "${DEPLOY}" || { echo "[error] tick-store-deployment.yaml missing gs:// out dir"; exit 1; }
+rg -q 'tick-store-gcs-hmac' "${DEPLOY}" || { echo "[error] tick-store-deployment.yaml missing GCS HMAC secretKeyRef"; exit 1; }
+[[ ! -f "${GENERATED_ROOT}/code/target-generated/kubernetes-runtime/manifests/base/tick-store-data-pvc.yaml" ]] || {
+  echo "[error] tick-store-data-pvc.yaml still generated -- should have been removed (GCS supersedes local PVC)"; exit 1;
+}
 
 echo "[check] tick-store unit tests pass"
 if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" >/dev/null 2>&1; then

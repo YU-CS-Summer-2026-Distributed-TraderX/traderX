@@ -8,7 +8,7 @@ NATS publish subjects — it is a consumer/CLI only).
 
 | Subject | Delivery | Effect |
 |---|---|---|
-| `pricing.*` | broadcast, wildcard | Every price tick is written to `/data/ticks/source=live/dt=.../symbol=.../` as an `event_type='price_tick'` row. |
+| `pricing.*` | broadcast, wildcard | Every price tick is written to `gs://traderx-501015-tick-store/ticks/source=live/dt=.../symbol=.../` as an `event_type='price_tick'` row. |
 | `/accounts/*/trades` | broadcast, wildcard | Every trade fill is written to the same tree as an `event_type='trade'` row. |
 
 No subject is published by `tick-store`; no existing publisher or consumer of either subject is
@@ -17,11 +17,11 @@ modified.
 ## 2. TAQ ingestion CLI (new, `tick-store`)
 
 ```
-unzip -p <taq_quotes_YYYYMMDD_csv.zip> <entry>.csv | python3 ingest_taq_quotes.py --date YYYY-MM-DD --out /data/ticks
+unzip -p <taq_quotes_YYYYMMDD_csv.zip> <entry>.csv | python3 ingest_taq_quotes.py --date YYYY-MM-DD --out gs://traderx-501015-tick-store/ticks
 ```
 
 Reads the confirmed TAQ CQ CSV layout from stdin, writes
-`/data/ticks/source=taq/dt=YYYY-MM-DD/symbol=.../` partitions. A row missing `symbol`/`date`/`time`
+`gs://traderx-501015-tick-store/ticks/source=taq/dt=YYYY-MM-DD/symbol=.../` partitions. A row missing `symbol`/`date`/`time`
 is excluded from the write rather than aborting the run (verified: 1 malformed row among 3 does not
 block the other 2); zero valid rows parsed, or a column layout that doesn't match the confirmed CQ
 header, → non-zero exit with a logged error.
@@ -33,7 +33,7 @@ API, e.g.:
 
 ```sql
 SELECT symbol, dt, sum(price * size) / sum(size) AS vwap
-FROM read_parquet('/data/ticks/**/*.parquet', hive_partitioning = true)
+FROM read_parquet('gs://traderx-501015-tick-store/ticks/**/*.parquet', hive_partitioning = true)
 WHERE event_type = 'trade' AND symbol = 'IBM' AND dt BETWEEN '2025-02-01' AND '2025-02-28'
 GROUP BY symbol, dt;
 ```

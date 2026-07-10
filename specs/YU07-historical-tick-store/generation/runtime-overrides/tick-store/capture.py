@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 import duckdb
 import nats
 
+from gcs import configure_gcs, is_gcs_path
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tick-store.capture")
 
@@ -114,8 +116,11 @@ def write_batch(con, rows, out_dir):
 
 async def run(nats_url=NATS_URL, out_dir=OUT_DIR,
                flush_interval=FLUSH_INTERVAL_SECONDS, flush_max_rows=FLUSH_MAX_ROWS):
-    os.makedirs(out_dir, exist_ok=True)
     con = duckdb.connect()
+    if is_gcs_path(out_dir):
+        configure_gcs(con)
+    else:
+        os.makedirs(out_dir, exist_ok=True)
     seq = SeqCounter()
     batch = []
     lock = asyncio.Lock()

@@ -1,4 +1,4 @@
-# ADR-029: New `tick-store` Component, Streamed TAQ Ingestion, Local PVC Storage
+# ADR-029: New `tick-store` Component, Streamed TAQ Ingestion, GCS Storage
 
 **Status:** Accepted, implemented
 **Date:** 2026-07-09
@@ -25,10 +25,15 @@ of scratch disk, and where the output actually gets stored.
    A single TAQ quotes day decompresses to ~76.5GiB (confirmed from the zip's own central
    directory); extracting before parsing would need multiple terabytes of scratch space across
    Feb+March with no query benefit.
-3. **Local PersistentVolumeClaim for storage in v1**, not GCS. The parent handoff explicitly flags
-   ~650GB in GCS as a real monthly cost requiring the user's budget/tier decision, which had not
-   been made as of this state. A local PVC lets capture and TAQ ingestion work end-to-end without
-   pre-committing that decision on the user's behalf.
+3. **GCS Standard tier, `traderx-501015` project, bucket-scoped HMAC credential.** ~650.2GB
+   (Feb+March combined) confirmed by the user. Standard was chosen over Nearline/Coldline because
+   this is actively-queried research data — a colder tier's per-GB retrieval fee would eat its own
+   storage-cost savings against repeated VWAP/return-series range queries. Auth is a dedicated
+   service account (`tick-store-gcs@traderx-501015.iam.gserviceaccount.com`) with
+   `storage.objectAdmin` scoped to only this bucket (not project-wide), via an HMAC key — DuckDB's
+   native GCS credential shape, not GKE Workload Identity, which DuckDB has no concept of. The key
+   reaches `tick-store` through a Kubernetes Secret created out-of-band, never committed to this
+   repo.
 
 ## Alternatives Considered
 
@@ -43,19 +48,25 @@ of scratch disk, and where the output actually gets stored.
 - **A custom columnar format or bespoke query engine** — rejected per the standing project
   decision (parent handoff): Parquet + DuckDB is the right size, already proven, and needs no new
   infrastructure to operate.
-- **Wire up GCS storage now** — rejected for this state; the budget/tier decision belongs to the
-  user and has not been made. A local PVC is a truthful description of what is built today; the
-  schema and partitioning do not change when the storage backend does.
+- **Nearline/Coldline storage class** — rejected; this dataset is queried unpredictably as
+  VWAP/VaR-ES work iterates, not archived. Retrieval fees on a colder tier scale with every scan of
+  a Parquet partition, unlike Standard's flat per-GB storage cost.
+- **GKE Workload Identity instead of an HMAC key** — rejected for this state; DuckDB's GCS
+  integration authenticates via an HMAC key/secret (the S3-compatible credential shape), not
+  Workload Identity. Revisit only if DuckDB adds native Workload Identity support.
+- **A local PersistentVolumeClaim** (this state's original v1 design, before the user confirmed
+  GCS tier/budget) — superseded once GCS was confirmed; removed rather than kept as a fallback,
+  since the schema/partitioning are identical either way and an unused PVC is dead infrastructure.
 
 ## Consequences
 
-Positive: capture and TAQ-quotes ingestion both work today with no new infrastructure beyond one
-new lightweight component and one new PVC; ingestion of the full Feb/March dataset needs no scratch
-disk beyond each day's own output size; the unified schema means one DuckDB query already spans
-both live and TAQ data.
+Positive: capture and TAQ-quotes ingestion both write directly to durable, region-matched object
+storage with no local PVC to manage or run out of space; ingestion of the full Feb/March dataset
+needs no scratch disk beyond each day's own network write; the bucket-scoped IAM binding means a
+compromised HMAC key can only touch this one bucket, not the rest of the project.
 
-Costs: `tick-store`'s local PVC does not scale to the full ~650GB TAQ dataset on its own — moving to
-object storage is the expected next step once GCS tier and budget are confirmed, at which point only
-the `--out` path changes (DuckDB reads/writes a `gs://` path via its `httpfs` extension the same way
-it does a local one). TAQ **trades** ingestion is not covered by this ADR or this state — the trades
-file's exact column layout was not confirmed at writing time.
+Costs: DuckDB's HMAC-based GCS auth means the credential is a static secret (rotatable, but not
+short-lived like Workload Identity tokens) — acceptable for a research-data store with no PII, not
+acceptable if this pattern were reused for anything handling sensitive data. TAQ **trades**
+ingestion is not covered by this ADR or this state — the trades file's exact column layout was not
+confirmed at writing time.

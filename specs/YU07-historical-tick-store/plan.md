@@ -37,8 +37,8 @@ extracting the multi-terabyte TAQ source to disk.
 - One unified Parquet schema for live and TAQ data, partitioned `source/dt/symbol`.
 - TAQ ingestion streams via a shell pipe (`unzip -p | ... /dev/stdin`) — never extracts the
   decompressed CSV to disk.
-- Storage is a local PVC in this state; GCS is the intended production target but is not wired up
-  until the user confirms storage tier and budget (research.md Decision 6).
+- Storage is GCS Standard tier in `traderx-501015` (`gs://traderx-501015-tick-store`), bucket-scoped
+  HMAC credential — confirmed with the user and wired up (research.md Decision 6).
 - Only TAQ **quotes** ingestion is implemented — the trades file's format was not confirmed at
   writing time; no normalizer is written against an unconfirmed layout.
 

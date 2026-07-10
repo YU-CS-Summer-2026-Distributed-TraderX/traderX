@@ -61,6 +61,7 @@ resources:
   - api-explorer-deployment.yaml
   - api-explorer-service.yaml
   # YU07 (historical-tick-store): tick-store capture component, no HTTP service (NATS
-  # subscriber + CLI only, see system/runtime-topology.md).
-  - tick-store-data-pvc.yaml
+  # subscriber + CLI only, see system/runtime-topology.md). Writes straight to GCS (research.md
+  # Decision 6) — no local PVC; the HMAC Secret is created out-of-band (see quickstart.md), not
+  # committed here.
   - tick-store-deployment.yaml

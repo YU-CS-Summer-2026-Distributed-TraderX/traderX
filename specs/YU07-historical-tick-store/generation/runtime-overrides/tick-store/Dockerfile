@@ -8,9 +8,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip \
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY capture.py ingest_taq_quotes.py duckdb_query_examples.sql ./
-
-RUN mkdir -p /data/ticks
-VOLUME /data/ticks
+COPY capture.py ingest_taq_quotes.py gcs.py duckdb_query_examples.sql ./
 
 CMD ["python3", "capture.py"]

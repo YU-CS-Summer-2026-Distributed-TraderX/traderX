@@ -2,10 +2,11 @@
 
 ## Storage layout
 
-Parquet files under a single root (`/data/ticks` on the `tick-store` PVC), Hive-partitioned:
+Parquet files under a single root (`gs://traderx-501015-tick-store/ticks`, GCS Standard tier —
+research.md Decision 6), Hive-partitioned:
 
 ```
-/data/ticks/source=<live|taq>/dt=<YYYY-MM-DD>/symbol=<SYM>/part-*.parquet
+gs://traderx-501015-tick-store/ticks/source=<live|taq>/dt=<YYYY-MM-DD>/symbol=<SYM>/part-*.parquet
 ```
 
 Read back with DuckDB's `hive_partitioning=true`, which reconstructs `source`, `dt`, `symbol` as
@@ -82,9 +83,11 @@ future consumer needs one.
 | Key | Default | Meaning |
 |---|---|---|
 | `TICKSTORE_NATS_URL` | `nats://nats-broker:4222` | Broker connection for `capture.py`. |
-| `TICKSTORE_OUT_DIR` | `/data/ticks` | Parquet store root (capture and ingestion both write here). |
+| `TICKSTORE_OUT_DIR` | `gs://traderx-501015-tick-store/ticks` | Parquet store root (capture and ingestion both write here). A local path also works unchanged (`gcs.py`'s `is_gcs_path` gates the GCS setup, opt-in on the `gs://` prefix). |
 | `TICKSTORE_FLUSH_INTERVAL_SECONDS` | `30` | Capture batch flush cadence. |
 | `TICKSTORE_FLUSH_MAX_ROWS` | `5000` | Capture batch flush size trigger (whichever of interval/rows hits first). |
+| `GCS_HMAC_KEY_ID` | (none — required when `TICKSTORE_OUT_DIR` is `gs://`) | HMAC access key ID for the bucket-scoped `tick-store-gcs` service account (research.md Decision 6). Sourced from the `tick-store-gcs-hmac` k8s Secret, never committed. |
+| `GCS_HMAC_SECRET_ACCESS_KEY` | (none — required when `TICKSTORE_OUT_DIR` is `gs://`) | HMAC secret for the same credential. |
 
 ## Reused, unchanged
 

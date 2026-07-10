@@ -14,11 +14,12 @@
 
 1. Delegate direct invocation via `pipeline/generate-state.sh YU07-historical-tick-store`.
 2. Generate parent `YU06-eod-price-production` from a clean target root.
-3. Overlay the new `tick-store` component in full (`capture.py`, `ingest_taq_quotes.py`,
+3. Overlay the new `tick-store` component in full (`capture.py`, `ingest_taq_quotes.py`, `gcs.py`,
    `duckdb_query_examples.sql`, `requirements.txt`, `Dockerfile`, `tests/`) — a brand-new directory
    in the shared component tree, not an override of any ancestor's file.
-4. Overlay the k8s manifests: `tick-store-deployment.yaml`, `tick-store-data-pvc.yaml`, and the
-   extended `kustomization.yaml` (starts from YU06's copy, appends the two new resource entries).
+4. Overlay the k8s manifests: `tick-store-deployment.yaml` (no PVC — writes straight to GCS,
+   research.md Decision 6) and the extended `kustomization.yaml` (starts from YU06's copy, appends
+   the one new resource entry).
 5. Materialize the state scaffold + spec-source copies under
    `generated/code/target-generated/YU07-historical-tick-store`.
 6. Inherit everything else (runtime harness, other manifests, GKE deploy scripts, observability
@@ -30,14 +31,14 @@ Only one file is overridden by an ancestor **and** by YU07:
 
 - `kubernetes-runtime/manifests/base/kustomization.yaml` — overridden by every ancestor state
   through YU06 (each appends its own resource entries). YU07's copy starts from YU06's current
-  version and appends `tick-store-deployment.yaml` + `tick-store-data-pvc.yaml`, never replacing it.
+  version and appends `tick-store-deployment.yaml`, never replacing it.
 
-`tick-store`'s own files (`capture.py`, `ingest_taq_quotes.py`, etc.) have no ancestor version —
-this is a new component, so there is nothing to clobber there.
+`tick-store`'s own files (`capture.py`, `ingest_taq_quotes.py`, `gcs.py`, etc.) have no ancestor
+version — this is a new component, so there is nothing to clobber there.
 
 Verify empirically after generating: regenerate, then grep the generated `kustomization.yaml` for
 an ancestor marker (`eod-session-close-cronjob.yaml`, `order-matcher-lmax-data-pvc.yaml`) **and**
-both YU07 markers (`tick-store-deployment.yaml`, `tick-store-data-pvc.yaml`).
+the YU07 marker (`tick-store-deployment.yaml`).
 
 ## Build / verify
 
@@ -47,4 +48,5 @@ cd generated/code/target-generated/tick-store && python3 -m pytest tests/ -v
 ```
 
 Deploy uses the inherited `YU06`/`YU02` GKE scripts/CI (the state adds only the `tick-store`
-component's image content, its Deployment/PVC manifests, and two `kustomization.yaml` entries).
+component's image content, its Deployment manifest, and one `kustomization.yaml` entry). The
+`tick-store-gcs-hmac` Secret is created out-of-band (quickstart.md) — generation never touches it.

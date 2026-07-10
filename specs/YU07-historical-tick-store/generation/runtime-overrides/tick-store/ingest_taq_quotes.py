@@ -19,6 +19,8 @@ import sys
 
 import duckdb
 
+from gcs import configure_gcs, is_gcs_path
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("tick-store.ingest_taq_quotes")
 
@@ -68,6 +70,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     con = duckdb.connect()
+    if is_gcs_path(args.out):
+        configure_gcs(con)
     try:
         count = ingest(con, args.input, args.out)
     except ValueError as exc:

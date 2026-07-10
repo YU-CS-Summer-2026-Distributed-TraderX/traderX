@@ -11,13 +11,16 @@ Tick capture + TAQ quotes ingestion + DuckDB query recipe — **implemented and 
 | `capture.py` | Long-running NATS subscriber on `pricing.*` and `/accounts/*/trades`; batches rows into the unified schema, flushes to partitioned Parquet on a row-count/interval trigger. |
 | `ingest_taq_quotes.py` | One-shot CLI normalizing a TAQ Consolidated Quotes CSV (read from stdin, streamed via `unzip -p`) into the same schema. |
 | `duckdb_query_examples.sql` | VWAP-style, daily-return, spread, and inventory queries over the unified store. |
+| `gcs.py` | Shared GCS wiring (`CREATE SECRET TYPE gcs` from HMAC env vars), opt-in on a `gs://` output path — used by both entrypoints. |
 | `Dockerfile`, `requirements.txt` | Container packaging (`duckdb`, `nats-py`; `unzip` in the base image). |
-| `tests/test_capture.py`, `tests/test_ingest_taq_quotes.py` | Unit tests (10 total). |
+| `tests/test_capture.py`, `tests/test_ingest_taq_quotes.py`, `tests/test_gcs.py` | Unit tests (13 total). |
 
 ### Manifests
 
-- `tick-store-deployment.yaml` (1 replica, no HTTP surface/probes — NATS subscriber + CLI only)
-- `tick-store-data-pvc.yaml` (20Gi, `ReadWriteOnce`)
+- `tick-store-deployment.yaml` (1 replica, no HTTP surface/probes — NATS subscriber + CLI only; GCS
+  HMAC credential injected via `tick-store-gcs-hmac` Secret, created out-of-band)
+- No PVC — writes straight to `gs://traderx-501015-tick-store` (research.md Decision 6); the
+  original `tick-store-data-pvc.yaml` was removed once GCS was confirmed, not kept as a fallback.
 - `kustomization.yaml` extended from YU06's copy, append-only (verified below)
 
 ### Pipeline wiring
@@ -107,13 +110,32 @@ secret as YU05/YU06).
 - **Shared-file no-clobber** (`scripts/test-state-YU07-historical-tick-store.sh`, run against the
   generated tree): `kustomization.yaml` retains every ancestor's resource entry
   (`eod-session-close-cronjob.yaml`, `order-matcher-lmax-data-pvc.yaml`,
-  `price-publisher-deployment.yaml`) alongside both YU07 additions (`tick-store-data-pvc.yaml`,
-  `tick-store-deployment.yaml`).
+  `price-publisher-deployment.yaml`) alongside the YU07 addition (`tick-store-deployment.yaml`).
 - **Unit tests** (`python3 -m pytest tests/ -v`, run both against the spec source and the generated
-  `tick-store` output): **10 passed, 0 failed** — message-to-row mapping (both NATS subjects),
+  `tick-store` output): **13 passed, 0 failed** — message-to-row mapping (both NATS subjects),
   `SeqCounter` monotonicity, partitioned-write collision-avoidance across repeated flushes, empty-
-  batch no-op, real-sample TAQ ingestion, row-level tolerance, and both error paths.
-- **Smoke test** (`scripts/test-state-YU07-historical-tick-store.sh`): all checks pass.
+  batch no-op, real-sample TAQ ingestion, row-level tolerance, both error paths, and `gcs.py`'s
+  `is_gcs_path`/`configure_gcs` behavior (including the clear-error guard when HMAC env vars are
+  unset).
+- **Smoke test** (`scripts/test-state-YU07-historical-tick-store.sh`): all checks pass, including
+  new checks that the generated Deployment references the real bucket + HMAC Secret and that no
+  PVC is generated.
+
+### GCS wiring (added after the user confirmed storage tier/budget)
+
+- Bucket `gs://traderx-501015-tick-store` created (Standard, `us-east1`, uniform bucket-level
+  access); dedicated service account `tick-store-gcs@traderx-501015.iam.gserviceaccount.com` with
+  `storage.objectAdmin` scoped to only this bucket (granted via the Console UI, at the user's
+  request, to walk through the IAM step themselves).
+- **Verified structurally before any real credential existed**: `CREATE SECRET (TYPE gcs, KEY_ID
+  'dummy', SECRET 'dummy')` against the real bucket produced an auth-style `403 Forbidden`, not a
+  scheme/routing error — confirms `gs://` URIs resolve correctly through DuckDB's native `gcs`
+  secret type before the real HMAC key was ever involved.
+- End-to-end write/read against the real bucket with the real HMAC key has **not** been run in this
+  session — the secret value was deliberately kept out of chat/tool logs (the user holds it,
+  creates the `tick-store-gcs-hmac` k8s Secret themselves per `quickstart.md`). The mechanism is
+  verified as far as it can be without that credential; a live write/read pass is the natural next
+  check once the Secret exists in a cluster.
 
 ## Not implemented (out of this state's scope — see spec.md)
 
@@ -121,8 +143,9 @@ secret as YU05/YU06).
   cloud placeholder) as of this state's implementation; per this project's standing rule, no
   normalizer is written against an unconfirmed column layout. Only TAQ **quotes** ingestion is
   implemented.
-- **GCS storage.** Storage is a local PVC (research.md Decision 6); GCS tier/budget was not
-  confirmed with the user as of this state.
+- **A live write/read against the real GCS bucket with the real HMAC key.** GCS tier/budget were
+  confirmed and the bucket/IAM/wiring are done, but the actual credential was deliberately kept out
+  of this session's chat/tool logs — see "GCS wiring" above.
 - Backtesting/replay, and serving the execution algo engine (YU08)/VaR-ES consumers — both are
   separate future states per the parent handoff's own decisions-already-made list, not this state's
   scope.
