@@ -222,6 +222,9 @@ case "${STATE_ID}" in
   YU06-eod-price-production)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production")
     ;;
+  YU07-historical-tick-store)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store")
+    ;;
 esac
 
 state_allows_dir() {

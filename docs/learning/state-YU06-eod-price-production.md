@@ -8,7 +8,7 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 
 - Previous state(s): [YU05-post-trade-compliance](/docs/learning/state-YU05-post-trade-compliance)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU07-historical-tick-store](/docs/learning/state-YU07-historical-tick-store)
 
 ## Convergence Metadata
 

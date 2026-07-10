@@ -33,6 +33,7 @@ tracks:
       - YU04-durable-control-feeds
       - YU05-post-trade-compliance
       - YU06-eod-price-production
+      - YU07-historical-tick-store
   functional:
     description: "Functional capability expansion states."
     states:
@@ -53,6 +54,7 @@ tracks:
       - YU04-durable-control-feeds
       - YU05-post-trade-compliance
       - YU06-eod-price-production
+      - YU07-historical-tick-store
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -201,3 +203,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU06-eod-price-production/spec.md
+  - id: YU07-historical-tick-store
+    previous:
+      - YU06-eod-price-production
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU07-historical-tick-store/spec.md

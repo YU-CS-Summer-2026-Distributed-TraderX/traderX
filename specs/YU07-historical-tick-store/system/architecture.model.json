@@ -1,0 +1,68 @@
+{
+  "title": "Historical Tick Store",
+  "stateId": "YU07-historical-tick-store",
+  "parentState": "YU06-eod-price-production",
+  "description": "TraderX's own live ticks and a normalized NYSE TAQ quotes sample, captured into one partitioned Parquet schema queryable through DuckDB.",
+  "inheritsFrom": "YU06-eod-price-production",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "price_publisher",
+      "label": "Price Publisher",
+      "kind": "service",
+      "description": "Existing last-price feed (pricing.*) that tick-store captures from, unchanged."
+    },
+    {
+      "id": "trade_processor",
+      "label": "Trade Processor",
+      "kind": "service",
+      "description": "Existing trade-fill broadcaster (/accounts/*/trades) that tick-store captures from, unchanged."
+    },
+    {
+      "id": "nats",
+      "label": "NATS",
+      "kind": "service",
+      "description": "Existing broker; tick-store adds a subscriber, publishes nothing."
+    },
+    {
+      "id": "tick_store_capture",
+      "label": "tick-store: capture.py",
+      "kind": "service",
+      "description": "Long-running subscriber on pricing.* and /accounts/*/trades; batched writes to partitioned Parquet."
+    },
+    {
+      "id": "taq_source",
+      "label": "TAQ CSV (zip, OneDrive)",
+      "kind": "actor",
+      "description": "NYSE Daily TAQ Consolidated Quotes CSV, streamed via unzip -p, never extracted to disk."
+    },
+    {
+      "id": "tick_store_ingest",
+      "label": "tick-store: ingest_taq_quotes.py",
+      "kind": "service",
+      "description": "One-shot CLI normalizing a TAQ CQ CSV (via stdin) into the same partitioned schema."
+    },
+    {
+      "id": "parquet_store",
+      "label": "Parquet Store (PVC)",
+      "kind": "service",
+      "description": "source=<live|taq>/dt=.../symbol=.../*.parquet, ZSTD-compressed."
+    },
+    {
+      "id": "duckdb_query",
+      "label": "DuckDB Query Layer",
+      "kind": "actor",
+      "description": "Symbol/date-range queries and aggregations over the unified store, no server."
+    }
+  ],
+  "edges": [
+    { "from": "price_publisher", "to": "nats", "label": "Publishes pricing.<TICKER> (unchanged)" },
+    { "from": "trade_processor", "to": "nats", "label": "Publishes /accounts/<id>/trades (unchanged)" },
+    { "from": "nats", "to": "tick_store_capture", "label": "Delivers pricing.* and /accounts/*/trades" },
+    { "from": "tick_store_capture", "to": "parquet_store", "label": "Batched Parquet writes (source=live)" },
+    { "from": "taq_source", "to": "tick_store_ingest", "label": "unzip -p | stdin (streamed, no extraction)" },
+    { "from": "tick_store_ingest", "to": "parquet_store", "label": "Parquet writes (source=taq)" },
+    { "from": "duckdb_query", "to": "parquet_store", "label": "read_parquet(..., hive_partitioning=true)" }
+  ]
+}

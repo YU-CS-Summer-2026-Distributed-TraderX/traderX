@@ -533,6 +533,29 @@
         "branch": "code/generated-state-YU06-eod-price-production",
         "tag": "generated/YU06-eod-price-production/v1"
       }
+    },
+    {
+      "id": "YU07-historical-tick-store",
+      "title": "Historical Tick Store",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU07-historical-tick-store",
+      "previous": [
+        "YU06-eod-price-production"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU07-historical-tick-store",
+        "runtime": "inherits YU06-eod-price-production runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU07-historical-tick-store",
+        "tag": "generated/YU07-historical-tick-store/v1"
+      }
     }
   ]
 }
