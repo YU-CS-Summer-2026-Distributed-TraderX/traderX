@@ -1,0 +1,63 @@
+{
+  "title": "Execution Algo Engine",
+  "stateId": "YU08-execution-algo-engine",
+  "parentState": "YU07-historical-tick-store",
+  "description": "A new execution-algo-engine component slicing parent orders into TWAP/VWAP child orders submitted through order-matcher's existing order-entry path.",
+  "inheritsFrom": "YU07-historical-tick-store",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "algo_client",
+      "label": "REST caller",
+      "kind": "actor",
+      "description": "Submits a parent order via POST /algo/orders and polls progress."
+    },
+    {
+      "id": "execution_algo_engine",
+      "label": "execution-algo-engine",
+      "kind": "service",
+      "description": "Schedules TWAP/VWAP buckets, submits child orders, tracks fills, event-sources its own state."
+    },
+    {
+      "id": "algo_event_stream",
+      "label": "TRADERX_ALGO_ENGINE (JetStream)",
+      "kind": "service",
+      "description": "Durable append log of parent-order lifecycle events; replayed on boot for crash recovery."
+    },
+    {
+      "id": "price_publisher",
+      "label": "Price Publisher",
+      "kind": "service",
+      "description": "Existing last-price feed; queried per child order to derive a marketable limit price."
+    },
+    {
+      "id": "order_matcher",
+      "label": "order-matcher (BLP + risk gateway)",
+      "kind": "service",
+      "description": "Existing order-entry endpoint; children are indistinguishable from manually entered orders."
+    },
+    {
+      "id": "nats",
+      "label": "NATS",
+      "kind": "service",
+      "description": "Existing broker; execution-algo-engine adds a subscriber on /accounts/*/orders, publishes nothing to core NATS."
+    },
+    {
+      "id": "tick_store_parquet",
+      "label": "Tick Store (Parquet, GCS)",
+      "kind": "service",
+      "description": "YU07's unified ticks store; queried by the DuckDB volume-profile source for VWAP."
+    }
+  ],
+  "edges": [
+    { "from": "algo_client", "to": "execution_algo_engine", "label": "POST /algo/orders, GET /algo/orders/{id}" },
+    { "from": "execution_algo_engine", "to": "price_publisher", "label": "GET /prices/{ticker}" },
+    { "from": "execution_algo_engine", "to": "order_matcher", "label": "POST /orders (child order, per bucket)" },
+    { "from": "order_matcher", "to": "nats", "label": "Publishes /accounts/<id>/orders (unchanged)" },
+    { "from": "nats", "to": "execution_algo_engine", "label": "Delivers /accounts/*/orders (new subscriber)" },
+    { "from": "execution_algo_engine", "to": "algo_event_stream", "label": "Append event, then apply to in-memory state" },
+    { "from": "algo_event_stream", "to": "execution_algo_engine", "label": "Replay on boot (crash recovery)" },
+    { "from": "execution_algo_engine", "to": "tick_store_parquet", "label": "VWAP: read_parquet(..., hive_partitioning=true) via DuckDB JDBC" }
+  ]
+}
