@@ -44,9 +44,10 @@ Build order is bottom-up (schema → capture → TAQ ingestion → query recipe 
   wired into both `capture.py` and `ingest_taq_quotes.py`, opt-in on a `gs://` output path.
 - [x] T73 Removed the local `tick-store-data` PVC once GCS was confirmed; Deployment updated with
   `TICKSTORE_OUT_DIR=gs://traderx-501015-tick-store/ticks` + Secret-sourced HMAC env vars.
-- [ ] T74 Live write/read against the real bucket with the real HMAC key — not run this session
-  (secret value intentionally never touched chat/tool logs); natural next check once the
-  `tick-store-gcs-hmac` k8s Secret exists in a cluster.
+- [x] T74 Live write/read against the real bucket with the real HMAC key (user ran `configure_gcs`
+  + a real `COPY ... TO 'gs://...'` locally with the real credential, kept out of chat/tool logs
+  throughout; verified independently via a separate gcloud-auth read-back — content matched
+  exactly, `[('IBM', 1)]`). Test object cleaned up from the bucket afterward.
 
 ## Doc sync
 - [x] T60 Verify generation propagation empirically (`kustomization.yaml` keeps every ancestor

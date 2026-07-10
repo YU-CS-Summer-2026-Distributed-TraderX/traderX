@@ -131,11 +131,14 @@ secret as YU05/YU06).
   'dummy', SECRET 'dummy')` against the real bucket produced an auth-style `403 Forbidden`, not a
   scheme/routing error — confirms `gs://` URIs resolve correctly through DuckDB's native `gcs`
   secret type before the real HMAC key was ever involved.
-- End-to-end write/read against the real bucket with the real HMAC key has **not** been run in this
-  session — the secret value was deliberately kept out of chat/tool logs (the user holds it,
-  creates the `tick-store-gcs-hmac` k8s Secret themselves per `quickstart.md`). The mechanism is
-  verified as far as it can be without that credential; a live write/read pass is the natural next
-  check once the Secret exists in a cluster.
+- **End-to-end write/read against the real bucket, with the real HMAC key, verified**: the user ran
+  `configure_gcs` + a real `COPY (SELECT 'IBM' AS symbol, 1 AS x) TO
+  'gs://traderx-501015-tick-store/_smoke-test/probe.parquet' (FORMAT PARQUET)` locally with the
+  real credential (kept out of this session's chat/tool logs throughout — env vars set directly in
+  the user's own terminal). Verified independently via a *separate* gcloud-auth path (the project
+  Owner account, not the HMAC key): `gcloud storage ls` confirmed the object existed, then
+  `gcloud storage cp` + `read_parquet` on the downloaded copy returned `[('IBM', 1)]` — exact match.
+  Test object removed from the bucket afterward.
 
 ## Not implemented (out of this state's scope — see spec.md)
 
@@ -143,9 +146,6 @@ secret as YU05/YU06).
   cloud placeholder) as of this state's implementation; per this project's standing rule, no
   normalizer is written against an unconfirmed column layout. Only TAQ **quotes** ingestion is
   implemented.
-- **A live write/read against the real GCS bucket with the real HMAC key.** GCS tier/budget were
-  confirmed and the bucket/IAM/wiring are done, but the actual credential was deliberately kept out
-  of this session's chat/tool logs — see "GCS wiring" above.
 - Backtesting/replay, and serving the execution algo engine (YU08)/VaR-ES consumers — both are
   separate future states per the parent handoff's own decisions-already-made list, not this state's
   scope.
