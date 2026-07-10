@@ -489,3 +489,10 @@ website/yarn-error.log*
 
 # IDE-only parent-state source snapshots inside spec overlays (derived)
 **/.parent-src/
+
+# GCP service-account key downloads (live credentials) -- these must never live in this repo.
+# Default Console download naming is <project-id>-<hex>.json; also guard common manual names.
+traderx-501015-*.json
+*-key.json
+*-sa-key.json
+*serviceaccount*.json
