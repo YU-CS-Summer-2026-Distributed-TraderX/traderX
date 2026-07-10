@@ -47,27 +47,48 @@ depends on (`JetStreamControlFeedPublisher`, `ControlFeedSubscriber`). `executio
 the identical client and stream-bootstrap idiom for a new stream, `TRADERX_ALGO_ENGINE` (subject
 `algo.events.>`, file storage): every state transition (`ParentOrderCreated`, `ChildOrderSubmitted`,
 `ChildOrderFillObserved`, `ParentOrderCompleted`) is appended as one JSON message before it is
-reflected in the in-memory model. A single durable pull consumer (`algo-engine-state`,
-`DeliverPolicy.All`, `AckPolicy.Explicit`) both rebuilds in-memory state at boot (replaying every
-unacked message) and receives new events live — the same consumer serves both roles, so there is no
-separate "replay mode" versus "live mode" to keep in sync. An event is only acked after the in-memory
-model reflects it, so a crash between append and ack simply redelivers and reapplies the same event,
-which is idempotent (each event fully replaces the affected bucket/order's fields rather than
-incrementing a counter).
+reflected in the in-memory model. On every boot, a fresh **ephemeral** pull consumer
+(`DeliverPolicy.All`, `AckPolicy.None`) replays the entire stream from the start and rebuilds every
+parent order, then the same subscription keeps delivering new events live — the same consumer
+serves both roles, so there is no separate "replay mode" versus "live mode" to keep in sync. No ack
+bookkeeping is needed because applying an event is a deterministic function of current state
+(each event fully replaces the affected bucket/order's fields rather than incrementing a counter),
+so a full replay from the start is correct regardless of when a crash happened. (A durable named
+consumer with explicit acks was tried first and rejected once live kind verification surfaced the
+gap: acking permanently advances that consumer's position, so a restart would only replay whatever
+was left unacked — any parent order that had already fully completed before the restart would be
+silently missing from the rebuilt state, contradicting FR-AE08's "every parent order." See ADR-030.)
 
 This is deliberately not a database table: this state has no existing datastore of its own to add
 one to, and the append-only, replay-to-rebuild shape is exactly what JetStream already gives for
 free — a new table plus ORM would duplicate infrastructure the project already runs for the same
 purpose.
 
-## Decision 5 — fill tracking: subscribe to the existing `/accounts/*/orders` broadcast, no new subject
+## Decision 5 — fill tracking: catch-all NATS subscribe + client-side filter, no new subject
 
 `/accounts/<accountId>/orders` already broadcasts every order lifecycle event
 (`orderId`, `status`, `remainingQuantity`, `limitPrice`, `lastExecutionPrice`) to multiple
-subscribers (the frontend blotter stream). `execution-algo-engine` adds itself as another wildcard
-subscriber (`/accounts/*/orders`) — the same precedent YU07's `tick-store` set for `pricing.*`
-(`system/messaging-subject-map.md`): a new broadcast subscriber, no publisher change, no new
-subject. Every submitted child order's returned `orderId` (from the synchronous `POST /orders`
+subscribers (the frontend blotter stream) — no new subject, no publisher change.
+`execution-algo-engine` cannot use a NATS token wildcard to select every account's subject the way
+`pricing.*` does for tick-store (YU07 Decision 2), because these subjects use a literal `/` rather
+than NATS's `.`-delimited hierarchy — `order-matcher` publishes the literal string
+`"/accounts/" + accountId + "/orders"` (`NatsBridgeHandler`), so the entire string is one NATS
+token and `*` cannot be embedded inside it (jnats's subject validator rejects
+`"/accounts/*/orders"` outright: "Subject wildcard improperly placed" — discovered live during this
+state's kind verification, not from documentation). Instead, `execution-algo-engine` subscribes to
+NATS's full match-all subject (`">"`) and filters client-side by subject prefix/suffix
+(`/accounts/` ... `/orders`) — the only correct way to select every account's order subject given
+the existing publisher's non-hierarchical naming, at the cost of also receiving every other subject
+on the connection and discarding non-matches.
+
+Every message on this bus is wrapped in a `NatsEnvelope` (`topic`/`payload`/`date`/`from`/`type` —
+`messaging/nats/NatsJSONPublisher`, the concrete `Publisher<T>` every JVM publisher on this branch
+uses, including order-matcher's `NatsBridgeHandler`); the actual `OrderResponse` fields live under
+`payload`, not the envelope's top level — also found live, not from documentation, since nothing in
+this project's spec packs had previously needed to describe the wire format from a *new*
+subscriber's point of view. `execution-algo-engine` unwraps `payload` before reading `orderId` etc.
+
+Every submitted child order's returned `orderId` (from the synchronous `POST /orders`
 response) is recorded in an in-memory `orderId -> (parentOrderId, bucketIndex)` index; an incoming
 lifecycle event whose `orderId` matches updates that bucket's fill state and appends a
 `ChildOrderFillObserved` event.

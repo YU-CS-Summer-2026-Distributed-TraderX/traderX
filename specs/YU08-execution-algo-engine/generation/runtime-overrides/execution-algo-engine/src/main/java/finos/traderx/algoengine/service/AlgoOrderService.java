@@ -50,7 +50,18 @@ public class AlgoOrderService {
    * to the owning parent/bucket without touching order-matcher's output payload. */
   private final Map<String, ChildRef> childIndex = new ConcurrentHashMap<>();
 
+  /** Fill updates for an orderId not yet in {@link #childIndex} — closes a real race discovered
+   * during live kind verification: order-matcher can broadcast a child order's fill over NATS
+   * before the synchronous {@code POST /orders} response (which is what populates {@link
+   * #childIndex}) returns, since NATS delivery to this subscriber races the HTTP round trip. Every
+   * {@link #onOrderUpdate} miss is stashed here; every {@link #submitBucket} success checks for a
+   * stashed update immediately after registering the new orderId, so correlation succeeds
+   * regardless of which side arrives first. */
+  private final Map<String, PendingUpdate> pendingUpdates = new ConcurrentHashMap<>();
+
   private record ChildRef(String parentOrderId, int bucketIndex) {}
+
+  private record PendingUpdate(Integer remainingQuantity, BigDecimal lastExecutionPrice) {}
 
   public AlgoOrderService(
       AlgoEventStore eventStore,
@@ -149,14 +160,28 @@ public class AlgoOrderService {
           childOrderId, clientOrderId, limitPrice, Instant.now());
       eventStore.append(submitted);
       applyAndIndex(submitted);
+
+      PendingUpdate pending = pendingUpdates.remove(childOrderId);
+      if (pending != null) {
+        processFill(childOrderId, pending.remainingQuantity(), pending.lastExecutionPrice());
+      }
     } catch (Exception ex) {
       log.warn("child order submission failed for {} (will retry next tick): {}", clientOrderId, ex.toString());
     }
   }
 
-  /** Called by {@code OrderUpdateSubscriber} for every {@code /accounts/*}{@code /orders} event
-   * whose {@code orderId} matches a known child order. */
+  /** Called by {@code OrderUpdateSubscriber} for every {@code /accounts/*}{@code /orders} event.
+   * An {@code orderId} not yet known here is stashed in {@link #pendingUpdates} rather than
+   * dropped — see that field's javadoc for the race this closes. */
   public void onOrderUpdate(String orderId, Integer remainingQuantity, BigDecimal lastExecutionPrice) {
+    if (!childIndex.containsKey(orderId)) {
+      pendingUpdates.put(orderId, new PendingUpdate(remainingQuantity, lastExecutionPrice));
+      return;
+    }
+    processFill(orderId, remainingQuantity, lastExecutionPrice);
+  }
+
+  private void processFill(String orderId, Integer remainingQuantity, BigDecimal lastExecutionPrice) {
     ChildRef ref = childIndex.get(orderId);
     if (ref == null) {
       return; // not a child order this engine submitted

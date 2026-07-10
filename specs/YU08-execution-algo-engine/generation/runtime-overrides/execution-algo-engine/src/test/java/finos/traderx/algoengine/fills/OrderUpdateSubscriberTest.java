@@ -21,9 +21,11 @@ class OrderUpdateSubscriberTest {
     AlgoOrderService service = mock(AlgoOrderService.class);
     OrderUpdateSubscriber subscriber = new OrderUpdateSubscriber("nats://unused:4222", service);
 
-    JsonNode body = mapper.readTree(
-        "{\"orderId\":\"child-0\",\"remainingQuantity\":0,\"lastExecutionPrice\":\"100.10\"}");
-    subscriber.handle(body);
+    // Wrapped in a NatsEnvelope, matching what NatsJSONPublisher actually puts on the wire.
+    JsonNode envelope = mapper.readTree(
+        "{\"topic\":\"/accounts/22214/orders\",\"payload\":{\"orderId\":\"child-0\","
+            + "\"remainingQuantity\":0,\"lastExecutionPrice\":\"100.10\"},\"from\":\"order-matcher\"}");
+    subscriber.handle(envelope);
 
     verify(service).onOrderUpdate(eq("child-0"), eq(0), eq(new BigDecimal("100.10")));
   }
@@ -33,8 +35,8 @@ class OrderUpdateSubscriberTest {
     AlgoOrderService service = mock(AlgoOrderService.class);
     OrderUpdateSubscriber subscriber = new OrderUpdateSubscriber("nats://unused:4222", service);
 
-    JsonNode body = mapper.readTree("{\"accountId\":22214}");
-    subscriber.handle(body);
+    JsonNode envelope = mapper.readTree("{\"topic\":\"/accounts/22214/positions\",\"payload\":{\"accountId\":22214}}");
+    subscriber.handle(envelope);
 
     verify(service, never()).onOrderUpdate(any(), any(), any());
   }

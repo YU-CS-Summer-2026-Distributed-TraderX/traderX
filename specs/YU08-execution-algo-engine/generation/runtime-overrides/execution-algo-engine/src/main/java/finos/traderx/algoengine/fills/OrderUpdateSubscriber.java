@@ -16,15 +16,26 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 /**
- * research.md Decision 5: subscribes to the existing {@code /accounts/*}{@code /orders} broadcast
- * subject — the same precedent YU07's {@code tick-store} set for {@code pricing.*} — and
- * correlates each lifecycle event to a child order by {@code orderId} via {@link
- * AlgoOrderService#onOrderUpdate}. No new subject, no publisher change.
+ * research.md Decision 5: subscribes to the existing {@code /accounts/<id>/orders} broadcast
+ * subject family and correlates each lifecycle event to a child order by {@code orderId} via
+ * {@link AlgoOrderService#onOrderUpdate}. No new subject, no publisher change.
+ *
+ * <p>These subjects use a literal {@code /}, not NATS's {@code .}-delimited token hierarchy
+ * (`order-matcher` publishes the literal string {@code "/accounts/" + accountId + "/orders"} —
+ * see {@code NatsBridgeHandler}), so the whole thing is one token from NATS's perspective and
+ * {@code *} cannot be embedded inside it as a wildcard (jnats's subject validator rejects
+ * {@code "/accounts/*}{@code /orders"} outright: "Subject wildcard improperly placed"). Instead
+ * this subscribes to NATS's full match-all ({@code ">"}) and filters client-side by subject
+ * prefix/suffix — the only correct way to select every {@code /accounts/<id>/orders} subject
+ * given the existing publisher's non-hierarchical naming, at the cost of also receiving every
+ * other subject on the connection (pricing ticks, trades, positions) and discarding non-matches.
  */
 @Component
 public class OrderUpdateSubscriber {
   private static final Logger log = LoggerFactory.getLogger(OrderUpdateSubscriber.class);
-  private static final String SUBJECT = "/accounts/*/orders";
+  private static final String CATCH_ALL_SUBJECT = ">";
+  private static final String SUBJECT_PREFIX = "/accounts/";
+  private static final String SUBJECT_SUFFIX = "/orders";
 
   private final String natsAddress;
   private final AlgoOrderService algoOrderService;
@@ -45,11 +56,16 @@ public class OrderUpdateSubscriber {
         .connectionTimeout(Duration.ofSeconds(10))
         .maxReconnects(-1)
         .build());
-    connection.createDispatcher(this::onMessage).subscribe(SUBJECT);
-    log.info("subscribed to {} for child-order fill tracking", SUBJECT);
+    connection.createDispatcher(this::onMessage).subscribe(CATCH_ALL_SUBJECT);
+    log.info("subscribed to {} (filtering for {}*{}) for child-order fill tracking",
+        CATCH_ALL_SUBJECT, SUBJECT_PREFIX, SUBJECT_SUFFIX);
   }
 
   void onMessage(io.nats.client.Message msg) {
+    String subject = msg.getSubject();
+    if (subject == null || !subject.startsWith(SUBJECT_PREFIX) || !subject.endsWith(SUBJECT_SUFFIX)) {
+      return;
+    }
     try {
       JsonNode body = mapper.readTree(msg.getData());
       handle(body);
@@ -59,8 +75,13 @@ public class OrderUpdateSubscriber {
   }
 
   /** Extracted from {@link #onMessage} so the correlation logic is testable without a live NATS
-   * connection. */
-  void handle(JsonNode body) {
+   * connection. Every message on this bus is wrapped in a {@code NatsEnvelope}
+   * ({@code topic}/{@code payload}/{@code date}/{@code from}/{@code type} —
+   * {@code messaging/nats/NatsJSONPublisher}, used by every publisher on this branch including
+   * order-matcher's {@code NatsBridgeHandler}); the actual {@code OrderResponse} fields live under
+   * {@code payload}, not at the envelope's top level. */
+  void handle(JsonNode envelope) {
+    JsonNode body = envelope.hasNonNull("payload") ? envelope.get("payload") : envelope;
     if (!body.hasNonNull("orderId")) {
       return;
     }

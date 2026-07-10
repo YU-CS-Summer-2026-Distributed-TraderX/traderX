@@ -31,17 +31,21 @@ import org.springframework.stereotype.Component;
 /**
  * JetStream-backed append log for {@link AlgoEvent}s (ADR-030). Reuses the same
  * {@code io.nats:jnats} client and stream-bootstrap idiom as YU04's
- * {@code JetStreamControlFeedPublisher}/{@code ControlFeedSubscriber}. One durable pull consumer
- * both replays every event on boot (rebuilding {@link AlgoOrderState}) and continues receiving new
- * events live — an event is acked only once the caller's {@code applier} has applied it, so a crash
- * between append and ack simply redelivers and reapplies the same (idempotent) event.
+ * {@code JetStreamControlFeedPublisher}/{@code ControlFeedSubscriber}. A fresh <b>ephemeral</b>
+ * pull consumer is created on every boot with {@code DeliverPolicy.All}, so every restart replays
+ * the entire event log from the start and rebuilds every parent order (FR-AE08) — not just the
+ * order in flight when a crash happened. Applying every event is a deterministic, idempotent
+ * function of current state ({@link AlgoOrderState#apply}), so replaying the full history on every
+ * boot is correct and requires no ack bookkeeping: a durable named consumer with explicit acks was
+ * tried first and rejected (see ADR-030) because acking permanently advances a durable consumer's
+ * position, so a later restart would only replay whatever was left unacked — silently forgetting
+ * every parent order that had already fully completed before the restart.
  */
 @Component
 public class AlgoEventStore {
   private static final Logger log = LoggerFactory.getLogger(AlgoEventStore.class);
   private static final String STREAM_NAME = "TRADERX_ALGO_ENGINE";
   private static final String SUBJECT = "algo.events.>";
-  private static final String DURABLE_CONSUMER = "algo-engine-state";
   private static final int FETCH_BATCH = 64;
   private static final Duration FETCH_WAIT = Duration.ofMillis(500);
 
@@ -59,8 +63,8 @@ public class AlgoEventStore {
     this.natsAddress = natsAddress;
   }
 
-  /** Blocks until every currently-unacked event has been replayed and applied, then starts a
-   * background thread that keeps applying new events as they are appended. */
+  /** Blocks until the entire event log has been replayed and applied, then starts a background
+   * thread that keeps applying new events as they are appended. */
   public synchronized void replayAndSubscribe(Consumer<AlgoEvent> applier) throws Exception {
     connection = Nats.connect(new Options.Builder()
         .server(natsAddress)
@@ -72,11 +76,9 @@ public class AlgoEventStore {
     jetStream = connection.jetStream();
 
     PullSubscribeOptions pullOptions = PullSubscribeOptions.builder()
-        .durable(DURABLE_CONSUMER)
         .configuration(ConsumerConfiguration.builder()
-            .durable(DURABLE_CONSUMER)
             .deliverPolicy(DeliverPolicy.All)
-            .ackPolicy(AckPolicy.Explicit)
+            .ackPolicy(AckPolicy.None)
             .filterSubject(SUBJECT)
             .build())
         .build();
@@ -99,7 +101,7 @@ public class AlgoEventStore {
         return count;
       }
       for (Message msg : messages) {
-        applyAndAck(msg, applier);
+        apply(msg, applier);
         count++;
       }
     }
@@ -110,7 +112,7 @@ public class AlgoEventStore {
       try {
         List<Message> messages = subscription.fetch(FETCH_BATCH, FETCH_WAIT);
         for (Message msg : messages) {
-          applyAndAck(msg, applier);
+          apply(msg, applier);
         }
       } catch (Exception ex) {
         if (stopped) {
@@ -121,10 +123,9 @@ public class AlgoEventStore {
     }
   }
 
-  private void applyAndAck(Message msg, Consumer<AlgoEvent> applier) throws Exception {
+  private void apply(Message msg, Consumer<AlgoEvent> applier) throws Exception {
     AlgoEvent event = mapper.readValue(msg.getData(), AlgoEvent.class);
     applier.accept(event);
-    msg.ack();
   }
 
   public void append(AlgoEvent event) throws Exception {

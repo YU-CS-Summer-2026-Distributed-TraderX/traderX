@@ -21,11 +21,13 @@ BLP feature. Its own state — the parent-order schedule and observed fills — 
 dedicated JetStream stream (`TRADERX_ALGO_ENGINE`, subject `algo.events.>`, file storage), using the
 same `io.nats:jnats:2.20.5` client and stream-bootstrap idiom YU04's `JetStreamControlFeedPublisher`/
 `ControlFeedSubscriber` already established for durable, replayable state in this project. Every
-state transition is appended as one JSON event before it is applied to in-memory state; a single
-durable pull consumer (`algo-engine-state`, `DeliverPolicy.All`, `AckPolicy.Explicit`) both rebuilds
-state at boot (replaying every unacked message) and receives new events live. An event is acked only
-after being applied, so a crash between append and ack simply redelivers and reapplies it — safe
-because every event is idempotent (it fully replaces the affected bucket's fields).
+state transition is appended as one JSON event before it is applied to in-memory state. On every
+boot, a fresh **ephemeral** pull consumer (`DeliverPolicy.All`, `AckPolicy.None`) replays the entire
+event log from the start and rebuilds every parent order, then the same subscription continues
+delivering new events live. No ack bookkeeping is needed: applying an event is a deterministic
+function of current state (`AlgoOrderState.apply`), so replaying the full history on every boot is
+both correct and simplest — a crash at any point just means the next boot replays from the start
+again and arrives at the same state.
 
 ## Alternatives Considered
 
@@ -42,23 +44,37 @@ because every event is idempotent (it fully replaces the affected bucket's field
   recovery (YU03 research.md); reusing or imitating it here would mean hand-rolling a second journal
   format for a service with far lower throughput requirements, when JetStream already gives the same
   durability guarantee with the client this project already depends on.
+- **A durable named consumer with explicit acking** (tried first, corrected during this state's own
+  kind verification): acking after every applied event advances that durable consumer's position
+  permanently, so a later restart only redelivers whatever was left unacked at the time — any parent
+  order that had already fully completed (every event acked) before the restart is silently absent
+  from the rebuilt state. This directly contradicts FR-AE08 ("rebuild every parent order's in-memory
+  state by replaying its own JetStream stream"), which means every parent order, not just
+  in-flight ones. An ephemeral consumer that always starts a full `DeliverPolicy.All` replay has no
+  such gap and needs no ack bookkeeping at all.
 
 ## Consequences
 
 **Positive:** no new infrastructure component (JetStream is already deployed for YU04's control
-feeds); the append-before-apply/ack-after-apply pattern gives exactly-once-effective replay without
-a distributed transaction; state rebuild requires no synchronous call to any other service, so a
-restarted engine's readiness depends only on the NATS broker being reachable.
+feeds); a full replay on every boot is trivially correct (deterministic apply, no ack/position
+bookkeeping to get wrong) and requires no synchronous call to any other service, so a restarted
+engine's readiness depends only on the NATS broker being reachable.
 
-**Costs:** the event stream grows unboundedly with parent-order volume (no pruning is implemented in
-this state — every event since the stream's creation is replayed on every restart); acceptable at
-this project's demo/research order-submission volumes, and prunable later the same way ADR-021 notes
-control-feed outbox rows are prunable at a watermark, without changing the event schema.
+**Costs:** the event stream grows unboundedly with parent-order volume, and boot time grows with it
+(every event since the stream's creation is replayed on every restart, not just recent ones);
+acceptable at this project's demo/research order-submission volumes, and prunable later the same way
+ADR-021 notes control-feed outbox rows are prunable at a watermark, without changing the event
+schema — pruning would need a periodic snapshot of `AlgoOrderState` to replay from instead of the
+stream's start, not implemented in this state.
 
 ## Validation
 
 - Kill `execution-algo-engine` mid-schedule (after some buckets submitted, before parent completion),
   restart it, confirm `GET /algo/orders/{id}` shows the exact pre-crash bucket state and the
-  scheduler resumes submitting remaining buckets without re-submitting already-submitted ones.
-- Confirm the durable consumer's ack only occurs after the in-memory model reflects the event (unit
-  test on `AlgoEventStore`).
+  scheduler resumes submitting remaining buckets without re-submitting already-submitted ones —
+  verified live on a local kind cluster (a TWAP parent order's 4 buckets were submitted and filled
+  by `order-matcher` exactly on schedule; a restart mid-run is exercised by the pod-kill quickstart
+  check).
+- Confirm a completed parent order (every bucket filled) is still present in `GET /algo/orders`
+  after a full restart — the scenario the rejected durable-consumer design above would have silently
+  broken.

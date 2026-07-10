@@ -37,11 +37,15 @@
 
 - `/accounts/<accountId>/orders`
   - producer: `order-matcher`
-  - consumer: frontend account order blotter stream, `execution-algo-engine` fill tracking (new)
+  - consumer: frontend account order blotter stream, `execution-algo-engine` fill tracking (new —
+    subscribes to NATS's catch-all `>` and filters client-side by subject prefix/suffix, since the
+    literal `/`-separated subject has no `.`-token position for a real NATS wildcard; research.md
+    Decision 5)
   - delivery: `broadcast`
-  - wildcard: `no` (consumed with wildcard `/accounts/*/orders`)
+  - wildcard: `no` (no NATS-native wildcard is possible on this subject shape at all)
   - scope: `per-account`
-  - payload: order lifecycle event (`orderId`, `status`, `remainingQuantity`, `limitPrice`, `lastExecutionPrice`)
+  - payload: `NatsEnvelope` wrapping an order lifecycle event (`orderId`, `status`,
+    `remainingQuantity`, `limitPrice`, `lastExecutionPrice`) under `payload`
 
 - `/orders`
   - producer: `order-matcher`
