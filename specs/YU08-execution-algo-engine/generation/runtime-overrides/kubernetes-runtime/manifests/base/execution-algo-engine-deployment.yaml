@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-algo-engine
+  namespace: traderx
+  labels:
+    app: execution-algo-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-algo-engine
+  template:
+    metadata:
+      labels:
+        app: execution-algo-engine
+    spec:
+      containers:
+        - name: execution-algo-engine
+          image: traderx/execution-algo-engine:state-yu08
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18120
+              protocol: TCP
+          env:
+            - name: ALGO_ENGINE_PORT
+              value: "18120"
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: ORDER_MATCHER_URL
+              value: "http://order-matcher:18110"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: ALGO_BUCKET_SECONDS_DEFAULT
+              value: "10"
+            - name: ALGO_LIMIT_OFFSET_BPS
+              value: "10"
+            # VWAP volume profile (research.md Decision 7, ADR-031): synthetic needs no data.
+            # Flip to "duckdb" to query YU07's tick store once enough TAQ/live-trade volume is
+            # captured; it falls back to synthetic per-security automatically until then.
+            - name: ALGO_VOLUME_PROFILE_SOURCE
+              value: "synthetic"
+            - name: ALGO_VOLUME_PROFILE_DUCKDB_PATH
+              value: "gs://traderx-501015-tick-store/ticks"

@@ -34,6 +34,7 @@ tracks:
       - YU05-post-trade-compliance
       - YU06-eod-price-production
       - YU07-historical-tick-store
+      - YU08-execution-algo-engine
   functional:
     description: "Functional capability expansion states."
     states:
@@ -55,6 +56,7 @@ tracks:
       - YU05-post-trade-compliance
       - YU06-eod-price-production
       - YU07-historical-tick-store
+      - YU08-execution-algo-engine
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -210,3 +212,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU07-historical-tick-store/spec.md
+  - id: YU08-execution-algo-engine
+    previous:
+      - YU07-historical-tick-store
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU08-execution-algo-engine/spec.md

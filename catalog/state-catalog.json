@@ -556,6 +556,29 @@
         "branch": "code/generated-state-YU07-historical-tick-store",
         "tag": "generated/YU07-historical-tick-store/v1"
       }
+    },
+    {
+      "id": "YU08-execution-algo-engine",
+      "title": "Execution Algo Engine",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU08-execution-algo-engine",
+      "previous": [
+        "YU07-historical-tick-store"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU08-execution-algo-engine",
+        "runtime": "inherits YU07-historical-tick-store runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU08-execution-algo-engine",
+        "tag": "generated/YU08-execution-algo-engine/v1"
+      }
     }
   ]
 }

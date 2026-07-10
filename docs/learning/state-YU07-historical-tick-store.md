@@ -8,7 +8,7 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 
 - Previous state(s): [YU06-eod-price-production](/docs/learning/state-YU06-eod-price-production)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU08-execution-algo-engine](/docs/learning/state-YU08-execution-algo-engine)
 
 ## Convergence Metadata
 
