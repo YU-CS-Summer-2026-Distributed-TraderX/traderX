@@ -54,6 +54,20 @@
   (`io.nats:jnats:2.20.5`) and Spring Boot service shape rather than introducing a new messaging
   library or service framework.
 
+## Technical Debt Register
+
+- TD-AE01: `DuckDbVolumeProfileSource` reads `read_parquet('<store>/**/*.parquet', hive_partitioning
+  = true)` and filters `event_type = 'trade' AND symbol = ?` in the `WHERE` clause. `symbol` is a
+  partition column so it prunes, but the recursive `**` glob still forces a full object listing of
+  the tick store, and `event_type` is not a partition key, so the query reads every one of the
+  symbol's co-mingled quote *and* trade Parquet files to select the trade rows. Against the real
+  TAQ store this makes one VWAP order creation take ~224s wall-clock for a liquid symbol (measured:
+  AAPL, 22.4M trade rows over 40 days) — and `bucketWeights()` runs synchronously on the request
+  thread inside `create()`, so `POST /algo/orders` blocks for that entire time. The synthetic
+  default has no such cost. Upgrade path: point the read at a symbol/source-scoped path prefix
+  instead of the store-root recursive glob, and/or cache/precompute per-symbol intraday profiles so
+  the scan is amortized rather than paid per order.
+
 ## Success Criteria
 
 - SC-AE01: Generation hook exists and is runnable (`pipeline/generate-state-YU08-execution-algo-engine.sh`).

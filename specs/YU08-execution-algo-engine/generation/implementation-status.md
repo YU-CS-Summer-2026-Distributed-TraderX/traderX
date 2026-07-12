@@ -122,6 +122,59 @@ and `order-matcher`.
   `order-matcher` in this state, are the load-bearing facts: this state does not touch the BLP hot
   path, and the bench run demonstrates that in practice, not just by code inspection.
 
+### Real-TAQ VWAP volume-profile validation (2026-07-12)
+
+The E2E run above exercised VWAP against the **synthetic** profile only (the default) — it was done
+before any real TAQ trade data existed in the tick store. Once YU07's Stage 2 ingestion loaded both
+TAQ trades files (`taq_trades_feb2025_csv.zip`, `taq_trades_mar2025_csv.zip`), VWAP's real
+(non-fallback) `DuckDbVolumeProfileSource` path was validated end to end on kind against the live
+GCS store `gs://traderx-501015-tick-store`, per `HANDOFF-vwap-real-data-validation.md`.
+
+- **Setup**: the `execution-algo-engine` Deployment on kind (`traderx-state-014`) was patched to
+  `ALGO_VOLUME_PROFILE_SOURCE=duckdb` with `GCS_HMAC_KEY_ID`/`GCS_HMAC_SECRET_ACCESS_KEY` sourced
+  from the existing `tick-store-gcs-hmac` k8s Secret via `secretKeyRef` (the credential was copied
+  GKE→kind by the user; it never appears in any command, log, or committed file). This is a live
+  runtime override for validation only — the committed manifest default stays `synthetic` (which
+  needs no credential and cannot block on data availability).
+- **Data exists** (independent proof, one-off DuckDB Job on kind reading GCS with the secret via
+  `secretKeyRef`): symbol `AAPL` has **22,364,398** `event_type='trade'` rows spanning **40 days**,
+  `ts ∈ [2025-02-03 04:00:00 .. 2025-03-31 19:59:58]`.
+- **Real profile produced, not the synthetic fallback**: `POST /algo/orders` (AAPL, Buy, qty 1000,
+  48s duration, 6s buckets → 8 buckets) returned **HTTP 201** with these bucket target quantities,
+  and **no** `"falling back to synthetic"` / query-failure line was logged for the run:
+
+  | bucket | real qty | real weight | synthetic weight (same bucketCount) |
+  |---|---|---|---|
+  | 0 | 0   | 0.000 | 0.175 |
+  | 1 | 4   | 0.004 | 0.132 |
+  | 2 | 14  | 0.014 | 0.104 |
+  | 3 | 481 | 0.481 | 0.089 |
+  | 4 | 302 | 0.302 | 0.089 |
+  | 5 | 193 | 0.193 | 0.104 |
+  | 6 | 3   | 0.003 | 0.132 |
+  | 7 | 3   | 0.003 | 0.175 |
+
+  Real volume is 97.6% concentrated in buckets 3–5 with near-zero tails — the query maps each
+  trade's second-of-day into `bucketCount` equal slices of the 24h day, so for 8 buckets the
+  09:00–18:00 slices (covering regular hours 09:30–16:00 plus adjacent extended trading) carry
+  almost all the volume. This is the **inverse** of the synthetic symmetric U-shape (which peaks at
+  buckets 0 and 7), so the result is unambiguously data-derived, not the fallback. Weights sum
+  exactly to the parent quantity (1000), so the schedule invariant holds on the real path too. This
+  is the concrete evidence SC-AE05's "differs from an equal split" clause lacked at implementation
+  time (which only had the empty-store fallback unit test).
+- **Latency finding (TD-AE01)**: the real query took **224s** wall-clock for AAPL, and
+  `bucketWeights()` runs synchronously inside `create()`, so `POST /algo/orders` blocked for the
+  full 224s. Cause: the store-root recursive `**` glob forces a full object listing, and
+  `event_type` is not a partition key so all of AAPL's (far more numerous) quote files are read to
+  select trade rows. Recorded as `TD-AE01` in `spec.md` with an upgrade path; not fixed here (this
+  was a validation pass, not a redesign). The synthetic default is unaffected.
+- **Order-matcher note**: `order-matcher` was in `CrashLoopBackOff` during this validation (an
+  unrelated pre-existing condition on this 2-day-old kind cluster, not touched by this task). It does
+  not affect this result — the volume profile and bucket quantities are computed at parent-order
+  **creation** time, before any child is submitted, so the profile is fully observable without a
+  healthy matcher. Child fills were not the object of this validation (they were already proven in
+  the E2E run above).
+
 ## Bugs found and fixed during live verification (not caught by unit tests or documentation)
 
 Three real defects, all invisible without actually running child orders through a live
