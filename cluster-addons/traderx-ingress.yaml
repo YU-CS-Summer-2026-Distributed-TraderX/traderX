@@ -1,0 +1,35 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traderx-ingress
+  namespace: traderx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - yaakovseif.dev
+        - grafana.yaakovseif.dev
+      secretName: yaakovseif-dev-tls
+  rules:
+    - host: yaakovseif.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: edge-proxy
+                port:
+                  number: 8080
+    - host: grafana.yaakovseif.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000
