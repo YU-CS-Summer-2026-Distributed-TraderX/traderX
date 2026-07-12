@@ -34,7 +34,7 @@ API, e.g.:
 ```sql
 SELECT symbol, dt, sum(price * size) / sum(size) AS vwap
 FROM read_parquet('gs://traderx-501015-tick-store/ticks/**/*.parquet', hive_partitioning = true)
-WHERE event_type = 'trade' AND symbol = 'IBM' AND dt BETWEEN '2025-02-01' AND '2025-02-28'
+WHERE event_type = 'trade' AND symbol = 'IBM' AND dt BETWEEN 'YYYY-MM-DD' AND 'YYYY-MM-DD'
 GROUP BY symbol, dt;
 ```
 

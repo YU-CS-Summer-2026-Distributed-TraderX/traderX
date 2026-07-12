@@ -1,0 +1,49 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tick-store-stage2
+  namespace: traderx
+spec:
+  completionMode: Indexed
+  completions: 28
+  parallelism: 3
+  backoffLimit: 40
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: stage2
+          # Pinned by digest (not :state-yu07 tag) so nodes can't run a stale cached image -- the
+          # tag was reused across the funzip-pipefail bugfix rebuild, and IfNotPresent would
+          # otherwise serve the old buggy script from node cache. Digest = the fixed build.
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/tick-store@sha256:16baf2b39ce1b0d40d9769f12bd536720f7ec0ddfb37372f9e24cc7b2ea8c200
+          imagePullPolicy: Always
+          command: ["/app/stage2_ingest.sh"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 3500Mi
+            limits:
+              cpu: "1500m"
+              memory: 5Gi
+          env:
+            - name: GCS_SA_KEY_FILE
+              value: /var/secrets/gcs/key.json
+            - name: GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: access-key-id
+            - name: GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: secret-access-key
+          volumeMounts:
+            - name: gcs-key
+              mountPath: /var/secrets/gcs
+              readOnly: true
+      volumes:
+        - name: gcs-key
+          secret:
+            secretName: tick-store-gcs-key

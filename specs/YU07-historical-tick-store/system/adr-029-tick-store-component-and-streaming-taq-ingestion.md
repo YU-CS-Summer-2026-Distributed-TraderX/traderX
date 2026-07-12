@@ -9,8 +9,9 @@
 The project needs a historical tick store: TraderX's own live ticks plus a normalized slice of NYSE
 TAQ data, in one queryable schema, to unblock real VWAP for the execution algo engine and
 return/scenario data for this project's own future VaR/ES work. Three sub-decisions had to be made
-together: where the new capability lives, how to move ~650GB of TAQ CSV without needing terabytes
-of scratch disk, and where the output actually gets stored.
+together: where the new capability lives, how to move a large multi-file TAQ CSV corpus (tens to
+hundreds of GB) without needing terabytes of scratch disk, and where the output actually gets
+stored.
 
 ## Decision
 
@@ -22,11 +23,11 @@ of scratch disk, and where the output actually gets stored.
    when the tech fit is better elsewhere.
 2. **Stream TAQ CSVs through a shell pipe, never extract to disk**: `unzip -p <zip> <entry> |
    python3 ingest_taq_quotes.py`, with the normalizer reading `/dev/stdin` via DuckDB's CSV reader.
-   A single TAQ quotes day decompresses to ~76.5GiB (confirmed from the zip's own central
-   directory); extracting before parsing would need multiple terabytes of scratch space across
-   Feb+March with no query benefit.
-3. **GCS Standard tier, `traderx-501015` project, bucket-scoped HMAC credential.** ~650.2GB
-   (Feb+March combined) confirmed by the user. Standard was chosen over Nearline/Coldline because
+   A single TAQ quotes day can decompress to tens of GB (confirmed from the zip's own central
+   directory); extracting before parsing would need multiple terabytes of scratch space across a
+   multi-month corpus with no query benefit.
+3. **GCS Standard tier, `traderx-501015` project, bucket-scoped HMAC credential.** Confirmed by the
+   user for a multi-hundred-GB corpus. Standard was chosen over Nearline/Coldline because
    this is actively-queried research data — a colder tier's per-GB retrieval fee would eat its own
    storage-cost savings against repeated VWAP/return-series range queries. Auth is a dedicated
    service account (`tick-store-gcs@traderx-501015.iam.gserviceaccount.com`) with

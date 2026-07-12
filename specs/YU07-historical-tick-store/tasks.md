@@ -16,6 +16,25 @@ Build order is bottom-up (schema → capture → TAQ ingestion → query recipe 
 - [x] T21 Stream from stdin (`/dev/stdin`) — no disk extraction.
 - [x] T22 Row-level error tolerance (skip malformed rows, fail only on zero valid rows).
 
+## TAQ trades ingestion (`tick-store/ingest_taq_trades.py`)
+- [x] T23 Confirmed TAQ CT CSV column mapping against the real sample file.
+- [x] T24 Stream from stdin (`/dev/stdin`) — no disk extraction, same pattern as T21.
+- [x] T25 Row-level error tolerance, same pattern as T22.
+
+## Bulk backfill (`tick-store/stage2_ingest.sh`, GCS-native)
+- [x] T90 Container-bundled driver: lists `_raw-taq/**/*.zip`, dispatches by filename pattern to
+  the quotes/trades normalizer, streams `gcloud storage cat | funzip | python3` (no local disk).
+- [x] T91 Kubernetes Indexed Job (`tick-store-stage2`, `completionMode: Indexed`) — coordination-
+  free per-file parallelism via `JOB_COMPLETION_INDEX`.
+- [x] T92 Fixed a `pipefail`/`funzip` false-failure bug that caused retry-driven duplicate writes
+  (research.md Decision 8) — success now keyed on the normalizer's own exit code.
+- [x] T93 Pinned the Job to an immutable image digest (`imagePullPolicy: Always`) after a stale-
+  cached-image incident from reusing a tag across the T92 rebuild.
+- [ ] T94 Bulk-scale verification: run the pipeline end-to-end against a real multi-file, multi-GB
+  batch — proves the driver and Indexed Job pattern handle production scale, not that any specific
+  dataset is a permanent requirement of the store. Tracked live in
+  `generation/implementation-status.md`.
+
 ## Query recipe
 - [x] T30 `duckdb_query_examples.sql` — VWAP-style and return-series queries spanning both
   `source` values.
@@ -34,6 +53,7 @@ Build order is bottom-up (schema → capture → TAQ ingestion → query recipe 
   query reading both sources.
 - [x] T53 `gcs.py` unit tests: `is_gcs_path`, clear-error guard without HMAC env vars, secret
   registration with them.
+- [x] T54 Unit tests: TAQ CT CSV row mapping against the real sample data (mirrors T51 for trades).
 
 ## GCS storage (research.md Decision 6, confirmed after initial implementation)
 - [x] T70 Bucket `gs://traderx-501015-tick-store` (Standard, `us-east1`, uniform bucket-level

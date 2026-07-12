@@ -15,6 +15,7 @@ format.
 """
 import argparse
 import logging
+import os
 import sys
 
 import duckdb
@@ -70,6 +71,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     con = duckdb.connect()
+    # Opt-in, unset by default (every existing caller is unaffected): fewer DuckDB threads means
+    # fewer concurrent partition-writer buffers for a PARTITION_BY COPY, trading write speed for a
+    # lower peak-memory ceiling -- needed for the largest single TAQ files (~39GB decompressed),
+    # which OOM'd a container-memory-limited pod under DuckDB's own default thread count.
+    threads = os.environ.get("TICKSTORE_DUCKDB_THREADS")
+    if threads:
+        con.execute(f"SET threads={int(threads)}")
     if is_gcs_path(args.out):
         configure_gcs(con)
     try:
