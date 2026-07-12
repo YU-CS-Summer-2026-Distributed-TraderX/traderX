@@ -67,6 +67,17 @@
   default has no such cost. Upgrade path: point the read at a symbol/source-scoped path prefix
   instead of the store-root recursive glob, and/or cache/precompute per-symbol intraday profiles so
   the scan is amortized rather than paid per order.
+  - RESOLVED (2026-07-12): replaced the `<store>/**/*.parquet` glob with explicit per-day
+    `source=<taq|live>/dt=<date>/symbol=<SYM>/*.parquet` paths over a bounded lookback window
+    (`algo.volume-profile.lookback-days`, default 30; `algo.volume-profile.as-of` window end,
+    default today), resolved with DuckDB `glob()` (tolerates non-trading days, unlike
+    `read_parquet`). Only the symbol's own files are listed/read — no full-store listing. The
+    per-`(symbol,bucketCount)` result is cached for the process lifetime. Validated against the real
+    TAQ store (as-of 2025-03-31, 60-day window): AAPL 22,364,398 trade rows, first-order scan
+    ~45s → **224s→~45s cold, 0.000s cached**, weights differ from an equal split (SC-AE05). Symbol
+    is now interpolated into the glob path so it is charset-validated (`[A-Za-z0-9._-]{1,32}`)
+    before reaching the query. Remaining lever if first-touch latency matters: move the scan off the
+    request thread.
 
 ## Success Criteria
 
