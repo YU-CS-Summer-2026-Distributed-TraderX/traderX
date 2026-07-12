@@ -17,7 +17,14 @@ TraderSpec/codebase/target-generated-specfirst/
 
 HELP.md
 .gradle
+.gradle-local/
+.gradle-local-*/
 build/
+
+# iCloud/Finder duplicate-file artifacts (e.g. "web-front-end 2/", "file 2.patch") from when this
+# repo lived under ~/Desktop; kept as a defensive guard even though relocated to ~/dev/lmax
+* 2
+* 2.*
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
