@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: tick-store-stage2-retry-311
+  namespace: traderx
+spec:
+  completions: 1
+  parallelism: 1
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: Never
+      nodeSelector:
+        workload: batch-private
+      containers:
+        - name: retry-311
+          # sha256:75006d67... = tick-store:state-yu07-retry (DuckDB thread-reduction fix).
+          # A NEW digest, separate from the running tick-store-stage2 Job's pinned digest -- this
+          # image does not affect the batch job's already-completed indices or its in-flight pods.
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/tick-store@sha256:75006d6719bd400c3695367c55855dc5afb417a81d401151fd647f4adc0827d8
+          imagePullPolicy: Always
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -euo pipefail
+              gcloud auth activate-service-account --key-file="${GCS_SA_KEY_FILE}"
+              set +e
+              gcloud storage cat "gs://traderx-501015-tick-store/_raw-taq/TAQ_March2025/taq_quotes_20250311_csv.zip" 2>/dev/null \
+                | funzip 2>/dev/null \
+                | python3 ingest_taq_quotes.py --date 2025-03-11 --out gs://traderx-501015-tick-store/ticks
+              rc=${PIPESTATUS[2]}
+              set -e
+              echo "[retry-311] normalizer exit ${rc}"
+              exit "${rc}"
+          env:
+            - name: TICKSTORE_DUCKDB_THREADS
+              value: "2"
+            - name: GCS_SA_KEY_FILE
+              value: /var/secrets/gcs/key.json
+            - name: GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: access-key-id
+            - name: GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: tick-store-gcs-hmac
+                  key: secret-access-key
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: 2Gi
+            limits:
+              cpu: "2000m"
+              memory: 5500Mi
+          volumeMounts:
+            - name: gcs-key
+              mountPath: /var/secrets/gcs
+              readOnly: true
+      volumes:
+        - name: gcs-key
+          secret:
+            secretName: tick-store-gcs-key
