@@ -496,3 +496,6 @@ traderx-501015-*.json
 *-key.json
 *-sa-key.json
 *serviceaccount*.json
+
+# local-only project context (untracked 2026-07-11)
+/CLAUDE.md
