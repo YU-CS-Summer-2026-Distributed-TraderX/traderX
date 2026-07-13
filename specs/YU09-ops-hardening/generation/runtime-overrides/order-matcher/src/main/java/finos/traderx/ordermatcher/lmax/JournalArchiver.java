@@ -6,6 +6,7 @@ import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.S3Configuration;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import java.net.URI;
@@ -53,6 +54,19 @@ final class JournalArchiver implements AutoCloseable {
                 .endpointOverride(GCS_ENDPOINT)
                 .region(Region.US_EAST_1)   // GCS's XML API ignores region for HMAC-signed requests
                 .credentialsProvider(StaticCredentialsProvider.create(AwsBasicCredentials.create(keyId, secret)))
+                // GCS's S3-compatible XML API doesn't support the chunked-transfer-encoding +
+                // trailing-checksum upload path AWS SDK v2 defaults to — that combination fails
+                // with an opaque 403 Access Denied against GCS, not a checksum-specific error.
+                // Disabling chunked encoding falls back to the classic signed-payload upload,
+                // which GCS's interoperability layer does support.
+                // GCS's interoperability docs specify path-style requests
+                // (storage.googleapis.com/<bucket>/<key>); the SDK's default virtual-hosted style
+                // (<bucket>.storage.googleapis.com/...) signs against a host GCS doesn't expect,
+                // which also surfaces as 403 Access Denied rather than a DNS/host error.
+                .serviceConfiguration(S3Configuration.builder()
+                    .chunkedEncodingEnabled(false)
+                    .pathStyleAccessEnabled(true)
+                    .build())
                 .build();
             this.executor = Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "journal-archiver");
@@ -84,6 +98,15 @@ final class JournalArchiver implements AutoCloseable {
                 client.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(), segment);
                 Files.deleteIfExists(segment);
                 log.info("Archived journal segment {} -> gs://{}/{}", segment.getFileName(), bucket, key);
+            } catch (software.amazon.awssdk.services.s3.model.S3Exception ex) {
+                log.warn("Failed to archive journal segment {} (left in place on local disk): status={} "
+                        + "awsErrorCode={} awsErrorMessage={} requestId={} extendedRequestId={} raw={}",
+                    segment, ex.statusCode(),
+                    ex.awsErrorDetails() != null ? ex.awsErrorDetails().errorCode() : null,
+                    ex.awsErrorDetails() != null ? ex.awsErrorDetails().errorMessage() : null,
+                    ex.requestId(), ex.extendedRequestId(),
+                    ex.awsErrorDetails() != null && ex.awsErrorDetails().rawResponse() != null
+                        ? ex.awsErrorDetails().rawResponse().asUtf8String() : null);
             } catch (Exception ex) {
                 log.warn("Failed to archive journal segment {} (left in place on local disk): {}",
                     segment, ex.toString());
