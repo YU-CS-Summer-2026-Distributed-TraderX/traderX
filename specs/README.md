@@ -29,6 +29,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU06-eod-price-production`
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
 
 ## References
 
