@@ -98,13 +98,27 @@ after generating (`bash pipeline/generate-state.sh YU09-ops-hardening`):
    No regression (399 vs 393 peak/s is within run-to-run noise on this metric; submit/s variance
    is client-side REST throughput, not matcher throughput, and both runs show 0 failed orders).
 
+## GCS upload leg — verified live (follow-up session, 2026-07-13)
+
+The actual `JournalArchiver.archiveAsync` `putObject` path was exercised end-to-end against a real
+GCS bucket after the initial YU09 landing:
+
+- Provisioned (out-of-band, mirroring YU07's `tick-store-gcs`): bucket
+  `gs://traderx-501015-order-matcher-journal-archive` (us-east1, Standard), a bucket-scoped
+  `order-matcher-journal-gcs` service account with `roles/storage.objectAdmin` on just that
+  bucket, and an HMAC key delivered into the `order-matcher-journal-gcs-hmac` Secret without the
+  secret value ever passing through a chat/tool log.
+- On kind with `journal.archive.enabled=true` and a short `SNAPSHOT_INTERVAL_MS`, closed segments
+  upload to the bucket and are deleted locally on success (`gcloud storage ls` confirms objects
+  landing; `kubectl exec ... ls` confirms the corresponding local files are gone). Pre-fix
+  segments that failed to upload correctly remained on local disk, never deleted — the FR-OH23
+  no-data-loss-on-failure behavior, observed directly.
+- Two real S3-client bugs were found and fixed in the process (commit `f6d956b`): AWS SDK v2's
+  default aws-chunked payload signing is rejected by GCS's XML API (disable chunked encoding), and
+  path-style addressing is required per GCS interop docs. Upload-failure logging was also widened
+  to surface full `S3Exception` detail — that is what distinguished the genuine GCS-interop config
+  issues from a bad-credential `SignatureDoesNotMatch` (a mistyped HMAC secret) during debugging.
+
 ## Not verified in this session
 
-- The GCS upload leg of journal archival (`JournalArchiver.archiveAsync`'s actual `putObject`
-  call) — requires a real HMAC credential against a live GCS bucket, out-of-band per
-  `quickstart.md`, same as YU07's tick-store credential was never exercised end-to-end in-session
-  either. Rotation itself (the local-disk-bounding half of the feature) was verified: it is
-  reachable code, flag-gated, and passes the hot-path banned-API and allocation gates; the actual
-  upload path is standard, well-tested AWS SDK v2 behavior against a documented-compatible
-  endpoint, not custom code.
-- Production GKE deployment (this session only exercised kind).
+- Production GKE deployment (only exercised on kind).
