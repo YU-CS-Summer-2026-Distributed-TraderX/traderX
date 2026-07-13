@@ -57,6 +57,7 @@ flowchart TB
   SYU06_eod_price_production["YU06-eod-price-production: EOD Price Production + Overnight Batch Chain"]
   SYU07_historical_tick_store["YU07-historical-tick-store: Historical Tick Store"]
   SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
+  SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -78,6 +79,7 @@ flowchart TB
   SYU05_post_trade_compliance -.-> SYU06_eod_price_production
   SYU06_eod_price_production -.-> SYU07_historical_tick_store
   SYU07_historical_tick_store -.-> SYU08_execution_algo_engine
+  SYU08_execution_algo_engine -.-> SYU09_ops_hardening
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -101,6 +103,7 @@ flowchart TB
   click SYU06_eod_price_production href "/specs/YU06-eod-price-production" "Open State YU06-eod-price-production Spec Pack"
   click SYU07_historical_tick_store href "/specs/YU07-historical-tick-store" "Open State YU07-historical-tick-store Spec Pack"
   click SYU08_execution_algo_engine href "/specs/YU08-execution-algo-engine" "Open State YU08-execution-algo-engine Spec Pack"
+  click SYU09_ops_hardening href "/specs/YU09-ops-hardening" "Open State YU09-ops-hardening Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -134,6 +137,7 @@ flowchart TB
 | [`YU06-eod-price-production`](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production/system/architecture) | [link](pathname:///specs/YU06-eod-price-production/system/runtime-topology) | [link](pathname:///docs/learning/state-YU06-eod-price-production) | [code/generated-state-YU06-eod-price-production](https://github.com/finos/traderX/tree/code/generated-state-YU06-eod-price-production) |
 | [`YU07-historical-tick-store`](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store/system/architecture) | [link](pathname:///specs/YU07-historical-tick-store/system/runtime-topology) | [link](pathname:///docs/learning/state-YU07-historical-tick-store) | [code/generated-state-YU07-historical-tick-store](https://github.com/finos/traderX/tree/code/generated-state-YU07-historical-tick-store) |
 | [`YU08-execution-algo-engine`](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine/system/architecture) | [link](pathname:///specs/YU08-execution-algo-engine/system/runtime-topology) | [link](pathname:///docs/learning/state-YU08-execution-algo-engine) | [code/generated-state-YU08-execution-algo-engine](https://github.com/finos/traderX/tree/code/generated-state-YU08-execution-algo-engine) |
+| [`YU09-ops-hardening`](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening/system/architecture) | [link](pathname:///specs/YU09-ops-hardening/system/runtime-topology) | [link](pathname:///docs/learning/state-YU09-ops-hardening) | [code/generated-state-YU09-ops-hardening](https://github.com/finos/traderX/tree/code/generated-state-YU09-ops-hardening) |
 
 ## Swimlane View
 
@@ -158,6 +162,7 @@ flowchart TB
     SYU06_eod_price_production["YU06-eod-price-production: EOD Price Production + Overnight Batch Chain"]
     SYU07_historical_tick_store["YU07-historical-tick-store: Historical Tick Store"]
     SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
+    SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -194,6 +199,7 @@ flowchart TB
   SYU05_post_trade_compliance -.-> SYU06_eod_price_production
   SYU06_eod_price_production -.-> SYU07_historical_tick_store
   SYU07_historical_tick_store -.-> SYU08_execution_algo_engine
+  SYU08_execution_algo_engine -.-> SYU09_ops_hardening
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

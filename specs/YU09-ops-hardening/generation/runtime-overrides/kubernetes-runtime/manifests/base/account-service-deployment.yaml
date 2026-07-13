@@ -1,0 +1,61 @@
+# account-service with NATS wired for the YU04 durable control feed. YU04 added the outbox
+# publisher (AccountOutboxPublisher -> TRADERX_CONTROL_ACCOUNT JetStream stream) but never added the
+# NATS env to this manifest, so on kind it defaulted to localhost:4222 and never reached the broker —
+# leaving order-matcher's ReplicaBootstrap unable to bootstrap the account control feed. Adds
+# NATS_BROKER_HOST alongside the inherited DB env (nats.address=${NATS_ADDRESS:nats://${NATS_BROKER_HOST}:4222}).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: account-service
+  namespace: traderx
+  labels:
+    app: account-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: account-service
+  template:
+    metadata:
+      labels:
+        app: account-service
+    spec:
+      containers:
+        - name: account-service
+          image: traderx/account-service:state009
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18088
+              protocol: TCP
+          env:
+            - name: ACCOUNT_SERVICE_PORT
+              value: "18088"
+            - name: DATABASE_PG_HOST
+              value: "database"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: PEOPLE_SERVICE_HOST
+              value: "people-service"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "http://localhost:8080"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+            - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"

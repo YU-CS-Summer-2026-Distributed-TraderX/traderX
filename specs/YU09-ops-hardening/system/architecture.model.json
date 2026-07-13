@@ -1,0 +1,76 @@
+{
+  "title": "Ops Hardening",
+  "stateId": "YU09-ops-hardening",
+  "parentState": "YU08-execution-algo-engine",
+  "description": "Database/JWT credentials moved to Kubernetes Secrets; order-matcher journal rotates at snapshot boundaries and archives closed segments to GCS; the shared build pipeline always rebuilds a fresh jar before the Docker build.",
+  "inheritsFrom": "YU08-execution-algo-engine",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "mariadb_credentials_secret",
+      "label": "mariadb-credentials (Secret)",
+      "kind": "service",
+      "description": "Created out-of-band via kubectl; never committed. Referenced by secretKeyRef from database, order-matcher, trade-processor, account-service, position-service."
+    },
+    {
+      "id": "auth_secrets_secret",
+      "label": "auth-secrets (Secret)",
+      "kind": "service",
+      "description": "Created out-of-band via kubectl; never committed. Referenced by secretKeyRef from order-matcher, trade-processor for AUTH_JWT_SECRET/AUTH_DEV_TOKEN_MASTER_SECRET."
+    },
+    {
+      "id": "database",
+      "label": "database (MariaDB)",
+      "kind": "service",
+      "description": "Existing MariaDB Deployment; credentials now sourced from mariadb-credentials instead of literal manifest values."
+    },
+    {
+      "id": "order_matcher",
+      "label": "order-matcher (BLP + risk gateway)",
+      "kind": "service",
+      "description": "Existing BLP; DB/JWT creds now from Secrets. Journaler rotates at each snapshot boundary when journal.archive.enabled."
+    },
+    {
+      "id": "journal_archiver",
+      "label": "JournalArchiver",
+      "kind": "service",
+      "description": "New: background-thread uploader inside order-matcher. Uploads closed journal segments to GCS via an HMAC-authenticated S3 client."
+    },
+    {
+      "id": "journal_gcs_hmac_secret",
+      "label": "order-matcher-journal-gcs-hmac (Secret, optional)",
+      "kind": "service",
+      "description": "Created out-of-band via kubectl; never committed. Its absence disables only the GCS upload leg, not pod startup or rotation."
+    },
+    {
+      "id": "journal_archive_bucket",
+      "label": "GCS: order-matcher-journal-archive",
+      "kind": "service",
+      "description": "Destination for closed journal segments, uploaded via GCS's S3-compatible XML API."
+    },
+    {
+      "id": "trade_processor",
+      "label": "trade-processor",
+      "kind": "service",
+      "description": "Existing service; DB/JWT/dev-token creds now from Secrets."
+    },
+    {
+      "id": "publish_generated_state_branch",
+      "label": "publish-generated-state-branch.sh",
+      "kind": "service",
+      "description": "Shared build pipeline script; now runs gradlew clean bootJar before docker build for any JVM service context."
+    }
+  ],
+  "edges": [
+    { "from": "mariadb_credentials_secret", "to": "database", "label": "secretKeyRef: MARIADB_USER/PASSWORD/ROOT_PASSWORD" },
+    { "from": "mariadb_credentials_secret", "to": "order_matcher", "label": "secretKeyRef: DATABASE_DBUSER/DBPASS" },
+    { "from": "mariadb_credentials_secret", "to": "trade_processor", "label": "secretKeyRef: DATABASE_DBUSER/DBPASS" },
+    { "from": "auth_secrets_secret", "to": "order_matcher", "label": "secretKeyRef: AUTH_JWT_SECRET" },
+    { "from": "auth_secrets_secret", "to": "trade_processor", "label": "secretKeyRef: AUTH_JWT_SECRET, AUTH_DEV_TOKEN_MASTER_SECRET" },
+    { "from": "order_matcher", "to": "journal_archiver", "label": "hands off closed segment at snapshot boundary" },
+    { "from": "journal_gcs_hmac_secret", "to": "journal_archiver", "label": "secretKeyRef: HMAC key/secret (optional)" },
+    { "from": "journal_archiver", "to": "journal_archive_bucket", "label": "PUT (S3-compatible XML API, HMAC-signed)" },
+    { "from": "publish_generated_state_branch", "to": "order_matcher", "label": "gradlew bootJar before docker build (build-time only)" }
+  ]
+}

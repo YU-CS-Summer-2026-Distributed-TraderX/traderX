@@ -33,6 +33,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU06-eod-price-production`
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
 
 ### Functional
 
@@ -55,6 +56,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU06-eod-price-production`
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
 
 ### Convergence
 
@@ -89,3 +91,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU06-eod-price-production` | YU05-post-trade-compliance | `none` | `false` | `optional` | `specs/YU06-eod-price-production/spec.md` |
 | `YU07-historical-tick-store` | YU06-eod-price-production | `none` | `false` | `optional` | `specs/YU07-historical-tick-store/spec.md` |
 | `YU08-execution-algo-engine` | YU07-historical-tick-store | `none` | `false` | `optional` | `specs/YU08-execution-algo-engine/spec.md` |
+| `YU09-ops-hardening` | YU08-execution-algo-engine | `none` | `false` | `optional` | `specs/YU09-ops-hardening/spec.md` |

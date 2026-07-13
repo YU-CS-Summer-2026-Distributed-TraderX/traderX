@@ -1,0 +1,76 @@
+# MariaDB for the local kind runtime. The Postgres->MariaDB migration switched every service to the
+# MariaDB JDBC driver (jdbc:mariadb://database:3306, MariaDBDialect) and updated the GKE/staging
+# database, but the base kind database-deployment (from state 010's overlay patch) was never migrated
+# and still ran postgres:16-alpine on 5432 — so on kind the MariaDB-client services could never
+# connect (they target database:3306). This override brings the kind database in line with the
+# service configs and production (mariadb:11.4), mirroring cluster-addons/yu03-staging/database.yaml.
+# MariaDB runs /docker-entrypoint-initdb.d/*.sql the same as Postgres, so the existing
+# database-init-sql ConfigMap is reused unchanged.
+# YU09 (ops-hardening): credentials come from the mariadb-credentials Secret (created out-of-band,
+# never committed — see quickstart.md), the same pattern as YU07's tick-store-gcs-hmac Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  namespace: traderx
+  labels:
+    app: database
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+  template:
+    metadata:
+      labels:
+        app: database
+    spec:
+      containers:
+        - name: database
+          image: mariadb:11.4
+          args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: mariadb
+              containerPort: 3306
+              protocol: TCP
+          env:
+            - name: MARIADB_DATABASE
+              value: "traderx"
+            - name: MARIADB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: MARIADB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            - name: MARIADB_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: root-password
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/mysql
+            - name: database-init-sql
+              mountPath: /docker-entrypoint-initdb.d/001-initialSchema.sql
+              subPath: 001-initialSchema.sql
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: db-data
+          emptyDir: {}
+        - name: database-init-sql
+          configMap:
+            name: database-init-sql

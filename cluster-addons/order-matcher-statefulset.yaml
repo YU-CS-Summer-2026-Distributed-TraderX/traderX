@@ -65,9 +65,22 @@ spec:
             - name: DATABASE_NAME
               value: "traderx"
             - name: DATABASE_DBUSER
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
             - name: DATABASE_DBPASS
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            # YU09 (ops-hardening): shared HS256 secret from the auth-secrets Secret, created
+            # out-of-band (kubectl create secret), never committed — see YU09 quickstart.md.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
             - name: NATS_BROKER_HOST
               value: "nats-broker"
             - name: CORS_ALLOWED_ORIGINS
@@ -112,6 +125,25 @@ spec:
               value: "1024"
             - name: BLP_TERMINAL_RETAIN
               value: "262144"
+            # Journal archival (YU09): rotate the journal at every snapshot boundary and upload the
+            # closed segment to GCS. Secret is optional so the pod still starts without it —
+            # rotation alone bounds local PVC growth; only the GCS upload leg is skipped.
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_BUCKET
+              value: "gs://traderx-501015-order-matcher-journal-archive"
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: access-key-id
+                  optional: true
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: secret-access-key
+                  optional: true
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
               value: "health,prometheus,info"
             - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED

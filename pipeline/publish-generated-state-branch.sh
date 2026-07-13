@@ -2327,6 +2327,15 @@ while IFS= read -r item; do
     [[ -d "${context_abs}" ]] || { echo "[error] missing build context ${context_abs}"; exit 1; }
     [[ -f "${dockerfile_abs}" ]] || { echo "[error] missing dockerfile ${dockerfile_abs}"; exit 1; }
 
+    # YU09 (ops-hardening): the Dockerfile just COPYs build/libs/*.jar — without rebuilding first,
+    # Docker's layer cache silently reuses whatever jar was already sitting in build/libs/ from an
+    # earlier build, even under --recreate-cluster (caught deploying YU08: execution-algo-engine
+    # kept crashing with a bug already fixed in source, because the deployed jar predated the fix).
+    if [[ -f "${context_abs}/build.gradle" && -x "${context_abs}/gradlew" ]]; then
+      echo "[build] ${name}: ./gradlew clean bootJar (fresh jar before docker build)"
+      ( cd "${context_abs}" && ./gradlew --no-daemon clean bootJar )
+    fi
+
     echo "[build] ${name} -> ${image}"
     docker build -t "${image}" -f "${dockerfile_abs}" "${context_abs}"
   else

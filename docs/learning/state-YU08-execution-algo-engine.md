@@ -8,7 +8,7 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 - Previous state(s): [YU07-historical-tick-store](/docs/learning/state-YU07-historical-tick-store)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening)
 
 ## Convergence Metadata
 
