@@ -6,14 +6,14 @@ TraderX is a simple, distributed reference application for exploring trading wor
 
 ## Start here
 - [Overview](overview.md) for architecture and the C4-inspired diagram.
-- [Flows](flows.md) for sequence diagrams of core user journeys.
-- [Code map](code.md) for links to each service.
+- [Flows](/specs/baseline-uncontainerized-parity/system/end-to-end-flows) for sequence diagrams of core user journeys.
+- [State Docs](spec-kit/state-docs.md) for spec packs, architecture, generated code, and branch comparisons.
 - The [Running TraderX](running.md) guide for run options (manual, Docker, Kubernetes/Tilt).
 
 ## What is in this docs folder
 - `overview.md` contains the architectural diagram and links to system context.
-- `flows.md` contains sequence diagrams for key workflows.
-- `code.md` links to each service root.
+- State-local flow diagrams live under `specs/*/system/`.
+- `spec-kit/state-docs.md` maps every state to its specs, architecture, and generated code branch.
 - `home.mdx`, `roadmap.mdx`, `running.md`, and `project-history.md` are Docusaurus site pages.
 - `c4/` contains the original C4 DSL and rendered image.
 

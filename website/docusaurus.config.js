@@ -21,16 +21,6 @@ function pathBrowserPolyfillPlugin() {
   }
 }
 
-function mermaidZoomClientPlugin() {
-  return {
-    name: 'mermaid-zoom-client',
-    getClientModules() {
-      return [require.resolve('./src/mermaid-zoom-client.js')]
-    },
-  }
-}
-
-
 // GitHub repo configuration - update these for forks/branches
 const repoOwner = 'finos';
 // Allow override via environment (e.g., DOCS_BRANCH=feature-branch)
@@ -43,6 +33,7 @@ const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
 module.exports = {
   markdown: {
     mermaid: true,
+    format: 'md',
   },
   themes: ['@docusaurus/theme-mermaid'],
   onBrokenLinks: 'ignore',
@@ -59,10 +50,6 @@ module.exports = {
   },
   scripts: ['https://buttons.github.io/buttons.js'],
   stylesheets: ['https://fonts.googleapis.com/css?family=Overpass:400,400i,700'],
-  markdown: {
-    mermaid: true,
-  },
-  themes: ['@docusaurus/theme-mermaid'],
   themeConfig: {
     announcementBar: {
       id: 'traderx-v2-welcome',
@@ -227,7 +214,6 @@ module.exports = {
         editUrl: 'https://github.com/finos/traderX/edit/main/.specify/',
       },
     ],
-    mermaidZoomClientPlugin,
     pathBrowserPolyfillPlugin,
   ],
 };
