@@ -119,6 +119,56 @@ GCS bucket after the initial YU09 landing:
   to surface full `S3Exception` detail — that is what distinguished the genuine GCS-interop config
   issues from a bad-credential `SignatureDoesNotMatch` (a mistyped HMAC secret) during debugging.
 
+## GKE production deploy — completed (follow-up session, 2026-07-13)
+
+YU09 rolled out to the live `traderx-lmax` cluster, replacing the plaintext-credential deployment
+that had been running since before this state existed:
+
+- Recovered five `cluster-addons/` infra manifests (`order-matcher-headless-service.yaml`,
+  `order-matcher-primary-service.yaml`, `order-matcher-rbac.yaml`, `traderx-ingress.yaml`,
+  `letsencrypt-issuer.yaml`) that CLAUDE.md documented as canonical but were never actually
+  committed on any branch — exported authoritatively from the live cluster (commit `ffbc10c`).
+  This had been silently blocking the manual GKE deploy path (`set -euo pipefail` aborted on the
+  missing headless service) the whole time, independent of YU09.
+- Found and fixed three unrelated drifts between the committed `order-matcher-statefulset.yaml`
+  and the live object before applying (commit `6edf073`): a missing `podManagementPolicy:
+  Parallel` (an immutable field — this alone was rejecting the whole apply), a stale `replicas: 2`
+  /`BLP_REPLICATION_ENABLED: true` that would have silently flipped production from single-BLP to
+  HA mode as a side effect of this deploy, and an entirely-missing `BLP_POD_NAME` downward-API env
+  var that would have been silently dropped.
+- Created `mariadb-credentials`/`auth-secrets` on prod with strong rotated values (user-driven;
+  values never touched chat/tool output) and rotated the live MariaDB `traderx` user's password to
+  match via `ALTER USER` (existing DB data preserved, not wiped).
+- Built + pushed a fresh `order-matcher` image (`state009-yu09-20260713`, linux/amd64 — the kind
+  build was arm64) with the JournalArchiver GCS fixes, and rolled it out.
+- **Found while verifying: every other service in prod (`account-service`, `reference-data`,
+  `position-service`, `trade-processor`, `trade-service`, `price-publisher`, `people-service`) was
+  running a build from 2026-07-01 — 12 days stale, missing YU03 through YU09 entirely.** Only
+  order-matcher has CI/CD keeping it current; nothing has ever kept the rest current. This
+  surfaced because order-matcher's post-YU09 restart needed account-service's `/account/control-
+  snapshot` endpoint (added in YU04), which the stale build didn't have — a 500 with no logged
+  stack trace, diagnosed via `curl` from inside the pod. Rebuilt and redeployed all 7 with dated
+  tags (`state009-yu09-20260713`) from current source.
+- **Found while verifying gap #1's actual scope: `reference-data` connects to MariaDB (YU04's
+  stocks/outbox persistence) but was never covered by YU09's original secretKeyRef migration** —
+  only `database`/`order-matcher`/`trade-processor`/`account-service`/`position-service` were in
+  scope. After the DB password rotation, `reference-data` crashlooped with
+  `ER_ACCESS_DENIED_ERROR` until fixed (commit `3f3bb3a`).
+- Verified: no pod anywhere in `CreateContainerConfigError`; `riskReplicaReady=true`; smoke order
+  (`POST /orders`, IBM, qty 10 @ 200) returned `201` against the live production order-matcher.
+
+**Known pre-existing gaps found but explicitly out of scope, not fixed tonight**:
+`execution-algo-engine` (YU08) and `tick-store` (YU07) are both `ImagePullBackOff` in
+production — `execution-algo-engine:state-yu08` was never pushed to Artifact Registry at all, and
+`tick-store`'s manifest references a bare `traderx/tick-store:state-yu07` that was never even
+pointed at the registry. The `eod-session-close` CronJob (YU06) is failing with a 404 after
+minting an admin token — likely the same "manual-deploy path never kept current" pattern. None of
+these were touched by YU09 or by tonight's rebuild (which was scoped to the 7 services above);
+flagged as separate follow-up work.
+
 ## Not verified in this session
 
-- Production GKE deployment (only exercised on kind).
+- The GCS-upload leg of journal archival on production specifically — verified live on kind
+  (above) and the same code is now deployed to prod, but `order-matcher-journal-gcs-hmac` was not
+  created on the prod cluster in this session (archival's rotation-only behavior is unaffected;
+  only the upload leg stays inactive on prod until that Secret exists there too).
