@@ -11,7 +11,8 @@ spec:
   # (single-BLP ~42k booked/s vs HA ~22k, but no failover). blp-pool must have >=2 nodes for HA
   # (required anti-affinity below): gcloud container clusters resize traderx-lmax
   #   --node-pool blp-pool --num-nodes 2 --zone us-east1-b
-  replicas: 2
+  replicas: 1
+  podManagementPolicy: Parallel
   serviceName: order-matcher-headless
   selector:
     matchLabels:
@@ -55,9 +56,9 @@ spec:
             # Size the JVM heap to the container memory limit (container-aware).
             - name: JAVA_TOOL_OPTIONS
               value: "-XX:MaxRAMPercentage=65.0"
-            # HA leader election + NATS JetStream replication. Set false for single-BLP mode.
+            # HA leader election + NATS JetStream replication. Set true + replicas:2 for HA mode.
             - name: BLP_REPLICATION_ENABLED
-              value: "true"
+              value: "false"
             - name: DATABASE_PG_HOST
               value: "database"
             - name: DATABASE_PG_PORT
@@ -117,6 +118,11 @@ spec:
               value: "65536"
             - name: BLP_GATEWAY_ACK_TIMEOUT_MS
               value: "5000"
+            - name: BLP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             - name: SNAPSHOT_INTERVAL_MS
               value: "300000"
             - name: RECOVERY_SOURCE
