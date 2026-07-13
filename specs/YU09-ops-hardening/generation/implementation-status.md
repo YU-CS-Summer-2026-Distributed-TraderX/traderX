@@ -157,14 +157,28 @@ that had been running since before this state existed:
 - Verified: no pod anywhere in `CreateContainerConfigError`; `riskReplicaReady=true`; smoke order
   (`POST /orders`, IBM, qty 10 @ 200) returned `201` against the live production order-matcher.
 
-**Known pre-existing gaps found but explicitly out of scope, not fixed tonight**:
-`execution-algo-engine` (YU08) and `tick-store` (YU07) are both `ImagePullBackOff` in
-production — `execution-algo-engine:state-yu08` was never pushed to Artifact Registry at all, and
-`tick-store`'s manifest references a bare `traderx/tick-store:state-yu07` that was never even
-pointed at the registry. The `eod-session-close` CronJob (YU06) is failing with a 404 after
-minting an admin token — likely the same "manual-deploy path never kept current" pattern. None of
-these were touched by YU09 or by tonight's rebuild (which was scoped to the 7 services above);
-flagged as separate follow-up work.
+## GKE stale-image follow-up — completed (2026-07-13)
+
+The two services left out of the first production pass and the failing EOD trigger are now fixed:
+
+- Regenerated `YU09-ops-hardening`, built and pushed fresh `linux/amd64` images for
+  `execution-algo-engine` and `tick-store`, and deployed both with the immutable dated tag
+  `state009-yu09-20260713`. Their canonical YU08/YU07 runtime-override manifests now use the full
+  Artifact Registry references, preventing a future regeneration/apply from restoring the broken
+  `state-yu08` or bare `traderx/tick-store:state-yu07` references. Both Deployments reached `1/1`
+  Ready and their running image IDs matched the newly pushed digests.
+- Fixed `eod-session-close` to read `EOD_MASTER_SECRET` from
+  `auth-secrets/dev-token-master-secret`. The inherited YU06 manifest still contained the old
+  plaintext demo default, so after YU09 rotated credentials its first `/auth/dev-token` request
+  failed with 401 before any JWT was minted.
+- Scaling the cluster back up exposed a separate first-boot bug in YU09's MariaDB probe change:
+  the liveness probe began after 10 seconds, while initialization took about 39 seconds, so
+  kubelet killed MariaDB after system-table creation but before the `traderx` database, user, and
+  init SQL were installed. Added a credential-aware startup probe (150-second budget) so liveness
+  remains disabled until initialization completes. Verified the replacement pod created the
+  `traderx` schema and 14 initial tables.
+- Verified the repaired CronJob with a one-off Job: token mint succeeded, session close returned
+  `PUBLISHED` version 1 for 20 instruments with zero flags, and the Job completed successfully.
 
 ## Not verified in this session
 

@@ -63,6 +63,11 @@ spec:
               command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
             initialDelaySeconds: 5
             periodSeconds: 5
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
+            periodSeconds: 5
+            failureThreshold: 30
           livenessProbe:
             exec:
               command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]

@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: execution-algo-engine
-          image: traderx/execution-algo-engine:state-yu08
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/execution-algo-engine:state009-yu09-20260713
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
