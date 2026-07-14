@@ -6,9 +6,9 @@ import finos.traderx.ordermatcher.api.OrderCreateRequest;
 import finos.traderx.ordermatcher.api.OrderResponse;
 import finos.traderx.ordermatcher.lmax.HotPathMetrics;
 import finos.traderx.ordermatcher.lmax.InMemoryOrderReadModel;
+import finos.traderx.ordermatcher.lmax.LeaderElection;
 import finos.traderx.ordermatcher.lmax.LmaxEngine;
 import finos.traderx.ordermatcher.lmax.OrderSnapshot;
-import finos.traderx.ordermatcher.lmax.Px;
 import finos.traderx.ordermatcher.model.OrderSide;
 import finos.traderx.ordermatcher.model.OrderStatus;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
 import static org.springframework.http.HttpStatus.BAD_REQUEST;
 import static org.springframework.http.HttpStatus.GATEWAY_TIMEOUT;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
+import static org.springframework.http.HttpStatus.SERVICE_UNAVAILABLE;
 
 /**
  * State 009b: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
@@ -79,19 +80,6 @@ public class OrderMatcherService {
         }
         readModel.recordPrice(normalizedTicker, normalizedPrice);
         engine.submitPriceTick(normalizedTicker, normalizedPrice);
-    }
-
-    /** Same as {@link #onPriceTick(String, BigDecimal)} but for the binary tick subscriber,
-     * which already has the price as fixed-point ticks — no BigDecimal parse on the hot path.
-     * sourceEpochMillis is unused here (no risk replica to feed in this state) but kept in the
-     * signature so the subscriber calls the same method regardless of state. */
-    public void onPriceTickRaw(String ticker, long priceTicks, long sourceEpochMillis) {
-        if (!StringUtils.hasText(ticker) || priceTicks == Px.NONE) {
-            return;
-        }
-        String normalizedTicker = ticker.trim().toUpperCase(Locale.ROOT);
-        readModel.recordPrice(normalizedTicker, Px.toBigDecimal(priceTicks));
-        engine.submitPriceTick(normalizedTicker, priceTicks);
     }
 
     // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
@@ -154,7 +142,7 @@ public class OrderMatcherService {
     public MarketTradeRequest bookMarketTrade(MarketTradeRequest request) {
         validateMarketTrade(request);
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
-        engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(), request.getQuantity());
+        run(() -> { engine.executeTradeNew(request.getAccountId(), ticker, request.getSide(), request.getQuantity()); return null; });
         return request;
     }
 
@@ -352,6 +340,23 @@ public class OrderMatcherService {
         sb.append("# HELP traderx_hotpath_alloc_bytes_total Bytes allocated by the BLP thread (should stay near zero in steady state).\n");
         sb.append("# TYPE traderx_hotpath_alloc_bytes_total counter\n");
         sb.append("traderx_hotpath_alloc_bytes_total{node=\"blp\"} ").append(engine.blpAllocatedBytes()).append('\n');
+
+        // HA leader-election health (HA mode only). renew_age proves the mechanism: it must never
+        // approach the lease duration in a healthy primary; demote_total must stay flat.
+        LeaderElection le = engine.leaderElection();
+        if (le != null) {
+            double ageSec = Math.max(0L, System.nanoTime() - le.lastSuccessfulRenewNs()) / 1e9;
+            sb.append("# HELP blp_lease_renew_age_seconds Seconds since the last confirmed Lease renewal.\n");
+            sb.append("# TYPE blp_lease_renew_age_seconds gauge\n");
+            sb.append("blp_lease_renew_age_seconds ").append(ageSec).append('\n');
+            sb.append("# HELP blp_lease_renew_latency_seconds Last Lease renewal round-trip latency.\n");
+            sb.append("# TYPE blp_lease_renew_latency_seconds gauge\n");
+            sb.append("blp_lease_renew_latency_seconds ").append(le.lastRenewLatencyNanos() / 1e9).append('\n');
+            sb.append("# HELP blp_demote_total Self-demotions by cause.\n");
+            sb.append("# TYPE blp_demote_total counter\n");
+            sb.append("blp_demote_total{cause=\"foreign_holder\"} ").append(le.demoteForeignHolderCount()).append('\n');
+            sb.append("blp_demote_total{cause=\"deadline\"} ").append(le.demoteDeadlineCount()).append('\n');
+        }
         return sb.toString();
     }
 
@@ -364,6 +369,8 @@ public class OrderMatcherService {
             throw new ResponseStatusException(NOT_FOUND, "order not found");
         } catch (LmaxEngine.GatewayTimeoutException ex) {
             throw new ResponseStatusException(GATEWAY_TIMEOUT, "order command not acknowledged");
+        } catch (LmaxEngine.NotPrimaryException ex) {
+            throw new ResponseStatusException(SERVICE_UNAVAILABLE, "not the serving primary; retry");
         }
     }
 
