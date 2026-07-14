@@ -1,8 +1,10 @@
 # TraderX — BLP Failover in Kubernetes: Design, Choices & Tradeoffs
 
 > **Branch:** `YU02-lmax-kubernetes`
-> **Date:** 2026-07-01
-> **Companion docs:** `LMAX-BLP.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, `CLAUDE.md`
+> **Date:** 2026-07-01 · **Revised 2026-07-14** — election contract rewritten after a
+> lease-starvation false-demote was reproduced under saturating load (see §10).
+> **Companion docs:** `LMAX-BLP.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, `CLAUDE.md`,
+> `SPEC-blp-ha-lease-starvation-fix-FINAL.md` (local working note)
 
 ---
 
@@ -10,8 +12,9 @@
 
 The BLP (Business Logic Processor) is a **single-threaded, in-memory, event-sourced** order matcher.
 There is exactly one running instance at any moment — the **PRIMARY**. A second pod runs as a
-**FOLLOWER** that stays warm by consuming the primary's event stream. When the primary fails, the
-follower detects the failure and promotes itself, becoming the new primary within ≤15 seconds.
+**FOLLOWER** that stays warm by consuming the primary's event stream. When the primary's pod dies,
+the follower proves the death via the Kubernetes Pod API and promotes itself in **~2–3 s**; a
+wedged-but-alive primary is displaced via Lease expiry in **≤15 s**.
 
 This document explains every design decision, why it was made, and what it costs.
 
@@ -50,7 +53,7 @@ This document explains every design decision, why it was made, and what it costs
 
 | Component | What it is | Where it lives |
 |---|---|---|
-| `LeaderElection.java` | Runs a single-threaded 5 s tick loop; manages Lease create/renew/watch | `specs/YU02-lmax-kubernetes/.../lmax/LeaderElection.java` |
+| `LeaderElection.java` | Two daemon threads: 100 ms heartbeat (never blocks on HTTP) + 2 s lease renew/poll; demote-on-proof renewal state machine; pod-GET fast path | `specs/YU02-lmax-kubernetes/.../lmax/LeaderElection.java` |
 | `NatsJournalReplicator.java` | Disruptor `EventHandler` on the PRIMARY's input ring; publishes each `InputEvent` to JetStream | same package |
 | `LmaxEngine.java` | Wires it together: reads `BLP_REPLICATION_ENABLED`, starts `LeaderElection`, conditionally installs the replicator | same package |
 | `ProjectorHandler.java` | Output-ring handler; gates DB writes and NATS output publishing on `replicationRole.isFollower()` | same package |
@@ -66,21 +69,30 @@ This document explains every design decision, why it was made, and what it costs
 ### Startup sequence
 
 1. Both pods start. `LmaxEngine` recovers from its per-pod journal/snapshot PVC.
-2. `LeaderElection.start()` schedules a single `tick()` every 5 s.
-3. On the first `tick()`, both pods are in role `UNKNOWN`; both call `watchAndPromote()`.
-4. `watchAndPromote()` checks whether the Lease exists and is fresh. The Lease doesn't exist yet.
-5. **One pod wins the race** to POST a new Lease (k8s enforces atomicity — only one 201 response).
-   The winning pod sets its role to `PRIMARY`.
-6. PRIMARY: patches its own pod label `blp-role=primary` via the k8s Pod API.
-7. `order-matcher-primary` Service now has exactly one Endpoint: the primary pod.
-8. PRIMARY installs `NatsJournalReplicator` on its Disruptor input ring and starts publishing.
-9. FOLLOWER subscribes to the JetStream stream and starts consuming events, keeping its BLP state in sync.
+2. `LeaderElection.start()` starts two daemon threads: `blp-heartbeat` (100 ms tick, NATS only,
+   never touches HTTP) and `blp-lease` (2 s tick, does the k8s API I/O).
+3. `tryAcquire()` races both pods to POST a new Lease (k8s enforces atomicity — only one 201).
+   The winning pod sets its role to `PRIMARY`. If a pod cannot reach NATS or bring up a working
+   JetStream replicator, it **fails closed**: stays FOLLOWER/REFUSING and retries on a backoff
+   loop (`scheduleReplicationRecovery`) rather than serving unreplicated.
+4. PRIMARY: patches its own pod label `blp-role=primary` via the k8s Pod API.
+5. `order-matcher-primary` Service now has exactly one Endpoint: the primary pod.
+6. PRIMARY installs `NatsJournalReplicator` on its Disruptor input ring and starts publishing.
+7. FOLLOWER subscribes to the JetStream stream and starts consuming events, keeping its BLP state in sync.
 
 ### Steady state
 
-- PRIMARY renews the Lease every 5 s by PUT-ing a new `renewTime`.
-- FOLLOWER calls `watchAndPromote()` every 5 s, reads the Lease, and confirms it is still fresh
-  (age < `leaseDurationSeconds`). No action taken.
+- PRIMARY renews the Lease every 2 s with a **single optimistic PUT** against a cached
+  `resourceVersion` (no per-renewal GET). On success it stamps `lastSuccessfulRenewNs`.
+- Renewal failures are classified, not fatal: a timeout/5xx/ambiguous-409 is **retried** on the
+  next tick; the primary demotes only on **proof** — a foreign `holderIdentity` in the Lease, or
+  `RENEW_DEADLINE_SECONDS` (10 s) elapsed since the last confirmed renewal. The old behavior
+  (demote on the first failed PUT) is what caused false-demotes under CPU saturation.
+- Every gateway admission passes the **synchronous admission gate** in `LmaxEngine`
+  (`guardPrimaryAdmission`): orders are admitted only while
+  `role == PRIMARY && age(lastSuccessfulRenew) < renewDeadline`. This is the single-writer
+  boundary — kubelet readiness is just the slower traffic-draining layer.
+- FOLLOWER polls the Lease every 2 s as a backup detection path (heartbeat is the fast path).
 - The `NatsJournalReplicator` publishes every input event in the same 64-byte binary layout used
   by the on-disk journal, so the follower's BLP applies events in an identical order.
 
@@ -88,21 +100,28 @@ This document explains every design decision, why it was made, and what it costs
 
 ## Failover Sequence
 
-When the primary pod crashes or is deleted:
+When the primary pod crashes or is deleted (**pod-GET fast path**):
 
-1. The primary stops renewing the Lease.
-2. At the next follower `tick()` (≤5 s), `watchAndPromote()` finds that
-   `now - renewTime > leaseDurationSeconds` (15 s). The Lease is expired.
+1. The primary's heartbeat goes silent; the follower notices within 500 ms.
+2. The follower GETs the holder's **Pod object** (holder name == pod name; pod-read RBAC exists):
+   - **404** → the process provably isn't running → steal the Lease immediately.
+   - **`deletionTimestamp` set** → wait a 1 s guard (covers the kubelet-sets-timestamp-before-
+     SIGTERM race), then steal.
+   - **Pod alive** → no early theft; fall through to Lease expiry (below).
 3. Follower atomically PUTs the Lease with its own pod name as `holderIdentity`.
 4. Follower sets `role = PRIMARY`, patches its pod label `blp-role=primary`.
 5. `order-matcher-primary` Service detects the label change and flips its Endpoint.
 6. Follower installs `NatsJournalReplicator` and starts publishing new events.
 
-**Total failover time (fast path via heartbeat):** heartbeat timeout (500 ms) + Lease PUT (~50 ms)
-+ pod label patch (~50 ms) = **~600 ms typical**.
+**Real pod death (fast path):** heartbeat silence (500 ms) + pod GET + Lease PUT + label patch
+= **~2–3 s** end-to-end.
 
-**Worst case (heartbeat blocked, Lease path):** leaseDurationSeconds (5 s) + tick interval (100 ms)
-= **~5.1 s**.
+**Wedged-but-alive primary (slow path):** the pod object still exists, so the follower waits for
+Lease expiry — `LEASE_DURATION_SECONDS` (15 s) + poll interval = **≤ ~17 s**. This is the
+deliberate price of false-demote immunity: the primary self-fences at 10 s (renew deadline), a
+follower may steal at 15 s, so there is a guaranteed 5 s no-overlap margin. A JVM waking from a
+long stop-the-world pause refuses its first admission at the gate (renewal age > deadline) before
+its election thread even runs.
 
 > **Note on the "gap"**: between primary death and follower promotion, the `order-matcher-primary`
 > Service has no healthy Endpoints. New order requests from `trade-service` will fail with a
@@ -191,21 +210,26 @@ required when becoming primary after a failover).
 ### 5. NATS heartbeat for fast failure detection
 
 **The problem with Lease-only detection:** The k8s Lease is renewed every 2 s and expires after
-5 s, giving a worst-case detection window of ~5 s plus the tick interval. The Lease API also
+15 s, giving a worst-case detection window of ~15 s plus the poll interval. The Lease API also
 requires an HTTP round-trip to the k8s API server, adding latency.
 
 **The solution:** The primary publishes a plain NATS message on `traderx.blp.heartbeat` every
-100 ms. The follower subscribes via an async NATS Dispatcher; if no heartbeat arrives within
-500 ms, it immediately attempts Lease theft without waiting for the next Lease poll.
+100 ms **from a dedicated thread that never performs HTTP** — so a slow Lease renewal can no
+longer silence the heartbeat (in the original single-thread design, one blocking renewal produced
+two simultaneous death signals: stale lease *and* silent heartbeat). The follower subscribes via
+an async NATS Dispatcher; on silence beyond 500 ms it runs `watchAndPromote()`, which uses the
+pod-GET fast path above.
 
-The **Lease is still the authoritative promotion gate** — the heartbeat only triggers faster
-detection. If the follower's Lease PUT fails (primary renewed faster — not actually dead), it backs
-off. Split-brain remains impossible.
+The **Lease is still the authoritative promotion gate** — heartbeat silence alone never authorizes
+theft from a live pod. If the holder's pod still exists, the follower waits for Lease expiry.
+Split-brain remains impossible.
 
 ```
-Follower tick (100ms):
-  if heartbeat stale (> 500ms):  → watchAndPromote()  [fast path, ~600ms total]
-  elif Lease poll due (every 2s): → isLeaseExpired()?  [slow path, ≤5s]
+Follower, heartbeat thread (100ms): heartbeat stale (>500ms)? → watchAndPromote()
+  → holder pod 404               → steal now            [real death, ~2–3s total]
+  → holder pod deletionTimestamp → 1s guard, then steal
+  → holder pod alive             → only steal after Lease expiry [wedge, ≤15s]
+Follower, lease thread (every 2s): heartbeat not fresh AND lease expired? → watchAndPromote()
 ```
 
 **Tradeoff:** Heartbeat adds a plain NATS publish on every 100 ms tick from the primary. At
@@ -260,15 +284,19 @@ event. A promoted pod immediately replicates to a new follower without restartin
 
 ---
 
-### 8. Single `tick()` dispatcher — no dual scheduling
+### 8. Two role-dispatched schedulers — heartbeat isolated from blocking I/O
 
-**The problem:** Early implementations used two `scheduleAtFixedRate` calls — one for the primary
-renew loop and one for the follower watch loop. On role transitions, both timers accumulated,
-causing the pod to run both `renewOrDemote()` and `watchAndPromote()` simultaneously. This led to
-split-brain: the demoted pod kept renewing the Lease.
+**History:** the earliest implementation ran two schedulers keyed to the role at creation time; on
+role transitions both loops accumulated and a demoted pod kept renewing the Lease (split-brain).
+That was fixed with a single 100 ms `tick()`. The single-tick design then caused the opposite
+failure: `renewOrDemote()`'s blocking GET+PUT ran inline on the same thread as the heartbeat
+publish, so one slow renewal under CPU saturation silenced the heartbeat *and* let the lease
+expire simultaneously — a false-demote of a healthy primary (reproduced 2026-07-14, see §10).
 
-**The fix:** A single `scheduleAtFixedRate(this::tick, 100ms, ...)` where `tick()` dispatches
-based on the current role at the time it runs.
+**Current design:** two schedulers again, but split by *blocking behavior*, not by role — and each
+tick dispatches on the **current** role at run time (the original split-brain bug cannot recur):
+- `blp-heartbeat` (100 ms): NATS publish/watch only. Never performs HTTP.
+- `blp-lease` (2 s): all k8s API I/O (renew as primary, poll as follower).
 
 ---
 
@@ -294,14 +322,22 @@ the second pod will fail to schedule until a node is available.
 
 | Failure | Behavior | Notes |
 |---|---|---|
-| Primary pod crashes | Heartbeat timeout fires in ~500 ms; follower promotes in ~600 ms total. Brief order-request failures during gap. | Expected; clients should retry. |
-| Primary node fails | Same as pod crash — StatefulSet reschedules primary onto another node after promotion. | Node replacement adds ~1–3 min k8s scheduling overhead on top of the ~600 ms failover. |
-| NATS broker restarts | Primary can't publish events or heartbeats; follower detects heartbeat stale in 500 ms, attempts promotion. Follower falls back to full journal replay on next restart (bounded by snapshot interval). | In-memory JetStream data is lost. File storage would survive broker restart. |
+| Primary pod crashes | Heartbeat silence (500 ms) → pod GET returns 404 → immediate steal. **~2–3 s** total. Brief order-request failures during gap. | Expected; clients should retry (order API returns 503 from the admission gate on a non-primary). |
+| Primary node fails | Same as pod crash once the pod object is deleted; until then the wedge path (≤15 s) applies. StatefulSet reschedules onto another node after promotion. | Node replacement adds ~1–3 min k8s scheduling overhead on top of the failover. |
+| Primary alive but wedged (STW pause, hang) | Lease expiry path: primary self-fences at 10 s (renew deadline — the admission gate rejects on renewal age even before the election thread wakes); follower steals at 15 s. | The deliberate cost of false-demote immunity. 5 s no-overlap margin between self-fence and theft. |
+| Slow/failed lease renewals under load | Retried until the 10 s renew deadline; **no demote on a single failure**. A timed-out PUT that actually landed server-side is recovered via 409→GET resync (still-self-holder → refresh + retry). | This was the 2026-07-14 false-demote bug (see §10) — a healthy saturated primary demoted on one ambiguous failure. |
+| NATS unreachable at startup | Pod **fails closed**: FOLLOWER/REFUSING, background backoff-retry loop (5 s → 60 s cap) re-establishes replication + election without a restart. Both pods degraded = unavailable, never split-brained. | Previously failed **open** into an unelected, unreplicated PRIMARY — if both pods hit it, that was split-brain with zero load. |
+| JetStream/replicator init fails (startup or post-promotion) | Fail closed: never serve as a loopback PRIMARY. Startup: degraded + recovery loop. Post-promotion: demote so the lease lapses and the peer takes over (re-election naturally retries `ensureStream`). | A primary that cannot replicate is a data-loss primary. |
 | Both pods fail simultaneously | No primary; cluster is unavailable until at least one pod restarts and replays its journal. | Single-zone GKE; multi-zone would reduce this risk. |
-| Split-brain (both pods think they are primary) | Prevented by k8s Lease optimistic concurrency (`resourceVersion` PUT check). Heartbeat triggers detection but Lease is the gate. | Only one PUT with the winning `resourceVersion` succeeds. |
-| Lease not renewed (silent renewal failure) | Prevented by fetching `resourceVersion` before every PUT; logs a warning on 4xx. | Root cause of original split-brain bug — fixed. |
+| Split-brain (both pods think they are primary) | Prevented by three layers: (i) atomic `resourceVersion` PUT — one current holder; (ii) renewDeadline (10 s) < leaseDuration (15 s) — the old primary self-fences 5 s before a follower is entitled to steal; (iii) the synchronous admission gate enforces (ii) on the serving path itself, surviving STW wakeups. | The Lease alone is mutual exclusion, not fencing — the gate is what stops a demoted-but-unaware primary from admitting new work. |
 | No follower ACK (follower down) | `NatsJournalReplicator.replicatedSeq()` falls back to `publishedSeq` after 500 ms. Primary continues in solo mode without stalling. | Follower catch-up on reconnect is bounded by JetStream message age (1 day max). |
 | Follower DB writes during failover gap | Prevented by `replicationRole.isFollower()` gate in `ProjectorHandler`. | Follower never writes to DB. |
+
+**Known residual (accepted):** events already claimed on the input ring when the gate flips are
+still processed by the single matcher thread (a milliseconds-scale drain). Clients never receive
+an ACK for these (gateway futures time out), but the demoted node's local projection can briefly
+diverge until it re-syncs as follower. Full elimination would need end-to-end fencing epochs
+validated by downstream writers — disproportionate for this system's scope.
 
 ---
 
@@ -315,20 +351,54 @@ the second pod will fail to schedule until a node is available.
 | `RECOVERY_SOURCE` | `journal` | Both pods recover from their per-pod journal, not MariaDB. |
 | `BLP_REPLICATION_ENABLED=false` | default | Disables replication for single-pod or local dev setups. |
 
-Parameters hardcoded in `LeaderElection.java`:
+Leader-election timing contract — **env-overridable** via the StatefulSet (no rebuild needed),
+defaults in `LeaderElection.java`. Invariant: `RENEW_DEADLINE < LEASE_DURATION` (the primary
+self-fences before a follower may steal).
 
-| Parameter | Value | Reason |
+| Env var | Default | Reason |
 |---|---|---|
-| `leaseDurationSeconds` | `5` | Reduces worst-case Lease-path detection to ≤5 s. |
-| `RENEW_INTERVAL_NS` | `2 s` | Renew at 2.5× the lease duration — 2 missed renewals before expiry. |
-| Tick interval | `100 ms` | Heartbeat publish + detection resolution. |
-| `HEARTBEAT_TIMEOUT_NS` | `500 ms` | 5× the publish interval; tolerates one lost message. |
+| `LEASE_DURATION_SECONDS` | `15` | Follower may steal only after 15 s staleness. Long lease = false-demote immunity; real-kill failover stays ~2–3 s via the pod-GET fast path, so the length costs nothing on the common case. |
+| `RENEW_DEADLINE_SECONDS` | `10` | Primary self-fences (demotes + admission gate closes) if holdership unconfirmed this long. 15−10 = 5 s no-overlap margin. |
+| `RENEW_INTERVAL_SECONDS` | `2` | ~5 renewal attempts inside the deadline (was ~2 under the old 5 s lease). |
+| `LEASE_HTTP_TIMEOUT_SECONDS` | `2` | A hung API call fails fast and is retried within the deadline instead of eating half of it (was 5 s — a single call could exceed the entire old lease). |
+| `HEARTBEAT_TIMEOUT_MS` | `500` | 5× the 100 ms publish interval; tolerates one lost message. |
+
+Election health is observable at `/metrics`: `blp_lease_renew_age_seconds` (must stay ≪ deadline),
+`blp_lease_renew_latency_seconds`, and `blp_demote_total{cause="foreign_holder"|"deadline"}`.
 
 Parameters hardcoded in `NatsJournalReplicator.java`:
 
 | Parameter | Value | Reason |
 |---|---|---|
 | `ACK_TIMEOUT_NS` | `500 ms` | If no follower ACK in 500 ms, fall back to solo (publish-ACK) mode. |
+
+---
+
+## §10 — The 2026-07-14 lease-starvation false-demote (incident → fix)
+
+**Symptom:** under a saturating in-cluster benchmark (`--batch 1000 --conc 48`), the healthy
+PRIMARY repeatedly false-demoted mid-run (`Failed to renew Lease — demoting`), producing a
+leaderless gap and 100k+ failed orders per run, then leadership flapped back.
+
+**Measured root cause:** GC was ruled out with `-Xlog:gc*,safepoint` under load — max
+stop-the-world pause was **157 ms** against a 5 s renewal window. The stall was CPU-runqueue
+starvation plus **blocking** GET+PUT renewals (each with a 5 s HTTP timeout) sharing one thread
+with the heartbeat publish, governed by a hair-trigger rule that demoted on the first failed
+renewal — including *ambiguous* failures where the timed-out PUT had actually landed and the
+primary demoted while still holding a freshly-renewed lease (nobody could serve until expiry;
+no theft even needed).
+
+**Fix (all four ship together):**
+1. Renewal state machine: demote only on proof (foreign holder / 10 s deadline), single-PUT with
+   cached `resourceVersion`, 2 s HTTP timeouts, heartbeat on its own thread.
+2. Pod-GET fast path: long lease without slow real-death failover.
+3. Synchronous admission gate at the ring claim: the single-writer boundary, STW-wakeup-safe.
+4. Fail-closed replication: NATS-down / JetStream-fail can no longer self-appoint an unreplicated
+   PRIMARY; degraded pods refuse traffic and recover via a background backoff loop.
+
+Design record: three independent model proposals were cross-reviewed and converged; see
+`SPEC-blp-ha-lease-starvation-fix-FINAL.md` (untracked working note) for the full spec and
+validation plan.
 
 ---
 
@@ -352,7 +422,8 @@ Key differences in our implementation:
 
 ```
 specs/YU02-lmax-kubernetes/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/
-  LeaderElection.java          ← NATS heartbeat (100ms publish/watch), leaseDuration=5s, 100ms tick
+  LeaderElection.java          ← demote-on-proof renewal state machine, cached-RV single PUT, pod-GET
+                                  fast path, split heartbeat/lease threads, env-tunable 15s/10s/2s/2s
   NatsJournalReplicator.java   ← follower ACK listener, synchronous replicatedSeq(), Disruptor seq in msg
   ReplicationFollower.java     ← ACK publish to traderx.blp.replication.ack after each inject()
   DelegatingReplicator.java    ← NEW: hot-swappable Disruptor wrapper (volatile delegate)

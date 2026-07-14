@@ -66,6 +66,24 @@ spec:
             # HA leader election + NATS JetStream replication. Set false for single-BLP mode.
             - name: BLP_REPLICATION_ENABLED
               value: "true"
+            # Leader-election timing contract (env-overridable so it tunes without a rebuild).
+            # Invariant: RENEW_DEADLINE < LEASE_DURATION (self-fence before a follower may steal).
+            # See SPEC-blp-ha-lease-starvation-fix-FINAL.md §2. Real-kill failover stays ~2-3s via
+            # the pod-GET fast path despite the long lease.
+            - name: LEASE_DURATION_SECONDS
+              value: "15"
+            - name: RENEW_DEADLINE_SECONDS
+              value: "10"
+            - name: RENEW_INTERVAL_SECONDS
+              value: "2"
+            - name: LEASE_HTTP_TIMEOUT_SECONDS
+              value: "2"
+            - name: HEARTBEAT_TIMEOUT_MS
+              value: "500"
+            # Cap request threads: 48-conn benchmarks don't need 200 threads on 4 cores; less
+            # contention shortens every tail, including lease renewals. Optional, not load-bearing.
+            - name: SERVER_TOMCAT_THREADS_MAX
+              value: "16"
             - name: DATABASE_PG_HOST
               value: "database"
             - name: DATABASE_PG_PORT

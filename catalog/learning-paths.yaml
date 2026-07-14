@@ -29,6 +29,7 @@ tracks:
       - 006-messaging-nats-replacement
       - 009b-lmax-sequencer-architecture
       - YU02-lmax-kubernetes
+      - YU03-in-memory-risk-gateway
   functional:
     description: "Functional capability expansion states."
     states:
@@ -45,6 +46,7 @@ tracks:
       - 009b-lmax-sequencer-architecture
       - 013-radius-kubernetes-platform
       - YU02-lmax-kubernetes
+      - YU03-in-memory-risk-gateway
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -165,3 +167,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU02-lmax-kubernetes/spec.md
+  - id: YU03-in-memory-risk-gateway
+    previous:
+      - YU02-lmax-kubernetes
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU03-in-memory-risk-gateway/spec.md

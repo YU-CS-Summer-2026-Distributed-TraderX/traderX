@@ -105,6 +105,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private volatile String recoveryStatus = "starting";
     private volatile String recoveryMode = "not-started";
     private volatile String recoveryError;
+    // Set when replication is enabled but this pod could not achieve a safe replicating-PRIMARY role
+    // (NATS unreachable, JetStream/publisher init failed). A degraded pod must REFUSE traffic rather
+    // than fail open into a lone unreplicated PRIMARY (which, if both pods degrade, is split-brain).
+    private volatile boolean replicationDegraded;
 
     private Disruptor<InputEvent> inputDisruptor;
     private Disruptor<OutputEvent> outputDisruptor;
@@ -298,7 +302,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         log.info("LMAX hot path live: profile={} role={} inputRing={} outputRing={} journal={} ({} orders warm)",
             runtimeProfile, replicationRole.get(), normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
             journalEnabled ? journalPath : "disabled", readModel.totalOrders());
-        if (replicationEnabled && replicationRole.isFollower() && replicationFollower != null) {
+        if (replicationEnabled && replicationDegraded) {
+            // Could not achieve a safe replicating-PRIMARY role (NATS/JetStream). Stay REFUSING so a
+            // healthy peer serves; never fail open into a lone unreplicated PRIMARY.
+            recoveryStatus = "replication-degraded-refusing";
+            publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+        } else if (replicationEnabled && replicationRole.isFollower() && replicationFollower != null) {
             // Follower: start JetStream subscription (blocks until caught up, then signals readiness).
             recoveryStatus = "follower-catching-up";
             replicationFollower.start();
@@ -335,8 +344,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                     .connectionTimeout(java.time.Duration.ofSeconds(10))
                     .build());
         } catch (Exception ex) {
-            log.warn("Replication NATS connect failed: {} — falling back to single-node primary", ex.getMessage());
-            replicationRole.set(ReplicationRole.Role.PRIMARY);
+            // Fail CLOSED: a pod that cannot reach NATS cannot replicate, so it must not lead.
+            // Stay FOLLOWER/degraded → REFUSING (the serving decision in afterPropertiesSet checks
+            // replicationDegraded). If both pods are degraded the system is unavailable, not
+            // split-brained. Recovery requires a restart once NATS is reachable (a backoff-retry
+            // loop is the deferred follow-up).
+            log.error("Replication NATS connect failed: {} — refusing to serve (degraded), not self-appointing PRIMARY", ex.getMessage());
+            replicationRole.set(ReplicationRole.Role.FOLLOWER);
+            replicationDegraded = true;
+            recoveryError = "nats-unreachable: " + ex.getMessage();
+            scheduleReplicationRecovery();
             return;
         }
 
@@ -353,8 +370,18 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                         NatsJournalReplicator.SUBJECT);
                     natsReplicator.startAckListener(replicationConn);
                 } catch (Exception ex) {
-                    log.warn("Could not create JetStream publisher — running without NATS replication: {}", ex.getMessage());
+                    log.warn("Could not create JetStream publisher: {}", ex.getMessage());
                 }
+            }
+            if (natsReplicator == null) {
+                // Fail CLOSED: won the lease but cannot replicate. Do NOT serve as an unreplicated
+                // PRIMARY. Skip leaderElection.start() so the freshly-acquired lease is never renewed
+                // and lapses within LEASE_DURATION, letting a healthy peer take over.
+                log.error("PRIMARY without a working JetStream replicator — refusing to serve (degraded); leadership will lapse");
+                replicationDegraded = true;
+                recoveryError = "jetstream-unavailable";
+                scheduleReplicationRecovery();
+                return;
             }
             leaderElection.start();
             log.info("BLP role: PRIMARY (pod={} natsReplication={})", podName, natsReplicator != null);
@@ -379,6 +406,68 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             leaderElection.start();
             log.info("BLP role: FOLLOWER (pod={} startSeq={})", podName, startSeq);
         }
+    }
+
+    /**
+     * Background retry for a degraded start (NATS unreachable or JetStream init failed): keep
+     * trying to establish replication + election with backoff instead of requiring a pod restart.
+     * Exits once a safe role is achieved (replicating PRIMARY or caught-up FOLLOWER).
+     */
+    private void scheduleReplicationRecovery() {
+        Thread t = new Thread(() -> {
+            long delayMs = 5_000;
+            while (replicationDegraded) {
+                try { Thread.sleep(delayMs); } catch (InterruptedException ie) { return; }
+                delayMs = Math.min(delayMs * 2, 60_000);
+                if (inputRing == null) continue;   // rings not built yet; try again next round
+                try {
+                    if (attemptReplicationRecovery()) {
+                        log.info("Replication recovered (role={}) — degraded mode cleared", replicationRole.get());
+                        return;
+                    }
+                } catch (Exception ex) {
+                    log.warn("Replication recovery attempt failed (retry in {} ms): {}", delayMs, ex.getMessage());
+                }
+            }
+        }, "blp-replication-recovery");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** One recovery attempt. Returns true when a safe role is established. */
+    private boolean attemptReplicationRecovery() throws Exception {
+        if (replicationConn == null) {
+            replicationConn = io.nats.client.Nats.connect(
+                io.nats.client.Options.builder().server(natsAddress)
+                    .connectionTimeout(java.time.Duration.ofSeconds(10))
+                    .build());
+            log.info("Replication NATS connection established on retry");
+        }
+        if (leaderElection == null) {
+            leaderElection = new LeaderElection(podName, readK8sNamespace(), replicationRole,
+                this::onRoleChange, replicationConn);
+        }
+        if (leaderElection.tryAcquire()) {
+            // Reuse the live-promotion path: builds replicator, swaps the ring delegate, signals
+            // ACCEPTING. It re-sets replicationDegraded on failure, keeping us in the loop.
+            replicationDegraded = false;
+            replicationRole.set(ReplicationRole.Role.PRIMARY);
+            onRoleChange(ReplicationRole.Role.PRIMARY);
+            if (replicationDegraded) return false;
+            recoveryStatus = "recovered-replicating-primary";
+            leaderElection.start();
+            return true;
+        }
+        // Lease held by a live peer: come up as a catching-up follower.
+        replicationRole.set(ReplicationRole.Role.FOLLOWER);
+        replicationFollower = new ReplicationFollower(replicationConn, podName, -1L,
+            readModel, this::followerReady);
+        replicationFollower.setInputRing(inputRing);
+        replicationDegraded = false;
+        recoveryStatus = "follower-catching-up";
+        leaderElection.start();
+        replicationFollower.start();   // blocks until caught up, then followerReady() → ACCEPTING
+        return true;
     }
 
     /** Called when a FOLLOWER has caught up to the JetStream tail. Signal readiness. */
@@ -412,8 +501,20 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                     delegatingReplicator.swapDelegate(natsReplicator);
                 }
             } catch (Exception ex) {
-                log.warn("Post-promotion replicator init failed — continuing with loopback: {}", ex.getMessage());
+                // Fail CLOSED: a promoted primary that cannot replicate must not serve. Drop back to
+                // FOLLOWER so lease renewal stops and the lease lapses — otherwise we'd be a
+                // lease-holding REFUSING primary that locks the healthy peer out (deadlock). The
+                // election loop keeps running and a later re-promotion retries replicator init.
+                log.error("Post-promotion replicator init failed — demoting, refusing to serve (degraded): {}", ex.getMessage());
+                if (delegatingReplicator != null) delegatingReplicator.swapDelegate(new ReplicatorStub());
+                if (natsReplicator != null) { natsReplicator.stopAckListener(); natsReplicator = null; }
+                replicationRole.set(ReplicationRole.Role.FOLLOWER);
+                replicationDegraded = true;
+                recoveryReady = false;
+                publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+                return;
             }
+            replicationDegraded = false;
             recoveryReady = true;
             publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
         } else {
@@ -509,6 +610,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (n == 0) {
             return List.of();
         }
+        guardPrimaryAdmission();
         long hi = claimInputSlots(n);
         long lo = hi - (n - 1);
         @SuppressWarnings("unchecked")
@@ -597,6 +699,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      * /trade/ contract (booking is async; the gateway does not block on the read-model).
      */
     public void executeTradeNew(int accountId, String ticker, OrderSide side, int quantity) {
+        guardPrimaryAdmission();
         int securityId = symbols.idFor(ticker);
         long seq = claimInputSlot();
         try {
@@ -648,6 +751,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                                   int quantity, long limitPx, long priceTicks) {
+        guardPrimaryAdmission();
         long seq = claimInputSlot();
         CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
         try {
@@ -687,6 +791,32 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         public GatewayTimeoutException(String message) {
             super(message);
         }
+    }
+
+    /** Thrown when a gateway admission is attempted on a pod that is not a confirmed serving PRIMARY. */
+    public static final class NotPrimaryException extends RuntimeException {
+        public NotPrimaryException() { super("order-matcher is not the serving primary"); }
+    }
+
+    /**
+     * Synchronous single-writer boundary (HA mode): admit gateway work only from a PRIMARY that has
+     * confirmed Lease holdership within the renew deadline. The renewal-age term makes this safe
+     * across a stop-the-world pause — a JVM waking from a long pause refuses its first order before
+     * the election thread runs. Single-BLP mode (replication disabled) is unaffected. Two volatile
+     * reads + one nanoTime() — nanoseconds, no hot-path cost.
+     */
+    private void guardPrimaryAdmission() {
+        if (!replicationEnabled) return;
+        LeaderElection le = leaderElection;
+        boolean ok = replicationRole.isPrimary()
+            && le != null
+            && (System.nanoTime() - le.lastSuccessfulRenewNs()) < le.renewDeadlineNanos();
+        if (!ok) throw new NotPrimaryException();
+    }
+
+    /** Exposes the leader-election handle for lease telemetry; null in single-BLP mode. */
+    public LeaderElection leaderElection() {
+        return leaderElection;
     }
 
     // ----- bootstrap ------------------------------------------------------------------------

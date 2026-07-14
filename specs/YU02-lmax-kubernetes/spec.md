@@ -37,7 +37,7 @@
 
 - TD-LK01: The current scaffold intentionally inherits `014` documentation/assets while the actual LMAX-on-Kubernetes port is not yet implemented.
 - TD-LK02: The initial state id intentionally drops numeric prefixing per user direction, so any tooling that assumes numeric ids must be validated as part of implementation.
-- TD-LK03: The durable shape of volume claims, warm-standby behavior, and failover semantics under Kubernetes remains to be specified in follow-up work.
+- TD-LK03: ~~The durable shape of volume claims, warm-standby behavior, and failover semantics under Kubernetes remains to be specified in follow-up work.~~ **Resolved** — per-pod PVCs via `volumeClaimTemplates`, warm-standby FOLLOWER via NATS JetStream replication, and Lease-based leader election with a demote-on-proof renewal contract, synchronous admission fencing, and fail-closed replication (revised 2026-07-14 after a lease-starvation false-demote under load). Authoritative design doc: `LMAX-BLP-FAILOVER.md`.
 
 ## Success Criteria
 

@@ -17,44 +17,58 @@ import java.time.temporal.ChronoUnit;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Consumer;
 
 /**
  * Kubernetes Lease-based leader election for the BLP StatefulSet, augmented with a NATS
  * heartbeat for fast failure detection.
  *
- * <h3>Detection strategy (two layers)</h3>
+ * <h3>Renewal contract (client-go LeaderElector semantics)</h3>
+ * The primary renews on a dedicated <em>lease</em> thread every {@code RENEW_INTERVAL_SECONDS}.
+ * A renewal is a single optimistic PUT against a cached {@code resourceVersion} (no per-renewal
+ * GET). The primary <b>demotes only on proof</b>: either the Lease shows a foreign
+ * {@code holderIdentity}, or it has failed to confirm holdership for {@code RENEW_DEADLINE_SECONDS}
+ * (at which point a follower may legitimately steal, so it must stop serving). A single timeout,
+ * 5xx, or ambiguous 409 is retried, never treated as loss — this removes the false-demote where an
+ * ambiguous PUT (that may have landed server-side) demoted a healthy primary.
+ *
+ * <p>The invariant {@code RENEW_DEADLINE < LEASE_DURATION} guarantees the old primary self-fences
+ * before any follower is entitled to acquire, so there is no two-writer overlap.
+ *
+ * <h3>Detection (two layers)</h3>
  * <ol>
- *   <li><b>NATS heartbeat</b> (fast path): PRIMARY publishes to {@code traderx.blp.heartbeat}
- *       every 100 ms. FOLLOWER considers the primary dead if no heartbeat arrives within
- *       {@link #HEARTBEAT_TIMEOUT_NS} (500 ms) and immediately attempts Lease theft.
- *       Typical failover detection: ~500 ms.
- *   <li><b>Kubernetes Lease</b> (safe path, split-brain guard): {@code leaseDurationSeconds=5},
- *       renewed every 2 s. Even if heartbeat is blocked, the follower detects expiry within 5 s.
- *       The Lease PUT is the atomic promotion gate — only one pod wins the optimistic-concurrency
- *       check, so split-brain is impossible regardless of heartbeat reliability.
+ *   <li><b>NATS heartbeat</b> (fast path): PRIMARY publishes to {@code traderx.blp.heartbeat} every
+ *       100 ms on a <em>separate</em> thread from lease renewal, so a slow renewal never silences
+ *       the heartbeat. FOLLOWER treats silence beyond {@code HEARTBEAT_TIMEOUT_MS} as a signal to
+ *       check for takeover.
+ *   <li><b>Kubernetes Lease</b> (safe path): the follower may steal only after observing the Lease
+ *       expired ({@code renewTime} older than {@code LEASE_DURATION}). The Lease PUT is the atomic
+ *       optimistic-concurrency gate, so split-brain is impossible regardless of heartbeat behaviour.
  * </ol>
  *
- * <h3>End-to-end failover latency</h3>
- * <ul>
- *   <li>Best case (heartbeat path): ~500 ms (heartbeat timeout) + Lease PUT (~50 ms) +
- *       pod label patch (~50 ms) = <b>~600 ms</b>.
- *   <li>Worst case (heartbeat blocked, Lease path): ~5 s.
- * </ul>
+ * <p><b>Pod-GET fast path:</b> on heartbeat silence the follower GETs the holder's Pod object; if the
+ * pod is gone (404) the process provably isn't running and the follower steals immediately, so a
+ * long Lease does not slow real-death failover (~2-3 s) — only a wedged-but-alive primary pays the
+ * full {@code LEASE_DURATION}.
  */
 public final class LeaderElection {
     private static final Logger log = LoggerFactory.getLogger(LeaderElection.class);
 
-    private static final String LEASE_NAME          = "order-matcher-leader";
-    private static final String HEARTBEAT_SUBJECT   = "traderx.blp.heartbeat";
+    private static final String LEASE_NAME        = "order-matcher-leader";
+    private static final String HEARTBEAT_SUBJECT = "traderx.blp.heartbeat";
 
-    // Lease parameters: aggressive but safe for a research deployment.
-    private static final int  LEASE_DURATION_SECONDS = 5;
-    private static final long RENEW_INTERVAL_NS      = 2_000_000_000L; // 2 s
+    // Heartbeat cadence; staleness threshold is configurable (default 500 ms).
+    private static final long TICK_MS = 100;
+    // Guard before stealing from a holder whose Pod is merely Terminating (deletionTimestamp set)
+    // rather than gone — covers the kubelet-sets-deletionTimestamp-before-SIGTERM race.
+    private static final long TERMINATING_GUARD_NS = 1_000_000_000L; // 1 s
 
-    // Heartbeat: published every tick (100 ms); stale after 500 ms.
-    private static final long TICK_MS               = 100;
-    private static final long HEARTBEAT_TIMEOUT_NS  = 500_000_000L;    // 500 ms
+    // Tunable timing contract (env-overridable via the StatefulSet). Defaults per the converged spec.
+    private final int  leaseDurationSeconds;   // follower may steal only after this staleness
+    private final long renewDeadlineNs;        // primary self-fences if unconfirmed this long
+    private final long renewIntervalNs;        // primary renews this often
+    private final long heartbeatTimeoutNs;     // follower detection threshold
 
     private final String podName;
     private final byte[] podNameBytes;      // cached to avoid getBytes() allocation on every heartbeat
@@ -66,16 +80,33 @@ public final class LeaderElection {
     private final Consumer<ReplicationRole.Role> onRoleChange;
     private final Connection natsConn;
 
-    private ScheduledExecutorService scheduler;
+    private ScheduledExecutorService heartbeatScheduler;   // 100 ms cadence, never blocks on lease HTTP
+    private ScheduledExecutorService leaseScheduler;       // renew/poll cadence, may block on k8s API
 
     /** Nanotime of last heartbeat received by follower; 0 = none yet. */
     private volatile long lastHeartbeatNs = 0;
 
-    /** Nanotime of next scheduled Lease operation (renew or poll). */
-    private volatile long nextLeaseOpNs = 0;
+    /** Nanotime of last CONFIRMED successful renewal/acquire; the admission gate reads this. */
+    private volatile long lastSuccessfulRenewNs = 0;
+
+    /** Cached Lease resourceVersion for optimistic single-PUT renewal; null forces a GET-resync. */
+    private volatile String cachedResourceVersion;
+
+    /** Last observed renewal round-trip latency (ns), for telemetry. */
+    private volatile long lastRenewLatencyNanos = 0;
+
+    private final LongAdder demoteForeignHolder = new LongAdder();
+    private final LongAdder demoteDeadline = new LongAdder();
+
+    // Terminating-guard bookkeeping (pod-GET fast path).
+    private volatile String terminatingHolder;
+    private volatile long   terminatingSinceNs;
 
     /** Active NATS Dispatcher for heartbeat subscription (follower only). */
     private volatile Dispatcher heartbeatDispatcher;
+
+    private enum RenewResult { SUCCESS, AMBIGUOUS, FOREIGN_HOLDER }
+    private enum PodStatus   { GONE, TERMINATING, ALIVE, UNKNOWN }
 
     public LeaderElection(String podName, String namespace, ReplicationRole role,
                           Consumer<ReplicationRole.Role> onRoleChange, Connection natsConn) {
@@ -85,71 +116,92 @@ public final class LeaderElection {
         this.role         = role;
         this.onRoleChange = onRoleChange;
         this.natsConn     = natsConn;
+
+        this.leaseDurationSeconds = (int) envLong("LEASE_DURATION_SECONDS", 15);
+        this.renewDeadlineNs      = envLong("RENEW_DEADLINE_SECONDS", 10) * 1_000_000_000L;
+        this.renewIntervalNs      = envLong("RENEW_INTERVAL_SECONDS", 2) * 1_000_000_000L;
+        this.heartbeatTimeoutNs   = envLong("HEARTBEAT_TIMEOUT_MS", 500) * 1_000_000L;
+        long httpTimeoutSeconds   = envLong("LEASE_HTTP_TIMEOUT_SECONDS", 2);
+
         String host = System.getenv("KUBERNETES_SERVICE_HOST");
         String port = System.getenv("KUBERNETES_SERVICE_PORT");
         this.apiBase = (host != null && port != null)
             ? "https://" + host + ":" + port
             : "https://kubernetes.default.svc";
         this.http = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(5))
+            .connectTimeout(Duration.ofSeconds(httpTimeoutSeconds))
             .sslContext(buildSslContext())
             .build();
         this.token = readToken();
     }
 
+    // ----- telemetry accessors (read by OrderMatcherService.prometheusMetrics + LmaxEngine gate) --
+
+    /** Nanotime of the last confirmed renewal; the admission gate compares this to {@link #renewDeadlineNanos()}. */
+    public long lastSuccessfulRenewNs() { return lastSuccessfulRenewNs; }
+    public long renewDeadlineNanos()    { return renewDeadlineNs; }
+    public long lastRenewLatencyNanos() { return lastRenewLatencyNanos; }
+    public long demoteForeignHolderCount() { return demoteForeignHolder.sum(); }
+    public long demoteDeadlineCount()      { return demoteDeadline.sum(); }
+
     /** Try to become primary on startup. Returns true if this pod acquired the Lease. */
     public boolean tryAcquire() {
         String holder = currentHolder();
         if (holder == null) {
-            return createLease();
+            boolean ok = createLease();
+            if (ok) lastSuccessfulRenewNs = System.nanoTime();
+            return ok;
         }
         if (podName.equals(holder) || isLeaseExpired()) {
-            return updateLease();
+            boolean ok = updateLease() == RenewResult.SUCCESS;
+            if (ok) lastSuccessfulRenewNs = System.nanoTime();
+            return ok;
         }
         log.info("Lease held by {} — starting as FOLLOWER", holder);
         return false;
     }
 
-    /** Start the background tick and set up heartbeat. */
-    public void start() {
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "leader-election");
-            t.setDaemon(true);
-            return t;
-        });
-        // Do first Lease op on the next tick.
-        nextLeaseOpNs = System.nanoTime() + RENEW_INTERVAL_NS;
+    /** Start the background threads and set up heartbeat. Idempotent — safe if called twice. */
+    public synchronized void start() {
+        if (heartbeatScheduler != null) return;   // already started
+        if (role.isPrimary()) lastSuccessfulRenewNs = System.nanoTime();
+        heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(daemon("blp-heartbeat"));
+        leaseScheduler     = Executors.newSingleThreadScheduledExecutor(daemon("blp-lease"));
         setupHeartbeat();
-        scheduler.scheduleAtFixedRate(this::tick, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
+        heartbeatScheduler.scheduleAtFixedRate(this::heartbeatTick, TICK_MS, TICK_MS, TimeUnit.MILLISECONDS);
+        long renewMs = Math.max(200, renewIntervalNs / 1_000_000L);
+        leaseScheduler.scheduleAtFixedRate(this::leaseTick, renewMs, renewMs, TimeUnit.MILLISECONDS);
     }
 
     public void stop() {
-        if (scheduler != null) scheduler.shutdownNow();
+        if (heartbeatScheduler != null) heartbeatScheduler.shutdownNow();
+        if (leaseScheduler != null) leaseScheduler.shutdownNow();
         teardownHeartbeat();
     }
 
-    // ----- tick ------------------------------------------------------------------------------------
+    // ----- ticks -----------------------------------------------------------------------------------
 
-    private void tick() {
-        long now = System.nanoTime();
+    /** 100 ms cadence. Primary publishes heartbeat (non-blocking); follower watches for silence. */
+    private void heartbeatTick() {
         if (role.isPrimary()) {
             publishHeartbeat();
-            if (now >= nextLeaseOpNs) {
-                renewOrDemote();
-                nextLeaseOpNs = System.nanoTime() + RENEW_INTERVAL_NS;
-            }
         } else {
-            // Fast path: heartbeat stale → attempt promotion immediately.
-            if (lastHeartbeatNs > 0 && now - lastHeartbeatNs > HEARTBEAT_TIMEOUT_NS) {
-                log.info("Heartbeat stale ({}ms) — attempting fast promotion",
-                    (now - lastHeartbeatNs) / 1_000_000);
+            long now = System.nanoTime();
+            if (lastHeartbeatNs > 0 && now - lastHeartbeatNs > heartbeatTimeoutNs) {
                 watchAndPromote();
-                nextLeaseOpNs = System.nanoTime() + RENEW_INTERVAL_NS;
-            } else if (now >= nextLeaseOpNs) {
-                // Slow path: periodic Lease poll (also catches cases where heartbeat never started).
-                if (isLeaseExpired()) watchAndPromote();
-                nextLeaseOpNs = System.nanoTime() + RENEW_INTERVAL_NS;
             }
+        }
+    }
+
+    /** Renew cadence. Primary renews-or-demotes; follower polls the Lease as a backup detection path. */
+    private void leaseTick() {
+        if (role.isPrimary()) {
+            renewOrDemote();
+        } else {
+            // Backup path (also covers heartbeat never starting, e.g. natsConn == null).
+            long now = System.nanoTime();
+            boolean heartbeatFresh = lastHeartbeatNs > 0 && now - lastHeartbeatNs <= heartbeatTimeoutNs;
+            if (!heartbeatFresh && isLeaseExpired()) watchAndPromote();
         }
     }
 
@@ -160,54 +212,94 @@ public final class LeaderElection {
         try {
             natsConn.publish(HEARTBEAT_SUBJECT, podNameBytes);
         } catch (Exception ex) {
-            // non-fatal; follower will detect stale after HEARTBEAT_TIMEOUT_NS
+            // non-fatal; follower will detect stale after heartbeatTimeoutNs
         }
     }
 
     private void renewOrDemote() {
+        RenewResult r;
         try {
-            boolean renewed = updateLease();
-            if (!renewed) {
-                log.warn("Failed to renew Lease — demoting to FOLLOWER");
-                role.set(ReplicationRole.Role.FOLLOWER);
-                onRoleChange.accept(ReplicationRole.Role.FOLLOWER);
-                patchPodLabel("standby");
-                // Switch from publishing heartbeats to watching for them.
-                subscribeToHeartbeat();
-            }
+            r = updateLease();
         } catch (Exception ex) {
+            r = RenewResult.AMBIGUOUS;
             log.warn("Lease renew error: {}", ex.getMessage());
+        }
+        switch (r) {
+            case SUCCESS -> lastSuccessfulRenewNs = System.nanoTime();
+            case FOREIGN_HOLDER -> demote("foreign_holder");
+            case AMBIGUOUS -> {
+                long age = System.nanoTime() - lastSuccessfulRenewNs;
+                if (age > renewDeadlineNs) {
+                    demote("deadline");
+                } else {
+                    log.warn("Lease renewal unconfirmed for {} ms (deadline {} ms) — retrying, not demoting",
+                        age / 1_000_000, renewDeadlineNs / 1_000_000);
+                }
+            }
         }
     }
 
-    // ----- follower: detect expiry + promote ------------------------------------------------------
+    private void demote(String cause) {
+        log.warn("Demoting to FOLLOWER (cause={})", cause);
+        if ("foreign_holder".equals(cause)) demoteForeignHolder.increment(); else demoteDeadline.increment();
+        cachedResourceVersion = null;
+        role.set(ReplicationRole.Role.FOLLOWER);
+        onRoleChange.accept(ReplicationRole.Role.FOLLOWER);
+        patchPodLabel("standby");
+        subscribeToHeartbeat();   // switch from publishing to watching
+    }
+
+    // ----- follower: detect + promote -------------------------------------------------------------
 
     private void watchAndPromote() {
         try {
-            if (!isLeaseExpired()) return;
-            log.info("Primary detected as lost — promoting {} to PRIMARY", podName);
-            if (updateLease()) {
-                role.set(ReplicationRole.Role.PRIMARY);
-                onRoleChange.accept(ReplicationRole.Role.PRIMARY);
-                patchPodLabel("primary");
-                // Switch from watching heartbeats to publishing them.
-                teardownHeartbeat();
-            } else {
-                log.warn("Lease theft failed — another pod may have won; backing off");
+            String holder = currentHolder();
+            if (holder == null) {                 // no Lease object → acquire if expired/absent
+                if (isLeaseExpired()) attemptPromotion();
+                return;
             }
+            if (podName.equals(holder)) return;   // we already hold it
+
+            PodStatus ps = podStatus(holder);
+            if (ps == PodStatus.GONE) {           // process provably gone → safe immediate steal
+                terminatingHolder = null;
+                log.info("Holder pod {} is gone — fast promotion of {}", holder, podName);
+                attemptPromotion();
+                return;
+            }
+            if (ps == PodStatus.TERMINATING) {
+                long now = System.nanoTime();
+                if (!holder.equals(terminatingHolder)) { terminatingHolder = holder; terminatingSinceNs = now; }
+                if (now - terminatingSinceNs > TERMINATING_GUARD_NS) {
+                    log.info("Holder pod {} terminating past guard — promoting {}", holder, podName);
+                    attemptPromotion();
+                }
+                return;
+            }
+            terminatingHolder = null;
+            if (isLeaseExpired()) attemptPromotion();   // holder alive but lease expired
         } catch (Exception ex) {
             log.warn("Promote check error: {}", ex.getMessage());
+        }
+    }
+
+    private void attemptPromotion() {
+        if (updateLease() == RenewResult.SUCCESS) {
+            lastSuccessfulRenewNs = System.nanoTime();
+            log.info("Promoted {} to PRIMARY", podName);
+            role.set(ReplicationRole.Role.PRIMARY);
+            onRoleChange.accept(ReplicationRole.Role.PRIMARY);
+            patchPodLabel("primary");
+            teardownHeartbeat();   // switch from watching to publishing
+        } else {
+            log.warn("Lease theft failed — another pod may have won; backing off");
         }
     }
 
     // ----- heartbeat management -------------------------------------------------------------------
 
     private void setupHeartbeat() {
-        if (role.isPrimary()) {
-            // heartbeat is published in tick(); no subscription needed
-        } else {
-            subscribeToHeartbeat();
-        }
+        if (!role.isPrimary()) subscribeToHeartbeat();
     }
 
     private void subscribeToHeartbeat() {
@@ -235,10 +327,8 @@ public final class LeaderElection {
 
     private String currentHolder() {
         try {
-            HttpRequest req = req("GET",
-                "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases/" + LEASE_NAME)
-                .GET().build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = http.send(
+                req("GET", leasePath()).GET().build(), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 404) return null;
             return extractJsonString(resp.body(), "holderIdentity");
         } catch (Exception ex) {
@@ -247,106 +337,140 @@ public final class LeaderElection {
         }
     }
 
-    /**
-     * Fetches the current Lease and returns [renewTime, resourceVersion], or null on 404.
-     * Both values are needed together: renewTime for expiry detection and resourceVersion for PUT.
-     */
+    /** Fetches the current Lease as [renewTime, resourceVersion, holderIdentity], or null on 404. */
     private String[] fetchLease() {
         try {
-            HttpRequest req = req("GET",
-                "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases/" + LEASE_NAME)
-                .GET().build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = http.send(
+                req("GET", leasePath()).GET().build(), HttpResponse.BodyHandlers.ofString());
             if (resp.statusCode() == 404) return null;
             String body = resp.body();
-            String renewTime       = extractJsonString(body, "renewTime");
-            String resourceVersion = extractJsonString(body, "resourceVersion");
-            return new String[]{renewTime, resourceVersion};
+            return new String[]{
+                extractJsonString(body, "renewTime"),
+                extractJsonString(body, "resourceVersion"),
+                extractJsonString(body, "holderIdentity")
+            };
         } catch (Exception ex) {
             log.warn("Could not read Lease: {}", ex.getMessage());
-            return new String[]{null, null};
+            return new String[]{null, null, null};
         }
     }
 
     private boolean isLeaseExpired() {
         String[] lease = fetchLease();
-        if (lease == null) return true;             // 404 → treat as expired
-        String renewTime = lease[0];
-        if (renewTime == null) return true;
+        if (lease == null || lease[0] == null) return true;   // 404 / no renewTime → expired
         try {
-            Instant last = Instant.parse(renewTime);
-            return Instant.now().isAfter(last.plusSeconds(LEASE_DURATION_SECONDS));
+            Instant last = Instant.parse(lease[0]);
+            return Instant.now().isAfter(last.plusSeconds(leaseDurationSeconds));
         } catch (Exception ex) {
-            log.warn("Could not parse Lease renewTime '{}': {}", renewTime, ex.getMessage());
+            log.warn("Could not parse Lease renewTime '{}': {}", lease[0], ex.getMessage());
             return true;
+        }
+    }
+
+    private PodStatus podStatus(String pod) {
+        try {
+            HttpResponse<String> resp = http.send(
+                req("GET", "/api/v1/namespaces/" + namespace + "/pods/" + pod).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 404) return PodStatus.GONE;
+            if (resp.statusCode() != 200) return PodStatus.UNKNOWN;
+            // A real deletion stamps a quoted timestamp value; `"deletionTimestamp":null` is not terminating.
+            return resp.body().contains("\"deletionTimestamp\":\"") ? PodStatus.TERMINATING : PodStatus.ALIVE;
+        } catch (Exception ex) {
+            return PodStatus.UNKNOWN;
         }
     }
 
     private boolean createLease() {
         try {
-            String body = leaseBody(null);
-            HttpRequest req = req("POST",
-                "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases")
-                .POST(HttpRequest.BodyPublishers.ofString(body))
-                .header("Content-Type", "application/json")
-                .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            boolean ok = resp.statusCode() == 201;
+            HttpResponse<String> resp = http.send(
+                req("POST", "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases")
+                    .POST(HttpRequest.BodyPublishers.ofString(leaseBody(null)))
+                    .header("Content-Type", "application/json").build(),
+                HttpResponse.BodyHandlers.ofString());
             log.info("Create Lease {}: status={}", LEASE_NAME, resp.statusCode());
-            return ok;
+            if (resp.statusCode() == 201) {
+                cachedResourceVersion = extractJsonString(resp.body(), "resourceVersion");
+                return true;
+            }
+            return false;
         } catch (Exception ex) {
             log.warn("Create Lease failed: {}", ex.getMessage());
             return false;
         }
     }
 
-    private boolean updateLease() {
+    /**
+     * Optimistic single-PUT renewal against the cached resourceVersion. On 409, resync once via GET:
+     * if we are still the holder (our prior timed-out PUT actually landed) refresh + retry; if a
+     * foreign pod holds it, that is confirmed loss. Timeout/5xx/other → AMBIGUOUS (caller retries
+     * until the renew deadline, never an immediate demote).
+     */
+    private RenewResult updateLease() {
+        long t0 = System.nanoTime();
         try {
-            String[] lease = fetchLease();
-            // resourceVersion is required by k8s for PUT conflict detection (optimistic concurrency).
-            // null means the Lease was deleted mid-flight — treat as lost.
-            String resourceVersion = (lease != null) ? lease[1] : null;
-            if (lease != null && resourceVersion == null) {
-                log.warn("Lease exists but has no resourceVersion — skipping update");
-                return false;
+            if (cachedResourceVersion == null) {
+                String[] lease = fetchLease();
+                cachedResourceVersion = (lease != null) ? lease[1] : null;
             }
-            String body = leaseBody(resourceVersion);
-            HttpRequest req = req("PUT",
-                "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases/" + LEASE_NAME)
-                .PUT(HttpRequest.BodyPublishers.ofString(body))
-                .header("Content-Type", "application/json")
-                .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() != 200 && resp.statusCode() != 201) {
-                log.warn("Update Lease returned status={}: {}", resp.statusCode(),
-                    resp.body().length() > 200 ? resp.body().substring(0, 200) : resp.body());
-                return false;
+            HttpResponse<String> resp = putLease(cachedResourceVersion);
+            int sc = resp.statusCode();
+            if (sc == 200 || sc == 201) {
+                cachedResourceVersion = extractJsonString(resp.body(), "resourceVersion");
+                return RenewResult.SUCCESS;
             }
-            return true;
+            if (sc == 409) {
+                String[] lease = fetchLease();
+                if (lease != null && podName.equals(lease[2])) {
+                    cachedResourceVersion = lease[1];
+                    HttpResponse<String> r2 = putLease(cachedResourceVersion);
+                    if (r2.statusCode() == 200 || r2.statusCode() == 201) {
+                        cachedResourceVersion = extractJsonString(r2.body(), "resourceVersion");
+                        return RenewResult.SUCCESS;
+                    }
+                    return RenewResult.AMBIGUOUS;
+                }
+                return RenewResult.FOREIGN_HOLDER;   // someone else holds it
+            }
+            log.warn("Update Lease status={}", sc);
+            return RenewResult.AMBIGUOUS;
         } catch (Exception ex) {
             log.warn("Update Lease failed: {}", ex.getMessage());
-            return false;
+            return RenewResult.AMBIGUOUS;
+        } finally {
+            lastRenewLatencyNanos = System.nanoTime() - t0;
         }
+    }
+
+    private HttpResponse<String> putLease(String resourceVersion) throws Exception {
+        return http.send(
+            req("PUT", leasePath())
+                .PUT(HttpRequest.BodyPublishers.ofString(leaseBody(resourceVersion)))
+                .header("Content-Type", "application/json").build(),
+            HttpResponse.BodyHandlers.ofString());
     }
 
     private void patchPodLabel(String blpRole) {
         try {
             String patch = "{\"metadata\":{\"labels\":{\"blp-role\":\"" + blpRole + "\"}}}";
-            HttpRequest req = req("PATCH",
-                "/api/v1/namespaces/" + namespace + "/pods/" + podName)
-                .method("PATCH", HttpRequest.BodyPublishers.ofString(patch))
-                .header("Content-Type", "application/strategic-merge-patch+json")
-                .build();
-            HttpResponse<String> resp = http.send(req, HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = http.send(
+                req("PATCH", "/api/v1/namespaces/" + namespace + "/pods/" + podName)
+                    .method("PATCH", HttpRequest.BodyPublishers.ofString(patch))
+                    .header("Content-Type", "application/strategic-merge-patch+json").build(),
+                HttpResponse.BodyHandlers.ofString());
             log.info("Patched pod label blp-role={} status={}", blpRole, resp.statusCode());
         } catch (Exception ex) {
             log.warn("Pod label patch failed: {}", ex.getMessage());
         }
     }
 
+    private String leasePath() {
+        return "/apis/coordination.k8s.io/v1/namespaces/" + namespace + "/leases/" + LEASE_NAME;
+    }
+
     private String leaseBody(String resourceVersion) {
-        // Kubernetes MicroTime fields require microsecond precision (6 decimal places).
-        // Instant.toString() produces nanoseconds (9 places) which the API rejects with 400.
+        // Kubernetes MicroTime fields require microsecond precision (6 decimals). Instant.toString()
+        // produces nanoseconds (9 places) which the API rejects with 400.
         String now = Instant.now().truncatedTo(ChronoUnit.MICROS).toString();
         String rvField = (resourceVersion != null)
             ? ",\n                \"resourceVersion\": \"" + resourceVersion + "\""
@@ -366,17 +490,27 @@ public final class LeaderElection {
                 "renewTime": "%s"
               }
             }
-            """.formatted(LEASE_NAME, namespace, rvField, podName, LEASE_DURATION_SECONDS, now, now);
+            """.formatted(LEASE_NAME, namespace, rvField, podName, leaseDurationSeconds, now, now);
     }
 
     private HttpRequest.Builder req(String method, String path) {
         return HttpRequest.newBuilder()
             .uri(URI.create(apiBase + path))
-            .timeout(Duration.ofSeconds(5))
+            .timeout(http.connectTimeout().orElse(Duration.ofSeconds(2)))
             .header("Authorization", "Bearer " + token);
     }
 
     // ----- helpers --------------------------------------------------------------------------------
+
+    private static java.util.concurrent.ThreadFactory daemon(String name) {
+        return r -> { Thread t = new Thread(r, name); t.setDaemon(true); return t; };
+    }
+
+    private static long envLong(String key, long dflt) {
+        String v = System.getenv(key);
+        if (v == null || v.isBlank()) return dflt;
+        try { return Long.parseLong(v.trim()); } catch (Exception ex) { return dflt; }
+    }
 
     private static String readToken() {
         try {
