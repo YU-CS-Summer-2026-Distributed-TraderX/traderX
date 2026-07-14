@@ -14,7 +14,7 @@ flowchart LR
   trade_processor["Trade Processor"]
   nats["NATS"]
   tick_store_capture["tick-store: capture.py"]
-  taq_source["TAQ CSV (zip, OneDrive)"]
+  taq_source["TAQ CSV (zip)"]
   tick_store_ingest["tick-store: ingest_taq_quotes.py"]
   parquet_store["Parquet Store (PVC)"]
   duckdb_query["DuckDB Query Layer"]
@@ -35,7 +35,7 @@ flowchart LR
 | `trade_processor` | service | Trade Processor | Existing trade-fill broadcaster (/accounts/*/trades) that tick-store captures from, unchanged. |
 | `nats` | service | NATS | Existing broker; tick-store adds a subscriber, publishes nothing. |
 | `tick_store_capture` | service | tick-store: capture.py | Long-running subscriber on pricing.* and /accounts/*/trades; batched writes to partitioned Parquet. |
-| `taq_source` | actor | TAQ CSV (zip, OneDrive) | NYSE Daily TAQ Consolidated Quotes CSV, streamed via unzip -p, never extracted to disk. |
+| `taq_source` | actor | TAQ CSV (zip) | NYSE Daily TAQ Consolidated Quotes CSV, streamed via unzip -p, never extracted to disk. |
 | `tick_store_ingest` | service | tick-store: ingest_taq_quotes.py | One-shot CLI normalizing a TAQ CQ CSV (via stdin) into the same partitioned schema. |
 | `parquet_store` | service | Parquet Store (PVC) | source=<live|taq>/dt=.../symbol=.../*.parquet, ZSTD-compressed. |
 | `duckdb_query` | actor | DuckDB Query Layer | Symbol/date-range queries and aggregations over the unified store, no server. |

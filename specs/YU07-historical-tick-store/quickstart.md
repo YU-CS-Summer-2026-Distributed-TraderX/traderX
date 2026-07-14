@@ -85,9 +85,9 @@ whichever comes first.
 
 ```bash
 # entry name is the single CSV inside the zip — confirm with: unzip -l <zip>
-unzip -p taq_quotes_20250211_csv.zip <entry>.csv \
+unzip -p taq_quotes_YYYYMMDD_csv.zip <entry>.csv \
   | GCS_HMAC_KEY_ID=<ACCESS_ID> GCS_HMAC_SECRET_ACCESS_KEY=<SECRET> \
-    python3 ingest_taq_quotes.py --date 2025-02-11 --out gs://traderx-501015-tick-store/ticks
+    python3 ingest_taq_quotes.py --date YYYY-MM-DD --out gs://traderx-501015-tick-store/ticks
 ```
 
 ## Query the store

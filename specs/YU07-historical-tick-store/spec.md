@@ -34,6 +34,12 @@
   symbol- and date-range-filtered aggregation across both live and TAQ data uniformly.
 - FR-TS07: Every Parquet file SHALL carry `source`, `event_type`, and `symbol` fields sufficient to
   distinguish live-captured rows from TAQ-ingested rows in any query.
+- FR-TS08: The state SHALL provide a normalizer that ingests a NYSE Daily TAQ Consolidated Trades
+  (CT) CSV file into the same unified Parquet schema as quotes ingestion and live capture.
+- FR-TS09: Ingestion SHALL support processing an arbitrary batch of TAQ files (any date range, any
+  mix of quotes/trades files) as a repeatable bulk operation, not just one file at a time by hand —
+  the normalizers are general-purpose against any conforming TAQ file, not scoped to a specific
+  dataset.
 
 ## Non-Functional Requirements
 
@@ -54,5 +60,10 @@
   resource entries alongside this state's two additions.
 - SC-TS04: A runnable self-check demonstrates the capture writer and the TAQ quotes normalizer both
   produce Parquet files that a single DuckDB query can read back uniformly by `source`.
-- SC-TS05: The TAQ quotes normalizer is verified against an actual sample file from the Feb2025
-  OneDrive drop, not a synthetic fixture.
+- SC-TS05: The TAQ quotes normalizer is verified against an actual sample file, not a synthetic
+  fixture.
+- SC-TS06: The TAQ trades normalizer is verified against an actual sample CT file, not a synthetic
+  fixture.
+- SC-TS07: The bulk-ingestion path is verified at real production scale — a multi-file, multi-GB
+  batch job, not just a single hand-run file — using whatever real TAQ files are available as the
+  verification corpus; any future TAQ files use the same path unchanged.

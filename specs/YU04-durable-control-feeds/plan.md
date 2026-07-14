@@ -1,76 +1,75 @@
-# Implementation Plan: YU04 Durable Control Feeds
+# Implementation Plan: YU04-durable-control-feeds
 
-Parent: `YU03-in-memory-risk-gateway`. Approach: adopt ADR-019's already-fully-specified target
-protocol, resolving the one open design question (the outbox mechanism, ADR-021) and implementing
-across all three affected services in one state, per the user's explicit scope decision (both
-account-service and reference-data outbox feeds land together, not split across two states —
-`ReplicaBootstrap`'s subscribe-buffer-snapshot-catchup machinery is shared regardless of source
-count, and a half-migrated bootstrap protocol with one durable source and one still-REST source is
-not a design ADR-019 describes or this roadmap wants to build).
+## Goal
 
-## Slice scope (this state)
+Replace YU03's one-shot REST replica bootstrap with real durable control feeds: give
+`account-service` and `reference-data` a transactional outbox that publishes versioned control
+deltas to per-source JetStream streams, and rewrite `order-matcher`'s `ReplicaBootstrap` to run
+ADR-019's subscribe-buffer-snapshot-catchup protocol per source — without touching the two-tier
+Gateway+BLP admission pipeline, the journal/replication wire format, or the snapshot format.
 
-1. **Spec pack**: this pack (spec, requirements deltas, ADR-021, architecture, runtime-topology,
-   data-model, contract-delta, plan, research, tasks, generation docs) — mirrors YU03's shape.
-2. **`account-service`**: `account_control_outbox` + `account_source_epoch` tables, `@Transactional`
-   outbox insert on the existing `AccountRepository.save` write path, a `@Scheduled` outbox
-   publisher, `GET /account/control-snapshot`.
-3. **`reference-data`**: new minimal MariaDB-backed `stocks` persistence (replacing the CSV-only
-   in-memory cache; CSV becomes a one-time idempotent seed), `stocks_control_outbox` +
-   `stocks_source_epoch` tables, a new `POST /stocks` write path, an interval-driven outbox
-   publisher, `GET /stocks/control-snapshot`.
-4. **`order-matcher`**: new `ControlFeedSubscriber` (per source), `ReplicaBootstrap` rewritten to
-   orchestrate two of them instead of two one-shot REST fetches, `GatewayReplicaStore` extended
-   with `sourceVersion` + new apply overloads, new quarantine/watermark metrics.
-5. **Generation pipeline hooks**: `pipeline/generate-state-YU04-durable-control-feeds.sh` +
-   `render-state-YU04-durable-control-feeds.sh`, mirroring YU03's exactly, parent pointed at YU03.
-6. **Isolated staging CI/CD**: `cloudbuild-yu04-staging.yaml`, `clouddeploy-yu04-staging.yaml`,
-   `skaffold-yu04-staging.yaml`, `cluster-addons/yu04-staging/` (namespace `traderx-yu04-staging`,
-   now including `account-service` + `reference-data` pods, not just order-matcher + database +
-   nats-broker as YU03-staging needed) — built only after the core implementation passes tests, and
-   only with the user's explicit go-ahead before touching any live Cloud Build/Deploy resource.
+## Workstreams
 
-## Key decisions (see ADR-021 + spec.md "Design constraints carried over unchanged")
+1. `account-service` outbox
+   - `account_control_outbox` + `account_source_epoch` tables; a `@Transactional` outbox insert on
+     the existing account write path; an `AccountOutboxPublisher` (`@Scheduled` poller) shipping
+     rows in version order to `TRADERX_CONTROL_ACCOUNT`; a new additive `GET /account/control-snapshot`.
+2. `reference-data` persistence + outbox
+   - New MariaDB-backed `stocks` persistence (CSV becomes a one-time idempotent seed);
+     `stocks_control_outbox` + `stocks_source_epoch` tables; a new `POST /stocks` write path; a
+     `StocksOutboxPublisher` (`@Interval` task) shipping rows to `TRADERX_CONTROL_SECURITY`; a new
+     additive `GET /stocks/control-snapshot`.
+3. `order-matcher` bootstrap rewrite
+   - `ControlFeedSubscriber` (one per source) split into a pure protocol state machine
+     (`ControlFeedBootstrapState`) and a thin JetStream + HTTP-snapshot I/O adapter; `ReplicaBootstrap`
+     rewritten to orchestrate two subscribers; `GatewayReplicaStore` records gain `sourceVersion`;
+     per-source watermark/quarantine metrics.
+4. State registration
+   - Spec pack (including ADR-021 for the outbox mechanism), generation hook + render scripts,
+     catalog entry, runtime harness registration.
+5. Validation
+   - Unit tests for outbox atomicity and idempotent publish (both services), the full bootstrap
+     protocol including fault injection (order-matcher), and a regression pass confirming no
+     journal/snapshot-format impact.
+6. Isolated staging CI/CD
+   - A second, fully isolated Cloud Build trigger + Cloud Deploy pipeline in its own
+     `traderx-yu04-staging` namespace (the first staging environment that also runs `account-service`
+     and `reference-data` pods), plus a live end-to-end injection/quarantine check.
+
+## Key decisions (see ADR-021 + spec.md)
 
 - Transactional outbox + polling publisher (not CDC/Debezium, not dual-write, not DB triggers) —
-  ADR-021.
-- The durable feed's field scope is existence/identity (account id/displayName, security
-  ticker/companyName), not enable/disable/halt — that stays a Gateway/BLP-native concept via
-  `/risk/control/*` (ADR-020), unchanged by this state.
-- Ephemeral, `DeliverPolicy.New` JetStream pull consumers for bootstrap, one fresh consumer per
-  bootstrap/re-bootstrap attempt — not a durable consumer with a persisted cursor (see `research.md`).
-- Per-source (not shared) epoch/watermark/quarantine state — a gap on one source must not force
-  re-bootstrapping the other.
+  ADR-021, so the feed is written in the same transaction as the business record and can never
+  diverge from it.
+- Two independent JetStream streams (not one shared), so an epoch bump or resync on one source never
+  forces re-bootstrapping the other; separate services have separate deploy lifecycles and failure
+  domains.
+- Ephemeral, `DeliverPolicy.New` JetStream pull consumers for bootstrap — one fresh consumer per
+  bootstrap attempt, not a durable consumer with a persisted cursor.
+- Per-source epoch/watermark/quarantine state; a gap on one source revokes overall readiness while
+  only that source re-bootstraps (FR-IMRG34).
 - No change to the BLP decision path, journal wire format, or snapshot format — `GatewayReplicaStore`
-  stays edge-only, never journaled/snapshotted.
-- New DB schema (outbox tables, `stocks`) is **not** a generation-pipeline override at all — empirically
-  confirmed (marker-comment test) that `postgres-database-replacement` is pruned from the generated
-  tree for every k8s-era state, so it lands directly in the new `cluster-addons/yu04-staging/database.yaml`
-  this state's own CI/CD pipeline creates (see `research.md`), same as how `yu03-staging`'s schema is
-  a hand-maintained, non-generated ConfigMap today.
-- Off production; isolated `traderx-yu04-staging` namespace only, same discipline as YU03.
+  stays edge-only, rebuilt on every boot, never journaled or snapshotted.
+- New DB schema (outbox tables, `stocks`) lands in the state's own `cluster-addons/yu04-staging/`
+  database manifest, not a generation-pipeline override — `postgres-database-replacement` is pruned
+  from the generated tree for every k8s-era state (confirmed empirically; see `research.md`).
+- Off production: isolated `traderx-yu04-staging` namespace only, same discipline as YU03.
 
-## Sequencing within this state
+## Exit Criteria
 
-1. Scaffold spec pack + generation hook/render scripts; confirm `bash pipeline/generate-state.sh
-   YU04-durable-control-feeds` exits 0 before writing any real implementation code.
-2. Verify propagation empirically (marker-comment + regenerate + grep) for every new/edited file
-   before trusting its runtime-overrides location, per the repeated generation-pipeline gotcha.
-3. Implement `account-service` outbox (smallest lift — existing write path, existing JDBC pattern).
-4. Implement `reference-data` persistence + outbox (larger lift — new DB layer + new write path).
-5. Rewrite `ReplicaBootstrap`/`ControlFeedSubscriber`/`GatewayReplicaStore` in order-matcher.
-6. Tests: outbox atomicity + idempotent publish (both services), `ControlFeedSubscriber` protocol
-   tests (snapshot+buffer+replay, gap/regression/epoch-mismatch/quarantine, buffer overflow),
-   extend `RiskReplayDeterminismTest`-style coverage only if the BLP-facing surface changed (it
-   should not have — confirm, don't assume).
-7. Only after 3–6 pass: build the isolated CI/CD pipeline (step 6 in "Slice scope" above), with
-   explicit user go-ahead before any live Cloud Build/Deploy change.
+- Spec and tasks are complete and reviewed.
+- Generation hook produces expected artifacts and exits successfully.
+- Unit suites pass across all three services (account-service, reference-data, order-matcher),
+  including the full ADR-019 bootstrap validation list.
+- `RiskReplayDeterminismTest` and the snapshot-v3 tests pass unchanged.
+- State can be published to `code/generated-state-YU04-durable-control-feeds`.
 
-## Validation strategy
+## Validation status
 
-Unit + integration tests in-tree for all three services (outbox atomicity, publish idempotency,
-bootstrap protocol correctness including fault injection per ADR-019's "Validation (when adopted)"
-list) plus a live end-to-end check in the isolated `traderx-yu04-staging` namespace — inject an
-account/security change through the real outbox path and confirm it reaches order-matcher's replica
-without a restart, then confirm a deliberately corrupted/regressed delta triggers quarantine and
-recovery, same verification discipline YU03 used for its staging deploy.
+- Core implementation complete and tested across all three services: 80 tests total
+  (order-matcher 65, account-service 7, reference-data 8), all passing except one pre-existing,
+  unrelated, documented allocation flake in `AllocationGateTest`.
+- The isolated `traderx-yu04-staging` Cloud Build trigger + Cloud Deploy pipeline (Workstream 6) is
+  the one remaining piece; it touches live Cloud Build/Deploy resources and requires the user's
+  explicit go-ahead before it is built (see `tasks.md`, "Still open", and
+  `generation/implementation-status.md`).

@@ -1,27 +1,50 @@
-# YU04-durable-control-feeds
+# Feature Pack: YU04-durable-control-feeds
 
-Adopts ADR-019's watermarked-snapshot-plus-buffered-deltas replica bootstrap protocol, replacing
-YU03's one-shot REST bootstrap with real durable outbox feeds from `account-service` and
+![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
+
+Status: Implemented
+Track: `architecture`
+Lineage role: `optional`
+Previous state: `YU03-in-memory-risk-gateway`
+
+This pack adopts ADR-019's watermarked-snapshot-plus-buffered-deltas replica bootstrap protocol,
+replacing YU03's one-shot REST bootstrap with real durable outbox feeds from `account-service` and
 `reference-data` into NATS JetStream.
 
-- **Parent state:** `YU03-in-memory-risk-gateway`
-- **Design baseline:** ADR-019 (`specs/YU03-in-memory-risk-gateway/system/adr-019-watermarked-replica-bootstrap.md`,
-  written in full during YU03, deliberately deferred there), ADR-021 (this state's own outbox
-  mechanism decision), ADR-020 (control events in the global journal — unchanged by this state).
-- **Read first:** `spec.md` (scope + what changes), `system/adr-021-transactional-outbox-jetstream-feeds.md`
-  (the outbox mechanism decision), `requirements/functional-delta.md` (per-requirement status),
-  `generation/implementation-status.md` (what is done vs deferred).
+Primary intent:
 
-Generate:
+- publish account and security control changes from a transactional outbox — written in the same
+  transaction as the business record — to per-source durable JetStream streams,
+- rewrite `order-matcher`'s `ReplicaBootstrap` to run the ADR-019 subscribe-buffer-snapshot-catchup
+  protocol per source, marking the Gateway ready only once every source is caught up,
+- detect and recover from gaps, version regressions, and epoch changes by quarantining and
+  re-bootstrapping the affected source only,
+- do all of the above without touching the BLP decision path, journal/replication wire format, or
+  snapshot format.
 
-```bash
-bash pipeline/generate-state.sh YU04-durable-control-feeds
-(cd generated/code/target-generated/order-matcher && ./gradlew test)
-(cd generated/code/target-generated/account-service && ./gradlew test)
-(cd generated/code/target-generated/reference-data && npm test)
-```
+Core artifacts:
 
-This state touches three services' persistence/messaging layers — `order-matcher` (`ReplicaBootstrap`
-rewrite), `account-service` (new outbox table + publisher), and `reference-data` (new persistence +
-outbox table + publisher, replacing its previous CSV-only read-only design). See `data-model.md` for
-the new schema and `system/architecture.md` for the end-to-end flow.
+- `spec.md`
+- `requirements/functional-delta.md`
+- `requirements/nonfunctional-delta.md`
+- `research.md`
+- `data-model.md`
+- `quickstart.md`
+- `contracts/contract-delta.md`
+- `system/architecture.model.json`
+- `system/architecture.md`
+- `system/runtime-topology.md`
+- `system/messaging-subject-map.md`
+- `system/adr-021-transactional-outbox-jetstream-feeds.md`
+- `generation/generation-hook.md`
+- `generation/implementation-status.md`
+
+Target runtime behavior:
+
+- `account-service` and `reference-data` each write a control outbox row alongside their business
+  write and publish it, in version order, to their own JetStream stream.
+- `order-matcher` bootstraps each source's replica image from a verified watermarked snapshot plus
+  buffered deltas, then consumes live; a fault on one source quarantines and re-bootstraps that
+  source only.
+- Everything else (deploy/runtime harness, BLP admission pipeline, observability stack) is inherited
+  unchanged from `YU03-in-memory-risk-gateway`.

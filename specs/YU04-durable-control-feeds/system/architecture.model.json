@@ -1,0 +1,55 @@
+{
+  "title": "Durable Control Feeds for the Risk Gateway",
+  "stateId": "YU04-durable-control-feeds",
+  "parentState": "YU03-in-memory-risk-gateway",
+  "description": "Replaces YU03's one-shot REST replica bootstrap with real durable outbox feeds: account-service and reference-data publish versioned control deltas to per-source JetStream streams, and order-matcher's ReplicaBootstrap runs the ADR-019 subscribe-buffer-snapshot-catchup protocol per source.",
+  "inheritsFrom": "YU03-in-memory-risk-gateway",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "writer",
+      "label": "Control writer",
+      "kind": "actor",
+      "description": "Writes account existence/identity (POST/PUT /account/) and security existence/identity (POST /stocks)."
+    },
+    {
+      "id": "account_service",
+      "label": "Account Service",
+      "kind": "service",
+      "description": "Writes accounts + account_control_outbox in one JdbcTemplate transaction; a @Scheduled publisher ships unpublished rows in strict version order. Serves GET /account/control-snapshot (epoch, watermark, checksum)."
+    },
+    {
+      "id": "reference_data",
+      "label": "Reference Data",
+      "kind": "service",
+      "description": "New MariaDB persistence (was CSV-only): writes stocks + stocks_control_outbox in one mysql2 transaction; an @Interval publisher ships rows in version order. Serves GET /stocks/control-snapshot."
+    },
+    {
+      "id": "nats",
+      "label": "NATS JetStream",
+      "kind": "service",
+      "description": "Two independent durable streams: TRADERX_CONTROL_ACCOUNT (traderx.control.account.deltas) and TRADERX_CONTROL_SECURITY (traderx.control.security.deltas)."
+    },
+    {
+      "id": "order_matcher",
+      "label": "Order Matcher (Gateway edge)",
+      "kind": "service",
+      "description": "ReplicaBootstrap orchestrates two ControlFeedSubscribers (one per source), each running the ADR-019 5-step protocol; GatewayReplicaStore records gain sourceVersion; markReady() fires only once both sources reach their high watermark (FR-IMRG05)."
+    }
+  ],
+  "edges": [
+    { "from": "writer", "to": "account_service", "label": "control write (account enable/disable)" },
+    { "from": "writer", "to": "reference_data", "label": "control write (security add / enable / halt)" },
+    { "from": "account_service", "to": "nats", "label": "publish deltas, version order (Nats-Msg-Id account:<v>)" },
+    { "from": "reference_data", "to": "nats", "label": "publish deltas, version order (Nats-Msg-Id security:<v>)" },
+    { "from": "nats", "to": "order_matcher", "label": "durable deltas (ephemeral pull consumer, DeliverPolicy.New) + buffer" },
+    { "from": "order_matcher", "to": "account_service", "label": "GET /account/control-snapshot (epoch, watermark, checksum)" },
+    { "from": "order_matcher", "to": "reference_data", "label": "GET /stocks/control-snapshot (epoch, watermark, checksum)" }
+  ],
+  "notes": [
+    "Per source: subscribe + buffer, fetch snapshot, verify checksum/count/schema and atomically install, apply buffered deltas above the watermark (same epoch, in order), then continue live consumption; a gap, version regression, or epoch change quarantines that source and forces a fresh bootstrap for it only (FR-IMRG34).",
+    "Two independent streams (not one shared) so an epoch bump or resync on one source never forces re-bootstrapping the other; account-service and reference-data have separate deploy lifecycles and failure domains.",
+    "The BLP decision path (ADR-018) and the journaled control-event path (/risk/control/* -> TYPE_{ACCOUNT,SECURITY}_CONTROL, ADR-020) are unchanged; this only replaces what feeds GatewayReplicaStore's existence/identity records at the edge, so journal/replication wire format, snapshot format, and replay determinism (NFR-IMRG03) are unaffected."
+  ]
+}
