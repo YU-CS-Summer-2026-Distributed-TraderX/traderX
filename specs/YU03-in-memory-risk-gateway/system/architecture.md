@@ -1,60 +1,55 @@
-# Architecture: YU03 In-Memory Risk Gateway
+# In-Memory Risk Gateway
 
-Parent: `YU02-lmax-kubernetes`. This state adds a pre-trade risk admission tier to the LMAX BLP
-without changing the inherited ring topology, journal-before-BLP gate, matching policy, output
-handlers, projector, or NATS subjects (FR-IMRG40/45).
+A two-tier pre-trade risk admission gate on the LMAX BLP: an in-process Gateway replica screens without synchronous lookup, and the single-writer BLP makes the authoritative decision and reserves exact aggregate exposure in global sequence order.
 
-## Two tiers (ADR-018)
+- Inherits architectural baseline from: `YU02-lmax-kubernetes`
+- Generated from: `system/architecture.model.json`
+- Canonical flows: `../001-baseline-uncontainerized-parity/system/end-to-end-flows.md`
 
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+  client["Client / Trade Service"]
+  operator["Risk Operator"]
+  gateway["Tier 1 — Gateway screening"]
+  input_ring["Input Disruptor"]
+  journaler["Journaler + Replicator"]
+  blp["Tier 2 — BLP (single writer)"]
+  book["Order Book / Execution"]
+  output_ring["Output Disruptor"]
+  marshaller["Marshaller"]
+  nats["NATS bridges"]
+  projector["Projector"]
+  mariadb["MariaDB read model"]
+  client -->|"order / market-trade (REST, optional clientOrderId)"| gateway
+  operator -->|"control events (account/security/policy/restriction), versioned"| input_ring
+  gateway -->|"preliminary PASS (never final, FR-IMRG07)"| input_ring
+  input_ring -->|"durable before BLP"| journaler
+  journaler -->|"replay-ordered input (single writer)"| blp
+  blp -->|"ACCEPTED: book / execute, reserve exposure"| book
+  blp -->|"REJECTED: journaled only, no book, no market event (FR-IMRG23)"| output_ring
+  book -->|"trade / order lifecycle events"| output_ring
+  output_ring -->|"read model + acks"| marshaller
+  output_ring -->|"order lifecycle subjects"| nats
+  output_ring -->|"projection stream"| projector
+  projector -->|"writes read model"| mariadb
 ```
-                         order / market-trade (REST, optional clientOrderId)
-                                        │
-                                        ▼
-                        ┌───────────────────────────────┐
-                        │  Tier 1 — Gateway screening    │   in-process, memory-only,
-                        │  GatewayReplicaStore.screen()  │   NO REST/DB (FR-IMRG01/06)
-                        │  fail-closed until ready       │   reject → 422 / 503 (stale)
-                        └───────────────┬───────────────┘
-                                        │ preliminary PASS (never final — FR-IMRG07)
-                                        ▼
-                 input disruptor  ──►  journaler + replicator  ──►  BLP (single writer)
-                 (global sequence)     (durable before BLP)          │
-                                                                     ▼
-                        ┌───────────────────────────────────────────────────────┐
-                        │  Tier 2 — authoritative decision + reservation         │
-                        │  BlpRiskState.decideAndReserve / decideMarketTrade     │
-                        │  ordered pipeline, exact aggregate exposure,           │
-                        │  check+reserve as ONE single-threaded op (FR-IMRG12/13)│
-                        └───────────────┬───────────────────────────────────────┘
-                       ACCEPTED ──► book / execute        REJECTED ──► journaled only,
-                       reserve exposure                    no book, no market event (FR-IMRG23)
-                                        │
-                                        ▼
-                 output disruptor ──► marshaller (read model + acks) | NATS bridges | projector
-```
 
-Control events (account/security/policy/restriction) enter the SAME input sequence as commands and
-prices (ADR-020), so the BLP applies them deterministically and replay reproduces every decision.
+## Node Catalog
 
-## Components (all under order-matcher; `risk` package unless noted)
+| Node | Kind | Label | Notes |
+| --- | --- | --- | --- |
+| `client` | actor | Client / Trade Service | Submits order / market-trade over REST (optional clientOrderId). |
+| `operator` | actor | Risk Operator | Administers versioned controls via /risk/control/* (token + operator provenance). |
+| `gateway` | component | Tier 1 — Gateway screening | GatewayReplicaStore.screen(): in-process, memory-only, no REST/DB (FR-IMRG01/06); fail-closed until ready; reject to 422 / 503 (stale). |
+| `input_ring` | component | Input Disruptor | Global input sequence carrying commands, prices, and control events (ADR-020). |
+| `journaler` | component | Journaler + Replicator | Durable journal + NATS JetStream replication before the BLP (FR-IMRG10). |
+| `blp` | component | Tier 2 — BLP (single writer) | BlpRiskState.decideAndReserve / decideMarketTrade: ordered pipeline, exact aggregate exposure, check+reserve as one single-threaded op (FR-IMRG12/13). |
+| `book` | component | Order Book / Execution | ACCEPTED commands enter the book and execute; the accepted order's exposure stays reserved until filled or cancelled. |
+| `output_ring` | component | Output Disruptor | The BLP's only side-effect channel (FR-IMRG27); gains order-rejected and trade-decision kinds (FR-IMRG45). |
+| `marshaller` | component | Marshaller | In-memory read model + correlation acks (KIND_TRADE_ACCEPTED/REJECTED). |
+| `nats` | component | NATS bridges | Order/trade lifecycle subjects, carrying riskReason on rejection (FR-IMRG15). |
+| `projector` | component | Projector | Projects accepted outcomes to the MariaDB read model; reads no admission state back (FR-IMRG41). |
+| `mariadb` | service | MariaDB read model | Async projection only, never the source of admission state. |
 
-| Component | Role |
-|---|---|
-| `GatewayReplicaStore` | Tier-1 replica: seeded + control-fed account/security/restriction/kill-switch/limits/price-freshness state; `screen()` preliminary validation; fail-closed readiness. |
-| `BlpRiskState` | Tier-2 authoritative state: ordered decision pipeline, per-account credit/executed exposure, per-(account,security) reserved qty, bounded idempotency with retention frontier, snapshot capture/restore. |
-| `ReservationHolder` (+ `RestingOrder` impl) | Per-order live reservation, riding the pooled order entry so its lifetime matches order addressability. |
-| `RiskReason` / `RiskMetrics` | Stable bounded reason codes; bounded-cardinality Prometheus metrics. |
-| `MatchingEngine` (lmax) | Invokes Tier 2 before book entry, consumes on fill, releases on cancel, applies control events. |
-| `InputEvent` / `OutputEvent` (lmax) | Type-discriminated payload slots for keys/control; `KIND_TRADE_ACCEPTED/REJECTED` + `FLAG_REJECT` correlation. |
-| `SnapshotStore` (lmax) | Format v3: order rows + risk sections (policy, account, security, idempotency). |
-| `ReplicaBootstrap` | Startup journal-sequenced fetch of the account/security universe (ADR-019 slice-1 stand-in). |
-| `RiskControlController` | `/risk/control/*` versioned control admin (token + operator); sequences control events. |
-| `OrderMatcherService` | Edge: screening, `clientOrderId` hashing, 422/503 rejection bodies, price feed, risk metrics. |
-| `RiskExceptionHandler` / `RiskRejectedException` / `RiskRejectionBody` | Stable 4xx rejection surface. |
-
-## Determinism boundary
-
-The BLP decision path makes no external call and reads no clock or randomness — decision time is
-event-carried, ids derive from the order reference, iteration is over preallocated arrays
-(NFR-IMRG02/04). Its only side-effect channel remains the inherited output ring (FR-IMRG27). This
-is what lets snapshot + journal replay reproduce byte-equivalent decisions (ADR-020, NFR-IMRG03).

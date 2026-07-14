@@ -1,6 +1,6 @@
-# Tasks: YU03 In-Memory Risk Gateway
+# Tasks: YU03-in-memory-risk-gateway
 
-## Slice 1 — done
+## Delivered
 
 - [x] T-01 Port `RiskReason` / `RiskMetrics` / `RiskRejectedException` / `RiskRejectionBody`.
 - [x] T-02 Adapt `BlpRiskState` to the YU02 base (reservations via `ReservationHolder`, snapshot tuples).
@@ -14,42 +14,41 @@
       recovery-boundary policy re-alignment.
 - [x] T-09 `OrderMatcherService` screening + rejection surface + risk metrics + price feed.
 - [x] T-10 `RiskControlController` + `RiskExceptionHandler` + config (`risk.*`).
-- [x] T-11 `ReplicaBootstrap` journaled startup fetch (ADR-019 slice-1 stand-in).
+- [x] T-11 `ReplicaBootstrap` journaled startup fetch of the account/security universe (ADR-019).
 - [x] T-12 Tests: `BlpRiskStateTest`, `GatewayReplicaStoreTest`, `RiskReplayDeterminismTest`.
 - [x] T-13 Spec pack (spec, requirements, ADRs 018/019/020, architecture, runtime-topology,
       data-model, contract-delta, plan, research, no-gc, this file); pipeline hooks; catalog.
-- [x] T-14 State renumbering to `YUxx-` lineage (YU02-lmax-kubernetes / YU03-in-memory-risk-gateway).
-- [x] T-15 Runtime harness: YU03 start/stop/status/test scripts + `install-generated-runtime-harness`
-      case so `generate-state.sh YU03-in-memory-risk-gateway` completes.
+- [x] T-14 State registration under the `YUxx-` lineage (parent `YU02-lmax-kubernetes`).
+- [x] T-15 Runtime harness: YU03 start/stop/status/test scripts + generation-hook registration.
+- [x] T-16 Grafana dashboard for the risk metric set (`traderx-risk-gateway.json`): decisions/
+      rejections by reason, control-update rejections, gateway/BLP decision latency p99, replica
+      rebootstrap events.
+- [x] T-17 Allocation gate: `AllocationGateTest.hotPathIsAllocationFreeInSteadyStateWithRiskGating()`
+      wires the real `BlpRiskState` into the BLP so every ORDER_NEW runs `decideAndReserve`;
+      `noGcTest` (Epsilon-GC) passes with risk gating on (NFR-IMRG02).
+- [x] T-18 p99 latency CI gate over the risk path (NFR-IMRG01): 5µs threshold (~5–8× the observed
+      600–950ns p99 on dev hardware), asserted in `AllocationGateTest` (BLP `decideAndReserve`) and
+      `GatewayReplicaStoreTest.screenLatencyP99StaysUnderGateway5usBudget()` (edge `screen()`).
+- [x] T-19 UI: surface rejection reasons + `clientOrderId` (FR-IMRG44). `OrderResponse` gained a
+      `riskReason` field (REST create-order response and NATS live-blotter bridge); the order ticket
+      has an optional Client Order ID field; the create-order alert shows the actual rejection reason
+      for both the BLP-level (200 OK, status=REJECTED) and edge-level (422/503,
+      `RiskRejectionBody.reason`) paths.
 
-## Deferred — later commits (see plan.md)
+## Still open
 
-- [ ] T-20 Durable account-service/reference-data control feeds (outbox → JetStream), watermarked
-      subscribe-buffer-snapshot bootstrap, gap/epoch/staleness detection (ADR-019, FR-IMRG04/05/32/33/34).
-- [ ] T-21 Entitlement replica fed from the real-auth roadmap item (principalKey path already wired).
-- [x] T-22a Grafana dashboard for the risk metric set (`traderx-risk-gateway.json`): decisions/
-      rejections by reason, control-update rejections, gateway/BLP decision latency p99,
-      replica rebootstrap events.
-- [ ] T-22b Alerts for the risk metric set (NFR-IMRG08) — no alert rules defined yet; needs
-      threshold decisions (e.g. what rejection rate or replica-rebootstrap rate pages someone),
-      same reasoning as the T-23b latency gate.
-- [x] T-23a `AllocationGateTest` extended with `hotPathIsAllocationFreeInSteadyStateWithRiskGating()`
-      — real `BlpRiskState` wired into the BLP so every ORDER_NEW runs `decideAndReserve`;
-      `noGcTest` (Epsilon-GC, never reclaims) passes with risk gating on (NFR-IMRG02).
-- [x] T-23b p99 latency CI gate over the risk path (NFR-IMRG01/13): 5us threshold (~5-8x the
-      observed 600-950ns p99 on dev hardware), asserted in
-      `AllocationGateTest.hotPathIsAllocationFreeInSteadyStateWithRiskGating()` (BLP decideAndReserve)
-      and `GatewayReplicaStoreTest.screenLatencyP99StaysUnderGateway5usBudget()` (edge screen()).
-      Stable across repeated runs — 0 failures from the latency assertion itself in 6+ runs (the
-      known unrelated 72-byte allocation flake still fires independently ~1-in-3).
-- [ ] T-24 Multi-Gateway deployment + concurrency-overshoot test (FR-IMRG25).
-- [x] T-25 UI: surface rejection reasons + `clientOrderId` (FR-IMRG44). `OrderResponse` gained a
-      `riskReason` field (both the REST create-order response and the NATS live-blotter bridge);
-      the order ticket has an optional Client Order ID field; the create-order alert now shows
-      the actual rejection reason for both the BLP-level (200 OK, status=REJECTED) and edge-level
-      (422/503, `RiskRejectionBody.reason`) paths -- the edge path was previously reading the
-      wrong JSON field (`error.error.error` instead of `error.error.reason`) and silently falling
-      through to a generic message.
-- [ ] T-26 Full container smoke: order/cancel/fill, projector convergence, NATS/WS delivery,
-      durable control propagation, kill-switch/restriction enforcement end to end.
-- [ ] T-27 k8s manifest env plumbing for `RISK_*` knobs (defaults are live-safe today).
+- [ ] Entitlement feeding into the admission-time replica/BLP check (FR-IMRG02 entitlement replica,
+      FR-IMRG30 full authn). The `principalKey` slot is already wired on the admission path; this
+      threads a resolved principal's entitlements into it, using the real JWT auth built in
+      `YU05-post-trade-compliance`.
+- [ ] Alert rules for the risk metric set (NFR-IMRG08). The dashboard is provisioned; alert
+      thresholds (e.g. what rejection rate or replica-rebootstrap rate pages someone) are a
+      paging-policy decision, not defined yet.
+- [ ] Multi-Gateway deployment + concurrency-overshoot test (FR-IMRG25): deploy the Gateway as a
+      separate tier and confirm the BLP's single-writer authority prevents overshoot under
+      concurrent gateways.
+- [ ] Full multi-scenario container smoke. Staging live-verification covers the `PRICE_COLLAR`
+      rejection scenario (see `generation/implementation-status.md`); order/cancel/fill, projector
+      convergence, NATS/WS delivery, durable control propagation, and kill-switch/restriction
+      enforcement are not yet exercised end to end in one pass.
+- [ ] k8s manifest env plumbing for `RISK_*` knobs (defaults are live-safe today).
