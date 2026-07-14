@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-traderspec-root-specs docs-version-current docs-doc-page docs-doc-id-009b-lmax-sequencer-architecture/contracts/contract-delta" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.1">
+<title data-rh="true">Contract Delta: 009b-lmax-sequencer-architecture | traderX</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" property="og:title" content="Contract Delta: 009b-lmax-sequencer-architecture | traderX"><meta data-rh="true" name="description" content="Parent state: 009-order-management-matcher"><meta data-rh="true" property="og:description" content="Parent state: 009-order-management-matcher"><link data-rh="true" rel="icon" href="/traderX/img/favicon/favicon-traderX.ico"><link data-rh="true" rel="canonical" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta" hreflang="en"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/"},{"@type":"ListItem","position":2,"name":"Contract Delta: 009b-lmax-sequencer-architecture","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta"}]}</script><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Overpass:400,400i,700">
+<script src="https://buttons.github.io/buttons.js"></script><link rel="stylesheet" href="/traderX/assets/css/styles.f29f6a7a.css">
+<script src="/traderX/assets/js/runtime~main.82a2d96e.js" defer="defer"></script>
+<script src="/traderX/assets/js/main.6b4b8400.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||"light"),document.documentElement.setAttribute("data-theme-choice",t||"light")}(),function(){try{const a=new URLSearchParams(window.location.search).entries();for(var[t,e]of a)if(t.startsWith("docusaurus-data-")){var n=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(n,e)}}catch(t){}}(),document.documentElement.setAttribute("data-announcement-bar-initially-dismissed",function(){try{return"true"===localStorage.getItem("docusaurus.announcement.dismiss")}catch(t){}return!1}())</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><div class="theme-announcement-bar announcementBar_mb4j" style="background-color:#0b3a5e;color:#ffffff" role="banner"><div class="content_knG7 announcementBarContent_xLdY">Welcome to the new <strong>TraderX</strong> docs. Read the <a href="/docs/blog/2026-03-29-traderx-speckit-migration"><strong>engineering migration story</strong></a>.</div></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/traderX/"><div class="navbar__logo"><img src="/traderX/img/favicon/favicon-traderX.ico" alt="TraderX Logo" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/favicon/favicon-traderX.ico" alt="TraderX Logo" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">TraderX</b></a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a class="navbar__item navbar__link" href="/traderX/docs/home">Overview</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a><a aria-current="page" class="navbar__item navbar__link navbar__link--active" href="/traderX/specs">Specs</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/state-docs">State Docs</a><a class="navbar__item navbar__link" href="/traderX/docs/adr">ADRs</a><a class="navbar__item navbar__link" href="/traderX/docs/learning">Learning</a><div class="navbarSearchContainer_Bca1"><div class="navbar__search"><span aria-label="expand searchbar" role="button" class="search-icon" tabindex="0"></span><input id="search_input_react" type="search" placeholder="Loading..." aria-label="Search" class="navbar__search-input search-bar" disabled=""></div></div><a href="https://github.com/finos/" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG menuWithAnnouncementBar_GW3s"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/traderX/specs"><span title="📘 Overview" class="linkLabel_WmDU">📘 Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/baseline-uncontainerized-parity"><span title="📦 001 Simple App - Base Uncontainerized App" class="categoryLinkLabel_W154">📦 001 Simple App - Base Uncontainerized App</span></a><button aria-label="Expand sidebar category &#x27;📦 001 Simple App - Base Uncontainerized App&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/edge-proxy-uncontainerized"><span title="📦 Feature Pack 002: Edge Proxy Uncontainerized" class="categoryLinkLabel_W154">📦 Feature Pack 002: Edge Proxy Uncontainerized</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 002: Edge Proxy Uncontainerized&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/agentic-harness-foundation"><span title="📦 Feature Pack 003: Agentic Harness Foundation" class="categoryLinkLabel_W154">📦 Feature Pack 003: Agentic Harness Foundation</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 003: Agentic Harness Foundation&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/containerized-compose-runtime"><span title="📦 Feature Pack 004: Containerized Compose Runtime" class="categoryLinkLabel_W154">📦 Feature Pack 004: Containerized Compose Runtime</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 004: Containerized Compose Runtime&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/postgres-database-replacement"><span title="📦 Feature Pack 005: PostgreSQL Database Replacement" class="categoryLinkLabel_W154">📦 Feature Pack 005: PostgreSQL Database Replacement</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 005: PostgreSQL Database Replacement&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/messaging-nats-replacement"><span title="📦 Feature Pack 006: Messaging Layer Replacement with NATS" class="categoryLinkLabel_W154">📦 Feature Pack 006: Messaging Layer Replacement with NATS</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 006: Messaging Layer Replacement with NATS&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/observability-lgtm-compose"><span title="📦 Feature Pack 007: Observability with LGTM on Compose" class="categoryLinkLabel_W154">📦 Feature Pack 007: Observability with LGTM on Compose</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 007: Observability with LGTM on Compose&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/pricing-awareness-market-data"><span title="📦 Feature Pack 008: Pricing Awareness and Market Data Streaming" class="categoryLinkLabel_W154">📦 Feature Pack 008: Pricing Awareness and Market Data Streaming</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 008: Pricing Awareness and Market Data Streaming&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/order-management-matcher"><span title="📦 Feature Pack 009: Order Management and Matcher" class="categoryLinkLabel_W154">📦 Feature Pack 009: Order Management and Matcher</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 009: Order Management and Matcher&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/kubernetes-runtime"><span title="📦 Feature Pack 010: Kubernetes Runtime Baseline" class="categoryLinkLabel_W154">📦 Feature Pack 010: Kubernetes Runtime Baseline</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 010: Kubernetes Runtime Baseline&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/tilt-kubernetes-dev-loop"><span title="📦 Feature Pack 011: Tilt Local Dev on Kubernetes" class="categoryLinkLabel_W154">📦 Feature Pack 011: Tilt Local Dev on Kubernetes</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 011: Tilt Local Dev on Kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/platform-convergence-c3"><span title="📦 Feature Pack 012: Platform Convergence C3" class="categoryLinkLabel_W154">📦 Feature Pack 012: Platform Convergence C3</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 012: Platform Convergence C3&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/radius-kubernetes-platform"><span title="📦 Feature Pack 013: Radius Platform on Kubernetes" class="categoryLinkLabel_W154">📦 Feature Pack 013: Radius Platform on Kubernetes</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 013: Radius Platform on Kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/fdc3-intent-interoperability"><span title="📦 Feature Pack 014: FDC3 Intent Interoperability on C3" class="categoryLinkLabel_W154">📦 Feature Pack 014: FDC3 Intent Interoperability on C3</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 014: FDC3 Intent Interoperability on C3&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--active" href="/traderX/specs/009b-lmax-sequencer-architecture"><span title="Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)" class="categoryLinkLabel_W154">Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)</span></a><button aria-label="Collapse sidebar category &#x27;Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)&#x27;" aria-expanded="true" type="button" class="clean-btn menu__caret"></button></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/spec"><span title="📜 Specification" class="linkLabel_WmDU">📜 Specification</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/plan"><span title="🗺️ Implementation Plan" class="linkLabel_WmDU">🗺️ Implementation Plan</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/tasks"><span title="✅ Tasks" class="linkLabel_WmDU">✅ Tasks</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/research"><span title="🔎 Research" class="linkLabel_WmDU">🔎 Research</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/data-model"><span title="🧱 Data Model" class="linkLabel_WmDU">🧱 Data Model</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/quickstart"><span title="🚀 Quickstart" class="linkLabel_WmDU">🚀 Quickstart</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/system/adr-014-input-disruptor-over-poll-and-lock"><span title="💻 System" class="categoryLinkLabel_W154">💻 System</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta"><span title="📜 Contracts" class="categoryLinkLabel_W154">📜 Contracts</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-3 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/contracts/contract-delta"><span title="Contract Delta: 009b-lmax-sequencer-architecture" class="linkLabel_WmDU">Contract Delta: 009b-lmax-sequencer-architecture</span></a></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/requirements/functional-delta"><span title="🧾 Requirements" class="categoryLinkLabel_W154">🧾 Requirements</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/tests/smoke"><span title="🧪 Tests" class="categoryLinkLabel_W154">🧪 Tests</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/009b-lmax-sequencer-architecture/generation/generation-hook"><span title="⚙️ Generation" class="categoryLinkLabel_W154">⚙️ Generation</span></a></div></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU02-lmax-kubernetes"><span title="Feature Pack: YU02-lmax-kubernetes" class="categoryLinkLabel_W154">Feature Pack: YU02-lmax-kubernetes</span></a><button aria-label="Expand sidebar category &#x27;Feature Pack: YU02-lmax-kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU06-eod-price-production"><span title="Feature Pack: YU06-eod-price-production" class="categoryLinkLabel_W154">Feature Pack: YU06-eod-price-production</span></a><button aria-label="Expand sidebar category &#x27;Feature Pack: YU06-eod-price-production&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU07-historical-tick-store"><span title="Feature Pack: YU07-historical-tick-store" class="categoryLinkLabel_W154">Feature Pack: YU07-historical-tick-store</span></a><button aria-label="Expand sidebar category &#x27;Feature Pack: YU07-historical-tick-store&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU08-execution-algo-engine"><span title="Feature Pack: YU08-execution-algo-engine" class="categoryLinkLabel_W154">Feature Pack: YU08-execution-algo-engine</span></a><button aria-label="Expand sidebar category &#x27;Feature Pack: YU08-execution-algo-engine&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU09-ops-hardening"><span title="Feature Pack: YU09-ops-hardening" class="categoryLinkLabel_W154">Feature Pack: YU09-ops-hardening</span></a><button aria-label="Expand sidebar category &#x27;Feature Pack: YU09-ops-hardening&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU03-in-memory-risk-gateway"><span title="YU03-in-memory-risk-gateway" class="categoryLinkLabel_W154">YU03-in-memory-risk-gateway</span></a><button aria-label="Expand sidebar category &#x27;YU03-in-memory-risk-gateway&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU04-durable-control-feeds"><span title="YU04-durable-control-feeds" class="categoryLinkLabel_W154">YU04-durable-control-feeds</span></a><button aria-label="Expand sidebar category &#x27;YU04-durable-control-feeds&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU05-post-trade-compliance"><span title="YU05-post-trade-compliance" class="categoryLinkLabel_W154">YU05-post-trade-compliance</span></a><button aria-label="Expand sidebar category &#x27;YU05-post-trade-compliance&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/traderX/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><a class="breadcrumbs__link" href="/traderX/specs/009b-lmax-sequencer-architecture"><span>Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)</span></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">📜 Contracts</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Contract Delta: 009b-lmax-sequencer-architecture</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Contract Delta: 009b-lmax-sequencer-architecture</h1></header>
+<p>Parent state: <code>009-order-management-matcher</code></p>
+<p>Document any API/event/schema changes for this state. Headline: <strong>the external surface is frozen</strong> —
+this state&#x27;s defining contract is that <code>009</code>&#x27;s OpenAPI, NATS, UI, and database-schema contracts are
+preserved verbatim while the internal execution path is replaced. All additions below are internal
+seams or metrics.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="openapi-changes">OpenAPI Changes<a href="#openapi-changes" class="hash-link" aria-label="Direct link to OpenAPI Changes" title="Direct link to OpenAPI Changes" translate="no">​</a></h2>
+<ul>
+<li class="">None. Order-management endpoints (<code>POST /orders</code>, <code>GET /orders</code>, <code>GET /orders/{orderId}</code>,
+<code>POST /orders/{orderId}/cancel</code>, <code>POST /orders/{orderId}/force-fill</code>), matcher health/metrics
+endpoints, and all trade/position/pricing endpoints keep the <code>009</code> paths, request/response shapes,
+and status semantics (FR-09B40).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="messaging-contract">Messaging Contract<a href="#messaging-contract" class="hash-link" aria-label="Direct link to Messaging Contract" title="Direct link to Messaging Contract" translate="no">​</a></h2>
+<ul>
+<li class="">Subjects and payload shapes are unchanged: <code>/orders</code>, <code>/accounts/{accountId}/orders</code>, <code>/trades</code>,
+<code>/accounts/{accountId}/trades</code>, <code>/accounts/{accountId}/positions</code>, <code>pricing.*</code>
+(see <code>system/messaging-subject-map.md</code>).</li>
+<li class="">Producer change (internal): order/trade/position subjects are now published by the output-disruptor
+NATS bridge instead of inline service code; <code>pricing.*</code> ticks are additionally consumed by the
+Gateway to inject sequenced <code>PRICE_TICK</code> input events. Payload byte-parity with <code>009</code> is a smoke
+gate (SC-09B09).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="internal-contract-additions">Internal Contract Additions<a href="#internal-contract-additions" class="hash-link" aria-label="Direct link to Internal Contract Additions" title="Direct link to Internal Contract Additions" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>SBE input schema</strong> (<code>sbe/order-input.xml</code>): message <code>TradeEvent</code> — <code>seq:int64</code>, <code>type:uint8</code>
+(<code>ORDER_NEW|ORDER_CANCEL|FORCE_FILL|PRICE_TICK|TRADE_NEW</code>), <code>accountId:int32</code>, <code>securityId:int32</code>,
+<code>side:uint8</code>, <code>qty:int64</code>, <code>limitPx:int64</code> (×1e6), <code>priceTicks:int64</code>, <code>ingressNanos:int64</code>.
+Versioned <code>schemaId</code>/<code>version</code>; codecs generated at build time (<code>generateSbe</code> before <code>compileJava</code>).</li>
+<li class=""><strong>SBE output schema</strong> (<code>sbe/order-output.xml</code>): message <code>OutEvent</code> — <code>seq:int64</code>, <code>kind:uint8</code>
+(<code>ORDER_ACCEPTED|ORDER_REJECTED|ORDER_PARTIALLY_FILLED|ORDER_FILLED|ORDER_CANCELED|TRADE_BOOKED| POSITION_UPDATED</code>), <code>accountId:int32</code>, <code>securityId:int32</code>, <code>side:uint8</code>, <code>qty:int64</code>,
+<code>pxTicks:int64</code>, <code>remainingQty:int64</code>, <code>status:uint8</code>, <code>ingressNanos:int64</code>.</li>
+<li class=""><strong>Journal format contract</strong>: append-only fixed <strong>64-byte little-endian</strong> record <code>(seq, type, side, orderRef, accountId, securityId, qty, limitPx, priceTicks, eventTimeMillis)</code> to <code>input-events.journal</code>;
+<code>ingressNanos</code> is not journaled (latency field, not state); a torn trailing record (&lt; 64 bytes) is
+discarded on replay. (SBE-as-wire-bytes + schema-versioning is the deferred perf-profile form; today the
+record is typed fields, not SBE.)</li>
+<li class=""><strong>Snapshot contract</strong>: <code>snapshot.dat</code> — full BLP state (orders, net positions, last prices,
+<code>nextOrderRef</code>, <code>tradeCounter</code>) + <code>coveredOffset</code> (journal byte offset the snapshot covers); written
+atomically (temp + atomic rename) on the BLP thread at a sequenced <code>SNAPSHOT</code> marker; recovery loads it
+and replays only the journal tail after <code>coveredOffset</code>.</li>
+<li class=""><strong>Replication contract</strong>: followers receive the identical sequenced input stream; follower output is
+suppressed until promotion; promotion occurs at the follower&#x27;s current sequence (Aeron Cluster in the
+perf profile; loopback/stub in demo).</li>
+<li class=""><strong>Request/response event contract</strong> for BLP cache misses (e.g. <code>AccountLookupRequest</code> -&gt;
+<code>AccountLookupResponse</code> re-entering as a sequenced input event); a timeout/failure is itself an event.</li>
+<li class=""><strong>Projection checkpoint contract</strong>: last projected <code>seq</code> (<code>projectedSeq</code>), advanced only on a committed
+flush so projection is idempotent; full rebuild from the journal must reproduce identical rows
+(SC-09B11). In 009b this watermark is in-memory; persisting it to <code>output.projector.checkpoint-path</code> is
+deferred (the snapshot&#x27;s <code>coveredOffset</code> is the durable recovery boundary).</li>
+<li class=""><strong>Symbol table contract</strong>: <code>ticker &lt;-&gt; securityId</code> owned by the Gateway; <code>securityId -&gt; ticker</code>
+rendering only in output handlers.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="database-contract">Database Contract<a href="#database-contract" class="hash-link" aria-label="Direct link to Database Contract" title="Direct link to Database Contract" translate="no">​</a></h2>
+<ul>
+<li class=""><code>database/initialSchema.sql</code> <code>OrderBook</code> table contract from <code>009</code> (NFR-01312/NFR-01313) is
+preserved bit-for-bit, including decimal(18,3) external precision. The writer changes from inline JPA
+to the batched Read-model Projector; the generated-state publish gate for the <code>OrderBook</code> schema
+continues to apply.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="configuration-contract">Configuration Contract<a href="#configuration-contract" class="hash-link" aria-label="Direct link to Configuration Contract" title="Direct link to Configuration Contract" translate="no">​</a></h2>
+<p>Added keys (demo-safe defaults):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Key</th><th>Default (demo)</th><th>Purpose</th></tr></thead><tbody><tr><td><code>runtime.profile</code></td><td><code>demo</code></td><td><code>demo</code> / <code>perf</code> / <code>noGcTest</code>.</td></tr><tr><td><code>disruptor.input.ring-size</code></td><td><code>65536</code></td><td>Power-of-two input slots.</td></tr><tr><td><code>disruptor.input.wait-strategy</code></td><td><code>blocking</code></td><td><code>blocking</code> / <code>yielding</code> / <code>busyspin</code>.</td></tr><tr><td><code>disruptor.input.producer-type</code></td><td><code>multi</code></td><td>Gateway + price feed.</td></tr><tr><td><code>disruptor.output.ring-size</code></td><td><code>65536</code></td><td>Power-of-two output slots.</td></tr><tr><td><code>disruptor.output.wait-strategy</code></td><td><code>yielding</code></td><td>Egress less latency-critical.</td></tr><tr><td><code>journal.enabled</code></td><td><code>true</code></td><td>Toggle the Journaler handler.</td></tr><tr><td><code>journal.type</code></td><td><code>chronicle</code></td><td><code>chronicle</code> / <code>aeron-archive</code>.</td></tr><tr><td><code>journal.path</code></td><td><code>./data/journal</code></td><td>Durable log location.</td></tr><tr><td><code>replication.enabled</code></td><td><code>false</code></td><td>Demo stubs the Replicator (loopback).</td></tr><tr><td><code>replication.endpoints</code></td><td>(empty)</td><td>Replica/DR addresses (perf).</td></tr><tr><td><code>price.input.via-ring</code></td><td><code>true</code></td><td>Price ticks through the ring (vs <code>009</code> out-of-band).</td></tr><tr><td><code>blp.books.max-securities</code></td><td><code>4096</code></td><td>Pre-size <code>OrderBook[]</code>.</td></tr><tr><td><code>blp.book.pool-size</code></td><td><code>65536</code></td><td>Pooled resting-order entries.</td></tr><tr><td><code>snapshot.interval.ms</code> (env <code>SNAPSHOT_INTERVAL_MS</code>)</td><td><code>0</code> (compose demo <code>60000</code>)</td><td>Periodic full-state snapshot cadence in ms; <code>0</code> = off. <code>snapshot.dat</code> lives under <code>journal.path</code>.</td></tr><tr><td><code>recovery.source</code> (env <code>RECOVERY_SOURCE</code>)</td><td><code>db</code></td><td><code>db</code> (warm-start + journal-replay verify) or <code>journal</code> (snapshot+journal authoritative, no DB).</td></tr><tr><td><code>output.projector.db.enabled</code> (env <code>OUTPUT_PROJECTOR_DB_ENABLED</code>)</td><td><code>true</code></td><td><code>false</code> drops all DB writes (no-DB cutover).</td></tr><tr><td><code>journal.replay.verify</code></td><td><code>true</code></td><td>In <code>db</code> mode, verify journal replay reconstructs the warm-start state.</td></tr><tr><td><code>blp.cache.account.warm-on-start</code></td><td><code>true</code></td><td>Warm account cache from read-model at startup <em>(not yet wired)</em>.</td></tr><tr><td><code>output.nats.enabled</code></td><td><code>true</code></td><td>Toggle the NATS bridge.</td></tr><tr><td><code>output.projector.enabled</code></td><td><code>true</code></td><td>Toggle DB projection.</td></tr><tr><td><code>output.projector.batch-size</code></td><td><code>500</code></td><td>Max rows per flush.</td></tr><tr><td><code>output.projector.flush-interval-ms</code></td><td><code>200</code></td><td>Time-based flush bound.</td></tr><tr><td><code>output.projector.checkpoint-path</code></td><td><code>./data/projection.ckpt</code></td><td>Last projected <code>seq</code> <em>(not yet wired; <code>projectedSeq</code> watermark is in-memory)</em>.</td></tr><tr><td><code>affinity.enabled</code></td><td><code>false</code></td><td>Core pinning (perf only).</td></tr><tr><td><code>affinity.blp-core</code> / <code>affinity.journaler-core</code></td><td>(unset)</td><td>Pinned core IDs.</td></tr><tr><td><code>nogc.*</code></td><td>see <code>requirements/no-gc-conformance.md</code></td><td>No-GC profile keys.</td></tr></tbody></table>
+<p>Removed keys (from <code>009</code>): <code>order.matcher.tick-ms</code>, <code>order.matcher.price-service-url</code>,
+<code>order.matcher.trade-service-url</code>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="build--dependency-contract">Build &amp; Dependency Contract<a href="#build--dependency-contract" class="hash-link" aria-label="Direct link to Build &amp; Dependency Contract" title="Direct link to Build &amp; Dependency Contract" translate="no">​</a></h2>
+<p>Additions to the hot-path Gradle modules (Java 21 / Spring Boot as in <code>009</code>; versions pinned to latest
+CVE-clean releases, repo dependency CVE gate applies):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Concern</th><th>Coordinate (illustrative)</th></tr></thead><tbody><tr><td>Ring buffers (input MULTI, output SINGLE)</td><td><code>com.lmax:disruptor:4.0.0</code></td></tr><tr><td>Off-heap buffers + primitive collections</td><td><code>org.agrona:agrona:1.22.0</code></td></tr><tr><td>Binary codec + build-time generation</td><td><code>uk.co.real-logic:sbe-tool:1.30.0</code></td></tr><tr><td>Durable journal (demo)</td><td><code>net.openhft:chronicle-queue:5.25ea</code></td></tr><tr><td>Replication/consensus + journal (perf)</td><td><code>io.aeron:aeron-cluster</code> / <code>io.aeron:aeron-archive</code> 1.46.x</td></tr><tr><td>Core pinning (perf)</td><td><code>net.openhft:affinity:3.23.3</code></td></tr><tr><td>Latency measurement</td><td><code>org.hdrhistogram:HdrHistogram:2.2.2</code>, <code>org.openjdk.jmh:jmh-core:1.37</code></td></tr></tbody></table>
+<p>Spring remains for lifecycle/wiring/actuator only; never on the per-event path.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="metrics-contract-additions">Metrics Contract Additions<a href="#metrics-contract-additions" class="hash-link" aria-label="Direct link to Metrics Contract Additions" title="Direct link to Metrics Contract Additions" translate="no">​</a></h2>
+<p>Prometheus metric names required for this state (full table with types/meanings in
+<code>requirements/nonfunctional-delta.md</code>):</p>
+<ul>
+<li class="">Input stage: <code>traderx_disruptor_input_remaining_capacity</code>, <code>traderx_input_published_seq</code>,
+<code>traderx_input_gating_seq</code>, <code>traderx_input_seq_lag</code>, <code>traderx_input_events_total{type=...}</code>,
+<code>traderx_input_backpressure_events_total</code>, <code>traderx_journal_write_latency_seconds</code>,
+<code>traderx_replication_ack_latency_seconds</code>.</li>
+<li class="">BLP: <code>traderx_blp_event_latency_seconds</code>, <code>traderx_blp_book_depth{security=...}</code>,
+<code>traderx_blp_positions_total</code>, <code>traderx_blp_cache_miss_total{cache=...}</code>,
+<code>traderx_blp_snapshot_seconds</code>, <code>traderx_blp_replay_seconds</code> <em>(snapshot/replay durations are
+currently logged via <code>JOURNAL-REPLAY VERIFY</code> / <code>LIVE RECOVERY</code>, not yet metered)</em>.</li>
+<li class="">Output stage: <code>traderx_output_publish_latency_seconds</code>, <code>traderx_output_remaining_capacity</code>,
+<code>traderx_output_events_total{kind=...}</code>, <code>traderx_output_nats_errors_total</code>,
+<code>traderx_projector_lag_seq</code>, <code>traderx_projector_batch_size</code>.</li>
+<li class="">No-GC: <code>traderx_hotpath_alloc_bytes_total{node=...}</code>, <code>traderx_jvm_gc_pause_seconds</code>,
+<code>traderx_jit_warmup_seconds</code>, <code>traderx_nightly_bounce_seconds</code>.</li>
+</ul>
+<p>All <code>009</code> order metric families are retained (FR-09B41); <code>traderx_order_match_latency_seconds</code> becomes
+a real measurement.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="compatibility-notes">Compatibility Notes<a href="#compatibility-notes" class="hash-link" aria-label="Direct link to Compatibility Notes" title="Direct link to Compatibility Notes" translate="no">​</a></h2>
+<ul>
+<li class="">Existing trade/position/pricing APIs remain backward-compatible from <code>008</code>/<code>009</code>.</li>
+<li class="">The UI requires zero changes; ADR-013 push semantics are preserved by the NATS bridge.</li>
+<li class="">Eventual consistency between push streams (immediate) and the relational read-model (projector lag)
+is a documented property of this state, not a regression.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/finos/traderX/edit/main/specs/../specs/009b-lmax-sequencer-architecture/contracts/contract-delta.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/traderX/specs/009b-lmax-sequencer-architecture/system/runtime-topology"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Runtime Topology: 009b-lmax-sequencer-architecture</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/traderX/specs/009b-lmax-sequencer-architecture/requirements/functional-delta"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Functional Delta: 009b-lmax-sequencer-architecture</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#openapi-changes" class="table-of-contents__link toc-highlight">OpenAPI Changes</a></li><li><a href="#messaging-contract" class="table-of-contents__link toc-highlight">Messaging Contract</a></li><li><a href="#internal-contract-additions" class="table-of-contents__link toc-highlight">Internal Contract Additions</a></li><li><a href="#database-contract" class="table-of-contents__link toc-highlight">Database Contract</a></li><li><a href="#configuration-contract" class="table-of-contents__link toc-highlight">Configuration Contract</a></li><li><a href="#build--dependency-contract" class="table-of-contents__link toc-highlight">Build &amp; Dependency Contract</a></li><li><a href="#metrics-contract-additions" class="table-of-contents__link toc-highlight">Metrics Contract Additions</a></li><li><a href="#compatibility-notes" class="table-of-contents__link toc-highlight">Compatibility Notes</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/home">Home</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/blog">Blog</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning-paths">Learning Paths</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning">Learning Guides</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/specs">Specs</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">FINOS</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://www.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Website</a></li><li class="footer__item"><a href="https://community.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">Community Handbook</a></li><li class="footer__item"><a href="https://landscape.finos.org" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Projects</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">About FINOS</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/finos" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Projects on GitHub</a></li><li class="footer__item"><a href="https://www.finos.org/engage-with-our-community" target="_blank" rel="noopener noreferrer" class="footer__link-item">Engage the FINOS Community</a></li><li class="footer__item"><a href="https://www.finos.org/news-and-events" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS News and Events</a></li></ul></div></div><div class="footer__bottom text--center"><div class="margin-bottom--sm"><a href="https://finos.org" rel="noopener noreferrer" class="footerLogoLink_BH7S"><img src="/traderX/img/favicon/favicon-finos.ico" alt="FINOS Logo" class="footer__logo themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/favicon/favicon-finos.ico" alt="FINOS Logo" class="footer__logo themedComponent_mlkZ themedComponent--dark_xIcU"></a></div><div class="footer__copyright">Copyright © 2026 TraderX - FINOS - The Fintech Open Source Foundation</div></div></div></footer></div>
+</body>
+</html>

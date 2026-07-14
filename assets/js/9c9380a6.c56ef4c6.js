@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunk=globalThis.webpackChunk||[]).push([[19354],{59634(a){a.exports=JSON.parse('{"metadata":{"permalink":"/traderX/blog","page":1,"postsPerPage":10,"totalPages":1,"totalCount":0,"blogDescription":"Blog","blogTitle":"Blog"}}')}}]);

@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunk=globalThis.webpackChunk||[]).push([[27590],{33197(s){s.exports=JSON.parse('{"name":"docusaurus-plugin-content-docs","id":"traderspec-specify"}')}}]);
