@@ -1,0 +1,97 @@
+{
+  "title": "In-Memory Risk Gateway",
+  "stateId": "YU03-in-memory-risk-gateway",
+  "parentState": "YU02-lmax-kubernetes",
+  "description": "A two-tier pre-trade risk admission gate on the LMAX BLP: an in-process Gateway replica screens without synchronous lookup, and the single-writer BLP makes the authoritative decision and reserves exact aggregate exposure in global sequence order.",
+  "inheritsFrom": "YU02-lmax-kubernetes",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "TB",
+  "nodes": [
+    {
+      "id": "client",
+      "label": "Client / Trade Service",
+      "kind": "actor",
+      "description": "Submits order / market-trade over REST (optional clientOrderId)."
+    },
+    {
+      "id": "operator",
+      "label": "Risk Operator",
+      "kind": "actor",
+      "description": "Administers versioned controls via /risk/control/* (token + operator provenance)."
+    },
+    {
+      "id": "gateway",
+      "label": "Tier 1 — Gateway screening",
+      "kind": "component",
+      "description": "GatewayReplicaStore.screen(): in-process, memory-only, no REST/DB (FR-IMRG01/06); fail-closed until ready; reject to 422 / 503 (stale)."
+    },
+    {
+      "id": "input_ring",
+      "label": "Input Disruptor",
+      "kind": "component",
+      "description": "Global input sequence carrying commands, prices, and control events (ADR-020)."
+    },
+    {
+      "id": "journaler",
+      "label": "Journaler + Replicator",
+      "kind": "component",
+      "description": "Durable journal + NATS JetStream replication before the BLP (FR-IMRG10)."
+    },
+    {
+      "id": "blp",
+      "label": "Tier 2 — BLP (single writer)",
+      "kind": "component",
+      "description": "BlpRiskState.decideAndReserve / decideMarketTrade: ordered pipeline, exact aggregate exposure, check+reserve as one single-threaded op (FR-IMRG12/13)."
+    },
+    {
+      "id": "book",
+      "label": "Order Book / Execution",
+      "kind": "component",
+      "description": "ACCEPTED commands enter the book and execute; the accepted order's exposure stays reserved until filled or cancelled."
+    },
+    {
+      "id": "output_ring",
+      "label": "Output Disruptor",
+      "kind": "component",
+      "description": "The BLP's only side-effect channel (FR-IMRG27); gains order-rejected and trade-decision kinds (FR-IMRG45)."
+    },
+    {
+      "id": "marshaller",
+      "label": "Marshaller",
+      "kind": "component",
+      "description": "In-memory read model + correlation acks (KIND_TRADE_ACCEPTED/REJECTED)."
+    },
+    {
+      "id": "nats",
+      "label": "NATS bridges",
+      "kind": "component",
+      "description": "Order/trade lifecycle subjects, carrying riskReason on rejection (FR-IMRG15)."
+    },
+    {
+      "id": "projector",
+      "label": "Projector",
+      "kind": "component",
+      "description": "Projects accepted outcomes to the MariaDB read model; reads no admission state back (FR-IMRG41)."
+    },
+    {
+      "id": "mariadb",
+      "label": "MariaDB read model",
+      "kind": "service",
+      "description": "Async projection only, never the source of admission state."
+    }
+  ],
+  "edges": [
+    { "from": "client", "to": "gateway", "label": "order / market-trade (REST, optional clientOrderId)" },
+    { "from": "operator", "to": "input_ring", "label": "control events (account/security/policy/restriction), versioned" },
+    { "from": "gateway", "to": "input_ring", "label": "preliminary PASS (never final, FR-IMRG07)" },
+    { "from": "input_ring", "to": "journaler", "label": "durable before BLP" },
+    { "from": "journaler", "to": "blp", "label": "replay-ordered input (single writer)" },
+    { "from": "blp", "to": "book", "label": "ACCEPTED: book / execute, reserve exposure" },
+    { "from": "blp", "to": "output_ring", "label": "REJECTED: journaled only, no book, no market event (FR-IMRG23)" },
+    { "from": "book", "to": "output_ring", "label": "trade / order lifecycle events" },
+    { "from": "output_ring", "to": "marshaller", "label": "read model + acks" },
+    { "from": "output_ring", "to": "nats", "label": "order lifecycle subjects" },
+    { "from": "output_ring", "to": "projector", "label": "projection stream" },
+    { "from": "projector", "to": "mariadb", "label": "writes read model" }
+  ]
+}
