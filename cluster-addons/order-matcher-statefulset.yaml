@@ -6,12 +6,12 @@ metadata:
   labels:
     app: order-matcher
 spec:
-  # HA mode: 2 replicas (leader-elected PRIMARY + FOLLOWER) across the 2 blp-pool nodes.
-  # For max single-BLP throughput instead, scale to 1 and set BLP_REPLICATION_ENABLED=false
-  # (single-BLP ~42k booked/s vs HA ~22k, but no failover). blp-pool must have >=2 nodes for HA
+  # Single-BLP mode (current default): 1 replica, BLP_REPLICATION_ENABLED=false — max throughput
+  # (~42-52k booked/s vs HA ~22k), no failover. Consistent with how the YU03+ states are built.
+  # To switch to HA: replicas=2 + BLP_REPLICATION_ENABLED=true, and scale blp-pool to >=2 nodes
   # (required anti-affinity below): gcloud container clusters resize traderx-lmax
   #   --node-pool blp-pool --num-nodes 2 --zone us-east1-b
-  replicas: 2
+  replicas: 1
   # Set out-of-band on the live StatefulSet at some point and never captured here — omitting it
   # makes kubectl apply's 3-way merge try to unset it, which StatefulSet forbids (immutable field,
   # not one of the few patchable ones). Must stay explicit to keep applies working.
@@ -24,6 +24,11 @@ spec:
     metadata:
       labels:
         app: order-matcher
+        # Single-BLP has no leader election to stamp this, so the pod would carry no blp-role and the
+        # order-matcher-primary Service (trade-service's ORDER_MATCHER_URL) would be empty. Default it
+        # to primary here. In HA, leader election patches the follower to standby at start, and the
+        # not-ready follower is excluded from the Service's endpoints regardless — so this is safe.
+        blp-role: primary
     spec:
       # Spread the two BLP replicas across different nodes so a node loss can't take both.
       affinity:
@@ -65,7 +70,7 @@ spec:
               value: "-XX:MaxRAMPercentage=65.0"
             # HA leader election + NATS JetStream replication. Set false for single-BLP mode.
             - name: BLP_REPLICATION_ENABLED
-              value: "true"
+              value: "false"
             # Leader-election timing contract (env-overridable so it tunes without a rebuild).
             # Invariant: RENEW_DEADLINE < LEASE_DURATION (self-fence before a follower may steal).
             # See SPEC-blp-ha-lease-starvation-fix-FINAL.md §2. Real-kill failover stays ~2-3s via
