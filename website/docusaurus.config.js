@@ -1,10 +1,10 @@
 // Docs at https://docusaurus.io/docs
 
-const projectName = 'TraderX'
+const projectName = 'traderX'
 const projectSlug = 'traderX'
 const copyrightOwner = 'FINOS - The Fintech Open Source Foundation'
-const docsUrl = process.env.DOCUSAURUS_URL || 'https://traderx.finos.org'
-const docsBaseUrl = process.env.DOCUSAURUS_BASE_URL || '/'
+const docsUrl = process.env.DOCUSAURUS_URL || 'https://YU-CS-Summer-2026-Distributed-TraderX.github.io'
+const docsBaseUrl = process.env.DOCUSAURUS_BASE_URL || '/traderX/'
 
 function pathBrowserPolyfillPlugin() {
   return {
@@ -22,7 +22,7 @@ function pathBrowserPolyfillPlugin() {
 }
 
 // GitHub repo configuration - update these for forks/branches
-const repoOwner = 'finos';
+const repoOwner = 'YU-CS-Summer-2026-Distributed-TraderX';
 // Allow override via environment (e.g., DOCS_BRANCH=feature-branch)
 const repoBranch = process.env.DOCS_BRANCH || 'main';
 const repoUrl = `https://github.com/${repoOwner}/${projectSlug}`;
@@ -44,7 +44,7 @@ module.exports = {
   trailingSlash: false,
   favicon: 'img/favicon/favicon-traderX.ico',
   projectName: `${projectName}`,
-  organizationName: 'FINOS',
+  organizationName: 'YU-CS-Summer-2026-Distributed-TraderX',
   customFields: {
     repoUrl: repoUrl,
   },
