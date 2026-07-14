@@ -46,6 +46,10 @@ spec:
           operator: Equal
           value: blp
           effect: NoSchedule
+      # Needed for HA leader election (Lease read/write via order-matcher-leader Role/RoleBinding,
+      # cluster-addons/order-matcher-rbac.yaml). Set out-of-band on the live StatefulSet and never
+      # captured here — without it, replication falls back to the default SA and Lease calls 403.
+      serviceAccountName: order-matcher
       containers:
         - name: order-matcher
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher:state009-asyncrepl-20260702
@@ -68,10 +72,25 @@ spec:
               value: "3306"
             - name: DATABASE_NAME
               value: "traderx"
+            # Sourced from the mariadb-credentials Secret (YU09-ops-hardening moved DB creds out
+            # of plaintext manifests) — set out-of-band on the live StatefulSet and never captured
+            # here; a hardcoded "traderx"/"traderx" no longer matches the rotated password.
             - name: DATABASE_DBUSER
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
             - name: DATABASE_DBPASS
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            # Real JWT auth (YU05-post-trade-compliance), sourced from the auth-secrets Secret.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
             - name: NATS_BROKER_HOST
               value: "nats-broker"
             - name: CORS_ALLOWED_ORIGINS
@@ -108,6 +127,11 @@ spec:
               value: "65536"
             - name: BLP_GATEWAY_ACK_TIMEOUT_MS
               value: "5000"
+            - name: BLP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
             - name: SNAPSHOT_INTERVAL_MS
               value: "300000"
             - name: RECOVERY_SOURCE
@@ -116,6 +140,25 @@ spec:
               value: "1024"
             - name: BLP_TERMINAL_RETAIN
               value: "262144"
+            # YU09-ops-hardening: journal rotation + GCS archival. HMAC secret is optional — its
+            # absence just disables archival rather than crashing (verified: the k8s Secret
+            # doesn't currently exist in this namespace).
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_BUCKET
+              value: "gs://traderx-501015-order-matcher-journal-archive"
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: access-key-id
+                  optional: true
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: secret-access-key
+                  optional: true
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
               value: "health,prometheus,info"
             - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
