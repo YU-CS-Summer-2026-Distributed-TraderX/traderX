@@ -78,6 +78,23 @@ unified schema in this state — none of VWAP or return/scenario aggregation nee
 byte read from the source CSV is still available by re-running ingestion against the same file if a
 future consumer needs one.
 
+### TAQ trades CSV (`taq_trades_<month><year>_csv.zip`, confirmed format)
+
+Header: `DATE,TIME_M,EX,SYM_ROOT,SYM_SUFFIX,TR_SCOND,SIZE,PRICE,TR_STOP_IND,TR_CORR,TR_SEQNUM,TR_ID,TR_SOURCE,TR_RF`
+
+| Source column | → | Column |
+|---|---|---|
+| `SYM_ROOT` | → | `symbol` |
+| `DATE` + `TIME_M` (truncated to µs) | → | `ts` |
+| `PRICE` | → | `price` |
+| `SIZE` | → | `size` |
+| `EX` | → | `venue` |
+| `TR_SEQNUM` | → | `seq` |
+| — | → | `event_type='trade'`, `source='taq'`, `bid_price`/`bid_size`/`ask_price`/`ask_size`=`NULL` |
+
+`TR_SCOND`, `TR_STOP_IND`, `TR_CORR`, `TR_ID`, `TR_SOURCE`, `TR_RF`, `SYM_SUFFIX` are read but not
+carried into the unified schema, same rationale as the quotes CSV's unused columns above.
+
 ## Config (namespace `tickstore.*`, environment variables)
 
 | Key | Default | Meaning |

@@ -29,8 +29,8 @@ Parent state: `YU06-eod-price-production`
 - `tick-store` authenticates to GCS via an HMAC key/secret (the `tick-store-gcs-hmac` k8s Secret,
   created out-of-band) scoped to only the `traderx-501015-tick-store` bucket; no other component
   reads or writes that bucket.
-- TAQ ingestion is invoked locally/ad hoc against the mounted OneDrive path or a copied sample file
-  — it is not a standing network service and has no ingress.
+- TAQ ingestion is invoked locally/ad hoc against a source zip file (local path or streamed from
+  GCS) — it is not a standing network service and has no ingress.
 
 ## Startup / Health Order
 

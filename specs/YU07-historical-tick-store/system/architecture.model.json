@@ -33,7 +33,7 @@
     },
     {
       "id": "taq_source",
-      "label": "TAQ CSV (zip, OneDrive)",
+      "label": "TAQ CSV (zip)",
       "kind": "actor",
       "description": "NYSE Daily TAQ Consolidated Quotes CSV, streamed via unzip -p, never extracted to disk."
     },
