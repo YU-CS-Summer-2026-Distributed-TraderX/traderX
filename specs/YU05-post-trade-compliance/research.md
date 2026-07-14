@@ -1,6 +1,6 @@
 # Research: YU05 Post-Trade Compliance Bundle
 
-## The trade-identity gap (why slice 1 is what it is)
+## The trade-identity gap (the foundation everything else needs)
 
 Discovered while scoping settlement/reconciliation: order-matcher already has everything needed
 for a deterministic, replay-safe trade id.
@@ -22,8 +22,8 @@ that has no derivable relationship to the journal's `tradeSeq`, the order it cam
 NATS message that created it. This is the actual root blocker for settlement (needs a stable id to
 track through a lifecycle), reconciliation (needs a stable id to diff against the journal),
 regulatory reporting (needs a stable audit-trail id), and TCA (needs a stable id to attach a
-benchmark to) — so wiring up the id that already exists is the correct, minimal slice 1, not scope
-creep.
+benchmark to) — so wiring up the id that already exists is the correct, minimal foundation, not
+scope creep.
 
 **Correction found immediately after, before the first test run: `TradeOrder.fromEvent` is not
 the live write path.** `output.legacy-trades.enabled` defaults to `false` (confirmed in the actual
@@ -64,18 +64,18 @@ second DB write) during replay — but the ring itself runs. A new handler that 
 `isReplaying()` therefore receives every historical `KIND_TRADE_BOOKED` event during recovery,
 rebuilding the blotter for free, with no snapshot format change and no new persistence layer.
 
-## Why reconciliation is scoped to "forward-looking" in slice 1
+## Why the live sweep is forward-looking and orphan detection is a separate full-history pass
 
 A full, symmetric reconciliation (detecting both a DB row missing from the journal, and a journal
-fill missing from the DB) needs the *complete* trade history available for comparison. The blotter
-as built in slice 1 is bounded (`recon.blotter.capacity`, default 500,000) to keep memory use
-predictable — appropriate for its primary purpose (recovery-safe forward tracking) but insufficient
-to prove a DB row has **no** corresponding fill anywhere in a potentially years-long journal.
-Slice 1 therefore only classifies `MATCHED`, `MISSING_IN_PROJECTION`, and `FIELD_MISMATCH` (all
-provable from a bounded forward window); `ORPHAN_IN_PROJECTION` detection is deferred until either
-the blotter gains unbounded/spillover retention or a direct journal-replay-based comparator is
-built (mirroring `JournalReader`, which already exists for the *input* journal but has no
-equivalent on the output/trade side).
+fill missing from the DB) needs the *complete* trade history available for comparison. The live
+blotter is bounded (`recon.blotter.capacity`, default 500,000) to keep memory use predictable —
+appropriate for its primary purpose (recovery-safe forward tracking) but insufficient to prove a DB
+row has **no** corresponding fill anywhere in a potentially years-long journal. The scheduled live
+sweep therefore only classifies `MATCHED`, `MISSING_IN_PROJECTION`, and `FIELD_MISMATCH` (all
+provable from a bounded forward window). `ORPHAN_IN_PROJECTION` detection (FR-PTC10) is a separate,
+on-demand full-history pass: `reindexFullHistory()` replays the entire journal into an unbounded
+index, and the orphan sweep cross-checks every local trade id against it — full confidence, not the
+bounded forward window.
 
 ## Where the real runtime schema lives (generation pipeline gotcha, confirmed again)
 
@@ -108,9 +108,9 @@ fill/fill/cancel/trade-booked), not just trades, filtered to an input-sequence r
 `OutputEvent.inputSeq`. Reproducible byte-for-byte because it is a pure function of (journal range,
 seed) — no wall-clock, no external query. Three admin operations now share this skeleton
 (`verifyJournalReplay`, `reindexFullHistory`, `generateRegulatoryReport`); a shared private helper
-was considered and rejected for this slice — the three call sites differ enough (digest-only vs.
-open-ended trade capture vs. range-filtered audit capture) that extracting one now would be
-premature; revisit if a fourth consumer appears.
+was considered and rejected — the three call sites differ enough (digest-only vs. open-ended trade
+capture vs. range-filtered audit capture) that extracting one now would be premature; revisit if a
+fourth consumer appears.
 
 ## TCA benchmark source: reusing the existing price feed, not a new one (ADR-024, FR-PTC30-32)
 
@@ -122,15 +122,37 @@ need. Instead, `PriceHistoryStore` (trade-processor) subscribes to price-publish
 `pricing.<ticker>` NATS JSON feed (the same one the Angular front-end's live ticker already
 consumes) via a wildcard `pricing.*` subscription — zero BLP involvement, zero new data source.
 
-VWAP is deferred (FR-PTC32): the synthetic feed carries a price but no per-tick traded volume to
-weight by, so only TWAP (time-weighted) is computed in slice 1. Both benchmarks compute the same
-way once real trade-and-volume data (e.g. the professor's TAQ dataset) is available — swapping the
-feed only changes what feeds `PriceHistoryStore.record`, never `TcaService`'s contract.
+## Real auth is HS256 JWT, not full OIDC (ADR-025, FR-PTC40/41)
 
-## Deferred source-side work
+There is no live OIDC provider in this environment, so principal resolution is a real HS256-verified
+JWT rather than a token minted by an external IdP: `JwtAuthenticator` verifies the signature with JDK
+`javax.crypto` and parses the claims with the existing Jackson dependency — no new library. Each
+module (order-matcher, trade-processor) carries its own copy of the authenticator rather than a
+shared library between the two Gradle modules, and both must be configured with the same
+`auth.jwt.secret`. `POST /auth/dev-token` (trade-processor, gated by a distinct
+`auth.dev-token.master-secret`) mints tokens for local dev/testing. The signature-verification and
+entitlement-gating semantics are exactly what a real IdP-issued token would carry, so swapping in a
+live provider later changes only where the token comes from, not how it is checked.
 
-Real auth/entitlements is specified (requirements, data model, ADR-025) in this same state but not
-implemented — see `plan.md` "Sequencing after slice 1." Not blocked on external infrastructure the
-way YU03's durable control feeds were; deferred purely for slice-size discipline (one real, complete
-capability per commit, same as every prior state in this lineage) and because it is the largest,
-most cross-cutting piece (it gates every endpoint the other four sub-capabilities added).
+## What remains open
+
+- **VWAP (FR-PTC32)**: the synthetic price feed carries a price but no per-tick traded volume to
+  weight by, so only TWAP (time-weighted) is computed today. Both benchmarks compute the same way
+  once a real per-tick-volume feed is available — swapping the feed only changes what feeds
+  `PriceHistoryStore.record`, never `TcaService`'s contract.
+## Entitlement resolution into the admission path (FR-PTC42)
+
+The one cross-state gap tracked in YU03's, YU04's, and this state's backlogs: YU03 built the risk
+gateway and YU05 built real JWT auth, but nothing checked a caller's entitlement to the order's
+account before the command was sequenced — order submission was wide open. `EntitlementGate` closes
+it. Because YU05's auth carries entitlements *in the token* (`JwtPrincipal.entitledAccounts`), the
+check is a memory-only lookup against the resolved principal — no synchronous lookup on the
+admission path (FR-IMRG01), and no need for the control-fed entitlement replica FR-IMRG02's original
+design sketched (that remains the upgrade path only if entitlements ever need revoking independently
+of a token's lifetime). It lives at the `OrderMatcherService` edge (an authn/authz decision, 401/403
+— distinct from a risk screening rejection's 422 `RiskRejectionBody`) rather than in the BLP, so the
+BLP decision path, journal, and snapshot format are untouched. Gated by `risk.entitlement.enforced`
+(default off, same live-safe-default discipline as YU03's risk knobs) so the existing token-less UI
+keeps working until enforcement is turned on and callers send a Bearer token.
+
+VWAP (FR-PTC32) remains the one open follow-on — see above.

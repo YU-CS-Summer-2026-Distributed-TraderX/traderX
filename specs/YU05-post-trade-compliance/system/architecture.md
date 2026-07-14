@@ -1,65 +1,45 @@
-# Architecture: YU05 Post-Trade Compliance Bundle
+# Post-Trade Compliance Bundle
 
-Parent: `YU03-in-memory-risk-gateway`. This state adds a back-office layer downstream of the BLP —
-it never sits on the order admission path and never mutates journal/BLP state (FR-PTC07/NFR-PTC01).
+A back-office compliance layer strictly downstream of the BLP: deterministic trade identity + settlement, reconciliation (forward + full-history orphan), journal-sourced regulatory reporting, TCA, and real JWT auth/entitlements gating every new endpoint. Never on the admission path, never mutating journal/BLP state.
 
-## Slice-1 data flow
+- Inherits architectural baseline from: `YU04-durable-control-feeds`
+- Generated from: `system/architecture.model.json`
+- Canonical flows: `../001-baseline-uncontainerized-parity/system/end-to-end-flows.md`
 
-```
-                          BLP (order-matcher, unchanged matching/risk pipeline)
-                                          │  KIND_TRADE_BOOKED (output ring)
-                                          ▼
-                 ┌────────────────────────────────────────────────────────┐
-                 │  output-ring handler chain (existing + 1 new handler)   │
-                 │  marshaller | natsBridge | accountTrade | positionUpdate│
-                 │  | projector | ── NEW: TradeBlotterHandler ──           │
-                 │  (all but the new handler suppress side-effects on     │
-                 │   readModel.isReplaying(); the new one does NOT —      │
-                 │   it must rebuild from replay)                         │
-                 └───────────────┬──────────────────────┬─────────────────┘
-                                  │ NATS TradeOrder        │ in-memory
-                                  │ (id = trd-09b-<seq>,   │ TradeBlotter
-                                  │  now deterministic)     │ (bounded, replay-rebuilt)
-                                  ▼                        │
-                   trade-processor: TradeService            │
-                   idempotent booking by id                 │
-                   ──► TRADES.ID = trd-09b-<seq>             │
-                   ──► SettlementService (T+N sweep)          │
-                                  │                            │
-                                  ▼                            │
-                   MariaDB TRADES (read-model projection,      │
-                   never authoritative)                        │
-                                  ▲                              │
-                                  │ GET /recon/trades/blotter (auth'd)
-                   ReconciliationService  ◄──────────────────────┘
-                   (trade-processor, scheduled sweep)
-                   ──► classification: MATCHED / MISSING_IN_PROJECTION / FIELD_MISMATCH
-                   ──► GET /recon/status, Prometheus counters
+## Architecture Diagram
+
+```mermaid
+flowchart LR
+  client["Compliance / Ops user"]
+  order_matcher["Order Matcher (BLP + journal)"]
+  trade_processor["Trade Processor"]
+  price_publisher["Price Publisher"]
+  nats["NATS"]
+  mariadb["MariaDB TRADES"]
+  client -->|"regulatory report / blotter / full-history reindex (admin JWT)"| order_matcher
+  client -->|"settlement force / TCA / recon status / orphan-sweep / dev-token (JWT)"| trade_processor
+  order_matcher -->|"ProjectorHandler INSERT (deterministic id, Processing + T+N date)"| mariadb
+  order_matcher -->|"order/trade lifecycle + legacy TradeOrder (deterministic id)"| nats
+  price_publisher -->|"pricing.* ticks"| nats
+  nats -->|"TradeOrder (idempotent booking) + pricing.* (PriceHistoryStore)"| trade_processor
+  trade_processor -->|"settlement sweep (Processing to Settled); recon compare; TCA reads trade"| mariadb
+  trade_processor -->|"GET /recon/trades/blotter, POST full-history/reindex (service-account JWT)"| order_matcher
 ```
 
-## Components
+## Node Catalog
 
-| Component | Location | Role |
-|---|---|---|
-| `OrderSnapshot.tradeIdFor` (existing, now actually used) | order-matcher | Deterministic trade id from the BLP's global trade counter. |
-| `TradeOrder.fromEvent` (fixed) | order-matcher | NATS trade-feed payload builder; now sets `id` from `tradeIdFor`, not `orderIdFor`. |
-| `TradeBlotter` / `TradeBlotterHandler` (new) | order-matcher, `lmax/` | Bounded, replay-rebuilt in-memory record of every booked trade. |
-| `ReconController` (new) | order-matcher, `controller/` | `GET /recon/trades/blotter` — authenticated forward-paginated read. |
-| `TradeService` (extended) | trade-processor | Idempotent booking by deterministic id; sets initial settlement date. |
-| `SettlementService` (new) | trade-processor | T+N sweep + manual force override. |
-| `ReconciliationService` (new) | trade-processor | Scheduled sweep against the order-matcher blotter; classification + metrics. |
-| `ReconStatusController` (new) | trade-processor | `GET /recon/status`. |
+| Node | Kind | Label | Notes |
+| --- | --- | --- | --- |
+| `client` | actor | Compliance / Ops user | Calls the post-trade APIs with a real JWT — account-scoped (settlement force, TCA for own account) or admin (blotter, full-history, orphan-sweep, regulatory report). |
+| `order_matcher` | service | Order Matcher (BLP + journal) | Admission/matching pipeline unchanged. Output-ring TradeBlotterHandler builds a bounded, replay-safe blotter; on demand it runs shadow-engine replays for full-history reindex and the regulatory report; ProjectorHandler writes trades with the deterministic id and a Processing/T+N settlement state. Own JWT authenticator. |
+| `trade_processor` | service | Trade Processor | Idempotent booking on the deterministic id; SettlementService (T+N sweep + force); ReconciliationService (forward sweep + orphan sweep); TcaService + PriceHistoryStore; POST /auth/dev-token minter; own JWT authenticator; recon/settlement Micrometer counters. |
+| `price_publisher` | service | Price Publisher | Existing last-trade feed (pricing.*) that TCA's PriceHistoryStore subscribes to as its benchmark source. |
+| `nats` | service | NATS | Carries order/trade lifecycle subjects, the legacy TradeOrder feed, and pricing.* ticks. |
+| `mariadb` | service | MariaDB TRADES | Read-model projection (never authoritative): trade rows keyed by the deterministic id, with the settlement lifecycle column. |
 
-## Determinism / correctness boundary (unchanged invariant, extended)
+## State Notes
 
-The BLP's decision path is untouched by this state — `TradeBlotterHandler` only reads
-`OutputEvent` fields already computed deterministically by the BLP and writes to its own
-in-process structure on the existing output-ring consumer thread (single-writer for the blotter,
-same threading model every other output handler already uses). MariaDB remains a downstream
-projection; settlement and reconciliation are computed entirely on the projection side and never
-feed back into journal/BLP state (FR-PTC07).
+- A deterministic trade id (OrderSnapshot.tradeIdFor(tradeSeq)) links every MariaDB trade row to the journal fill that produced it; every capability here depends on it (ADR-022).
+- Full-history reindex and the regulatory report are read-only shadow-engine replays; settlement and reconciliation write only trade-processor's own MariaDB rows. The BLP admission path, journal, and snapshot format are untouched (FR-PTC07/NFR-PTC09).
+- Every endpoint is gated by a real HS256-verified JWT (ADR-025): account-scoped endpoints check entitlement against the trade's account, cross-account endpoints require an admin claim.
 
-## Deferred capabilities (specified only, see requirements/functional-delta.md)
-
-Regulatory reporting, TCA, and real auth/entitlements are not yet built; their architecture is
-sketched in ADR-023/024/025 but no code exists for them in slice 1.

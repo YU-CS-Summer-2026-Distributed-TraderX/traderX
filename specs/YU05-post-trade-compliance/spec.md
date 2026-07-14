@@ -1,123 +1,116 @@
-# Feature Specification: Post-Trade Compliance Bundle (state YU05)
+# Feature Specification: Post-Trade Compliance Bundle
 
-**State id**: `YU05-post-trade-compliance`
-**Parent state**: `YU04-durable-control-feeds` (reparented 2026-07-08; was originally a sibling of
-YU04 off `YU03-in-memory-risk-gateway` directly — see "Reparenting" note below)
+**Feature Branch**: `YU05-post-trade-compliance`
 **Created**: 2026-07-06
-**Status**: All five sub-capabilities implemented — settlement/reconciliation (incl. full-history
-orphan detection), regulatory reporting, TCA, and real JWT-based auth/entitlements gating every
-new endpoint (see `generation/implementation-status.md` for verification evidence). Feeding the
-risk gateway's `principalKey` path (FR-PTC42) remains deferred — it needs order-admission wiring
-outside this state's scope.
-**Input**: New roadmap work — combines four items from the production-realism roadmap
-(`HANDOFF-production-realism.md`) into a single spec-kit state at the user's explicit request, to
-avoid one-state-per-item sprawl: post-trade settlement + reconciliation, regulatory reporting,
-TCA, and real auth/entitlements.
+**Status**: Implemented
+**Input**: Combines four production-realism capabilities into one spec-kit state at the user's
+request — post-trade settlement + reconciliation, regulatory reporting, TCA, and real
+auth/entitlements. Parented on `YU04-durable-control-feeds` (lineage `YU03 → YU04 → YU05`). New
+requirement namespace `PTC` (`FR-PTCxx`, `NFR-PTCxx`); per-requirement status in
+`requirements/functional-delta.md` and `requirements/nonfunctional-delta.md`.
 
-## Why these four are bundled together
+The four capabilities are three views over one underlying record — an executed fill (symbol, price,
+qty, side, account, timestamp, deterministic trade id) sourced from the order-matcher journal —
+plus the access-control layer that makes exposing that record as real reports/APIs safe. This state
+is a back-office layer strictly downstream of the BLP: it never sits on the order-admission path and
+never mutates journal or BLP state.
 
-Settlement/reconciliation, regulatory reporting, and TCA are not four unrelated features — they
-are three different **views over the same underlying record**: an executed fill (symbol, price,
-qty, side, account, timestamp, deterministic trade id) sourced from the order-matcher journal.
-Real auth/entitlements is the access-control layer that makes exposing that record as real
-reports/APIs safe rather than wide open — it is the connective tissue, not a fourth unrelated
-bolt-on.
+## User Stories
 
-Two items considered for this bundle were deliberately **excluded**: market surveillance (needs
-L2 order-book data that doesn't exist anywhere in this system yet — order-matcher only emits
-last-trade prints) and market data dissemination (the L2-publishing prerequisite for surveillance,
-which nothing in this bundle needs). Both are deferred to a future `YU06` once there is an actual
-consumer for book depth.
+- As an operations user, I want a booked trade to move through a real settlement lifecycle
+  (`Processing → Settled` on a T+N schedule, with a manual override) instead of being marked settled
+  the instant it books.
+- As an operations user, I want reconciliation to flag any trade that is in the journal but missing
+  or mismatched in the projection — and, on demand, any projection row with no journal fill behind
+  it at all — so a divergence between the authoritative journal and the read model is caught.
+- As a compliance reviewer, I want a reproducible, journal-sourced audit export of every order/trade
+  lifecycle event in an input-sequence range, so a regulator query can be answered byte-for-byte
+  from the source of truth rather than the projection.
+- As an execution analyst, I want per-trade transaction-cost analysis (arrival price, benchmark,
+  signed slippage) so execution quality can be measured without touching the trading hot path.
+- As a security owner, I want every one of these endpoints gated by a verified token and an
+  entitlement check, so account-scoped data is only visible to an entitled caller and cross-account
+  data only to an admin.
 
-The professor's ~3TB historical NYSE TAQ dataset (trades + NBBO quotes, not L2) is a natural,
-*optional* future input to TCA's benchmark computation — it does not drive scope here.
+## Functional Requirements
 
-## Reparenting (2026-07-08)
+- FR-PTC01: A MariaDB trade row SHALL carry the deterministic trade id derived from the journal fill
+  that produced it (`OrderSnapshot.tradeIdFor(tradeSeq)`), on both the live projector path and the
+  legacy NATS booking path.
+- FR-PTC02: A booked trade SHALL start `Processing` with a computed settlement date and advance to
+  `Settled` by a scheduled T+N sweep or a manual force.
+- FR-PTC03: order-matcher SHALL maintain a replay-safe in-memory trade blotter, rebuilt from journal
+  replay on recovery (no snapshot-format change).
+- FR-PTC04: Reconciliation SHALL classify each blotter entry against the local trade row as
+  `MATCHED`, `MISSING_IN_PROJECTION`, or `FIELD_MISMATCH`, and (full-history sweep)
+  `ORPHAN_IN_PROJECTION`.
+- FR-PTC05: Reconciliation SHALL expose a status summary (`GET /recon/status`) and bounded Prometheus
+  counters with no per-trade labels.
+- FR-PTC06: The settlement date SHALL default to T+1 business day (`settlement.t-plus-days`) and be
+  overridable via `POST /trades/{id}/settlement/force`.
+- FR-PTC07: Settlement and reconciliation SHALL never mutate journal or BLP state; their writes are
+  MariaDB-side only, and full-history reindex and regulatory reports are read-only shadow replays.
+- FR-PTC08: Trade booking SHALL be idempotent on the deterministic trade id — a duplicate delivery
+  is a no-op.
+- FR-PTC10: A full-history sweep SHALL replay the entire journal on demand (`POST
+  /recon/full-history/reindex`) into an unbounded index and cross-check every local trade id
+  (`POST /recon/orphan-sweep`), flagging `ORPHAN_IN_PROJECTION` with full confidence.
+- FR-PTC20: `GET /regulatory/report?fromSeq=&toSeq=` SHALL return every order/trade lifecycle event
+  (accept, reject, partial-fill, fill, cancel, trade-booked) in that input-sequence range, sourced
+  from journal replay, never from the MariaDB projection.
+- FR-PTC21: The audit export SHALL be a pure function of (journal range, seed) — no wall-clock, no
+  external query — so identical inputs always produce identical records.
+- FR-PTC22: The audit export SHALL require an admin caller and never run on the BLP admission path.
+- FR-PTC30: TCA SHALL compute arrival price, a TWAP benchmark, and signed slippage-in-bps per trade
+  (`GET /tca/report/{tradeId}`).
+- FR-PTC31: TCA SHALL be read-side only, entirely in trade-processor, never calling the admission
+  path.
+- FR-PTC32: TCA SHALL compute its benchmark against a pluggable historical price source — a
+  `PriceHistoryStore` fed by price-publisher's existing `pricing.*` feed — with no new data source
+  and no BLP involvement.
+- FR-PTC40: Every endpoint this state adds SHALL require a real HS256-verified JWT (`JwtAuthenticator`,
+  JDK crypto only), replacing the shared-token stopgap; `POST /auth/dev-token` mints tokens for local
+  dev/testing.
+- FR-PTC41: Account-scoped endpoints (settlement force, TCA) SHALL check the caller's entitlement
+  against the trade's own account; cross-account endpoints (blotter, full-history, orphan-sweep,
+  regulatory report) SHALL require an `admin` claim.
+- FR-PTC42: The order-admission path (`OrderMatcherService.createOrder`/`createOrderBatch`/
+  `bookMarketTrade`) SHALL resolve the caller's JWT principal and reject a caller not entitled to
+  the order's account before the command is screened or sequenced — a memory-only check against the
+  token claim, adding no synchronous lookup to the admission path (FR-IMRG01). Enforcement is gated
+  by `risk.entitlement.enforced` (default off) so the token-less UI is unaffected until it is
+  enabled; the mechanism closes FR-IMRG02 (entitlement resolution) and FR-IMRG30 (full authn on the
+  command path).
 
-This state originally branched directly off `YU03-in-memory-risk-gateway`, as a sibling of
-`YU04-durable-control-feeds` (both parented on YU03). Per explicit request, the lineage was
-changed to a straight chain — `YU03 -> YU04 -> YU05` — so YU05 now depends on YU04 rather than
-bypassing it. Mechanically: `git rebase --onto YU04-durable-control-feeds <old-fork-point>
-YU05-post-trade-compliance`, plus a manual 3-way content merge (base = the pre-YU04 file, "ours" =
-YU05's existing override, "other" = YU04's override, via `git merge-file`) for the three files both
-states independently override at the same path — `LmaxEngine.java`, order-matcher's
-`application.properties`, and `LmaxHotPathParityTest.java` — since each state stores a full copy
-of its overrides rather than a diff, and a plain history rebase alone would have let YU05's
-pre-YU04 copy of those files silently clobber YU04's control-feed additions during generation.
-One genuine (not just additive) conflict surfaced: YU04 renamed the REST-based
-`risk.bootstrap.accounts-url`/`securities-url` properties to a JetStream-based property set
-(`risk.bootstrap.account-stream`, `-snapshot-url`, etc., consumed by `ReplicaBootstrap.java`) —
-resolved by keeping YU04's new property names (confirmed via the actual Java `@Value` bindings)
-and dropping the now-dead old ones, with YU05's own properties appended after unchanged.
+## Non-Functional Requirements
 
-## Requirements
+- NFR-PTC01: Blotter capture SHALL happen on the existing output-ring consumer thread, off the BLP
+  decision path; recon and settlement SHALL make no synchronous call into the admission path.
+- NFR-PTC02: Reconciliation classification SHALL be a pure function of (blotter state, DB state) at
+  sweep time and reproduce the same result on an unchanged rerun.
+- NFR-PTC03: Metric cardinality SHALL stay bounded — classification labels only, no
+  trade-id/account/security labels.
+- NFR-PTC05: The live blotter SHALL be bounded (`recon.blotter.capacity`, default 500,000) with
+  oldest-first eviction; the on-demand full-history index is unbounded but populated only on demand.
+- NFR-PTC06: This state SHALL touch order-matcher and trade-processor overrides only; the inherited
+  build/publish/deploy harness is unchanged.
+- NFR-PTC07: No new runtime dependency SHALL be added (JDK crypto/HttpClient, existing
+  Jackson/Micrometer/Spring).
+- NFR-PTC09: The only admission-path change SHALL be the entitlement gate (an authn/authz check
+  before screening); the BLP decision path, risk screening logic, journal/replication wire format,
+  and snapshot format SHALL be unchanged (`GatewayReplicaStore.screen`/`BlpRiskState` untouched).
 
-New requirement namespace `PTC` (`FR-PTCxx`, `NFR-PTCxx`), grouped by sub-capability:
+## Success Criteria
 
-- **Settlement + reconciliation, incl. full-history orphan detection** (`FR-PTC01`–`FR-PTC10`): implemented.
-- **Regulatory reporting** (`FR-PTC20`–`FR-PTC22`): implemented.
-- **TCA** (`FR-PTC30`–`FR-PTC32`): implemented (VWAP deferred — see below).
-- **Real auth + entitlements** (`FR-PTC40`–`FR-PTC42`): FR-PTC40/41 implemented (real JWT, not
-  full OIDC — no live IdP in this environment); FR-PTC42 (feeding YU03's `principalKey` path,
-  FR-IMRG02/FR-IMRG30) deferred — needs order-admission wiring outside this state's scope.
-
-Full per-requirement status: `requirements/functional-delta.md` / `requirements/nonfunctional-delta.md`.
-
-## Foundational fix: deterministic trade identity (ADR-022)
-
-Everything else in this state depends on a stable id linking a MariaDB trade row back to the
-journal fill that produced it. `OrderSnapshot.tradeIdFor(tradeSeq)` (deterministic, snapshot-
-persisted, replay-safe) already existed for this — but was unwired in `TradeOrder.fromEvent`
-(the *optional*, disabled-by-default legacy `/trades` NATS path) and ignored entirely by
-trade-processor's `TradeService`, which minted `UUID.randomUUID()` instead. Both are now fixed.
-
-**Correction made during implementation, before finalizing this doc**: initial investigation
-assumed this was *the* live bug. It wasn't — `output.legacy-trades.enabled` defaults to `false`,
-so trade-processor's NATS-driven booking path never actually runs against the deployed
-configuration. **The real, live writer of MariaDB `TRADES` is order-matcher's own
-`ProjectorHandler`** (direct `INSERT IGNORE INTO trades` off the output ring), which was already
-using `tradeIdFor` correctly and was already idempotent via `INSERT IGNORE`. The real live-system
-gap was that `ProjectorHandler.toTrade()` set `TradeState.Settled` immediately, with no settlement
-lifecycle at all — confirmed by two existing integration tests that asserted exactly that. That is
-the fix that actually matters in production; see `research.md` for the full account. The
-trade-processor-side fixes remain correct, tested improvements to the legacy path, kept in place
-rather than reverted.
-
-## What's implemented
-
-- **Settlement**: a booked trade starts `Processing` with `settlementDate = created +
-  settlement.t-plus-days` (default T+1, business days); a scheduled sweep advances due trades to
-  `Settled`; `POST /trades/{id}/settlement/force` is the manual override.
-- **Reconciliation**: order-matcher's replay-safe `TradeBlotter` (rebuilt from journal replay,
-  bounded to `recon.blotter.capacity`) feeds a scheduled trade-processor sweep classifying each
-  entry `MATCHED` / `MISSING_IN_PROJECTION` / `FIELD_MISMATCH` against the local MariaDB row.
-- **Full-history orphan detection (FR-PTC10)**: `POST /recon/full-history/reindex` triggers an
-  on-demand, admin-gated full journal replay (reusing the existing shadow-engine pattern from
-  `verifyJournalReplay`) into an unbounded index; `POST /recon/orphan-sweep` (trade-processor)
-  cross-checks every local trade id against it, flagging `ORPHAN_IN_PROJECTION` rows with full
-  confidence — not just the bounded forward window the live sweep covers.
-- **Regulatory reporting (ADR-023)**: `GET /regulatory/report?fromSeq=&toSeq=` replays the journal
-  (same shadow-engine skeleton) and returns every order/trade lifecycle event (accept, reject,
-  partial-fill, fill, cancel, trade-booked) in that input-sequence range, reproducible byte-for-
-  byte — sourced from the journal, never from the MariaDB projection.
-- **TCA (ADR-024)**: `GET /tca/report/{tradeId}` (trade-processor) computes arrival price, TWAP
-  benchmark, and signed slippage-in-bps for a trade, fed by a `PriceHistoryStore` that subscribes
-  to price-publisher's existing `pricing.*` NATS feed — no new data source, no BLP hot-path
-  involvement. VWAP is deferred (FR-PTC32): the synthetic feed carries no per-tick volume to
-  weight by; the real TAQ dataset would supply it without changing the computation's contract.
-- **Real auth/entitlements (ADR-025)**: every endpoint above requires a real HS256-verified JWT
-  (`JwtAuthenticator`, JDK crypto only, no live OIDC provider in this environment) instead of the
-  shared-token stopgap the first draft of this state used. Account-scoped endpoints (settlement
-  force, TCA) check the caller's entitlement against the trade's own account; cross-account
-  endpoints (blotter, full-history, orphan-sweep, regulatory report) require an `admin` claim.
-  `POST /auth/dev-token` (trade-processor) mints tokens for local dev/testing.
-- **Observability**: `traderx_recon_matched_total`/`missing_in_projection_total`/
-  `field_mismatch_total`/`cursor`/`orphan_total`/`traderx_settlement_swept_total` are real
-  Micrometer gauges (trade-processor `/actuator/prometheus`); `traderx-post-trade-compliance.json`
-  Grafana dashboard visualizes them plus TCA/regulatory-report request rates.
-
-## Out of scope (specified, deferred)
-
-Feeding the risk gateway's `principalKey` path (FR-PTC42) — needs wiring into order *submission*
-(`OrderMatcherService`/`GatewayReplicaStore`), a hot-path-adjacent surface this state deliberately
-never touched. VWAP (FR-PTC32). See `generation/implementation-status.md`.
+- SC-PTC01: order-matcher unit tests validate the replay-safe blotter (capture, bounded eviction,
+  replay-safety), the deterministic-id wiring, the audit-log handler (kind coverage, range filtering),
+  and the JWT authenticator.
+- SC-PTC02: trade-processor unit tests validate idempotent booking, the T+N settlement transition,
+  reconciliation classification, the full-history orphan sweep, TWAP/slippage computation, and the
+  JWT authenticator.
+- SC-PTC03: A Grafana dashboard (`traderx-post-trade-compliance.json`) visualizes the recon,
+  settlement, TCA, and regulatory-report metric set.
+- SC-PTC04: `bash pipeline/generate-state.sh YU05-post-trade-compliance` exits 0 and the generated
+  order-matcher/trade-processor trees test green.
+- SC-PTC05: Generated shared files retain every ancestor state's content alongside this state's
+  additions.
