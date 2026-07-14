@@ -12,6 +12,10 @@ spec:
   # (required anti-affinity below): gcloud container clusters resize traderx-lmax
   #   --node-pool blp-pool --num-nodes 2 --zone us-east1-b
   replicas: 2
+  # Set out-of-band on the live StatefulSet at some point and never captured here — omitting it
+  # makes kubectl apply's 3-way merge try to unset it, which StatefulSet forbids (immutable field,
+  # not one of the few patchable ones). Must stay explicit to keep applies working.
+  podManagementPolicy: Parallel
   serviceName: order-matcher-headless
   selector:
     matchLabels:
