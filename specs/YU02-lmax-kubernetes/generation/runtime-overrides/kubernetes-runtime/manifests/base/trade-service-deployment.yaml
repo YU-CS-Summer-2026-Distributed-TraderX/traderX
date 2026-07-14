@@ -39,7 +39,7 @@ spec:
             - name: ORDER_MATCHER_URL
               value: "http://order-matcher-primary:18110"
             - name: CORS_ALLOWED_ORIGINS
-              value: "http://localhost:8080"
+              value: "http://localhost:8080,http://127.0.0.1:8080"
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
               value: "health,prometheus,info"
             - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
