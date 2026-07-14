@@ -165,6 +165,11 @@ public final class LeaderElection {
     public synchronized void start() {
         if (heartbeatScheduler != null) return;   // already started
         if (role.isPrimary()) lastSuccessfulRenewNs = System.nanoTime();
+        // Stamp the routing label for the STARTUP role. Historically only the promotion/demotion
+        // paths patched blp-role, so a pair that elected cleanly at boot and never flapped had no
+        // labels at all — and order-matcher-primary had zero endpoints (masked before the
+        // false-demote fix because constant flapping always ran the promotion path).
+        patchPodLabel(role.isPrimary() ? "primary" : "standby");
         heartbeatScheduler = Executors.newSingleThreadScheduledExecutor(daemon("blp-heartbeat"));
         leaseScheduler     = Executors.newSingleThreadScheduledExecutor(daemon("blp-lease"));
         setupHeartbeat();
