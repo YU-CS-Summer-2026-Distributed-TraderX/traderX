@@ -43,6 +43,16 @@ GCP/CI-CD context, two-tier gateway design rationale) remain valid reference.
 | 11 | ML-based dynamic risk calibration | Table #11 / market-data-realism #5 | Extension of YU03; could consume #2's volatility data | Lowest priority |
 | 12 | **BLP HA/throughput hardening** — ~~lease starvation, `blp-role` label bug~~ **(both FIXED 2026-07-14)**; *remaining:* beyond-42k gateway bottleneck, replication durability testing, + 2 new gaps found on deploy (NATS broker memory limit / JetStream file storage; replicator stream re-create on NATS reconnect) | `HANDOFF-idea-blp-ha-hardening.md`, `HANDOFF-ha-throughput-improvements.md` | `CLOUD-ARCHITECTURE.md` §7's pre-existing backlog | Throughput levers detailed in `HANDOFF-ha-throughput-improvements.md`. Beyond-42k is gateway-CPU-bound (binary/SBE ingress + projector→DB decoupling), teammate-adjacent on the snapshot/journal path only |
 
+## Tracked issues (non-state — fixes/chores, not YUxx candidates)
+
+| Issue | Doc | Status |
+|---|---|---|
+| Spec-layer forward-propagation gaps (pattern + open instances) | `HANDOFF-issue-spec-layer-propagation-gaps.md` | YU04/YU05 instance fixed 2026-07-14; **open:** YU02 kind database manifests untracked on every branch |
+| order-matcher `ReplicaBootstrap` logs INFO every ~1s | `HANDOFF-issue-replica-bootstrap-log-noise.md` | Open, cosmetic; check the 1s loop isn't re-running snapshot work |
+
+`HANDOFF-ha-throughput-improvements.md` (the perf track referenced by item #12) now lives in this
+`issues/` directory as of 2026-07-14 (previously a root-level untracked file on the YU02 worktree).
+
 ## Sequencing rationale (agreed 2026-07-07)
 
 - **YU06 = EOD/batch chain** because it needs no external data, is medium-sized, and has the
