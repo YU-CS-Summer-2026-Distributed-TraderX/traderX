@@ -201,7 +201,7 @@ public class EodPnlConsumer {
         }
     }
 
-    private void publishPnlDone(LocalDate sessionDate, int version, PnlResult result) throws Exception {
+    void publishPnlDone(LocalDate sessionDate, int version, PnlResult result) throws Exception {
         String payload = new JSONObject()
             .put("sessionDate", sessionDate.toString())
             .put("version", version)

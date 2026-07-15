@@ -2,11 +2,17 @@ package finos.traderx.positionservice.eod;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 
 import finos.traderx.positionservice.eod.EodPnlConsumer.PnlResult;
 import finos.traderx.positionservice.model.Position;
 import finos.traderx.positionservice.repository.PositionRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.nats.client.JetStream;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -15,6 +21,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.lang.reflect.Field;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -42,8 +49,14 @@ class EodPnlConsumerTest {
 
     private static final class FakeReader extends EodPriceSnapshotReader {
         final Map<String, EodSnapshotPrice> map = new HashMap<>();
+        LocalDate requestedDate;
+        int requestedVersion;
         FakeReader() { super(null); }
-        @Override public Map<String, EodSnapshotPrice> read(LocalDate d, int v) { return map; }
+        @Override public Map<String, EodSnapshotPrice> read(LocalDate d, int v) {
+            requestedDate = d;
+            requestedVersion = v;
+            return map;
+        }
         void put(String security, String price, String quality) {
             map.put(security, new EodSnapshotPrice(security, price == null ? null : new BigDecimal(price), quality));
         }
@@ -60,7 +73,12 @@ class EodPnlConsumerTest {
     }
 
     private EodPnlConsumer consumer(FakePositions p, FakeReader r, FakePnl pnl) {
-        return new EodPnlConsumer(p, r, pnl, new SimpleMeterRegistry(),
+        return consumer(p, r, pnl, new SimpleMeterRegistry());
+    }
+
+    private EodPnlConsumer consumer(FakePositions p, FakeReader r, FakePnl pnl,
+                                    SimpleMeterRegistry registry) {
+        return new EodPnlConsumer(p, r, pnl, registry,
             "nats://localhost:4222", false, "TRADERX_EOD", "eod.prices.ready", "eod.pnl.done", "eod-pnl");
     }
 
@@ -143,5 +161,48 @@ class EodPnlConsumerTest {
         c.process(DATE, 1); // durable redelivery
 
         assertEquals(1, pnl.rows.size(), "same (date,version,account,security) upserts to one row");
+    }
+
+    @Test
+    void readsExactlyTheVersionNamedByTheGate() {
+        FakePositions p = new FakePositions();
+        p.add(1, "AAA", 1);
+        FakeReader r = new FakeReader();
+        r.put("AAA", "101", "OK");
+
+        consumer(p, r, new FakePnl()).process(DATE, 7);
+
+        assertEquals(DATE, r.requestedDate);
+        assertEquals(7, r.requestedVersion);
+    }
+
+    @Test
+    void emitsOneCompletionForTheExactDateAndVersion() throws Exception {
+        EodPnlConsumer c = consumer(new FakePositions(), new FakeReader(), new FakePnl());
+        JetStream js = mock(JetStream.class);
+        Field field = EodPnlConsumer.class.getDeclaredField("jetStream");
+        field.setAccessible(true);
+        field.set(c, js);
+
+        c.publishPnlDone(DATE, 4, new PnlResult(2, 1, 1234L));
+
+        verify(js, times(1)).publish(anyString(), any(byte[].class), any());
+    }
+
+    @Test
+    void metricsCountHaltedAndMarkedAccountsWithFixedCardinality() {
+        FakePositions p = new FakePositions();
+        p.add(1, "AAA", 1);
+        p.add(2, "ZZZ", 1);
+        FakeReader r = new FakeReader();
+        r.put("AAA", "100", "OK");
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+
+        consumer(p, r, new FakePnl(), registry).process(DATE, 2);
+
+        assertEquals(1.0, registry.get("traderx_eod_pnl_accounts_marked").counter().count());
+        assertEquals(1.0, registry.get("traderx_eod_pnl_halted").counter().count());
+        assertEquals(3, registry.getMeters().size());
+        assertTrue(registry.getMeters().stream().allMatch(m -> m.getId().getTags().isEmpty()));
     }
 }
