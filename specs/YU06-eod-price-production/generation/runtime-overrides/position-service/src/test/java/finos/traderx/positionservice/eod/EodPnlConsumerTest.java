@@ -3,7 +3,7 @@ package finos.traderx.positionservice.eod;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -13,6 +13,7 @@ import finos.traderx.positionservice.model.Position;
 import finos.traderx.positionservice.repository.PositionRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.nats.client.JetStream;
+import io.nats.client.PublishOptions;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -23,6 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.lang.reflect.Field;
 import org.junit.jupiter.api.Test;
+import org.json.JSONObject;
+import org.mockito.ArgumentCaptor;
 
 /**
  * YU06 (FR-EOD30-32, NFR-EOD05): the consumer's marking logic — mark-to-close math, per-account
@@ -186,7 +189,13 @@ class EodPnlConsumerTest {
 
         c.publishPnlDone(DATE, 4, new PnlResult(2, 1, 1234L));
 
-        verify(js, times(1)).publish(anyString(), any(byte[].class), any());
+        ArgumentCaptor<byte[]> payload = ArgumentCaptor.forClass(byte[].class);
+        verify(js, times(1)).publish(eq("eod.pnl.done"), payload.capture(), any(PublishOptions.class));
+        JSONObject event = new JSONObject(new String(payload.getValue(), java.nio.charset.StandardCharsets.UTF_8));
+        assertEquals(DATE.toString(), event.getString("sessionDate"));
+        assertEquals(4, event.getInt("version"));
+        assertEquals(2, event.getInt("accountsMarked"));
+        assertEquals(1, event.getInt("accountsHalted"));
     }
 
     @Test
