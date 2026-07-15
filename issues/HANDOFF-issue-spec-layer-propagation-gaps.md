@@ -1,7 +1,7 @@
 # Issue: spec-layer forward-propagation gaps (recurring pattern) + open instances
 
-**Status: pattern documented 2026-07-14; YU04/YU05 instance FIXED same day; one instance still open
-(YU02 database manifests untracked). See "Open instances" below.**
+**Status: pattern documented 2026-07-14; YU04/YU05 instance FIXED same day; YU02 database-manifests
+instance FIXED same day (committed on all 8 branches). No open instances.**
 
 ## The pattern
 
@@ -30,11 +30,16 @@ Known instances of this class (chronological):
 
 ## Open instances
 
-- **YU02-layer database manifests are untracked on every branch.** The kind MariaDB fix of
-  2026-07-09 (`specs/YU02-lmax-kubernetes/generation/runtime-overrides/kubernetes-runtime/manifests/
-  base/database-{deployment,service,init-configmap}.yaml`) exists only as untracked working-tree
-  files, duplicated per worktree. A fresh clone cannot bring YU02/YU03 up on kind. Fix = commit the
-  three files on the YU02 home branch and carry them on all descendants (same action as instance #3).
+None. Most recently closed:
+
+- **YU02-layer database manifests untracked on every branch (FIXED 2026-07-14).** The 2026-07-09
+  kind MariaDB fix (`.../YU02-lmax-kubernetes/.../base/database-{deployment,service,init-configmap}.yaml`)
+  existed only as untracked working-tree files, duplicated per worktree — while the *tracked*
+  kustomization.yaml referenced all three, so a fresh clone could not bring YU02/YU03 up on kind.
+  The YU08 copies were newest (explanatory headers + `protocol: TCP`, content otherwise identical
+  to the other 5 worktrees'); committed verbatim on all 8 branches. Note: the legacy
+  `lmax-kubernetes` branch (pre-YU02-rename, carries `specs/lmax-kubernetes`) was deliberately NOT
+  updated — it predates the YUxx layout entirely; the YU02 blp-ha branch is the effective home.
 
 ## Convention going forward
 
