@@ -53,6 +53,44 @@ class GatewayReplicaStoreTest {
     }
 
     @Test
+    void frImrg12RejectReasonsFollowStablePrecedence() {
+        replicas.markReady();
+
+        // The earlier reason must win even when later checks would also reject.
+        replicas.applyPolicy(2L, true);
+        assertEquals(RiskReason.KILL_SWITCH, screen(999, "UNKNOWN", 20_000, null, 1_000L));
+        replicas.applyPolicy(3L, false);
+
+        assertEquals(RiskReason.UNKNOWN_ACCOUNT, screen(999, "UNKNOWN", 20_000, null, 1_000L));
+        replicas.applyAccount(22214, false);
+        assertEquals(RiskReason.ACCOUNT_DISABLED, screen(22214, "UNKNOWN", 20_000, null, 1_000L));
+        replicas.applyAccount(22214, true);
+
+        assertEquals(RiskReason.UNKNOWN_SECURITY, screen(22214, "UNKNOWN", 20_000, null, 1_000L));
+        replicas.applySecurity("IBM", false, false);
+        assertEquals(RiskReason.SECURITY_DISABLED, screen(22214, "IBM", 20_000, null, 1_000L));
+        replicas.applySecurity("IBM", true, false);
+
+        replicas.applyRestriction("IBM", true);
+        assertEquals(RiskReason.RESTRICTED, screen(22214, "IBM", 20_000, null, 1_000L));
+        replicas.applyRestriction("IBM", false);
+
+        assertEquals(RiskReason.INVALID, screen(22214, "IBM", 0, null, 1_000L));
+        assertEquals(RiskReason.ORDER_SIZE, screen(22214, "IBM", 20_000, null, 1_000L));
+
+        GatewayReplicaStore lowNotional = new GatewayReplicaStore("22214", "IBM", 10_000,
+            100_000_000L, 30_000L, 5_000L, 64, 64);
+        lowNotional.seed();
+        lowNotional.alignSecurityIds(ticker -> 0);
+        lowNotional.markReady();
+        assertEquals(RiskReason.ORDER_NOTIONAL,
+            lowNotional.screen(22214, "IBM", 2, new BigDecimal("100.000000"), false, 1_000L));
+
+        replicas.recordPrice("IBM", 100_000_000L, 1_000L);
+        assertEquals(RiskReason.PRICE_COLLAR, screen(22214, "IBM", 100, "200.000", 2_000L));
+    }
+
+    @Test
     void priceCollarAndFreshness() {
         replicas.markReady();
         replicas.recordPrice("IBM", 100_000_000L, 1_000L);

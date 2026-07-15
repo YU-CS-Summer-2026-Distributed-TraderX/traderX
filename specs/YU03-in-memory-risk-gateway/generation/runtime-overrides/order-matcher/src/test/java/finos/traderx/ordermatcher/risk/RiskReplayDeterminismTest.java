@@ -180,6 +180,88 @@ class RiskReplayDeterminismTest {
     }
 
     @Test
+    void frImrg22InterleavedAccountSecurityRestrictionAndPolicyControlsReplayIdentically() {
+        List<InputEvent> events = alternateControlScript();
+        MatchingEngine live = newEngine();
+        MatchingEngine replay = newEngine();
+
+        apply(live, events);
+        apply(replay, events);
+
+        assertSameState(live, replay);
+        List<Long> reasons = live.allOrderTuples().stream().map(tuple -> tuple[12]).toList();
+        assertEquals(List.of(
+            (long) RiskReason.ACCOUNT_DISABLED.ordinal(),
+            // The BLP's bounded security table intentionally represents disabled/absent with
+            // the same zero slot, so the stable authoritative reason is UNKNOWN_SECURITY.
+            (long) RiskReason.UNKNOWN_SECURITY.ordinal(),
+            (long) RiskReason.RESTRICTED.ordinal(),
+            (long) RiskReason.KILL_SWITCH.ordinal(),
+            (long) RiskReason.ACCEPTED.ordinal()), reasons);
+    }
+
+    private static List<InputEvent> alternateControlScript() {
+        List<InputEvent> events = new ArrayList<>();
+        events.add(accountControl(0, false, 2));
+        events.add(order(1, 11, 201));
+        events.add(accountControl(2, true, 3));
+        events.add(securityControl(3, false, 4));
+        events.add(order(4, 12, 202));
+        events.add(securityControl(5, true, 5));
+        events.add(restrictionControl(6, true, 6));
+        events.add(order(7, 13, 203));
+        events.add(restrictionControl(8, false, 7));
+        events.add(policyControl(9, true, 8));
+        events.add(order(10, 14, 204));
+        events.add(policyControl(11, false, 9));
+        events.add(order(12, 15, 205));
+        return events;
+    }
+
+    private static InputEvent order(long seq, int orderRef, long clientOrderKey) {
+        InputEvent order = event(seq, InputEvent.TYPE_ORDER_NEW);
+        order.orderRef = orderRef;
+        order.accountId = ACCT;
+        order.securityId = SEC;
+        order.side = InputEvent.SIDE_BUY;
+        order.qty = 10;
+        order.limitPx = PX - 1_000_000L;
+        order.setClientOrderKey(clientOrderKey);
+        return order;
+    }
+
+    private static InputEvent accountControl(long seq, boolean enabled, long version) {
+        InputEvent control = event(seq, InputEvent.TYPE_ACCOUNT_CONTROL);
+        control.accountId = ACCT;
+        control.setControlEnabled(enabled);
+        control.setControlVersion(version);
+        return control;
+    }
+
+    private static InputEvent securityControl(long seq, boolean enabled, long version) {
+        InputEvent control = event(seq, InputEvent.TYPE_SECURITY_CONTROL);
+        control.securityId = SEC;
+        control.setControlEnabled(enabled);
+        control.setControlVersion(version);
+        return control;
+    }
+
+    private static InputEvent restrictionControl(long seq, boolean restricted, long version) {
+        InputEvent control = event(seq, InputEvent.TYPE_RESTRICTION_CONTROL);
+        control.securityId = SEC;
+        control.setControlEnabled(restricted);
+        control.setControlVersion(version);
+        return control;
+    }
+
+    private static InputEvent policyControl(long seq, boolean killSwitch, long version) {
+        InputEvent control = event(seq, InputEvent.TYPE_POLICY_CONTROL);
+        control.setControlEnabled(killSwitch);
+        control.setControlVersion(version);
+        return control;
+    }
+
+    @Test
     void snapshotV3PlusTailRestoresIdenticalState(@TempDir Path dir) throws Exception {
         List<InputEvent> events = script();
         int cut = 6;   // snapshot after the idempotent retry, before the sell/cancel/trade tail
