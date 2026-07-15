@@ -165,6 +165,20 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
             archiver.archiveAsync(segment);
         } catch (IOException ex) {
             log.warn("Journal rotation failed; continuing on the current journal file", ex);
+            // rotate closes before moving. Reopen the active path so the next event can still be
+            // journaled; otherwise the swallowed rotation exception merely defers a fatal
+            // ClosedChannelException to the next append.
+            try {
+                if (channel == null || !channel.isOpen()) {
+                    channel = FileChannel.open(journalFile,
+                        StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+                    writtenBytes = channel.size();
+                    lastSnapshotOffset = writtenBytes;
+                }
+            } catch (IOException reopenEx) {
+                failed = true;
+                log.error("Journal rotation recovery failed; journaling disabled", reopenEx);
+            }
         }
     }
 

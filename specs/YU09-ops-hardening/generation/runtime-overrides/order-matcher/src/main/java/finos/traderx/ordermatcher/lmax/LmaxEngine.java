@@ -812,6 +812,20 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         return canceled;
     }
 
+    /** Pure companion used by the restriction contract test: selects the same open orders while
+     * letting the caller provide the sequenced-cancel sink. */
+    static int cancelOpenOrdersForSecurity(String ticker, java.util.List<OrderSnapshot> orders,
+                                           java.util.function.IntConsumer cancelSink) {
+        int canceled = 0;
+        for (OrderSnapshot snapshot : orders) {
+            if (snapshot.isOpen() && ticker.equalsIgnoreCase(snapshot.security)) {
+                cancelSink.accept(snapshot.orderRef);
+                canceled++;
+            }
+        }
+        return canceled;
+    }
+
     /** Stable FNV-1a hash of a client order id / principal; 0 is reserved for "absent". */
     public static long hashClientOrderId(String value) {
         if (value == null || value.isEmpty()) {

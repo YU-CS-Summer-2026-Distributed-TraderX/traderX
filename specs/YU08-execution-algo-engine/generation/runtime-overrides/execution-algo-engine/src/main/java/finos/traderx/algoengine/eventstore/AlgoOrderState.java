@@ -83,7 +83,11 @@ public class AlgoOrderState {
     if (order == null || event.getBucketIndex() == null) {
       return null;
     }
-    return order.getBuckets().get(event.getBucketIndex());
+    int index = event.getBucketIndex();
+    if (index < 0 || index >= order.getBuckets().size()) {
+      return null;
+    }
+    return order.getBuckets().get(index);
   }
 
   public ParentOrder get(String parentOrderId) {

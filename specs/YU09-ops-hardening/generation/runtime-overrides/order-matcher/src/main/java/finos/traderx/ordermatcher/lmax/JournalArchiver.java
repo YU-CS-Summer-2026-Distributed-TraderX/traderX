@@ -14,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Uploads closed journal segments (see Journaler#rotate) to GCS, off the journaler thread.
@@ -82,6 +83,36 @@ final class JournalArchiver implements AutoCloseable {
                     + "accumulate on local disk (see order-matcher-journal-gcs-hmac Secret)");
             }
         }
+    }
+
+    /** Package-visible offline-test seam: injects an S3 client while retaining the production
+     * daemon executor and archive/delete behavior. */
+    JournalArchiver(String bucketUri, S3Client client) {
+        URI uri = URI.create(bucketUri);
+        this.enabled = true;
+        this.bucket = uri.getHost();
+        String path = uri.getPath();
+        this.prefix = (path == null || path.isBlank() || path.equals("/")) ? "" : path.substring(1) + "/";
+        this.client = client;
+        this.executor = newArchiveExecutor();
+    }
+
+    private static ExecutorService newArchiveExecutor() {
+        return Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "journal-archiver");
+            t.setDaemon(true);
+            return t;
+        });
+    }
+
+    /** Wait until every archive queued before this call has finished. Useful for orderly shutdown
+     * and deterministic offline verification; it does not stop the executor. */
+    boolean awaitIdle(long timeout, TimeUnit unit) throws Exception {
+        if (executor == null) {
+            return true;
+        }
+        executor.submit(() -> { }).get(timeout, unit);
+        return true;
     }
 
     /** Fire-and-forget upload of a closed (already-rotated-away) journal segment. Runs on its own

@@ -80,11 +80,38 @@ class EodPriceServiceTest {
         }
     }
 
+    private static final class CapturingPublisher extends EodEventPublisher {
+        private final InMemoryRepo repo;
+        private int calls;
+        private LocalDate sessionDate;
+        private int version;
+        private String statusAtPublish;
+
+        CapturingPublisher(InMemoryRepo repo) {
+            super("nats://unused", "TRADERX_EOD", "eod.prices.ready", false);
+            this.repo = repo;
+        }
+
+        @Override
+        public void publishPricesReady(LocalDate date, int v, int instrumentCount, long publishedAtMillis) {
+            calls++;
+            sessionDate = date;
+            version = v;
+            statusAtPublish = repo.find(date, v).orElseThrow().status();
+        }
+    }
+
     private EodPriceService service(PriceHistoryStore history, List<String> universe) {
-        return new EodPriceService(history, new EodQualityChecker(300, new BigDecimal("20")),
-            new InMemoryRepo(),
+        return service(history, universe, new InMemoryRepo(),
             new EodEventPublisher("nats://localhost:4222", "TRADERX_EOD", "eod.prices.ready", false),
-            new SimpleMeterRegistry(), universe, true);
+            new SimpleMeterRegistry(), true);
+    }
+
+    private EodPriceService service(PriceHistoryStore history, List<String> universe,
+                                    InMemoryRepo repo, EodEventPublisher publisher,
+                                    SimpleMeterRegistry registry, boolean autoPublish) {
+        return new EodPriceService(history, new EodQualityChecker(300, new BigDecimal("20")),
+            repo, publisher, registry, universe, autoPublish);
     }
 
     private PriceHistoryStore historyWith(Map<String, long[]> tickerToPriceAndAgeMs) {
@@ -123,6 +150,38 @@ class EodPriceServiceTest {
     }
 
     @Test
+    void gateEventIsEmittedAfterCommitWithExactDateAndVersion() {
+        PriceHistoryStore h = historyWith(Map.of("AAA", new long[]{100, 1000}));
+        InMemoryRepo repo = new InMemoryRepo();
+        CapturingPublisher publisher = new CapturingPublisher(repo);
+        EodPriceService svc = service(h, List.of(), repo, publisher, new SimpleMeterRegistry(), false);
+
+        EodReport draft = svc.produce(DATE, CLOSE);
+        EodPriceService.PublishOutcome outcome = svc.publish(DATE);
+
+        assertEquals(EodReport.DRAFT, draft.status());
+        assertEquals(PublishStatus.PUBLISHED, outcome.status());
+        assertEquals(1, publisher.calls);
+        assertEquals(DATE, publisher.sessionDate);
+        assertEquals(1, publisher.version);
+        assertEquals(EodReport.PUBLISHED, publisher.statusAtPublish,
+            "the durable gate is emitted only after the snapshot header is committed PUBLISHED");
+    }
+
+    @Test
+    void blockedPublishLeavesDraftAndEmitsNoGateEvent() {
+        PriceHistoryStore h = historyWith(Map.of("CCC", new long[]{50, 400_000}));
+        InMemoryRepo repo = new InMemoryRepo();
+        CapturingPublisher publisher = new CapturingPublisher(repo);
+        EodPriceService svc = service(h, List.of(), repo, publisher, new SimpleMeterRegistry(), false);
+
+        svc.produce(DATE, CLOSE);
+        assertEquals(PublishStatus.BLOCKED, svc.publish(DATE).status());
+        assertEquals(EodReport.DRAFT, repo.find(DATE, 1).orElseThrow().status());
+        assertEquals(0, publisher.calls);
+    }
+
+    @Test
     void overrideCreatesNewVersionThenPublishes() {
         PriceHistoryStore h = historyWith(Map.of("AAA", new long[]{100, 1000}, "CCC", new long[]{50, 400_000}));
         EodPriceService svc = service(h, List.of());
@@ -151,6 +210,44 @@ class EodPriceServiceTest {
         EodPriceService svc = service(h, List.of());
         svc.produce(DATE, CLOSE); // auto-published v1
         assertEquals(PublishStatus.ALREADY_PUBLISHED, svc.publish(DATE).status());
+    }
+
+    @Test
+    void producingSameDateTwiceCreatesImmutablePublishedVersions() {
+        PriceHistoryStore h = historyWith(Map.of("AAA", new long[]{100, 1000}));
+        EodPriceService svc = service(h, List.of());
+
+        EodReport v1 = svc.produce(DATE, CLOSE);
+        h.record("AAA", new BigDecimal("101"), CLOSE + 1000);
+        EodReport v2 = svc.produce(DATE, CLOSE + 1000);
+
+        assertEquals(1, v1.version());
+        assertEquals(2, v2.version());
+        assertEquals(new BigDecimal("100"), svc.find(DATE, 1).orElseThrow()
+            .instruments().get(0).closingPrice());
+        assertEquals(new BigDecimal("101"), svc.find(DATE, 2).orElseThrow()
+            .instruments().get(0).closingPrice());
+        assertEquals(EodReport.PUBLISHED, svc.find(DATE, 1).orElseThrow().status());
+    }
+
+    @Test
+    void metricsCountPublishedSessionsAndQualityFlagsWithoutTagCardinality() {
+        PriceHistoryStore h = historyWith(Map.of("AAA", new long[]{100, 1000}, "CCC", new long[]{50, 400_000}));
+        InMemoryRepo repo = new InMemoryRepo();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        EodPriceService svc = service(h, List.of(), repo,
+            new EodEventPublisher("nats://unused", "TRADERX_EOD", "eod.prices.ready", false),
+            registry, false);
+
+        svc.produce(DATE, CLOSE);
+        assertEquals(1.0, registry.get("traderx_eod_quality_flagged").counter().count());
+        assertEquals(0.0, registry.get("traderx_eod_sessions_published").counter().count());
+
+        svc.override(DATE, "CCC", new BigDecimal("51"), "manual");
+        svc.publish(DATE);
+        assertEquals(1.0, registry.get("traderx_eod_sessions_published").counter().count());
+        assertEquals(3, registry.getMeters().size(), "fixed aggregate metric cardinality");
+        assertTrue(registry.getMeters().stream().allMatch(m -> m.getId().getTags().isEmpty()));
     }
 
     @Test

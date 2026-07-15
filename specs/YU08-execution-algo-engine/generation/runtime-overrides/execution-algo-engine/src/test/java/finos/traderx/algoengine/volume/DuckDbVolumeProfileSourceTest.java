@@ -9,6 +9,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
 import java.util.List;
+import finos.traderx.algoengine.model.Bucket;
+import finos.traderx.algoengine.schedule.VwapScheduleBuilder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -30,6 +32,17 @@ class DuckDbVolumeProfileSourceTest {
     List<Double> expected = synthetic.bucketWeights("IBM", 6);
     List<Double> actual = source.bucketWeights("IBM", 6);
     assertEquals(expected, actual);
+  }
+
+  @Test
+  void fallbackWeightsFeedASumPreservingVwapSchedule(@TempDir File emptyStore) {
+    DuckDbVolumeProfileSource source = new DuckDbVolumeProfileSource(
+        "duckdb", emptyStore.getAbsolutePath(), 30, "", "", "",
+        new SyntheticVolumeProfileSource());
+    List<Bucket> buckets = VwapScheduleBuilder.build(
+        1001, source.bucketWeights("IBM", 6), 10, 0L);
+    assertEquals(1001, buckets.stream().mapToInt(Bucket::getTargetQuantity).sum());
+    assertTrue(buckets.stream().mapToInt(Bucket::getTargetQuantity).distinct().count() > 1);
   }
 
   @Test

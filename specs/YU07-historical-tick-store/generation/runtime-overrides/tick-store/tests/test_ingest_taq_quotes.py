@@ -1,5 +1,7 @@
 import os
 import sys
+import threading
+import zipfile
 
 import duckdb
 import pytest
@@ -77,6 +79,46 @@ def test_ingest_raises_clear_error_on_wrong_column_layout(tmp_path):
     con = duckdb.connect()
     with pytest.raises(ValueError, match="does not match the expected CQ column layout"):
         ingest_taq_quotes.ingest(con, str(csv_path), str(tmp_path / "out"))
+
+
+def test_ingest_multiple_cq_files_preserves_both_batches(tmp_path):
+    out_dir = tmp_path / "out"
+    con = duckdb.connect()
+    for index, symbol in enumerate(("A", "IBM"), start=1):
+        csv_path = tmp_path / f"batch-{index}.csv"
+        csv_path.write_text(SAMPLE_CQ_CSV.replace(",A,\n", f",{symbol},\n"))
+        assert ingest_taq_quotes.ingest(con, str(csv_path), str(out_dir)) == 4
+
+    rows = con.execute(
+        f"SELECT symbol, count(*) FROM read_parquet('{out_dir}/**/*.parquet', hive_partitioning=true) "
+        "GROUP BY symbol ORDER BY symbol"
+    ).fetchall()
+    assert rows == [("A", 4), ("IBM", 4)]
+
+
+def test_ingest_streams_csv_directly_from_stdlib_zipfile(tmp_path):
+    archive = tmp_path / "quotes.zip"
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("quotes.csv", SAMPLE_CQ_CSV)
+
+    read_fd, write_fd = os.pipe()
+
+    def stream_member():
+        with zipfile.ZipFile(archive) as zf, zf.open("quotes.csv") as source, \
+                os.fdopen(write_fd, "wb") as sink:
+            while chunk := source.read(8192):
+                sink.write(chunk)
+
+    writer = threading.Thread(target=stream_member, daemon=True)
+    writer.start()
+    try:
+        con = duckdb.connect()
+        written = ingest_taq_quotes.ingest(con, f"/dev/fd/{read_fd}", str(tmp_path / "out"))
+        assert written == 4
+    finally:
+        os.close(read_fd)
+        writer.join(timeout=5)
+    assert not writer.is_alive()
 
 
 if __name__ == "__main__":

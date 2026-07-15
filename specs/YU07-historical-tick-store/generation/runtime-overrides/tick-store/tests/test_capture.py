@@ -97,5 +97,19 @@ def test_write_batch_noop_on_empty_batch(tmp_path):
     assert os.listdir(tmp_path) == []
 
 
+def test_unrelated_subject_is_ignored():
+    assert capture.captured_message_to_row(
+        "orders.IBM", {"price": 100, "asOf": "2026-07-09T14:00:00Z"}, 1
+    ) is None
+
+
+@pytest.mark.parametrize("payload", [
+    {"asOf": "2026-07-09T14:00:00Z"},
+    {"price": 100},
+])
+def test_pricing_message_missing_price_or_asof_is_skipped_without_abort(payload):
+    assert capture.captured_message_to_row("pricing.IBM", payload, 1) is None
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
