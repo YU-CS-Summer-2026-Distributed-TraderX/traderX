@@ -31,11 +31,20 @@ spec:
             - name: MARIADB_DATABASE
               value: "traderx"
             - name: MARIADB_USER
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
             - name: MARIADB_PASSWORD
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
             - name: MARIADB_ROOT_PASSWORD
-              value: "traderx"
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: root-password
           volumeMounts:
             - name: db-data
               mountPath: /var/lib/mysql
@@ -44,12 +53,12 @@ spec:
               subPath: 001-initialSchema.sql
           readinessProbe:
             exec:
-              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -utraderx -ptraderx --silent"]
+              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             exec:
-              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -utraderx -ptraderx --silent"]
+              command: ["sh", "-c", "mariadb-admin ping -h 127.0.0.1 -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" --silent"]
             initialDelaySeconds: 10
             periodSeconds: 10
       volumes:
