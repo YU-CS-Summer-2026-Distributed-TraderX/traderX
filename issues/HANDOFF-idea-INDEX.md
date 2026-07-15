@@ -21,6 +21,10 @@ GCP/CI-CD context, two-tier gateway design rationale) remain valid reference.
 | Durable control feeds (outbox → JetStream) | YU04 | Done |
 | Settlement + recon, regulatory reporting, TCA, auth/entitlements | YU05-post-trade-compliance | Done |
 | EOD price production + overnight batch chain | YU06-eod-price-production | Done (2026-07-08). Producer in trade-processor, consumer (EOD P&L) in position-service, gated by durable `EOD_PRICES_READY` JetStream event. See `HANDOFF-execution-algo-engine-yu07.md` |
+| Historical tick store + backtesting | YU07-historical-tick-store | Done (2026-07-09). See `HANDOFF-idea-historical-tick-store-backtesting.md` |
+| Execution algo engine (TWAP/VWAP) | YU08-execution-algo-engine | Done (2026-07-10/12). See `HANDOFF-idea-execution-algo-engine.md` |
+| Ops hardening (secrets, journal archival→GCS, DR runbook, pipeline stale-jar fix) | YU09-ops-hardening | Done (2026-07-12/13). Deployed to prod. |
+| **BLP HA hardening — lease-starvation false-demote + `blp-role` label bug** (item #12 items 1–2) | on `YU02-lmax-kubernetes-blp-ha`, propagated to all 8 states | **Done (2026-07-14).** Deployed to prod + validated. See `HANDOFF-idea-blp-ha-hardening.md` status block. Item #12's remaining pieces (beyond-42k throughput, broader durability) stay open below. |
 
 ## Open backlog (deduplicated, in recommended order)
 
@@ -37,7 +41,17 @@ GCP/CI-CD context, two-tier gateway design rationale) remain valid reference.
 | 9 | **Market data quality engine** (gaps/spikes/staleness) | `HANDOFF-idea-market-data-quality-engine.md` | Feeds YU03 price-reasonability fail-safe | Nothing — small; good gap-filler state |
 | 10 | Reference-data / corporate-actions backfill | Table #8 / market-data-realism #6 | — | Low priority; mechanical |
 | 11 | ML-based dynamic risk calibration | Table #11 / market-data-realism #5 | Extension of YU03; could consume #2's volatility data | Lowest priority |
-| 12 | **BLP HA/throughput hardening** (lease starvation, `blp-role` label bug, beyond-42k gateway bottleneck, replication durability testing) | `HANDOFF-idea-blp-ha-hardening.md` | `CLOUD-ARCHITECTURE.md` §7's pre-existing backlog, predates YU03-05 | **TEAMMATE-ADJACENT: Tani is already working BLP performance (snapshot/journal/terminal-retention) — coordinate before starting, this is adjacent (HA-replication + gateway-CPU-path), not identical** |
+| 12 | **BLP HA/throughput hardening** — ~~lease starvation, `blp-role` label bug~~ **(both FIXED 2026-07-14)**; *remaining:* beyond-42k gateway bottleneck, replication durability testing, + 2 new gaps found on deploy (NATS broker memory limit / JetStream file storage; replicator stream re-create on NATS reconnect) | `HANDOFF-idea-blp-ha-hardening.md`, `HANDOFF-ha-throughput-improvements.md` | `CLOUD-ARCHITECTURE.md` §7's pre-existing backlog | Throughput levers detailed in `HANDOFF-ha-throughput-improvements.md`. Beyond-42k is gateway-CPU-bound (binary/SBE ingress + projector→DB decoupling), teammate-adjacent on the snapshot/journal path only |
+
+## Tracked issues (non-state — fixes/chores, not YUxx candidates)
+
+| Issue | Doc | Status |
+|---|---|---|
+| Spec-layer forward-propagation gaps (pattern + open instances) | `HANDOFF-issue-spec-layer-propagation-gaps.md` | YU04/YU05 instance fixed 2026-07-14; **open:** YU02 kind database manifests untracked on every branch |
+| order-matcher `ReplicaBootstrap` logs INFO every ~1s | `HANDOFF-issue-replica-bootstrap-log-noise.md` | Open, cosmetic; check the 1s loop isn't re-running snapshot work |
+
+`HANDOFF-ha-throughput-improvements.md` (the perf track referenced by item #12) now lives in this
+`issues/` directory as of 2026-07-14 (previously a root-level untracked file on the YU02 worktree).
 
 ## Sequencing rationale (agreed 2026-07-07)
 
