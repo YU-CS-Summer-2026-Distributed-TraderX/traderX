@@ -1,0 +1,19 @@
+# MariaDB service on 3306 (was Postgres on 5432). Services connect to database:3306 with the
+# MariaDB driver; the base kind service still exposed 5432, so nothing could reach the DB. See
+# database-deployment.yaml for the full migration-gap explanation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: traderx
+  labels:
+    app: database
+spec:
+  type: ClusterIP
+  selector:
+    app: database
+  ports:
+    - name: mariadb
+      protocol: TCP
+      port: 3306
+      targetPort: 3306
