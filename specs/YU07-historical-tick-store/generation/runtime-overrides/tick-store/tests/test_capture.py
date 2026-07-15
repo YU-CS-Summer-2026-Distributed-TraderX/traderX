@@ -23,6 +23,19 @@ def test_price_tick_to_row_maps_pricing_subject():
     assert row["source"] == "live"
 
 
+def test_envelope_payload_unwraps_traderx_topic_envelope():
+    # Live pricing.* / trades messages arrive wrapped as {"topic":..., "payload":{...}} — capture
+    # must unwrap to the inner payload (regression: previously KeyError'd on every live tick).
+    wrapped = {"topic": "pricing.IBM", "payload": {"ticker": "IBM", "price": 190.2, "asOf": "2025-02-11T14:00:00.000Z"}}
+    inner = capture.envelope_payload(wrapped)
+    assert inner["price"] == 190.2 and inner["asOf"] == "2025-02-11T14:00:00.000Z"
+    row = capture.price_tick_to_row("pricing.IBM", inner, seq=1)
+    assert row["symbol"] == "IBM" and row["price"] == 190.2 and row["source"] == "live"
+    # a flat (already-unwrapped) payload passes through unchanged
+    flat = {"price": 1.0, "asOf": "t"}
+    assert capture.envelope_payload(flat) is flat
+
+
 def test_trade_to_row_maps_trade_entity_payload():
     row = capture.trade_to_row(
         {
