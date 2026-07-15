@@ -90,6 +90,18 @@ unzip -p taq_quotes_YYYYMMDD_csv.zip <entry>.csv \
     python3 ingest_taq_quotes.py --date YYYY-MM-DD --out gs://traderx-501015-tick-store/ticks
 ```
 
+## Ingest a TAQ trades file (streamed, no extraction)
+
+Same streaming pattern for a NYSE Daily TAQ Consolidated Trades (CT) file — produces
+`event_type='trade'`, `source='taq'` rows (price/size), so a VWAP query weights them exactly like
+live trades:
+
+```bash
+unzip -p taq_trades_YYYYMMDD_csv.zip <entry>.csv \
+  | GCS_HMAC_KEY_ID=<ACCESS_ID> GCS_HMAC_SECRET_ACCESS_KEY=<SECRET> \
+    python3 ingest_taq_trades.py --date YYYY-MM-DD --out gs://traderx-501015-tick-store/ticks
+```
+
 ## Query the store
 
 ```bash

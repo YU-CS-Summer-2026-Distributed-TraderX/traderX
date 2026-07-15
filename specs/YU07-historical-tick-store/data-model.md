@@ -18,7 +18,7 @@ symbol-filtered queries without a separate index.
 | Column | Type | Notes |
 |---|---|---|
 | `symbol` | VARCHAR | Ticker (`SYM_ROOT` for TAQ; the NATS subject's ticker for live). |
-| `event_type` | VARCHAR | `price_tick` (live `pricing.*`) / `trade` (live account trades) / `quote` (TAQ CQ). |
+| `event_type` | VARCHAR | `price_tick` (live `pricing.*`) / `trade` (live account trades **or** TAQ CT prints) / `quote` (TAQ CQ). |
 | `ts` | TIMESTAMP | Event time, microsecond precision. For TAQ, `DATE`+`TIME_M` truncated from nanoseconds (research.md Decision 4). |
 | `price` | DOUBLE, nullable | Trade/price-tick price. Null for `quote` rows. |
 | `size` | BIGINT, nullable | Trade quantity. Null for `price_tick`/`quote` rows. |
