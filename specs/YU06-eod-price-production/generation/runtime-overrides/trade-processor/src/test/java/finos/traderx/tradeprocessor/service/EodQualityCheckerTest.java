@@ -50,6 +50,26 @@ class EodQualityCheckerTest {
     }
 
     @Test
+    void bigDownMoveVsPriorCloseIsSpike() {
+        EodPrice p = checker.classify("AAA",
+            Optional.of(new PriceSample(new BigDecimal("79"), CLOSE - 1000)),
+            Optional.of(new BigDecimal("100")), CLOSE);
+        assertEquals(EodQuality.SPIKE, p.quality());
+    }
+
+    @Test
+    void moveExactlyAtThresholdIsOk() {
+        EodPrice up = checker.classify("AAA",
+            Optional.of(new PriceSample(new BigDecimal("120"), CLOSE - 1000)),
+            Optional.of(new BigDecimal("100")), CLOSE);
+        EodPrice down = checker.classify("AAA",
+            Optional.of(new PriceSample(new BigDecimal("80"), CLOSE - 1000)),
+            Optional.of(new BigDecimal("100")), CLOSE);
+        assertEquals(EodQuality.OK, up.quality());
+        assertEquals(EodQuality.OK, down.quality());
+    }
+
+    @Test
     void moveWithinBoundIsOk() {
         // 100 -> 115 is +15% < 20%
         EodPrice p = checker.classify("AAA",
