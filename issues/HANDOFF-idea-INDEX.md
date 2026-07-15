@@ -49,6 +49,7 @@ GCP/CI-CD context, two-tier gateway design rationale) remain valid reference.
 |---|---|---|
 | Spec-layer forward-propagation gaps (pattern + open instances) | `HANDOFF-issue-spec-layer-propagation-gaps.md` | All instances fixed 2026-07-14 (YU04/YU05 manifests; YU02 kind database manifests now tracked on all 8 branches) |
 | order-matcher `ReplicaBootstrap` logs INFO every ~1s | `HANDOFF-issue-replica-bootstrap-log-noise.md` | Open, cosmetic; check the 1s loop isn't re-running snapshot work |
+| Back YU05 TCA with YU07's tick store (arrival-price + VWAP gaps) | `HANDOFF-issue-tca-tickstore-retrofit.md` | Open — new-state candidate (≈YU10); NOT YU05 (lineage) and prefer not editing the finished YU08 |
 
 `HANDOFF-ha-throughput-improvements.md` (the perf track referenced by item #12) now lives in this
 `issues/` directory as of 2026-07-14 (previously a root-level untracked file on the YU02 worktree).
