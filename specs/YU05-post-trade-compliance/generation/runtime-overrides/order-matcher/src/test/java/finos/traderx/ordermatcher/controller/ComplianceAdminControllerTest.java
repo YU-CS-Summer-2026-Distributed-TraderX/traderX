@@ -74,5 +74,8 @@ class ComplianceAdminControllerTest {
             .andExpect(status().isUnauthorized());
         mvc.perform(get("/recon/trades/blotter").header("Authorization", ""))
             .andExpect(status().isUnauthorized());
+        // Physically absent Authorization header (required=false) → 401, not Spring's default 400.
+        mvc.perform(get("/regulatory/report"))
+            .andExpect(status().isUnauthorized());
     }
 }

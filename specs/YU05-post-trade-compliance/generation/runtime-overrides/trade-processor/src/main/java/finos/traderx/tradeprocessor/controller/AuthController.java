@@ -33,7 +33,7 @@ public final class AuthController {
     public record DevTokenRequest(String subject, Set<Integer> accounts, boolean admin, long ttlSeconds) { }
 
     @PostMapping("/dev-token")
-    public String devToken(@RequestHeader("X-Auth-Master-Secret") String secret,
+    public String devToken(@RequestHeader(value = "X-Auth-Master-Secret", required = false) String secret,
                            @RequestBody DevTokenRequest request) {
         if (!masterSecret.equals(secret)) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid master secret");
