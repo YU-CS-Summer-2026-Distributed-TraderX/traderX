@@ -37,6 +37,8 @@ public final class ReplicaBootstrap {
     private final ControlFeedSubscriber<SecurityDelta> securityFeed;
     private volatile boolean stopped;
 
+    record BootstrapProgress(boolean accountBootstrapped, boolean securityBootstrapped) {}
+
     @Autowired
     public ReplicaBootstrap(
             GatewayReplicaStore replicas,
@@ -131,14 +133,10 @@ public final class ReplicaBootstrap {
                     Thread.sleep(MONITOR_INTERVAL_MS);
                     continue;
                 }
-                if (!accountBootstrapped) {
-                    accountFeed.bootstrapOnce();
-                    accountBootstrapped = true;
-                }
-                if (!securityBootstrapped) {
-                    securityFeed.bootstrapOnce();
-                    securityBootstrapped = true;
-                }
+                BootstrapProgress progress = bootstrapPendingFeeds(
+                    accountBootstrapped, securityBootstrapped);
+                accountBootstrapped = progress.accountBootstrapped();
+                securityBootstrapped = progress.securityBootstrapped();
                 updateReadiness();
 
                 // Both sources caught up: monitor for a quarantine (readiness flips back to false
@@ -170,6 +168,20 @@ public final class ReplicaBootstrap {
                 }
             }
         }
+    }
+
+    /** Bootstrap only sources marked pending; keeps a healthy source serving during isolation. */
+    BootstrapProgress bootstrapPendingFeeds(boolean accountBootstrapped,
+                                             boolean securityBootstrapped) throws Exception {
+        if (!accountBootstrapped) {
+            accountFeed.bootstrapOnce();
+            accountBootstrapped = true;
+        }
+        if (!securityBootstrapped) {
+            securityFeed.bootstrapOnce();
+            securityBootstrapped = true;
+        }
+        return new BootstrapProgress(accountBootstrapped, securityBootstrapped);
     }
 
     /** A quarantine fails the Gateway closed immediately (FR-IMRG34) — no polling lag on the safety side. */

@@ -11,6 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 /** Durable-feed orchestration contract (FR-IMRG05/34 and NFR-IMRG-ISOLATION). */
@@ -67,6 +68,17 @@ class ReplicaBootstrapTest {
         replicas.metrics().render(metrics, replicas.ready());
         assertTrue(metrics.toString().contains(
             "traderx_replica_quarantine_total{source=\"account\",reason=\"gap_or_epoch_mismatch\"} 1"));
+    }
+
+    @Test
+    void nfrImrgIsolationRebootstrapsOnlyTheQuarantinedSource() throws Exception {
+        ReplicaBootstrap.BootstrapProgress progress =
+            bootstrap.bootstrapPendingFeeds(false, true);
+
+        verify(accountFeed).bootstrapOnce();
+        verify(securityFeed, never()).bootstrapOnce();
+        assertTrue(progress.accountBootstrapped());
+        assertTrue(progress.securityBootstrapped());
     }
 
     @Test
