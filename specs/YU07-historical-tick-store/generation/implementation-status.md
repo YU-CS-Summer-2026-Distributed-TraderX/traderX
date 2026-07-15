@@ -10,10 +10,11 @@ Tick capture + TAQ quotes ingestion + DuckDB query recipe — **implemented and 
 |---|---|
 | `capture.py` | Long-running NATS subscriber on `pricing.*` and `/accounts/*/trades`; batches rows into the unified schema, flushes to partitioned Parquet on a row-count/interval trigger. |
 | `ingest_taq_quotes.py` | One-shot CLI normalizing a TAQ Consolidated Quotes CSV (read from stdin, streamed via `unzip -p`) into the same schema. |
+| `ingest_taq_trades.py` | Same, for a TAQ Consolidated **Trades** (CT) CSV → `event_type='trade'`/`source='taq'` rows (FR-TS08). |
 | `duckdb_query_examples.sql` | VWAP-style, daily-return, spread, and inventory queries over the unified store. |
 | `gcs.py` | Shared GCS wiring (`CREATE SECRET TYPE gcs` from HMAC env vars), opt-in on a `gs://` output path — used by both entrypoints. |
 | `Dockerfile`, `requirements.txt` | Container packaging (`duckdb`, `nats-py`; `unzip` in the base image). |
-| `tests/test_capture.py`, `tests/test_ingest_taq_quotes.py`, `tests/test_gcs.py` | Unit tests (13 total). |
+| `tests/test_capture.py`, `tests/test_ingest_taq_quotes.py`, `tests/test_ingest_taq_trades.py`, `tests/test_gcs.py` | Unit tests (18 total). |
 
 ### Manifests
 
@@ -142,10 +143,13 @@ secret as YU05/YU06).
 
 ## Not implemented (out of this state's scope — see spec.md)
 
-- **TAQ trades ingestion.** `taq_trades_feb2025_csv.zip` had not hydrated from OneDrive (still a 0B
-  cloud placeholder) as of this state's implementation; per this project's standing rule, no
-  normalizer is written against an unconfirmed column layout. Only TAQ **quotes** ingestion is
-  implemented.
+- **TAQ trades ingestion — now implemented (2026-07-15).** `ingest_taq_trades.py` normalizes a NYSE
+  Daily TAQ Consolidated Trades (CT) CSV into the unified schema (`event_type='trade'`,
+  `source='taq'`, price/size populated), streamed via `unzip -p` like the quotes path, closing
+  FR-TS08. Tested against a format-accurate CT sample (`tests/test_ingest_taq_trades.py`, incl. a
+  VWAP-over-the-store assertion). **SC-TS06's real-file verification remains pending** the actual
+  `taq_trades_*_csv.zip` (still a 0B OneDrive placeholder at implementation) — the normalizer is
+  general-purpose against any conforming CT file (FR-TS09) and needs no change to ingest it.
 - Backtesting/replay, and serving the execution algo engine (YU08)/VaR-ES consumers — both are
   separate future states per the parent handoff's own decisions-already-made list, not this state's
   scope.

@@ -9,9 +9,8 @@ extracting the decompressed CSV to disk (research.md Decision 5):
 
     unzip -p taq_quotes_20250211_csv.zip <entry>.csv | python3 ingest_taq_quotes.py --date 2025-02-11 --out /data/ticks
 
-Only TAQ quotes are implemented in this state — the trades file's column layout was not confirmed
-at writing time (see research.md Decision 4); no normalizer is written against an unconfirmed
-format.
+The trades sibling is ingest_taq_trades.py (Consolidated Trades / CT), added later once the CT
+layout was set from the standard NYSE Daily TAQ format.
 """
 import argparse
 import logging
