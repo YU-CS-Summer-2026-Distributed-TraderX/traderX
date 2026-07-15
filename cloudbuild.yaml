@@ -1,4 +1,4 @@
-# Triggered on push to lmax-kubernetes-blp-ha. Rebuilds order-matcher from committed source
+# Triggered on push to YU09-ops-hardening. Rebuilds order-matcher from committed source
 # (specs/ -> generated/ via the generation pipeline, matching the "deploy discipline" rule in
 # CLAUDE.md: never build from a hand-edited generated/ directory, always regenerate fresh), tags
 # the image uniquely (never a mutable tag), and creates a Cloud Deploy release. The release sits
@@ -22,7 +22,7 @@ steps:
         apt-get install -y -qq curl git ca-certificates jq python3 rsync zip unzip ripgrep > /dev/null
         curl -fsSL https://deb.nodesource.com/setup_22.x | bash - > /dev/null
         apt-get install -y -qq nodejs > /dev/null
-        bash pipeline/generate-state.sh YU02-lmax-kubernetes
+        bash pipeline/generate-state.sh YU09-ops-hardening
         cd generated/code/target-generated/order-matcher
         ./gradlew bootJar --no-daemon
 
@@ -47,7 +47,7 @@ steps:
       - releases
       - create
       - release-$SHORT_SHA
-      - --delivery-pipeline=order-matcher-pipeline
+      - --delivery-pipeline=order-matcher-yu09-pipeline
       - --region=us-east1
       - --source=.
       - --images=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA

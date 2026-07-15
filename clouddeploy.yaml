@@ -1,11 +1,12 @@
 apiVersion: deploy.cloud.google.com/v1
 kind: DeliveryPipeline
 metadata:
-  name: order-matcher-pipeline
+  name: order-matcher-yu09-pipeline
 description: >
-  order-matcher (BLP) CI/CD. Single target (the live traderx-lmax cluster) with a required
-  manual-approval gate before anything is applied, so a push never silently changes what's
-  running in production.
+  order-matcher (BLP) CI/CD for the YU09-ops-hardening state (journal archival + secret-sourced
+  credentials). Single target (the live traderx-lmax cluster) with a required manual-approval
+  gate before anything is applied, so a push never silently changes what's running in production.
+  Separate from the YU02 order-matcher-pipeline; only one trigger should feed the shared cluster.
 serialPipeline:
   stages:
     - targetId: production
