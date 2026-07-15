@@ -41,6 +41,11 @@ import org.slf4j.LoggerFactory;
  * against, mirroring why those services' NATS adapters aren't unit-tested either).
  */
 public final class ControlFeedSubscriber<T> {
+    @FunctionalInterface
+    interface CheckedSupplier<R> {
+        R get() throws Exception;
+    }
+
     private static final Logger log = LoggerFactory.getLogger(ControlFeedSubscriber.class);
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
     private static final Duration LIVE_FETCH_WAIT = Duration.ofSeconds(2);
@@ -57,6 +62,9 @@ public final class ControlFeedSubscriber<T> {
     private final Function<T, String> canonicalLine;
     private final BiConsumer<T, Long> applier;
     private final Runnable onQuarantine;
+    private final CheckedSupplier<Connection> connectionSupplier;
+    private final CheckedSupplier<Snapshot<T>> snapshotSupplier;
+    private final boolean startLiveThread;
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpClient httpClient = HttpClient.newBuilder().connectTimeout(HTTP_TIMEOUT).build();
@@ -78,6 +86,27 @@ public final class ControlFeedSubscriber<T> {
             Function<T, String> canonicalLine,
             BiConsumer<T, Long> applier,
             Runnable onQuarantine) {
+        this(source, streamName, subject, snapshotUrl, natsAddress, bufferCapacity,
+            snapshotRecordDecoder, deltaPayloadDecoder, canonicalLine, applier, onQuarantine,
+            null, null, true);
+    }
+
+    /** Package-private hermetic-I/O seam used by the ADR-019 adapter contract tests. */
+    ControlFeedSubscriber(
+            String source,
+            String streamName,
+            String subject,
+            String snapshotUrl,
+            String natsAddress,
+            int bufferCapacity,
+            Function<JsonNode, T> snapshotRecordDecoder,
+            Function<JsonNode, T> deltaPayloadDecoder,
+            Function<T, String> canonicalLine,
+            BiConsumer<T, Long> applier,
+            Runnable onQuarantine,
+            CheckedSupplier<Connection> connectionSupplier,
+            CheckedSupplier<Snapshot<T>> snapshotSupplier,
+            boolean startLiveThread) {
         this.source = source;
         this.streamName = streamName;
         this.subject = subject;
@@ -89,6 +118,9 @@ public final class ControlFeedSubscriber<T> {
         this.canonicalLine = canonicalLine;
         this.applier = applier;
         this.onQuarantine = onQuarantine;
+        this.connectionSupplier = connectionSupplier;
+        this.snapshotSupplier = snapshotSupplier;
+        this.startLiveThread = startLiveThread;
         this.state = new ControlFeedBootstrapState<>(source, bufferCapacity);
     }
 
@@ -154,7 +186,9 @@ public final class ControlFeedSubscriber<T> {
         }
 
         this.connection = conn;
-        startLiveConsumption(subscription);
+        if (startLiveThread) {
+            startLiveConsumption(subscription);
+        }
         log.info("{} control feed bootstrap complete: epoch={} watermark={}", source, state.epoch(), state.watermark());
     }
 
@@ -180,19 +214,8 @@ public final class ControlFeedSubscriber<T> {
         while (!stopped && state.isReady()) {
             try {
                 List<Message> messages = subscription.fetch(FETCH_BATCH, LIVE_FETCH_WAIT);
-                for (Message msg : messages) {
-                    JsonNode node = mapper.readTree(msg.getData());
-                    long version = node.get("version").asLong();
-                    long epoch = node.get("epoch").asLong();
-                    T payload = deltaPayloadDecoder.apply(node);
-                    Outcome outcome = state.applyLiveDelta(version, epoch, payload, applier);
-                    if (outcome == Outcome.GAP || outcome == Outcome.EPOCH_MISMATCH) {
-                        log.warn("{} control feed {} at version={} epoch={} — quarantining, forcing re-bootstrap",
-                            source, outcome, version, epoch);
-                        state.quarantine();
-                        onQuarantine.run();
-                        return; // ReplicaBootstrap's monitor loop observes !isReady() and re-bootstraps
-                    }
+                if (!consumeLiveBatch(messages)) {
+                    return;
                 }
             } catch (Exception ex) {
                 if (stopped) {
@@ -203,7 +226,29 @@ public final class ControlFeedSubscriber<T> {
         }
     }
 
+    /** Apply one fetched live batch; package-private so the adapter contract stays thread-free. */
+    boolean consumeLiveBatch(List<Message> messages) throws Exception {
+        for (Message msg : messages) {
+            JsonNode node = mapper.readTree(msg.getData());
+            long version = node.get("version").asLong();
+            long epoch = node.get("epoch").asLong();
+            T payload = deltaPayloadDecoder.apply(node);
+            Outcome outcome = state.applyLiveDelta(version, epoch, payload, applier);
+            if (outcome == Outcome.GAP || outcome == Outcome.EPOCH_MISMATCH) {
+                log.warn("{} control feed {} at version={} epoch={} — quarantining, forcing re-bootstrap",
+                    source, outcome, version, epoch);
+                state.quarantine();
+                onQuarantine.run();
+                return false;
+            }
+        }
+        return true;
+    }
+
     private Snapshot<T> fetchSnapshot() throws Exception {
+        if (snapshotSupplier != null) {
+            return snapshotSupplier.get();
+        }
         HttpRequest request = HttpRequest.newBuilder(URI.create(snapshotUrl))
             .timeout(HTTP_TIMEOUT)
             .header("Accept", "application/json")
@@ -226,6 +271,9 @@ public final class ControlFeedSubscriber<T> {
     }
 
     private Connection connect() throws Exception {
+        if (connectionSupplier != null) {
+            return connectionSupplier.get();
+        }
         return Nats.connect(new Options.Builder()
             .server(natsAddress)
             .connectionTimeout(HTTP_TIMEOUT)

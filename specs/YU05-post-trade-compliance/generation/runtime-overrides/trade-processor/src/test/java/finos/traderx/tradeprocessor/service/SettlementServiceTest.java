@@ -63,6 +63,10 @@ class SettlementServiceTest {
 
         assertEquals(SettlementService.ForceResult.SETTLED, result);
         assertEquals(TradeState.Settled, trade.getState());
+        org.junit.jupiter.api.Assertions.assertNotNull(trade.getSettlementDate());
+        org.junit.jupiter.api.Assertions.assertNotNull(trade.getUpdated());
+        assertEquals(1, settlementService.sweptCount());
+        verify(tradeRepository).save(trade);
     }
 
     @Test

@@ -67,6 +67,36 @@ class AuditLogHandlerTest {
         assertEquals(1, sink.size());
     }
 
+    @Test
+    void frPtc21SameReplayAndRangeProducesIdenticalRecords() {
+        SymbolTable symbols = new SymbolTable(16);
+        int securityId = symbols.idFor("IBM");
+        List<OutputEvent> replay = List.of(
+            orderEvent(OutputEvent.KIND_ORDER_ACCEPTED, 1L, securityId),
+            orderEvent(OutputEvent.KIND_ORDER_REJECTED, 2L, securityId),
+            tradeEvent(3L, securityId, 42L),
+            positionEvent(4L, securityId),
+            orderEvent(OutputEvent.KIND_ORDER_CANCELED, 5L, securityId));
+
+        List<AuditRecord> first = replay(replay, symbols, 2L, 5L);
+        List<AuditRecord> second = replay(replay, symbols, 2L, 5L);
+
+        assertEquals(first, second);
+        assertEquals(List.of("ORDER_REJECTED", "TRADE_BOOKED", "ORDER_CANCELED"),
+            first.stream().map(AuditRecord::kind).toList());
+    }
+
+    private static List<AuditRecord> replay(List<OutputEvent> events, SymbolTable symbols,
+                                             long fromSeq, long toSeq) {
+        List<AuditRecord> sink = new ArrayList<>();
+        AuditLogHandler handler = new AuditLogHandler(sink, symbols, fromSeq, toSeq);
+        long outputSequence = 0L;
+        for (OutputEvent event : events) {
+            handler.onEvent(event, outputSequence++, outputSequence == events.size());
+        }
+        return List.copyOf(sink);
+    }
+
     private static OutputEvent orderEvent(byte kind, long inputSeq, int securityId) {
         OutputEvent e = new OutputEvent();
         e.kind = kind;
