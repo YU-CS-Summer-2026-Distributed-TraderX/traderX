@@ -40,14 +40,14 @@ public final class ReconStatusController {
     /** FR-PTC10: triggers order-matcher's full-history reindex, then diffs against local trades. */
     @PostMapping("/orphan-sweep")
     public ReconciliationService.OrphanSweepResult runOrphanSweep(
-            @RequestHeader("Authorization") String authorization) throws IOException, InterruptedException {
+            @RequestHeader(value = "Authorization", required = false) String authorization) throws IOException, InterruptedException {
         requireAdmin(authorization);
         return reconciliationService.runOrphanSweep();
     }
 
     @GetMapping("/orphan-sweep/last")
     public ReconciliationService.OrphanSweepResult lastOrphanSweep(
-            @RequestHeader("Authorization") String authorization) {
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
         requireAdmin(authorization);
         ReconciliationService.OrphanSweepResult last = reconciliationService.lastOrphanSweep();
         if (last == null) {

@@ -50,8 +50,8 @@ public final class RiskControlController {
     }
 
     @PostMapping("/account")
-    public ResponseEntity<Void> account(@RequestHeader("X-Risk-Control-Token") String token,
-                                        @RequestHeader("X-Risk-Operator") String operator,
+    public ResponseEntity<Void> account(@RequestHeader(value = "X-Risk-Control-Token", required = false) String token,
+                                        @RequestHeader(value = "X-Risk-Operator", required = false) String operator,
                                         @RequestBody AccountDelta delta) {
         authorize(token, operator);
         long version = replicas.applyAccount(delta.accountId(), delta.enabled());
@@ -62,8 +62,8 @@ public final class RiskControlController {
     }
 
     @PostMapping("/security")
-    public ResponseEntity<Void> security(@RequestHeader("X-Risk-Control-Token") String token,
-                                         @RequestHeader("X-Risk-Operator") String operator,
+    public ResponseEntity<Void> security(@RequestHeader(value = "X-Risk-Control-Token", required = false) String token,
+                                         @RequestHeader(value = "X-Risk-Operator", required = false) String operator,
                                          @RequestBody SecurityDelta delta) {
         authorize(token, operator);
         boolean tradable = delta.enabled() && !delta.halted();
@@ -75,8 +75,8 @@ public final class RiskControlController {
     }
 
     @PostMapping("/policy")
-    public ResponseEntity<Void> policy(@RequestHeader("X-Risk-Control-Token") String token,
-                                       @RequestHeader("X-Risk-Operator") String operator,
+    public ResponseEntity<Void> policy(@RequestHeader(value = "X-Risk-Control-Token", required = false) String token,
+                                       @RequestHeader(value = "X-Risk-Operator", required = false) String operator,
                                        @RequestBody PolicyDelta delta) {
         authorize(token, operator);
         replicas.applyPolicy(delta.policyVersion(), delta.killSwitch());
@@ -93,8 +93,8 @@ public final class RiskControlController {
     }
 
     @PostMapping("/restriction")
-    public ResponseEntity<Void> restriction(@RequestHeader("X-Risk-Control-Token") String token,
-                                            @RequestHeader("X-Risk-Operator") String operator,
+    public ResponseEntity<Void> restriction(@RequestHeader(value = "X-Risk-Control-Token", required = false) String token,
+                                            @RequestHeader(value = "X-Risk-Operator", required = false) String operator,
                                             @RequestBody RestrictionDelta delta) {
         authorize(token, operator);
         long version = replicas.applyRestriction(delta.ticker(), delta.restricted());

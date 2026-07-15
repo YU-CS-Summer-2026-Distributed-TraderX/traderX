@@ -36,7 +36,7 @@ public final class RegulatoryReportController {
     /** {@code toSeq <= 0} means "replay to the end of the journal". Synchronous and expensive. */
     @GetMapping("/report")
     public List<AuditRecord> report(
-            @RequestHeader("Authorization") String authorization,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(name = "fromSeq", defaultValue = "0") long fromSeq,
             @RequestParam(name = "toSeq", defaultValue = "0") long toSeq) {
         requireAdmin(authorization);

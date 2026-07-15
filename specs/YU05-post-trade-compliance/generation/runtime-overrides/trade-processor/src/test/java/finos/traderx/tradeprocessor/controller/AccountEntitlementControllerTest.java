@@ -80,6 +80,9 @@ class AccountEntitlementControllerTest {
             .andExpect(status().isForbidden());
         mvc.perform(get("/tca/report/{tradeId}", TRADE_ID).header("Authorization", ""))
             .andExpect(status().isUnauthorized());
+        // Physically absent Authorization header (required=false) → 401, not Spring's default 400.
+        mvc.perform(get("/tca/report/{tradeId}", TRADE_ID))
+            .andExpect(status().isUnauthorized());
 
         verifyNoInteractions(tcaService);
     }

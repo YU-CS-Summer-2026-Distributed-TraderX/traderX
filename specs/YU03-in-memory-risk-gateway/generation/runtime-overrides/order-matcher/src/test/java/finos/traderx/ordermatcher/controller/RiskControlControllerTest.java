@@ -51,6 +51,13 @@ class RiskControlControllerTest {
                 .content("{\"accountId\":22214,\"enabled\":false}"))
             .andExpect(status().isUnauthorized());
 
+        // Physically absent auth headers (required=false) route through authorize() to a 401,
+        // not Spring's default 400 for a missing required header.
+        mvc.perform(post("/risk/control/account")
+                .contentType("application/json")
+                .content("{\"accountId\":22214,\"enabled\":false}"))
+            .andExpect(status().isUnauthorized());
+
         verifyNoInteractions(engine);
     }
 
