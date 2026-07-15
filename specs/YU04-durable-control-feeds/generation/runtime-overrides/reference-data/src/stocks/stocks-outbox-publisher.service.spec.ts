@@ -58,6 +58,33 @@ describe('StocksOutboxPublisher', () => {
     expect(outboxRepository.markPublished).not.toHaveBeenCalled();
   });
 
+  it('NFR-IMRG-DEDUPE retries with the same stable Nats-Msg-Id', async () => {
+    const outboxRepository = fakeOutboxRepository([rows[0]]);
+    const publisher: jest.Mocked<ControlFeedPublisher> = {
+      publish: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('ack lost after broker accepted publish'))
+        .mockResolvedValueOnce(undefined),
+    };
+    const poller = new StocksOutboxPublisher(outboxRepository, fakeEpochRepository(), publisher);
+
+    await poller.publishPending();
+    await poller.publishPending();
+
+    expect(publisher.publish).toHaveBeenNthCalledWith(
+      1,
+      'security:1',
+      expect.stringContaining('"version":1'),
+    );
+    expect(publisher.publish).toHaveBeenNthCalledWith(
+      2,
+      'security:1',
+      expect.stringContaining('"version":1'),
+    );
+    expect(outboxRepository.markPublished).toHaveBeenCalledTimes(1);
+    expect(outboxRepository.markPublished).toHaveBeenCalledWith(1);
+  });
+
   it('does nothing when disabled', async () => {
     process.env.SECURITY_OUTBOX_ENABLED = 'false';
     try {
