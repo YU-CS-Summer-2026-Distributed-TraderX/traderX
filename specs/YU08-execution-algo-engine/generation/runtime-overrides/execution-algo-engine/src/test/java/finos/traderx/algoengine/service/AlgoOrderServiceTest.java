@@ -7,6 +7,8 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
+import org.mockito.ArgumentCaptor;
 
 import finos.traderx.algoengine.eventstore.AlgoEventStore;
 import finos.traderx.algoengine.model.AlgoType;
@@ -75,5 +77,39 @@ class AlgoOrderServiceTest {
     ParentOrder after = service.get(order.getParentOrderId());
     assertTrue(after.getBuckets().get(0).isFilled());
     assertEquals(ParentOrderStatus.COMPLETED, after.getStatus());
+  }
+
+  @Test
+  void childSubmissionUsesDeterministicParentAndBucketClientOrderId() throws Exception {
+    OrderMatcherClient matcher = mock(OrderMatcherClient.class);
+    when(matcher.submitChildOrder(anyString(), anyInt(), anyString(), any(), anyInt(), any()))
+        .thenReturn("child-key");
+    AlgoOrderService service = newService(matcher);
+    ParentOrder parent = service.create(22214, "IBM", OrderSide.Buy, 10, AlgoType.TWAP, 1, 1);
+
+    service.submitDueBuckets(System.currentTimeMillis() + 1);
+
+    ArgumentCaptor<String> clientOrderId = ArgumentCaptor.forClass(String.class);
+    verify(matcher).submitChildOrder(clientOrderId.capture(), anyInt(), anyString(), any(), anyInt(), any());
+    assertEquals(parent.getParentOrderId() + ":0", clientOrderId.getValue());
+    assertEquals(clientOrderId.getValue(), parent.getBuckets().get(0).getClientOrderId());
+  }
+
+  @Test
+  void progressReadbackReflectsOneOfTwoBucketsFilled() throws Exception {
+    OrderMatcherClient matcher = mock(OrderMatcherClient.class);
+    when(matcher.submitChildOrder(anyString(), anyInt(), anyString(), any(), anyInt(), any()))
+        .thenReturn("child-0", "child-1");
+    AlgoOrderService service = newService(matcher);
+    ParentOrder parent = service.create(22214, "IBM", OrderSide.Buy, 20, AlgoType.TWAP, 2, 1);
+    service.submitDueBuckets(System.currentTimeMillis() + 2_000);
+    service.onOrderUpdate("child-0", 0, new BigDecimal("100.00"));
+
+    ParentOrder progress = service.get(parent.getParentOrderId());
+    assertEquals(2, progress.getBuckets().size());
+    assertEquals(1, progress.getBuckets().stream().filter(b -> b.isFilled()).count());
+    assertEquals(10, progress.getBuckets().stream()
+        .filter(b -> !b.isFilled()).mapToInt(b -> b.getTargetQuantity()).sum());
+    assertEquals(ParentOrderStatus.RUNNING, progress.getStatus());
   }
 }

@@ -107,6 +107,13 @@ public class AlgoEventStore {
     }
   }
 
+  /** Applies an already-decoded full event log in order. Package-visible for an offline recovery
+   * contract test; production replay decodes JetStream messages and invokes the same applier. */
+  static int replayEvents(List<AlgoEvent> events, Consumer<AlgoEvent> applier) {
+    events.forEach(applier);
+    return events.size();
+  }
+
   private void liveLoop(JetStreamSubscription subscription, Consumer<AlgoEvent> applier) {
     while (!stopped) {
       try {

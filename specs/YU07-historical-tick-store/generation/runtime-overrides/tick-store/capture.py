@@ -92,6 +92,23 @@ def trade_to_row(payload, seq):
     }
 
 
+def captured_message_to_row(subject, data, seq):
+    """Map one subscribed TraderX message, or return None when it is unrelated/malformed.
+
+    Keeping subject dispatch and row validation in this pure helper makes the live callback's
+    fail-open behavior testable without a NATS connection.
+    """
+    try:
+        payload = envelope_payload(json.loads(data) if not isinstance(data, dict) else data)
+        if subject.startswith("pricing."):
+            return price_tick_to_row(subject, payload, seq)
+        if subject.startswith("/accounts/") and subject.endswith("/trades"):
+            return trade_to_row(payload, seq)
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    return None
+
+
 def write_batch(con, rows, out_dir):
     """Write a batch of unified rows to partitioned Parquet. A unique FILENAME_PATTERN avoids
     collisions across repeated flushes into the same source=/dt=/symbol= partition directory
@@ -142,10 +159,9 @@ async def run(nats_url=NATS_URL, out_dir=OUT_DIR,
         log.info("flushed %d rows to %s", len(to_write), out_dir)
 
     async def on_price_tick(msg):
-        try:
-            row = price_tick_to_row(msg.subject, envelope_payload(json.loads(msg.data)), seq.next())
-        except (KeyError, ValueError, json.JSONDecodeError) as exc:
-            log.warning("skipping malformed pricing message on %s: %s", msg.subject, exc)
+        row = captured_message_to_row(msg.subject, msg.data, seq.next())
+        if row is None:
+            log.warning("skipping malformed or unrelated pricing message on %s", msg.subject)
             return
         async with lock:
             batch.append(row)
@@ -154,10 +170,9 @@ async def run(nats_url=NATS_URL, out_dir=OUT_DIR,
             await flush()
 
     async def on_trade(msg):
-        try:
-            row = trade_to_row(envelope_payload(json.loads(msg.data)), seq.next())
-        except (KeyError, ValueError, json.JSONDecodeError) as exc:
-            log.warning("skipping malformed trade message on %s: %s", msg.subject, exc)
+        row = captured_message_to_row(msg.subject, msg.data, seq.next())
+        if row is None:
+            log.warning("skipping malformed or unrelated trade message on %s", msg.subject)
             return
         async with lock:
             batch.append(row)

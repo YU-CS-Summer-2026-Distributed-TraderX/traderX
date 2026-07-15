@@ -58,4 +58,44 @@ class AlgoOrderStateTest {
 
     assertTrue(state.get("p2").getBuckets().get(0).isFilled());
   }
+
+  @Test
+  void partialFillLeavesBucketUnfilledAndParentRunning() {
+    AlgoOrderState state = stateWithTwoBuckets("partial");
+    state.apply(AlgoEvent.childOrderFillObserved("partial", 0, 4,
+        new BigDecimal("99.50"), Instant.now()));
+
+    assertTrue(!state.get("partial").getBuckets().get(0).isFilled());
+    assertEquals(4, state.get("partial").getBuckets().get(0).getRemainingQuantity());
+    assertEquals(ParentOrderStatus.RUNNING, state.get("partial").getStatus());
+  }
+
+  @Test
+  void fillForUnknownParentOrBucketIsIgnored() {
+    AlgoOrderState state = stateWithTwoBuckets("known");
+    state.apply(AlgoEvent.childOrderFillObserved("missing", 0, 0, BigDecimal.ONE, Instant.now()));
+    AlgoEvent outOfRange = AlgoEvent.childOrderFillObserved("known", 99, 0, BigDecimal.ONE, Instant.now());
+    // A corrupt/out-of-range event must not take down replay.
+    state.apply(outOfRange);
+    assertEquals(2, state.get("known").getBuckets().size());
+  }
+
+  @Test
+  void parentCompletesOnlyAfterAllBucketsAreFilledAndCompletionEventApplied() {
+    AlgoOrderState state = stateWithTwoBuckets("all");
+    state.apply(AlgoEvent.childOrderFillObserved("all", 0, 0, BigDecimal.ONE, Instant.now()));
+    assertEquals(ParentOrderStatus.RUNNING, state.get("all").getStatus());
+    state.apply(AlgoEvent.childOrderFillObserved("all", 1, 0, BigDecimal.ONE, Instant.now()));
+    assertEquals(ParentOrderStatus.RUNNING, state.get("all").getStatus());
+    state.apply(AlgoEvent.parentOrderCompleted("all", Instant.now()));
+    assertEquals(ParentOrderStatus.COMPLETED, state.get("all").getStatus());
+  }
+
+  private static AlgoOrderState stateWithTwoBuckets(String parentId) {
+    AlgoOrderState state = new AlgoOrderState();
+    state.apply(AlgoEvent.parentOrderCreated(parentId, 1, "IBM", OrderSide.Buy, 20, AlgoType.TWAP,
+        20, 10, List.of(new AlgoEvent.BucketSeed(0, 0L, 10),
+            new AlgoEvent.BucketSeed(1, 10_000L, 10)), Instant.now()));
+    return state;
+  }
 }
