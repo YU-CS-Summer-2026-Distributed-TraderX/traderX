@@ -2,7 +2,8 @@
 # YU04 durable control feeds — PROOF 2: offline replica catches up on reconnect.
 # Take order-matcher DOWN, inject a control change while it's offline, bring it back:
 # it bootstraps from the watermarked snapshot + buffered JetStream deltas and only declares
-# ready once caught up (FR-IMRG05). In YU03 the change would have been silently lost.
+# ready once caught up (FR-IMRG05). (YU03's replica had no update path at all while running —
+# a boot-time REST snapshot, stale until the next restart; YU04 makes it a live durable feed.)
 #
 # Prereq (separate terminal): reference-data port-forward. order-matcher is reached via the
 # edge-proxy (127.0.0.1:8080) so the view survives the pod going away.
@@ -45,7 +46,7 @@ $K scale "$WL" --replicas=1 >/dev/null && $K rollout status "$WL" --timeout=180s
 printf "   %-30s " "replica after bootstrap"
 for i in $(seq 1 40); do
   v=$(replica_has)
-  if [ "$v" != "null" ] && [ -n "$v" ]; then echo "$TK present — durable catch-up ✔ (would be lost in YU03)"; break; fi
+  if [ "$v" != "null" ] && [ -n "$v" ]; then echo "$TK present — durable catch-up ✔ (no re-push, no manual recon)"; break; fi
   [ "$i" = 40 ] && echo "TIMEOUT — $TK not seen 20s after ready ✘"
   sleep 0.5
 done
