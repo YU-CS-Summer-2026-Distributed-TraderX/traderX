@@ -49,7 +49,7 @@ public final class ReconController {
 
     @GetMapping("/trades/blotter")
     public List<TradeBlotter.TradeRecord> blotter(
-            @RequestHeader("Authorization") String authorization,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(name = "sinceSeq", defaultValue = "0") long sinceSeq) {
         requireAdmin(authorization);
         return blotter.since(sinceSeq, pageSize);
@@ -57,7 +57,7 @@ public final class ReconController {
 
     /** FR-PTC10: triggers a full journal replay. Synchronous and expensive — the caller waits. */
     @PostMapping("/full-history/reindex")
-    public Map<String, Object> reindexFullHistory(@RequestHeader("Authorization") String authorization) {
+    public Map<String, Object> reindexFullHistory(@RequestHeader(value = "Authorization", required = false) String authorization) {
         requireAdmin(authorization);
         TradeBlotter index;
         try {
@@ -71,7 +71,7 @@ public final class ReconController {
 
     @GetMapping("/full-history/trades")
     public List<TradeBlotter.TradeRecord> fullHistoryTrades(
-            @RequestHeader("Authorization") String authorization,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @RequestParam(name = "sinceSeq", defaultValue = "0") long sinceSeq) {
         requireAdmin(authorization);
         TradeBlotter index = engine.fullHistoryIndex();
