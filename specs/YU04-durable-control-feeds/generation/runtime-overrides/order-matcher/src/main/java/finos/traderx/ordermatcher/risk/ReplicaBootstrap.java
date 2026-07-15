@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
@@ -36,6 +37,7 @@ public final class ReplicaBootstrap {
     private final ControlFeedSubscriber<SecurityDelta> securityFeed;
     private volatile boolean stopped;
 
+    @Autowired
     public ReplicaBootstrap(
             GatewayReplicaStore replicas,
             LmaxEngine engine,
@@ -64,10 +66,7 @@ public final class ReplicaBootstrap {
             node -> new AccountDelta(node.get("id").asInt(), node.get("displayName").asText()),
             node -> new AccountDelta(node.get("accountId").asInt(), node.get("displayName").asText()),
             d -> d.accountId() + ":" + d.displayName() + ";",
-            (delta, sourceVersion) -> {
-                long localVersion = replicas.applyAccount(delta.accountId(), true, sourceVersion);
-                engine.submitAccountControl(delta.accountId(), true, localVersion);
-            },
+            this::applyAccountDelta,
             () -> onQuarantine("account"));
 
         this.securityFeed = new ControlFeedSubscriber<>(
@@ -75,11 +74,33 @@ public final class ReplicaBootstrap {
             node -> new SecurityDelta(node.get("ticker").asText(), node.get("companyName").asText()),
             node -> new SecurityDelta(node.get("ticker").asText(), node.get("companyName").asText()),
             d -> d.ticker() + ":" + d.companyName() + ";",
-            (delta, sourceVersion) -> {
-                long localVersion = replicas.applySecurity(delta.ticker(), true, false, sourceVersion);
-                engine.submitSecurityControl(delta.ticker(), true, localVersion);
-            },
+            this::applySecurityDelta,
             () -> onQuarantine("security"));
+    }
+
+    /** Package-private orchestration seam for hermetic FR-IMRG05/34 tests. */
+    ReplicaBootstrap(GatewayReplicaStore replicas, LmaxEngine engine, ReplicationRole replicationRole,
+                     boolean riskEnabled, boolean bootstrapEnabled,
+                     ControlFeedSubscriber<AccountDelta> accountFeed,
+                     ControlFeedSubscriber<SecurityDelta> securityFeed) {
+        this.replicas = replicas;
+        this.engine = engine;
+        this.replicationRole = replicationRole;
+        this.riskEnabled = riskEnabled;
+        this.bootstrapEnabled = bootstrapEnabled;
+        this.metrics = replicas.metrics();
+        this.accountFeed = accountFeed;
+        this.securityFeed = securityFeed;
+    }
+
+    void applyAccountDelta(AccountDelta delta, long sourceVersion) {
+        long localVersion = replicas.applyAccount(delta.accountId(), true, sourceVersion);
+        engine.submitAccountControl(delta.accountId(), true, localVersion);
+    }
+
+    void applySecurityDelta(SecurityDelta delta, long sourceVersion) {
+        long localVersion = replicas.applySecurity(delta.ticker(), true, false, sourceVersion);
+        engine.submitSecurityControl(delta.ticker(), true, localVersion);
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -152,14 +173,14 @@ public final class ReplicaBootstrap {
     }
 
     /** A quarantine fails the Gateway closed immediately (FR-IMRG34) — no polling lag on the safety side. */
-    private void onQuarantine(String source) {
+    void onQuarantine(String source) {
         metrics.quarantine(source, "gap_or_epoch_mismatch");
         replicas.markNotReady();
         log.warn("{} control feed quarantined; Gateway readiness revoked pending re-bootstrap", source);
     }
 
     /** FR-IMRG05: ready only once BOTH sources have installed a snapshot and caught up. */
-    private void updateReadiness() {
+    void updateReadiness() {
         metrics.sourceWatermark("account", accountFeed.watermark());
         metrics.sourceWatermark("security", securityFeed.watermark());
         boolean bothReady = accountFeed.isReady() && securityFeed.isReady();

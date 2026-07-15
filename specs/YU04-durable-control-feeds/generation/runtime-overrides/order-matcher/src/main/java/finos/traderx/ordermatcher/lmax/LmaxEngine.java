@@ -769,10 +769,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      * cancelled through explicit sequenced CANCEL events — never silently deleted or mutated.
      */
     public int cancelOpenOrdersForSecurity(String ticker) {
+        return cancelOpenOrdersForSecurity(ticker, readModel.all(), this::executeCancel);
+    }
+
+    /** Package-private deterministic seam proving the restriction path uses the sequenced
+     * cancellation command for each matching resting order (FR-IMRG24). */
+    static int cancelOpenOrdersForSecurity(String ticker, Iterable<OrderSnapshot> snapshots,
+                                           java.util.function.IntConsumer sequencedCancel) {
         int canceled = 0;
-        for (OrderSnapshot snapshot : readModel.all()) {
+        for (OrderSnapshot snapshot : snapshots) {
             if (snapshot.isOpen() && ticker.equalsIgnoreCase(snapshot.security)) {
-                executeCancel(snapshot.orderRef);
+                sequencedCancel.accept(snapshot.orderRef);
                 canceled++;
             }
         }
