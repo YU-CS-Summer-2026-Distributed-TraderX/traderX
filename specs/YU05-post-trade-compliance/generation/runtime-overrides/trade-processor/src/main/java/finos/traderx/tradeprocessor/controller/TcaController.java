@@ -37,7 +37,7 @@ public final class TcaController {
 
     @GetMapping("/report/{tradeId}")
     public TcaService.TcaReport report(@PathVariable("tradeId") String tradeId,
-                                       @RequestHeader("Authorization") String authorization) {
+                                       @RequestHeader(value = "Authorization", required = false) String authorization) {
         JwtPrincipal principal = jwt.validate(authorization)
             .orElseThrow(() -> new ResponseStatusException(HttpStatus.UNAUTHORIZED, "valid JWT required"));
         Optional<Trade> trade = tradeRepository.findById(tradeId);
