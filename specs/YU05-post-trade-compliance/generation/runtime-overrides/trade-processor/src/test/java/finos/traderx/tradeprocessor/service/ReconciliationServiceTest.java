@@ -196,4 +196,38 @@ class ReconciliationServiceTest {
         assertEquals(0, result.orphanCount());
         assertTrue(result.orphanIds().isEmpty());
     }
+
+    @Test
+    void frPtc10OneRunAccountsForMatchedMissingAndOrphanProjectionRows() throws Exception {
+        TradeRepository tradeRepository = mock(TradeRepository.class);
+        Trade matched = new Trade();
+        matched.setId("trd-09b-1");
+        matched.setAccountId(22214);
+        matched.setSecurity("IBM");
+        matched.setSide(TradeSide.Buy);
+        matched.setQuantity(100);
+        matched.setPrice(new BigDecimal("136.250"));
+        when(tradeRepository.findById("trd-09b-1")).thenReturn(Optional.of(matched));
+        when(tradeRepository.findById("trd-09b-2")).thenReturn(Optional.empty());
+        when(tradeRepository.findAllIds()).thenReturn(List.of("trd-09b-1", "trd-local-orphan"));
+
+        nextResponseBody.set("""
+            [
+              {"id":"trd-09b-1","tradeSeq":1,"accountId":22214,"security":"IBM","side":"Buy","quantity":100,"price":136.250,"execTimeMillis":1700000000000},
+              {"id":"trd-09b-2","tradeSeq":2,"accountId":22214,"security":"IBM","side":"Buy","quantity":100,"price":136.250,"execTimeMillis":1700000000001}
+            ]
+            """);
+        fullHistoryResponseBody.set(nextResponseBody.get());
+
+        ReconciliationService reconciliationService =
+            new ReconciliationService(tradeRepository, baseUrl(), "dev-recon-control", new SimpleMeterRegistry());
+        reconciliationService.sweep();
+        ReconciliationService.OrphanSweepResult orphan = reconciliationService.runOrphanSweep();
+
+        assertEquals(1, reconciliationService.status().matched());
+        assertEquals(1, reconciliationService.status().missingInProjection());
+        assertEquals(1, orphan.orphanCount());
+        assertEquals(List.of("trd-local-orphan"), orphan.orphanIds());
+        assertEquals(2, orphan.fullHistoryTradeCount());
+    }
 }
