@@ -46,6 +46,14 @@ class SeqCounter:
         return self._n
 
 
+def envelope_payload(data):
+    """TraderX broadcasts pricing/trade messages wrapped as {"topic":..., "payload":{...}} (the
+    standard FINOS TraderX envelope). Unwrap to the inner payload; pass through if already flat."""
+    if isinstance(data, dict) and "payload" in data and isinstance(data["payload"], dict):
+        return data["payload"]
+    return data
+
+
 def price_tick_to_row(subject, payload, seq):
     """pricing.<TICKER> -> unified row. Payload: {price, openPrice, closePrice, asOf, source}."""
     symbol = subject.split(".", 1)[1]
@@ -135,7 +143,7 @@ async def run(nats_url=NATS_URL, out_dir=OUT_DIR,
 
     async def on_price_tick(msg):
         try:
-            row = price_tick_to_row(msg.subject, json.loads(msg.data), seq.next())
+            row = price_tick_to_row(msg.subject, envelope_payload(json.loads(msg.data)), seq.next())
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             log.warning("skipping malformed pricing message on %s: %s", msg.subject, exc)
             return
@@ -147,7 +155,7 @@ async def run(nats_url=NATS_URL, out_dir=OUT_DIR,
 
     async def on_trade(msg):
         try:
-            row = trade_to_row(json.loads(msg.data), seq.next())
+            row = trade_to_row(envelope_payload(json.loads(msg.data)), seq.next())
         except (KeyError, ValueError, json.JSONDecodeError) as exc:
             log.warning("skipping malformed trade message on %s: %s", msg.subject, exc)
             return
