@@ -41,7 +41,7 @@ public final class SettlementController {
 
     @PostMapping("/{id}/settlement/force")
     public ResponseEntity<Void> forceSettle(@PathVariable("id") String id,
-                                            @RequestHeader("Authorization") String authorization) {
+                                            @RequestHeader(value = "Authorization", required = false) String authorization) {
         JwtPrincipal principal = requirePrincipal(authorization);
         Optional<Trade> trade = tradeRepository.findById(id);
         if (trade.isEmpty()) {
