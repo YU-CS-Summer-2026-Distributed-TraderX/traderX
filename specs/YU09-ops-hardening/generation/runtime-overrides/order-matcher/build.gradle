@@ -79,23 +79,53 @@ tasks.withType(Test).configureEach {
   systemProperty 'outputHandlerLatencyBenchmark', System.getProperty('outputHandlerLatencyBenchmark', 'false')
 }
 
-// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run the hot-path allocation
-// gate under Epsilon GC — a no-op collector on a small fixed pre-touched heap, so any
-// steady-state allocation exhausts the heap and fails the run. The same test also runs
-// in the regular `test` task under the default collector, where it asserts exact
-// zero-byte deltas per hot-path thread via ThreadMXBean. Invoked by
-// pipeline/validate-no-gc-conformance.sh (SC-NGC-01).
-tasks.register('noGcTest', Test) {
-  description = 'Hot-path allocation gate under Epsilon GC (zero steady-state allocation, NGC-02).'
-  group = 'verification'
-  testClassesDirs = sourceSets.test.output.classesDirs
-  classpath = sourceSets.test.runtimeClasspath
-  filter {
-    includeTestsMatching 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+// ThreadMXBean allocation deltas are sensitive to work done earlier in the same test worker
+// (JIT recompilation, shared statics, and TLAB accounting). Run each exact-zero gate method in a
+// fresh JVM instead of weakening NGC-01. The risk method is contributed by YU03; on YU02 this
+// task intentionally has no matching test.
+def allocationGateClass = 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+def isolatedAllocationGate = { String taskName, String methodName, boolean epsilon ->
+  tasks.register(taskName, Test) {
+    description = "Isolated hot-path allocation gate: ${methodName}"
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    filter {
+      includeTestsMatching "${allocationGateClass}.${methodName}"
+      setFailOnNoMatchingTests(false)
+    }
+    systemProperty 'gate.steadyStateEvents',
+        System.getProperty('gate.steadyStateEvents', epsilon ? '3000000' : '1000000')
+    systemProperty 'gate.warmupEvents', System.getProperty('gate.warmupEvents', '250000')
+    if (epsilon) {
+      jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
+              '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch', '-Xbatch'
+    }
   }
-  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '3000000')
-  jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
-          '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch'
+}
+
+def baseAllocationGate = isolatedAllocationGate(
+    'allocationGateTest', 'hotPathIsAllocationFreeInSteadyState', false)
+def riskAllocationGate = isolatedAllocationGate(
+    'riskAllocationGateTest', 'hotPathIsAllocationFreeInSteadyStateWithRiskGating', false)
+
+tasks.named('test', Test) {
+  filter {
+    excludeTestsMatching "${allocationGateClass}.*"
+  }
+  dependsOn baseAllocationGate, riskAllocationGate
+}
+
+// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run both isolated methods
+// under Epsilon GC. `noGcTest` retains the public task name used by
+// pipeline/validate-no-gc-conformance.sh and depends on the separately forked risk gate.
+def baseNoGcGate = isolatedAllocationGate(
+    'noGcTest', 'hotPathIsAllocationFreeInSteadyState', true)
+def riskNoGcGate = isolatedAllocationGate(
+    'riskNoGcTest', 'hotPathIsAllocationFreeInSteadyStateWithRiskGating', true)
+baseNoGcGate.configure {
+  description = 'Hot-path allocation gates under Epsilon GC (zero steady-state allocation, NGC-02).'
+  dependsOn riskNoGcGate
 }
 
 configurations.configureEach {
