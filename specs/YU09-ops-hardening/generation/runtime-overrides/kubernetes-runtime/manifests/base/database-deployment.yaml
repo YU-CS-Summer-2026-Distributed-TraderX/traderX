@@ -28,8 +28,20 @@ spec:
       containers:
         - name: database
           image: mariadb:11.4
-          args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
+          # Write-throughput tuning: larger buffer pool + higher io_capacity than the 128M/200
+          # defaults (flush=2 already avoids per-commit fsync). Bump buffer-pool higher on GKE if
+          # the node has the memory; 512M keeps the pod schedulable on a laptop kind node too.
+          args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2", "--innodb-buffer-pool-size=512M", "--innodb-io-capacity=2000"]
           imagePullPolicy: IfNotPresent
+          # Guaranteed floor so the DB isn't BestEffort/starvable under load (was no resources).
+          # Burstable: modest requests schedule on kind, high limits use GKE headroom.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "4"
+              memory: 2Gi
           ports:
             - name: mariadb
               containerPort: 3306

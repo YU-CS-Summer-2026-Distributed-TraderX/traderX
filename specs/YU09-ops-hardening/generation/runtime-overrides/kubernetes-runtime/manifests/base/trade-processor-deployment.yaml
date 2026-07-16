@@ -19,6 +19,14 @@ spec:
         - name: trade-processor
           image: traderx/trade-processor:state009
           imagePullPolicy: IfNotPresent
+          # Guaranteed floor so the projector isn't BestEffort/starvable under load (was no resources).
+          resources:
+            requests:
+              cpu: 500m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
           ports:
             - name: http
               containerPort: 18091
