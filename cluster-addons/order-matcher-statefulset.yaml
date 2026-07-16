@@ -6,12 +6,14 @@ metadata:
   labels:
     app: order-matcher
 spec:
-  # HA mode: 2 replicas (leader-elected PRIMARY + FOLLOWER) across the 2 blp-pool nodes.
-  # For max single-BLP throughput instead, scale to 1 and set BLP_REPLICATION_ENABLED=false
-  # (single-BLP ~42k booked/s vs HA ~22k, but no failover). blp-pool must have >=2 nodes for HA
-  # (required anti-affinity below): gcloud container clusters resize traderx-lmax
-  #   --node-pool blp-pool --num-nodes 2 --zone us-east1-b
-  replicas: 1
+  # replicas AND BLP_REPLICATION_ENABLED (below) are chosen at deploy time by the `promote-blp-mode`
+  # Cloud Deploy postdeploy hook (skaffold customActions -> clouddeploy.yaml), which reads the live
+  # blp-pool node count: >=2 nodes -> HA (replicas=2, replication on), else single-BLP (replicas=1,
+  # replication off). Both are intentionally OMITTED from this manifest so `kubectl apply` never
+  # fights the hook — a StatefulSet defaults to replicas=1 on first create, and the hook takes it
+  # from there (apply leaves an absent field untouched on later deploys). blp-pool must have >=2
+  # nodes for HA (the required anti-affinity below spreads the two replicas across nodes):
+  #   gcloud container clusters resize traderx-lmax --node-pool blp-pool --num-nodes 2 --zone us-east1-b
   podManagementPolicy: Parallel
   serviceName: order-matcher-headless
   selector:
@@ -56,9 +58,9 @@ spec:
             # Size the JVM heap to the container memory limit (container-aware).
             - name: JAVA_TOOL_OPTIONS
               value: "-XX:MaxRAMPercentage=65.0"
-            # HA leader election + NATS JetStream replication. Set true + replicas:2 for HA mode.
-            - name: BLP_REPLICATION_ENABLED
-              value: "false"
+            # BLP_REPLICATION_ENABLED is set by the promote-blp-mode postdeploy hook (see top of
+            # spec) — omitted here so apply doesn't override it. App default when the env is unset
+            # is false / single-BLP (application.properties: blp.replication.enabled=${BLP_REPLICATION_ENABLED:false}).
             - name: DATABASE_PG_HOST
               value: "database"
             - name: DATABASE_PG_PORT

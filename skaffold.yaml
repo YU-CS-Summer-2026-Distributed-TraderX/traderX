@@ -16,3 +16,33 @@ manifests:
     - cluster-addons/order-matcher-statefulset.yaml
 deploy:
   kubectl: {}
+
+# Cloud Deploy postdeploy hook (referenced from clouddeploy.yaml stage strategy.standard.postdeploy).
+# Runs AFTER the StatefulSet is applied, against the live target cluster, and picks single-BLP vs HA
+# from the current blp-pool node count — so the same release adapts to whatever the pool is sized to,
+# with no manifest edit per deploy. Idempotent: set env + scale are no-ops when already in the right
+# mode. Needs the execution SA (traderx-cicd@) to have container.developer + patch on statefulsets.
+customActions:
+  - name: promote-blp-mode
+    containers:
+      - name: promote-blp-mode
+        # Full cloud-sdk image (NOT :slim) — bundles kubectl + the gke-gcloud-auth-plugin the hook needs.
+        image: gcr.io/google.com/cloudsdktool/cloud-sdk:latest
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -euo pipefail
+            export USE_GKE_GCLOUD_AUTH_PLUGIN=True
+            gcloud container clusters get-credentials traderx-lmax \
+              --location us-east1-b --project traderx-501015
+            nodes=$(kubectl get nodes -l workload=blp --no-headers 2>/dev/null | wc -l | tr -d ' ')
+            if [ "${nodes:-0}" -ge 2 ]; then
+              echo "[promote-blp-mode] blp-pool has ${nodes} nodes -> HA (replicas=2, replication on)"
+              kubectl -n traderx set env statefulset/order-matcher BLP_REPLICATION_ENABLED=true
+              kubectl -n traderx scale statefulset/order-matcher --replicas=2
+            else
+              echo "[promote-blp-mode] blp-pool has ${nodes:-0} node(s) -> single-BLP (replicas=1, replication off)"
+              kubectl -n traderx set env statefulset/order-matcher BLP_REPLICATION_ENABLED=false
+              kubectl -n traderx scale statefulset/order-matcher --replicas=1
+            fi
+            kubectl -n traderx rollout status statefulset/order-matcher --timeout=240s

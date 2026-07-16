@@ -10,6 +10,14 @@ description: >
 serialPipeline:
   stages:
     - targetId: production
+      strategy:
+        standard:
+          # After the StatefulSet is applied, run the promote-blp-mode action (skaffold.yaml
+          # customActions): it reads the live blp-pool node count and sets single-BLP vs HA
+          # (replicas + BLP_REPLICATION_ENABLED) automatically.
+          postdeploy:
+            actions:
+              - promote-blp-mode
 ---
 apiVersion: deploy.cloud.google.com/v1
 kind: Target
