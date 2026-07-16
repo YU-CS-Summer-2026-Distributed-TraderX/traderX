@@ -27,19 +27,45 @@ public final class EntitlementGate {
     private EntitlementGate() {}
 
     /**
-     * @throws ResponseStatusException 401 if enforcement is on and the token is missing/invalid,
-     *                                 403 if the token is valid but not entitled to {@code accountId}.
+     * Authentication result for one HTTP request. The HMAC verification and JWT decode happen
+     * once in {@link EntitlementGate#resolve}; account checks reuse this immutable principal.
      */
-    public static void check(JwtAuthenticator jwt, boolean enforced, int accountId, String authorization) {
+    public record ResolvedPrincipal(boolean enforced, JwtPrincipal principal) {
+        public ResolvedPrincipal {
+            if (enforced && principal == null) {
+                throw new IllegalArgumentException("an enforced entitlement requires a principal");
+            }
+        }
+
+        public void checkAccount(int accountId) {
+            if (enforced && !principal.isEntitledTo(accountId)) {
+                throw new ResponseStatusException(HttpStatus.FORBIDDEN,
+                    "not entitled to account " + accountId);
+            }
+        }
+    }
+
+    /** Resolve and validate the caller once for the whole request. */
+    public static ResolvedPrincipal resolve(
+        JwtAuthenticator jwt,
+        boolean enforced,
+        String authorization
+    ) {
         if (!enforced) {
-            return;
+            return new ResolvedPrincipal(false, null);
         }
         Optional<JwtPrincipal> principal = jwt.validate(authorization);
         if (principal.isEmpty()) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "missing or invalid token");
         }
-        if (!principal.get().isEntitledTo(accountId)) {
-            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "not entitled to account " + accountId);
-        }
+        return new ResolvedPrincipal(true, principal.get());
+    }
+
+    /**
+     * @throws ResponseStatusException 401 if enforcement is on and the token is missing/invalid,
+     *                                 403 if the token is valid but not entitled to {@code accountId}.
+     */
+    public static void check(JwtAuthenticator jwt, boolean enforced, int accountId, String authorization) {
+        resolve(jwt, enforced, authorization).checkAccount(accountId);
     }
 }
