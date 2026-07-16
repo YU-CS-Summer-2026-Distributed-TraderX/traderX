@@ -37,8 +37,29 @@ overlay_dir() {
 
 overlay_dir "${RUNTIME_OVERRIDES_DIR}" "${TARGET_ROOT}" "runtime"
 
+# Existing component overlays intentionally exclude Gradle wrappers, but YU11 introduces the
+# sidecar as a new standalone component and therefore must seed its wrapper explicitly.
+SIDECAR_OVERRIDE="${RUNTIME_OVERRIDES_DIR}/aeron-replication-sidecar"
+SIDECAR_TARGET="${TARGET_ROOT}/aeron-replication-sidecar"
+if [[ -f "${SIDECAR_OVERRIDE}/gradlew" ]]; then
+  mkdir -p "${SIDECAR_TARGET}/gradle"
+  cp "${SIDECAR_OVERRIDE}/gradlew" "${SIDECAR_TARGET}/gradlew"
+  cp "${SIDECAR_OVERRIDE}/gradlew.bat" "${SIDECAR_TARGET}/gradlew.bat"
+  rm -rf "${SIDECAR_TARGET}/gradle/wrapper"
+  cp -R "${SIDECAR_OVERRIDE}/gradle/wrapper" "${SIDECAR_TARGET}/gradle/wrapper"
+  chmod +x "${SIDECAR_TARGET}/gradlew"
+fi
+
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}" "${SPEC_SOURCE_DIR}"
+
+if [[ -d "${STATE_SPEC_DIR}/generation/compose" ]]; then
+  mkdir -p "${STATE_DIR}/runtime"
+  cp "${STATE_SPEC_DIR}/generation/compose/"*.yml "${STATE_DIR}/runtime/"
+fi
+if [[ -d "${STATE_SPEC_DIR}/generation/kubernetes" ]]; then
+  cp -R "${STATE_SPEC_DIR}/generation/kubernetes" "${STATE_DIR}/runtime/kubernetes"
+fi
 
 for source in \
   README.md \

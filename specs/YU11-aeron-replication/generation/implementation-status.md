@@ -1,6 +1,6 @@
 # Implementation Status: YU11-aeron-replication
 
-**Status**: Spec/generation scaffold verified; dual transport and exact durable-watermark core implemented.
+**Status**: Dual transport, exact durable-watermark core, Archive sidecar, and compose HA profile verified.
 
 ## Verification evidence
 
@@ -17,6 +17,9 @@
 | SBE toolchain | Aeron `1.51.0` and SBE `1.37.1` are locked; `generateSbe` produces the codecs from the committed 64-byte schema. |
 | Transport proof | Embedded Media Driver test passes primary claimed SBE publication, follower direct ring injection, and ACK return over Aeron IPC. |
 | Order-matcher regression | Full generated order-matcher suite passes: 157 tests, 1 skipped. |
+| Sidecar | Standalone `ArchivingMediaDriver` module launches a real recording subscription; unit tests and `installDist` pass. |
+| Compose HA | Six-container MariaDB/File-JetStream/two-matcher/two-sidecar profile validates, both sidecars and both matchers become ready, and the smoke accepts and replicates an order. |
+| Kubernetes render | HA and dedicated two-worker kind kustomizations render successfully; GKE keeps NATS selected by default and the sidecar capped at one CPU. |
 
 ## Component status
 
@@ -25,12 +28,13 @@
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
 | Generation/render/runtime wrappers | Scaffolded and syntax-validated |
 | Order-matcher Aeron/SBE runtime | Selector, generated codec, primary/follower agents, ACK mapping, policy validation, and embedded transport test implemented |
-| Archiving Media Driver sidecar | Parent parity |
-| Compose, multi-node kind, GKE runtime | Parent parity |
+| Archiving Media Driver sidecar | Real UDP recording, persistent Archive catalog, schema health, and one-core runtime budget implemented |
+| Compose runtime | Primary/follower/sidecar/File-JetStream profile passes acceptance + replication smoke |
+| Multi-node kind and GKE runtime | Dedicated manifests and wrappers render; live kind/GKE evidence remains pending |
 | Allocation, recovery, failover, GKE evidence | Baseline contracts recorded |
 
 ## Current limitations
 
-- Aeron Archive recording/replay, signed peer handshake, consume-side shadow comparison, sidecar
-  manifests, and the fast-witness path are not part of the current transport-core checkpoint.
+- Aeron Archive replay/catch-up, signed peer handshake, consume-side shadow comparison, Archive
+  fault handling, and the fast-witness path remain pending.
 - The GKE capacity action remains user-run; this branch performs no cluster scaling or push.

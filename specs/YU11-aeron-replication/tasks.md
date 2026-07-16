@@ -51,7 +51,7 @@
 
 ## Runtime and operations
 
-- [ ] T-AR27 Add compose primary/follower/sidecar/NATS runtime and proof scripts.
+- [x] T-AR27 Add compose primary/follower/sidecar/NATS runtime and proof scripts.
 - [ ] T-AR28 Add a dedicated multi-node kind profile without modifying the shared cluster.
 - [ ] T-AR29 Add GKE sidecar, UDP ports, headless addressing, NetworkPolicy, anti-affinity, Secret,
   transport/policy env, and Archive volume wiring.

@@ -1,0 +1,155 @@
+name: traderx-yu11-aeron-ha
+
+services:
+  database:
+    image: mariadb:11.8
+    environment:
+      MARIADB_DATABASE: traderx
+      MARIADB_USER: traderx
+      MARIADB_PASSWORD: traderx
+      MARIADB_ROOT_PASSWORD: traderx-root
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+    volumes:
+      - yu11-database:/var/lib/mysql
+
+  nats-broker:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data/jetstream", "-m", "8222"]
+    volumes:
+      - yu11-nats:/data/jetstream
+
+  order-matcher-primary:
+    build:
+      context: ../../order-matcher
+      dockerfile: Dockerfile.compose
+    x-matcher-env: &matcher-env
+      JAVA_TOOL_OPTIONS: >-
+        -XX:MaxRAMPercentage=65.0
+        --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+        --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+      DATABASE_PG_HOST: database
+      DATABASE_PG_PORT: "3306"
+      DATABASE_NAME: traderx
+      DATABASE_DBUSER: traderx
+      DATABASE_DBPASS: traderx
+      NATS_BROKER_HOST: nats-broker
+      RISK_BOOTSTRAP_ENABLED: "false"
+      OUTPUT_PROJECTOR_DB_ENABLED: "false"
+      RECOVERY_SOURCE: journal
+      ORDER_MATCHER_JOURNAL_ENABLED: "true"
+      ORDER_MATCHER_JOURNAL_BATCH_RECORDS: "1024"
+      BLP_REPLICATION_ENABLED: "true"
+      BLP_REPLICATION_TRANSPORT: "${BLP_REPLICATION_TRANSPORT:-aeron}"
+      BLP_REPLICATION_ACK_MODE: "${BLP_REPLICATION_ACK_MODE:-onring}"
+      BLP_REPLICATION_FAILURE_POLICY: "${BLP_REPLICATION_FAILURE_POLICY:-degraded-solo}"
+      BLP_REPLICATION_ACK_TIMEOUT_MS: "500"
+      BLP_LEADER_EPOCH: "1"
+      BLP_AERON_DIR: /dev/shm/aeron/driver
+      BLP_AERON_DATA_STREAM_ID: "1101"
+      BLP_AERON_ACK_STREAM_ID: "1102"
+      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+    environment:
+      <<: *matcher-env
+      BLP_POD_NAME: order-matcher-primary
+      BLP_REPLICATION_STATIC_ROLE: primary
+      ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-follower:40123
+      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40123
+      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-follower:40124
+      BLP_AERON_ACK_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40124
+    ports:
+      - "18110:18110"
+      - "19080:18080"
+    expose:
+      - "40123/udp"
+      - "40124/udp"
+      - "8010/udp"
+      - "8012/udp"
+    volumes:
+      - yu11-primary-data:/var/lib/traderx-lmax
+      - yu11-primary-aeron:/dev/shm/aeron
+    depends_on:
+      database:
+        condition: service_healthy
+      nats-broker:
+        condition: service_started
+
+  aeron-primary:
+    build:
+      context: ../../aeron-replication-sidecar
+      dockerfile: Dockerfile.compose
+    network_mode: service:order-matcher-primary
+    environment:
+      AERON_DIR: /dev/shm/aeron/driver
+      AERON_ARCHIVE_DIR: /var/lib/traderx-lmax/aeron-archive
+      AERON_HEALTH_PORT: "18080"
+      AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
+      AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
+      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+    volumes:
+      - yu11-primary-data:/var/lib/traderx-lmax
+      - yu11-primary-aeron:/dev/shm/aeron
+    depends_on:
+      order-matcher-primary:
+        condition: service_started
+
+  order-matcher-follower:
+    build:
+      context: ../../order-matcher
+      dockerfile: Dockerfile.compose
+    environment:
+      <<: *matcher-env
+      BLP_POD_NAME: order-matcher-follower
+      BLP_REPLICATION_STATIC_ROLE: follower
+      ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-primary:40123
+      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40123
+      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-primary:40124
+      BLP_AERON_ACK_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40124
+    ports:
+      - "18111:18110"
+      - "19081:18080"
+    expose:
+      - "40123/udp"
+      - "40124/udp"
+      - "8010/udp"
+      - "8012/udp"
+    volumes:
+      - yu11-follower-data:/var/lib/traderx-lmax
+      - yu11-follower-aeron:/dev/shm/aeron
+    depends_on:
+      database:
+        condition: service_healthy
+      nats-broker:
+        condition: service_started
+
+  aeron-follower:
+    build:
+      context: ../../aeron-replication-sidecar
+      dockerfile: Dockerfile.compose
+    network_mode: service:order-matcher-follower
+    environment:
+      AERON_DIR: /dev/shm/aeron/driver
+      AERON_ARCHIVE_DIR: /var/lib/traderx-lmax/aeron-archive
+      AERON_HEALTH_PORT: "18080"
+      AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
+      AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
+      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+    volumes:
+      - yu11-follower-data:/var/lib/traderx-lmax
+      - yu11-follower-aeron:/dev/shm/aeron
+    depends_on:
+      order-matcher-follower:
+        condition: service_started
+
+volumes:
+  yu11-database:
+  yu11-nats:
+  yu11-primary-data:
+  yu11-follower-data:
+  yu11-primary-aeron:
+  yu11-follower-aeron:

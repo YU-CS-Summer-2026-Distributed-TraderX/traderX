@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    cloud.google.com/neg: '{"ingress":true}'
+  labels:
+    app: order-matcher
+  name: order-matcher-headless
+  namespace: traderx
+spec:
+  clusterIP: None
+  clusterIPs:
+  - None
+  ports:
+  - name: http
+    port: 18110
+    protocol: TCP
+    targetPort: 18110
+  selector:
+    app: order-matcher
+  type: ClusterIP

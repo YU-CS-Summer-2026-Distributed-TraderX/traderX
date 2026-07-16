@@ -109,6 +109,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final ReplicationTransport replicationTransport;
     private final ReplicationAckMode replicationAckMode;
     private final ReplicationFailurePolicy replicationFailurePolicy;
+    private final String replicationStaticRole;
     private final boolean aeronShadowEnabled;
     private final String aeronDirectory;
     private final String aeronDataPublishChannel;
@@ -215,8 +216,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.replication.transport:nats}") String replicationTransport,
         @Value("${blp.replication.ack-mode:onring}") String replicationAckMode,
         @Value("${blp.replication.failure-policy:degraded-solo}") String replicationFailurePolicy,
+        @Value("${blp.replication.static-role:}") String replicationStaticRole,
         @Value("${blp.replication.aeron.shadow:false}") boolean aeronShadowEnabled,
-        @Value("${blp.replication.aeron.directory:/dev/shm/aeron}") String aeronDirectory,
+        @Value("${blp.replication.aeron.directory:/dev/shm/aeron/driver}") String aeronDirectory,
         @Value("${blp.replication.aeron.data-publish-channel:aeron:udp?endpoint=127.0.0.1:40123}") String aeronDataPublishChannel,
         @Value("${blp.replication.aeron.data-subscribe-channel:aeron:udp?endpoint=0.0.0.0:40123}") String aeronDataSubscribeChannel,
         @Value("${blp.replication.aeron.ack-publish-channel:aeron:udp?endpoint=127.0.0.1:40124}") String aeronAckPublishChannel,
@@ -283,14 +285,21 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.replicationTransport = ReplicationTransport.parse(replicationTransport);
         this.replicationAckMode = ReplicationAckMode.parse(replicationAckMode);
         this.replicationFailurePolicy = ReplicationFailurePolicy.parse(replicationFailurePolicy);
+        this.replicationStaticRole = replicationStaticRole == null
+            ? "" : replicationStaticRole.trim().toLowerCase(Locale.ROOT);
+        if (!this.replicationStaticRole.isEmpty()
+            && !"primary".equals(this.replicationStaticRole)
+            && !"follower".equals(this.replicationStaticRole)) {
+            throw new IllegalArgumentException("BLP_REPLICATION_STATIC_ROLE must be primary, follower, or empty");
+        }
         ReplicationFailurePolicy.validate(this.replicationAckMode,
             this.replicationFailurePolicy, journalEnabled);
         this.aeronShadowEnabled = aeronShadowEnabled;
         this.aeronDirectory = aeronDirectory;
-        this.aeronDataPublishChannel = aeronDataPublishChannel;
-        this.aeronDataSubscribeChannel = aeronDataSubscribeChannel;
-        this.aeronAckPublishChannel = aeronAckPublishChannel;
-        this.aeronAckSubscribeChannel = aeronAckSubscribeChannel;
+        this.aeronDataPublishChannel = resolveAeronChannel(aeronDataPublishChannel, podName, 40123, true);
+        this.aeronDataSubscribeChannel = resolveAeronChannel(aeronDataSubscribeChannel, podName, 40123, false);
+        this.aeronAckPublishChannel = resolveAeronChannel(aeronAckPublishChannel, podName, 40124, true);
+        this.aeronAckSubscribeChannel = resolveAeronChannel(aeronAckSubscribeChannel, podName, 40124, false);
         this.aeronDataStreamId = aeronDataStreamId;
         this.aeronAckStreamId = aeronAckStreamId;
         this.aeronMappingCapacity = aeronMappingCapacity;
@@ -513,6 +522,19 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             return;
         }
 
+        if (!replicationStaticRole.isEmpty()) {
+            if ("primary".equals(replicationStaticRole)) {
+                replicationRole.set(ReplicationRole.Role.PRIMARY);
+                initPrimaryTransport(false);
+            } else {
+                replicationRole.set(ReplicationRole.Role.FOLLOWER);
+                initFollowerTransport();
+            }
+            log.info("BLP static role: {} (pod={} transport={} epoch={})",
+                replicationRole.get(), podName, replicationTransport, currentLeaderEpoch);
+            return;
+        }
+
         String namespace = readK8sNamespace();
         leaderElection = new LeaderElection(podName, namespace, replicationRole, this::onRoleChange, replicationConn);
         boolean isPrimary = leaderElection.tryAcquire();
@@ -699,6 +721,25 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (Exception ex) {
             return "traderx";
         }
+    }
+
+    private static String resolveAeronChannel(String configured, String podName,
+                                              int port, boolean publish) {
+        if (configured != null && !configured.isBlank() && !"auto".equalsIgnoreCase(configured)) {
+            return configured;
+        }
+        if (!publish) return "aeron:udp?endpoint=0.0.0.0:" + port;
+        String peer;
+        if (podName != null && podName.endsWith("-0")) {
+            peer = podName.substring(0, podName.length() - 1) + "1";
+        } else if (podName != null && podName.endsWith("-1")) {
+            peer = podName.substring(0, podName.length() - 1) + "0";
+        } else {
+            throw new IllegalArgumentException(
+                "automatic Aeron peer channel requires StatefulSet pod ordinal 0 or 1: " + podName);
+        }
+        return "aeron:udp?endpoint=" + peer + ".order-matcher-headless."
+            + readK8sNamespace() + ".svc.cluster.local:" + port;
     }
 
     @Override

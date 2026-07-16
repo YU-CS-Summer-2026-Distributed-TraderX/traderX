@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher
+  namespace: traderx
+spec:
+  replicas: 2
+  template:
+    spec:
+      nodeSelector: null
+      tolerations: null
+      containers:
+        - name: order-matcher
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: BLP_REPLICATION_ENABLED
+              value: "true"
+            - name: BLP_REPLICATION_TRANSPORT
+              value: "aeron"
+        - name: aeron-replication-sidecar
+          imagePullPolicy: IfNotPresent

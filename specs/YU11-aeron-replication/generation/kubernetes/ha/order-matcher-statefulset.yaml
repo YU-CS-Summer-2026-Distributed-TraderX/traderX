@@ -1,0 +1,314 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher
+  namespace: traderx
+  labels:
+    app: order-matcher
+spec:
+  # replicas AND BLP_REPLICATION_ENABLED (below) are chosen at deploy time by the `promote-blp-mode`
+  # Cloud Deploy postdeploy hook (skaffold customActions -> clouddeploy.yaml), which reads the live
+  # blp-pool node count: >=2 nodes -> HA (replicas=2, replication on), else single-BLP (replicas=1,
+  # replication off). Both are intentionally OMITTED from this manifest so `kubectl apply` never
+  # fights the hook — a StatefulSet defaults to replicas=1 on first create, and the hook takes it
+  # from there (apply leaves an absent field untouched on later deploys). blp-pool must have >=2
+  # nodes for HA (the required anti-affinity below spreads the two replicas across nodes):
+  #   gcloud container clusters resize traderx-lmax --node-pool blp-pool --num-nodes 2 --zone us-east1-b
+  podManagementPolicy: Parallel
+  serviceName: order-matcher-headless
+  selector:
+    matchLabels:
+      app: order-matcher
+  template:
+    metadata:
+      labels:
+        app: order-matcher
+    spec:
+      serviceAccountName: order-matcher
+      # Spread the two BLP replicas across different nodes so a node loss can't take both.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: order-matcher
+              topologyKey: kubernetes.io/hostname
+      # Pin the BLP to the dedicated c2-standard-4 node pool (created with:
+      #   gcloud container node-pools create blp-pool --machine-type=c2-standard-4 \
+      #     --disk-type=pd-standard --disk-size=50 \
+      #     --node-labels=workload=blp --node-taints=workload=blp:NoSchedule)
+      # so the single-threaded hot loop gets high-clock cores with no noisy neighbours. The taint
+      # keeps other workloads off; this toleration + nodeSelector puts order-matcher on it.
+      nodeSelector:
+        workload: blp
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: blp
+          effect: NoSchedule
+      containers:
+        - name: order-matcher
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher:yu11-aeron-replication
+          ports:
+            - name: http
+              containerPort: 18110
+              protocol: TCP
+            - name: fix
+              containerPort: 18130
+              protocol: TCP
+          env:
+            - name: ORDER_MATCHER_PORT
+              value: "18110"
+            # Size the JVM heap to the container memory limit (container-aware).
+            - name: JAVA_TOOL_OPTIONS
+              value: >-
+                -XX:MaxRAMPercentage=65.0
+                --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED
+                --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED
+            # BLP_REPLICATION_ENABLED is set by the promote-blp-mode postdeploy hook (see top of
+            # spec) — omitted here so apply doesn't override it. App default when the env is unset
+            # is false / single-BLP (application.properties: blp.replication.enabled=${BLP_REPLICATION_ENABLED:false}).
+            - name: DATABASE_PG_HOST
+              value: "database"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            # YU09 (ops-hardening): shared HS256 secret from the auth-secrets Secret, created
+            # out-of-band (kubectl create secret), never committed — see YU09 quickstart.md.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "*"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: TRADE_SERVICE_URL
+              value: "http://trade-service:18092/trade/"
+            - name: ORDER_FILL_FULL_THRESHOLD
+              value: "1000"
+            - name: RUNTIME_PROFILE
+              value: "demo"
+            - name: DISRUPTOR_INPUT_RING_SIZE
+              value: "65536"
+            - name: DISRUPTOR_OUTPUT_RING_SIZE
+              value: "65536"
+            - name: ORDER_MATCHER_JOURNAL_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_PATH
+              value: "/var/lib/traderx-lmax/journal"
+            - name: JOURNAL_REPLAY_VERIFY
+              value: "true"
+            - name: OUTPUT_LEGACY_TRADES_ENABLED
+              value: "false"
+            - name: OUTPUT_PROJECTOR_BATCH_SIZE
+              value: "500"
+            - name: OUTPUT_PROJECTOR_QUEUE_CAPACITY
+              value: "1000000"
+            - name: OUTPUT_PROJECTOR_DB_ENABLED
+              value: "true"
+            - name: BLP_MAX_SECURITIES
+              value: "4096"
+            - name: BLP_BOOK_POOL_SIZE
+              value: "65536"
+            - name: BLP_GATEWAY_ACK_TIMEOUT_MS
+              value: "5000"
+            - name: BLP_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            # YU11 keeps NATS as the default. A coordinated rollout changes this one value to
+            # aeron on both ordinals; mixed peers remain unready.
+            - name: BLP_REPLICATION_TRANSPORT
+              value: "nats"
+            - name: BLP_REPLICATION_ACK_MODE
+              value: "onring"
+            - name: BLP_REPLICATION_FAILURE_POLICY
+              value: "degraded-solo"
+            - name: BLP_REPLICATION_ACK_TIMEOUT_MS
+              value: "500"
+            - name: BLP_REPLICATION_AERON_SHADOW
+              value: "false"
+            - name: BLP_AERON_DIR
+              value: "/dev/shm/aeron/driver"
+            - name: BLP_AERON_DATA_PUBLISH_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_DATA_SUBSCRIBE_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_ACK_PUBLISH_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_ACK_SUBSCRIBE_CHANNEL
+              value: "auto"
+            - name: BLP_SBE_SCHEMA_CHECKSUM
+              value: "ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a"
+            - name: SNAPSHOT_INTERVAL_MS
+              value: "300000"
+            - name: RECOVERY_SOURCE
+              value: "journal"
+            - name: ORDER_MATCHER_JOURNAL_BATCH_RECORDS
+              value: "1024"
+            - name: BLP_TERMINAL_RETAIN
+              value: "262144"
+            # Journal archival (YU09): rotate the journal at every snapshot boundary and upload the
+            # closed segment to GCS. Secret is optional so the pod still starts without it —
+            # rotation alone bounds local PVC growth; only the GCS upload leg is skipped.
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_BUCKET
+              value: "gs://traderx-501015-order-matcher-journal-archive"
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: access-key-id
+                  optional: true
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: secret-access-key
+                  optional: true
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+            - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_LIVENESSSTATE_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_READINESSSTATE_ENABLED
+              value: "true"
+          # The single-threaded BLP is CPU-bound; give it a strong core floor and no CPU limit
+          # (a CPU limit would CFS-throttle the hot loop). It runs on a dedicated c2-standard-4
+          # node pool (see nodeSelector/tolerations below), so cpu=2 request reserves cores it can
+          # burst beyond. Memory is capped to protect the node, with headroom for the gateway's
+          # in-flight ack futures under high concurrency. On the shared default-pool this maxed ~13k
+          # booked/s; on the dedicated c2 node it reaches ~42k.
+          resources:
+            requests:
+              cpu: "2"
+              memory: 2Gi
+            limits:
+              memory: 4Gi
+          # Startup targets READINESS (stays DOWN until recovery completes) with a
+          # replay-sized budget: engine init is synchronous, so HTTP serves nothing during
+          # journal replay and the old 24x5s=120s budget kill-looped any recovery longer
+          # than 2 minutes. 120x5s = 10 min ceiling.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          # Probes are deliberately tolerant: under saturating load the CPU-bound pod is alive but
+          # slow to answer, and a tight 1s/3-failure liveness probe was killing a healthy-but-busy
+          # pod (SIGTERM/143) mid-benchmark. Wider timeout + threshold prevents that.
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: lmax-runtime-data
+              mountPath: /var/lib/traderx-lmax
+            - name: aeron-ipc
+              mountPath: /dev/shm/aeron
+        - name: aeron-replication-sidecar
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/aeron-replication-sidecar:yu11-aeron-replication
+          ports:
+            - name: aeron-health
+              containerPort: 18080
+              protocol: TCP
+            - name: aeron-data
+              containerPort: 40123
+              protocol: UDP
+            - name: aeron-ack
+              containerPort: 40124
+              protocol: UDP
+            - name: archive-control
+              containerPort: 8010
+              protocol: UDP
+            - name: archive-repl
+              containerPort: 8012
+              protocol: UDP
+          env:
+            - name: AERON_DIR
+              value: /dev/shm/aeron/driver
+            - name: AERON_ARCHIVE_DIR
+              value: /var/lib/traderx-lmax/aeron-archive
+            - name: AERON_HEALTH_PORT
+              value: "18080"
+            - name: AERON_ARCHIVE_CONTROL_CHANNEL
+              value: aeron:udp?endpoint=0.0.0.0:8010
+            - name: AERON_ARCHIVE_REPLICATION_CHANNEL
+              value: aeron:udp?endpoint=0.0.0.0:8012
+            - name: BLP_SBE_SCHEMA_CHECKSUM
+              value: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: aeron-health
+            periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: aeron-health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          volumeMounts:
+            - name: lmax-runtime-data
+              mountPath: /var/lib/traderx-lmax
+            - name: aeron-ipc
+              mountPath: /dev/shm/aeron
+      volumes:
+        - name: aeron-ipc
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: lmax-runtime-data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests:
+            storage: 10Gi
