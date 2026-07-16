@@ -33,6 +33,7 @@ resources:
   - prometheus-service.yaml
   - grafana-deployment.yaml
   - grafana-service.yaml
+  - database-data-pvc.yaml
   - database-deployment.yaml
   - database-service.yaml
   - nats-broker-data-pvc.yaml

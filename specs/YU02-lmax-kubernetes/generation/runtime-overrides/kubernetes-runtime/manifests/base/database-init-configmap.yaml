@@ -105,3 +105,93 @@ data:
 
     INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-52355-AABBCC', NOW(), NOW(), 'BAC', 'Sell', 2400, 41.125, 'Settled', 52355);
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (52355, 'BAC', NOW(), -2400, 41.125);
+  # Idempotent desired-state schema for a PERSISTENT (PVC-backed) datadir. The MariaDB
+  # entrypoint runs /docker-entrypoint-initdb.d only on an EMPTY volume, so this key is
+  # (a) run by the entrypoint right after 001 on first boot (every statement no-ops), and
+  # (b) applied by the schema-migrate initContainer on every later start, bringing a
+  # populated volume from any older state's schema up to this state's (the YU02->YU09
+  # evolution is purely additive: new tables, trades.settlementdate, one index).
+  # Reference seeds (accounts/accountusers) are re-asserted with INSERT IGNORE because FKs
+  # and entitlements need them; demo trades/positions are NOT re-asserted, so deliberately
+  # deleted rows stay deleted. Derived mechanically from 001 - keep the two in sync.
+  900-migrations.sql: |
+
+    CREATE TABLE IF NOT EXISTS accounts (
+      id INTEGER PRIMARY KEY,
+      displayname VARCHAR(50)
+    );
+
+    CREATE TABLE IF NOT EXISTS accountusers (
+      accountid INTEGER NOT NULL,
+      username VARCHAR(15) NOT NULL,
+      PRIMARY KEY (accountid, username),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS positions (
+      accountid INTEGER,
+      security VARCHAR(15),
+      updated DATETIME,
+      quantity INTEGER,
+      averagecostbasis DECIMAL(18,3),
+      PRIMARY KEY (accountid, security),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS trades (
+      id VARCHAR(50) PRIMARY KEY,
+      accountid INTEGER REFERENCES accounts(id),
+      created DATETIME,
+      updated DATETIME,
+      security VARCHAR(15),
+      side VARCHAR(10) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER CHECK (quantity > 0),
+      price DECIMAL(18,3),
+      state VARCHAR(20) CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled'))
+    );
+
+    CREATE TABLE IF NOT EXISTS orderbook (
+      orderid VARCHAR(32) PRIMARY KEY,
+      accountid INTEGER NOT NULL,
+      security VARCHAR(16) NOT NULL,
+      side VARCHAR(16) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER NOT NULL CHECK (quantity > 0),
+      remainingquantity INTEGER NOT NULL CHECK (remainingquantity >= 0),
+      limitprice DECIMAL(18,3) NOT NULL,
+      status VARCHAR(24) CHECK (status in ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED')),
+      createdat DATETIME NOT NULL,
+      updatedat DATETIME NOT NULL,
+      lastexecutionprice DECIMAL(18,3),
+      lastfillquantity INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_orderbook_status ON orderbook(status);
+    CREATE INDEX IF NOT EXISTS idx_orderbook_updatedat ON orderbook(updatedat);
+
+    CREATE SEQUENCE IF NOT EXISTS accounts_seq START WITH 65000 INCREMENT BY 1;
+
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (22214, 'Test Account 20');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (11413, 'Private Clients Fund TTXX');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (42422, 'Algo Execution Partners');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (52355, 'Big Corporate Fund');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (62654, 'Hedge Fund TXY1');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (10031, 'Internal Trading Book');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (44044, 'Trading Account 1');
+
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user03');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user03');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user04');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user06');
