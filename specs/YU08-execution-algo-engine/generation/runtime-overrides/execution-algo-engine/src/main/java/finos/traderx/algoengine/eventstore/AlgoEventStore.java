@@ -93,6 +93,15 @@ public class AlgoEventStore {
     liveThread = thread;
   }
 
+  /** True when the NATS connection is up and the live-apply thread is still running.
+   * Feeds the readiness health group: a wedged/dead subscriber must unready the pod. */
+  public boolean healthy() {
+    Connection conn = connection;
+    Thread live = liveThread;
+    return conn != null && conn.getStatus() == Connection.Status.CONNECTED
+        && live != null && live.isAlive();
+  }
+
   private int drain(JetStreamSubscription subscription, Consumer<AlgoEvent> applier) throws Exception {
     int count = 0;
     while (true) {

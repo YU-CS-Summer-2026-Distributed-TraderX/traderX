@@ -61,6 +61,12 @@ public class OrderUpdateSubscriber {
         CATCH_ALL_SUBJECT, SUBJECT_PREFIX, SUBJECT_SUFFIX);
   }
 
+  /** True when the fill-tracking NATS connection is up. Feeds the readiness health group. */
+  public boolean healthy() {
+    Connection conn = connection;
+    return conn != null && conn.getStatus() == Connection.Status.CONNECTED;
+  }
+
   void onMessage(io.nats.client.Message msg) {
     String subject = msg.getSubject();
     if (subject == null || !subject.startsWith(SUBJECT_PREFIX) || !subject.endsWith(SUBJECT_SUFFIX)) {

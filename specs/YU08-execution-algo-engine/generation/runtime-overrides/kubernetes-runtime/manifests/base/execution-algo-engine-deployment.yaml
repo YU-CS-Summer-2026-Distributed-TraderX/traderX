@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: execution-algo-engine
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/execution-algo-engine:state009-yu09-20260713
+          image: traderx/execution-algo-engine:state-yu08
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -43,3 +43,29 @@ spec:
               value: "synthetic"
             - name: ALGO_VOLUME_PROFILE_DUCKDB_PATH
               value: "gs://traderx-501015-tick-store/ticks"
+          # Startup targets READINESS: the event store replays its JetStream log synchronously
+          # before the app is ready. Readiness includes the algoEngine health group (NATS event
+          # store + fill subscriber) so a dead subscription unroutes the pod; liveness stays
+          # app-level so a broker outage does not restart-loop the engine.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6

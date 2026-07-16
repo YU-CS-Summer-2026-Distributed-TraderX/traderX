@@ -19,6 +19,7 @@ repositories {
 
 dependencies {
   implementation 'org.springframework.boot:spring-boot-starter-web'
+  implementation 'org.springframework.boot:spring-boot-starter-actuator'
   implementation 'io.nats:jnats:2.20.5'
   // VWAP volume-profile query over YU07's unified ticks Parquet store (research.md Decision 7,
   // ADR-031) — same DuckDB engine tick-store already uses from Python, here from Java.
