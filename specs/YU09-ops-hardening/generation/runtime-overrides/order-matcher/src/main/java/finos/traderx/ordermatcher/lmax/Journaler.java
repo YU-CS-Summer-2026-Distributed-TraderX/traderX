@@ -79,10 +79,34 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
                     StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
                 this.writtenBytes = channel.size();   // continue the byte cursor across restarts (append)
                 log.info("Journaling sequenced input events to {} (at byte {})", journalFile.toAbsolutePath(), writtenBytes);
+                resubmitLeftoverSegments();
             } catch (IOException ex) {
                 log.error("Unable to open journal at {}; journaling disabled", journalFile, ex);
                 this.failed = true;
             }
+        }
+    }
+
+    /** Resubmit rotated segments left behind by earlier runs. archiveAsync is fire-and-forget and
+     *  never deletes on failure, so segments accumulate while the upload leg is down (e.g. the
+     *  archive secret not yet provisioned) — and without this sweep nothing would ever retry them
+     *  (observed live: 208 stranded segments on the prod PVC, 2026-07-16). Startup-only, off the
+     *  hot path; uploads serialize on the archiver's single daemon thread. */
+    private void resubmitLeftoverSegments() {
+        if (archiver == null) {
+            return;
+        }
+        int n = 0;
+        try (var leftovers = Files.newDirectoryStream(journalDir, "input-events-*.journal")) {
+            for (Path segment : leftovers) {
+                archiver.archiveAsync(segment);
+                n++;
+            }
+        } catch (IOException ex) {
+            log.warn("Could not scan {} for leftover rotated segments: {}", journalDir, ex.toString());
+        }
+        if (n > 0) {
+            log.info("Resubmitted {} rotated journal segment(s) from earlier runs to the archiver", n);
         }
     }
 

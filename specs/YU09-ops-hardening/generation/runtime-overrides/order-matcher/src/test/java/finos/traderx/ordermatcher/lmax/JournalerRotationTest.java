@@ -32,6 +32,26 @@ class JournalerRotationTest {
     }
 
     @Test
+    void startupResubmitsLeftoverSegmentsToArchiver(@TempDir Path dir) throws Exception {
+        // Segments stranded by an earlier run whose upload leg was down (e.g. no archive secret).
+        Files.write(dir.resolve("input-events-111.journal"), new byte[]{1});
+        Files.write(dir.resolve("input-events-222.journal"), new byte[]{2});
+        var client = org.mockito.Mockito.mock(software.amazon.awssdk.services.s3.S3Client.class);
+        org.mockito.Mockito.when(client.putObject(
+                org.mockito.ArgumentMatchers.any(software.amazon.awssdk.services.s3.model.PutObjectRequest.class),
+                org.mockito.ArgumentMatchers.any(Path.class)))
+            .thenReturn(software.amazon.awssdk.services.s3.model.PutObjectResponse.builder().build());
+        JournalArchiver archiver = new JournalArchiver("gs://bucket/journals", client);
+        try (Journaler journaler = new Journaler(true, dir, new HotPathMetrics(), 1, archiver)) {
+            assertTrue(archiver.awaitIdle(5, java.util.concurrent.TimeUnit.SECONDS));
+            // successful archive deletes the local segment; the active journal is untouched
+            assertTrue(Files.notExists(dir.resolve("input-events-111.journal")));
+            assertTrue(Files.notExists(dir.resolve("input-events-222.journal")));
+            assertTrue(Files.exists(dir.resolve("input-events.journal")));
+        }
+    }
+
+    @Test
     void nullArchiverLeavesRotationDisabledAndActiveJournalGrowing(@TempDir Path dir) throws Exception {
         try (Journaler journaler = new Journaler(true, dir, new HotPathMetrics(), 1)) {
             journaler.onEvent(event(InputEvent.TYPE_ORDER_NEW, 1), 0, true);
