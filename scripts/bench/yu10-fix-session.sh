@@ -38,6 +38,19 @@ if [ -n "${FIX_JWT}" ] && [ "${FIX_JWT}" != "null" ] && ! echo "${FIX_JWT}" | gr
   ok "mint session JWT" "dev-token issued (account ${ACCOUNT})"
 else bad "mint session JWT" "no token from ${TP}/auth/dev-token"; exit 1; fi
 
+# 1b. Fail-closed identity: a session with a bad JWT never logs on (the security headline). We
+#     attempt a logon with a garbage token and confirm the acceptor rejected it.
+POD="$(kubectl get pods -n "${NS}" -l app=order-matcher --no-headers | awk '{print $1}' | head -1)"
+rej_before="$(kubectl logs -n "${NS}" "${POD}" 2>/dev/null | grep -c 'FIX logon rejected')"
+kubectl port-forward -n "${NS}" svc/order-matcher "${FIX_LOCAL_PORT}:18130" >/dev/null 2>&1 &
+PF0=$!; sleep 3
+FIX_JWT="not-a-valid-jwt" FIX_COMP_ID="${COMP_ID}" FIX_PORT="${FIX_LOCAL_PORT}" \
+  node "${here}/fix-load.mjs" --secs 4 >/dev/null 2>&1
+kill "${PF0}" 2>/dev/null; wait "${PF0}" 2>/dev/null; sleep 2
+rej_after="$(kubectl logs -n "${NS}" "${POD}" 2>/dev/null | grep -c 'FIX logon rejected')"
+if [ "${rej_after}" -gt "${rej_before}" ]; then ok "fail-closed logon (bad JWT)" "session rejected at logon"
+else bad "fail-closed logon (bad JWT)" "no rejection logged"; fi
+
 # 2. DB projection baseline for this account (proves FIX orders reach the same read model)
 db_orders() {
   kubectl exec -n "${NS}" deploy/database -- sh -c \
