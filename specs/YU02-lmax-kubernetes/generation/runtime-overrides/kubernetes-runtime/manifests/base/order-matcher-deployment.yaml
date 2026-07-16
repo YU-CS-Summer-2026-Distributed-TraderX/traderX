@@ -88,25 +88,34 @@ spec:
               value: "true"
             - name: MANAGEMENT_HEALTH_READINESSSTATE_ENABLED
               value: "true"
+          # Startup targets READINESS (stays DOWN until recovery completes) with a
+          # replay-sized budget: engine init is synchronous, so HTTP serves nothing during
+          # journal replay and the old 24x5s=120s budget kill-looped any recovery longer
+          # than 2 minutes. 120x5s = 10 min ceiling.
           startupProbe:
             httpGet:
-              path: /actuator/health/liveness
+              path: /actuator/health/readiness
               port: http
             periodSeconds: 5
-            failureThreshold: 24
+            timeoutSeconds: 5
+            failureThreshold: 120
+          # Tolerant timeouts: under saturating load the CPU-bound pod is alive but slow to
+          # answer; a 1s probe timeout has SIGTERM-killed a healthy-but-busy pod (2026-07-02).
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness
               port: http
             periodSeconds: 5
-            failureThreshold: 12
+            timeoutSeconds: 5
+            failureThreshold: 6
           livenessProbe:
             httpGet:
               path: /actuator/health/liveness
               port: http
             initialDelaySeconds: 15
-            periodSeconds: 10
-            failureThreshold: 3
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
           volumeMounts:
             - name: lmax-runtime-data
               mountPath: /var/lib/traderx-lmax

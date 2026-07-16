@@ -206,12 +206,17 @@ spec:
               memory: 2Gi
             limits:
               memory: 4Gi
+          # Startup targets READINESS (stays DOWN until recovery completes) with a
+          # replay-sized budget: engine init is synchronous, so HTTP serves nothing during
+          # journal replay and the old 24x5s=120s budget kill-looped any recovery longer
+          # than 2 minutes. 120x5s = 10 min ceiling.
           startupProbe:
             httpGet:
-              path: /actuator/health/liveness
+              path: /actuator/health/readiness
               port: http
             periodSeconds: 5
-            failureThreshold: 24
+            timeoutSeconds: 5
+            failureThreshold: 120
           # Probes are deliberately tolerant: under saturating load the CPU-bound pod is alive but
           # slow to answer, and a tight 1s/3-failure liveness probe was killing a healthy-but-busy
           # pod (SIGTERM/143) mid-benchmark. Wider timeout + threshold prevents that.
