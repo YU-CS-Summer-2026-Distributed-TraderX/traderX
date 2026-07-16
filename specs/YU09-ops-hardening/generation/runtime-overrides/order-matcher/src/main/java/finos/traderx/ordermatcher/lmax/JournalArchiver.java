@@ -120,6 +120,11 @@ final class JournalArchiver implements AutoCloseable {
      *  journaling. On failure (or when uploads aren't configured) the local file is left in place —
      *  no data is ever lost to a bad upload, only local disk keeps growing until it's fixed. */
     void archiveAsync(Path segment) {
+        // Watermark check runs on EVERY rotation, before the creds/client short-circuit: the
+        // fail-safe (never delete an unconfirmed segment) means a dead upload leg — missing
+        // secret or persistent failures — grows the journal volume without bound. Loki alert
+        // target: "journal volume" + level.
+        logDiskWatermark(segment);
         if (!enabled || client == null) {
             return;
         }
@@ -143,6 +148,35 @@ final class JournalArchiver implements AutoCloseable {
                     segment, ex.toString());
             }
         });
+    }
+
+    /** Rotation-cadence disk watermark on the journal volume (max one log per snapshot interval).
+     * ponytail: fixed 80/90 thresholds + log-based alerting; make them env-tunable / wire a
+     * Micrometer gauge if operations ever needs more than a Loki alert on these lines. */
+    private static void logDiskWatermark(Path onVolume) {
+        try {
+            var store = Files.getFileStore(onVolume);
+            int pct = usedPercent(store.getUsableSpace(), store.getTotalSpace());
+            if (pct >= 90) {
+                log.error("journal volume {}% full — rotated segments are accumulating faster than "
+                    + "they are archived; journaling stops when the disk fills. Provision the "
+                    + "archive secret or grow the PVC now.", pct);
+            } else if (pct >= 80) {
+                log.warn("journal volume {}% full — check that segment archival is keeping up "
+                    + "(gs upload configured and succeeding).", pct);
+            }
+        } catch (Exception ex) {
+            log.debug("journal volume watermark check failed: {}", ex.toString());
+        }
+    }
+
+    /** Pure helper for the watermark math (testable without a full filesystem). */
+    static int usedPercent(long usable, long total) {
+        if (total <= 0) {
+            return 0;
+        }
+        long used = total - Math.max(0, usable);
+        return (int) ((used * 100) / total);
     }
 
     @Override

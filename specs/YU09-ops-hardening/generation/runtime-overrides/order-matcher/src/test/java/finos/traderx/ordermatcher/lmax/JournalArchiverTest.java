@@ -81,4 +81,15 @@ class JournalArchiverTest {
             assertFalse(Files.exists(segment));
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void diskWatermarkMathHitsThresholdsExactly() {
+        assertEquals(0, JournalArchiver.usedPercent(100, 100));
+        assertEquals(79, JournalArchiver.usedPercent(21, 100));
+        assertEquals(80, JournalArchiver.usedPercent(20, 100));   // WARN boundary
+        assertEquals(90, JournalArchiver.usedPercent(10, 100));   // ERROR boundary
+        assertEquals(100, JournalArchiver.usedPercent(0, 100));
+        assertEquals(0, JournalArchiver.usedPercent(0, 0));       // degenerate: no explosion
+        assertEquals(100, JournalArchiver.usedPercent(-5, 100));  // usable can report negative
+    }
 }
