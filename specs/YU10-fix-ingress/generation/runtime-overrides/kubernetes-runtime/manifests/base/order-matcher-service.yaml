@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher
+  namespace: traderx
+  labels:
+    app: order-matcher
+spec:
+  # NodePort so an external FIX test client can reach the acceptor on kind (the FIX port is not
+  # routed through ingress-nginx and has no public exposure — ADR-036, FR-FIX13). HTTP keeps its
+  # cluster-internal contract; only the FIX port gets a node-reachable mapping.
+  type: NodePort
+  selector:
+    app: order-matcher
+  ports:
+    - name: http
+      protocol: TCP
+      port: 18110
+      targetPort: 18110
+    - name: fix
+      protocol: TCP
+      port: 18130
+      targetPort: 18130
+      nodePort: 31830
