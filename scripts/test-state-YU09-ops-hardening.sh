@@ -59,6 +59,9 @@ rg -q 'software.amazon.awssdk:s3' "${ORDER_MATCHER_DIR}/build.gradle" \
 echo "[check] pipeline stale-jar fix present (FR-OH30)"
 rg -q 'gradlew --no-daemon clean bootJar' "${REPO_ROOT}/pipeline/publish-generated-state-branch.sh" \
   || { echo "[error] publish-generated-state-branch.sh missing gradlew bootJar step before docker build"; exit 1; }
+bash "${REPO_ROOT}/scripts/test-local-jvm-jar-build.sh"
+rg -q 'build-jvm-jar\.sh.*context_abs.*name' "${REPO_ROOT}/scripts/start-state-010-kubernetes-runtime-generated.sh" \
+  || { echo "[error] local start wrapper missing JVM jar-build guard"; exit 1; }
 
 echo "[check] DR runbook exists"
 [[ -f "${REPO_ROOT}/specs/YU09-ops-hardening/system/dr-runbook.md" ]] || { echo "[error] missing system/dr-runbook.md"; exit 1; }

@@ -322,6 +322,8 @@ while IFS= read -r item; do
       exit 1
     }
 
+    bash "${REPO_ROOT}/scripts/lib/build-jvm-jar.sh" "${context_abs}" "${name}"
+
     echo "[build] ${name} -> ${image}"
     docker build -t "${image}" -f "${dockerfile_abs}" "${context_abs}"
   else
