@@ -9,9 +9,9 @@
 | SC-FIX01 (logon + order + fail-closed) | `FixSessionIntegrationTest` (real QuickFIX/J initiator, in-JVM): valid JWT logs on and receives ER New; an invalid JWT never gets a session. Confirmed live on kind: acceptor rejected a malformed token (`FIX logon rejected … 401`) and accepted a valid dev-token JWT. |
 | SC-FIX02 (cancel round-trip) | `FixSessionIntegrationTest`: `OrderCancelRequest` on a resting order → ER Canceled; unknown order → `OrderCancelReject`. |
 | SC-FIX03 (status) | `FixSessionIntegrationTest`: `OrderStatusRequest` → ER ExecType=I snapshot. |
-| SC-FIX04 (restart reconciliation) | Ledger rehydration + duplicate detection across reopen unit-tested (`ClOrdIdLedgerTest.rehydratesAcrossReopen`, duplicate survives restart). Engine `clientOrderKey` idempotency (FR-IMRG14, session-namespaced) is the retry authority. Live pod-kill resend is exercised by `yu10-fix-session.sh --resume` / the QuickFIX/J store. |
+| SC-FIX04 (restart reconciliation) | Ledger rehydration + duplicate detection across reopen unit-tested (`ClOrdIdLedgerTest.rehydratesAcrossReopen`). **Confirmed live**: after an order-matcher restart the ledger rehydrated 336,575 entries and correctly rejected every re-used ClOrdID as a duplicate (a re-run with the same ids produced all-duplicate rejections — the idempotent-retry safety property). Engine `clientOrderKey` idempotency (FR-IMRG14, session-namespaced) is the retry authority. |
 | SC-FIX05 (no regression, NGC-01 holds) | Composed YU10 order-matcher suite: 148 tests, 0 failures. `allocationGateTest` + `riskAllocationGateTest` + `noGcTest` green with FIX code present — exact-zero preserved (ER handler is enqueue-only on the ring thread; QuickFIX/J allocates only on session threads). |
-| SC-FIX06 (throughput) | `scripts/bench/results/yu10-fix-kind-2026-07-16.md`: ~8,109 completed order→ExecutionReport lifecycles/s sustained over 30s on kind, single session; the 10s proof grew the DB `orderbook` projection by exactly the completed count (FIX/REST equivalence). |
+| SC-FIX06 (throughput vs REST) | **Matched-methodology control** (`scripts/bench/results/yu10-fix-vs-rest-matched-2026-07-16.md`): identical 256-in-flight window, "completed = outcome learned", same account/workload/cluster. FIX **5,213 completed lifecycles/s** (one session) vs REST POST /orders **3,479/s** (256 connections) — FIX ~1.5x, on a single connection vs REST's 256 and with port-forward latency handicapping FIX. The FIX/REST path equivalence (orders land in the same ring/journal/risk/DB projection) is separately proven by the 10s `yu10-fix-session.sh` proof growing the DB `orderbook` by exactly the completed count. |
 
 ## Component status
 
@@ -32,5 +32,5 @@
   fill record.
 - FIX sessions terminate on the single configured replica; session state does not follow a BLP
   role change (TD-FIX02, single-BLP deployment).
-- A matched-methodology REST completed-lifecycle control for the SC-FIX06 comparison is the
-  remaining bench refinement (the FIX completed rate itself is recorded).
+- (Resolved 2026-07-16) The matched-methodology REST completed-lifecycle control is recorded:
+  FIX 5,213/s vs REST 3,479/s at a 256-in-flight window.

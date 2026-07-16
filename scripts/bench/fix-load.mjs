@@ -30,6 +30,7 @@ const cfg = {
 };
 if (!cfg.jwt) { console.error('FIX_JWT is required'); process.exit(2); }
 
+const RUN = process.env.RUN_ID || String(Date.now() % 1000000);
 let outSeq = 1;
 let submitted = 0, completed = 0, rejected = 0;
 const pending = new Set();
@@ -97,7 +98,7 @@ function handle(msg) {
 }
 
 function sendOne() {
-  const clId = `${cfg.sender}-${++clSeq}`;
+  const clId = `${cfg.sender}-${RUN}-${++clSeq}`;
   const side = cfg.alternate && (sideFlip++ & 1) ? '2' : '1';
   const ticker = cfg.tickers[clSeq % cfg.tickers.length];
   pending.add(clId);
