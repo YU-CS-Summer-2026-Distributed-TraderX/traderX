@@ -14,5 +14,7 @@ data:
     }
 
     jetstream {
+      store_dir: /data/jetstream
       max_memory_store: 512MB
+      max_file_store: 4GB
     }
