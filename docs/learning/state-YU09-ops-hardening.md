@@ -8,7 +8,7 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 - Previous state(s): [YU08-execution-algo-engine](/docs/learning/state-YU08-execution-algo-engine)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU10-fix-ingress](/docs/learning/state-YU10-fix-ingress)
 
 ## Convergence Metadata
 

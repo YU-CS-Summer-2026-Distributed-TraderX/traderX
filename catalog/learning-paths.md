@@ -34,6 +34,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
 - `YU09-ops-hardening`
+- `YU10-fix-ingress`
 
 ### Functional
 
@@ -57,6 +58,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
 - `YU09-ops-hardening`
+- `YU10-fix-ingress`
 
 ### Convergence
 
@@ -92,3 +94,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU07-historical-tick-store` | YU06-eod-price-production | `none` | `false` | `optional` | `specs/YU07-historical-tick-store/spec.md` |
 | `YU08-execution-algo-engine` | YU07-historical-tick-store | `none` | `false` | `optional` | `specs/YU08-execution-algo-engine/spec.md` |
 | `YU09-ops-hardening` | YU08-execution-algo-engine | `none` | `false` | `optional` | `specs/YU09-ops-hardening/spec.md` |
+| `YU10-fix-ingress` | YU09-ops-hardening | `none` | `false` | `optional` | `specs/YU10-fix-ingress/spec.md` |

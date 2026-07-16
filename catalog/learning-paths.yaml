@@ -36,6 +36,7 @@ tracks:
       - YU07-historical-tick-store
       - YU08-execution-algo-engine
       - YU09-ops-hardening
+      - YU10-fix-ingress
   functional:
     description: "Functional capability expansion states."
     states:
@@ -59,6 +60,7 @@ tracks:
       - YU07-historical-tick-store
       - YU08-execution-algo-engine
       - YU09-ops-hardening
+      - YU10-fix-ingress
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -228,3 +230,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU09-ops-hardening/spec.md
+  - id: YU10-fix-ingress
+    previous:
+      - YU09-ops-hardening
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU10-fix-ingress/spec.md
