@@ -1,0 +1,147 @@
+plugins {
+  id 'java'
+  id 'org.springframework.boot' version '3.5.14'
+  id 'io.spring.dependency-management' version '1.1.7'
+}
+
+ext['tomcat.version'] = '10.1.55'
+
+group = 'finos.traderx.order-matcher-specfirst'
+version = '0.1.0'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_21
+}
+
+// In-place development of this overlay (specs/.../runtime-overrides): the
+// parent-state (009) sources live in .parent-src so the module compiles and
+// the IDE resolves imports without generating. Generated trees merge the
+// parent files directly into src/ and have no .parent-src; Gradle ignores
+// missing source dirs, so this is a no-op there.
+sourceSets {
+  main {
+    java {
+      srcDir '.parent-src/main/java'
+    }
+  }
+}
+
+repositories {
+  mavenCentral()
+}
+
+dependencies {
+  implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
+  implementation 'org.springframework.boot:spring-boot-starter-web'
+  implementation 'org.springframework.boot:spring-boot-starter-actuator'
+  // YU10 FIX ingress: QuickFIX/J owns the session layer (logon, heartbeats, sequence numbers,
+  // resend windows, persistent stores) on its own threads - outside the no-GC boundary (ADR-034).
+  implementation 'org.quickfixj:quickfixj-core:2.3.1'
+  implementation 'org.quickfixj:quickfixj-messages-fix44:2.3.1' 
+  runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+  runtimeOnly 'org.mariadb.jdbc:mariadb-java-client:3.5.9'
+  implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:2.8.17'
+  implementation('org.json:json:20240303') {
+    because 'previous versions are affected by multiple CVE'
+  }
+  implementation 'org.jetbrains.kotlin:kotlin-stdlib:2.3.20'
+  implementation('io.socket:socket.io-client:2.1.2') {
+    exclude group: 'org.json', module: 'json'
+  }
+  implementation 'com.squareup.okhttp3:okhttp:4.12.0'
+  implementation ('ch.qos.logback:logback-core:1.5.32') {
+    because 'version brought in by spring boot 3.5.14 affected by CVE-2024-12798'
+  }
+  implementation 'ch.qos.logback:logback-classic:1.5.32'
+  implementation 'org.apache.logging.log4j:log4j-api:2.25.4'
+  implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.25.4'
+  implementation 'org.apache.commons:commons-lang3:3.20.0'
+  implementation 'io.nats:jnats:2.20.5'
+
+  // LMAX hot path (state 009b): ring buffers + latency histograms.
+  implementation 'com.lmax:disruptor:4.0.0'
+  implementation 'org.hdrhistogram:HdrHistogram:2.2.2'
+  // Optional BLP core pinning (perf profile, NFR-09B06): bind the single-writer thread to a
+  // dedicated CPU. Used only at thread start; demo profile leaves blp.pin.cpu=-1 (no pinning).
+  implementation 'net.openhft:affinity:3.23.3'
+
+  // Journal archival (YU09, off the hot path): GCS's XML API is S3-compatible, so this signs
+  // HMAC-authenticated PUTs the same way YU07's tick-store DuckDB connector does, just via a
+  // real SDK instead of hand-rolled request signing.
+  implementation 'software.amazon.awssdk:s3:2.29.52'
+
+  testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  testRuntimeOnly 'com.h2database:h2'
+}
+
+tasks.withType(Test).configureEach {
+  useJUnitPlatform()
+  // Forward benchmark flags so @EnabledIfSystemProperty guards work correctly.
+  systemProperty 'replicationThroughputBenchmark', System.getProperty('replicationThroughputBenchmark', 'false')
+  systemProperty 'outputLatencyBenchmark', System.getProperty('outputLatencyBenchmark', 'false')
+  systemProperty 'outputTopologyBenchmark', System.getProperty('outputTopologyBenchmark', 'false')
+  systemProperty 'outputHandlerLatencyBenchmark', System.getProperty('outputHandlerLatencyBenchmark', 'false')
+}
+
+// ThreadMXBean allocation deltas are sensitive to work done earlier in the same test worker
+// (JIT recompilation, shared statics, and TLAB accounting). Run each exact-zero gate method in a
+// fresh JVM instead of weakening NGC-01. The risk method is contributed by YU03; on YU02 this
+// task intentionally has no matching test.
+def allocationGateClass = 'finos.traderx.ordermatcher.lmax.AllocationGateTest'
+def isolatedAllocationGate = { String taskName, String methodName, boolean epsilon ->
+  tasks.register(taskName, Test) {
+    description = "Isolated hot-path allocation gate: ${methodName}"
+    group = 'verification'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    filter {
+      includeTestsMatching "${allocationGateClass}.${methodName}"
+      setFailOnNoMatchingTests(false)
+    }
+    systemProperty 'gate.steadyStateEvents',
+        System.getProperty('gate.steadyStateEvents', epsilon ? '3000000' : '1000000')
+    systemProperty 'gate.warmupEvents', System.getProperty('gate.warmupEvents', '250000')
+    if (epsilon) {
+      jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
+              '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch', '-Xbatch'
+    } else {
+      // -Xbatch here too. NGC-01's intermittent exactly-72-byte "allocation" was root-caused
+      // (2026-07-16; JFR + -XX:-UseTLAB gave exact per-allocation recording) to C2
+      // escape-analysis REMATERIALIZATION at a mid-window deoptimization: deopt reifies a
+      // scalar-replaced InputEvent (72 bytes = its exact size), bumping the thread's
+      // allocated-bytes counter with zero JFR-visible allocations JVM-wide - a compiler
+      // artifact, not a hot-path allocation. Synchronous compilation completes before the
+      // measured window, so no mid-window deopt: 10/10 deterministic vs ~30-80% flake without.
+      jvmArgs '-Xbatch'
+    }
+  }
+}
+
+def baseAllocationGate = isolatedAllocationGate(
+    'allocationGateTest', 'hotPathIsAllocationFreeInSteadyState', false)
+def riskAllocationGate = isolatedAllocationGate(
+    'riskAllocationGateTest', 'hotPathIsAllocationFreeInSteadyStateWithRiskGating', false)
+
+tasks.named('test', Test) {
+  filter {
+    excludeTestsMatching "${allocationGateClass}.*"
+  }
+  dependsOn baseAllocationGate, riskAllocationGate
+}
+
+// No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run both isolated methods
+// under Epsilon GC. `noGcTest` retains the public task name used by
+// pipeline/validate-no-gc-conformance.sh and depends on the separately forked risk gate.
+def baseNoGcGate = isolatedAllocationGate(
+    'noGcTest', 'hotPathIsAllocationFreeInSteadyState', true)
+def riskNoGcGate = isolatedAllocationGate(
+    'riskNoGcTest', 'hotPathIsAllocationFreeInSteadyStateWithRiskGating', true)
+baseNoGcGate.configure {
+  description = 'Hot-path allocation gates under Epsilon GC (zero steady-state allocation, NGC-02).'
+  dependsOn riskNoGcGate
+}
+
+configurations.configureEach {
+  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk7'
+  exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'
+}
