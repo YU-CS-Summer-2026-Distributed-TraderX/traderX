@@ -59,10 +59,14 @@ const inflight = new Set(); // live requests, so shutdown can abort whatever the
 // not JSON.stringify of K objects every request. Each body is `--batch` orders; we rotate
 // the leading ticker so load spreads across the price-published symbols.
 const bodies = cfg.tickers.map((_, offset) => {
+  // SIDES=alternate flips every other order to Sell: orders self-match, positions stay ~flat,
+  // and the book stays bounded — use it to build a big JOURNAL without tripping the risk
+  // position cap (an all-Buy run starts drawing POSITION_LIMIT 422s after cap/qty orders).
+  const alternate = (process.env.SIDES || '') === 'alternate';
   const orders = Array.from({ length: cfg.batch }, (_, j) => ({
     accountId: cfg.account,
     security: cfg.tickers[(offset + j) % cfg.tickers.length],
-    side: 'Buy',
+    side: alternate && j % 2 === 1 ? 'Sell' : 'Buy',
     quantity: cfg.qty,
     limitPrice: cfg.limit,
   }));
