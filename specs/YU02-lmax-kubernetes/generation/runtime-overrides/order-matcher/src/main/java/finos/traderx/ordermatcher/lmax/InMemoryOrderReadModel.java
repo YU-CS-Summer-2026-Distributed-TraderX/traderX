@@ -40,8 +40,8 @@ public final class InMemoryOrderReadModel {
     // (no sync) bounds the read model the same way the BLP bounds ordersByRef. Older terminal orders are
     // removed from byRef; a GET for one then returns null (404), matching the BLP's aged-out behavior.
     // Mirrors the blp.terminal.retain default; reads stay correct for open orders + recent terminals.
-    private static final int TERMINAL_RETAIN = 262_144;
-    private final int[] terminalRing = new int[TERMINAL_RETAIN];
+    private static final int DEFAULT_TERMINAL_RETAIN = 262_144;
+    private final int[] terminalRing;
     private int terminalHead;
     private int terminalCount;
 
@@ -50,6 +50,14 @@ public final class InMemoryOrderReadModel {
     private volatile boolean replaying;
 
     public InMemoryOrderReadModel() {
+        this(DEFAULT_TERMINAL_RETAIN);
+    }
+
+    InMemoryOrderReadModel(int terminalRetain) {
+        if (terminalRetain < 1) {
+            throw new IllegalArgumentException("terminalRetain must be positive");
+        }
+        terminalRing = new int[terminalRetain];
         for (String event : List.of("create", "partial_fill", "fill", "cancel", "reject", "force_fill")) {
             eventCounters.put(event, new LongAdder());
         }
@@ -67,6 +75,28 @@ public final class InMemoryOrderReadModel {
 
     public void bootstrap(OrderSnapshot snapshot) {
         byRef.put(snapshot.orderRef, snapshot);
+    }
+
+    /**
+     * DB warm-up arrives newest-first. Retain every open order and only the configured newest
+     * terminal window; prepend retained terminals so the runtime FIFO still evicts the oldest one
+     * when a new terminal transition arrives after recovery.
+     *
+     * @return true when the BLP should retain this row too, false for an aged-out terminal row.
+     */
+    public boolean bootstrapNewestFirst(OrderSnapshot snapshot) {
+        if (snapshot.isOpen()) {
+            byRef.put(snapshot.orderRef, snapshot);
+            return true;
+        }
+        if (terminalCount == terminalRing.length) {
+            return false;
+        }
+        terminalHead = terminalHead == 0 ? terminalRing.length - 1 : terminalHead - 1;
+        terminalRing[terminalHead] = snapshot.orderRef;
+        terminalCount++;
+        byRef.put(snapshot.orderRef, snapshot);
+        return true;
     }
 
     public void apply(OutputEvent e, SymbolTable symbols) {
@@ -87,15 +117,15 @@ public final class InMemoryOrderReadModel {
 
     /** FIFO-track a terminal order, evicting the oldest from byRef when the cap is full. Single-writer. */
     private void trackTerminal(int orderRef) {
-        if (terminalCount == TERMINAL_RETAIN) {
+        if (terminalCount == terminalRing.length) {
             int oldest = terminalRing[terminalHead];
-            terminalHead = terminalHead + 1 == TERMINAL_RETAIN ? 0 : terminalHead + 1;
+            terminalHead = terminalHead + 1 == terminalRing.length ? 0 : terminalHead + 1;
             terminalCount--;
             byRef.remove(oldest);
         }
         int tail = terminalHead + terminalCount;
-        if (tail >= TERMINAL_RETAIN) {
-            tail -= TERMINAL_RETAIN;
+        if (tail >= terminalRing.length) {
+            tail -= terminalRing.length;
         }
         terminalRing[tail] = orderRef;
         terminalCount++;
