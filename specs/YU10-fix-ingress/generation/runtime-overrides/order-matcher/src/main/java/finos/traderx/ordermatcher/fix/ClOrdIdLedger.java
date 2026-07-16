@@ -18,17 +18,20 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Durable FIX client-order correlation ledger (ADR-035, FR-FIX09/FR-FIX10).
  *
- * <p>Append-only fixed-length records binding (sessionKey, ClOrdID) to the input-ring sequence
- * and internal order reference. A record is WRITTEN (buffered to the OS) before the order is
- * published to the input ring — the invariant is "no order on the ring without a ledger entry";
- * fsync is amortized ({@link #FORCE_EVERY} appends), the same durability discipline the journal
- * uses per drained batch. Rehydration replays the whole file at startup, truncating a torn tail.
+ * <p>Append-only fixed-length records binding (sessionKey, ClOrdID) to the internal order
+ * reference — the stable identity every lifecycle OutputEvent carries. A record is written at
+ * admission, immediately after the sequenced response. The DUPLICATE/idempotency AUTHORITY is
+ * the engine itself (clientOrderKey, FR-IMRG14 — journaled and replay-safe): the ledger's
+ * duplicate check is a fast pre-filter and its restart rehydration restores correlation, while
+ * a crash-window retry is resolved by the engine mapping the same client order key back to the
+ * one original order. fsync is amortized ({@link #FORCE_EVERY} appends), the journal's
+ * per-batch durability discipline.
  *
- * <p>Threading: appends and by-ClOrdID lookups happen on QuickFIX/J session threads
- * (synchronized); {@link #byInputSeq(long)} is read by the ExecutionReport handler on the
- * output-ring thread via a ConcurrentHashMap (lock-free read; the output-ring thread sits
- * outside the exact-zero allocation boundary, so the boxed key lookup is acceptable there —
- * NFR-FIX01).
+ * <p>Threading: appends and by-ClOrdID lookups happen on FIX session/submitter threads
+ * (synchronized); {@link #byOrderRef(int)} is read by the ExecutionReport handler on the
+ * output-ring thread via a ConcurrentHashMap — lock-free, and the output-ring thread sits
+ * outside the exact-zero allocation boundary, so the boxed key lookup is acceptable there
+ * (NFR-FIX01).
  */
 public final class ClOrdIdLedger implements AutoCloseable {
     private static final Logger log = LoggerFactory.getLogger(ClOrdIdLedger.class);
@@ -40,11 +43,11 @@ public final class ClOrdIdLedger implements AutoCloseable {
     public enum AppendResult { OK, DUPLICATE, UNAVAILABLE }
 
     /** One correlated order. */
-    public record Entry(long sessionKey, String clOrdId, long inputSeq, int orderRef) { }
+    public record Entry(long sessionKey, String clOrdId, int orderRef) { }
 
     private final Path file;
     private final Map<Long, Map<String, Entry>> bySession = new HashMap<>();
-    private final ConcurrentHashMap<Long, Entry> byInputSeq = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<Integer, Entry> byOrderRef = new ConcurrentHashMap<>();
     private final ByteBuffer writeBuf = ByteBuffer.allocate(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
 
     private FileChannel channel;
@@ -64,7 +67,7 @@ public final class ClOrdIdLedger implements AutoCloseable {
             }
             channel.position(channel.size());
             this.available = true;
-            log.info("ClOrdID ledger ready: {} entries from {}", byInputSeq.size(), file);
+            log.info("ClOrdID ledger ready: {} entries from {}", byOrderRef.size(), file);
         } catch (IOException ex) {
             log.error("ClOrdID ledger unavailable at {} — FIX order admission will fail closed", file, ex);
             this.available = false;
@@ -80,8 +83,9 @@ public final class ClOrdIdLedger implements AutoCloseable {
         return h;
     }
 
-    /** Record an order BEFORE ring publish. DUPLICATE and UNAVAILABLE mean: do not publish. */
-    public synchronized AppendResult append(long sessionKey, String clOrdId, long inputSeq, int orderRef) {
+    /** Record an admitted order. DUPLICATE means already correlated (do not re-admit);
+     *  UNAVAILABLE means fail closed — reject at the session level (FR-FIX10). */
+    public synchronized AppendResult append(long sessionKey, String clOrdId, int orderRef) {
         if (!available) {
             return AppendResult.UNAVAILABLE;
         }
@@ -94,7 +98,7 @@ public final class ClOrdIdLedger implements AutoCloseable {
             return AppendResult.DUPLICATE;
         }
         writeBuf.clear();
-        writeBuf.putLong(sessionKey).putLong(inputSeq).putInt(orderRef).putShort((short) id.length);
+        writeBuf.putLong(sessionKey).putLong(0L /* reserved */).putInt(orderRef).putShort((short) id.length);
         writeBuf.put(id);
         while (writeBuf.position() < RECORD_SIZE) {
             writeBuf.put((byte) 0);
@@ -113,9 +117,9 @@ public final class ClOrdIdLedger implements AutoCloseable {
             available = false;
             return AppendResult.UNAVAILABLE;
         }
-        Entry e = new Entry(sessionKey, clOrdId, inputSeq, orderRef);
+        Entry e = new Entry(sessionKey, clOrdId, orderRef);
         session.put(clOrdId, e);
-        byInputSeq.put(inputSeq, e);
+        byOrderRef.put(orderRef, e);
         return AppendResult.OK;
     }
 
@@ -125,9 +129,9 @@ public final class ClOrdIdLedger implements AutoCloseable {
         return session == null ? null : session.get(clOrdId);
     }
 
-    /** Output-ring-thread lookup joining OutputEvent.inputSeq to the owning session. */
-    public Entry byInputSeq(long inputSeq) {
-        return byInputSeq.get(inputSeq);
+    /** Output-ring-thread lookup joining OutputEvent.orderRef to the owning session. */
+    public Entry byOrderRef(int orderRef) {
+        return byOrderRef.get(orderRef);
     }
 
     public boolean available() {
@@ -135,7 +139,7 @@ public final class ClOrdIdLedger implements AutoCloseable {
     }
 
     public synchronized int size() {
-        return byInputSeq.size();
+        return byOrderRef.size();
     }
 
     /** Flush any unforced appends (shutdown hook / tests). */
@@ -158,7 +162,7 @@ public final class ClOrdIdLedger implements AutoCloseable {
             }
             buf.flip();
             long sessionKey = buf.getLong();
-            long inputSeq = buf.getLong();
+            buf.getLong();  // reserved slot
             int orderRef = buf.getInt();
             short len = buf.getShort();
             if (len <= 0 || len > MAX_CLORDID_BYTES) {
@@ -166,9 +170,9 @@ public final class ClOrdIdLedger implements AutoCloseable {
             }
             byte[] id = new byte[len];
             buf.get(id);
-            Entry e = new Entry(sessionKey, new String(id, StandardCharsets.UTF_8), inputSeq, orderRef);
+            Entry e = new Entry(sessionKey, new String(id, StandardCharsets.UTF_8), orderRef);
             bySession.computeIfAbsent(sessionKey, k -> new HashMap<>()).put(e.clOrdId(), e);
-            byInputSeq.put(inputSeq, e);
+            byOrderRef.put(orderRef, e);
             offset += RECORD_SIZE;
         }
         return offset;

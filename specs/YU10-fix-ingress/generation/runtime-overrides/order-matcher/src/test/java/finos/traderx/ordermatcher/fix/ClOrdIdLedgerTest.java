@@ -21,17 +21,17 @@ class ClOrdIdLedgerTest {
     @Test
     void appendLookupAndDuplicateDetection(@TempDir Path dir) {
         try (ClOrdIdLedger ledger = new ClOrdIdLedger(dir)) {
-            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(SESSION, "ord-1", 100L, 7));
-            assertEquals(ClOrdIdLedger.AppendResult.DUPLICATE, ledger.append(SESSION, "ord-1", 101L, 8));
+            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(SESSION, "ord-1", 7));
+            assertEquals(ClOrdIdLedger.AppendResult.DUPLICATE, ledger.append(SESSION, "ord-1", 8));
             // same ClOrdID on a DIFFERENT session is a distinct order
             long other = ClOrdIdLedger.sessionKey("OTHER", "TRADERX");
-            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(other, "ord-1", 102L, 9));
+            assertEquals(ClOrdIdLedger.AppendResult.OK, ledger.append(other, "ord-1", 9));
 
             assertEquals(7, ledger.byClOrdId(SESSION, "ord-1").orderRef());
-            assertEquals("ord-1", ledger.byInputSeq(100L).clOrdId());
-            assertEquals(9, ledger.byInputSeq(102L).orderRef());
+            assertEquals("ord-1", ledger.byOrderRef(7).clOrdId());
+            assertEquals(9, ledger.byOrderRef(9).orderRef());
             assertNull(ledger.byClOrdId(SESSION, "missing"));
-            assertNull(ledger.byInputSeq(999L));
+            assertNull(ledger.byOrderRef(999));
         }
     }
 
@@ -40,27 +40,27 @@ class ClOrdIdLedgerTest {
         try (ClOrdIdLedger ledger = new ClOrdIdLedger(dir)) {
             for (int i = 0; i < 200; i++) {
                 assertEquals(ClOrdIdLedger.AppendResult.OK,
-                    ledger.append(SESSION, "ord-" + i, 1000L + i, i));
+                    ledger.append(SESSION, "ord-" + i, i));
             }
         }
         try (ClOrdIdLedger reopened = new ClOrdIdLedger(dir)) {
             assertEquals(200, reopened.size());
             assertEquals(150, reopened.byClOrdId(SESSION, "ord-150").orderRef());
-            assertEquals("ord-42", reopened.byInputSeq(1042L).clOrdId());
+            assertEquals("ord-42", reopened.byOrderRef(42).clOrdId());
             // duplicate detection survives the restart — the safety property behind idempotent retry
             assertEquals(ClOrdIdLedger.AppendResult.DUPLICATE,
-                reopened.append(SESSION, "ord-150", 9999L, 1));
+                reopened.append(SESSION, "ord-150", 1));
             // and new appends continue
             assertEquals(ClOrdIdLedger.AppendResult.OK,
-                reopened.append(SESSION, "ord-new", 2000L, 201));
+                reopened.append(SESSION, "ord-new", 201));
         }
     }
 
     @Test
     void tornTailIsTruncatedAndLedgerContinues(@TempDir Path dir) throws Exception {
         try (ClOrdIdLedger ledger = new ClOrdIdLedger(dir)) {
-            ledger.append(SESSION, "good-1", 1L, 1);
-            ledger.append(SESSION, "good-2", 2L, 2);
+            ledger.append(SESSION, "good-1", 1);
+            ledger.append(SESSION, "good-2", 2);
         }
         Path file = dir.resolve("clordid-ledger.dat");
         long intact = Files.size(file);
@@ -68,7 +68,7 @@ class ClOrdIdLedgerTest {
         Files.write(file, new byte[]{1, 2, 3, 4, 5}, StandardOpenOption.APPEND);
         try (ClOrdIdLedger reopened = new ClOrdIdLedger(dir)) {
             assertEquals(2, reopened.size());
-            assertEquals(ClOrdIdLedger.AppendResult.OK, reopened.append(SESSION, "good-3", 3L, 3));
+            assertEquals(ClOrdIdLedger.AppendResult.OK, reopened.append(SESSION, "good-3", 3));
         }
         // corrupt FULL record (bad length field) also stops rehydration at the last good entry
         byte[] junk = new byte[ClOrdIdLedger.RECORD_SIZE];
@@ -86,13 +86,13 @@ class ClOrdIdLedgerTest {
         assertTrue(ledger.available());
         ledger.close();
         assertFalse(ledger.available());
-        assertEquals(ClOrdIdLedger.AppendResult.UNAVAILABLE, ledger.append(SESSION, "x", 1L, 1));
+        assertEquals(ClOrdIdLedger.AppendResult.UNAVAILABLE, ledger.append(SESSION, "x", 1));
 
         try (ClOrdIdLedger fresh = new ClOrdIdLedger(dir)) {
             assertThrows(IllegalArgumentException.class,
-                () -> fresh.append(SESSION, "", 1L, 1));
+                () -> fresh.append(SESSION, "", 1));
             assertThrows(IllegalArgumentException.class,
-                () -> fresh.append(SESSION, "x".repeat(65), 1L, 1));
+                () -> fresh.append(SESSION, "x".repeat(65), 1));
         }
     }
 
