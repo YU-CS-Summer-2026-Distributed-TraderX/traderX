@@ -1,5 +1,27 @@
 # Handoff: BLP HA / Throughput Hardening (CLOUD-ARCHITECTURE.md §7 backlog)
 
+> **STATUS 2026-07-14 — items 1 & 2 RESOLVED, deployed to prod, propagated to all 8 states.**
+> The HA lease-starvation false-demote (item 1) and the `blp-role`-label bug (item 2) were fixed,
+> deployed to `yaakovseif.dev`, and validated. GC was ruled out by measurement (max stop-the-world
+> 157 ms vs the old 5 s renewal window) — the cause was renewal starvation + demote-on-first-failure,
+> not the candidate fixes originally guessed here (longer lease / thread priority). Actual fix:
+> **demote-on-proof** renewal state machine (foreign holder OR 10 s renew deadline; single optimistic
+> PUT with cached resourceVersion; 2 s HTTP timeouts), **heartbeat split onto its own thread**,
+> **pod-GET fast path** (real-kill failover ~2–3 s despite a 15 s lease), a **synchronous admission
+> gate** (single-writer fencing, STW-wakeup-safe), **fail-closed replication** (NATS-down /
+> JetStream-fail no longer self-appoint an unreplicated PRIMARY) + a **NATS backoff recovery loop**,
+> and stamping `blp-role` at election start (item 2). Timing contract is env-tunable (15/10/2/2).
+> Full design + validation: `LMAX-BLP-FAILOVER.md` (rewritten; §10 = incident) and
+> `SPEC-blp-ha-lease-starvation-fix-FINAL.md`. Three independent model proposals were cross-reviewed
+> to converge on it (`DESIGN-PROPOSAL-*`/`PROPOSAL-*`).
+>
+> **Still open:** item 3 (beyond-42k gateway path) and item 4 (broader crash/partition durability —
+> real-kill + cgroup-freeze wedge are now tested, but multi-zone/partition is not). Two NEW
+> production gaps surfaced during the fix's deploy: **NATS broker has no memory limit** (OOM'd under
+> 22k/s HA load — real fix is JetStream file storage + stream/consumer limits, not a bigger cap),
+> and the **replicator doesn't re-create the JetStream stream on NATS reconnect** (wedges the primary
+> until restart). Throughput levers now live in `HANDOFF-ha-throughput-improvements.md` (item 5).
+
 > Not one of the professor's 8 deck-idea handoffs — this one captures the "Known issues / next
 > levers" already logged in `CLOUD-ARCHITECTURE.md` §7 that predate YU03-YU05 and remain
 > unaddressed. None of YU03 (risk gateway), YU04 (durable control feeds), or YU05 (post-trade
@@ -25,15 +47,15 @@ shared cluster.
 
 ## Open items (from CLOUD-ARCHITECTURE.md §7, unaddressed as of 2026-07-07)
 
-1. **HA lease starvation under load** *(real bug, not yet fixed)* — at conc≥24 the CPU-saturating
-   load starves the leader-election Lease renewal, the PRIMARY false-demotes (409 lease conflict),
-   and writes fail transiently until it re-settles. Candidate fixes: longer
-   `leaseDurationSeconds`, and/or run the election thread at higher priority / off the saturated
-   cores.
-2. **`blp-role` label not always set on the PRIMARY after redeploy** — `order-matcher-primary`
-   Service can end up empty. Not currently unsafe (the plain `order-matcher` Service still routes
-   correctly since FOLLOWER reports not-ready), but worth fixing for anything that depends on the
-   primary-only Service specifically.
+1. ~~**HA lease starvation under load** *(real bug, not yet fixed)*~~ **✅ FIXED 2026-07-14** (see
+   status block above). The candidate fixes guessed here were wrong: GC was measured out (157 ms max
+   STW), and lengthening the lease alone would only have made it rarer. Root cause was
+   demote-on-first-ambiguous-failure + renewal starvation; fix is demote-on-proof + pod-GET fast path
+   + split threads + admission fencing.
+2. ~~**`blp-role` label not always set on the PRIMARY after redeploy**~~ **✅ FIXED 2026-07-14** —
+   the label is now stamped at election start, not only on promotion/demotion, so a cleanly-elected
+   pair that never flaps still populates `order-matcher-primary`. (This bug was actually *exposed* by
+   fixing item 1: pre-fix, constant flapping always ran the promotion path and hid it.)
 3. **Beyond 42k single-BLP booked/s**: the path is gateway-CPU-bound, not matching-engine-bound
    (the in-process ceiling is ~2.4M/s). Levers: a `c2-standard-8` (more cores), or reducing
    per-order gateway cost (async REST, fewer allocations) — **not** CPU pinning, which doesn't
