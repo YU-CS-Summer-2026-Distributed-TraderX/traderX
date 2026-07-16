@@ -47,6 +47,10 @@ cp "${REPO_ROOT}/cluster-addons/order-matcher-headless-service.yaml" "${OUTPUT_D
 KUST="${OUTPUT_DIR}/kustomization.yaml"
 perl -0pi -e 's/  - order-matcher-lmax-data-pvc\.yaml\n//' "${KUST}"
 perl -0pi -e 's/  - order-matcher-deployment\.yaml/  - order-matcher-statefulset.yaml\n  - order-matcher-headless-service.yaml/' "${KUST}"
+# execution-algo-engine is CI/CD-owned (cluster-addons/execution-algo-engine-deployment.yaml via
+# skaffold/Cloud Deploy, unique ci-$SHA tags) — drop it here so a manual full deploy can't revert
+# it to a stale fixed tag. Its Service stays kustomization-managed.
+perl -0pi -e 's/  - execution-algo-engine-deployment\.yaml\n//' "${KUST}"
 
 while IFS=$'\t' read -r name source_image context dockerfile; do
   tag="${source_image##*:}"

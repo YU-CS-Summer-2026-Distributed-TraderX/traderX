@@ -25,6 +25,11 @@ steps:
         bash pipeline/generate-state.sh YU09-ops-hardening
         cd generated/code/target-generated/order-matcher
         ./gradlew bootJar --no-daemon
+        # execution-algo-engine rides the same release (no standalone pipeline: it churns
+        # rarely and shares the approval gate) — added 2026-07-16 after its manifest
+        # referenced an image that had never been pushed to Artifact Registry.
+        cd ../execution-algo-engine
+        ./gradlew bootJar --no-daemon
 
   - id: build-and-push-image
     name: gcr.io/cloud-builders/docker
@@ -39,6 +44,19 @@ steps:
       - push
       - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA
 
+  - id: build-and-push-algo-engine-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/execution-algo-engine:ci-$SHORT_SHA
+      - generated/code/target-generated/execution-algo-engine
+  - id: push-algo-engine-image
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/execution-algo-engine:ci-$SHORT_SHA
+
   - id: create-release
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
     entrypoint: gcloud
@@ -50,7 +68,7 @@ steps:
       - --delivery-pipeline=order-matcher-yu09-pipeline
       - --region=us-east1
       - --source=.
-      - --images=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA
+      - --images=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/order-matcher:ci-$SHORT_SHA,us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/execution-algo-engine=us-east1-docker.pkg.dev/${PROJECT_ID}/traderx/execution-algo-engine:ci-$SHORT_SHA
 
 options:
   logging: CLOUD_LOGGING_ONLY

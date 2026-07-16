@@ -11,9 +11,12 @@ build:
   artifacts:
     - image: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher
       context: generated/code/target-generated/order-matcher
+    - image: us-east1-docker.pkg.dev/traderx-501015/traderx/execution-algo-engine
+      context: generated/code/target-generated/execution-algo-engine
 manifests:
   rawYaml:
     - cluster-addons/order-matcher-statefulset.yaml
+    - cluster-addons/execution-algo-engine-deployment.yaml
 deploy:
   kubectl: {}
 

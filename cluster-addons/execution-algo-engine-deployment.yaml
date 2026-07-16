@@ -1,0 +1,86 @@
+# CI/CD-owned copy of the execution-algo-engine Deployment (mirrors the generated
+# kubernetes-runtime manifest; kept in cluster-addons because skaffold/Cloud Deploy needs a
+# committed manifest and generated/ is gitignored — same arrangement as the order-matcher
+# StatefulSet). The image tag is substituted by Cloud Deploy from the release's --images
+# mapping (unique ci-$SHORT_SHA tags, never a mutable tag). The manual GKE deploy script
+# excludes execution-algo-engine-deployment.yaml from its kustomization for the same reason
+# it excludes order-matcher-deployment.yaml: this pipeline owns the resource.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-algo-engine
+  namespace: traderx
+  labels:
+    app: execution-algo-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-algo-engine
+  template:
+    metadata:
+      labels:
+        app: execution-algo-engine
+    spec:
+      containers:
+        - name: execution-algo-engine
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/execution-algo-engine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18120
+              protocol: TCP
+          env:
+            - name: ALGO_ENGINE_PORT
+              value: "18120"
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: ORDER_MATCHER_URL
+              value: "http://order-matcher:18110"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: ALGO_BUCKET_SECONDS_DEFAULT
+              value: "10"
+            - name: ALGO_LIMIT_OFFSET_BPS
+              value: "10"
+            # VWAP volume profile (research.md Decision 7, ADR-031): synthetic needs no data.
+            # Flip to "duckdb" to query YU07's tick store once enough TAQ/live-trade volume is
+            # captured; it falls back to synthetic per-security automatically until then.
+            - name: ALGO_VOLUME_PROFILE_SOURCE
+              value: "synthetic"
+            - name: ALGO_VOLUME_PROFILE_DUCKDB_PATH
+              value: "gs://traderx-501015-tick-store/ticks"
+          # Modest floor so the pod isn't BestEffort/starvable (the 2026-07-02 lesson).
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Startup targets READINESS: the event store replays its JetStream log synchronously
+          # before the app is ready. Readiness includes the algoEngine health group (NATS event
+          # store + fill subscriber) so a dead subscription unroutes the pod; liveness stays
+          # app-level so a broker outage does not restart-loop the engine.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
