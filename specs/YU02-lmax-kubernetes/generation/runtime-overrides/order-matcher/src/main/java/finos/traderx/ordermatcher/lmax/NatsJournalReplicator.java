@@ -221,7 +221,15 @@ public final class NatsJournalReplicator implements EventHandler<InputEvent> {
             JetStreamManagement jsm = conn.jetStreamManagement();
             try {
                 StreamInfo existing = jsm.getStreamInfo(STREAM_NAME);
-                log.info("Replication stream already exists: subjects={}", existing.getConfiguration().getSubjects());
+                if (existing.getConfiguration().getStorageType() == StorageType.Memory) {
+                    // JetStream cannot convert storage type in place; a pre-existing Memory
+                    // stream stays Memory until it is deleted (or the broker restarts without
+                    // it) and gets recreated here as File.
+                    log.warn("Replication stream {} exists with Memory storage — not durable; " +
+                        "delete the stream during a quiet window to recreate it as File.", STREAM_NAME);
+                } else {
+                    log.info("Replication stream already exists: subjects={}", existing.getConfiguration().getSubjects());
+                }
                 return true;
             } catch (io.nats.client.JetStreamApiException ex) {
                 if (ex.getApiErrorCode() != 10059) throw ex; // 10059 = stream not found
@@ -229,7 +237,7 @@ public final class NatsJournalReplicator implements EventHandler<InputEvent> {
             StreamConfiguration sc = StreamConfiguration.builder()
                 .name(STREAM_NAME)
                 .subjects(SUBJECT)
-                .storageType(StorageType.Memory)
+                .storageType(StorageType.File)
                 .maxAge(Duration.ofDays(1))
                 .build();
             jsm.addStream(sc);

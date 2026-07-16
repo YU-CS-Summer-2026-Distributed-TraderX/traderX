@@ -35,6 +35,7 @@ resources:
   - grafana-service.yaml
   - database-deployment.yaml
   - database-service.yaml
+  - nats-broker-data-pvc.yaml
   - nats-broker-deployment.yaml
   - nats-broker-service.yaml
   - reference-data-deployment.yaml
