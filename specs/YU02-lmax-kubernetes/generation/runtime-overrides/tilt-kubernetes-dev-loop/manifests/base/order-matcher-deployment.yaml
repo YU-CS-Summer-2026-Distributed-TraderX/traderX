@@ -75,7 +75,11 @@ spec:
             - name: SNAPSHOT_INTERVAL_MS
               value: "300000"
             - name: RECOVERY_SOURCE
-              value: "db"
+              # journal: the journal is the source of truth and replay is bounded by the snapshot
+              # interval; db warm-up rebuilds the book from a projection (and OOMed on populated
+              # DBs before DbWarmupReader streamed it). Matches the GKE StatefulSet. The CODE
+              # default stays db (documented warm-start for compose/tests).
+              value: "journal"
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
               value: "health,prometheus,info"
             - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
