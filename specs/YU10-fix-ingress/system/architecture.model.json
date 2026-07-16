@@ -1,0 +1,92 @@
+{
+  "title": "YU10-fix-ingress architecture",
+  "stateId": "YU10-fix-ingress",
+  "parentState": "YU09-ops-hardening",
+  "description": "FIX 4.4 order-entry front door for the order-matcher: an in-process QuickFIX/J acceptor whose session threads publish translated order commands to the existing LMAX input ring, a durable correlation ledger binding ClOrdIDs to ring sequences, and an output-disruptor handler streaming ExecutionReports back to the owning session.",
+  "inheritsFrom": "YU09-ops-hardening (which inherits the full YU02..YU08 LMAX/Kubernetes lineage)",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "fix_counterparty",
+      "label": "FIX counterparty (initiator)",
+      "kind": "external",
+      "description": "Any FIX 4.4 initiator: logs on with SenderCompID + JWT in Password(554), submits NewOrderSingle/OrderCancelRequest/OrderStatusRequest, receives ExecutionReports."
+    },
+    {
+      "id": "fix_acceptor",
+      "label": "QuickFIX/J acceptor (in-process, :18130)",
+      "kind": "service",
+      "description": "Owns the FIX session layer (logon, heartbeats, sequence numbers, resend) on its own threads inside the order-matcher JVM. File store + file log on the FIX data directory."
+    },
+    {
+      "id": "fix_identity",
+      "label": "FixIdentity (logon gate)",
+      "kind": "service",
+      "description": "Resolves Password(554) JWT once via the existing EntitlementGate.resolve and maps SenderCompID to exactly one account via FIX_SESSION_ACCOUNTS; pins the ResolvedPrincipal to the session; fail-closed on any miss."
+    },
+    {
+      "id": "fix_translator",
+      "label": "FixOrderApplication (translator)",
+      "kind": "service",
+      "description": "On the session thread: D -> order-new, F -> cancel (ledger lookup + ownership check), H -> read-model status report. Four-outcome admission model; publishes to the input ring with a bounded claim timeout."
+    },
+    {
+      "id": "clordid_ledger",
+      "label": "ClOrdID correlation ledger (PVC)",
+      "kind": "store",
+      "description": "Append-only records (sessionKey, ClOrdID, inputSeq, orderRef) written before ring publish with amortized force; rehydrated at startup; duplicate detection; fail-closed when unavailable."
+    },
+    {
+      "id": "input_ring",
+      "label": "Input ring (ProducerType.MULTI)",
+      "kind": "queue",
+      "description": "Unchanged. FIX session threads join REST/Tomcat threads and the replication follower as producers."
+    },
+    {
+      "id": "blp",
+      "label": "BLP (journaler -> matcher)",
+      "kind": "service",
+      "description": "Unchanged: journal + risk screen + matching engine. A FIX order is bit-identical to a REST order here."
+    },
+    {
+      "id": "output_ring",
+      "label": "Output ring (ProducerType.SINGLE)",
+      "kind": "queue",
+      "description": "Unchanged; carries order-lifecycle output events with inputSeq correlation."
+    },
+    {
+      "id": "fix_er_handler",
+      "label": "FixExecutionReportHandler",
+      "kind": "service",
+      "description": "Output-disruptor handler: joins OutputEvent.inputSeq through the ledger to (session, ClOrdID), builds ExecutionReport/OrderCancelReject, enqueues to the QuickFIX/J session send path. No I/O on the ring thread."
+    },
+    {
+      "id": "fix_store",
+      "label": "FIX session store (PVC)",
+      "kind": "store",
+      "description": "QuickFIX/J file store: sequence numbers + sent messages (PersistMessages=Y) under FIX_DATA_DIR on the existing lmax-runtime-data volume; backs ResendRequest recovery."
+    },
+    {
+      "id": "read_model",
+      "label": "In-memory order read model",
+      "kind": "store",
+      "description": "Unchanged; serves OrderStatusRequest lookups without touching the ring."
+    }
+  ],
+  "edges": [
+    { "from": "fix_counterparty", "to": "fix_acceptor", "label": "FIX 4.4 over TCP :18130 (logon, D/F/H)" },
+    { "from": "fix_acceptor", "to": "fix_identity", "label": "Logon: JWT + CompID resolution (once per session)" },
+    { "from": "fix_acceptor", "to": "fix_translator", "label": "validated application messages (session thread)" },
+    { "from": "fix_translator", "to": "clordid_ledger", "label": "append (session, ClOrdID, inputSeq, orderRef) BEFORE publish" },
+    { "from": "fix_translator", "to": "input_ring", "label": "order-new / cancel input events" },
+    { "from": "fix_translator", "to": "read_model", "label": "OrderStatusRequest lookup (no ring publish)" },
+    { "from": "input_ring", "to": "blp", "label": "journal -> risk screen -> match (unchanged)" },
+    { "from": "blp", "to": "output_ring", "label": "lifecycle output events (inputSeq correlated)" },
+    { "from": "output_ring", "to": "fix_er_handler", "label": "handler in existing output chain" },
+    { "from": "fix_er_handler", "to": "clordid_ledger", "label": "inputSeq -> (session, ClOrdID) join" },
+    { "from": "fix_er_handler", "to": "fix_acceptor", "label": "ExecutionReport / OrderCancelReject enqueue" },
+    { "from": "fix_acceptor", "to": "fix_store", "label": "sequence numbers + sent messages (resend window)" },
+    { "from": "fix_acceptor", "to": "fix_counterparty", "label": "8 / 9 / 3 + session protocol" }
+  ]
+}

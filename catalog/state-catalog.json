@@ -602,6 +602,29 @@
         "branch": "code/generated-state-YU09-ops-hardening",
         "tag": "generated/YU09-ops-hardening/v1"
       }
+    },
+    {
+      "id": "YU10-fix-ingress",
+      "title": "FIX Order-Entry Ingress",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU10-fix-ingress",
+      "previous": [
+        "YU09-ops-hardening"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU10-fix-ingress",
+        "runtime": "inherits YU09-ops-hardening runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU10-fix-ingress",
+        "tag": "generated/YU10-fix-ingress/v1"
+      }
     }
   ]
 }
