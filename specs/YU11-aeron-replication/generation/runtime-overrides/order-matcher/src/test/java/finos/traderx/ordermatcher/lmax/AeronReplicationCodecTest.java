@@ -76,6 +76,8 @@ class AeronReplicationCodecTest {
         assertThat(target.qty).isEqualTo(-44);
         assertThat(target.type).isEqualTo(InputEvent.TYPE_ORDER_NEW);
         assertThat(target.side).isEqualTo(InputEvent.SIDE_SELL);
+        assertThat(codec.inspectedPayloadChecksum())
+            .isEqualTo(AeronReplicationCodec.payloadChecksum(source));
     }
 
     @Test

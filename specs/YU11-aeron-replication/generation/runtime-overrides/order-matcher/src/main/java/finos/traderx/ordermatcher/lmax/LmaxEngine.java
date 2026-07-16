@@ -111,16 +111,34 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final ReplicationFailurePolicy replicationFailurePolicy;
     private final String replicationStaticRole;
     private final boolean aeronShadowEnabled;
+    private final String aeronClusterId;
+    private final String aeronSecretFile;
+    private final String aeronInlineSecret;
+    private final int aeronLocalOrdinal;
+    private final String aeronPeerId;
     private final String aeronDirectory;
     private final String aeronDataPublishChannel;
+    private final String aeronDataLivePublishChannel;
     private final String aeronDataSubscribeChannel;
     private final String aeronAckPublishChannel;
     private final String aeronAckSubscribeChannel;
+    private final String aeronControlPublishChannel;
+    private final String aeronControlSubscribeChannel;
     private final int aeronDataStreamId;
     private final int aeronAckStreamId;
+    private final int aeronControlStreamId;
+    private final long aeronHeartbeatIntervalMs;
+    private final long aeronPeerStaleMs;
+    private final boolean aeronArchiveReplayEnabled;
+    private final String aeronArchiveControlRequestChannel;
+    private final String aeronArchiveControlResponseChannel;
+    private final String aeronArchiveReplayDestination;
+    private final String aeronArchiveRecordingChannelFragment;
+    private final long aeronArchiveReplayTimeoutMs;
     private final int aeronMappingCapacity;
     private final long replicationAckTimeoutMs;
     private volatile long currentLeaderEpoch;
+    private volatile boolean aeronProtocolFaulted;
     // In-memory risk gateway (state YU03): the Gateway replica feeding preliminary screening and
     // the config for the BLP's authoritative risk state (SEC 15c3-5 baseline controls).
     private final GatewayReplicaStore gatewayReplicas;
@@ -172,6 +190,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private AeronReplicator aeronReplicator;
     private AeronReplicator aeronShadowReplicator;
     private AeronReplicationFollower aeronFollower;
+    private AeronShadowFollower aeronShadowFollower;
+    private ShadowSequenceMap shadowSequenceMap;
+    private AeronPeerControlAgent aeronControlAgent;
     private LeaderElection leaderElection;
 
     public LmaxEngine(
@@ -218,13 +239,31 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.replication.failure-policy:degraded-solo}") String replicationFailurePolicy,
         @Value("${blp.replication.static-role:}") String replicationStaticRole,
         @Value("${blp.replication.aeron.shadow:false}") boolean aeronShadowEnabled,
+        @Value("${blp.replication.aeron.schema-checksum:45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e}") String aeronSchemaChecksum,
+        @Value("${blp.replication.cluster-id:traderx}") String aeronClusterId,
+        @Value("${blp.replication.secret-file:}") String aeronSecretFile,
+        @Value("${blp.replication.secret:}") String aeronInlineSecret,
+        @Value("${blp.replication.local-ordinal:-1}") int aeronLocalOrdinal,
+        @Value("${blp.replication.peer-id:}") String aeronPeerId,
         @Value("${blp.replication.aeron.directory:/dev/shm/aeron/driver}") String aeronDirectory,
         @Value("${blp.replication.aeron.data-publish-channel:aeron:udp?endpoint=127.0.0.1:40123}") String aeronDataPublishChannel,
+        @Value("${blp.replication.aeron.data-live-publish-channel:}") String aeronDataLivePublishChannel,
         @Value("${blp.replication.aeron.data-subscribe-channel:aeron:udp?endpoint=0.0.0.0:40123}") String aeronDataSubscribeChannel,
         @Value("${blp.replication.aeron.ack-publish-channel:aeron:udp?endpoint=127.0.0.1:40124}") String aeronAckPublishChannel,
         @Value("${blp.replication.aeron.ack-subscribe-channel:aeron:udp?endpoint=0.0.0.0:40124}") String aeronAckSubscribeChannel,
+        @Value("${blp.replication.aeron.control-publish-channel:aeron:udp?endpoint=127.0.0.1:40125}") String aeronControlPublishChannel,
+        @Value("${blp.replication.aeron.control-subscribe-channel:aeron:udp?endpoint=0.0.0.0:40125}") String aeronControlSubscribeChannel,
         @Value("${blp.replication.aeron.data-stream-id:1101}") int aeronDataStreamId,
         @Value("${blp.replication.aeron.ack-stream-id:1102}") int aeronAckStreamId,
+        @Value("${blp.replication.aeron.control-stream-id:1103}") int aeronControlStreamId,
+        @Value("${blp.replication.aeron.heartbeat-interval-ms:10}") long aeronHeartbeatIntervalMs,
+        @Value("${blp.replication.aeron.peer-stale-ms:40}") long aeronPeerStaleMs,
+        @Value("${blp.replication.aeron.archive-replay-enabled:true}") boolean aeronArchiveReplayEnabled,
+        @Value("${blp.replication.aeron.archive-control-request-channel:auto}") String aeronArchiveControlRequestChannel,
+        @Value("${blp.replication.aeron.archive-control-response-channel:auto}") String aeronArchiveControlResponseChannel,
+        @Value("${blp.replication.aeron.archive-replay-destination:auto}") String aeronArchiveReplayDestination,
+        @Value("${blp.replication.aeron.archive-recording-channel-fragment:alias=yu11-data}") String aeronArchiveRecordingChannelFragment,
+        @Value("${blp.replication.aeron.archive-replay-timeout-ms:10000}") long aeronArchiveReplayTimeoutMs,
         @Value("${blp.replication.aeron.mapping-capacity:65536}") int aeronMappingCapacity,
         @Value("${blp.replication.ack-timeout-ms:500}") long replicationAckTimeoutMs,
         @Value("${blp.replication.leader-epoch:1}") long initialLeaderEpoch,
@@ -295,13 +334,48 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         ReplicationFailurePolicy.validate(this.replicationAckMode,
             this.replicationFailurePolicy, journalEnabled);
         this.aeronShadowEnabled = aeronShadowEnabled;
+        if ((this.replicationTransport == ReplicationTransport.AERON || aeronShadowEnabled)
+            && !AeronReplicationCodec.SCHEMA_CHECKSUM.equals(aeronSchemaChecksum)) {
+            throw new IllegalArgumentException("BLP_SBE_SCHEMA_CHECKSUM mismatch: local="
+                + AeronReplicationCodec.SCHEMA_CHECKSUM + " configured=" + aeronSchemaChecksum);
+        }
+        this.aeronClusterId = aeronClusterId == null ? "" : aeronClusterId.trim();
+        this.aeronSecretFile = aeronSecretFile;
+        this.aeronInlineSecret = aeronInlineSecret;
+        boolean aeronActive = this.replicationTransport == ReplicationTransport.AERON || aeronShadowEnabled;
+        this.aeronLocalOrdinal = aeronActive
+            ? resolvePodOrdinal(aeronLocalOrdinal, podName) : aeronLocalOrdinal;
+        this.aeronPeerId = aeronPeerId == null || aeronPeerId.isBlank()
+            ? (aeronActive ? peerPodName(podName) : "") : aeronPeerId.trim();
         this.aeronDirectory = aeronDirectory;
-        this.aeronDataPublishChannel = resolveAeronChannel(aeronDataPublishChannel, podName, 40123, true);
+        this.aeronDataPublishChannel = withAlias(
+            resolveAeronChannel(aeronDataPublishChannel, podName, 40123, true), "yu11-data");
+        this.aeronDataLivePublishChannel = aeronDataLivePublishChannel == null
+            || aeronDataLivePublishChannel.isBlank() ? ""
+                : withAlias(resolveAeronChannel(aeronDataLivePublishChannel,
+                    podName, 40123, true), "yu11-data");
         this.aeronDataSubscribeChannel = resolveAeronChannel(aeronDataSubscribeChannel, podName, 40123, false);
         this.aeronAckPublishChannel = resolveAeronChannel(aeronAckPublishChannel, podName, 40124, true);
         this.aeronAckSubscribeChannel = resolveAeronChannel(aeronAckSubscribeChannel, podName, 40124, false);
+        this.aeronControlPublishChannel = resolveAeronChannel(aeronControlPublishChannel, podName, 40125, true);
+        this.aeronControlSubscribeChannel = resolveAeronChannel(aeronControlSubscribeChannel, podName, 40125, false);
         this.aeronDataStreamId = aeronDataStreamId;
         this.aeronAckStreamId = aeronAckStreamId;
+        this.aeronControlStreamId = aeronControlStreamId;
+        this.aeronHeartbeatIntervalMs = aeronHeartbeatIntervalMs;
+        this.aeronPeerStaleMs = aeronPeerStaleMs;
+        this.aeronArchiveReplayEnabled = aeronArchiveReplayEnabled;
+        this.aeronArchiveControlRequestChannel = resolveAeronChannel(
+            aeronArchiveControlRequestChannel, podName, 8010, true);
+        this.aeronArchiveControlResponseChannel = resolveLocalAeronChannel(
+            aeronArchiveControlResponseChannel, podName, 8011);
+        this.aeronArchiveReplayDestination = resolveLocalAeronChannel(
+            aeronArchiveReplayDestination, podName, 40126);
+        this.aeronArchiveRecordingChannelFragment = aeronArchiveRecordingChannelFragment;
+        this.aeronArchiveReplayTimeoutMs = aeronArchiveReplayTimeoutMs;
+        if (aeronActive && (aeronHeartbeatIntervalMs <= 0 || aeronPeerStaleMs <= aeronHeartbeatIntervalMs)) {
+            throw new IllegalArgumentException("Aeron peer stale threshold must exceed heartbeat interval");
+        }
         this.aeronMappingCapacity = aeronMappingCapacity;
         this.replicationAckTimeoutMs = replicationAckTimeoutMs;
         if (initialLeaderEpoch < 0 || initialLeaderEpoch > 0xffff_ffffL) {
@@ -456,7 +530,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (aeronFollower != null) {
             aeronFollower.setInputRing(inputRing);
             aeronFollower.setDurabilityWatermarks(journaler::journaledSeq,
-                journaler::journalForceNanos, matchingEngine::blpSeq);
+                journaler::journalForceNanos, matchingEngine::blpSeq,
+                Path.of(journalPath).resolve("aeron-follower.checkpoint"), this::followerFault);
         }
         startSnapshotScheduler();
 
@@ -470,11 +545,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             if (aeronFollower != null) {
                 aeronFollower.start(this::followerReady, this::followerFault);
             }
+            if (aeronShadowFollower != null) {
+                aeronShadowFollower.start(this::shadowFollowerFault);
+            }
             if (leaderElection != null) leaderElection.start();
         } else {
-            recoveryReady = true;
-            recoveryStatus = journalRecovery ? "recovered-journal-tail" : "warm-started-from-postgres";
-            publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+            recoveryReady = !aeronProtocolFaulted;
+            recoveryStatus = aeronProtocolFaulted ? "aeron-peer-protocol-fault"
+                : (journalRecovery ? "recovered-journal-tail" : "warm-started-from-postgres");
+            publishReadiness(aeronProtocolFaulted
+                ? ReadinessState.REFUSING_TRAFFIC : ReadinessState.ACCEPTING_TRAFFIC);
             if (leaderElection != null) leaderElection.start();
         }
         if (riskEnabled) {
@@ -560,8 +640,43 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         aeronClient = io.aeron.Aeron.connect(context);
     }
 
+    private void initAeronControl(int localRole) {
+        if (aeronControlAgent != null) aeronControlAgent.close();
+        int expectedRole = localRole == AeronPeerAuthenticator.ROLE_PRIMARY
+            ? AeronPeerAuthenticator.ROLE_FOLLOWER : AeronPeerAuthenticator.ROLE_PRIMARY;
+        AeronPeerAuthenticator.Identity identity = new AeronPeerAuthenticator.Identity(
+            aeronClusterId, podName, aeronPeerId, currentLeaderEpoch, localRole, expectedRole,
+            aeronLocalOrdinal, 1 - aeronLocalOrdinal);
+        byte[] secret = AeronPeerAuthenticator.loadSecret(aeronSecretFile, aeronInlineSecret);
+        aeronControlAgent = new AeronPeerControlAgent(aeronClient,
+            aeronControlPublishChannel, aeronControlSubscribeChannel, aeronControlStreamId,
+            identity, secret, aeronHeartbeatIntervalMs, aeronPeerStaleMs,
+            () -> inputRing == null ? -1L : inputRing.getCursor(),
+            () -> journaler == null ? -1L : journaler.journaledSeq(),
+            () -> matchingEngine == null ? -1L : matchingEngine.blpSeq(),
+            () -> aeronReplicator == null ? -1L : aeronReplicator.publicationPosition());
+        aeronControlAgent.start(this::aeronProtocolFault);
+    }
+
+    private boolean aeronPeerAuthenticated() {
+        AeronPeerControlAgent agent = aeronControlAgent;
+        return agent != null && agent.sessionReady();
+    }
+
+    private void aeronProtocolFault() {
+        aeronProtocolFaulted = true;
+        recoveryReady = false;
+        recoveryStatus = "aeron-peer-protocol-fault";
+        publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+    }
+
     private void initPrimaryTransport(boolean promoted) {
-        if (promoted) currentLeaderEpoch = Math.min(0xffff_ffffL, currentLeaderEpoch + 1L);
+        if (replicationTransport == ReplicationTransport.AERON || aeronShadowEnabled) {
+            currentLeaderEpoch = LeaderEpochStore.claimNext(
+                Path.of(journalPath).resolve("leader.epoch"), currentLeaderEpoch);
+        } else if (promoted) {
+            currentLeaderEpoch = Math.min(0xffff_ffffL, currentLeaderEpoch + 1L);
+        }
         if (replicationTransport == ReplicationTransport.NATS) {
             if (NatsJournalReplicator.ensureStream(replicationConn)) {
                 try {
@@ -575,12 +690,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             if (aeronShadowEnabled) {
                 try {
                     ensureAeronClient();
+                    initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
                     aeronShadowReplicator = new AeronReplicator(aeronClient,
                         aeronDataPublishChannel, aeronDataStreamId,
                         aeronAckSubscribeChannel, aeronAckStreamId,
                         currentLeaderEpoch, ReplicationAckMode.ON_RING,
-                        ReplicationFailurePolicy.DEGRADED_SOLO, replicationAckTimeoutMs, true);
+                        ReplicationFailurePolicy.DEGRADED_SOLO, replicationAckTimeoutMs, true,
+                        this::aeronPeerAuthenticated, aeronDataLivePublishChannel);
                 } catch (Exception ex) {
+                    if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
                     log.warn("Aeron shadow publisher unavailable: {}", ex.getMessage());
                 }
             }
@@ -589,12 +707,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
         try {
             ensureAeronClient();
+            initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
             aeronReplicator = new AeronReplicator(aeronClient,
                 aeronDataPublishChannel, aeronDataStreamId,
                 aeronAckSubscribeChannel, aeronAckStreamId,
                 currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
-                replicationAckTimeoutMs, false);
+                replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
+                aeronDataLivePublishChannel);
         } catch (Exception ex) {
+            if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
             if (replicationFailurePolicy == ReplicationFailurePolicy.STRICT) {
                 throw new IllegalStateException("strict Aeron primary initialization failed", ex);
             }
@@ -605,16 +726,53 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private void initFollowerTransport() {
         if (replicationTransport == ReplicationTransport.NATS) {
             long startSeq = followerSnapshotJetStreamSeq();
+            shadowSequenceMap = aeronShadowEnabled ? new ShadowSequenceMap(aeronMappingCapacity) : null;
             replicationFollower = new ReplicationFollower(replicationConn, podName, startSeq,
                 readModel, this::followerReady, replicationAckMode,
-                () -> journaler == null ? -1L : journaler.journaledSeq());
+                () -> journaler == null ? -1L : journaler.journaledSeq(), shadowSequenceMap);
+            if (aeronShadowEnabled) {
+                try {
+                    ensureAeronClient();
+                    initAeronControl(AeronPeerAuthenticator.ROLE_FOLLOWER);
+                    aeronShadowFollower = new AeronShadowFollower(aeronClient,
+                        aeronDataSubscribeChannel, aeronDataStreamId, currentLeaderEpoch,
+                        shadowSequenceMap, replicationAckTimeoutMs);
+                } catch (Exception ex) {
+                    if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
+                    log.warn("Aeron shadow consumer unavailable: {}", ex.getMessage());
+                }
+            }
             return;
         }
         ensureAeronClient();
+        initAeronControl(AeronPeerAuthenticator.ROLE_FOLLOWER);
+        AeronFollowerCheckpointStore.Record checkpoint = readAeronFollowerCheckpoint();
+        AeronArchiveReplayMerge.Config replayConfig = aeronArchiveReplayEnabled
+            ? new AeronArchiveReplayMerge.Config(aeronArchiveControlRequestChannel,
+                aeronArchiveControlResponseChannel, aeronArchiveReplayDestination,
+                aeronDataSubscribeChannel, aeronArchiveRecordingChannelFragment,
+                aeronDataStreamId, aeronArchiveReplayTimeoutMs)
+            : null;
         aeronFollower = new AeronReplicationFollower(aeronClient,
             aeronDataSubscribeChannel, aeronDataStreamId,
             aeronAckPublishChannel, aeronAckStreamId,
-            currentLeaderEpoch, replicationAckMode, aeronMappingCapacity, replicationAckTimeoutMs);
+            () -> aeronControlAgent == null ? currentLeaderEpoch : aeronControlAgent.negotiatedEpoch(),
+            replicationAckMode, aeronMappingCapacity, replicationAckTimeoutMs,
+            this::aeronPeerAuthenticated, replayConfig, checkpoint);
+        aeronFollower.setPrimaryHighWatermark(() -> aeronControlAgent == null
+            ? -1L : aeronControlAgent.peerHighestInputSeq());
+        aeronFollower.setPrimaryRecordingPosition(() -> aeronControlAgent == null
+            ? -1L : aeronControlAgent.peerRecordingPosition());
+    }
+
+    private AeronFollowerCheckpointStore.Record readAeronFollowerCheckpoint() {
+        Path path = Path.of(journalPath).resolve("aeron-follower.checkpoint");
+        if (!java.nio.file.Files.exists(path)) return null;
+        try (AeronFollowerCheckpointStore store = new AeronFollowerCheckpointStore(path)) {
+            return store.read();
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("cannot read Aeron follower checkpoint", ex);
+        }
     }
 
     private long followerSnapshotJetStreamSeq() {
@@ -633,6 +791,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     /** Called when a FOLLOWER has caught up to the JetStream tail. Signal readiness. */
     private void followerReady() {
+        if (aeronProtocolFaulted) return;
         recoveryReady = true;
         recoveryStatus = "follower-live";
         publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
@@ -645,10 +804,22 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         publishReadiness(ReadinessState.REFUSING_TRAFFIC);
     }
 
+    private void shadowFollowerFault() {
+        // Shadow mode is diagnostic by contract: NATS remains authoritative and readiness is not
+        // gated, but the mismatch remains sticky and operator-visible through logs/metrics.
+        log.error("Aeron shadow validation fault (pod={} code={} compared={})", podName,
+            aeronShadowFollower == null ? -1 : aeronShadowFollower.faultCode(),
+            aeronShadowFollower == null ? -1 : aeronShadowFollower.comparedCount());
+    }
+
     /** Called by LeaderElection when role changes (e.g. follower promoted, primary demoted). */
     private void onRoleChange(ReplicationRole.Role newRole) {
         log.info("BLP role transition → {} (pod={})", newRole, podName);
+        aeronProtocolFaulted = false;
         if (newRole == ReplicationRole.Role.PRIMARY) {
+            if (aeronControlAgent != null && aeronControlAgent.peerEpoch() > currentLeaderEpoch) {
+                currentLeaderEpoch = aeronControlAgent.peerEpoch();
+            }
             closeFollowerTransport();
             closePrimaryTransport();
             try {
@@ -677,8 +848,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                     if (aeronFollower != null) {
                         aeronFollower.setInputRing(inputRing);
                         aeronFollower.setDurabilityWatermarks(journaler::journaledSeq,
-                            journaler::journalForceNanos, matchingEngine::blpSeq);
+                            journaler::journalForceNanos, matchingEngine::blpSeq,
+                            Path.of(journalPath).resolve("aeron-follower.checkpoint"), this::followerFault);
                         aeronFollower.start(this::followerReady, this::followerFault);
+                    }
+                    if (aeronShadowFollower != null) {
+                        aeronShadowFollower.start(this::shadowFollowerFault);
                     }
                 }
             } catch (Exception ex) {
@@ -701,6 +876,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             aeronShadowReplicator.close();
             aeronShadowReplicator = null;
         }
+        closeAeronControl();
     }
 
     private void closeFollowerTransport() {
@@ -711,6 +887,19 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (aeronFollower != null) {
             aeronFollower.close();
             aeronFollower = null;
+        }
+        if (aeronShadowFollower != null) {
+            aeronShadowFollower.close();
+            aeronShadowFollower = null;
+        }
+        shadowSequenceMap = null;
+        closeAeronControl();
+    }
+
+    private void closeAeronControl() {
+        if (aeronControlAgent != null) {
+            aeronControlAgent.close();
+            aeronControlAgent = null;
         }
     }
 
@@ -728,7 +917,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (configured != null && !configured.isBlank() && !"auto".equalsIgnoreCase(configured)) {
             return configured;
         }
-        if (!publish) return "aeron:udp?endpoint=0.0.0.0:" + port;
+        if (!publish) return resolveLocalAeronChannel("auto", podName, port);
         String peer;
         if (podName != null && podName.endsWith("-0")) {
             peer = podName.substring(0, podName.length() - 1) + "1";
@@ -740,6 +929,42 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         return "aeron:udp?endpoint=" + peer + ".order-matcher-headless."
             + readK8sNamespace() + ".svc.cluster.local:" + port;
+    }
+
+    private static String withAlias(String channel, String alias) {
+        if (channel == null || channel.contains("alias=")) return channel;
+        return channel + (channel.indexOf('?') >= 0 ? "|" : "?") + "alias=" + alias;
+    }
+
+    private static String resolveLocalAeronChannel(String configured, String podName, int port) {
+        if (configured != null && !configured.isBlank() && !"auto".equalsIgnoreCase(configured)) {
+            return configured;
+        }
+        if (podName == null || (!podName.endsWith("-0") && !podName.endsWith("-1"))) {
+            throw new IllegalArgumentException(
+                "automatic local Aeron channel requires StatefulSet pod ordinal 0 or 1: " + podName);
+        }
+        return "aeron:udp?endpoint=" + podName + ".order-matcher-headless."
+            + readK8sNamespace() + ".svc.cluster.local:" + port;
+    }
+
+    private static int resolvePodOrdinal(int configured, String podName) {
+        if (configured == 0 || configured == 1) return configured;
+        if (podName != null && podName.endsWith("-0")) return 0;
+        if (podName != null && podName.endsWith("-1")) return 1;
+        throw new IllegalArgumentException(
+            "Aeron replication requires StatefulSet ordinal 0/1 or BLP_REPLICATION_LOCAL_ORDINAL");
+    }
+
+    private static String peerPodName(String podName) {
+        if (podName != null && podName.endsWith("-0")) {
+            return podName.substring(0, podName.length() - 1) + "1";
+        }
+        if (podName != null && podName.endsWith("-1")) {
+            return podName.substring(0, podName.length() - 1) + "0";
+        }
+        throw new IllegalArgumentException(
+            "Aeron replication requires BLP_REPLICATION_PEER_ID outside a StatefulSet ordinal");
     }
 
     @Override
@@ -835,6 +1060,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (n == 0) {
             return List.of();
         }
+        guardPrimaryAdmission();
         long hi = claimInputSlots(n);
         long lo = hi - (n - 1);
         @SuppressWarnings("unchecked")
@@ -932,6 +1158,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      */
     public RiskDecision executeTradeNew(int accountId, String ticker, OrderSide side, int quantity,
                                         long clientOrderKey) {
+        guardPrimaryAdmission();
         int securityId = symbols.idFor(ticker);
         long seq = claimInputSlot();
         CompletableFuture<RiskReason> ack = readModel.registerTradeAck(seq);
@@ -1089,6 +1316,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private OrderSnapshot execute(byte type, int orderRef, int accountId, int securityId, byte side,
                                   int quantity, long limitPx, long priceTicks) {
+        guardPrimaryAdmission();
         long seq = claimInputSlot();
         CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
         try {
@@ -1129,6 +1357,31 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             super(message);
         }
     }
+
+    /** Thrown when a gateway admission is attempted on a pod that is not a fenced primary. */
+    public static final class NotPrimaryException extends RuntimeException {
+        public NotPrimaryException() { super("order-matcher is not the serving primary"); }
+    }
+
+    /**
+     * Preserve the YU02 synchronous admission fence in this full-file YU11 override. Static roles
+     * exist only for the isolated compose proof; real HA must have a recently confirmed Lease.
+     */
+    private void guardPrimaryAdmission() {
+        if (!replicationEnabled) return;
+        if (aeronProtocolFaulted) throw new NotPrimaryException();
+        if (!replicationStaticRole.isEmpty()) {
+            if (!replicationRole.isPrimary()) throw new NotPrimaryException();
+            return;
+        }
+        LeaderElection election = leaderElection;
+        boolean ok = replicationRole.isPrimary()
+            && election != null
+            && (System.nanoTime() - election.lastSuccessfulRenewNs()) < election.renewDeadlineNanos();
+        if (!ok) throw new NotPrimaryException();
+    }
+
+    public LeaderElection leaderElection() { return leaderElection; }
 
     // ----- bootstrap ------------------------------------------------------------------------
 

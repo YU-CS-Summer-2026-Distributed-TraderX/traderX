@@ -41,7 +41,7 @@ public final class AeronReplicationCodec {
 
     /** SHA-256 of src/main/resources/sbe/blp-replication.xml. */
     public static final String SCHEMA_CHECKSUM =
-        "ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a";
+        "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e";
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();
@@ -160,6 +160,53 @@ public final class AeronReplicationCodec {
     public long ackFlags() { return ackFlags; }
     public long recordingPosition() { return recordingPosition; }
     public long journalForceNanos() { return journalForceNanos; }
+
+    /** Canonical payload checksum for the currently inspected input, excluding transport metadata. */
+    public long inspectedPayloadChecksum() {
+        long hash = 0xcbf29ce484222325L;
+        hash = mixLong(hash, inputDecoder.eventTimeMillis());
+        hash = mixLong(hash, inputDecoder.limitPx());
+        hash = mixLong(hash, inputDecoder.priceTicks());
+        hash = mixInt(hash, (int) inputDecoder.orderRef());
+        hash = mixInt(hash, (int) inputDecoder.accountId());
+        hash = mixInt(hash, (int) inputDecoder.securityId());
+        hash = mixInt(hash, inputDecoder.qty());
+        hash = mixByte(hash, (byte) inputDecoder.commandType());
+        return mixByte(hash, (byte) inputDecoder.side());
+    }
+
+    /** Same canonical payload checksum from the authoritative NATS-decoded ring event. */
+    public static long payloadChecksum(InputEvent event) {
+        long hash = 0xcbf29ce484222325L;
+        hash = mixLong(hash, event.eventTimeMillis);
+        hash = mixLong(hash, event.limitPx);
+        hash = mixLong(hash, event.priceTicks);
+        hash = mixInt(hash, event.orderRef);
+        hash = mixInt(hash, event.accountId);
+        hash = mixInt(hash, event.securityId);
+        hash = mixInt(hash, event.qty);
+        hash = mixByte(hash, event.type);
+        return mixByte(hash, event.side);
+    }
+
+    private static long mixLong(long hash, long value) {
+        for (int shift = 0; shift < Long.SIZE; shift += Byte.SIZE) {
+            hash = mixByte(hash, (byte) (value >>> shift));
+        }
+        return hash;
+    }
+
+    private static long mixInt(long hash, int value) {
+        for (int shift = 0; shift < Integer.SIZE; shift += Byte.SIZE) {
+            hash = mixByte(hash, (byte) (value >>> shift));
+        }
+        return hash;
+    }
+
+    private static long mixByte(long hash, byte value) {
+        hash ^= value & 0xffL;
+        return hash * 0x100000001b3L;
+    }
 
     /** Stable duplicate-comparison checksum; no allocation and no hidden native state. */
     public static long checksum64(DirectBuffer buffer, int offset, int length) {

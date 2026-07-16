@@ -44,6 +44,7 @@ public final class ReplicationFollower {
     private final InMemoryOrderReadModel readModel;
     private final ReplicationAckMode ackMode;
     private final LongSupplier journaledSeq;
+    private final ShadowSequenceMap shadowSequenceMap;
     private final FollowerSequenceMap sequenceMap = new FollowerSequenceMap(65_536);
     private final FollowerSequenceMap.Entry ackEntry = new FollowerSequenceMap.Entry();
 
@@ -63,6 +64,14 @@ public final class ReplicationFollower {
     public ReplicationFollower(Connection conn, String podName, long startJetsStreamSeq,
                                InMemoryOrderReadModel readModel, Runnable readinessCallback,
                                ReplicationAckMode ackMode, LongSupplier journaledSeq) {
+        this(conn, podName, startJetsStreamSeq, readModel, readinessCallback,
+            ackMode, journaledSeq, null);
+    }
+
+    public ReplicationFollower(Connection conn, String podName, long startJetsStreamSeq,
+                               InMemoryOrderReadModel readModel, Runnable readinessCallback,
+                               ReplicationAckMode ackMode, LongSupplier journaledSeq,
+                               ShadowSequenceMap shadowSequenceMap) {
         this.conn = conn;
         this.podName = podName;
         this.startJetsStreamSeq = startJetsStreamSeq;
@@ -70,6 +79,7 @@ public final class ReplicationFollower {
         this.readinessCallback = readinessCallback;
         this.ackMode = ackMode;
         this.journaledSeq = journaledSeq;
+        this.shadowSequenceMap = shadowSequenceMap;
     }
 
     /** Called by LmaxEngine after the input ring is created. */
@@ -209,6 +219,9 @@ public final class ReplicationFollower {
         try {
             InputEvent e = ring.get(seq);
             NatsJournalReplicator.decode(data, e);
+            if (shadowSequenceMap != null) {
+                shadowSequenceMap.put(disruptorSeq, AeronReplicationCodec.payloadChecksum(e));
+            }
             streamSeq = msg.metaData().streamSequence();
             while (running && !sequenceMap.put(seq, 0L, disruptorSeq, streamSeq,
                 checksum64(data))) {

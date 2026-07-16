@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.LongSupplier;
+import java.util.function.BooleanSupplier;
 
 /** Follower-side reliable-unicast poll/decode/ring-injection agent for the Aeron transport. */
 public final class AeronReplicationFollower implements AutoCloseable {
@@ -23,12 +24,17 @@ public final class AeronReplicationFollower implements AutoCloseable {
     public static final int FAULT_EPOCH = 2;
     public static final int FAULT_GAP = 3;
     public static final int FAULT_DUPLICATE_MISMATCH = 4;
+    public static final int FAULT_ARCHIVE = 5;
 
+    private final Aeron aeron;
     private final Subscription dataSubscription;
     private final ExclusivePublication ackPublication;
-    private final long expectedEpoch;
+    private final LongSupplier expectedEpoch;
     private final ReplicationAckMode ackMode;
     private final long offerTimeoutNs;
+    private final BooleanSupplier peerAuthenticated;
+    private final AeronArchiveReplayMerge.Config archiveConfig;
+    private final AeronFollowerCheckpointStore.Record initialCheckpoint;
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final FollowerSequenceMap sequenceMap;
     private final BufferClaim ackClaim = new BufferClaim();
@@ -36,13 +42,21 @@ public final class AeronReplicationFollower implements AutoCloseable {
     private final LongAdder invalidFrames = new LongAdder();
 
     private volatile RingBuffer<InputEvent> inputRing;
+    private volatile LongSupplier primaryHighWatermark = () -> -1L;
+    private volatile LongSupplier primaryRecordingPosition = () -> -1L;
     private volatile boolean running;
     private volatile int faultCode;
     private volatile long lastInputSeq = -1;
     private volatile long lastChecksum;
     private volatile long lastLocalSeq = -1;
+    private volatile long lastRecordingPosition = -1L;
+    private volatile int lastDataSessionId = -1;
+    private volatile boolean archiveReplaying;
+    private volatile LongSupplier journaledWatermark = () -> -1L;
+    private volatile LongSupplier appliedWatermark = () -> -1L;
     private Thread pollThread;
     private AeronDurableAckAgent durableAckAgent;
+    private AeronArchiveReplayMerge archiveReplayMerge;
     private Runnable readyCallback;
     private Runnable faultCallback;
 
@@ -50,21 +64,82 @@ public final class AeronReplicationFollower implements AutoCloseable {
                                     String ackChannel, int ackStreamId, long expectedEpoch,
                                     ReplicationAckMode ackMode, int mappingCapacity,
                                     long offerTimeoutMs) {
-        this.dataSubscription = aeron.addSubscription(dataChannel, dataStreamId);
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, expectedEpoch,
+            ackMode, mappingCapacity, offerTimeoutMs, () -> true, null, null);
+    }
+
+    public AeronReplicationFollower(Aeron aeron, String dataChannel, int dataStreamId,
+                                    String ackChannel, int ackStreamId, long expectedEpoch,
+                                    ReplicationAckMode ackMode, int mappingCapacity,
+                                    long offerTimeoutMs, BooleanSupplier peerAuthenticated) {
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, expectedEpoch,
+            ackMode, mappingCapacity, offerTimeoutMs, peerAuthenticated, null, null);
+    }
+
+    public AeronReplicationFollower(Aeron aeron, String dataChannel, int dataStreamId,
+                                    String ackChannel, int ackStreamId, long expectedEpoch,
+                                    ReplicationAckMode ackMode, int mappingCapacity,
+                                    long offerTimeoutMs, BooleanSupplier peerAuthenticated,
+                                    AeronArchiveReplayMerge.Config archiveConfig,
+                                    AeronFollowerCheckpointStore.Record initialCheckpoint) {
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, () -> expectedEpoch,
+            ackMode, mappingCapacity, offerTimeoutMs, peerAuthenticated,
+            archiveConfig, initialCheckpoint);
+    }
+
+    public AeronReplicationFollower(Aeron aeron, String dataChannel, int dataStreamId,
+                                    String ackChannel, int ackStreamId,
+                                    LongSupplier expectedEpoch,
+                                    ReplicationAckMode ackMode, int mappingCapacity,
+                                    long offerTimeoutMs, BooleanSupplier peerAuthenticated,
+                                    AeronArchiveReplayMerge.Config archiveConfig,
+                                    AeronFollowerCheckpointStore.Record initialCheckpoint) {
+        this.aeron = aeron;
+        this.archiveConfig = archiveConfig;
+        this.initialCheckpoint = initialCheckpoint;
+        this.dataSubscription = archiveConfig == null
+            ? aeron.addSubscription(dataChannel, dataStreamId) : null;
         this.ackPublication = aeron.addExclusivePublication(ackChannel, ackStreamId);
         this.expectedEpoch = expectedEpoch;
         this.ackMode = ackMode;
         this.sequenceMap = new FollowerSequenceMap(mappingCapacity);
         this.offerTimeoutNs = Math.max(1L, offerTimeoutMs) * 1_000_000L;
+        this.peerAuthenticated = peerAuthenticated;
+        if (initialCheckpoint != null) {
+            lastInputSeq = initialCheckpoint.inputSeq();
+            lastChecksum = initialCheckpoint.payloadChecksum();
+            lastRecordingPosition = initialCheckpoint.recordingPosition();
+            lastDataSessionId = initialCheckpoint.dataSessionId();
+        }
     }
 
     public void setInputRing(RingBuffer<InputEvent> ring) { this.inputRing = ring; }
+    public void setPrimaryHighWatermark(LongSupplier watermark) {
+        this.primaryHighWatermark = watermark == null ? () -> -1L : watermark;
+    }
+    public void setPrimaryRecordingPosition(LongSupplier position) {
+        this.primaryRecordingPosition = position == null ? () -> -1L : position;
+    }
 
     public void setDurabilityWatermarks(LongSupplier journaledSeq, LongSupplier journalForceNanos,
                                         LongSupplier appliedSeq) {
-        if (ackMode == ReplicationAckMode.DURABLE) {
+        setDurabilityWatermarks(journaledSeq, journalForceNanos, appliedSeq, null, () -> { });
+    }
+
+    public void setDurabilityWatermarks(LongSupplier journaledSeq, LongSupplier journalForceNanos,
+                                        LongSupplier appliedSeq, java.nio.file.Path checkpointPath,
+                                        Runnable checkpointFault) {
+        try {
+            this.journaledWatermark = journaledSeq;
+            this.appliedWatermark = appliedSeq;
+            AeronFollowerCheckpointStore store = checkpointPath == null
+                ? null : new AeronFollowerCheckpointStore(checkpointPath);
             durableAckAgent = new AeronDurableAckAgent(ackPublication, sequenceMap,
-                journaledSeq, journalForceNanos, appliedSeq, TimeUnit.NANOSECONDS.toMillis(offerTimeoutNs));
+                journaledSeq, journalForceNanos, appliedSeq,
+                TimeUnit.NANOSECONDS.toMillis(offerTimeoutNs),
+                ackMode == ReplicationAckMode.DURABLE, store, checkpointFault);
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("cannot open Aeron follower checkpoint", ex);
         }
     }
 
@@ -83,11 +158,89 @@ public final class AeronReplicationFollower implements AutoCloseable {
     }
 
     private void pollLoop() {
+        if (archiveConfig != null) {
+            log.info("Waiting for authenticated Aeron peer before Archive catch-up");
+            while (running && !peerAuthenticated.getAsBoolean()) {
+                LockSupport.parkNanos(100_000L);
+            }
+            if (!running) return;
+            long negotiatedEpoch = expectedEpoch.getAsLong();
+            AeronFollowerCheckpointStore.Record replayCheckpoint = initialCheckpoint;
+            if (replayCheckpoint != null && replayCheckpoint.epoch() != negotiatedEpoch) {
+                replayCheckpoint = null;
+                lastInputSeq = -1L;
+                lastChecksum = 0L;
+            }
+            try {
+                ReplayTarget target = stablePrimaryReplayTarget();
+                log.info("Starting Aeron Archive catch-up epoch={} checkpointInputSeq={} "
+                        + "primaryInputSeq={} primaryRecordingPosition={}",
+                    negotiatedEpoch, replayCheckpoint == null ? -1L : replayCheckpoint.inputSeq(),
+                    target.inputSeq(), target.recordingPosition());
+                archiveReplaying = true;
+                archiveReplayMerge = new AeronArchiveReplayMerge(aeron, archiveConfig,
+                    replayCheckpoint, target.recordingPosition());
+            } catch (RuntimeException ex) {
+                log.error("Aeron Archive catch-up initialization failed", ex);
+                fault(FAULT_ARCHIVE);
+                return;
+            }
+        }
         boolean readySignalled = false;
+        long nextArchiveStatusNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
         while (running) {
-            int fragments = dataSubscription.poll(fragmentHandler, 256);
+            int fragments;
+            try {
+                fragments = archiveReplayMerge == null
+                    ? dataSubscription.poll(fragmentHandler, 256)
+                    : archiveReplayMerge.poll(fragmentHandler, 256);
+            } catch (RuntimeException ex) {
+                log.error("Aeron Archive replay-to-live merge failed", ex);
+                fault(FAULT_ARCHIVE);
+                return;
+            }
+            if (archiveReplayMerge != null && archiveReplayMerge.isMerged()) {
+                long primaryHigh = primaryHighWatermark.getAsLong();
+                if (primaryHigh >= 0L && lastInputSeq < primaryHigh) {
+                    log.warn("Aeron Archive merge below authenticated primary watermark; "
+                        + "retrying from verified position (follower={} primary={})",
+                        lastInputSeq, primaryHigh);
+                    AeronFollowerCheckpointStore.Record resume = lastInputSeq < 0L ? null
+                        : new AeronFollowerCheckpointStore.Record(0L, expectedEpoch.getAsLong(),
+                            lastInputSeq, lastRecordingPosition, lastChecksum, lastDataSessionId);
+                    archiveReplayMerge.close();
+                    archiveReplayMerge = null;
+                    LockSupport.parkNanos(10_000_000L);
+                    try {
+                        ReplayTarget target = stablePrimaryReplayTarget();
+                        archiveReplayMerge = new AeronArchiveReplayMerge(aeron, archiveConfig,
+                            resume, target.recordingPosition());
+                    } catch (RuntimeException ex) {
+                        log.error("Aeron Archive catch-up retry failed", ex);
+                        fault(FAULT_ARCHIVE);
+                        return;
+                    }
+                    nextArchiveStatusNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
+                    continue;
+                }
+                archiveReplaying = false;
+            }
+            if (archiveReplayMerge != null && archiveReplaying
+                && System.nanoTime() >= nextArchiveStatusNs) {
+                log.info("Aeron Archive catch-up status: {}", archiveReplayMerge.status());
+                nextArchiveStatusNs = System.nanoTime() + TimeUnit.SECONDS.toNanos(1L);
+            }
+            boolean dataLive = archiveReplayMerge == null
+                ? dataSubscription.isConnected() : archiveReplayMerge.isMerged();
+            long primaryHigh = primaryHighWatermark.getAsLong();
+            boolean caughtUpToPrimary = primaryHigh < 0L || lastInputSeq >= primaryHigh;
+            boolean appliedThroughTail = lastLocalSeq < 0
+                || (journaledWatermark.getAsLong() >= lastLocalSeq
+                    && appliedWatermark.getAsLong() >= lastLocalSeq);
             if (!readySignalled && faultCode == FAULT_NONE
-                && dataSubscription.isConnected() && ackPublication.isConnected()) {
+                && peerAuthenticated.getAsBoolean()
+                && dataLive && caughtUpToPrimary && appliedThroughTail
+                && ackPublication.isConnected()) {
                 readySignalled = true;
                 readyCallback.run();
             }
@@ -95,16 +248,34 @@ public final class AeronReplicationFollower implements AutoCloseable {
         }
     }
 
+    private ReplayTarget stablePrimaryReplayTarget() {
+        while (running) {
+            long firstInputSeq = primaryHighWatermark.getAsLong();
+            long recordingPosition = primaryRecordingPosition.getAsLong();
+            long secondInputSeq = primaryHighWatermark.getAsLong();
+            if (firstInputSeq == secondInputSeq
+                && (firstInputSeq < 0L || recordingPosition >= 0L)) {
+                return new ReplayTarget(firstInputSeq, recordingPosition);
+            }
+            LockSupport.parkNanos(100_000L);
+        }
+        return new ReplayTarget(-1L, -1L);
+    }
+
+    private record ReplayTarget(long inputSeq, long recordingPosition) { }
+
     private void onFragment(org.agrona.DirectBuffer buffer, int offset, int length,
                             io.aeron.logbuffer.Header header) {
         if (faultCode != FAULT_NONE) return;
+        if (!peerAuthenticated.getAsBoolean()) return;
         int status = codec.tryInspectInput(buffer, offset, length);
         if (status != AeronReplicationCodec.OK) {
             invalidFrames.increment();
             fault(FAULT_WIRE);
             return;
         }
-        if (codec.leaderEpoch() != expectedEpoch) {
+        long epoch = expectedEpoch.getAsLong();
+        if (codec.leaderEpoch() != epoch) {
             fault(FAULT_EPOCH);
             return;
         }
@@ -112,8 +283,13 @@ public final class AeronReplicationFollower implements AutoCloseable {
         long inputSeq = codec.inputSeq();
         long checksum = AeronReplicationCodec.checksum64(buffer, offset, length);
         if (lastInputSeq >= 0 && inputSeq <= lastInputSeq) {
+            if (archiveReplaying && inputSeq < lastInputSeq) return;
             if (inputSeq == lastInputSeq && checksum == lastChecksum) return;
             fault(FAULT_DUPLICATE_MISMATCH);
+            return;
+        }
+        if (lastInputSeq < 0 && archiveConfig != null && inputSeq != 0L) {
+            fault(FAULT_GAP);
             return;
         }
         if (lastInputSeq >= 0 && inputSeq != lastInputSeq + 1) {
@@ -125,8 +301,8 @@ public final class AeronReplicationFollower implements AutoCloseable {
         long localSeq = ring.next();
         try {
             codec.decodeInspectedInput(ring.get(localSeq));
-            while (running && !sequenceMap.put(localSeq, expectedEpoch, inputSeq,
-                header.position(), checksum)) {
+            while (running && !sequenceMap.put(localSeq, epoch, inputSeq,
+                header.position(), checksum, header.sessionId())) {
                 Thread.onSpinWait();
             }
             if (!running) return;
@@ -137,8 +313,11 @@ public final class AeronReplicationFollower implements AutoCloseable {
         lastLocalSeq = localSeq;
         lastInputSeq = inputSeq;
         lastChecksum = checksum;
+        lastRecordingPosition = header.position();
+        lastDataSessionId = header.sessionId();
         if (ackMode == ReplicationAckMode.ON_RING) {
-            offerOnRingAck(expectedEpoch, inputSeq, header.position());
+            offerOnRingAck(epoch, inputSeq, header.position());
+            if (durableAckAgent == null) sequenceMap.consumed(localSeq);
         }
     }
 
@@ -161,7 +340,7 @@ public final class AeronReplicationFollower implements AutoCloseable {
         faultCode = code;
         running = false;
         log.error("Aeron follower protocol fault: code={} epoch={} lastInputSeq={}",
-            code, expectedEpoch, lastInputSeq);
+            code, expectedEpoch.getAsLong(), lastInputSeq);
         if (faultCallback != null) faultCallback.run();
     }
 
@@ -177,7 +356,8 @@ public final class AeronReplicationFollower implements AutoCloseable {
         running = false;
         if (pollThread != null) pollThread.interrupt();
         if (durableAckAgent != null) durableAckAgent.close();
-        dataSubscription.close();
+        if (archiveReplayMerge != null) archiveReplayMerge.close();
+        if (dataSubscription != null) dataSubscription.close();
         ackPublication.close();
     }
 }

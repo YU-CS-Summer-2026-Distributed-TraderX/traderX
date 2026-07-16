@@ -48,27 +48,33 @@ services:
       BLP_REPLICATION_FAILURE_POLICY: "${BLP_REPLICATION_FAILURE_POLICY:-degraded-solo}"
       BLP_REPLICATION_ACK_TIMEOUT_MS: "500"
       BLP_LEADER_EPOCH: "1"
+      BLP_CLUSTER_ID: traderx-compose
+      BLP_REPLICATION_SECRET: yu11-compose-replication-secret-32bytes-minimum
+      BLP_AERON_HEARTBEAT_INTERVAL_MS: "10"
+      BLP_AERON_PEER_STALE_MS: "40"
       BLP_AERON_DIR: /dev/shm/aeron/driver
       BLP_AERON_DATA_STREAM_ID: "1101"
       BLP_AERON_ACK_STREAM_ID: "1102"
-      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
     environment:
       <<: *matcher-env
       BLP_POD_NAME: order-matcher-primary
+      BLP_REPLICATION_LOCAL_ORDINAL: "0"
+      BLP_REPLICATION_PEER_ID: order-matcher-follower
       BLP_REPLICATION_STATIC_ROLE: primary
       ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
-      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-follower:40123
-      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40123
-      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-follower:40124
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:ipc
+      BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-follower:40123
+      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=aeron-primary:40123
+      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-follower:40124
       BLP_AERON_ACK_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40124
-    ports:
-      - "18110:18110"
-      - "19080:18080"
-    expose:
-      - "40123/udp"
-      - "40124/udp"
-      - "8010/udp"
-      - "8012/udp"
+      BLP_AERON_CONTROL_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-follower:40125
+      BLP_AERON_CONTROL_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40125
+      BLP_AERON_ARCHIVE_CONTROL_REQUEST_CHANNEL: aeron:udp?endpoint=aeron-follower:8010
+      BLP_AERON_ARCHIVE_CONTROL_RESPONSE_CHANNEL: aeron:udp?endpoint=aeron-primary:8011
+      BLP_AERON_ARCHIVE_REPLAY_DESTINATION: aeron:udp?endpoint=aeron-primary:40126
+      BLP_AERON_ARCHIVE_RECORDING_CHANNEL_FRAGMENT: alias=yu11-data
+    network_mode: service:aeron-primary
     volumes:
       - yu11-primary-data:/var/lib/traderx-lmax
       - yu11-primary-aeron:/dev/shm/aeron
@@ -77,25 +83,41 @@ services:
         condition: service_healthy
       nats-broker:
         condition: service_started
+      aeron-primary:
+        condition: service_healthy
 
   aeron-primary:
     build:
       context: ../../aeron-replication-sidecar
       dockerfile: Dockerfile.compose
-    network_mode: service:order-matcher-primary
     environment:
       AERON_DIR: /dev/shm/aeron/driver
       AERON_ARCHIVE_DIR: /var/lib/traderx-lmax/aeron-archive
       AERON_HEALTH_PORT: "18080"
       AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
-      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+      AERON_RECORD_INBOUND_CHANNEL: disabled
+      AERON_RECORD_OUTBOUND_CHANNEL: aeron:ipc?alias=yu11-data
+      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
     volumes:
       - yu11-primary-data:/var/lib/traderx-lmax
       - yu11-primary-aeron:/dev/shm/aeron
-    depends_on:
-      order-matcher-primary:
-        condition: service_started
+    ports:
+      - "18110:18110"
+      - "19080:18080"
+    expose:
+      - "40123/udp"
+      - "40124/udp"
+      - "40125/udp"
+      - "40126/udp"
+      - "8010/udp"
+      - "8011/udp"
+      - "8012/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/18080'"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
 
   order-matcher-follower:
     build:
@@ -104,20 +126,22 @@ services:
     environment:
       <<: *matcher-env
       BLP_POD_NAME: order-matcher-follower
+      BLP_REPLICATION_LOCAL_ORDINAL: "1"
+      BLP_REPLICATION_PEER_ID: order-matcher-primary
       BLP_REPLICATION_STATIC_ROLE: follower
       ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
-      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-primary:40123
-      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40123
-      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=order-matcher-primary:40124
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:ipc
+      BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-primary:40123
+      BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=aeron-follower:40123
+      BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-primary:40124
       BLP_AERON_ACK_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40124
-    ports:
-      - "18111:18110"
-      - "19081:18080"
-    expose:
-      - "40123/udp"
-      - "40124/udp"
-      - "8010/udp"
-      - "8012/udp"
+      BLP_AERON_CONTROL_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-primary:40125
+      BLP_AERON_CONTROL_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=0.0.0.0:40125
+      BLP_AERON_ARCHIVE_CONTROL_REQUEST_CHANNEL: aeron:udp?endpoint=aeron-primary:8010
+      BLP_AERON_ARCHIVE_CONTROL_RESPONSE_CHANNEL: aeron:udp?endpoint=aeron-follower:8011
+      BLP_AERON_ARCHIVE_REPLAY_DESTINATION: aeron:udp?endpoint=aeron-follower:40126
+      BLP_AERON_ARCHIVE_RECORDING_CHANNEL_FRAGMENT: alias=yu11-data
+    network_mode: service:aeron-follower
     volumes:
       - yu11-follower-data:/var/lib/traderx-lmax
       - yu11-follower-aeron:/dev/shm/aeron
@@ -126,25 +150,41 @@ services:
         condition: service_healthy
       nats-broker:
         condition: service_started
+      aeron-follower:
+        condition: service_healthy
 
   aeron-follower:
     build:
       context: ../../aeron-replication-sidecar
       dockerfile: Dockerfile.compose
-    network_mode: service:order-matcher-follower
     environment:
       AERON_DIR: /dev/shm/aeron/driver
       AERON_ARCHIVE_DIR: /var/lib/traderx-lmax/aeron-archive
       AERON_HEALTH_PORT: "18080"
       AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
-      BLP_SBE_SCHEMA_CHECKSUM: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+      AERON_RECORD_INBOUND_CHANNEL: disabled
+      AERON_RECORD_OUTBOUND_CHANNEL: aeron:ipc?alias=yu11-data
+      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
     volumes:
       - yu11-follower-data:/var/lib/traderx-lmax
       - yu11-follower-aeron:/dev/shm/aeron
-    depends_on:
-      order-matcher-follower:
-        condition: service_started
+    ports:
+      - "18111:18110"
+      - "19081:18080"
+    expose:
+      - "40123/udp"
+      - "40124/udp"
+      - "40125/udp"
+      - "40126/udp"
+      - "8010/udp"
+      - "8011/udp"
+      - "8012/udp"
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/18080'"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
 
 volumes:
   yu11-database:

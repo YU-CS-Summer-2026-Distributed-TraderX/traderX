@@ -144,9 +144,15 @@ spec:
               value: "500"
             - name: BLP_REPLICATION_AERON_SHADOW
               value: "false"
+            - name: BLP_CLUSTER_ID
+              value: "traderx"
+            - name: BLP_REPLICATION_SECRET_FILE
+              value: "/var/run/secrets/traderx/replication/replication-secret"
             - name: BLP_AERON_DIR
               value: "/dev/shm/aeron/driver"
             - name: BLP_AERON_DATA_PUBLISH_CHANNEL
+              value: "aeron:ipc"
+            - name: BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL
               value: "auto"
             - name: BLP_AERON_DATA_SUBSCRIBE_CHANNEL
               value: "auto"
@@ -154,8 +160,24 @@ spec:
               value: "auto"
             - name: BLP_AERON_ACK_SUBSCRIBE_CHANNEL
               value: "auto"
+            - name: BLP_AERON_CONTROL_PUBLISH_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_CONTROL_SUBSCRIBE_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_ARCHIVE_CONTROL_REQUEST_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_ARCHIVE_CONTROL_RESPONSE_CHANNEL
+              value: "auto"
+            - name: BLP_AERON_ARCHIVE_REPLAY_DESTINATION
+              value: "auto"
+            - name: BLP_AERON_ARCHIVE_RECORDING_CHANNEL_FRAGMENT
+              value: "alias=yu11-data"
+            - name: BLP_AERON_HEARTBEAT_INTERVAL_MS
+              value: "10"
+            - name: BLP_AERON_PEER_STALE_MS
+              value: "40"
             - name: BLP_SBE_SCHEMA_CHECKSUM
-              value: "ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a"
+              value: "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e"
             - name: SNAPSHOT_INTERVAL_MS
               value: "300000"
             - name: RECOVERY_SOURCE
@@ -241,6 +263,9 @@ spec:
               mountPath: /var/lib/traderx-lmax
             - name: aeron-ipc
               mountPath: /dev/shm/aeron
+            - name: replication-secret
+              mountPath: /var/run/secrets/traderx/replication
+              readOnly: true
         - name: aeron-replication-sidecar
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/aeron-replication-sidecar:yu11-aeron-replication
           ports:
@@ -253,13 +278,32 @@ spec:
             - name: aeron-ack
               containerPort: 40124
               protocol: UDP
+            - name: aeron-control
+              containerPort: 40125
+              protocol: UDP
+            - name: aeron-replay
+              containerPort: 40126
+              protocol: UDP
             - name: archive-control
               containerPort: 8010
+              protocol: UDP
+            - name: archive-response
+              containerPort: 8011
               protocol: UDP
             - name: archive-repl
               containerPort: 8012
               protocol: UDP
           env:
+            - name: AERON_POD_NAME
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: AERON_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
             - name: AERON_DIR
               value: /dev/shm/aeron/driver
             - name: AERON_ARCHIVE_DIR
@@ -270,8 +314,12 @@ spec:
               value: aeron:udp?endpoint=0.0.0.0:8010
             - name: AERON_ARCHIVE_REPLICATION_CHANNEL
               value: aeron:udp?endpoint=0.0.0.0:8012
+            - name: AERON_RECORD_INBOUND_CHANNEL
+              value: disabled
+            - name: AERON_RECORD_OUTBOUND_CHANNEL
+              value: aeron:ipc?alias=yu11-data
             - name: BLP_SBE_SCHEMA_CHECKSUM
-              value: ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a
+              value: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
           readinessProbe:
             httpGet:
               path: /healthz
@@ -304,6 +352,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 512Mi
+        - name: replication-secret
+          secret:
+            secretName: order-matcher-replication-secret
   volumeClaimTemplates:
     - metadata:
         name: lmax-runtime-data

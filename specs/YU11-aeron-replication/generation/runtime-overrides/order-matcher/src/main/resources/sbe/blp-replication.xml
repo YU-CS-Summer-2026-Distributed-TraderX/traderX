@@ -12,6 +12,7 @@
       <type name="schemaId" primitiveType="uint16"/>
       <type name="version" primitiveType="uint16"/>
     </composite>
+    <type name="sha256" primitiveType="uint8" length="32"/>
   </types>
 
   <sbe:message name="InputEventMessage" id="1" blockLength="56">
@@ -35,5 +36,51 @@
     <field name="inputSeq" id="3" type="uint64" offset="8"/>
     <field name="recordingPosition" id="4" type="int64" offset="16"/>
     <field name="journalForceNanos" id="5" type="uint64" offset="24"/>
+  </sbe:message>
+
+  <sbe:message name="PeerHelloMessage" id="3" blockLength="152">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="role" id="2" type="uint8" offset="4"/>
+    <field name="ordinal" id="3" type="uint8" offset="5"/>
+    <field name="flags" id="4" type="uint16" offset="6"/>
+    <field name="nonce" id="5" type="uint64" offset="8"/>
+    <field name="issuedAtMillis" id="6" type="int64" offset="16"/>
+    <field name="clusterIdHash" id="7" type="sha256" offset="24"/>
+    <field name="peerIdHash" id="8" type="sha256" offset="56"/>
+    <field name="schemaChecksumHash" id="9" type="sha256" offset="88"/>
+    <field name="authTag" id="10" type="sha256" offset="120"/>
+  </sbe:message>
+
+  <sbe:message name="HeartbeatMessage" id="4" blockLength="80">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="role" id="2" type="uint8" offset="4"/>
+    <field name="flags" id="3" type="uint8" offset="5"/>
+    <field name="reserved" id="4" type="uint16" offset="6"/>
+    <field name="senderNanos" id="5" type="uint64" offset="8"/>
+    <field name="highestInputSeq" id="6" type="uint64" offset="16"/>
+    <field name="journaledSeq" id="7" type="uint64" offset="24"/>
+    <field name="appliedSeq" id="8" type="uint64" offset="32"/>
+    <field name="recordingPosition" id="9" type="int64" offset="40"/>
+    <field name="authTag" id="10" type="sha256" offset="48"/>
+  </sbe:message>
+
+  <sbe:message name="ReplayRequestMessage" id="5" blockLength="32">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="flags" id="2" type="uint32" offset="4"/>
+    <field name="fromInputSeq" id="3" type="uint64" offset="8"/>
+    <field name="fromRecordingPosition" id="4" type="int64" offset="16"/>
+    <field name="correlationId" id="5" type="uint64" offset="24"/>
+  </sbe:message>
+
+  <sbe:message name="SnapshotManifestMessage" id="6" blockLength="104">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="schemaVersion" id="2" type="uint16" offset="4"/>
+    <field name="flags" id="3" type="uint16" offset="6"/>
+    <field name="inputSeq" id="4" type="uint64" offset="8"/>
+    <field name="archivePosition" id="5" type="int64" offset="16"/>
+    <field name="snapshotLength" id="6" type="uint64" offset="24"/>
+    <field name="symbolsLength" id="7" type="uint64" offset="32"/>
+    <field name="snapshotHash" id="8" type="sha256" offset="40"/>
+    <field name="symbolsHash" id="9" type="sha256" offset="72"/>
   </sbe:message>
 </sbe:messageSchema>

@@ -69,6 +69,7 @@ dependencies {
   // YU11 replication transport. Aeron and SBE are locked together and the committed schema is
   // compiled during every build; generated flyweights are build output, never hand-maintained.
   implementation "io.aeron:aeron-client:${aeronVersion}"
+  implementation "io.aeron:aeron-archive:${aeronVersion}"
   implementation "uk.co.real-logic:sbe-tool:${sbeVersion}"
   sbeTool "uk.co.real-logic:sbe-tool:${sbeVersion}"
 

@@ -5,6 +5,12 @@ resources:
   - ../ha
 patches:
   - path: statefulset-kind-patch.yaml
+secretGenerator:
+  - name: order-matcher-replication-secret
+    literals:
+      - replication-secret=yu11-kind-replication-secret-32bytes-minimum
+generatorOptions:
+  disableNameSuffixHash: true
 images:
   - name: us-east1-docker.pkg.dev/traderx-501015/traderx/order-matcher
     newName: traderx/order-matcher

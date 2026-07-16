@@ -29,6 +29,7 @@ public final class FollowerSequenceMap {
     private final long[] epochs;
     private final long[] recordingPositions;
     private final long[] checksums;
+    private final int[] dataSessionIds;
     @SuppressWarnings("FieldMayBeFinal")
     private volatile long publishedLocalSeq = -1;
     @SuppressWarnings("FieldMayBeFinal")
@@ -43,11 +44,17 @@ public final class FollowerSequenceMap {
         epochs = new long[capacity];
         recordingPositions = new long[capacity];
         checksums = new long[capacity];
+        dataSessionIds = new int[capacity];
         java.util.Arrays.fill(localSeqs, Long.MIN_VALUE);
     }
 
     public boolean put(long localSeq, long epoch, long inputSeq,
                        long recordingPosition, long checksum) {
+        return put(localSeq, epoch, inputSeq, recordingPosition, checksum, -1);
+    }
+
+    public boolean put(long localSeq, long epoch, long inputSeq,
+                       long recordingPosition, long checksum, int dataSessionId) {
         long consumed = (long) CONSUMED.getAcquire(this);
         if (localSeq - consumed > localSeqs.length) return false;
         int slot = (int) localSeq & mask;
@@ -56,6 +63,7 @@ public final class FollowerSequenceMap {
         inputSeqs[slot] = inputSeq;
         recordingPositions[slot] = recordingPosition;
         checksums[slot] = checksum;
+        dataSessionIds[slot] = dataSessionId;
         PUBLISHED.setRelease(this, localSeq);
         return true;
     }
@@ -69,6 +77,7 @@ public final class FollowerSequenceMap {
         target.inputSeq = inputSeqs[slot];
         target.recordingPosition = recordingPositions[slot];
         target.checksum = checksums[slot];
+        target.dataSessionId = dataSessionIds[slot];
         return true;
     }
 
@@ -84,5 +93,6 @@ public final class FollowerSequenceMap {
         public long inputSeq;
         public long recordingPosition;
         public long checksum;
+        public int dataSessionId;
     }
 }

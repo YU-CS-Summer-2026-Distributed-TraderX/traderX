@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.LongAdder;
+import java.util.function.BooleanSupplier;
 
 /**
  * Primary-side Aeron replication handler. It encodes the SBE record directly into a claimed
@@ -18,15 +19,18 @@ public final class AeronReplicator implements ReplicationEventHandler {
     private static final Logger log = LoggerFactory.getLogger(AeronReplicator.class);
 
     private final ExclusivePublication dataPublication;
+    private final ExclusivePublication livePublication;
     private final Subscription ackSubscription;
     private final long leaderEpoch;
     private final ReplicationAckMode ackMode;
     private final ReplicationFailurePolicy failurePolicy;
     private final long ackTimeoutNs;
     private final boolean shadow;
+    private final BooleanSupplier peerAuthenticated;
     private final AeronReplicationCodec dataCodec = new AeronReplicationCodec();
     private final AeronReplicationCodec ackCodec = new AeronReplicationCodec();
-    private final BufferClaim claim = new BufferClaim();
+    private final BufferClaim archiveClaim = new BufferClaim();
+    private final BufferClaim liveClaim = new BufferClaim();
     private final FragmentHandler ackHandler = this::onAck;
     private final LongAdder offerFailures = new LongAdder();
     private final LongAdder invalidAcks = new LongAdder();
@@ -40,25 +44,49 @@ public final class AeronReplicator implements ReplicationEventHandler {
                            String ackChannel, int ackStreamId, long leaderEpoch,
                            ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
                            long ackTimeoutMs, boolean shadow) {
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, leaderEpoch,
+            ackMode, failurePolicy, ackTimeoutMs, shadow, () -> true, "");
+    }
+
+    public AeronReplicator(Aeron aeron, String dataChannel, int dataStreamId,
+                           String ackChannel, int ackStreamId, long leaderEpoch,
+                           ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
+                           long ackTimeoutMs, boolean shadow, BooleanSupplier peerAuthenticated) {
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, leaderEpoch,
+            ackMode, failurePolicy, ackTimeoutMs, shadow, peerAuthenticated, "");
+    }
+
+    public AeronReplicator(Aeron aeron, String dataChannel, int dataStreamId,
+                           String ackChannel, int ackStreamId, long leaderEpoch,
+                           ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
+                           long ackTimeoutMs, boolean shadow, BooleanSupplier peerAuthenticated,
+                           String dataLiveChannel) {
         if (leaderEpoch < 0 || leaderEpoch > 0xffff_ffffL) {
             throw new IllegalArgumentException("leaderEpoch must fit uint32");
         }
         this.dataPublication = aeron.addExclusivePublication(dataChannel, dataStreamId);
+        this.livePublication = dataLiveChannel == null || dataLiveChannel.isBlank() ? null
+            : aeron.addExclusivePublication(withSessionId(dataLiveChannel,
+                dataPublication.sessionId()), dataStreamId);
         this.ackSubscription = aeron.addSubscription(ackChannel, ackStreamId);
         this.leaderEpoch = leaderEpoch;
         this.ackMode = ackMode;
         this.failurePolicy = failurePolicy;
         this.ackTimeoutNs = Math.max(1L, ackTimeoutMs) * 1_000_000L;
         this.shadow = shadow;
+        this.peerAuthenticated = peerAuthenticated;
     }
 
     @Override
     public void onEvent(InputEvent event, long sequence, boolean endOfBatch) {
         pollAcks();
+        // Always publish to the local Archive IPC leg. The direct peer UDP leg shares its session
+        // id, so ReplayMerge can move from the retained recording to the live unicast image.
+        if (!peerAuthenticated.getAsBoolean()) degraded = true;
         long result;
         long deadline = System.nanoTime() + ackTimeoutNs;
         do {
-            result = dataPublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, claim);
+            result = dataPublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, archiveClaim);
             if (result >= 0) break;
             pollAcks();
             if (shadow || System.nanoTime() >= deadline) {
@@ -70,9 +98,21 @@ public final class AeronReplicator implements ReplicationEventHandler {
         } while (true);
 
         int flags = shadow ? AeronReplicationCodec.INPUT_FLAG_SHADOW : 0;
-        dataCodec.encodeInput(claim.buffer(), claim.offset(), event, sequence, leaderEpoch, flags);
-        claim.commit();
+        dataCodec.encodeInput(archiveClaim.buffer(), archiveClaim.offset(), event, sequence,
+            leaderEpoch, flags);
+        archiveClaim.commit();
         publishedSeq = sequence;
+
+        if (livePublication != null) {
+            long liveResult = livePublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, liveClaim);
+            if (liveResult >= 0L) {
+                dataCodec.encodeInput(liveClaim.buffer(), liveClaim.offset(), event, sequence,
+                    leaderEpoch, flags);
+                liveClaim.commit();
+            } else {
+                onLiveOfferFailure(sequence, liveResult);
+            }
+        }
 
         if (endOfBatch && !shadow) awaitRequiredAck(sequence);
     }
@@ -86,6 +126,20 @@ public final class AeronReplicator implements ReplicationEventHandler {
         }
         // Degraded-solo explicitly makes the local post-force journal the durability authority.
         publishedSeq = sequence;
+    }
+
+    private void onLiveOfferFailure(long sequence, long result) {
+        offerFailures.increment();
+        degraded = true;
+        if (failurePolicy == ReplicationFailurePolicy.STRICT && !shadow) {
+            throw new IllegalStateException(
+                "strict Aeron live offer failed at seq=" + sequence + " result=" + result);
+        }
+    }
+
+    private static String withSessionId(String channel, int sessionId) {
+        if (channel.contains("session-id=")) return channel;
+        return channel + (channel.indexOf('?') >= 0 ? "|" : "?") + "session-id=" + sessionId;
     }
 
     private void awaitRequiredAck(long sequence) {
@@ -151,10 +205,15 @@ public final class AeronReplicator implements ReplicationEventHandler {
     public long offerFailureCount() { return offerFailures.sum(); }
     public long invalidAckCount() { return invalidAcks.sum(); }
     public int publicationSessionId() { return dataPublication.sessionId(); }
+    public long publicationPosition() { return dataPublication.position(); }
+    public boolean connected() {
+        return livePublication == null ? dataPublication.isConnected() : livePublication.isConnected();
+    }
 
     @Override
     public void close() {
         dataPublication.close();
+        if (livePublication != null) livePublication.close();
         ackSubscription.close();
     }
 }

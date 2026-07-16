@@ -20,7 +20,7 @@ import java.util.concurrent.CountDownLatch;
 /** Dedicated YU11 Media Driver + Archive process; no Spring heap or BLP duty cycle is shared. */
 public final class AeronArchiveSidecar {
     public static final String SCHEMA_CHECKSUM =
-        "ed3de6f48d4032b641e4123c0f79a7d02468452636e2dd235c65f34a269fae2a";
+        "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e";
 
     private AeronArchiveSidecar() { }
 
@@ -31,7 +31,7 @@ public final class AeronArchiveSidecar {
 
         MediaDriver.Context driverContext = new MediaDriver.Context()
             .aeronDirectoryName(config.aeronDir().toString())
-            .dirDeleteOnStart(false)
+            .dirDeleteOnStart(true)
             .dirDeleteOnShutdown(false)
             .threadingMode(ThreadingMode.SHARED)
             .warnIfDirectoryExists(false);
@@ -50,9 +50,17 @@ public final class AeronArchiveSidecar {
                  .controlRequestChannel("aeron:ipc")
                  .controlResponseChannel("aeron:ipc"));
              HealthServer health = new HealthServer(config.healthPort(), config)) {
-            long recordingSubscriptionId = archive.startRecording(config.recordingChannel(),
-                config.recordingStreamId(), SourceLocation.REMOTE, true);
-            health.recordingSubscriptionId(recordingSubscriptionId);
+            // The HA profiles record the matcher's local IPC publication. The matcher mirrors the
+            // same session to direct peer UDP, allowing replay-to-live merge without an MDC leg.
+            long inboundRecordingSubscriptionId = "disabled".equalsIgnoreCase(
+                config.inboundRecordingChannel()) ? -1L
+                    : archive.startRecording(config.inboundRecordingChannel(),
+                        config.recordingStreamId(), SourceLocation.REMOTE, false);
+            long outboundRecordingSubscriptionId = config.outboundRecordingChannel().isBlank()
+                ? -1L : archive.startRecording(config.outboundRecordingChannel(),
+                    config.recordingStreamId(), SourceLocation.LOCAL, false);
+            health.recordingSubscriptionIds(inboundRecordingSubscriptionId,
+                outboundRecordingSubscriptionId);
             health.start();
             Runtime.getRuntime().addShutdownHook(new Thread(health::stop, "aeron-sidecar-shutdown"));
             new CountDownLatch(1).await();
@@ -61,10 +69,15 @@ public final class AeronArchiveSidecar {
 
     public record Config(Path aeronDir, Path archiveDir, int healthPort,
                          String archiveControlChannel, String archiveReplicationChannel,
-                         String recordingEventsChannel, String recordingChannel,
+                         String recordingEventsChannel, String inboundRecordingChannel,
+                         String outboundRecordingChannel,
                          int recordingStreamId,
                          String expectedSchemaChecksum) {
         static Config fromEnvironment() {
+            String podName = env("AERON_POD_NAME", "");
+            String namespace = env("AERON_NAMESPACE", "traderx");
+            String outbound = resolveOutboundChannel(
+                env("AERON_RECORD_OUTBOUND_CHANNEL", ""), podName, namespace);
             return new Config(
                 Path.of(env("AERON_DIR", "/dev/shm/aeron/driver")),
                 Path.of(env("AERON_ARCHIVE_DIR", "/var/lib/traderx-lmax/aeron-archive")),
@@ -72,18 +85,34 @@ public final class AeronArchiveSidecar {
                 env("AERON_ARCHIVE_CONTROL_CHANNEL", "aeron:udp?endpoint=0.0.0.0:8010"),
                 env("AERON_ARCHIVE_REPLICATION_CHANNEL", "aeron:udp?endpoint=0.0.0.0:8012"),
                 env("AERON_ARCHIVE_RECORDING_EVENTS_CHANNEL", "aeron:ipc"),
-                env("AERON_RECORD_CHANNEL", "aeron:udp?endpoint=0.0.0.0:40123"),
+                env("AERON_RECORD_INBOUND_CHANNEL",
+                    env("AERON_RECORD_CHANNEL", "aeron:udp?endpoint=0.0.0.0:40123")),
+                outbound,
                 integerEnv("AERON_RECORD_STREAM_ID", 1101),
                 env("BLP_SBE_SCHEMA_CHECKSUM", SCHEMA_CHECKSUM));
         }
 
         boolean schemaMatches() { return SCHEMA_CHECKSUM.equals(expectedSchemaChecksum); }
+
+        static String resolveOutboundChannel(String configured, String podName, String namespace) {
+            if (configured == null || configured.isBlank()) return "";
+            if (!"auto".equalsIgnoreCase(configured)) return configured;
+            if (podName == null || (!podName.endsWith("-0") && !podName.endsWith("-1"))) {
+                throw new IllegalArgumentException(
+                    "AERON_RECORD_OUTBOUND_CHANNEL=auto requires StatefulSet ordinal pod name");
+            }
+            String peer = podName.substring(0, podName.length() - 1)
+                + (podName.endsWith("-0") ? "1" : "0");
+            return "aeron:udp?endpoint=" + peer + ".order-matcher-headless."
+                + namespace + ".svc.cluster.local:40123|alias=yu11-data";
+        }
     }
 
     static final class HealthServer implements AutoCloseable {
         private final HttpServer server;
         private final Config config;
-        private volatile long recordingSubscriptionId = -1L;
+        private volatile long inboundRecordingSubscriptionId = -1L;
+        private volatile long outboundRecordingSubscriptionId = -1L;
 
         HealthServer(int port, Config config) throws IOException {
             this.config = config;
@@ -94,7 +123,10 @@ public final class AeronArchiveSidecar {
 
         void start() { server.start(); }
         void stop() { server.stop(0); }
-        void recordingSubscriptionId(long value) { recordingSubscriptionId = value; }
+        void recordingSubscriptionIds(long inbound, long outbound) {
+            inboundRecordingSubscriptionId = inbound;
+            outboundRecordingSubscriptionId = outbound;
+        }
 
         private void health(HttpExchange exchange) throws IOException {
             boolean ok = config.schemaMatches()
@@ -103,8 +135,9 @@ public final class AeronArchiveSidecar {
                 && Files.isWritable(config.archiveDir());
             respond(exchange, ok ? 200 : 503,
                 "{\"status\":\"" + (ok ? "UP" : "DOWN") + "\",\"schemaChecksum\":\""
-                    + SCHEMA_CHECKSUM + "\",\"recordingSubscriptionId\":"
-                    + recordingSubscriptionId + "}\n");
+                    + SCHEMA_CHECKSUM + "\",\"inboundRecordingSubscriptionId\":"
+                    + inboundRecordingSubscriptionId + ",\"outboundRecordingSubscriptionId\":"
+                    + outboundRecordingSubscriptionId + "}\n");
         }
 
         private void schema(HttpExchange exchange) throws IOException {
