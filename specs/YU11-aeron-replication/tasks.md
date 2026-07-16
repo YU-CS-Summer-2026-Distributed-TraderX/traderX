@@ -2,30 +2,30 @@
 
 ## Spec and generation
 
-- [ ] T-AR01 Create the full YU11 spec pack and generated architecture document.
-- [ ] T-AR02 Add catalog, state-generation, render, runtime-harness, and state-wrapper entries.
+- [x] T-AR01 Create the full YU11 spec pack and generated architecture document.
+- [x] T-AR02 Add catalog, state-generation, render, runtime-harness, and state-wrapper entries.
 - [ ] T-AR03 Audit every YU11 full-file override against YU02/YU03/YU04/YU05/YU09/YU10 copies
   and record ancestor markers.
 - [ ] T-AR04 Generate YU11 from a clean target and verify every ancestor marker survives.
 
 ## SBE and transport
 
-- [ ] T-AR05 Lock compatible Aeron/Agrona/SBE versions and add schema code generation.
+- [x] T-AR05 Lock compatible Aeron/Agrona/SBE versions and add schema code generation.
 - [ ] T-AR06 Define input, ACK, handshake, heartbeat, snapshot, and replay SBE templates.
 - [ ] T-AR07 Add golden N/N-1 encode/decode vectors and schema-checksum startup validation.
-- [ ] T-AR08 Implement the transport selector with NATS default and Aeron authoritative mode.
+- [x] T-AR08 Implement the transport selector with NATS default and Aeron authoritative mode.
 - [ ] T-AR09 Implement exact-zero Aeron primary encode/claim publication.
 - [ ] T-AR10 Implement exact-zero follower poll/decode/ring injection with sequence/epoch checks.
-- [ ] T-AR11 Implement fixed-capacity local-to-primary sequence mapping and ACK publication.
+- [x] T-AR11 Implement fixed-capacity local-to-primary sequence mapping and ACK publication.
 
 ## Shadow, durability, and policy
 
 - [ ] T-AR12 Implement NATS-authoritative Aeron shadow record/consume/checksum comparison without
   follower BLP injection.
-- [ ] T-AR13 Wire the exact follower `Journaler.journaledSeq()` post-force watermark to the ACK
+- [x] T-AR13 Wire the exact follower `Journaler.journaledSeq()` post-force watermark to the ACK
   agent.
 - [ ] T-AR14 Prove on-ring ACK precedes the durable watermark and durable ACK follows it.
-- [ ] T-AR15 Implement degraded-solo default with alert/reconnect and strict durable halt opt-in.
+- [x] T-AR15 Implement degraded-solo default with alert/reconnect and strict durable halt opt-in.
 - [ ] T-AR16 Reject incompatible strict/on-ring and mixed transport/schema configurations.
 
 ## Sidecar and recovery
@@ -41,7 +41,7 @@
 
 ## Failover
 
-- [ ] T-AR22 Preserve the Lease-gated admission path as the default.
+- [x] T-AR22 Preserve the Lease-gated admission path as the default.
 - [ ] T-AR23 Emit/measure direct Aeron heartbeat and peer-staleness detection.
 - [ ] T-AR24 Implement atomic `TRADERX_BLP_FAST_WITNESS` compare-and-set claim and revision fence.
 - [ ] T-AR25 Reconcile the Kubernetes Lease asynchronously and demote on foreign witness/epoch/

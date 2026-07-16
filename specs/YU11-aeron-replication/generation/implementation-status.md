@@ -1,6 +1,6 @@
 # Implementation Status: YU11-aeron-replication
 
-**Status**: Spec and generation scaffold verified; generated runtime is YU10 parity.
+**Status**: Spec/generation scaffold verified; dual transport and exact durable-watermark core implemented.
 
 ## Verification evidence
 
@@ -14,6 +14,9 @@
 | State test | `TRADERX_SKIP_GENERATE=1 bash scripts/test-state-YU11-aeron-replication.sh` passes. |
 | Spec readiness | `pipeline/speckit/validate-speckit-readiness.sh` passes. The repository-wide root gate reaches the unchanged parent heading `# Feature Pack: YU02-lmax-kubernetes` and rejects it because it predates the gate's required YU02 heading form; YU11 does not alter that parent document. |
 | Content gate | House-style present-tense language throughout the YU11 spec pack; `git diff --check` passes. |
+| SBE toolchain | Aeron `1.51.0` and SBE `1.37.1` are locked; `generateSbe` produces the codecs from the committed 64-byte schema. |
+| Transport proof | Embedded Media Driver test passes primary claimed SBE publication, follower direct ring injection, and ACK return over Aeron IPC. |
+| Order-matcher regression | Full generated order-matcher suite passes: 157 tests, 1 skipped. |
 
 ## Component status
 
@@ -21,13 +24,13 @@
 |---|---|
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
 | Generation/render/runtime wrappers | Scaffolded and syntax-validated |
-| Order-matcher Aeron/SBE runtime | Parent parity |
+| Order-matcher Aeron/SBE runtime | Selector, generated codec, primary/follower agents, ACK mapping, policy validation, and embedded transport test implemented |
 | Archiving Media Driver sidecar | Parent parity |
 | Compose, multi-node kind, GKE runtime | Parent parity |
 | Allocation, recovery, failover, GKE evidence | Baseline contracts recorded |
 
 ## Current limitations
 
-- Generated YU11 runtime currently matches YU10 because no YU11 runtime override is applied in
-  the scaffold commit.
+- Aeron Archive recording/replay, signed peer handshake, consume-side shadow comparison, sidecar
+  manifests, and the fast-witness path are not part of the current transport-core checkpoint.
 - The GKE capacity action remains user-run; this branch performs no cluster scaling or push.
