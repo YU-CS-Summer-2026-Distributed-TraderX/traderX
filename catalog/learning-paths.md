@@ -35,6 +35,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU08-execution-algo-engine`
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
+- `YU11-aeron-replication`
 
 ### Functional
 
@@ -59,6 +60,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU08-execution-algo-engine`
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
+- `YU11-aeron-replication`
 
 ### Convergence
 
@@ -95,3 +97,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU08-execution-algo-engine` | YU07-historical-tick-store | `none` | `false` | `optional` | `specs/YU08-execution-algo-engine/spec.md` |
 | `YU09-ops-hardening` | YU08-execution-algo-engine | `none` | `false` | `optional` | `specs/YU09-ops-hardening/spec.md` |
 | `YU10-fix-ingress` | YU09-ops-hardening | `none` | `false` | `optional` | `specs/YU10-fix-ingress/spec.md` |
+| `YU11-aeron-replication` | YU10-fix-ingress | `none` | `false` | `optional` | `specs/YU11-aeron-replication/spec.md` |

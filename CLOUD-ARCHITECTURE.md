@@ -5,6 +5,14 @@ Live at **https://yaakovseif.dev** · Branch: `lmax-kubernetes-blp-ha` · Cluste
 This document describes the deployed GKE architecture: node pools, what runs where, the
 order-matcher (BLP) HA/single-BLP modes, throughput characteristics, and the operational commands.
 
+## Spec-kit lineage note
+
+The team-authored state lineage now reaches `YU11-aeron-replication`, parented on
+`YU10-fix-ingress`. YU11 keeps the File-backed NATS replication path as the default and adds a
+flag-selected Aeron+SBE path with per-pod Archive sidecars. This document describes the inherited
+GKE baseline and user-run capacity commands; YU11's exact sidecar, UDP, NetworkPolicy, witness,
+PVC-expansion, and benchmark contracts live in `specs/YU11-aeron-replication/`.
+
 ---
 
 ## 1. Cluster & node pools

@@ -1,0 +1,137 @@
+{
+  "title": "YU11-aeron-replication architecture",
+  "stateId": "YU11-aeron-replication",
+  "parentState": "YU10-fix-ingress",
+  "description": "Dual-capable BLP replication: File-backed NATS remains the default and rollback path, while Aeron reliable unicast plus SBE and per-pod Archive sidecars provide a measured replication alternative, exact follower-journal durable watermarks, shadow validation, Archive catch-up, and an opt-in direct-heartbeat plus atomic-witness failover path.",
+  "inheritsFrom": "YU10-fix-ingress (which inherits the full YU02..YU09 LMAX/Kubernetes lineage)",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "ingress",
+      "label": "REST + FIX ingress",
+      "kind": "external",
+      "description": "Unchanged YU10 entrypoints publish authorized commands onto the multi-producer input ring."
+    },
+    {
+      "id": "primary_ring",
+      "label": "Primary input ring",
+      "kind": "queue",
+      "description": "Existing Disruptor ring. Journaler and selected replication handler consume in parallel; matching/risk waits behind both."
+    },
+    {
+      "id": "primary_journal",
+      "label": "Primary Journaler + PVC",
+      "kind": "store",
+      "description": "Business durability authority. Forces drained batches before journaledSeq advances."
+    },
+    {
+      "id": "transport_selector",
+      "label": "Delegating replication selector",
+      "kind": "service",
+      "description": "BLP_REPLICATION_TRANSPORT selects NATS or Aeron; optional Aeron shadow runs with NATS authoritative."
+    },
+    {
+      "id": "nats_replication",
+      "label": "File-backed NATS replication",
+      "kind": "queue",
+      "description": "Inherited default and rollback path using TRADERX_BLP_REPLICATION plus follower ACK subject."
+    },
+    {
+      "id": "primary_aeron",
+      "label": "AeronReplicator + SBE encoder",
+      "kind": "service",
+      "description": "Claims publication buffers and writes fixed 64-byte input records in place; tracks durable ACKs and policy state."
+    },
+    {
+      "id": "primary_sidecar",
+      "label": "Primary Archiving Media Driver",
+      "kind": "service",
+      "description": "Reliable unicast media driver plus Archive recording on the primary pod PVC under a one-core budget."
+    },
+    {
+      "id": "follower_sidecar",
+      "label": "Follower Archiving Media Driver",
+      "kind": "service",
+      "description": "Receives/records live data and serves/consumes replay for follower catch-up."
+    },
+    {
+      "id": "follower_aeron",
+      "label": "AeronReplicationFollower",
+      "kind": "service",
+      "description": "Validates handshake/schema/epoch/sequence, decodes into the follower input ring, and maintains fixed sequence mappings."
+    },
+    {
+      "id": "follower_ring",
+      "label": "Follower input ring",
+      "kind": "queue",
+      "description": "Existing Disruptor topology for journal and matching/risk apply."
+    },
+    {
+      "id": "follower_journal",
+      "label": "Follower Journaler + PVC",
+      "kind": "store",
+      "description": "Advances the exact post-force journaled watermark consumed by the durable ACK agent."
+    },
+    {
+      "id": "follower_blp",
+      "label": "Follower matching/risk apply",
+      "kind": "service",
+      "description": "Applies replicated inputs after journaling; applied watermark is independently required for promotion readiness."
+    },
+    {
+      "id": "ack_agent",
+      "label": "Durable ACK agent",
+      "kind": "service",
+      "description": "Coalesces highest contiguous mapped sequence at or below Journaler.journaledSeq and returns epoch/sequence/recording position."
+    },
+    {
+      "id": "snapshot_archive",
+      "label": "Snapshot bundle + Archive replay",
+      "kind": "store",
+      "description": "Checksummed bootstrap boundary and recorded tail used for retained-volume and empty-volume follower catch-up."
+    },
+    {
+      "id": "lease",
+      "label": "Kubernetes Lease",
+      "kind": "service",
+      "description": "Synchronous default promotion authority and asynchronous reconciliation backstop in fast-witness mode."
+    },
+    {
+      "id": "fast_witness",
+      "label": "NATS KV fast witness",
+      "kind": "store",
+      "description": "Atomic compare-and-set tiebreaker after direct heartbeat staleness; exact revision/epoch enters the admission fence."
+    },
+    {
+      "id": "admission_fence",
+      "label": "Primary admission fence",
+      "kind": "service",
+      "description": "Opens only for a current default Lease proof or fast witness revision; closes on foreign or ambiguous proof before ring claim."
+    }
+  ],
+  "edges": [
+    { "from": "ingress", "to": "admission_fence", "label": "authorized order/cancel before ring claim" },
+    { "from": "admission_fence", "to": "primary_ring", "label": "admitted input event" },
+    { "from": "primary_ring", "to": "primary_journal", "label": "parallel journal write + force" },
+    { "from": "primary_ring", "to": "transport_selector", "label": "parallel replication event" },
+    { "from": "transport_selector", "to": "nats_replication", "label": "default / rollback authoritative path" },
+    { "from": "transport_selector", "to": "primary_aeron", "label": "Aeron authoritative or shadow encode" },
+    { "from": "primary_aeron", "to": "primary_sidecar", "label": "SBE tryClaim publication" },
+    { "from": "primary_sidecar", "to": "follower_sidecar", "label": "reliable unicast UDP data/control" },
+    { "from": "follower_sidecar", "to": "follower_aeron", "label": "live or replay fragments" },
+    { "from": "follower_aeron", "to": "follower_ring", "label": "validated direct decode + publish" },
+    { "from": "follower_ring", "to": "follower_journal", "label": "journal write + force" },
+    { "from": "follower_journal", "to": "ack_agent", "label": "exact journaledSeq watermark" },
+    { "from": "follower_ring", "to": "follower_blp", "label": "apply after journal/replication dependencies" },
+    { "from": "ack_agent", "to": "follower_sidecar", "label": "SBE ACK publication" },
+    { "from": "follower_sidecar", "to": "primary_sidecar", "label": "reliable unicast UDP ACK" },
+    { "from": "primary_sidecar", "to": "primary_aeron", "label": "durable watermark fragment" },
+    { "from": "snapshot_archive", "to": "follower_sidecar", "label": "snapshot install + Archive tail replay" },
+    { "from": "primary_sidecar", "to": "snapshot_archive", "label": "record live data and snapshot streams" },
+    { "from": "lease", "to": "admission_fence", "label": "default synchronous holder/renewal proof" },
+    { "from": "follower_sidecar", "to": "fast_witness", "label": "direct heartbeat stale -> atomic claim" },
+    { "from": "fast_witness", "to": "admission_fence", "label": "fast mode exact revision + epoch" },
+    { "from": "fast_witness", "to": "lease", "label": "winner reconciles Lease asynchronously" }
+  ]
+}

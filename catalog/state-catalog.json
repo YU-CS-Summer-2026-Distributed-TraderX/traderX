@@ -625,6 +625,29 @@
         "branch": "code/generated-state-YU10-fix-ingress",
         "tag": "generated/YU10-fix-ingress/v1"
       }
+    },
+    {
+      "id": "YU11-aeron-replication",
+      "title": "Aeron SBE BLP Replication",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU11-aeron-replication",
+      "previous": [
+        "YU10-fix-ingress"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU11-aeron-replication",
+        "runtime": "inherits YU10-fix-ingress runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU11-aeron-replication",
+        "tag": "generated/YU11-aeron-replication/v1"
+      }
     }
   ]
 }

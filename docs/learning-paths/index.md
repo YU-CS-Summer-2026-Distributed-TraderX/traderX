@@ -59,6 +59,7 @@ flowchart TB
   SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
   SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
   SYU10_fix_ingress["YU10-fix-ingress: FIX Order-Entry Ingress"]
+  SYU11_aeron_replication["YU11-aeron-replication: Aeron SBE BLP Replication"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -82,6 +83,7 @@ flowchart TB
   SYU07_historical_tick_store -.-> SYU08_execution_algo_engine
   SYU08_execution_algo_engine -.-> SYU09_ops_hardening
   SYU09_ops_hardening -.-> SYU10_fix_ingress
+  SYU10_fix_ingress -.-> SYU11_aeron_replication
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -107,6 +109,7 @@ flowchart TB
   click SYU08_execution_algo_engine href "/specs/YU08-execution-algo-engine" "Open State YU08-execution-algo-engine Spec Pack"
   click SYU09_ops_hardening href "/specs/YU09-ops-hardening" "Open State YU09-ops-hardening Spec Pack"
   click SYU10_fix_ingress href "/specs/YU10-fix-ingress" "Open State YU10-fix-ingress Spec Pack"
+  click SYU11_aeron_replication href "/specs/YU11-aeron-replication" "Open State YU11-aeron-replication Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -142,6 +145,7 @@ flowchart TB
 | [`YU08-execution-algo-engine`](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine/system/architecture) | [link](pathname:///specs/YU08-execution-algo-engine/system/runtime-topology) | [link](pathname:///docs/learning/state-YU08-execution-algo-engine) | [code/generated-state-YU08-execution-algo-engine](https://github.com/finos/traderX/tree/code/generated-state-YU08-execution-algo-engine) |
 | [`YU09-ops-hardening`](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening/system/architecture) | [link](pathname:///specs/YU09-ops-hardening/system/runtime-topology) | [link](pathname:///docs/learning/state-YU09-ops-hardening) | [code/generated-state-YU09-ops-hardening](https://github.com/finos/traderX/tree/code/generated-state-YU09-ops-hardening) |
 | [`YU10-fix-ingress`](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress/system/architecture) | [link](pathname:///specs/YU10-fix-ingress/system/runtime-topology) | [link](pathname:///docs/learning/state-YU10-fix-ingress) | [code/generated-state-YU10-fix-ingress](https://github.com/finos/traderX/tree/code/generated-state-YU10-fix-ingress) |
+| [`YU11-aeron-replication`](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication/system/architecture) | [link](pathname:///specs/YU11-aeron-replication/system/runtime-topology) | [link](pathname:///docs/learning/state-YU11-aeron-replication) | [code/generated-state-YU11-aeron-replication](https://github.com/finos/traderX/tree/code/generated-state-YU11-aeron-replication) |
 
 ## Swimlane View
 
@@ -168,6 +172,7 @@ flowchart TB
     SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
     SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
     SYU10_fix_ingress["YU10-fix-ingress: FIX Order-Entry Ingress"]
+    SYU11_aeron_replication["YU11-aeron-replication: Aeron SBE BLP Replication"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -206,6 +211,7 @@ flowchart TB
   SYU07_historical_tick_store -.-> SYU08_execution_algo_engine
   SYU08_execution_algo_engine -.-> SYU09_ops_hardening
   SYU09_ops_hardening -.-> SYU10_fix_ingress
+  SYU10_fix_ingress -.-> SYU11_aeron_replication
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

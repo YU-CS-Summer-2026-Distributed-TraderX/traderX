@@ -21,6 +21,19 @@ This repository follows a SpecKit-first, multi-state architecture. Agents should
 - `002-edge-proxy-uncontainerized`
 - `004-containerized-compose-runtime`
 
+## Team YU State Lineage
+
+- `YU02-lmax-kubernetes`
+- `YU03-in-memory-risk-gateway`
+- `YU04-durable-control-feeds`
+- `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
+- `YU07-historical-tick-store`
+- `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
+- `YU10-fix-ingress`
+- `YU11-aeron-replication`
+
 ## Learning Doc Front-Matter Contract
 
 Every file under `docs/learning/**/*.md` must include:

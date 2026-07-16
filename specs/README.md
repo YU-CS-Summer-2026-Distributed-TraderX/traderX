@@ -31,6 +31,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU08-execution-algo-engine`
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
+- `YU11-aeron-replication`
 
 ## References
 

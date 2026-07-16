@@ -8,7 +8,7 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 - Previous state(s): [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication)
 
 ## Convergence Metadata
 
