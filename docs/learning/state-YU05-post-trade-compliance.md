@@ -44,5 +44,5 @@ inherits YU04-durable-control-feeds runtime harness
 - Flows / topology: [/specs/YU05-post-trade-compliance/system/runtime-topology](/specs/YU05-post-trade-compliance/system/runtime-topology)
 - Research: [link](/specs/YU05-post-trade-compliance/research)
 - Data model: [link](/specs/YU05-post-trade-compliance/data-model)
-- Quickstart: `n/a`
+- Quickstart: [link](/specs/YU05-post-trade-compliance/quickstart)
 
