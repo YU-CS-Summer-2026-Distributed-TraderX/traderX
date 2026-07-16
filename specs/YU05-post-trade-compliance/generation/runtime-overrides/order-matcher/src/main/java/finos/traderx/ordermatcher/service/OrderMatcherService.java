@@ -16,6 +16,7 @@ import finos.traderx.ordermatcher.model.OrderStatus;
 import finos.traderx.ordermatcher.risk.GatewayReplicaStore;
 import finos.traderx.ordermatcher.risk.RiskReason;
 import finos.traderx.ordermatcher.risk.RiskRejectedException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -46,10 +47,11 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
  * in-memory read model; the 009 polling tick, ReentrantLock, hot-path BigDecimal math, and
  * inline JPA/REST calls are gone (FR-09B02/B03, NFR-09B04).
  *
- * <p>YU05 (FR-PTC42 / FR-IMRG30): every command entry point (order, batch, market trade) now
- * runs the {@link EntitlementGate} before screening — the resolved JWT principal must be entitled
- * to the order's account. The gate is a no-op unless {@code risk.entitlement.enforced} is set, so
- * the existing (token-less) UI flow is unaffected until entitlement is turned on.
+ * <p>YU05 (FR-PTC42 / FR-IMRG30): every command entry point (order, batch, market trade, cancel,
+ * force-fill) runs the {@link EntitlementGate} before sequencing — the resolved JWT principal
+ * must be entitled to the affected account. The gate is a no-op unless
+ * {@code risk.entitlement.enforced} is set, so the existing token-less UI flow is unaffected
+ * until entitlement is turned on.
  */
 @Service
 public class OrderMatcherService {
@@ -69,6 +71,19 @@ public class OrderMatcherService {
     private final String tradeServiceUrl;
     private final Instant startedAt = Instant.now();
 
+    /** Compatibility for inherited pre-YU05 tests; production injection uses the public ctor. */
+    OrderMatcherService(
+        LmaxEngine engine,
+        GatewayReplicaStore replicas,
+        boolean riskEnabled,
+        String priceServiceUrl,
+        String tradeServiceUrl
+    ) {
+        this(engine, replicas, riskEnabled, "dev-jwt-shared-secret", false,
+            priceServiceUrl, tradeServiceUrl);
+    }
+
+    @Autowired
     public OrderMatcherService(
         LmaxEngine engine,
         GatewayReplicaStore replicas,
@@ -161,7 +176,8 @@ public class OrderMatcherService {
         validateCreateRequest(request);
         // YU05 (FR-PTC42/FR-IMRG30): authn/entitlement before risk screening — is this caller
         // allowed to act on this account at all, before we spend a screen()/sequence on it.
-        EntitlementGate.check(jwt, entitlementEnforced, request.getAccountId(), authorization);
+        EntitlementGate.ResolvedPrincipal principal = resolvePrincipal(authorization);
+        principal.checkAccount(request.getAccountId());
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
         screen(request.getAccountId(), ticker, request.getQuantity(), request.getLimitPrice(),
             false, request.getClientOrderId());
@@ -193,12 +209,15 @@ public class OrderMatcherService {
         if (requests.size() > MAX_BATCH) {
             throw new ResponseStatusException(BAD_REQUEST, "batch too large (max " + MAX_BATCH + ")");
         }
+        // Resolve/HMAC-verify/decode once for the HTTP request, then reuse the immutable principal
+        // for every account in the batch (up to MAX_BATCH entries).
+        EntitlementGate.ResolvedPrincipal principal = resolvePrincipal(authorization);
         List<LmaxEngine.NewOrderCommand> commands = new ArrayList<>(requests.size());
         for (OrderCreateRequest request : requests) {
             validateCreateRequest(request);
             // Every order in the batch is entitlement-checked against the same caller; a batch
             // may span accounts, so the caller must be entitled to each (or hold the admin claim).
-            EntitlementGate.check(jwt, entitlementEnforced, request.getAccountId(), authorization);
+            principal.checkAccount(request.getAccountId());
             String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
             screen(request.getAccountId(), ticker, request.getQuantity(), request.getLimitPrice(),
                 false, request.getClientOrderId());
@@ -218,12 +237,26 @@ public class OrderMatcherService {
     }
 
     public OrderResponse cancelOrder(String orderId) {
-        OrderSnapshot snapshot = run(() -> engine.executeCancel(parseOrderRef(orderId)));
+        return cancelOrder(orderId, null);
+    }
+
+    public OrderResponse cancelOrder(String orderId, String authorization) {
+        EntitlementGate.ResolvedPrincipal principal = resolvePrincipal(authorization);
+        int orderRef = parseOrderRef(orderId);
+        authorizeExistingOrder(principal, orderRef);
+        OrderSnapshot snapshot = run(() -> engine.executeCancel(orderRef));
         return toResponse(snapshot);
     }
 
     public OrderResponse forceFillOrder(String orderId) {
-        OrderSnapshot snapshot = run(() -> engine.executeForceFill(parseOrderRef(orderId)));
+        return forceFillOrder(orderId, null);
+    }
+
+    public OrderResponse forceFillOrder(String orderId, String authorization) {
+        EntitlementGate.ResolvedPrincipal principal = resolvePrincipal(authorization);
+        int orderRef = parseOrderRef(orderId);
+        authorizeExistingOrder(principal, orderRef);
+        OrderSnapshot snapshot = run(() -> engine.executeForceFill(orderRef));
         return toResponse(snapshot);
     }
 
@@ -239,7 +272,8 @@ public class OrderMatcherService {
      */
     public MarketTradeRequest bookMarketTrade(MarketTradeRequest request, String authorization) {
         validateMarketTrade(request);
-        EntitlementGate.check(jwt, entitlementEnforced, request.getAccountId(), authorization);
+        EntitlementGate.ResolvedPrincipal principal = resolvePrincipal(authorization);
+        principal.checkAccount(request.getAccountId());
         String ticker = request.getSecurity().trim().toUpperCase(Locale.ROOT);
         screen(request.getAccountId(), ticker, request.getQuantity(), null, true,
             request.getClientOrderId());
@@ -470,6 +504,21 @@ public class OrderMatcherService {
     }
 
     // ----- helpers --------------------------------------------------------------------------
+
+    private EntitlementGate.ResolvedPrincipal resolvePrincipal(String authorization) {
+        return EntitlementGate.resolve(jwt, entitlementEnforced, authorization);
+    }
+
+    private void authorizeExistingOrder(EntitlementGate.ResolvedPrincipal principal, int orderRef) {
+        if (!principal.enforced()) {
+            return;
+        }
+        OrderSnapshot existing = readModel.get(orderRef);
+        if (existing == null) {
+            throw new ResponseStatusException(NOT_FOUND, "order not found");
+        }
+        principal.checkAccount(existing.accountId);
+    }
 
     private <T> T run(java.util.function.Supplier<T> command) {
         try {

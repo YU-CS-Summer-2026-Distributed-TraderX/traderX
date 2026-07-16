@@ -75,15 +75,21 @@ public class OrderController {
     }
 
     @PostMapping("/orders/{orderId}/cancel")
-    public OrderResponse cancelOrder(@PathVariable("orderId") String orderId) {
-        OrderResponse response = orderMatcherService.cancelOrder(orderId);
+    public OrderResponse cancelOrder(
+        @PathVariable("orderId") String orderId,
+        @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization
+    ) {
+        OrderResponse response = orderMatcherService.cancelOrder(orderId, authorization);
         orderMatcherService.publishOrderUpdate(response);
         return response;
     }
 
     @PostMapping("/orders/{orderId}/force-fill")
-    public OrderResponse forceFillOrder(@PathVariable("orderId") String orderId) {
-        OrderResponse response = orderMatcherService.forceFillOrder(orderId);
+    public OrderResponse forceFillOrder(
+        @PathVariable("orderId") String orderId,
+        @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization
+    ) {
+        OrderResponse response = orderMatcherService.forceFillOrder(orderId, authorization);
         orderMatcherService.publishOrderUpdate(response);
         return response;
     }

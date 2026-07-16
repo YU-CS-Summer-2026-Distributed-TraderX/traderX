@@ -50,6 +50,18 @@ class EntitlementGateTest {
     }
 
     @Test
+    void oneResolvedPrincipalCanAuthorizeEveryAccountInABatch() {
+        EntitlementGate.ResolvedPrincipal principal =
+            EntitlementGate.resolve(jwt, true, token(Set.of(42, 7), false));
+
+        assertDoesNotThrow(() -> principal.checkAccount(42));
+        assertDoesNotThrow(() -> principal.checkAccount(7));
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+            () -> principal.checkAccount(9));
+        assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    @Test
     void enforcedWithUnentitledTokenIsForbidden() {
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
             () -> EntitlementGate.check(jwt, true, 42, token(Set.of(7, 9), false)));
