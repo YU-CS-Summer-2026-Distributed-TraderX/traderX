@@ -95,6 +95,15 @@ def isolatedAllocationGate = { String taskName, String methodName, boolean epsil
     if (epsilon) {
       jvmArgs '-XX:+UnlockExperimentalVMOptions', '-XX:+UseEpsilonGC',
               '-Xms256m', '-Xmx256m', '-XX:+AlwaysPreTouch', '-Xbatch'
+    } else {
+      // -Xbatch here too. NGC-01's intermittent exactly-72-byte "allocation" was root-caused
+      // (2026-07-16; JFR + -XX:-UseTLAB gave exact per-allocation recording) to C2
+      // escape-analysis REMATERIALIZATION at a mid-window deoptimization: deopt reifies a
+      // scalar-replaced InputEvent (72 bytes = its exact size), bumping the thread's
+      // allocated-bytes counter with zero JFR-visible allocations JVM-wide - a compiler
+      // artifact, not a hot-path allocation. Synchronous compilation completes before the
+      // measured window, so no mid-window deopt: 10/10 deterministic vs ~30-80% flake without.
+      jvmArgs '-Xbatch'
     }
   }
 }
