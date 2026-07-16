@@ -23,11 +23,20 @@ bad()  { fail=$((fail+1)); step "$1" "✘ $2"; }
 
 echo "YU10 FIX ingress — live session proof (account ${ACCOUNT}, CompID ${COMP_ID})"
 
-# 1. mint a JWT for the session (same dev-token infra the REST demos use)
-FIX_JWT="$(curl -s -m8 -X POST "${EDGE}/order-matcher/auth/dev-token" \
-  -H "Content-Type: application/json" -d "{\"user\":\"user01\",\"accountId\":${ACCOUNT}}" | tr -d '"')"
-if [ -n "${FIX_JWT}" ] && [ "${FIX_JWT}" != "null" ]; then ok "mint session JWT" "dev-token issued"
-else bad "mint session JWT" "no token from ${EDGE}"; exit 1; fi
+# 1. mint a JWT for the session — the dev-token endpoint lives on trade-processor and requires the
+#    master secret header (same infra the YU05 auth demos use); scoped to this account.
+TP="${TRADE_PROCESSOR_URL:-${EDGE}/trade-processor}"
+MASTER="${AUTH_MASTER_SECRET:-dev-token-master-secret}"
+FIX_JWT="$(curl -s -m8 -X POST "${TP}/auth/dev-token" \
+  -H "X-Auth-Master-Secret: ${MASTER}" -H "Content-Type: application/json" \
+  -d "{\"subject\":\"fix-${COMP_ID}\",\"accounts\":[${ACCOUNT}],\"admin\":false,\"ttlSeconds\":600}" \
+  | python3 -c "import sys,json
+s=sys.stdin.read().strip()
+try: print(json.loads(s).get('token') or json.loads(s).get('accessToken') or s)
+except Exception: print(s)")"
+if [ -n "${FIX_JWT}" ] && [ "${FIX_JWT}" != "null" ] && ! echo "${FIX_JWT}" | grep -q '404\|error'; then
+  ok "mint session JWT" "dev-token issued (account ${ACCOUNT})"
+else bad "mint session JWT" "no token from ${TP}/auth/dev-token"; exit 1; fi
 
 # 2. DB projection baseline for this account (proves FIX orders reach the same read model)
 db_orders() {
