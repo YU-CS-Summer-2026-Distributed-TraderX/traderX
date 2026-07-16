@@ -128,7 +128,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private final SymbolTable symbols;
     private final HotPathMetrics metrics = new HotPathMetrics();
-    private final InMemoryOrderReadModel readModel = new InMemoryOrderReadModel();
+    private final InMemoryOrderReadModel readModel;
     private final AtomicInteger nextOrderRef = new AtomicInteger(1);
     private volatile boolean recoveryReady;
     private volatile String recoveryStatus = "starting";
@@ -232,6 +232,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.runtimeProfile = runtimeProfile;
         this.journalBatchRecords = journalBatchRecords;
         this.terminalRetain = terminalRetain;
+        this.readModel = new InMemoryOrderReadModel(terminalRetain);
         this.replicationEnabled = replicationEnabled;
         this.podName = podName;
         this.natsAddress = natsAddress;
@@ -932,64 +933,80 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     /** Warm-start: the persisted read-model is the snapshot; load it into memory (BLP + reads). */
     private void bootstrapFromReadModel() {
-        int maxRef = 0;
-        long counterCreate = 0;
-        for (OrderRecord record : orderRepository.findAllByOrderByUpdatedAtDesc()) {
-            Matcher matcher = ORDER_ID_PATTERN.matcher(record.getOrderId() == null ? "" : record.getOrderId());
-            if (!matcher.matches()) {
-                log.warn("Skipping order with unrecognized id format: {}", record.getOrderId());
-                continue;
-            }
-            int ref = Integer.parseInt(matcher.group(1));
-            maxRef = Math.max(maxRef, ref);
-            counterCreate++;
-
-            int securityId = symbols.idFor(record.getSecurity());
-            readModel.bootstrap(OrderSnapshot.fromRecord(ref, record));
-            matchingEngine.bootstrapOrder(
-                ref,
-                record.getAccountId(),
-                securityId,
-                (byte) record.getSide().ordinal(),
-                record.getQuantity(),
-                record.getRemainingQuantity() == null ? 0 : record.getRemainingQuantity(),
-                Px.toTicks(record.getLimitPrice()),
-                (byte) record.getStatus().ordinal(),
-                record.getLastExecutionPrice() == null ? Px.NONE : Px.toTicks(record.getLastExecutionPrice()),
-                record.getLastFillQuantity() == null ? 0 : record.getLastFillQuantity(),
-                record.getCreatedAt() == null ? 0 : record.getCreatedAt().toEpochMilli(),
-                record.getUpdatedAt() == null ? 0 : record.getUpdatedAt().toEpochMilli()
-            );
-        }
-        nextOrderRef.set(maxRef + 1);
-
-        // Warm the BLP's net positions from the persisted POSITIONS read-model (FR-09B16 recovery):
-        // the BLP is the single position writer, so it must resume from the durable state on restart.
-        for (Position position : positionRepository.findAll()) {
-            if (position.getAccountId() == null || position.getSecurity() == null) {
-                continue;
-            }
-            int securityId = symbols.idFor(position.getSecurity());
-            matchingEngine.bootstrapPosition(position.getAccountId(), securityId,
-                position.getQuantity() == null ? 0 : position.getQuantity(),
-                Px.toTicks(position.getAverageCostBasis()));
-        }
-
-        // Resume the global trade counter above the max persisted trade id so ids never collide
-        // across restarts (mirrors nextOrderRef; foreign-format ids — e.g. 009 seed — are ignored).
-        long maxTradeSeq = 0;
-        for (Trade trade : tradeRepository.findAll()) {
-            maxTradeSeq = Math.max(maxTradeSeq, OrderSnapshot.tradeSeqFromId(trade.getId()));
-        }
-        matchingEngine.bootstrapTradeCounter(maxTradeSeq);
+        DbWarmupCounters counters = new DbWarmupCounters();
+        DbWarmupReader.Result streamed = new DbWarmupReader(jdbcTemplate).stream(
+            record -> bootstrapOrderFromDb(record, counters),
+            this::bootstrapPositionFromDb);
+        nextOrderRef.set(counters.maxRef + 1);
+        matchingEngine.bootstrapTradeCounter(streamed.maxTradeSeq());
 
         // Counter parity with 009's refreshCountersFromDatabase().
-        readModel.setCounter("create", counterCreate);
-        readModel.setCounter("partial_fill", readModel.countByStatus(OrderStatus.PARTIALLY_FILLED));
-        readModel.setCounter("fill", readModel.countByStatus(OrderStatus.FILLED));
-        readModel.setCounter("cancel", readModel.countByStatus(OrderStatus.CANCELED));
-        readModel.setCounter("reject", readModel.countByStatus(OrderStatus.REJECTED));
+        readModel.setCounter("create", counters.created);
+        readModel.setCounter("partial_fill", counters.count(OrderStatus.PARTIALLY_FILLED));
+        readModel.setCounter("fill", counters.count(OrderStatus.FILLED));
+        readModel.setCounter("cancel", counters.count(OrderStatus.CANCELED));
+        readModel.setCounter("reject", counters.count(OrderStatus.REJECTED));
         readModel.setCounter("force_fill", 0);
+        log.info("DB warm-up streamed {} orders, {} positions, and {} trade ids; retained {} orders",
+            streamed.orderRows(), streamed.positionRows(), streamed.tradeRows(), readModel.totalOrders());
+    }
+
+    private void bootstrapOrderFromDb(OrderRecord record, DbWarmupCounters counters) {
+        Matcher matcher = ORDER_ID_PATTERN.matcher(record.getOrderId() == null ? "" : record.getOrderId());
+        if (!matcher.matches()) {
+            log.warn("Skipping order with unrecognized id format: {}", record.getOrderId());
+            return;
+        }
+        int ref = Integer.parseInt(matcher.group(1));
+        counters.record(ref, record.getStatus());
+
+        int securityId = symbols.idFor(record.getSecurity());
+        OrderSnapshot snapshot = OrderSnapshot.fromRecord(ref, record);
+        if (!readModel.bootstrapNewestFirst(snapshot)) {
+            return;
+        }
+        matchingEngine.bootstrapOrder(
+            ref,
+            record.getAccountId(),
+            securityId,
+            (byte) record.getSide().ordinal(),
+            record.getQuantity(),
+            record.getRemainingQuantity() == null ? 0 : record.getRemainingQuantity(),
+            Px.toTicks(record.getLimitPrice()),
+            (byte) record.getStatus().ordinal(),
+            record.getLastExecutionPrice() == null ? Px.NONE : Px.toTicks(record.getLastExecutionPrice()),
+            record.getLastFillQuantity() == null ? 0 : record.getLastFillQuantity(),
+            record.getCreatedAt() == null ? 0 : record.getCreatedAt().toEpochMilli(),
+            record.getUpdatedAt() == null ? 0 : record.getUpdatedAt().toEpochMilli()
+        );
+    }
+
+    private void bootstrapPositionFromDb(Position position) {
+        if (position.getAccountId() == null || position.getSecurity() == null) {
+            return;
+        }
+        int securityId = symbols.idFor(position.getSecurity());
+        matchingEngine.bootstrapPosition(position.getAccountId(), securityId,
+            position.getQuantity() == null ? 0 : position.getQuantity(),
+            Px.toTicks(position.getAverageCostBasis()));
+    }
+
+    private static final class DbWarmupCounters {
+        private final long[] byStatus = new long[OrderStatus.values().length];
+        private int maxRef;
+        private long created;
+
+        void record(int ref, OrderStatus status) {
+            maxRef = Math.max(maxRef, ref);
+            created++;
+            if (status != null) {
+                byStatus[status.ordinal()]++;
+            }
+        }
+
+        long count(OrderStatus status) {
+            return byStatus[status.ordinal()];
+        }
     }
 
     /**
