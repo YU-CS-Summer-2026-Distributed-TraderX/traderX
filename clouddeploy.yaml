@@ -31,6 +31,9 @@ executionConfigs:
   - usages:
       - RENDER
       - DEPLOY
+      # POSTDEPLOY is required because the production stage enables a postdeploy hook
+      # (promote-blp-mode); it's the execution env Cloud Deploy runs that hook container in.
+      - POSTDEPLOY
     serviceAccount: traderx-cicd@traderx-501015.iam.gserviceaccount.com
     # Default execution-config artifact bucket uses App Engine's domain-verified naming
     # convention (<region>.deploy-artifacts.<project>.appspot.com), which only Cloud Deploy's
