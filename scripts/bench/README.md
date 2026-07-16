@@ -99,3 +99,28 @@ slowest of the 5 parallel output-ring consumers, so it gates the whole single-wr
 out. It is *not* DB CPU (Postgres ~0.57 cores) — it's per-row JPA `merge` round-trips
 (assigned `@Id`, no `hibernate.jdbc.batch_size`). The lever that would help is decoupling the
 projector from the ring and/or bulk/async persistence — not ingress batching.
+
+## The credit-limit pitfall (why a REST bench "hits a wall" at ~50k orders)
+
+Every order's notional is reserved against the account's **credit limit**
+(`RISK_CREDIT_LIMIT_TICKS`, default 5e15 ticks) and **executed notional accumulates for the
+process lifetime** — so a sustained one-sided burst of 500-share/$200 orders exhausts the
+account after ~50,000 orders, and every subsequent POST returns `422 CREDIT_LIMIT` (or
+`POSITION_LIMIT`/`CONCENTRATION_LIMIT`, whichever trips first). Pre-fix `max-load.mjs` counted
+those 422s as `failed (← over the ceiling)`, which misreads the 15c3-5 gateway doing its job as
+a throughput ceiling. It now reports them separately as `RISK-REJECTED (policy, not capacity)`
+with a per-reason tally. For a sustained bench, raise `RISK_CREDIT_LIMIT_TICKS` on the
+order-matcher **in a bench environment only** (env knob; requires restart), and lift the
+position/concentration policy via `POST /risk/control/policy`.
+
+## Measured tiers (2026-07-16, YU09)
+
+| Tier | Where | Result |
+|---|---|---|
+| In-process journaled BLP (`POST /system/benchmarks/journaled-blp/run`, 2M orders) | GKE blp-pool (c2-standard-4), single-BLP | **1.26–1.59M orders/s sustained** (blpPeak ~2M/s) |
+| REST per-order `POST /orders` (max-burst, in-cluster client) | kind (laptop) | **~9.2k/s**, zero failures — input/journal/BLP watermarks in lockstep, both rings ~empty: the ceiling is HTTP thread-per-request + the per-order ack-future block, not the engine |
+| REST batch `POST /orders/batch` (batch=500, conc=16) | kind (laptop) | **~74k orders/s booked** — output ring becomes the next constraint (`outFree` touched 0). Use `max-load.mjs --batch N`. |
+
+GKE REST per-order runs (~4k/s) were **credit-capped, not throughput-capped** — they died at
+43k/51k ≈ 50k cumulative orders. The GKE per-order and batch ceilings are untested with credit
+lifted; expect the same shape as kind (engine idle, ingress-bound), scaled by pod networking.

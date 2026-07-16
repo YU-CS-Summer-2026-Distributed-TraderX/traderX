@@ -10,11 +10,18 @@
 // fill). trades/sec therefore tracks submit/sec, and REST submission is the bottleneck.
 // We push it with HTTP keep-alive + many concurrent in-flight requests.
 //
-// Usage:  node max-load.mjs [--conc N] [--secs S]
+// Usage:  node max-load.mjs [--conc N] [--secs S] [--batch N]
 //   --conc N   concurrent in-flight POSTs (raise to push harder)  (default 128)
 //   --secs S   run for S seconds; 0 = until Ctrl-C                 (default 0)
+//   --batch N  N orders per request via /orders/batch (max 1024) — amortises the HTTP
+//              round-trip + per-order ack-future; ~8x the per-order ceiling (default: off)
 //   env: MATCHER_URL (http://localhost:18110), PROM_URL (http://localhost:9090),
 //        ACCOUNT (42422), TICKERS (JPM,GS,COF,DFS — must be price-published), QTY (500)
+//
+// Reading the output: `failed` = transport-level (the real capacity signal); `RISK-REJECTED`
+// = the risk gateway declining orders (CREDIT_LIMIT etc.) — policy, not capacity. A sustained
+// one-sided burst WILL exhaust the account's credit limit (~50k orders at defaults) and flip
+// every response to 422; that is the 15c3-5 gateway working, not a throughput wall.
 //
 // Watch live:  http://localhost:8080/grafana/d/traderx-trades-per-second  (refresh = 1s)
 // Tip: one Node process may itself become the limit; run several copies in parallel
@@ -47,33 +54,54 @@ const cfg = {
   qty: Number(process.env.QTY || 500),
   limit: Number(process.env.LIMIT || 1_000_000),
   tickers: (process.env.TICKERS || 'JPM,GS,COF,DFS').split(',').map((t) => t.trim().toUpperCase()),
+  // --batch N / BATCH: submit N-order arrays to /orders/batch instead of one order per POST.
+  // One gateway thread then amortises the HTTP round-trip and the per-order BLP ack-future
+  // across the whole batch (OrderMatcherService.createOrderBatch) — measured ~8x the
+  // per-order ceiling on kind (9k/s -> 74k/s). Max 1024 (MAX_BATCH server-side).
+  batch: Math.min(1024, Number(flag('--batch', 'BATCH', 0))),
 };
 
-const u = new URL(cfg.matcherUrl + '/orders');
+const u = new URL(cfg.matcherUrl + (cfg.batch > 0 ? '/orders/batch' : '/orders'));
 const agent = new http.Agent({ keepAlive: true, maxSockets: Math.max(cfg.conc, 512), maxFreeSockets: 256 });
 
 let submitted = 0;
-let failed = 0;
+let failed = 0;       // transport-level: 5xx / timeout / socket error — the REAL capacity signal
+let rejected = 0;     // HTTP 4xx = the risk gateway said no (CREDIT_LIMIT etc.) — policy, NOT capacity.
+                      // Counting these as "over the ceiling" is how a 15s one-sided burst that merely
+                      // exhausts the account's credit (~50k orders at default RISK_CREDIT_LIMIT_TICKS)
+                      // masquerades as a throughput wall. Keep them separate, with reasons.
+const rejectReasons = new Map(); // reason -> count
 let running = true;
 let stopping = false;
 let rr = 0;
 const inflight = new Set(); // live requests, so shutdown can abort whatever the matcher is starving
 
+function tallyReject(reason, n = 1) {
+  rejected += n;
+  const key = reason || 'unknown';
+  rejectReasons.set(key, (rejectReasons.get(key) || 0) + n);
+}
+
 function postOrder() {
   if (stopping) return Promise.resolve(); // don't start new work once we're tearing down
   const ticker = cfg.tickers[rr++ % cfg.tickers.length];
-  const data = Buffer.from(JSON.stringify({
+  const mkOrder = () => ({
     accountId: cfg.account, security: ticker, side: 'Buy', quantity: cfg.qty, limitPrice: cfg.limit,
-  }));
+  });
+  const n = cfg.batch > 0 ? cfg.batch : 1; // orders per request, so all counters stay in ORDER units
+  const data = Buffer.from(JSON.stringify(
+    cfg.batch > 0 ? Array.from({ length: cfg.batch }, mkOrder) : mkOrder(),
+  ));
   return new Promise((resolve) => {
     let settled = false;
     let req;
-    const settle = (outcome) => { // 'ok' | 'fail' | 'abort'
+    const settle = (outcome, reason) => { // 'ok' | 'reject' | 'fail' | 'done' (counted inline) | 'abort'
       if (settled) return;
       settled = true;
       inflight.delete(req);
-      if (outcome === 'ok') submitted++;
-      else if (outcome === 'fail') failed++;
+      if (outcome === 'ok') submitted += n;
+      else if (outcome === 'reject') tallyReject(reason, n);
+      else if (outcome === 'fail') failed += n;
       // 'abort' = shutdown teardown: don't pollute the failed count with our own cancellations
       resolve();
     };
@@ -81,10 +109,45 @@ function postOrder() {
       { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', agent,
         headers: { 'content-type': 'application/json', 'content-length': data.length } },
       (res) => {
-        const ok = res.statusCode === 201;
-        res.resume();
-        res.on('end', () => settle(ok ? 'ok' : 'fail'));
-        res.on('error', () => settle(ok ? 'ok' : 'fail'));
+        const sc = res.statusCode;
+        if (sc >= 200 && sc < 300) {
+          if (cfg.batch > 0) {
+            // Batch semantics: per-order BLP decisions come back in the array, not as HTTP errors.
+            let body = '';
+            res.on('data', (c) => { body += c; });
+            res.on('end', () => {
+              try {
+                const arr = JSON.parse(body);
+                let acc = 0;
+                for (const o of arr) {
+                  if (o && o.status === 'REJECTED') tallyReject(o.riskReason || 'REJECTED');
+                  else acc++;
+                }
+                submitted += acc;
+              } catch { submitted += n; } // parse hiccup: orders were accepted; don't inflate failures
+              settle('done'); // counters already applied above; just release the slot
+            });
+            res.on('error', () => settle('fail'));
+          } else {
+            res.resume();
+            res.on('end', () => settle('ok'));
+            res.on('error', () => settle('ok'));
+          }
+        } else if (sc >= 400 && sc < 500) {
+          // 4xx = validation/risk rejection. Read the small body to name the tripped control.
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => {
+            let reason = `HTTP ${sc}`;
+            try { reason = JSON.parse(body).reason || reason; } catch { /* keep HTTP code */ }
+            settle('reject', reason);
+          });
+          res.on('error', () => settle('reject', `HTTP ${sc}`));
+        } else {
+          res.resume();
+          res.on('end', () => settle('fail'));
+          res.on('error', () => settle('fail'));
+        }
       },
     );
     // Cap the wait so a worker can never park forever on a starved order (see cfg.reqTimeoutMs).
@@ -125,6 +188,7 @@ let lastT = Date.now();
 let peakTrades = 0;
 let currentTarget = 0;
 let lastFailed = 0;
+let lastRejected = 0;
 let cleanCeiling = 0;
 const TRADES_RATE = 'sum(irate(traderx_order_events_total{event=~"fill|partial_fill|force_fill"}[15s]))';
 
@@ -139,6 +203,8 @@ async function printStats() {
   const open = await promScalar('max(traderx_orders_open_total)');
   const failDelta = failed - lastFailed;
   lastFailed = failed;
+  const rejDelta = rejected - lastRejected;
+  lastRejected = rejected;
   if ((cfg.ramp || cfg.rate > 0) && failDelta === 0 && Number.isFinite(tps)) {
     cleanCeiling = Math.max(cleanCeiling, tps);
   }
@@ -147,7 +213,8 @@ async function printStats() {
     `[max] ${targetStr}submit ${String(clientRate).padStart(6)}/s  ·  ` +
     `trades ${Number.isFinite(tps) ? tps.toFixed(0).padStart(6) : '     …'}/s  ·  ` +
     `peak ${peakTrades.toFixed(0).padStart(6)}/s  ·  ` +
-    `open ${Number.isFinite(open) ? open : '…'}  ·  failed ${failed}${failDelta > 0 ? ` (+${failDelta} ← over the ceiling)` : ''}`,
+    `open ${Number.isFinite(open) ? open : '…'}  ·  failed ${failed}${failDelta > 0 ? ` (+${failDelta} ← over the ceiling)` : ''}` +
+    `${rejected > 0 ? `  ·  RISK-REJECTED ${rejected}${rejDelta > 0 ? ` (+${rejDelta})` : ''} ← policy, not capacity` : ''}`,
   );
 }
 
@@ -156,7 +223,7 @@ const mode = cfg.ramp
   : cfg.rate > 0
     ? `paced ${cfg.rate}/s (steady plateau)`
     : `max-burst conc=${cfg.conc} (sawtooth + connection resets as the trade-booking pipeline backpressures — use --ramp or --rate for a clean number)`;
-console.log(`[max] matcher=${cfg.matcherUrl}  qty=${cfg.qty}  tickers=${cfg.tickers.join(',')}  ${cfg.durationSecs ? `for ${cfg.durationSecs}s` : '(Ctrl-C to stop)'}`);
+console.log(`[max] matcher=${cfg.matcherUrl}  qty=${cfg.qty}  tickers=${cfg.tickers.join(',')}${cfg.batch > 0 ? `  BATCH=${cfg.batch} via /orders/batch` : ''}  ${cfg.durationSecs ? `for ${cfg.durationSecs}s` : '(Ctrl-C to stop)'}`);
 console.log(`[max] mode: ${mode}`);
 console.log('[max] dashboard: http://localhost:8080/grafana/d/traderx-trades-per-second  (set refresh to 1s)');
 
@@ -200,7 +267,15 @@ if (cfg.rate > 0 || cfg.ramp) {
 
 clearInterval(statsTimer);
 await printStats();
-console.log(`\n[max] done.  submitted=${submitted}  failed=${failed}  PEAK trades/sec=${peakTrades.toFixed(0)}`);
+console.log(`\n[max] done.  submitted=${submitted}  failed=${failed}  rejected=${rejected}  PEAK trades/sec=${peakTrades.toFixed(0)}`);
+if (rejected > 0) {
+  const reasons = [...rejectReasons.entries()].sort((a, b) => b[1] - a[1])
+    .map(([r, c]) => `${r}=${c}`).join('  ');
+  console.log(`[max] risk rejections by reason: ${reasons}`);
+  console.log('[max] NOTE: rejections are the risk gateway working, not a throughput ceiling. A sustained');
+  console.log('[max] one-sided burst exhausts the account credit limit (RISK_CREDIT_LIMIT_TICKS, default 5e15');
+  console.log('[max] ticks ≈ 50k orders of 500x$200) — raise it in a BENCH env only, never in prod.');
+}
 if (cfg.ramp || cfg.rate > 0) {
   console.log(`[max] highest SUSTAINED trades/sec (no new failures) ≈ ${cleanCeiling.toFixed(0)}/s`);
 }
