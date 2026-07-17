@@ -294,6 +294,9 @@ spec:
             - name: aeron-replay
               containerPort: 40126
               protocol: UDP
+            - name: aeron-probe
+              containerPort: 40128
+              protocol: UDP
             - name: archive-data
               containerPort: 40127
               protocol: UDP

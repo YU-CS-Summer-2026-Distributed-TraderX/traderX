@@ -93,11 +93,17 @@ public final class AeronArchiveReplayMerge implements AutoCloseable {
             if (current <= recording.startPosition()) {
                 return new StreamStart(peerHighWatermark + 1L, -1L, false);
             }
+            // The probe replays to its OWN endpoint (replay port + 2, opened in the manifests):
+            // sharing the ReplayMerge replay endpoint leaves driver-side endpoint residue that
+            // the later merge subscription never forms an image through (observed live:
+            // ReplayMerge stuck at image=null, activeTransportCount=0 after a probe on the
+            // shared endpoint).
+            String probeDestination = probeDestination(config.replayDestination());
             try (Subscription probe = aeron.addSubscription(
-                    config.replayDestination(), config.dataStreamId())) {
+                    probeDestination, config.dataStreamId())) {
                 long replaySession = archive.startReplay(recording.recordingId(),
                     recording.startPosition(), current - recording.startPosition(),
-                    config.replayDestination(), config.dataStreamId());
+                    probeDestination, config.dataStreamId());
                 try {
                     AeronReplicationCodec codec = new AeronReplicationCodec();
                     long[] captured = {-1L, -1L};
@@ -127,6 +133,24 @@ public final class AeronArchiveReplayMerge implements AutoCloseable {
                 }
             }
         }
+    }
+
+    /** The probe endpoint: the replay destination with its port shifted by +2 (40126 -> 40128). */
+    static String probeDestination(String replayDestination) {
+        int endpointIndex = replayDestination.lastIndexOf("endpoint=");
+        int portIndex = replayDestination.lastIndexOf(':');
+        if (endpointIndex < 0 || portIndex <= endpointIndex) {
+            throw new IllegalStateException(
+                "cannot derive probe endpoint from replay destination: " + replayDestination);
+        }
+        int portEnd = portIndex + 1;
+        while (portEnd < replayDestination.length()
+            && Character.isDigit(replayDestination.charAt(portEnd))) {
+            portEnd++;
+        }
+        int port = Integer.parseInt(replayDestination.substring(portIndex + 1, portEnd));
+        return replayDestination.substring(0, portIndex + 1) + (port + 2)
+            + replayDestination.substring(portEnd);
     }
 
     private static AeronArchive connectArchive(Aeron aeron, Config config) {

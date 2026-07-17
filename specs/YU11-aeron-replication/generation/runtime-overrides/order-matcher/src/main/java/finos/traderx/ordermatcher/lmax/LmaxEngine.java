@@ -921,6 +921,21 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (checkpoint != null && checkpoint.epoch() == epoch) {
             return new BootstrapPlan(checkpoint, 0L);   // same-epoch resume; boundary unused
         }
+        long localTail;
+        try {
+            localTail = new JournalReader(Path.of(journalPath)).lastBusinessSeq();
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("cannot read local journal tail for bootstrap", ex);
+        }
+        if (localTail < 0L) {
+            // A fresh journal can only ever join a stream that begins at the origin — any nonzero
+            // epoch start needs local history through S0-1, which this node cannot have. Probing
+            // the recording adds nothing: either the recording starts at 0 (origin contract
+            // succeeds) or the follower correctly fails closed on its first fragment (FAULT_GAP).
+            log.info("Aeron follower bootstrap: fresh local journal — origin contract "
+                + "(a nonzero epoch start will fail closed)");
+            return new BootstrapPlan(null, 0L);
+        }
         AeronArchiveReplayMerge.StreamStart start = AeronArchiveReplayMerge.probeStreamStart(
             aeronClient, replayConfig, agent.peerHighestInputSeq(), aeronArchiveReplayTimeoutMs);
         if (start.fromRecording() && start.leaderEpoch() != epoch) {
