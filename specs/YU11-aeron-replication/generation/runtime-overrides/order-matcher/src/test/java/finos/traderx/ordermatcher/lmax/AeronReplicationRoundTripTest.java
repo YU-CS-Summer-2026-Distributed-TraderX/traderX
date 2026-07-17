@@ -42,10 +42,12 @@ class AeronReplicationRoundTripTest {
             assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
 
             InputEvent first = event(101, 11L);
+            first.seq = 0L;   // the wire inputSeq is the event's business sequence
             primary.onEvent(first, 0L, true);
             await(() -> follower.lastInputSeq() >= 0L, 5_000L);
 
             InputEvent second = event(102, 12L);
+            second.seq = 1L;
             primary.onEvent(second, 1L, true);
             await(() -> {
                 primary.pollAcksOnce();

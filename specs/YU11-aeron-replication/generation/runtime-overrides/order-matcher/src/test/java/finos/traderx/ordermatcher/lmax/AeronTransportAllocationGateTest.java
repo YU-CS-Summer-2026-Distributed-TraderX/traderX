@@ -164,6 +164,7 @@ class AeronTransportAllocationGateTest {
         @Override public void run() {
             long sequence = 0L;
             while (running) {
+                event.seq = sequence;   // the wire inputSeq is the event's business sequence
                 event.orderRef = (int) sequence;
                 event.eventTimeMillis = sequence;
                 primary.onEvent(event, sequence, (sequence & 63L) == 63L);

@@ -44,6 +44,10 @@ public final class AeronReplicationFollower implements AutoCloseable {
     private volatile RingBuffer<InputEvent> inputRing;
     private volatile LongSupplier primaryHighWatermark = () -> -1L;
     private volatile LongSupplier primaryRecordingPosition = () -> -1L;
+    /** First input sequence this checkpoint-less follower may accept. 0 = the stream origin
+     *  (legacy contract); a cross-epoch bootstrap sets the new epoch's first sequence after the
+     *  engine has proven local state through exactly that boundary minus one. */
+    private volatile long expectedFirstInputSeq;
     private volatile boolean running;
     private volatile int faultCode;
     private volatile long lastInputSeq = -1;
@@ -115,6 +119,9 @@ public final class AeronReplicationFollower implements AutoCloseable {
     }
 
     public void setInputRing(RingBuffer<InputEvent> ring) { this.inputRing = ring; }
+    public void setExpectedFirstInputSeq(long inputSeq) {
+        this.expectedFirstInputSeq = Math.max(0L, inputSeq);
+    }
     public void setPrimaryHighWatermark(LongSupplier watermark) {
         this.primaryHighWatermark = watermark == null ? () -> -1L : watermark;
     }
@@ -267,7 +274,7 @@ public final class AeronReplicationFollower implements AutoCloseable {
             fault(FAULT_DUPLICATE_MISMATCH);
             return;
         }
-        if (lastInputSeq < 0 && archiveConfig != null && inputSeq != 0L) {
+        if (lastInputSeq < 0 && archiveConfig != null && inputSeq != expectedFirstInputSeq) {
             fault(FAULT_GAP);
             return;
         }

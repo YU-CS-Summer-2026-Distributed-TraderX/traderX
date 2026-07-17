@@ -194,6 +194,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private AeronReplicator aeronReplicator;
     private AeronReplicator aeronShadowReplicator;
     private AeronReplicationFollower aeronFollower;
+    /** Lineage-continuous business sequencing (event.seq = inputSeqBase + ringSeq): the Disruptor
+     *  ring restarts at -1 on every reboot, but the replicated stream's numbering must survive the
+     *  whole leader lineage. Boot sets it from the journal's proven business tail; promotion
+     *  recomputes it from the follower's replicated watermark (see onRoleChange). 0 for a fresh
+     *  journal — identical to the legacy numbering. */
+    private volatile long inputSeqBase;
     private AeronShadowFollower aeronShadowFollower;
     private ShadowSequenceMap shadowSequenceMap;
     private AeronPeerControlAgent aeronControlAgent;
@@ -464,6 +470,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             projector = new ProjectorHandler(jdbcTemplate, symbols,
                 projectorBatchSize, projectorQueueCapacity, metrics, settlementTPlusDays);
         }
+        // Lineage base BEFORE transports: the primary's control heartbeat advertises
+        // base + ring cursor from the moment it authenticates, and a bootstrapping follower may
+        // read it before this pod's recovery completes. Recomputed after a follower bootstrap
+        // truncation (see planFollowerBootstrap).
+        initInputSeqBase();
         // Replication: determine role before wiring handlers (role gates their output).
         if (replicationEnabled) {
             initReplication();
@@ -698,10 +709,20 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             aeronClusterId, podName, aeronPeerId, currentLeaderEpoch, localRole, expectedRole,
             aeronLocalOrdinal, 1 - aeronLocalOrdinal);
         byte[] secret = AeronPeerAuthenticator.loadSecret(aeronSecretFile, aeronInlineSecret);
+        // highestInputSeq is load-bearing (the follower's replay target and bootstrap fallback),
+        // so it must be the BUSINESS sequence: base + ring cursor on a primary (base - 1 = the
+        // proven journal tail before the ring starts), the replicated watermark on a follower.
+        java.util.function.LongSupplier highestInputSeq =
+            localRole == AeronPeerAuthenticator.ROLE_PRIMARY
+                ? () -> inputRing == null ? inputSeqBase - 1L : inputSeqBase + inputRing.getCursor()
+                : () -> {
+                    AeronReplicationFollower follower = aeronFollower;
+                    return follower == null ? -1L : follower.lastInputSeq();
+                };
         aeronControlAgent = new AeronPeerControlAgent(aeronClient,
             aeronControlPublishChannel, aeronControlSubscribeChannel, aeronControlStreamId,
             identity, secret, aeronHeartbeatIntervalMs, aeronPeerStaleMs,
-            () -> inputRing == null ? -1L : inputRing.getCursor(),
+            highestInputSeq,
             () -> journaler == null ? -1L : journaler.journaledSeq(),
             () -> matchingEngine == null ? -1L : matchingEngine.blpSeq(),
             () -> aeronReplicator == null ? -1L : aeronReplicator.publicationPosition());
@@ -809,16 +830,100 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 aeronDataSubscribeChannel, aeronArchiveRecordingChannelFragment,
                 aeronDataStreamId, aeronArchiveReplayTimeoutMs)
             : null;
+        long expectedFirstInputSeq = 0L;
+        if (replayConfig != null) {
+            BootstrapPlan plan = planFollowerBootstrap(checkpoint, replayConfig);
+            checkpoint = plan.checkpoint();
+            expectedFirstInputSeq = plan.expectedFirstInputSeq();
+        }
         aeronFollower = new AeronReplicationFollower(aeronClient,
             aeronDataSubscribeChannel, aeronDataStreamId,
             aeronAckPublishChannel, aeronAckStreamId,
             () -> aeronControlAgent == null ? currentLeaderEpoch : aeronControlAgent.negotiatedEpoch(),
             replicationAckMode, aeronMappingCapacity, replicationAckTimeoutMs,
             this::aeronPeerAuthenticated, replayConfig, checkpoint);
+        aeronFollower.setExpectedFirstInputSeq(expectedFirstInputSeq);
         aeronFollower.setPrimaryHighWatermark(() -> aeronControlAgent == null
             ? -1L : aeronControlAgent.peerHighestInputSeq());
         aeronFollower.setPrimaryRecordingPosition(() -> aeronControlAgent == null
             ? -1L : aeronControlAgent.peerRecordingPosition());
+    }
+
+    private record BootstrapPlan(AeronFollowerCheckpointStore.Record checkpoint,
+                                 long expectedFirstInputSeq) { }
+
+    /** Lineage base from the journal's proven business tail (0 for a fresh journal). */
+    private void initInputSeqBase() {
+        if (!journalEnabled) return;
+        try {
+            inputSeqBase = new JournalReader(Path.of(journalPath)).lastBusinessSeq() + 1L;
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("cannot establish input-seq lineage base", ex);
+        }
+        if (inputSeqBase > 0) {
+            log.info("Input-seq lineage base: {} (journal business tail {})",
+                inputSeqBase, inputSeqBase - 1L);
+        }
+    }
+
+    /**
+     * Cross-epoch cold-follower bootstrap (the post-failover replacement path). A checkpoint from
+     * an older leader epoch is unusable, and the new epoch's recording starts at a nonzero
+     * business sequence S0 — so a checkpoint-less follower could never join (it demanded sequence
+     * 0 and faulted, the one-shot-failover defect). The contract implemented here:
+     *
+     * <ol>
+     *   <li>learn S0 from the primary's own recording (first fragment; heartbeat watermark + 1
+     *       when the recording is still empty — degrades to 0 for a fresh pair);</li>
+     *   <li>cut the local journal at exactly S0-1, discarding a divergent suffix the new leader
+     *       lineage never saw (fail closed when local history cannot prove that boundary — the
+     *       fell-behind / empty-PVC case needs the deferred snapshot transfer);</li>
+     *   <li>recovery then rebuilds state to exactly S0-1, and the follower accepts S0 as its
+     *       first fragment, replaying the new recording from its start via ReplayMerge.</li>
+     * </ol>
+     *
+     * When the peer does not authenticate within the archive-replay timeout, boot proceeds with
+     * the legacy stream-origin contract (a fresh pair, or a cold pair start where the election
+     * has not yet produced a primary — the fail-closed FAULT_GAP still protects correctness).
+     */
+    private BootstrapPlan planFollowerBootstrap(AeronFollowerCheckpointStore.Record checkpoint,
+                                                AeronArchiveReplayMerge.Config replayConfig) {
+        AeronPeerControlAgent agent = aeronControlAgent;
+        long deadline = System.nanoTime() + aeronArchiveReplayTimeoutMs * 1_000_000L;
+        while (agent != null && !agent.sessionReady() && !aeronProtocolFaulted
+            && System.nanoTime() < deadline) {
+            java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
+        }
+        if (agent == null || !agent.sessionReady()) {
+            log.info("Aeron follower bootstrap: peer not authenticated within {} ms — "
+                + "starting with the legacy stream-origin contract", aeronArchiveReplayTimeoutMs);
+            return new BootstrapPlan(checkpoint, 0L);
+        }
+        long epoch = agent.negotiatedEpoch();
+        if (checkpoint != null && checkpoint.epoch() == epoch) {
+            return new BootstrapPlan(checkpoint, 0L);   // same-epoch resume; boundary unused
+        }
+        AeronArchiveReplayMerge.StreamStart start = AeronArchiveReplayMerge.probeStreamStart(
+            aeronClient, replayConfig, agent.peerHighestInputSeq(), aeronArchiveReplayTimeoutMs);
+        if (start.fromRecording() && start.leaderEpoch() != epoch) {
+            throw new IllegalStateException("bootstrap probe decoded epoch " + start.leaderEpoch()
+                + " but the negotiated epoch is " + epoch);
+        }
+        long s0 = start.firstInputSeq();
+        log.info("Aeron follower bootstrap: negotiatedEpoch={} checkpointEpoch={} "
+                + "epochStartInputSeq={} source={}",
+            epoch, checkpoint == null ? -1L : checkpoint.epoch(), s0,
+            start.fromRecording() ? "recording" : "peer-watermark");
+        if (s0 <= 0L) {
+            return new BootstrapPlan(null, 0L);   // stream begins at the origin — legacy contract
+        }
+        try {
+            new JournalReader(Path.of(journalPath)).truncateAfterBusinessSeq(s0 - 1L);
+        } catch (java.io.IOException ex) {
+            throw new IllegalStateException("bootstrap journal cut failed", ex);
+        }
+        initInputSeqBase();   // the tail just changed; recompute the lineage base
+        return new BootstrapPlan(null, s0);
     }
 
     private AeronFollowerCheckpointStore.Record readAeronFollowerCheckpoint() {
@@ -951,6 +1056,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (newRole == ReplicationRole.Role.PRIMARY) {
             if (aeronControlAgent != null && aeronControlAgent.peerEpoch() > currentLeaderEpoch) {
                 currentLeaderEpoch = aeronControlAgent.peerEpoch();
+            }
+            // Lineage base for the new epoch, captured before the follower transport closes:
+            // the next ring sequence (cursor+1) must publish as lastReplicatedInputSeq+1 so the
+            // business numbering continues across the promotion. With nothing replicated yet the
+            // boot-time base (journal tail + 1) already holds.
+            AeronReplicationFollower promotedFrom = aeronFollower;
+            if (promotedFrom != null && promotedFrom.lastInputSeq() >= 0 && inputRing != null) {
+                inputSeqBase = promotedFrom.lastInputSeq() - inputRing.getCursor();
+                log.info("Promotion lineage base: lastReplicatedInputSeq={} ringCursor={} base={}",
+                    promotedFrom.lastInputSeq(), inputRing.getCursor(), inputSeqBase);
             }
             closeFollowerTransport();
             closePrimaryTransport();
@@ -1218,9 +1333,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         for (int i = 0; i < n; i++) {
             long seq = lo + i;
             NewOrderCommand c = commands.get(i);
-            acks[i] = readModel.registerAck(seq);
+            acks[i] = readModel.registerAck(inputSeqBase + seq);
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = InputEvent.TYPE_ORDER_NEW;
             e.orderRef = c.orderRef();
             e.accountId = c.accountId();
@@ -1281,7 +1396,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         long seq = claimInputSlot();
         try {
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = InputEvent.TYPE_PRICE_TICK;
             e.orderRef = 0;
             e.accountId = 0;
@@ -1309,10 +1424,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         guardPrimaryAdmission();
         int securityId = symbols.idFor(ticker);
         long seq = claimInputSlot();
-        CompletableFuture<RiskReason> ack = readModel.registerTradeAck(seq);
+        CompletableFuture<RiskReason> ack = readModel.registerTradeAck(inputSeqBase + seq);
         try {
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = InputEvent.TYPE_TRADE_NEW;
             e.orderRef = 0;
             e.accountId = accountId;
@@ -1375,7 +1490,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         long seq = claimInputSlot();
         try {
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = type;
             e.orderRef = 0;
             e.accountId = accountId;
@@ -1466,10 +1581,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                                   int quantity, long limitPx, long priceTicks) {
         guardPrimaryAdmission();
         long seq = claimInputSlot();
-        CompletableFuture<OrderSnapshot> ack = readModel.registerAck(seq);
+        CompletableFuture<OrderSnapshot> ack = readModel.registerAck(inputSeqBase + seq);
         try {
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = type;
             e.orderRef = orderRef;
             e.accountId = accountId;
@@ -1960,7 +2075,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         long seq = claimInputSlot();
         try {
             InputEvent e = inputRing.get(seq);
-            e.seq = seq;
+            e.seq = inputSeqBase + seq;
             e.type = InputEvent.TYPE_SNAPSHOT;
             e.orderRef = 0;
             e.accountId = 0;

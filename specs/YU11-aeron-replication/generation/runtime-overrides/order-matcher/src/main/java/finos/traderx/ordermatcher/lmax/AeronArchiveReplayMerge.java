@@ -6,6 +6,7 @@ import io.aeron.archive.client.AeronArchive;
 import io.aeron.archive.client.RecordingDescriptorConsumer;
 import io.aeron.archive.client.ReplayMerge;
 import io.aeron.logbuffer.FragmentHandler;
+import org.agrona.DirectBuffer;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
@@ -53,6 +54,80 @@ public final class AeronArchiveReplayMerge implements AutoCloseable {
     public boolean isMerged() { return merged; }
     public boolean isConnected() { return replayMerge.image() != null || subscription.isConnected(); }
     public String status() { return replayMerge.toString(); }
+
+    /** Where a cross-epoch follower must start: the new leader epoch's first input sequence. */
+    public record StreamStart(long firstInputSeq, long leaderEpoch, boolean fromRecording) { }
+
+    /**
+     * Determines the current leader epoch's first business input sequence (S0), so a
+     * checkpoint-less follower can align its local state to exactly S0-1 before joining.
+     *
+     * <p>Authoritative source: the first fragment of the newest matching Archive recording — the
+     * recording IS the epoch's stream, so its first fragment carries S0 and the epoch (decoded
+     * with the production codec, cross-checkable by the caller). When the recording is still
+     * empty (a promoted primary that has not accepted traffic yet), the next fragment published
+     * will be {@code peerHighWatermark + 1}, which the caller reads from the authenticated
+     * heartbeat; with no history at all that degrades to 0 — the legacy stream-origin contract.
+     */
+    public static StreamStart probeStreamStart(Aeron aeron, Config config,
+                                               long peerHighWatermark, long timeoutMs) {
+        try (AeronArchive archive = connectArchive(aeron, config)) {
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+            RecordingFinder finder = new RecordingFinder(config.dataStreamId(),
+                config.recordingChannelFragment(), -1);
+            Recording recording = null;
+            while (System.nanoTime() < deadline) {
+                finder.reset();
+                archive.listRecordings(0L, Integer.MAX_VALUE, finder);
+                if (finder.recording != null) {
+                    recording = finder.recording;
+                    break;
+                }
+                LockSupport.parkNanos(1_000_000L);
+            }
+            if (recording == null) {
+                throw new IllegalStateException("bootstrap probe found no primary Archive recording"
+                    + " for stream=" + config.dataStreamId());
+            }
+            long current = archive.getMaxRecordedPosition(recording.recordingId());
+            if (current <= recording.startPosition()) {
+                return new StreamStart(peerHighWatermark + 1L, -1L, false);
+            }
+            try (Subscription probe = aeron.addSubscription(
+                    config.replayDestination(), config.dataStreamId())) {
+                long replaySession = archive.startReplay(recording.recordingId(),
+                    recording.startPosition(), current - recording.startPosition(),
+                    config.replayDestination(), config.dataStreamId());
+                try {
+                    AeronReplicationCodec codec = new AeronReplicationCodec();
+                    long[] captured = {-1L, -1L};
+                    FragmentHandler firstFragment = (buffer, offset, length, header) -> {
+                        if (captured[0] < 0
+                            && codec.tryInspectInput(buffer, offset, length) == AeronReplicationCodec.OK) {
+                            captured[0] = codec.inputSeq();
+                            captured[1] = codec.leaderEpoch();
+                        }
+                    };
+                    while (captured[0] < 0 && System.nanoTime() < deadline) {
+                        if (probe.poll(firstFragment, 1) == 0) {
+                            LockSupport.parkNanos(1_000_000L);
+                        }
+                    }
+                    if (captured[0] < 0) {
+                        throw new IllegalStateException(
+                            "bootstrap probe replay produced no fragment before timeout");
+                    }
+                    return new StreamStart(captured[0], captured[1], true);
+                } finally {
+                    try {
+                        archive.stopReplay(replaySession);
+                    } catch (RuntimeException ignored) {
+                        // replay may have already terminated at its bounded length
+                    }
+                }
+            }
+        }
+    }
 
     private static AeronArchive connectArchive(Aeron aeron, Config config) {
         return AeronArchive.connect(new AeronArchive.Context()

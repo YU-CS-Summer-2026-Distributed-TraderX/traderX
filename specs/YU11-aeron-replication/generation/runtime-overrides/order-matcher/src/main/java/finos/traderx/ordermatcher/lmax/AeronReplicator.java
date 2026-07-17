@@ -88,6 +88,13 @@ public final class AeronReplicator implements ReplicationEventHandler {
         // One MDC publication fans each claimed frame to the local Archive and peer follower.
         // Both legs therefore share one session and one position space; the Archive recording is
         // the live stream ReplayMerge later joins.
+        //
+        // The wire inputSeq is the event's BUSINESS sequence (event.seq), not the raw Disruptor
+        // sequence: the ring restarts at -1 on every reboot and continues per-pod on promotion,
+        // while the replicated stream's numbering must stay continuous across the whole leader
+        // lineage (the engine stamps event.seq with its lineage base at ingress). Follower ACKs
+        // carry the same business sequence, so all comparisons here use event.seq.
+        long inputSeq = event.seq;
         if (!peerAuthenticated.getAsBoolean()) degraded = true;
         long result;
         long deadline = System.nanoTime() + ackTimeoutNs;
@@ -96,20 +103,20 @@ public final class AeronReplicator implements ReplicationEventHandler {
             if (result >= 0) break;
             pollAcks();
             if (shadow || System.nanoTime() >= deadline) {
-                onOfferFailure(sequence, result);
-                if (endOfBatch && !shadow) awaitRequiredAck(sequence);
+                onOfferFailure(inputSeq, result);
+                if (endOfBatch && !shadow) awaitRequiredAck(inputSeq);
                 return;
             }
             Thread.onSpinWait();
         } while (true);
 
         int flags = shadow ? AeronReplicationCodec.INPUT_FLAG_SHADOW : 0;
-        dataCodec.encodeInput(dataClaim.buffer(), dataClaim.offset(), event, sequence,
+        dataCodec.encodeInput(dataClaim.buffer(), dataClaim.offset(), event, inputSeq,
             leaderEpoch, flags);
         dataClaim.commit();
-        publishedSeq = sequence;
+        publishedSeq = inputSeq;
 
-        if (endOfBatch && !shadow) awaitRequiredAck(sequence);
+        if (endOfBatch && !shadow) awaitRequiredAck(inputSeq);
     }
 
     private void onOfferFailure(long sequence, long result) {
