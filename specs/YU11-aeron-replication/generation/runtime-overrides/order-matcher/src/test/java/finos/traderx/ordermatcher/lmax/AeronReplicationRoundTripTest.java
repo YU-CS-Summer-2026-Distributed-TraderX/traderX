@@ -74,6 +74,18 @@ class AeronReplicationRoundTripTest {
                 .isEqualTo(followerBoundary.recordingPosition);
             assertThat(primaryBoundary.dataSessionId).isEqualTo(followerBoundary.dataSessionId);
             assertThat(primaryBoundary.checksum).isEqualTo(followerBoundary.checksum);
+
+            InputEvent marker = event(0, 13L);
+            marker.type = InputEvent.TYPE_SNAPSHOT;
+            marker.seq = 2L;
+            primary.onEvent(marker, 2L, true);
+            await(() -> follower.lastInputSeq() >= 2L, 5_000L);
+            FollowerSequenceMap.Entry markerBoundary = new FollowerSequenceMap.Entry();
+            assertThat(primary.readSnapshotBoundary(2L, markerBoundary)).isTrue();
+            assertThat(markerBoundary.inputSeq).isEqualTo(2L);
+            assertThat(markerBoundary.epoch).isEqualTo(3L);
+            assertThat(markerBoundary.recordingPosition).isPositive();
+            assertThat(primary.readSnapshotBoundary(1L, markerBoundary)).isFalse();
         }
     }
 

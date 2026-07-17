@@ -2282,7 +2282,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         boolean found = false;
         if (replicationTransport == ReplicationTransport.AERON) {
             if (replicationRole.isPrimary()) {
-                found = aeronPublicationSequenceMap.read(localSeq, snapshotSequenceBoundary);
+                found = aeronReplicator != null
+                    && aeronReplicator.readSnapshotBoundary(localSeq, snapshotSequenceBoundary);
+                if (!found) {
+                    found = aeronPublicationSequenceMap.read(localSeq, snapshotSequenceBoundary);
+                }
             } else if (aeronFollower != null) {
                 found = aeronFollower.readSequenceBoundary(localSeq, snapshotSequenceBoundary);
             }

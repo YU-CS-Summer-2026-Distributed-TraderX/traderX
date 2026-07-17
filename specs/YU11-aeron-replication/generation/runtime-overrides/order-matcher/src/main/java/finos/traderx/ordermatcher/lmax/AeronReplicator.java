@@ -31,6 +31,13 @@ public final class AeronReplicator implements ReplicationEventHandler {
     private final LongAdder offerFailures = new LongAdder();
     private final LongAdder invalidAcks = new LongAdder();
     private volatile AeronPublicationSequenceMap publicationSequenceMap;
+    private long snapshotEpoch;
+    private long snapshotInputSeq;
+    private long snapshotRecordingPosition;
+    private long snapshotChecksum;
+    private int snapshotDataSessionId;
+    /** Release-published last: binds the primitive fields above to one exact local marker. */
+    private volatile long snapshotLocalSeq = Long.MIN_VALUE;
 
     private volatile long publishedSeq = -1;
     private volatile long followerAckedSeq = -1;
@@ -141,6 +148,14 @@ public final class AeronReplicator implements ReplicationEventHandler {
             boundaryMap.put(sequence, leaderEpoch, inputSeq, result, checksum,
                 dataPublication.sessionId());
         }
+        if (event.type == InputEvent.TYPE_SNAPSHOT) {
+            snapshotEpoch = leaderEpoch;
+            snapshotInputSeq = inputSeq;
+            snapshotRecordingPosition = result;
+            snapshotChecksum = checksum;
+            snapshotDataSessionId = dataPublication.sessionId();
+            snapshotLocalSeq = sequence;
+        }
         publishedSeq = inputSeq;
 
         if (endOfBatch && !shadow) awaitRequiredAck(inputSeq);
@@ -236,6 +251,21 @@ public final class AeronReplicator implements ReplicationEventHandler {
     public long publicationPosition() { return dataPublication.position(); }
     public void setPublicationSequenceMap(AeronPublicationSequenceMap map) {
         this.publicationSequenceMap = map;
+    }
+
+    /**
+     * Dedicated marker register. Unlike the general overwrite map, this cannot be displaced by
+     * upstream run-ahead before the BLP's snapshot callback observes the marker.
+     */
+    public boolean readSnapshotBoundary(long localSeq, FollowerSequenceMap.Entry target) {
+        if (snapshotLocalSeq != localSeq) return false;
+        target.localSeq = localSeq;
+        target.epoch = snapshotEpoch;
+        target.inputSeq = snapshotInputSeq;
+        target.recordingPosition = snapshotRecordingPosition;
+        target.checksum = snapshotChecksum;
+        target.dataSessionId = snapshotDataSessionId;
+        return true;
     }
     public boolean archiveConnected() { return dataPublication.isConnected(); }
     public boolean connected() { return dataPublication.isConnected(); }
