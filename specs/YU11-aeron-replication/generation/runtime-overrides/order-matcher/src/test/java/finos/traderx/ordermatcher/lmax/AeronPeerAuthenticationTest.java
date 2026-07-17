@@ -2,6 +2,7 @@ package finos.traderx.ordermatcher.lmax;
 
 import io.aeron.Aeron;
 import io.aeron.CommonContext;
+import io.aeron.ExclusivePublication;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import org.agrona.concurrent.UnsafeBuffer;
@@ -99,6 +100,58 @@ class AeronPeerAuthenticationTest {
             assertThat(follower.protocolFault()).isZero();
             assertThat(primary.peerHeartbeatAgeMillis()).isLessThan(100L);
             assertThat(follower.peerHeartbeatAgeMillis()).isLessThan(100L);
+        }
+    }
+
+    @Test
+    void staleBackloggedHellosAreSkippedAndAFreshHelloThenAuthenticates() throws Exception {
+        String aeronDir = tempDir.resolve("stale-hello").toString();
+        MediaDriver.Context driverContext = new MediaDriver.Context()
+            .aeronDirectoryName(aeronDir)
+            .dirDeleteOnStart(true)
+            .dirDeleteOnShutdown(true)
+            .threadingMode(ThreadingMode.SHARED);
+
+        try (MediaDriver driver = MediaDriver.launch(driverContext);
+             Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
+             ExclusivePublication rawPrimary =
+                 aeron.addExclusivePublication(CommonContext.IPC_CHANNEL, 1402);
+             AeronPeerControlAgent follower = new AeronPeerControlAgent(aeron,
+                 CommonContext.IPC_CHANNEL, CommonContext.IPC_CHANNEL, 1402,
+                 followerIdentity(1L), SECRET, 5L, 50L, () -> 11L, () -> 10L, () -> 9L)) {
+            // The follower's subscription exists from construction, but its poll thread has
+            // not started — so hellos offered now accumulate as backlog, which is exactly the
+            // app-container-restart shape (the peer's publication never disconnected).
+            AeronPeerAuthenticator primaryAuth = new AeronPeerAuthenticator(primaryIdentity(), SECRET);
+            AeronControlCodec primaryCodec = new AeronControlCodec();
+            UnsafeBuffer hello = new UnsafeBuffer(
+                ByteBuffer.allocateDirect(AeronControlCodec.HELLO_BYTES));
+
+            long stale = System.currentTimeMillis() - TimeUnit.MINUTES.toMillis(40);
+            primaryAuth.encodeHello(primaryCodec, hello, 0, 7L, stale);
+            offer(rawPrimary, hello, AeronControlCodec.HELLO_BYTES);
+            primaryAuth.encodeHello(primaryCodec, hello, 0, 7L, stale + 1_000L);
+            offer(rawPrimary, hello, AeronControlCodec.HELLO_BYTES);
+
+            follower.start(() -> { });
+            await(() -> follower.staleHellosSkipped() >= 2L, 5_000L);
+            assertThat(follower.protocolFault()).isZero();
+            assertThat(follower.authenticated()).isFalse();
+
+            primaryAuth.encodeHello(primaryCodec, hello, 0, 7L, System.currentTimeMillis());
+            offer(rawPrimary, hello, AeronControlCodec.HELLO_BYTES);
+            await(follower::authenticated, 5_000L);
+            assertThat(follower.protocolFault()).isZero();
+            assertThat(follower.negotiatedEpoch()).isEqualTo(7L);
+        }
+    }
+
+    private static void offer(ExclusivePublication publication, UnsafeBuffer buffer, int length)
+        throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (publication.offer(buffer, 0, length) < 0L) {
+            if (System.nanoTime() >= deadline) throw new AssertionError("offer timed out");
+            Thread.sleep(1L);
         }
     }
 

@@ -40,6 +40,7 @@ public final class AeronPeerControlAgent implements AutoCloseable, Runnable {
     private volatile long peerEpoch = -1L;
     private volatile long lastPeerSenderNanos = -1L;
     private volatile boolean heartbeatConfirmed;
+    private volatile long staleHelloCount;
     private Thread thread;
     private Runnable faultCallback;
 
@@ -128,6 +129,21 @@ public final class AeronPeerControlAgent implements AutoCloseable, Runnable {
         if (codec.templateId() == finos.traderx.ordermatcher.replication.sbe.PeerHelloMessageDecoder.TEMPLATE_ID) {
             int result = authenticator.validateHello(codec, buffer, offset, length,
                 System.currentTimeMillis());
+            if (result == AeronPeerAuthenticator.AUTH_CLOCK) {
+                // Backlogged hellos are a normal condition here, not an attack: the peer's
+                // publication stays connected across our app-container restarts, so a fresh
+                // subscriber drains every hello offered while we were down, oldest first.
+                // Skip stale ones and keep polling — the peer offers a fresh hello every
+                // second, so a live peer always authenticates once the backlog drains.
+                // Freshness-forged or tampered hellos still fault below (AUTH_HMAC et al.).
+                staleHelloCount++;
+                if (staleHelloCount == 1L) {
+                    log.warn("Skipping stale Aeron peer hello (issued beyond clock-skew "
+                        + "threshold); draining backlog while awaiting a fresh hello from {}",
+                        identity.expectedPeerId());
+                }
+                return;
+            }
             if (result != AeronPeerAuthenticator.AUTH_OK) {
                 fault(result);
                 return;
@@ -137,8 +153,9 @@ public final class AeronPeerControlAgent implements AutoCloseable, Runnable {
                 peerNonce = codec.helloNonce();
                 heartbeatConfirmed = false;
                 lastPeerSenderNanos = -1L;
-                log.info("Authenticated Aeron peer session={} ordinal={} epoch={}",
-                    authenticatedSessionId, codec.helloOrdinal(), codec.helloEpoch());
+                log.info("Authenticated Aeron peer session={} ordinal={} epoch={} staleHellosSkipped={}",
+                    authenticatedSessionId, codec.helloOrdinal(), codec.helloEpoch(), staleHelloCount);
+                staleHelloCount = 0L;
             }
             peerEpoch = codec.helloEpoch();
             if (identity.localRole() == AeronPeerAuthenticator.ROLE_FOLLOWER) {
@@ -183,6 +200,7 @@ public final class AeronPeerControlAgent implements AutoCloseable, Runnable {
     }
 
     public boolean authenticated() { return authenticated && protocolFault == 0; }
+    public long staleHellosSkipped() { return staleHelloCount; }
     public boolean sessionReady() { return authenticated() && heartbeatConfirmed; }
     public int protocolFault() { return protocolFault; }
     public boolean peerStale() {
