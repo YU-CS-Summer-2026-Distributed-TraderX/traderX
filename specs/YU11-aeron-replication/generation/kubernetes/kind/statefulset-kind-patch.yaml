@@ -12,6 +12,12 @@ spec:
       containers:
         - name: order-matcher
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              memory: 2Gi
           env:
             - name: BLP_REPLICATION_ENABLED
               value: "true"
@@ -19,3 +25,10 @@ spec:
               value: "aeron"
         - name: aeron-replication-sidecar
           imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 128Mi
+            limits:
+              cpu: "500m"
+              memory: 256Mi

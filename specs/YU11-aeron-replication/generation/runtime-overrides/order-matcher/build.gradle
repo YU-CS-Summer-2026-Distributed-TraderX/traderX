@@ -162,11 +162,34 @@ def baseAllocationGate = isolatedAllocationGate(
 def riskAllocationGate = isolatedAllocationGate(
     'riskAllocationGateTest', 'hotPathIsAllocationFreeInSteadyStateWithRiskGating', false)
 
+def aeronAllocationGate = tasks.register('aeronAllocationGateTest', Test) {
+  description = 'Isolated exact-zero Aeron claim/encode and poll/decode/ring-injection gate.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.lmax.AeronTransportAllocationGateTest.*'
+  }
+  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '1000000')
+  systemProperty 'gate.warmupEvents', System.getProperty('gate.warmupEvents', '250000')
+  // The transport has two independent hot loops. Compile them directly at C2 before sampling;
+  // tier transitions can otherwise rematerialize scalar-replaced state and increment
+  // ThreadMXBean despite producing no JFR-visible allocation event.
+  jvmArgs '-Xbatch', '-XX:-TieredCompilation', '-XX:CompileThreshold=10000'
+  String jfrFile = System.getProperty('gate.jfr', '')
+  if (!jfrFile.isBlank()) {
+    String jfrSettings = System.getProperty('gate.jfr.settings', 'profile')
+    jvmArgs '-XX:-UseTLAB',
+            "-XX:StartFlightRecording=filename=${jfrFile},settings=${jfrSettings},dumponexit=true"
+  }
+}
+
 tasks.named('test', Test) {
   filter {
     excludeTestsMatching "${allocationGateClass}.*"
+    excludeTestsMatching 'finos.traderx.ordermatcher.lmax.AeronTransportAllocationGateTest.*'
   }
-  dependsOn baseAllocationGate, riskAllocationGate
+  dependsOn baseAllocationGate, riskAllocationGate, aeronAllocationGate
 }
 
 // No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run both isolated methods

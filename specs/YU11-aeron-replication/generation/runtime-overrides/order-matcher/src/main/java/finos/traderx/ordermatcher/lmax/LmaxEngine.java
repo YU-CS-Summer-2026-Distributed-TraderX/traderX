@@ -129,6 +129,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final int aeronControlStreamId;
     private final long aeronHeartbeatIntervalMs;
     private final long aeronPeerStaleMs;
+    private final boolean fastWitnessEnabled;
+    private final long fastWitnessTtlMs;
+    private final long fastWitnessRenewMs;
     private final boolean aeronArchiveReplayEnabled;
     private final String aeronArchiveControlRequestChannel;
     private final String aeronArchiveControlResponseChannel;
@@ -194,6 +197,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private ShadowSequenceMap shadowSequenceMap;
     private AeronPeerControlAgent aeronControlAgent;
     private LeaderElection leaderElection;
+    private FastWitness fastWitness;
+    private java.util.concurrent.ScheduledExecutorService fastFailoverScheduler;
+    private final java.util.concurrent.atomic.AtomicBoolean failoverTransition =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    private volatile long fastPeerStaleDetectedNs;
+    private volatile long fastWitnessClaimedNs;
+    private volatile long fastAdmissionOpenedNs;
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -258,6 +268,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.replication.aeron.control-stream-id:1103}") int aeronControlStreamId,
         @Value("${blp.replication.aeron.heartbeat-interval-ms:10}") long aeronHeartbeatIntervalMs,
         @Value("${blp.replication.aeron.peer-stale-ms:40}") long aeronPeerStaleMs,
+        @Value("${blp.failover.mode:lease}") String failoverMode,
+        @Value("${blp.failover.fast-witness.ttl-ms:50}") long fastWitnessTtlMs,
+        @Value("${blp.failover.fast-witness.renew-ms:10}") long fastWitnessRenewMs,
         @Value("${blp.replication.aeron.archive-replay-enabled:true}") boolean aeronArchiveReplayEnabled,
         @Value("${blp.replication.aeron.archive-control-request-channel:auto}") String aeronArchiveControlRequestChannel,
         @Value("${blp.replication.aeron.archive-control-response-channel:auto}") String aeronArchiveControlResponseChannel,
@@ -364,6 +377,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.aeronControlStreamId = aeronControlStreamId;
         this.aeronHeartbeatIntervalMs = aeronHeartbeatIntervalMs;
         this.aeronPeerStaleMs = aeronPeerStaleMs;
+        String normalizedFailoverMode = failoverMode == null
+            ? "lease" : failoverMode.trim().toLowerCase(Locale.ROOT);
+        if (!"lease".equals(normalizedFailoverMode)
+            && !"fast-witness".equals(normalizedFailoverMode)) {
+            throw new IllegalArgumentException("BLP_FAILOVER_MODE must be lease or fast-witness");
+        }
+        this.fastWitnessEnabled = "fast-witness".equals(normalizedFailoverMode);
+        this.fastWitnessTtlMs = fastWitnessTtlMs;
+        this.fastWitnessRenewMs = fastWitnessRenewMs;
         this.aeronArchiveReplayEnabled = aeronArchiveReplayEnabled;
         this.aeronArchiveControlRequestChannel = resolveAeronChannel(
             aeronArchiveControlRequestChannel, podName, 8010, true);
@@ -375,6 +397,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.aeronArchiveReplayTimeoutMs = aeronArchiveReplayTimeoutMs;
         if (aeronActive && (aeronHeartbeatIntervalMs <= 0 || aeronPeerStaleMs <= aeronHeartbeatIntervalMs)) {
             throw new IllegalArgumentException("Aeron peer stale threshold must exceed heartbeat interval");
+        }
+        if (fastWitnessEnabled && (this.replicationTransport != ReplicationTransport.AERON
+            || !this.replicationStaticRole.isEmpty())) {
+            throw new IllegalArgumentException(
+                "fast-witness failover requires Aeron transport and Lease-elected roles");
+        }
+        if (fastWitnessEnabled && (fastWitnessRenewMs <= 0L
+            || fastWitnessRenewMs >= fastWitnessTtlMs
+            || fastWitnessTtlMs < aeronPeerStaleMs)) {
+            throw new IllegalArgumentException(
+                "fast witness requires 0 < renew-ms < ttl-ms and ttl-ms >= peer-stale-ms");
         }
         this.aeronMappingCapacity = aeronMappingCapacity;
         this.replicationAckTimeoutMs = replicationAckTimeoutMs;
@@ -543,7 +576,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             recoveryStatus = "follower-catching-up";
             if (replicationFollower != null) replicationFollower.start();
             if (aeronFollower != null) {
-                aeronFollower.start(this::followerReady, this::followerFault);
+                aeronFollower.start(this::followerReady, this::followerCatchingUp,
+                    this::followerFault);
             }
             if (aeronShadowFollower != null) {
                 aeronShadowFollower.start(this::shadowFollowerFault);
@@ -557,6 +591,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 ? ReadinessState.REFUSING_TRAFFIC : ReadinessState.ACCEPTING_TRAFFIC);
             if (leaderElection != null) leaderElection.start();
         }
+        if (fastWitnessEnabled) startFastFailoverDetector();
         if (riskEnabled) {
             // Recovery-boundary alignment: the journal/snapshot-restored BLP policy state (e.g. an
             // armed kill switch) is authoritative; push it back to the edge replica so the Gateway
@@ -616,7 +651,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
 
         String namespace = readK8sNamespace();
-        leaderElection = new LeaderElection(podName, namespace, replicationRole, this::onRoleChange, replicationConn);
+        leaderElection = new LeaderElection(podName, namespace, replicationRole,
+            this::onElectionRoleChange, replicationConn);
         boolean isPrimary = leaderElection.tryAcquire();
 
         if (isPrimary) {
@@ -630,6 +666,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             log.info("BLP role: FOLLOWER (pod={} transport={} epoch={})",
                 podName, replicationTransport, currentLeaderEpoch);
         }
+        if (fastWitnessEnabled) initFastWitness();
+    }
+
+    private void initFastWitness() {
+        fastWitness = new FastWitness(replicationConn, aeronClusterId, podName,
+            AeronReplicationCodec.SCHEMA_CHECKSUM, fastWitnessTtlMs, fastWitnessRenewMs,
+            this::fastWitnessLost);
+        if (replicationRole.isPrimary() && !fastWitness.tryClaim(currentLeaderEpoch)) {
+            throw new IllegalStateException("Lease primary could not acquire fast witness");
+        }
+        fastWitness.start();
     }
 
     private void ensureAeronClient() {
@@ -714,6 +761,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
                 replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
                 aeronDataLivePublishChannel);
+            boolean transportReady = promoted
+                ? aeronReplicator.awaitArchiveConnected(aeronArchiveReplayTimeoutMs)
+                : aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
+            if (!transportReady) {
+                throw new IllegalStateException(
+                    promoted
+                        ? "Aeron Archive publication did not connect before promotion timeout"
+                        : "Aeron Archive/live publications did not connect before startup timeout");
+            }
         } catch (Exception ex) {
             if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
             if (replicationFailurePolicy == ReplicationFailurePolicy.STRICT) {
@@ -798,6 +854,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         log.info("Follower caught up and ready (pod={})", podName);
     }
 
+    private void followerCatchingUp() {
+        recoveryReady = false;
+        recoveryStatus = "follower-catching-up";
+        publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+    }
+
     private void followerFault() {
         recoveryReady = false;
         recoveryStatus = "follower-protocol-fault";
@@ -812,8 +874,84 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             aeronShadowFollower == null ? -1 : aeronShadowFollower.comparedCount());
     }
 
+    private void startFastFailoverDetector() {
+        if (fastFailoverScheduler != null) return;
+        fastFailoverScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread thread = new Thread(r, "blp-fast-failover");
+            thread.setDaemon(true);
+            return thread;
+        });
+        fastFailoverScheduler.scheduleAtFixedRate(this::fastFailoverTick,
+            1L, 1L, java.util.concurrent.TimeUnit.MILLISECONDS);
+    }
+
+    private void fastFailoverTick() {
+        if (!replicationRole.isFollower() || failoverTransition.get()) return;
+        AeronPeerControlAgent control = aeronControlAgent;
+        if (control == null || !control.sessionReady() || !control.peerStale()) return;
+        if (fastPeerStaleDetectedNs == 0L) fastPeerStaleDetectedNs = System.nanoTime();
+        long targetEpoch = Math.min(0xffff_ffffL,
+            Math.max(currentLeaderEpoch, control.peerEpoch()) + 1L);
+        promoteWithFastWitness(targetEpoch, true);
+    }
+
+    private void onElectionRoleChange(ReplicationRole.Role newRole) {
+        if (!fastWitnessEnabled || newRole == ReplicationRole.Role.FOLLOWER) {
+            onRoleChange(newRole);
+            return;
+        }
+        long peerEpoch = aeronControlAgent == null ? -1L : aeronControlAgent.peerEpoch();
+        long targetEpoch = Math.min(0xffff_ffffL,
+            Math.max(currentLeaderEpoch, peerEpoch) + 1L);
+        if (!promoteWithFastWitness(targetEpoch, false)) {
+            replicationRole.set(ReplicationRole.Role.FOLLOWER);
+            recoveryReady = false;
+            recoveryStatus = "fast-witness-unavailable";
+            publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+        }
+    }
+
+    private boolean promoteWithFastWitness(long targetEpoch, boolean reconcileLease) {
+        FastWitness witness = fastWitness;
+        if (witness == null || !failoverTransition.compareAndSet(false, true)) return false;
+        try {
+            if (!witness.tryClaim(targetEpoch)) return false;
+            fastWitnessClaimedNs = System.nanoTime();
+            replicationRole.set(ReplicationRole.Role.PRIMARY);
+            onRoleChange(ReplicationRole.Role.PRIMARY);
+            if (!witness.isHeld()
+                || (witness.epoch() != currentLeaderEpoch
+                && !witness.tryClaim(currentLeaderEpoch))) {
+                replicationRole.set(ReplicationRole.Role.FOLLOWER);
+                onRoleChange(ReplicationRole.Role.FOLLOWER);
+                return false;
+            }
+            recoveryReady = true;
+            recoveryStatus = "ready";
+            publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+            fastAdmissionOpenedNs = System.nanoTime();
+            if (reconcileLease && leaderElection != null) leaderElection.witnessPromoted();
+            return true;
+        } finally {
+            failoverTransition.set(false);
+        }
+    }
+
+    private void fastWitnessLost() {
+        if (!replicationRole.isPrimary() || !failoverTransition.compareAndSet(false, true)) return;
+        try {
+            recoveryReady = false;
+            recoveryStatus = "fast-witness-lost";
+            publishReadiness(ReadinessState.REFUSING_TRAFFIC);
+            replicationRole.set(ReplicationRole.Role.FOLLOWER);
+            onRoleChange(ReplicationRole.Role.FOLLOWER);
+        } finally {
+            failoverTransition.set(false);
+        }
+    }
+
     /** Called by LeaderElection when role changes (e.g. follower promoted, primary demoted). */
-    private void onRoleChange(ReplicationRole.Role newRole) {
+    private synchronized void onRoleChange(ReplicationRole.Role newRole) {
         log.info("BLP role transition → {} (pod={})", newRole, podName);
         aeronProtocolFaulted = false;
         if (newRole == ReplicationRole.Role.PRIMARY) {
@@ -830,9 +968,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             } catch (Exception ex) {
                 log.warn("Post-promotion replicator init failed — continuing with loopback: {}", ex.getMessage());
             }
-            recoveryReady = true;
-            publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
+            boolean admissionFenceReady = !fastWitnessEnabled
+                || (fastWitness != null
+                    && fastWitness.isHeld()
+                    && fastWitness.epoch() == currentLeaderEpoch);
+            recoveryReady = admissionFenceReady;
+            recoveryStatus = admissionFenceReady ? "ready" : "fast-witness-transition";
+            publishReadiness(admissionFenceReady
+                ? ReadinessState.ACCEPTING_TRAFFIC
+                : ReadinessState.REFUSING_TRAFFIC);
         } else {
+            if (fastWitness != null) fastWitness.relinquish();
             closePrimaryTransport();
             if (delegatingReplicator != null) {
                 delegatingReplicator.swapDelegate(new ReplicatorStub());
@@ -850,7 +996,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                         aeronFollower.setDurabilityWatermarks(journaler::journaledSeq,
                             journaler::journalForceNanos, matchingEngine::blpSeq,
                             Path.of(journalPath).resolve("aeron-follower.checkpoint"), this::followerFault);
-                        aeronFollower.start(this::followerReady, this::followerFault);
+                        aeronFollower.start(this::followerReady, this::followerCatchingUp,
+                            this::followerFault);
                     }
                     if (aeronShadowFollower != null) {
                         aeronShadowFollower.start(this::shadowFollowerFault);
@@ -974,6 +1121,14 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         publishReadiness(ReadinessState.REFUSING_TRAFFIC);
         closeFollowerTransport();
         closePrimaryTransport();
+        if (fastFailoverScheduler != null) {
+            fastFailoverScheduler.shutdownNow();
+            fastFailoverScheduler = null;
+        }
+        if (fastWitness != null) {
+            fastWitness.close();
+            fastWitness = null;
+        }
         if (leaderElection != null) leaderElection.stop();
         if (aeronClient != null) {
             try { aeronClient.close(); } catch (Exception ex) {
@@ -1372,6 +1527,15 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (aeronProtocolFaulted) throw new NotPrimaryException();
         if (!replicationStaticRole.isEmpty()) {
             if (!replicationRole.isPrimary()) throw new NotPrimaryException();
+            return;
+        }
+        if (fastWitnessEnabled) {
+            FastWitness witness = fastWitness;
+            boolean witnessed = replicationRole.isPrimary()
+                && witness != null
+                && witness.isHeld()
+                && witness.epoch() == currentLeaderEpoch;
+            if (!witnessed) throw new NotPrimaryException();
             return;
         }
         LeaderElection election = leaderElection;
@@ -2086,6 +2250,122 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public long replicatedSeq() {
         return delegatingReplicator != null ? delegatingReplicator.replicatedSeq() : -1;
+    }
+
+    public boolean replicationEnabled() { return replicationEnabled; }
+    public String replicationTransportName() { return replicationTransport.name().toLowerCase(Locale.ROOT); }
+    public String replicationAckModeName() { return replicationAckMode.name().toLowerCase(Locale.ROOT); }
+    public String replicationFailurePolicyName() {
+        return replicationFailurePolicy.name().toLowerCase(Locale.ROOT).replace('_', '-');
+    }
+    public String failoverModeName() { return fastWitnessEnabled ? "fast-witness" : "lease"; }
+    public boolean replicationPrimary() { return replicationRole.isPrimary(); }
+    public long leaderEpoch() { return currentLeaderEpoch; }
+    public boolean replicationDegraded() {
+        return delegatingReplicator != null && delegatingReplicator.degraded();
+    }
+    public boolean replicationConnected() {
+        if (!replicationEnabled) return true;
+        if (replicationTransport == ReplicationTransport.NATS) {
+            return replicationConn != null
+                && replicationConn.getStatus() == io.nats.client.Connection.Status.CONNECTED;
+        }
+        AeronReplicator primary = aeronReplicator;
+        if (replicationRole.isPrimary()) return primary != null && primary.connected();
+        AeronPeerControlAgent control = aeronControlAgent;
+        return control != null && control.sessionReady();
+    }
+    public boolean replicationHealthy() {
+        if (!replicationEnabled) return true;
+        if (aeronProtocolFaulted || !recoveryReady) return false;
+        FastWitness witness = fastWitness;
+        return !fastWitnessEnabled || !replicationRole.isPrimary()
+            || (witness != null && witness.isHeld() && witness.epoch() == currentLeaderEpoch);
+    }
+    public long followerAckedInputSeq() {
+        AeronReplicator primary = aeronReplicator;
+        return primary == null ? -1L : primary.followerAckedSeq();
+    }
+    public long followerReceivedInputSeq() {
+        AeronReplicationFollower follower = aeronFollower;
+        return follower == null ? -1L : follower.lastInputSeq();
+    }
+    public long followerDurableAckedInputSeq() {
+        AeronReplicationFollower follower = aeronFollower;
+        return follower == null ? -1L : follower.durableAckedInputSeq();
+    }
+    public long replicationOfferFailureCount() {
+        AeronReplicator primary = aeronReplicator;
+        return primary == null ? 0L : primary.offerFailureCount();
+    }
+    public long replicationInvalidFrameCount() {
+        AeronReplicationFollower follower = aeronFollower;
+        return follower == null ? 0L : follower.invalidFrameCount();
+    }
+    public boolean controlSessionReady() {
+        AeronPeerControlAgent control = aeronControlAgent;
+        return control != null && control.sessionReady();
+    }
+    public boolean peerStale() {
+        AeronPeerControlAgent control = aeronControlAgent;
+        return control != null && control.peerStale();
+    }
+    public long peerHeartbeatAgeMillis() {
+        AeronPeerControlAgent control = aeronControlAgent;
+        return control == null ? -1L : control.peerHeartbeatAgeMillis();
+    }
+    public boolean archiveReplayActive() {
+        AeronReplicationFollower follower = aeronFollower;
+        return follower != null && follower.archiveReplaying();
+    }
+    public boolean archiveReplayMerged() {
+        AeronReplicationFollower follower = aeronFollower;
+        return follower != null && follower.archiveMerged();
+    }
+    public long shadowMismatchCount() {
+        AeronShadowFollower follower = aeronShadowFollower;
+        return follower == null ? 0L : follower.mismatchCount();
+    }
+    public boolean witnessHeld() {
+        FastWitness witness = fastWitness;
+        return witness != null && witness.isHeld();
+    }
+    public long witnessRevision() {
+        FastWitness witness = fastWitness;
+        return witness == null ? 0L : witness.revision();
+    }
+    public long witnessEpoch() {
+        FastWitness witness = fastWitness;
+        return witness == null ? -1L : witness.epoch();
+    }
+    public long witnessClaimAttemptCount() {
+        FastWitness witness = fastWitness;
+        return witness == null ? 0L : witness.claimAttemptCount();
+    }
+    public long witnessClaimConflictCount() {
+        FastWitness witness = fastWitness;
+        return witness == null ? 0L : witness.claimConflictCount();
+    }
+    public long witnessAmbiguousOperationCount() {
+        FastWitness witness = fastWitness;
+        return witness == null ? 0L : witness.ambiguousOperationCount();
+    }
+    public long witnessLostClaimCount() {
+        FastWitness witness = fastWitness;
+        return witness == null ? 0L : witness.lostClaimCount();
+    }
+    public double failoverDetectionToClaimMillis() {
+        return phaseMillis(fastPeerStaleDetectedNs, fastWitnessClaimedNs);
+    }
+    public double failoverClaimToAdmissionMillis() {
+        return phaseMillis(fastWitnessClaimedNs, fastAdmissionOpenedNs);
+    }
+    public double failoverTotalMillis() {
+        return phaseMillis(fastPeerStaleDetectedNs, fastAdmissionOpenedNs);
+    }
+
+    private static double phaseMillis(long startNs, long endNs) {
+        return startNs == 0L || endNs < startNs ? 0.0 : (endNs - startNs) / 1_000_000.0;
     }
 
     public long gatingSeq() {

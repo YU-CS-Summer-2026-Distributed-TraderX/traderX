@@ -140,6 +140,14 @@ spec:
               value: "onring"
             - name: BLP_REPLICATION_FAILURE_POLICY
               value: "degraded-solo"
+            # Lease remains the production default. Fast-witness is an explicit coordinated
+            # opt-in after the NATS KV and direct-Aeron failover proof has passed.
+            - name: BLP_FAILOVER_MODE
+              value: "lease"
+            - name: BLP_FAST_WITNESS_TTL_MS
+              value: "50"
+            - name: BLP_FAST_WITNESS_RENEW_MS
+              value: "10"
             - name: BLP_REPLICATION_ACK_TIMEOUT_MS
               value: "500"
             - name: BLP_REPLICATION_AERON_SHADOW
@@ -287,7 +295,7 @@ spec:
             - name: archive-control
               containerPort: 8010
               protocol: UDP
-            - name: archive-response
+            - name: archive-resp
               containerPort: 8011
               protocol: UDP
             - name: archive-repl

@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.LongAdder;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BooleanSupplier;
 
 /**
@@ -104,14 +106,22 @@ public final class AeronReplicator implements ReplicationEventHandler {
         publishedSeq = sequence;
 
         if (livePublication != null) {
-            long liveResult = livePublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, liveClaim);
-            if (liveResult >= 0L) {
-                dataCodec.encodeInput(liveClaim.buffer(), liveClaim.offset(), event, sequence,
-                    leaderEpoch, flags);
-                liveClaim.commit();
-            } else {
-                onLiveOfferFailure(sequence, liveResult);
-            }
+            long liveResult;
+            long liveDeadline = System.nanoTime() + ackTimeoutNs;
+            do {
+                liveResult = livePublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, liveClaim);
+                if (liveResult >= 0L) break;
+                pollAcks();
+                if (shadow || System.nanoTime() >= liveDeadline) {
+                    onLiveOfferFailure(sequence, liveResult);
+                    if (endOfBatch && !shadow) awaitRequiredAck(sequence);
+                    return;
+                }
+                Thread.onSpinWait();
+            } while (true);
+            dataCodec.encodeInput(liveClaim.buffer(), liveClaim.offset(), event, sequence,
+                leaderEpoch, flags);
+            liveClaim.commit();
         }
 
         if (endOfBatch && !shadow) awaitRequiredAck(sequence);
@@ -131,6 +141,7 @@ public final class AeronReplicator implements ReplicationEventHandler {
     private void onLiveOfferFailure(long sequence, long result) {
         offerFailures.increment();
         degraded = true;
+        log.warn("Aeron live publication failed at seq={} result={}", sequence, result);
         if (failurePolicy == ReplicationFailurePolicy.STRICT && !shadow) {
             throw new IllegalStateException(
                 "strict Aeron live offer failed at seq=" + sequence + " result=" + result);
@@ -155,15 +166,22 @@ public final class AeronReplicator implements ReplicationEventHandler {
             if (System.nanoTime() >= deadline) {
                 degraded = true;
                 if (failurePolicy == ReplicationFailurePolicy.STRICT) {
-                    throw new IllegalStateException(
-                        "strict Aeron replication ACK timeout at seq=" + sequence
-                            + " acked=" + followerAckedSeq + " mode=" + ackMode);
+                    throwStrictAckTimeout(sequence);
                 }
                 return;
             }
             Thread.onSpinWait();
         }
         degraded = false;
+    }
+
+    // Keep diagnostic String construction outside the exact-zero ACK polling method. C2 can
+    // otherwise rematerialize the cold concat graph during an uncommon trap even when this
+    // DEGRADED_SOLO instance never takes the strict branch.
+    private void throwStrictAckTimeout(long sequence) {
+        throw new IllegalStateException(
+            "strict Aeron replication ACK timeout at seq=" + sequence
+                + " acked=" + followerAckedSeq + " mode=" + ackMode);
     }
 
     private void pollAcks() {
@@ -206,8 +224,34 @@ public final class AeronReplicator implements ReplicationEventHandler {
     public long invalidAckCount() { return invalidAcks.sum(); }
     public int publicationSessionId() { return dataPublication.sessionId(); }
     public long publicationPosition() { return dataPublication.position(); }
+    public boolean archiveConnected() { return dataPublication.isConnected(); }
     public boolean connected() {
-        return livePublication == null ? dataPublication.isConnected() : livePublication.isConnected();
+        return archiveConnected()
+            && (livePublication == null || livePublication.isConnected());
+    }
+
+    /**
+     * Wait outside the Disruptor path for both the local Archive leg and the peer-live leg. Without
+     * this startup barrier degraded-solo can consume the first ring sequences before either
+     * publication has an image, leaving a later healthy follower with an irrecoverable initial gap.
+     */
+    public boolean awaitConnected(long timeoutMs) {
+        return awaitConnection(timeoutMs, true);
+    }
+
+    /** Promotion must fence and resume before the dead peer returns; only local Archive is needed. */
+    public boolean awaitArchiveConnected(long timeoutMs) {
+        return awaitConnection(timeoutMs, false);
+    }
+
+    private boolean awaitConnection(long timeoutMs, boolean requirePeerLive) {
+        long deadline = System.nanoTime()
+            + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMs));
+        while (!(requirePeerLive ? connected() : archiveConnected())
+            && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(100_000L);
+        }
+        return requirePeerLive ? connected() : archiveConnected();
     }
 
     @Override

@@ -104,6 +104,8 @@ public final class LeaderElection {
 
     /** Active NATS Dispatcher for heartbeat subscription (follower only). */
     private volatile Dispatcher heartbeatDispatcher;
+    /** True only while an already-fenced fast-witness primary reconciles the advisory Lease. */
+    private volatile boolean witnessReconciliationPending;
 
     private enum RenewResult { SUCCESS, AMBIGUOUS, FOREIGN_HOLDER }
     private enum PodStatus   { GONE, TERMINATING, ALIVE, UNKNOWN }
@@ -184,6 +186,20 @@ public final class LeaderElection {
         teardownHeartbeat();
     }
 
+    /**
+     * A fast-witness winner already owns the synchronous admission fence. Reconcile the
+     * Kubernetes Lease off the critical path and switch this instance to primary maintenance.
+     */
+    public void witnessPromoted() {
+        cachedResourceVersion = null;
+        lastSuccessfulRenewNs = 0L;
+        witnessReconciliationPending = true;
+        teardownHeartbeat();
+        patchPodLabel("primary");
+        ScheduledExecutorService scheduler = leaseScheduler;
+        if (scheduler != null) scheduler.execute(this::renewOrDemote);
+    }
+
     // ----- ticks -----------------------------------------------------------------------------------
 
     /** 100 ms cadence. Primary publishes heartbeat (non-blocking); follower watches for silence. */
@@ -230,15 +246,28 @@ public final class LeaderElection {
             log.warn("Lease renew error: {}", ex.getMessage());
         }
         switch (r) {
-            case SUCCESS -> lastSuccessfulRenewNs = System.nanoTime();
-            case FOREIGN_HOLDER -> demote("foreign_holder");
-            case AMBIGUOUS -> {
-                long age = System.nanoTime() - lastSuccessfulRenewNs;
-                if (age > renewDeadlineNs) {
-                    demote("deadline");
+            case SUCCESS -> {
+                lastSuccessfulRenewNs = System.nanoTime();
+                witnessReconciliationPending = false;
+            }
+            case FOREIGN_HOLDER -> {
+                if (witnessReconciliationPending) {
+                    log.warn("Lease still names the previous holder after witness promotion — retrying asynchronously");
                 } else {
-                    log.warn("Lease renewal unconfirmed for {} ms (deadline {} ms) — retrying, not demoting",
-                        age / 1_000_000, renewDeadlineNs / 1_000_000);
+                    demote("foreign_holder");
+                }
+            }
+            case AMBIGUOUS -> {
+                if (witnessReconciliationPending) {
+                    log.warn("Lease reconciliation remains ambiguous after witness promotion — retrying asynchronously");
+                } else {
+                    long age = System.nanoTime() - lastSuccessfulRenewNs;
+                    if (age > renewDeadlineNs) {
+                        demote("deadline");
+                    } else {
+                        log.warn("Lease renewal unconfirmed for {} ms (deadline {} ms) — retrying, not demoting",
+                            age / 1_000_000, renewDeadlineNs / 1_000_000);
+                    }
                 }
             }
         }
@@ -288,14 +317,22 @@ public final class LeaderElection {
         }
     }
 
-    private void attemptPromotion() {
+    private synchronized void attemptPromotion() {
+        // The heartbeat and Lease schedulers can discover the same failure concurrently. The
+        // second path must not run another role transition after the first path has won.
+        if (role.isPrimary()) return;
         if (updateLease() == RenewResult.SUCCESS) {
             lastSuccessfulRenewNs = System.nanoTime();
             log.info("Promoted {} to PRIMARY", podName);
             role.set(ReplicationRole.Role.PRIMARY);
             onRoleChange.accept(ReplicationRole.Role.PRIMARY);
-            patchPodLabel("primary");
-            teardownHeartbeat();   // switch from watching to publishing
+            if (role.isPrimary()) {
+                patchPodLabel("primary");
+                teardownHeartbeat();   // switch from watching to publishing
+            } else {
+                patchPodLabel("standby");
+                subscribeToHeartbeat();
+            }
         } else {
             log.warn("Lease theft failed — another pod may have won; backing off");
         }
@@ -426,8 +463,8 @@ public final class LeaderElection {
             }
             if (sc == 409) {
                 String[] lease = fetchLease();
+                if (lease != null) cachedResourceVersion = lease[1];
                 if (lease != null && podName.equals(lease[2])) {
-                    cachedResourceVersion = lease[1];
                     HttpResponse<String> r2 = putLease(cachedResourceVersion);
                     if (r2.statusCode() == 200 || r2.statusCode() == 201) {
                         cachedResourceVersion = extractJsonString(r2.body(), "resourceVersion");

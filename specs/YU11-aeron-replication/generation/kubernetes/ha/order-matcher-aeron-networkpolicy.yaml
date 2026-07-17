@@ -42,6 +42,15 @@ spec:
       ports:
         - {protocol: TCP, port: 4222}
         - {protocol: TCP, port: 3306}
-        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 18085}
+        - {protocol: TCP, port: 18088}
+        - {protocol: TCP, port: 18090}
+        - {protocol: TCP, port: 18092}
+        - {protocol: TCP, port: 18100}
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+    # Kubernetes Lease calls terminate at the API Service endpoint, which is not represented by
+    # a namespace-selected pod on kind (and may likewise be externally hosted on managed GKE).
+    - ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 6443}

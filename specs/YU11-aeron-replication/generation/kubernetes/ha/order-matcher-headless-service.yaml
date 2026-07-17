@@ -11,6 +11,8 @@ spec:
   clusterIP: None
   clusterIPs:
   - None
+  # Aeron publications resolve the peer ordinal while both parallel pods are still starting.
+  publishNotReadyAddresses: true
   ports:
   - name: http
     port: 18110
