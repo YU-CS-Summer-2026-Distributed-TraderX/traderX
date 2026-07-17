@@ -52,9 +52,37 @@ perl -0pi -e 's/  - order-matcher-deployment\.yaml/  - order-matcher-statefulset
 # it to a stale fixed tag. Its Service stays kustomization-managed.
 perl -0pi -e 's/  - execution-algo-engine-deployment\.yaml\n//' "${KUST}"
 
+# GKE image tags for the services that have NO CI/CD.
+#
+# Their manifests carry the LOCAL kind tag (state009) because that is what the local harness
+# builds and `kind load`s. But in Artifact Registry, :state009 is the stale 2026-07-01 build that
+# predates YU04+ — its account-service has no /account/control-snapshot, so the order-matcher's
+# risk bootstrap can never complete and admission stays closed: prod silently 503s every order.
+# That is exactly what a manual full deploy did on 2026-07-17 (it reverted all seven services and
+# broke prod until they were pinned back by hand).
+#
+# So: rewrite these to the known-good dated build for the GKE render ONLY. kind is unaffected.
+# Update GKE_SERVICE_TAG whenever these services are rebuilt+pushed (or override it per-deploy).
+# The durable fix is to extend CI/CD to them with unique ci-$SHORT_SHA tags, the way
+# order-matcher and execution-algo-engine already work — then this map goes away.
+GKE_SERVICE_TAG="${GKE_SERVICE_TAG:-state009-yu09-20260713}"
+
+gke_tag_for() {  # $1=service name, $2=tag from the manifest; echoes the tag to render for GKE
+  case "$1" in
+    account-service|reference-data|position-service|trade-processor|trade-service|price-publisher|people-service)
+      printf '%s' "${GKE_SERVICE_TAG}" ;;
+    *)
+      printf '%s' "$2" ;;   # CI/CD-owned or no dated build exists — keep the manifest's own tag
+  esac
+}
+
 while IFS=$'\t' read -r name source_image context dockerfile; do
   tag="${source_image##*:}"
-  remote_image="${PREFIX}/${name}:${tag}"
+  remote_tag="$(gke_tag_for "${name}" "${tag}")"
+  if [[ "${remote_tag}" != "${tag}" ]]; then
+    echo "[gke-tag] ${name}: ${tag} -> ${remote_tag} (no CI/CD; see GKE_SERVICE_TAG)"
+  fi
+  remote_image="${PREFIX}/${name}:${remote_tag}"
   source_escaped="$(printf '%s' "${source_image}" | perl -pe 's/([\\\/])/\\$1/g')"
   remote_escaped="$(printf '%s' "${remote_image}" | perl -pe 's/([\\\/])/\\$1/g')"
   find "${OUTPUT_DIR}" -type f -name '*.yaml' -print0 | while IFS= read -r -d '' file; do
