@@ -45,7 +45,7 @@ public final class ClusterProofClient {
             .aeronDirectoryName(aeronDir)
             .ingressChannel("aeron:udp?term-length=64k")
             .ingressEndpoints(ingressEndpoints)
-            .egressChannel("aeron:udp?endpoint=0.0.0.0:0")
+            .egressChannel("aeron:udp?endpoint=" + env("PROOF_EGRESS_HOST", env("POD_IP", "localhost")) + ":0")
             .egressListener((clusterSessionId, timestamp, egress, offset, length, header) -> {
                 final int ref = egress.getInt(offset + 8);
                 final byte kind = egress.getByte(offset + 12);
@@ -97,7 +97,7 @@ public final class ClusterProofClient {
             try {
                 return AeronCluster.connect(context.clone());
             } catch (final Exception e) {
-                System.out.println("CONNECT-RETRY cause=" + e.getClass().getSimpleName());
+                System.out.println("CONNECT-RETRY cause=" + e);
                 try {
                     Thread.sleep(200);
                 } catch (final InterruptedException ie) {

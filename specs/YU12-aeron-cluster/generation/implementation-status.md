@@ -26,13 +26,26 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | Order-matcher regression | Full generated suite passes: 201 tests, 0 failures, 2 skipped — including base, risk, and Aeron transport allocation gates. |
 | No-GC gates | `./gradlew --no-daemon noGcTest` passes (base + risk Epsilon gates). |
 
+## Workstream 3–7 evidence (2026-07-17 session end)
+
+| Contract | Evidence |
+|---|---|
+| Three-member Raft proof (in-process) | `ThreeMemberClusterTest` passed at `4e788c1`: election, cluster-wide snapshot, leader kill with the same client session continuing, EMPTY-disk member rejoin converging to identical state (generator/trade counter/book/terminal FIFO/risk aggregates), second leader kill with the recovered member voting, refs 1..7 one no-reuse lineage. Timing-flaky under a loaded host (documented; same class as the parent state's kind findings). |
+| Cluster apply-path allocation gate | `clusterAllocationGateTest`: two consecutive exact-zero 1M-event windows on the decode→generator→engine→drain path (NFR-AC01). |
+| Symbol identity (matrix F2) | `SymbolRegisterMessage` template + `ClusterSymbolRegistrationTest`: log-ordered idempotent assignment, deterministic capacity refusal, snapshot round-trip with derived generator. |
+| Containerized cluster on kind | 3/3 members Ready and a leader elected on `kind-traderx-yu12-cluster` (member-DNS await + halt-on-termination fixed the live `UnknownHostException` wedge). |
+| kind destructive proof | BLOCKED on one leg: cluster egress to non-member client pods never connects (`egress.isConnected=false` with a connected, consumed ingress). Full diagnosis, ruled-out causes, and resume path in `docs/handoff/ISSUES-yu12-kind-egress-2026-07-17.md`; `scripts/yu12/crash-proof-kind.sh` runs the whole crash/wipe/no-reuse matrix once the leg connects. |
+| Gateway tier (ADR-047 first cut) | `ClusterGatewayMain`: REST termination, FIFO committed-ack correlation, sequenced symbol resolution, leader-follow via the cluster client, split `/ready`. Compiles; runtime verification and FIX termination are the open remainder. |
+| Feed adapter (ADR-045) | `FeedAdapterMain`: NATS `pricing.>` conflated into PRICE_TICK ingress with sequenced symbol registration. Compiles; live NATS verification open. |
+| GKE | Not touched (fable-owned YU11 image still deployed). The bench (label `aeron-cluster`) requires the gateway tier serving REST first; deploy/bench commands are user-run per working convention. |
+
 ## Component status
 
 | Item | Current status |
 |---|---|
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
 | Clustered service hosting (`onSessionMessage` + complete snapshot/restore + no-ID-reuse proof) | Proven single-member at full snapshot completeness (matrix verdict: Complete at this scope) |
-| Three-member kind cluster | Specified |
-| Ingress gateway tier | Specified |
-| Feed-adapter consensus ingress | Specified |
-| Recovery matrix / failover / GKE proofs | Specified |
+| Three-member cluster | Proven in-process; running elected on kind; destructive kind proof blocked on the egress leg (see handoff issue doc) |
+| Ingress gateway tier | REST cut built (compiles); runtime verification + FIX termination open |
+| Feed-adapter consensus ingress | Built (compiles); live NATS verification open |
+| Recovery matrix / failover / GKE proofs | Unit slice green; kind/GKE runs open |

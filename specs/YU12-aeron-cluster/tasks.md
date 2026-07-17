@@ -30,7 +30,7 @@
 
 ## Three-member cluster
 
-- [ ] T-AC12 StatefulSet member identity, headless discovery, per-pod PVCs, NetworkPolicy, and
+- [x] T-AC12 StatefulSet member identity, headless discovery, per-pod PVCs, NetworkPolicy, and
   the dedicated kind profile for three members.
 - [ ] T-AC13 Prove leader election, leader-kill re-election, and wiped-member rejoin via snapshot
   retrieval + log replay on kind.
@@ -48,7 +48,7 @@
 
 ## Proof
 
-- [ ] T-AC19 Keep inherited allocation gates exact-zero on the service thread; `noGcTest` green.
+- [x] T-AC19 Keep inherited allocation gates exact-zero on the service thread; `noGcTest` green.
 - [ ] T-AC20 Measure client-observed failover under 1,000 ms through the gateway.
 - [ ] T-AC21 Run the three-run GKE comparison labelled `aeron-cluster` against the stored YU11
   Aeron HA baseline.

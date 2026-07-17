@@ -5,6 +5,7 @@ metadata:
   labels:
     app: cluster-proof-client
 spec:
+  nodeName: traderx-yu12-cluster-worker3
   restartPolicy: Never
   containers:
     - name: proof-client
@@ -16,6 +17,10 @@ spec:
         - /opt/app/classes:/opt/app/lib/*
         - finos.traderx.ordermatcher.cluster.ClusterProofClient
       env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
         - name: PROOF_INGRESS_ENDPOINTS
           value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
         - name: PROOF_INTERVAL_MS
