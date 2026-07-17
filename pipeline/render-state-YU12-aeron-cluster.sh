@@ -63,6 +63,7 @@ for source in \
   system/architecture.model.json \
   system/runtime-topology.md \
   system/messaging-subject-map.md \
+  system/snapshot-completeness-matrix.md \
   system/adr-044-aeron-cluster-consensus.md \
   system/adr-045-consensus-log-single-input.md \
   system/adr-046-cluster-snapshot-completeness.md \

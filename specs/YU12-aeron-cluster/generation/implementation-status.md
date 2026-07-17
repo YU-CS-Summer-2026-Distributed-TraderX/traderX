@@ -1,7 +1,8 @@
 # Implementation Status: YU12-aeron-cluster
 
-**Status**: Scaffold verified; single-member ClusteredService core proven — consensus-log
-round-trip, snapshot + log-tail recovery, and zero-tail recovery with strict no-ID-reuse.
+**Status**: Scaffold verified; single-member ClusteredService core proven at snapshot
+completeness — full deterministic state (book, generators, risk, idempotency, terminal
+retention order) survives snapshot + log-tail and zero-tail recovery with strict no-ID-reuse.
 
 ## Verification evidence
 
@@ -18,7 +19,11 @@ round-trip, snapshot + log-tail recovery, and zero-tail recovery with strict no-
 | Single-member cluster proof (SC-AC01) | `AeronClusterSpikeTest` passes: a real single-member Aeron Cluster (Media Driver + Archive + Consensus Module + service container) hosts the inherited `MatchingEngine` in `onSessionMessage`; orders offered through the cluster client round-trip the consensus log, rest, and fill; egress acks carry service-assigned references. |
 | Generator-in-state recovery | The service assigns `nextOrderRef` while applying committed `ORDER_NEW` messages and snapshots it with the book: recovery 1 (snapshot + log tail) restores the generator at 5, replay deterministically re-assigns 5–6, next live order takes 7; recovery 2 (snapshot + ZERO log tail — the parent state's defect-exposing shape) restores the generator at 8 and issues 8. No reference is ever reused; the trade counter continues 2..8 across both recoveries. |
 | Fail-closed load assertion | Snapshot load throws (refusing service start) when a restored order reference reaches `nextOrderRef` or `nextOrderRef <= highestIssuedRef`. |
-| Order-matcher regression | Full generated suite passes: 193 tests, 0 failures, 2 skipped — including base, risk, and Aeron transport allocation gates. |
+| Snapshot completeness audit | `system/snapshot-completeness-matrix.md`: every authoritative item enumerated from mutation surfaces with capture/load/replay evidence and behavioral proof; findings F1 (terminal eviction order — fixed here), F2 (symbol identity — gateway workstream), F3 (config identity — 3-member phase). |
+| Risk state in the cluster (ADR-045) | Control state seeded and mutated exclusively by sequenced `*_CONTROL` ingress; `AeronClusterSpikeTest` proves reservation and executed-exposure continuity across both recovery shapes, exact aggregate rebuild from order rows, and an idempotent client-key retry answered with the original order after two recoveries. |
+| Terminal eviction determinism (F1) | `MatchingEngine.terminalOrderRefsFifo()` (YU12 override; YU03 base verified byte-identical before extending) + eviction-FIFO terminal rows in the snapshot; `ClusterSnapshotCodecTest.terminalRetentionRestoresInEvictionFifoOrder`. |
+| Fail-closed recovery matrix (unit slice of T-AC11) | `ClusterSnapshotCodecTest`: unknown record type, unknown format, record-before-header, truncated stream (no END), generator at/below a restored ref, and generator not above highest-issued all refuse the load. |
+| Order-matcher regression | Full generated suite passes: 201 tests, 0 failures, 2 skipped — including base, risk, and Aeron transport allocation gates. |
 | No-GC gates | `./gradlew --no-daemon noGcTest` passes (base + risk Epsilon gates). |
 
 ## Component status
@@ -26,7 +31,7 @@ round-trip, snapshot + log-tail recovery, and zero-tail recovery with strict no-
 | Item | Current status |
 |---|---|
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
-| Clustered service hosting (`onSessionMessage` + snapshot/restore + no-ID-reuse proof) | Proven single-member; risk/idempotency/control-version snapshot groups in implementation |
+| Clustered service hosting (`onSessionMessage` + complete snapshot/restore + no-ID-reuse proof) | Proven single-member at full snapshot completeness (matrix verdict: Complete at this scope) |
 | Three-member kind cluster | Specified |
 | Ingress gateway tier | Specified |
 | Feed-adapter consensus ingress | Specified |

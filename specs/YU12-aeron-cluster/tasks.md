@@ -18,8 +18,9 @@
 
 ## Snapshot completeness
 
-- [ ] T-AC08 Serialize complete deterministic state in `onTakeSnapshot` (book, generators,
-  idempotency, risk, symbols, control versions) and restore on `onStart`.
+- [x] T-AC08 Serialize complete deterministic state in `onTakeSnapshot` (book with terminal
+  eviction order, generators, idempotency with retention order, risk policy/accounts/securities,
+  positions, prices) and restore on `onStart`, per `system/snapshot-completeness-matrix.md`.
 - [ ] T-AC09 Assert on load and promotion that every restored generator exceeds every ID ever
   issued; fail closed on violation.
 - [x] T-AC10 Prove snapshot → post-snapshot orders → restart → strict no-ID-reuse on the
@@ -41,7 +42,8 @@
   leader-follow re-pointing.
 - [ ] T-AC16 Prove counterparty FIX session survival across a leader change.
 - [ ] T-AC17 Build the feed adapter sequencing conflated pricing/control ingress; remove every
-  side-channel input path.
+  side-channel input path, including symbol-identity registration as sequenced ingress
+  (matrix finding F2).
 - [ ] T-AC18 Implement the split readiness contract (cluster state vs admission state).
 
 ## Proof

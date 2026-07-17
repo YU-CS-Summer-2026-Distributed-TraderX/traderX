@@ -34,16 +34,20 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Phase-1 single-member cluster proof (SC-AC01): the inherited deterministic MatchingEngine
- * hosted as a ClusteredService, orders round-tripping the consensus log, and the strict
- * no-ID-reuse invariant across two recoveries — snapshot + log tail, then snapshot + ZERO tail
- * (the exact shape that exposed the parent state's nextOrderRef defect).
+ * Single-member cluster proof (SC-AC01) at workstream-2 completeness: the inherited
+ * deterministic MatchingEngine + authoritative BlpRiskState hosted as a ClusteredService, with
+ * risk control state seeded exclusively by sequenced control ingress (ADR-045). Proves across
+ * snapshot+tail recovery and snapshot+ZERO-tail recovery (the parent state's defect-exposing
+ * shape): strict no-ID-reuse, trade-counter continuity, reservation and executed-exposure
+ * continuity, and an idempotent client-key retry answered with the original order after two
+ * recoveries.
  */
 @Timeout(120)
 class AeronClusterSpikeTest {
     private static final long PX = 1_000_000L;
     private static final int SECURITY = 1;
     private static final int ACCOUNT = 11;
+    private static final long CLIENT_KEY = 0x5EEDF00DL;
     private static final String CLUSTER_MEMBERS =
         "0,localhost:21610,localhost:21611,localhost:21612,localhost:21613,localhost:21614";
     private static final String INGRESS_CHANNEL = "aeron:udp?endpoint=localhost:21610|term-length=64k";
@@ -77,58 +81,82 @@ class AeronClusterSpikeTest {
     }
 
     @Test
-    void ordersSurviveSnapshotAndZeroTailRecoveryWithoutIdReuse() {
+    void completeStateSurvivesSnapshotAndZeroTailRecoveryWithoutIdReuse() {
         launchNode(true);
         connectClient();
 
-        // Live book: a tick that leaves buy-limit-100 orders resting, three resting orders,
-        // then one marketable order that fills and books trade 1 — all through the consensus log.
+        // Risk control state enters ONLY as sequenced control ingress (ADR-045): without these
+        // two events every order would be rejected UNKNOWN_ACCOUNT / UNKNOWN_SECURITY.
+        offerAccountControl(ACCOUNT, true);
+        offerSecurityControl(SECURITY, true);
+
+        // Live book: a tick that leaves buy-limit-100 orders resting, three resting orders (one
+        // carrying an idempotency key), then one marketable order that fills and books trade 1.
         offerPriceTick(150 * PX);
-        offerNewOrder(100 * PX);
-        offerNewOrder(100 * PX);
-        offerNewOrder(100 * PX);
-        offerNewOrder(200 * PX); // in the money at 150: create-ack then a full fill, tradeSeq 1
+        offerNewOrder(100 * PX, 0L);
+        offerNewOrder(100 * PX, CLIENT_KEY); // ref 2: the key retried after both recoveries
+        offerNewOrder(100 * PX, 0L);
+        offerNewOrder(200 * PX, 0L); // in the money at 150: create-ack then a full fill, tradeSeq 1
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 4
             && countKind(OutputEvent.KIND_ORDER_FILLED) == 1);
         assertEquals(List.of(1L, 2L, 3L, 4L, 4L), acceptedOrFilledRefs());
+        assertEquals(3 * 10 * 100 * PX, service.risk().reservedNotional(ACCOUNT),
+            "three resting orders reserve exactly their notional");
+        assertEquals(10 * 150 * PX, service.risk().executedNotional(ACCOUNT),
+            "the fill converted its reservation into executed exposure");
 
-        // Snapshot 1 binds the complete state — including the generators — at the applied position.
+        // Snapshot 1 binds the complete state — generators, book, risk, idempotency — at the
+        // applied position; the two post-snapshot orders exist only in the committed log tail.
         takeSnapshot();
-        assertEquals(1, service.snapshotsTaken());
-
-        // Post-snapshot orders: they exist only in the committed log tail.
         acks.clear();
-        offerNewOrder(100 * PX);
-        offerNewOrder(100 * PX);
+        offerNewOrder(100 * PX, 0L);
+        offerNewOrder(100 * PX, 0L);
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 2);
         assertEquals(List.of(5L, 6L), acceptedOrFilledRefs());
 
-        // Recovery 1: snapshot + log tail. The service must resume after the snapshot boundary,
-        // re-assign refs 5..6 identically during replay, and issue strictly beyond them.
+        // Recovery 1: snapshot + log tail. Resume strictly after the boundary, re-assign 5..6
+        // identically during replay, and issue strictly beyond them.
         restartNode();
         assertEquals(5, service.lastLoadedNextOrderRef(), "snapshot must carry the generator");
         connectClient();
-        offerNewOrder(100 * PX);
+        offerNewOrder(100 * PX, 0L);
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 1);
         assertEquals(List.of(7L), acceptedOrFilledRefs());
+        assertEquals(6 * 10 * 100 * PX, service.risk().reservedNotional(ACCOUNT),
+            "reservations rebuilt from snapshotted orders, replayed tail, and the new order");
 
         // Snapshot 2 then recovery with ZERO log tail — the parent state's defect-exposing case:
-        // every warm order came from the snapshot alone, so a generator outside snapshotted
-        // state would reissue ref 5 here.
+        // every warm value came from the snapshot alone.
         takeSnapshot();
-        assertEquals(1, service.snapshotsTaken());
         restartNode();
         assertEquals(8, service.lastLoadedNextOrderRef(), "zero-tail recovery restores the generator");
         connectClient();
-        offerNewOrder(100 * PX);
-        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 1);
-        assertEquals(List.of(8L), acceptedOrFilledRefs());
+        assertEquals(6 * 10 * 100 * PX, service.risk().reservedNotional(ACCOUNT),
+            "reservations rebuilt from the snapshot alone");
+        assertEquals(10 * 150 * PX, service.risk().executedNotional(ACCOUNT),
+            "executed exposure survives both recoveries");
 
-        // The book recovered completely: 8 orders ever issued, 7 still open (order 4 filled).
+        // Idempotent retry of the pre-snapshot-1 key: answered with the ORIGINAL order (ref 2),
+        // creating nothing and reserving nothing — after two recoveries. The duplicate still
+        // consumes one generator value deterministically, so the next fresh order takes 9.
+        acks.clear();
+        offerNewOrder(100 * PX, CLIENT_KEY);
+        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 1);
+        assertEquals(List.of(2L), acceptedOrFilledRefs());
+        assertEquals(6 * 10 * 100 * PX, service.risk().reservedNotional(ACCOUNT),
+            "a replayed duplicate reserves nothing");
+
+        acks.clear();
+        offerNewOrder(100 * PX, 0L);
+        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 1);
+        assertEquals(List.of(9L), acceptedOrFilledRefs());
+
+        // Book recovered completely: refs 1..9 ever issued (8 consumed by the duplicate),
+        // order 4 filled, so 1,2,3,5,6,7,9 remain open.
         assertEquals(7, service.engine().openOrderTuples().size());
 
-        // A crossing tick fills every open order; trade sequencing must continue at 2..8,
-        // proving the trade counter also survived both recoveries.
+        // A crossing tick fills every open order; trade sequencing continues at 2..8, proving
+        // the trade counter also survived both recoveries.
         offerPriceTick(90 * PX);
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_FILLED) == 7);
         final long maxTradeSeq = acks.stream()
@@ -136,6 +164,7 @@ class AeronClusterSpikeTest {
             .mapToLong(a -> a[2]).max().orElse(-1);
         assertEquals(8, maxTradeSeq, "trade counter continues across recoveries, never restarts");
         assertEquals(0, service.engine().openOrderTuples().size());
+        assertEquals(0L, service.risk().reservedNotional(ACCOUNT), "all reservations consumed by fills");
     }
 
     // ----- cluster harness -------------------------------------------------------------------
@@ -204,7 +233,7 @@ class AeronClusterSpikeTest {
 
     // ----- ingress/egress helpers ------------------------------------------------------------
 
-    private void offerNewOrder(final long limitPx) {
+    private void offerNewOrder(final long limitPx, final long clientOrderKey) {
         ingress.type = InputEvent.TYPE_ORDER_NEW;
         ingress.side = InputEvent.SIDE_BUY;
         ingress.orderRef = 0; // the cluster service owns the generator (ADR-046)
@@ -212,7 +241,7 @@ class AeronClusterSpikeTest {
         ingress.securityId = SECURITY;
         ingress.qty = 10;
         ingress.limitPx = limitPx;
-        ingress.priceTicks = 0;
+        ingress.priceTicks = clientOrderKey; // type-discriminated slot: idempotency key
         ingress.eventTimeMillis = 0; // overwritten with cluster time by the service
         offerIngress();
     }
@@ -226,6 +255,32 @@ class AeronClusterSpikeTest {
         ingress.qty = 0;
         ingress.limitPx = 0;
         ingress.priceTicks = px;
+        ingress.eventTimeMillis = 0;
+        offerIngress();
+    }
+
+    private void offerAccountControl(final int accountId, final boolean enabled) {
+        ingress.type = InputEvent.TYPE_ACCOUNT_CONTROL;
+        ingress.setControlEnabled(enabled);
+        ingress.orderRef = 0;
+        ingress.accountId = accountId;
+        ingress.securityId = 0;
+        ingress.qty = 0;
+        ingress.limitPx = 0;
+        ingress.setControlVersion(1L);
+        ingress.eventTimeMillis = 0;
+        offerIngress();
+    }
+
+    private void offerSecurityControl(final int securityId, final boolean enabled) {
+        ingress.type = InputEvent.TYPE_SECURITY_CONTROL;
+        ingress.setControlEnabled(enabled);
+        ingress.orderRef = 0;
+        ingress.accountId = 0;
+        ingress.securityId = securityId;
+        ingress.qty = 0;
+        ingress.limitPx = 0;
+        ingress.setControlVersion(2L);
         ingress.eventTimeMillis = 0;
         offerIngress();
     }
