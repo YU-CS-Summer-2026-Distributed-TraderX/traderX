@@ -26,13 +26,12 @@ import java.nio.file.StandardOpenOption;
  * A torn trailing record (a crash mid-append) is shorter than 64 bytes and is discarded — it was
  * never durable, so it is correctly excluded from replay.
  *
- * <p>YU11 additions. The journal carries two kinds of non-business records: SNAPSHOT markers
- * (whose {@code seq} is a local ring sequence, not a business sequence) and rotation ANCHOR
- * records ({@link Journaler#ANCHOR_TYPE}, journal-private carriers of the pre-rotation business
- * tail — never surfaced to replay). Business records carry the replicated stream's
- * lineage-continuous {@code event.seq}. This reader therefore distinguishes the three for the
- * cross-epoch follower bootstrap: {@link #lastBusinessSeq()} proves the local business tail, and
- * {@link #truncateAfterBusinessSeq(long)} cuts a divergent suffix at an exact business boundary,
+ * <p>YU11 additions. SNAPSHOT markers do not mutate business state, but they are replicated inputs:
+ * they consume the same lineage-continuous {@code event.seq} as commands and must participate in
+ * restart and cross-epoch continuity. Rotation ANCHOR records ({@link Journaler#ANCHOR_TYPE}) are
+ * journal-private carriers of the pre-rotation input tail and are never surfaced to replay.
+ * {@link #lastInputSeq()} proves the local stream tail and
+ * {@link #truncateAfterInputSeq(long)} cuts a divergent suffix at an exact stream boundary,
  * failing closed when local history cannot prove that boundary.
  */
 public final class JournalReader {
@@ -97,13 +96,13 @@ public final class JournalReader {
     }
 
     /**
-     * The last business sequence this journal proves: the {@code seq} of the final business
-     * record or rotation anchor (SNAPSHOT markers carry local ring sequences and are ignored).
+     * The last replicated input sequence this journal proves: the {@code seq} of the final input
+     * record or rotation anchor. SNAPSHOT markers count because they occupy an Aeron inputSeq.
      * Returns -1 when the journal is missing or holds no business history. A non-monotonic
-     * business sequence (a pre-lineage-base journal, where numbering restarted per boot) is
+     * input sequence (a pre-lineage-base journal, where numbering restarted per boot) is
      * tolerated here by returning the maximum seen — a safe upper bound for a lineage base.
      */
-    public long lastBusinessSeq() throws IOException {
+    public long lastInputSeq() throws IOException {
         if (!Files.exists(journalFile)) return -1L;
         long last = -1L;
         long max = -1L;
@@ -115,9 +114,8 @@ public final class JournalReader {
                 buf.flip();
                 while (buf.remaining() >= RECORD_SIZE) {
                     long seq = buf.getLong();
-                    byte type = buf.get();
+                    buf.get();   // type: every record, including SNAPSHOT and ANCHOR, carries the tail
                     buf.position(buf.position() + (RECORD_SIZE - Long.BYTES - Byte.BYTES));
-                    if (type == InputEvent.TYPE_SNAPSHOT) continue;
                     if (seq < last) monotonic = false;
                     last = seq;
                     max = Math.max(max, seq);
@@ -127,35 +125,35 @@ public final class JournalReader {
             }
         }
         if (!monotonic) {
-            log.warn("Journal {} has non-monotonic business sequences (pre-lineage journal); "
+            log.warn("Journal {} has non-monotonic input sequences (pre-lineage journal); "
                 + "using max {} as the lineage base tail", journalFile, max);
         }
         return max;
     }
 
     /**
-     * Cross-epoch bootstrap cut: truncates the journal so its business history ends at exactly
+     * Cross-epoch bootstrap cut: truncates the journal so its replicated input history ends exactly
      * {@code boundSeq} (the new leader epoch's first input sequence minus one), discarding a
-     * divergent suffix the new leader lineage never saw. SNAPSHOT markers ride with the region
-     * that precedes them; anchors count as business carriers.
+     * divergent suffix the new leader lineage never saw. SNAPSHOT markers and anchors both prove
+     * input-sequence boundaries.
      *
      * <p>Fails closed ({@link IllegalStateException}) when local history cannot prove the
      * boundary: the journal ends before {@code boundSeq} (this node fell behind — it needs a
      * snapshot transfer, which YU11 does not implement), the snapshot already covers past
-     * {@code boundSeq} (rotation discarded the pre-boundary history), or the business sequence is
+     * {@code boundSeq} (rotation discarded the pre-boundary history), or the input sequence is
      * non-monotonic (a pre-lineage journal that cannot anchor an exact boundary).
      *
      * @return the number of bytes truncated (0 when the journal already ends at the boundary).
      */
-    public long truncateAfterBusinessSeq(long boundSeq) throws IOException {
+    public long truncateAfterInputSeq(long boundSeq) throws IOException {
         if (!Files.exists(journalFile)) {
             if (boundSeq < 0) return 0L;
-            throw new IllegalStateException("bootstrap requires local history through business seq "
+            throw new IllegalStateException("bootstrap requires local history through input seq "
                 + boundSeq + " but " + journalFile + " does not exist (snapshot transfer needed)");
         }
         long keepEnd = 0L;
         long lastKept = -1L;
-        long firstBusiness = -1L;
+        long firstInput = -1L;
         boolean cut = false;
         long size;
         try (FileChannel channel = FileChannel.open(journalFile, StandardOpenOption.READ)) {
@@ -168,25 +166,21 @@ public final class JournalReader {
                 buf.flip();
                 while (buf.remaining() >= RECORD_SIZE) {
                     long seq = buf.getLong();
-                    byte type = buf.get();
+                    buf.get();   // type: SNAPSHOT and ANCHOR are both valid stream boundaries
                     buf.position(buf.position() + (RECORD_SIZE - Long.BYTES - Byte.BYTES));
-                    if (type == InputEvent.TYPE_SNAPSHOT) {
-                        if (!cut) keepEnd = offset + RECORD_SIZE;
-                    } else {
-                        if (firstBusiness < 0) firstBusiness = seq;
-                        if (!cut && seq <= boundSeq) {
-                            if (seq < lastKept) {
-                                throw new IllegalStateException("journal " + journalFile
-                                    + " has non-monotonic business sequences (" + seq + " after "
-                                    + lastKept + "); cannot anchor a bootstrap boundary — wipe the"
-                                    + " journal or transfer a snapshot");
-                            }
-                            lastKept = seq;
-                            keepEnd = offset + RECORD_SIZE;
-                        } else {
-                            cut = true;
-                            break outer;
+                    if (firstInput < 0) firstInput = seq;
+                    if (!cut && seq <= boundSeq) {
+                        if (seq < lastKept) {
+                            throw new IllegalStateException("journal " + journalFile
+                                + " has non-monotonic input sequences (" + seq + " after "
+                                + lastKept + "); cannot anchor a bootstrap boundary — wipe the"
+                                + " journal or transfer a snapshot");
                         }
+                        lastKept = seq;
+                        keepEnd = offset + RECORD_SIZE;
+                    } else {
+                        cut = true;
+                        break outer;
                     }
                     offset += RECORD_SIZE;
                 }
@@ -195,11 +189,11 @@ public final class JournalReader {
             }
         }
         if (lastKept != boundSeq) {
-            String reason = firstBusiness >= 0 && firstBusiness > boundSeq
+            String reason = firstInput >= 0 && firstInput > boundSeq
                 ? "the local snapshot/rotation already covers past the boundary (first retained"
-                    + " business seq " + firstBusiness + ")"
-                : "local history ends at business seq " + lastKept + " (node fell behind)";
-            throw new IllegalStateException("cannot bootstrap at business boundary " + boundSeq
+                    + " input seq " + firstInput + ")"
+                : "local history ends at input seq " + lastKept + " (node fell behind)";
+            throw new IllegalStateException("cannot bootstrap at input boundary " + boundSeq
                 + ": " + reason + " — snapshot transfer needed");
         }
         if (keepEnd >= size) {
@@ -210,7 +204,7 @@ public final class JournalReader {
             channel.force(false);
         }
         long truncated = size - keepEnd;
-        log.info("Bootstrap journal cut: truncated {} bytes of divergent suffix after business seq {} in {}",
+        log.info("Bootstrap journal cut: truncated {} bytes of divergent suffix after input seq {} in {}",
             truncated, boundSeq, journalFile);
         return truncated;
     }

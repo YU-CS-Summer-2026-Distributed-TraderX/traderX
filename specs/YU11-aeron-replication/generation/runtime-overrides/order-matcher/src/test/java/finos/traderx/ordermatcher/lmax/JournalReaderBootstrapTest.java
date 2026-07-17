@@ -15,60 +15,61 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The cross-epoch bootstrap contract of the YU11 JournalReader: business-tail proof, exact
+/** The cross-epoch bootstrap contract of the YU11 JournalReader: input-tail proof, exact
  *  boundary cuts of a divergent suffix, fail-closed behaviour when local history cannot prove
  *  the boundary, and anchor/marker transparency. */
 class JournalReaderBootstrapTest {
     @TempDir Path tempDir;
 
     @Test
-    void lastBusinessSeqIgnoresSnapshotMarkersAndCountsAnchors() throws IOException {
+    void lastInputSeqCountsReplicatedSnapshotMarkersAndAnchors() throws IOException {
         writeRecords(record(0, InputEvent.TYPE_ORDER_NEW), record(1, InputEvent.TYPE_ORDER_NEW),
-            record(999, InputEvent.TYPE_SNAPSHOT), record(2, InputEvent.TYPE_PRICE_TICK));
-        assertThat(new JournalReader(tempDir).lastBusinessSeq()).isEqualTo(2L);
+            record(2, InputEvent.TYPE_SNAPSHOT), record(3, InputEvent.TYPE_PRICE_TICK));
+        assertThat(new JournalReader(tempDir).lastInputSeq()).isEqualTo(3L);
 
         writeRecords(record(41, Journaler.ANCHOR_TYPE));
-        assertThat(new JournalReader(tempDir).lastBusinessSeq()).isEqualTo(41L);
+        assertThat(new JournalReader(tempDir).lastInputSeq()).isEqualTo(41L);
     }
 
     @Test
     void replaySkipsAnchorsButSurfacesMarkers() throws IOException {
         writeRecords(record(9, Journaler.ANCHOR_TYPE), record(10, InputEvent.TYPE_ORDER_NEW),
-            record(777, InputEvent.TYPE_SNAPSHOT), record(11, InputEvent.TYPE_ORDER_NEW));
+            record(11, InputEvent.TYPE_SNAPSHOT), record(12, InputEvent.TYPE_ORDER_NEW));
         List<Long> seen = new ArrayList<>();
         long count = new JournalReader(tempDir).replay(e -> seen.add(e.seq));
         assertThat(count).isEqualTo(3L);
-        assertThat(seen).containsExactly(10L, 777L, 11L);
+        assertThat(seen).containsExactly(10L, 11L, 12L);
     }
 
     @Test
     void truncateCutsDivergentSuffixAtExactBoundary() throws IOException {
-        // Business 0..14 with a marker riding mid-stream; the new epoch starts at S0=13, so the
-        // bound is 12: records 13,14 are the divergent suffix the new lineage never saw.
+        // Inputs 0..16 with replicated markers in the same contiguous sequence domain. The new
+        // epoch starts at S0=14, so the bound is 13 and inputs 14..16 are divergent.
         byte[][] records = new byte[17][];
         for (int i = 0; i <= 9; i++) records[i] = record(i, InputEvent.TYPE_ORDER_NEW);
-        records[10] = record(555, InputEvent.TYPE_SNAPSHOT);
-        for (int i = 10; i <= 14; i++) records[i + 1] = record(i, InputEvent.TYPE_ORDER_NEW);
-        records[16] = record(556, InputEvent.TYPE_SNAPSHOT);   // post-divergence marker: cut too
+        records[10] = record(10, InputEvent.TYPE_SNAPSHOT);
+        for (int i = 11; i <= 15; i++) records[i] = record(i, InputEvent.TYPE_ORDER_NEW);
+        records[16] = record(16, InputEvent.TYPE_SNAPSHOT);
         writeRecords(records);
 
         JournalReader reader = new JournalReader(tempDir);
-        long truncated = reader.truncateAfterBusinessSeq(12L);
+        long truncated = reader.truncateAfterInputSeq(13L);
         assertThat(truncated).isEqualTo(3L * 64L);
-        assertThat(reader.lastBusinessSeq()).isEqualTo(12L);
+        assertThat(reader.lastInputSeq()).isEqualTo(13L);
 
         List<Long> seen = new ArrayList<>();
         reader.replay(e -> seen.add(e.seq));
-        assertThat(seen).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L, 9L, 555L, 10L, 11L, 12L);
+        assertThat(seen).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L, 7L, 8L,
+            9L, 10L, 11L, 12L, 13L);
 
         // Idempotent when the file already ends at the boundary.
-        assertThat(reader.truncateAfterBusinessSeq(12L)).isZero();
+        assertThat(reader.truncateAfterInputSeq(13L)).isZero();
     }
 
     @Test
     void truncateFailsClosedWhenLocalHistoryEndsBeforeTheBoundary() throws IOException {
         writeRecords(record(0, InputEvent.TYPE_ORDER_NEW), record(1, InputEvent.TYPE_ORDER_NEW));
-        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterBusinessSeq(7L))
+        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterInputSeq(7L))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("fell behind");
     }
@@ -77,7 +78,7 @@ class JournalReaderBootstrapTest {
     void truncateFailsClosedWhenRotationAlreadyCoversPastTheBoundary() throws IOException {
         // Post-rotation file: anchor at 9, business 10.. — a bound of 5 is unreachable.
         writeRecords(record(9, Journaler.ANCHOR_TYPE), record(10, InputEvent.TYPE_ORDER_NEW));
-        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterBusinessSeq(5L))
+        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterInputSeq(5L))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("covers past the boundary");
     }
@@ -88,15 +89,15 @@ class JournalReaderBootstrapTest {
         writeRecords(record(0, InputEvent.TYPE_ORDER_NEW), record(1, InputEvent.TYPE_ORDER_NEW),
             record(2, InputEvent.TYPE_ORDER_NEW), record(0, InputEvent.TYPE_ORDER_NEW),
             record(1, InputEvent.TYPE_ORDER_NEW));
-        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterBusinessSeq(2L))
+        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterInputSeq(2L))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("non-monotonic");
     }
 
     @Test
     void truncateOfMissingJournalIsOnlyValidAtTheOrigin() throws IOException {
-        assertThat(new JournalReader(tempDir).truncateAfterBusinessSeq(-1L)).isZero();
-        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterBusinessSeq(3L))
+        assertThat(new JournalReader(tempDir).truncateAfterInputSeq(-1L)).isZero();
+        assertThatThrownBy(() -> new JournalReader(tempDir).truncateAfterInputSeq(3L))
             .isInstanceOf(IllegalStateException.class)
             .hasMessageContaining("does not exist");
     }
@@ -107,8 +108,8 @@ class JournalReaderBootstrapTest {
         writeRecords(record(9, Journaler.ANCHOR_TYPE), record(10, InputEvent.TYPE_ORDER_NEW),
             record(11, InputEvent.TYPE_ORDER_NEW));
         JournalReader reader = new JournalReader(tempDir);
-        assertThat(reader.truncateAfterBusinessSeq(9L)).isEqualTo(2L * 64L);
-        assertThat(reader.lastBusinessSeq()).isEqualTo(9L);
+        assertThat(reader.truncateAfterInputSeq(9L)).isEqualTo(2L * 64L);
+        assertThat(reader.lastInputSeq()).isEqualTo(9L);
         assertThat(reader.replay(e -> { })).isZero();
     }
 

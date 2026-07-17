@@ -40,9 +40,9 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
     private static final int DEFAULT_BATCH_RECORDS = 1024;   // 64 KiB coalescing buffer
 
     /** Journal-private record type: a sequence anchor written as the first record of a freshly
-     *  rotated file, carrying the last BUSINESS sequence (event.seq) journaled before rotation.
+     *  rotated file, carrying the last replicated INPUT sequence (event.seq) through the snapshot.
      *  Never appears on the input ring and is never surfaced by {@link JournalReader} to replay —
-     *  it exists so a post-rotation journal still proves the stream's business tail (the lineage
+     *  it exists so a post-rotation journal still proves the stream's input tail (the lineage
      *  base for a restarted primary, and the bound check for a cross-epoch follower bootstrap). */
     public static final byte ANCHOR_TYPE = 127;
 
@@ -66,8 +66,9 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
     private volatile long lastSnapshotOffset;   // journal byte offset just past the most recent SNAPSHOT marker
     private volatile long threadId;
     private volatile boolean failed;
-    /** Business sequence (event.seq) of the last non-marker record appended; feeds the rotation anchor. */
-    private long lastBusinessSeq = -1;
+    /** Replicated input sequence (event.seq) of the last record appended; feeds the rotation anchor.
+     *  SNAPSHOT is a no-op for business state but still occupies a contiguous Aeron inputSeq. */
+    private long lastInputSeq = -1;
 
     public Journaler(boolean enabled, Path journalDir, HotPathMetrics metrics) {
         this(enabled, journalDir, metrics, DEFAULT_BATCH_RECORDS, null);
@@ -141,7 +142,7 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
             if (batchBuffer.remaining() < RECORD_SIZE) {
                 flushBatch();   // buffer full mid-batch: drain it before appending the next record
             }
-            if (e.type != InputEvent.TYPE_SNAPSHOT) lastBusinessSeq = e.seq;
+            lastInputSeq = e.seq;
             batchBuffer.putLong(e.seq);
             batchBuffer.put(e.type);
             batchBuffer.put(e.side);
@@ -230,11 +231,11 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
         }
     }
 
-    /** First record of a freshly rotated file: the business-tail anchor (see {@link #ANCHOR_TYPE}).
+    /** First record of a freshly rotated file: the input-tail anchor (see {@link #ANCHOR_TYPE}).
      *  Runs on the journaler thread inside rotate(), with the coalescing buffer empty. */
     private void writeAnchor() throws IOException {
-        if (lastBusinessSeq < 0) return;
-        batchBuffer.putLong(lastBusinessSeq);
+        if (lastInputSeq < 0) return;
+        batchBuffer.putLong(lastInputSeq);
         batchBuffer.put(ANCHOR_TYPE);
         batchBuffer.put((byte) 0);
         batchBuffer.putShort((short) 0);

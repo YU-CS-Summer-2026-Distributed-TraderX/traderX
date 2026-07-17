@@ -26,12 +26,11 @@ class JournalerRotationTest {
             assertEquals(1, segments.size());
             assertEquals(128L, Files.size(segments.get(0)));
             assertTrue(Files.exists(dir.resolve("input-events.journal")));
-            // YU11: the fresh file opens with a 64-byte business-tail anchor (seq of the last
-            // business record before rotation), so a rotated journal still proves the stream's
-            // lineage tail; the snapshot covers through the anchor.
+            // YU11: the fresh file opens with a 64-byte input-tail anchor. SNAPSHOT occupies
+            // inputSeq=2 even though it is a business-state no-op, so restart continues at 3.
             assertEquals(64L, Files.size(dir.resolve("input-events.journal")));
             assertEquals(64L, journaler.lastSnapshotOffset());
-            assertEquals(1L, new JournalReader(dir).lastBusinessSeq());
+            assertEquals(2L, new JournalReader(dir).lastInputSeq());
             assertEquals(0L, new JournalReader(dir).replay(e -> { }));
         }
     }

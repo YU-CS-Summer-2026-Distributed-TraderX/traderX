@@ -198,7 +198,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private AeronReplicationFollower aeronFollower;
     /** Lineage-continuous business sequencing (event.seq = inputSeqBase + ringSeq): the Disruptor
      *  ring restarts at -1 on every reboot, but the replicated stream's numbering must survive the
-     *  whole leader lineage. Boot sets it from the journal's proven business tail; promotion
+     *  whole leader lineage. Boot sets it from the journal's proven replicated-input tail; promotion
      *  recomputes it from the follower's replicated watermark (see onRoleChange). 0 for a fresh
      *  journal — identical to the legacy numbering. */
     private volatile long inputSeqBase;
@@ -932,16 +932,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private record BootstrapPlan(AeronFollowerCheckpointStore.Record checkpoint,
                                  long expectedFirstInputSeq) { }
 
-    /** Lineage base from the journal's proven business tail (0 for a fresh journal). */
+    /** Lineage base from the journal's proven replicated-input tail (0 for a fresh journal). */
     private void initInputSeqBase() {
         if (!journalEnabled) return;
         try {
-            inputSeqBase = new JournalReader(Path.of(journalPath)).lastBusinessSeq() + 1L;
+            inputSeqBase = new JournalReader(Path.of(journalPath)).lastInputSeq() + 1L;
         } catch (java.io.IOException ex) {
             throw new IllegalStateException("cannot establish input-seq lineage base", ex);
         }
         if (inputSeqBase > 0) {
-            log.info("Input-seq lineage base: {} (journal business tail {})",
+            log.info("Input-seq lineage base: {} (journal input tail {})",
                 inputSeqBase, inputSeqBase - 1L);
         }
     }
@@ -989,7 +989,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         long localTail;
         try {
-            localTail = new JournalReader(Path.of(journalPath)).lastBusinessSeq();
+            localTail = new JournalReader(Path.of(journalPath)).lastInputSeq();
         } catch (java.io.IOException ex) {
             throw new IllegalStateException("cannot read local journal tail for bootstrap", ex);
         }
@@ -1017,7 +1017,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             return new BootstrapPlan(null, 0L);   // stream begins at the origin — legacy contract
         }
         try {
-            new JournalReader(Path.of(journalPath)).truncateAfterBusinessSeq(s0 - 1L);
+            new JournalReader(Path.of(journalPath)).truncateAfterInputSeq(s0 - 1L);
         } catch (java.io.IOException ex) {
             throw new IllegalStateException("bootstrap journal cut failed", ex);
         }
@@ -2179,7 +2179,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     /** Sequence a SNAPSHOT marker so the BLP checkpoints its state at a consistent point in the stream. */
     public void submitSnapshot() {
-        if (inputRing == null) {
+        // The primary's marker is replicated, so both engines snapshot at one deterministic input
+        // boundary. A follower-local marker would consume only its local ring sequence and split
+        // the journal lineage from the transport's contiguous inputSeq contract.
+        if (inputRing == null || !localSnapshotSubmissionAllowed(replicationEnabled,
+                replicationRole.get())) {
             return;
         }
         long seq = claimInputSlot();
@@ -2199,6 +2203,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } finally {
             inputRing.publish(seq);
         }
+    }
+
+    static boolean localSnapshotSubmissionAllowed(boolean replicationEnabled,
+                                                  ReplicationRole.Role role) {
+        return !replicationEnabled || role == ReplicationRole.Role.PRIMARY;
     }
 
     /** Runs on the BLP thread at a SNAPSHOT marker: write a consistent full-state checkpoint plus the
