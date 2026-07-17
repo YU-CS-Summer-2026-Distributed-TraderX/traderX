@@ -813,6 +813,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 aeronDataArchiveDestination, "");
             boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
             if (!transportReady) {
+                aeronReplicator.close();   // creation failed — release the publication before retry
+                aeronReplicator = null;
                 throw new IllegalStateException(
                     "Aeron MDC Archive destination did not connect before startup timeout");
             }
@@ -853,7 +855,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 log.info("Aeron primary data path recovered after degraded-solo (epoch={})",
                     currentLeaderEpoch);
             } catch (Exception ex) {
-                aeronReplicator = null;
+                // Keep the replicator: its archive leg is healthy and recording — only the
+                // control/live parts failed. Nulling it here leaked a publication per 2s retry
+                // and churned a NEW Archive recording each time (observed live: 254 recordings
+                // in 9 minutes, breaking newest-recording selection for every joiner).
                 log.warn("Aeron primary data path retry failed — still degraded-solo: {}",
                     ex.getMessage());
                 scheduleAeronPrimaryRetry();
