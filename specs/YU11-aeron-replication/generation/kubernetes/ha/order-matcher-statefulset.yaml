@@ -187,7 +187,7 @@ spec:
             - name: BLP_AERON_PEER_STALE_MS
               value: "40"
             - name: BLP_SBE_SCHEMA_CHECKSUM
-              value: "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e"
+              value: "c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f"
             - name: SNAPSHOT_INTERVAL_MS
               value: "300000"
             - name: RECOVERY_SOURCE
@@ -335,7 +335,7 @@ spec:
             - name: AERON_RECORD_OUTBOUND_CHANNEL
               value: ""
             - name: BLP_SBE_SCHEMA_CHECKSUM
-              value: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
+              value: c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f
           readinessProbe:
             httpGet:
               path: /healthz

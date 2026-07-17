@@ -58,7 +58,7 @@ services:
       BLP_AERON_DIR: /dev/shm/aeron/driver
       BLP_AERON_DATA_STREAM_ID: "1101"
       BLP_AERON_ACK_STREAM_ID: "1102"
-      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
+      BLP_SBE_SCHEMA_CHECKSUM: c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f
     environment:
       <<: *matcher-env
       BLP_POD_NAME: order-matcher-primary
@@ -102,7 +102,7 @@ services:
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
       AERON_RECORD_INBOUND_CHANNEL: aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data
       AERON_RECORD_OUTBOUND_CHANNEL: ""
-      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
+      BLP_SBE_SCHEMA_CHECKSUM: c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f
     volumes:
       - yu11-primary-data:/var/lib/traderx-lmax
       - yu11-primary-aeron:/dev/shm/aeron
@@ -171,7 +171,7 @@ services:
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
       AERON_RECORD_INBOUND_CHANNEL: aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data
       AERON_RECORD_OUTBOUND_CHANNEL: ""
-      BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
+      BLP_SBE_SCHEMA_CHECKSUM: c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f
     volumes:
       - yu11-follower-data:/var/lib/traderx-lmax
       - yu11-follower-aeron:/dev/shm/aeron

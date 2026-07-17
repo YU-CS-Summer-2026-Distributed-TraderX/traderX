@@ -41,6 +41,7 @@ spec:
         - {protocol: UDP, port: 8010}
         - {protocol: UDP, port: 8011}
         - {protocol: UDP, port: 8012}
+        - {protocol: TCP, port: 18110}
     - to:
         - namespaceSelector: {}
       ports:

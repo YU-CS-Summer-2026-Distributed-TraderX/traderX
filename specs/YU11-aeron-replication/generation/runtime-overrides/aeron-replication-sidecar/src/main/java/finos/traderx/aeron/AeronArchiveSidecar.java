@@ -20,7 +20,7 @@ import java.util.concurrent.CountDownLatch;
 /** Dedicated YU11 Media Driver + Archive process; no Spring heap or BLP duty cycle is shared. */
 public final class AeronArchiveSidecar {
     public static final String SCHEMA_CHECKSUM =
-        "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e";
+        "c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f";
 
     private AeronArchiveSidecar() { }
 

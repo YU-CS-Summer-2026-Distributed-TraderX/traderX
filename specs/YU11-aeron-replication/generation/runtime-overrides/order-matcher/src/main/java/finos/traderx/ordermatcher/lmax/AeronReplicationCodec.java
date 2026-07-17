@@ -41,7 +41,7 @@ public final class AeronReplicationCodec {
 
     /** SHA-256 of src/main/resources/sbe/blp-replication.xml. */
     public static final String SCHEMA_CHECKSUM =
-        "45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e";
+        "c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f";
 
     private final MessageHeaderEncoder headerEncoder = new MessageHeaderEncoder();
     private final MessageHeaderDecoder headerDecoder = new MessageHeaderDecoder();

@@ -200,6 +200,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final FollowerSequenceMap.Entry snapshotSequenceBoundary =
         new FollowerSequenceMap.Entry();
     private volatile AeronSnapshotBoundary lastAeronSnapshotBoundary = AeronSnapshotBoundary.NONE;
+    private final AeronBootstrapBundleStore aeronBootstrapBundleStore;
     /** Lineage-continuous business sequencing (event.seq = inputSeqBase + ringSeq): the Disruptor
      *  ring restarts at -1 on every reboot, but the replicated stream's numbering must survive the
      *  whole leader lineage. Boot sets it from the journal's proven replicated-input tail; promotion
@@ -262,7 +263,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.replication.failure-policy:degraded-solo}") String replicationFailurePolicy,
         @Value("${blp.replication.static-role:}") String replicationStaticRole,
         @Value("${blp.replication.aeron.shadow:false}") boolean aeronShadowEnabled,
-        @Value("${blp.replication.aeron.schema-checksum:45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e}") String aeronSchemaChecksum,
+        @Value("${blp.replication.aeron.schema-checksum:c45285f115563a260941241079d436fb44dd65aca6515f6e8a89998696d4e43f}") String aeronSchemaChecksum,
         @Value("${blp.replication.cluster-id:traderx}") String aeronClusterId,
         @Value("${blp.replication.secret-file:}") String aeronSecretFile,
         @Value("${blp.replication.secret:}") String aeronInlineSecret,
@@ -447,6 +448,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.replicationRole = replicationRole;
         this.symbols = new SymbolTable(maxSecurities);
         this.aeronPublicationSequenceMap = new AeronPublicationSequenceMap(aeronMappingCapacity);
+        this.aeronBootstrapBundleStore = new AeronBootstrapBundleStore(Path.of(journalPath));
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -2225,13 +2227,17 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             long offset = journaler == null ? 0L : journaler.lastSnapshotOffset();
             long jsSeq = (replicationFollower != null) ? replicationFollower.lastJetsStreamSeq() : -1L;
             BlpRiskState risk = matchingEngine.riskState();
-            snapshotStore.write(new SnapshotStore.Data(offset, nextOrderRef.get(),
+            SnapshotStore.Data snapshot = new SnapshotStore.Data(offset, nextOrderRef.get(),
                 matchingEngine.tradeCounter(), matchingEngine.priceTuples(),
                 matchingEngine.positionTuples(), matchingEngine.allOrderTuples(), jsSeq,
                 risk == null ? null : risk.policyTuple(),
                 risk == null ? null : risk.accountTuples(),
                 risk == null ? null : risk.securityTuples(),
-                risk == null ? null : risk.idempotencyTuples()));
+                risk == null ? null : risk.idempotencyTuples());
+            snapshotStore.write(snapshot);
+            if (boundary.transferable() && aeronBootstrapBundleStore.captureRequested()) {
+                aeronBootstrapBundleStore.capture(boundary, snapshot);
+            }
             lastAeronSnapshotBoundary = boundary;
             if (boundary.transferable()) {
                 log.info("Aeron snapshot boundary: epoch={} inputSeq={} position={} sessionId={}",
@@ -2268,6 +2274,49 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     AeronSnapshotBoundary lastAeronSnapshotBoundary() {
         return lastAeronSnapshotBoundary;
+    }
+
+    public String expectedAeronPeerId() {
+        return aeronPeerId;
+    }
+
+    public boolean isCurrentAeronPrimary(long epoch) {
+        return replicationEnabled && replicationTransport == ReplicationTransport.AERON
+            && replicationRole.isPrimary() && currentLeaderEpoch == epoch
+            && !aeronProtocolFaulted;
+    }
+
+    /**
+     * Request-thread bootstrap path. The marker is sequenced through the normal input ring; this
+     * thread only waits for the BLP's atomically written snapshot and exact boundary publication.
+     */
+    public synchronized Path createAeronBootstrapBundle(long requestedEpoch, long correlationId,
+                                                        byte[] secret) throws java.io.IOException {
+        if (!isCurrentAeronPrimary(requestedEpoch)) {
+            throw new IllegalStateException("not the current Aeron primary for epoch "
+                + requestedEpoch);
+        }
+        long previousBoundary = lastAeronSnapshotBoundary.inputSeq();
+        aeronBootstrapBundleStore.requestCapture();
+        submitSnapshot();
+        long deadline = System.nanoTime()
+            + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+                Math.max(1L, aeronArchiveReplayTimeoutMs));
+        AeronSnapshotBoundary boundary;
+        do {
+            boundary = lastAeronSnapshotBoundary;
+            if (boundary.transferable() && boundary.leaderEpoch() == requestedEpoch
+                && boundary.inputSeq() > previousBoundary) {
+                return aeronBootstrapBundleStore.build(boundary, correlationId, secret);
+            }
+            if (!isCurrentAeronPrimary(requestedEpoch)) {
+                aeronBootstrapBundleStore.cancelCapture();
+                throw new IllegalStateException("leader epoch changed during bundle capture");
+            }
+            java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
+        } while (System.nanoTime() < deadline);
+        aeronBootstrapBundleStore.cancelCapture();
+        throw new IllegalStateException("timed out waiting for transferable snapshot boundary");
     }
 
     /** Restore engine state (orders + positions + prices + trade counter + risk) from a snapshot.

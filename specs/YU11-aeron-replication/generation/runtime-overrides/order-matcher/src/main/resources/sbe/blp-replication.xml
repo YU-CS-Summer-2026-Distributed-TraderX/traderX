@@ -72,7 +72,7 @@
     <field name="correlationId" id="5" type="uint64" offset="24"/>
   </sbe:message>
 
-  <sbe:message name="SnapshotManifestMessage" id="6" blockLength="104">
+  <sbe:message name="SnapshotManifestMessage" id="6" blockLength="192">
     <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
     <field name="schemaVersion" id="2" type="uint16" offset="4"/>
     <field name="flags" id="3" type="uint16" offset="6"/>
@@ -82,5 +82,11 @@
     <field name="symbolsLength" id="7" type="uint64" offset="32"/>
     <field name="snapshotHash" id="8" type="sha256" offset="40"/>
     <field name="symbolsHash" id="9" type="sha256" offset="72"/>
+    <field name="dataSessionId" id="10" type="int32" offset="104"/>
+    <field name="reserved" id="11" type="uint32" offset="108"/>
+    <field name="correlationId" id="12" type="uint64" offset="112"/>
+    <field name="payloadChecksum" id="13" type="uint64" offset="120"/>
+    <field name="schemaChecksumHash" id="14" type="sha256" offset="128"/>
+    <field name="authTag" id="15" type="sha256" offset="160"/>
   </sbe:message>
 </sbe:messageSchema>
