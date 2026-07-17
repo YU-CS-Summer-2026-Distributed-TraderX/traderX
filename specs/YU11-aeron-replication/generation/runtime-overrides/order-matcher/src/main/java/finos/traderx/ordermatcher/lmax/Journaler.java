@@ -253,6 +253,22 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
         writtenBytes += RECORD_SIZE;
     }
 
+    /** Writes the sole anchor record for a transferred recovery generation. Startup-only. */
+    public static void writeBootstrapAnchor(Path journalDir, long inputSeq) throws IOException {
+        if (inputSeq < 0L) throw new IllegalArgumentException("bootstrap inputSeq must be non-negative");
+        Files.createDirectories(journalDir);
+        ByteBuffer record = ByteBuffer.allocate(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
+        record.putLong(inputSeq).put(ANCHOR_TYPE).put((byte) 0).putShort((short) 0);
+        record.putInt(0).putInt(0).putInt(0).putInt(0);
+        record.putLong(0L).putLong(0L).putLong(0L).putInt(0).putLong(0L).flip();
+        Path file = journalDir.resolve("input-events.journal");
+        try (FileChannel output = FileChannel.open(file, StandardOpenOption.CREATE_NEW,
+                StandardOpenOption.WRITE)) {
+            while (record.hasRemaining()) output.write(record);
+            output.force(true);
+        }
+    }
+
     /** Drain the coalescing buffer to the channel in one write (looped for short writes); allocation-free.
      *  No-op when the buffer is empty (flip→limit 0). */
     private void flushBatch() throws IOException {

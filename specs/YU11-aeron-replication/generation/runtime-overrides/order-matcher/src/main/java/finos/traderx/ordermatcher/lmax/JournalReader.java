@@ -138,10 +138,10 @@ public final class JournalReader {
      * input-sequence boundaries.
      *
      * <p>Fails closed ({@link IllegalStateException}) when local history cannot prove the
-     * boundary: the journal ends before {@code boundSeq} (this node fell behind — it needs a
-     * snapshot transfer, which YU11 does not implement), the snapshot already covers past
-     * {@code boundSeq} (rotation discarded the pre-boundary history), or the input sequence is
-     * non-monotonic (a pre-lineage journal that cannot anchor an exact boundary).
+     * boundary: the journal ends before {@code boundSeq} (this node fell behind and the caller
+     * must use recovery-bundle transfer), the snapshot already covers past {@code boundSeq}
+     * (rotation discarded the pre-boundary history), or the input sequence is non-monotonic
+     * (a pre-lineage journal that cannot anchor an exact boundary).
      *
      * @return the number of bytes truncated (0 when the journal already ends at the boundary).
      */

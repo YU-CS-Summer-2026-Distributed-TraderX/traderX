@@ -462,10 +462,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         recoveryError = null;
         publishReadiness(ReadinessState.REFUSING_TRAFFIC);
         try {
-        // Restore the durable ticker->securityId mapping FIRST (before any idFor): the journal stores
-        // ids, so replay must resolve them to the same tickers the original run used (FR-09B05 recovery).
         if (journalEnabled) {
-            symbols.enablePersistence(Path.of(journalPath).resolve("symbols.tab"));
+            AeronBootstrapInstaller.recoverInterruptedInstall(Path.of(journalPath));
             snapshotStore = new SnapshotStore(Path.of(journalPath));
         }
         boolean journalRecovery = "journal".equalsIgnoreCase(recoverySource);
@@ -489,6 +487,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             initReplication();
         } else {
             replicationRole.set(ReplicationRole.Role.PRIMARY);
+        }
+        // A follower bootstrap may atomically replace symbols.tab while initReplication plans its
+        // Archive join. Load the winning generation only after that switch, and still before the
+        // first idFor assignment or journal replay.
+        if (journalEnabled) {
+            symbols.enablePersistence(Path.of(journalPath).resolve("symbols.tab"));
         }
 
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel, replicationRole);
@@ -964,8 +968,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      *   <li>learn S0 from the primary's own recording (first fragment; heartbeat watermark + 1
      *       when the recording is still empty — degrades to 0 for a fresh pair);</li>
      *   <li>cut the local journal at exactly S0-1, discarding a divergent suffix the new leader
-     *       lineage never saw (fail closed when local history cannot prove that boundary — the
-     *       fell-behind / empty-PVC case needs the deferred snapshot transfer);</li>
+     *       lineage never saw; when local history cannot prove that boundary, install an
+     *       authenticated full-state bundle captured in the current epoch;</li>
      *   <li>recovery then rebuilds state to exactly S0-1, and the follower accepts S0 as its
      *       first fragment, replaying the new recording from its start via ReplayMerge.</li>
      * </ol>
@@ -1001,15 +1005,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         } catch (java.io.IOException ex) {
             throw new IllegalStateException("cannot read local journal tail for bootstrap", ex);
         }
-        if (localTail < 0L) {
-            // A fresh journal can only ever join a stream that begins at the origin — any nonzero
-            // epoch start needs local history through S0-1, which this node cannot have. Probing
-            // the recording adds nothing: either the recording starts at 0 (origin contract
-            // succeeds) or the follower correctly fails closed on its first fragment (FAULT_GAP).
-            log.info("Aeron follower bootstrap: fresh local journal — origin contract "
-                + "(a nonzero epoch start will fail closed)");
-            return new BootstrapPlan(null, 0L);
-        }
         AeronArchiveReplayMerge.StreamStart start = AeronArchiveReplayMerge.probeStreamStart(
             aeronClient, replayConfig, agent.peerHighestInputSeq(), aeronArchiveReplayTimeoutMs);
         if (start.fromRecording() && start.leaderEpoch() != epoch) {
@@ -1026,11 +1021,37 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
         try {
             new JournalReader(Path.of(journalPath)).truncateAfterInputSeq(s0 - 1L);
-        } catch (java.io.IOException ex) {
-            throw new IllegalStateException("bootstrap journal cut failed", ex);
+        } catch (java.io.IOException | IllegalStateException cutFailure) {
+            log.warn("Exact journal-cut bootstrap unavailable at boundary {} (local tail {}): {}. "
+                    + "Requesting an authenticated recovery bundle.",
+                s0 - 1L, localTail, cutFailure.getMessage());
+            byte[] secret = AeronPeerAuthenticator.loadSecret(
+                aeronSecretFile, aeronInlineSecret);
+            AeronBootstrapInstaller.InstallResult installed =
+                new AeronBootstrapBundleClient(Path.of(journalPath), secret,
+                    aeronArchiveReplayTimeoutMs).fetchAndInstall(
+                        aeronBootstrapBaseUrl(), podName, epoch, agent::negotiatedEpoch);
+            initInputSeqBase();
+            AeronBootstrapManifest manifest = installed.manifest();
+            log.info("Aeron follower bundle installed: epoch={} inputSeq={} position={} "
+                    + "sessionId={} correlation={}",
+                manifest.leaderEpoch(), manifest.inputSeq(), manifest.archivePosition(),
+                manifest.dataSessionId(), manifest.correlationId());
+            return new BootstrapPlan(installed.checkpoint(), manifest.inputSeq() + 1L);
         }
         initInputSeqBase();   // the tail just changed; recompute the lineage base
         return new BootstrapPlan(null, s0);
+    }
+
+    private String aeronBootstrapBaseUrl() {
+        if (aeronPeerId == null || aeronPeerId.isBlank()) {
+            throw new IllegalStateException("Aeron bootstrap peer id is not configured");
+        }
+        String host = aeronPeerId.endsWith("-0") || aeronPeerId.endsWith("-1")
+            ? aeronPeerId + ".order-matcher-headless." + readK8sNamespace()
+                + ".svc.cluster.local"
+            : aeronPeerId;
+        return "http://" + host + ":18110";
     }
 
     private AeronFollowerCheckpointStore.Record readAeronFollowerCheckpoint() {
