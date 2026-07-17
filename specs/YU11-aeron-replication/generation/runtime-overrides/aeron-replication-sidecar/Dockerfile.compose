@@ -1,4 +1,5 @@
-# syntax=docker/dockerfile:1.7
+# No syntax directive: it forces a network fetch of the BuildKit frontend image, which fails
+# offline or after a builder-cache prune; multi-stage builds need no 1.x syntax features.
 FROM eclipse-temurin:21-jdk AS build
 WORKDIR /app
 COPY . .
