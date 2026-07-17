@@ -2,16 +2,16 @@
 
 ## Spec and generation
 
-- [ ] T-AC01 Create the full YU12 spec pack and generated architecture document.
-- [ ] T-AC02 Add catalog, state-generation, render, runtime-harness, and state-wrapper entries.
-- [ ] T-AC03 Generate YU12 from a clean target and verify every ancestor marker survives.
+- [x] T-AC01 Create the full YU12 spec pack and generated architecture document.
+- [x] T-AC02 Add catalog, state-generation, render, runtime-harness, and state-wrapper entries.
+- [x] T-AC03 Generate YU12 from a clean target and verify every ancestor marker survives.
 
 ## Clustered service core
 
-- [ ] T-AC04 Add the Aeron Cluster dependency aligned with the locked Aeron version.
-- [ ] T-AC05 Host `MatchingEngine` + risk apply inside `ClusteredService.onSessionMessage` with
+- [x] T-AC04 Add the Aeron Cluster dependency aligned with the locked Aeron version.
+- [x] T-AC05 Host `MatchingEngine` + risk apply inside `ClusteredService.onSessionMessage` with
   the inherited SBE ingress decode.
-- [ ] T-AC06 Prove the single-member round-trip: cluster client offer → consensus log → match →
+- [x] T-AC06 Prove the single-member round-trip: cluster client offer → consensus log → match →
   committed output.
 - [ ] T-AC07 Route time-driven behavior through cluster time / `onTimerEvent`; audit state
   transitions for wall-clock, entropy, and cross-thread reads.
@@ -22,7 +22,7 @@
   idempotency, risk, symbols, control versions) and restore on `onStart`.
 - [ ] T-AC09 Assert on load and promotion that every restored generator exceeds every ID ever
   issued; fail closed on violation.
-- [ ] T-AC10 Prove snapshot → post-snapshot orders → restart → strict no-ID-reuse on the
+- [x] T-AC10 Prove snapshot → post-snapshot orders → restart → strict no-ID-reuse on the
   single-member cluster.
 - [ ] T-AC11 Port the parent state's corruption/interrupted-install/term-change recovery matrix
   to the cluster snapshot path.

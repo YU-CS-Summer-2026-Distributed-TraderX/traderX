@@ -1,6 +1,7 @@
 # Implementation Status: YU12-aeron-cluster
 
-**Status**: State scaffold generated and verified; clustered-service core in implementation.
+**Status**: Scaffold verified; single-member ClusteredService core proven — consensus-log
+round-trip, snapshot + log-tail recovery, and zero-tail recovery with strict no-ID-reuse.
 
 ## Verification evidence
 
@@ -13,13 +14,19 @@
 | Generation | `pipeline/generate-state.sh YU12-aeron-cluster` completed exit 0 across the full parent chain, installed the generated runtime harness, and copied the state pack into `spec-source/`. |
 | Ancestor markers | Generated `order-matcher` retains parent-state markers (`BLP_REPLICATION_TRANSPORT` in `application.properties`; Aeron/SBE and QuickFIX/J wiring in `build.gradle`). |
 | State test | `TRADERX_SKIP_GENERATE=1 bash scripts/test-state-YU12-aeron-cluster.sh` passes. |
+| Cluster dependency | `io.aeron:aeron-cluster:1.51.0`, aligned with the locked Aeron version. |
+| Single-member cluster proof (SC-AC01) | `AeronClusterSpikeTest` passes: a real single-member Aeron Cluster (Media Driver + Archive + Consensus Module + service container) hosts the inherited `MatchingEngine` in `onSessionMessage`; orders offered through the cluster client round-trip the consensus log, rest, and fill; egress acks carry service-assigned references. |
+| Generator-in-state recovery | The service assigns `nextOrderRef` while applying committed `ORDER_NEW` messages and snapshots it with the book: recovery 1 (snapshot + log tail) restores the generator at 5, replay deterministically re-assigns 5–6, next live order takes 7; recovery 2 (snapshot + ZERO log tail — the parent state's defect-exposing shape) restores the generator at 8 and issues 8. No reference is ever reused; the trade counter continues 2..8 across both recoveries. |
+| Fail-closed load assertion | Snapshot load throws (refusing service start) when a restored order reference reaches `nextOrderRef` or `nextOrderRef <= highestIssuedRef`. |
+| Order-matcher regression | Full generated suite passes: 193 tests, 0 failures, 2 skipped — including base, risk, and Aeron transport allocation gates. |
+| No-GC gates | `./gradlew --no-daemon noGcTest` passes (base + risk Epsilon gates). |
 
 ## Component status
 
 | Item | Current status |
 |---|---|
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
-| Clustered service hosting (`onSessionMessage` + snapshot) | In implementation |
+| Clustered service hosting (`onSessionMessage` + snapshot/restore + no-ID-reuse proof) | Proven single-member; risk/idempotency/control-version snapshot groups in implementation |
 | Three-member kind cluster | Specified |
 | Ingress gateway tier | Specified |
 | Feed-adapter consensus ingress | Specified |
