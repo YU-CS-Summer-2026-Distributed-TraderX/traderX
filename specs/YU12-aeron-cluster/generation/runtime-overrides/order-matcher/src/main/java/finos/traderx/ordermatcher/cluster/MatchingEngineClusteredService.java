@@ -97,11 +97,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
+    private volatile Cluster.Role role = Cluster.Role.FOLLOWER;
 
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
         this.cluster = cluster;
         this.idle = cluster.idleStrategy();
+        this.role = cluster.role();
         initEngine();
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
@@ -170,6 +172,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     @Override
     public void onRoleChange(final Cluster.Role newRole) {
+        this.role = newRole;
     }
 
     @Override
@@ -383,6 +386,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     public long lastLoadedNextOrderRef() {
         return lastLoadedNextOrderRef;
+    }
+
+    public Cluster.Role role() {
+        return role;
+    }
+
+    /** Plain read for quiesced cross-member equality checks; ordered by the engine's per-event
+     *  release-store (read {@code engine().blpSeq()} first). */
+    public long nextOrderRef() {
+        return nextOrderRef;
     }
 
     public MatchingEngine engine() {
