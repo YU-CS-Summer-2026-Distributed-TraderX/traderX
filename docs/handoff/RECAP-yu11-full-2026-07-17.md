@@ -513,3 +513,44 @@ state at engagement end.
    cross-epoch cold-follower bootstrap per the contract above (the real design task), graceful
    Lease release on shutdown (YU02-owner fix, propagate). The parked kind cluster has now served
    its diagnostic purpose.
+
+## Overnight implementation addendum — 2026-07-17 (fable lane)
+
+Ledger items 1 and 2 are now implemented and committed (nothing pushed):
+
+- `aecee1f` — stale backlogged hellos are skipped (WARN + keep polling) instead of terminally
+  faulting; forged/tampered hellos still fault. Regression test drives the exact
+  app-container-restart backlog shape.
+- `8695b79` — the cross-epoch bootstrap, with a deeper root cause than the FAULT_GAP guard: the
+  wire inputSeq WAS the raw Disruptor ring sequence, which restarts at -1 on every reboot while
+  the replicated stream must number continuously across the leader lineage. Implemented
+  lineage-continuous business sequencing (engine `inputSeqBase`: journal-tail-derived at boot,
+  follower-watermark-derived at promotion; a rotation ANCHOR record preserves the tail across
+  segment rotation), plus the bootstrap itself: probe the new epoch's first input sequence from
+  the primary's own recording (no schema change — the recording IS the stream; heartbeat-watermark
+  fallback for an empty recording degrades to the legacy origin for a fresh pair), cut the local
+  journal at exactly S0-1 discarding the divergent suffix, fail closed with precise reasons when
+  local history cannot prove the boundary. 178 tests green including all allocation gates;
+  noGcTest green.
+- `c087683` — the `# syntax=docker/dockerfile:1.7` directives forced a BuildKit frontend fetch
+  that fails offline/after a builder-cache prune; removed (no 1.x features used).
+- `4322581` — first live run showed the bootstrap also ran on the runtime-demotion path, where it
+  is unsound (journal cut raced the live Journaler's appends; a cut cannot rewind in-memory
+  state; no probe→merge teardown gap on the shared replay port). Bootstrap is now boot-path-only;
+  a demoted engine expects the stream to resume at its own watermark + 1 and faults into a pod
+  restart (which runs the sound boot-path bootstrap) if the stream forked.
+- `917783f` — the boot-only peer-auth wait widened to 3× the archive timeout (10s expired
+  mid-Spring-startup twice under kind host load).
+
+**New runtime finding (live, reproducible):** Aeron endpoint DNS resolution is boot-time-static.
+A pod whose peer has no IP at control-agent init (peer Pending) creates a publication that can
+never deliver — the pair wedges asymmetrically (one side authenticated-primary, the other waits
+forever) and only a restart of the stale side heals it. This is the recap's deferred "DNS/pod-IP
+replacement" gap observed in the wild; the durable fix (re-resolve or re-init the control
+publication on peer-IP change) stays on the ledger.
+
+Validated live so far: the probe correctly reads the epoch boundary from a real recording
+(`epochStartInputSeq=90 source=recording`), the journal cut executes with an exact boundary, the
+lineage base recomputes across boots (`base: 4801` from a 4,800-event applied history), and a
+fresh follower joining a long-running primary catches up from the recording origin. The full
+crash→rejoin→second-crash proof is the remaining E2E gate.
