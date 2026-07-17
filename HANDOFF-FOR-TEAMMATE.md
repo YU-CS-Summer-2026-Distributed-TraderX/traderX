@@ -4,9 +4,11 @@
 **Repo:** `YU-CS-Summer-2026-Distributed-TraderX/traderX` on GitHub.
 **Active branch:** `lmax-kubernetes-blp-ha` — pushed and up to date as of 2026-07-03.
 
-> **Spec-kit lineage update (2026-07-16):** the team-authored state line now continues through
-> `YU10-fix-ingress` and `YU11-aeron-replication`. YU11 is parented on YU10 and adds a
-> rollback-safe Aeron+SBE BLP replication transport while retaining NATS as the default. The
+> **Spec-kit lineage update (2026-07-17):** the team-authored state line now continues through
+> `YU10-fix-ingress`, `YU11-aeron-replication`, and `YU12-aeron-cluster`. YU11 is parented on
+> YU10 and adds a rollback-safe Aeron+SBE BLP replication transport while retaining NATS as the
+> default. YU12 is parented on YU11 and moves BLP HA to Aeron Cluster Raft consensus hosting the
+> deterministic matching/risk core. The
 > historical GKE branch/runbook below remains useful operational background; use the selected
 > YU state pack and its generated artifacts as the source for state-specific work.
 

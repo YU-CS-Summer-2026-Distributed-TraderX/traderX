@@ -648,6 +648,29 @@
         "branch": "code/generated-state-YU11-aeron-replication",
         "tag": "generated/YU11-aeron-replication/v1"
       }
+    },
+    {
+      "id": "YU12-aeron-cluster",
+      "title": "Aeron Cluster BLP Consensus",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU12-aeron-cluster",
+      "previous": [
+        "YU11-aeron-replication"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU12-aeron-cluster",
+        "runtime": "inherits YU11-aeron-replication runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU12-aeron-cluster",
+        "tag": "generated/YU12-aeron-cluster/v1"
+      }
     }
   ]
 }

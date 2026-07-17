@@ -8,7 +8,7 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 - Previous state(s): [YU10-fix-ingress](/docs/learning/state-YU10-fix-ingress)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU12-aeron-cluster](/docs/learning/state-YU12-aeron-cluster)
 
 ## Convergence Metadata
 
@@ -45,3 +45,4 @@ inherits YU10-fix-ingress runtime harness
 - Research: [link](/specs/YU11-aeron-replication/research)
 - Data model: [link](/specs/YU11-aeron-replication/data-model)
 - Quickstart: [link](/specs/YU11-aeron-replication/quickstart)
+

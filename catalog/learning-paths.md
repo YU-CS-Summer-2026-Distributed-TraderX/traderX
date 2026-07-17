@@ -36,6 +36,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
 - `YU11-aeron-replication`
+- `YU12-aeron-cluster`
 
 ### Functional
 
@@ -61,6 +62,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
 - `YU11-aeron-replication`
+- `YU12-aeron-cluster`
 
 ### Convergence
 
@@ -98,3 +100,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU09-ops-hardening` | YU08-execution-algo-engine | `none` | `false` | `optional` | `specs/YU09-ops-hardening/spec.md` |
 | `YU10-fix-ingress` | YU09-ops-hardening | `none` | `false` | `optional` | `specs/YU10-fix-ingress/spec.md` |
 | `YU11-aeron-replication` | YU10-fix-ingress | `none` | `false` | `optional` | `specs/YU11-aeron-replication/spec.md` |
+| `YU12-aeron-cluster` | YU11-aeron-replication | `none` | `false` | `optional` | `specs/YU12-aeron-cluster/spec.md` |

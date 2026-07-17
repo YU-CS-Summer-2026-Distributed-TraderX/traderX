@@ -38,6 +38,7 @@ tracks:
       - YU09-ops-hardening
       - YU10-fix-ingress
       - YU11-aeron-replication
+      - YU12-aeron-cluster
   functional:
     description: "Functional capability expansion states."
     states:
@@ -63,6 +64,7 @@ tracks:
       - YU09-ops-hardening
       - YU10-fix-ingress
       - YU11-aeron-replication
+      - YU12-aeron-cluster
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -246,3 +248,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU11-aeron-replication/spec.md
+  - id: YU12-aeron-cluster
+    previous:
+      - YU11-aeron-replication
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU12-aeron-cluster/spec.md
