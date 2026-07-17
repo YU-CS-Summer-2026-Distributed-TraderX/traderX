@@ -657,7 +657,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 initPrimaryTransport(false);
             } else {
                 replicationRole.set(ReplicationRole.Role.FOLLOWER);
-                initFollowerTransport();
+                initFollowerTransport(true);
             }
             log.info("BLP static role: {} (pod={} transport={} epoch={})",
                 replicationRole.get(), podName, replicationTransport, currentLeaderEpoch);
@@ -676,7 +676,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 podName, replicationTransport, currentLeaderEpoch);
         } else {
             replicationRole.set(ReplicationRole.Role.FOLLOWER);
-            initFollowerTransport();
+            initFollowerTransport(true);
             log.info("BLP role: FOLLOWER (pod={} transport={} epoch={})",
                 podName, replicationTransport, currentLeaderEpoch);
         }
@@ -800,7 +800,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
     }
 
-    private void initFollowerTransport() {
+    private void initFollowerTransport(boolean bootPath) {
         if (replicationTransport == ReplicationTransport.NATS) {
             long startSeq = followerSnapshotJetStreamSeq();
             shadowSequenceMap = aeronShadowEnabled ? new ShadowSequenceMap(aeronMappingCapacity) : null;
@@ -832,9 +832,23 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             : null;
         long expectedFirstInputSeq = 0L;
         if (replayConfig != null) {
-            BootstrapPlan plan = planFollowerBootstrap(checkpoint, replayConfig);
-            checkpoint = plan.checkpoint();
-            expectedFirstInputSeq = plan.expectedFirstInputSeq();
+            if (bootPath) {
+                BootstrapPlan plan = planFollowerBootstrap(checkpoint, replayConfig);
+                checkpoint = plan.checkpoint();
+                expectedFirstInputSeq = plan.expectedFirstInputSeq();
+            } else {
+                // Runtime demotion: the journal cut is only sound at boot (no live journaler
+                // appending mid-cut, and recovery rebuilds state from the cut journal — neither
+                // holds here). A demoted engine instead expects the stream to CONTINUE from its
+                // own business watermark; if the new primary's stream forked (it promoted without
+                // everything we accepted), the first fragment mismatches, the follower faults,
+                // and the pod restart runs the sound boot-path bootstrap.
+                checkpoint = null;
+                long cursor = inputRing == null ? -1L : inputRing.getCursor();
+                expectedFirstInputSeq = inputSeqBase + cursor + 1L;
+                log.info("Demoted follower continuation: expecting stream to resume at inputSeq={}",
+                    expectedFirstInputSeq);
+            }
         }
         aeronFollower = new AeronReplicationFollower(aeronClient,
             aeronDataSubscribeChannel, aeronDataStreamId,
@@ -1094,7 +1108,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             }
             currentLeaderEpoch = Math.min(0xffff_ffffL, currentLeaderEpoch + 1L);
             try {
-                initFollowerTransport();
+                initFollowerTransport(false);
                 if (inputRing != null) {
                     if (replicationFollower != null) {
                         replicationFollower.setInputRing(inputRing);
