@@ -185,12 +185,26 @@ def aeronAllocationGate = tasks.register('aeronAllocationGateTest', Test) {
   }
 }
 
+def clusterAllocationGate = tasks.register('clusterAllocationGateTest', Test) {
+  description = 'Isolated exact-zero cluster-service apply-path gate (YU12, NFR-AC01).'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  filter {
+    includeTestsMatching 'finos.traderx.ordermatcher.cluster.ClusterServiceAllocationGateTest.*'
+  }
+  systemProperty 'gate.steadyStateEvents', System.getProperty('gate.steadyStateEvents', '1000000')
+  systemProperty 'gate.warmupEvents', System.getProperty('gate.warmupEvents', '250000')
+  jvmArgs '-Xbatch', '-XX:-TieredCompilation', '-XX:CompileThreshold=10000'
+}
+
 tasks.named('test', Test) {
   filter {
     excludeTestsMatching "${allocationGateClass}.*"
     excludeTestsMatching 'finos.traderx.ordermatcher.lmax.AeronTransportAllocationGateTest.*'
+    excludeTestsMatching 'finos.traderx.ordermatcher.cluster.ClusterServiceAllocationGateTest.*'
   }
-  dependsOn baseAllocationGate, riskAllocationGate, aeronAllocationGate
+  dependsOn baseAllocationGate, riskAllocationGate, aeronAllocationGate, clusterAllocationGate
 }
 
 // No-GC allocation gate (NGC-02, SC-09B05, task T09B18): re-run both isolated methods

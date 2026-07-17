@@ -69,6 +69,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_ACCOUNT = 7;
     static final int T_SECURITY = 8;
     static final int T_IDEMPOTENCY = 9;
+    static final int T_SYMBOL = 10;
+
+    /** Egress ack kind for symbol registration (outside OutputEvent's 1..8 range). */
+    public static final byte KIND_SYMBOL_REGISTERED = 100;
 
     static final int EGRESS_ACK_LENGTH = 24; // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20
 
@@ -94,6 +98,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long highestIssuedRef;
     private long appliedSeq;
     private boolean snapshotHeaderSeen;
+    // Symbol identity as replicated state (matrix F2): ids assigned in committed-log order,
+    // never evicted, so the generator derives from the mapping itself on restore.
+    private final String[] tickerById = new String[MAX_SECURITIES];
+    private int nextSymbolId;
 
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
@@ -124,6 +132,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
         this.snapshotHeaderSeen = false;
+        java.util.Arrays.fill(tickerById, null);
+        this.nextSymbolId = 0;
     }
 
     @Override
@@ -138,6 +148,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public void onSessionMessage(final ClientSession session, final long timestamp,
                                  final DirectBuffer buffer, final int offset, final int length,
                                  final Header header) {
+        if (codec.templateIdOf(buffer, offset, length) == 7) { // SymbolRegisterMessage
+            onSymbolRegister(session, buffer, offset, length);
+            return;
+        }
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
         }
@@ -157,6 +171,45 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     @Override
     public void onTimerEvent(final long correlationId, final long timestamp) {
+    }
+
+    /** Symbol registration is idempotent by ticker and sequenced like any other input; the
+     *  assigned id is deterministic on every member and replay. Cold path — registration is
+     *  first-sighting-rare, so the String allocation here never touches the apply hot loop. */
+    private void onSymbolRegister(final ClientSession session, final DirectBuffer buffer,
+                                  final int offset, final int length) {
+        if (codec.tryDecodeSymbolRegister(buffer, offset, length) != AeronReplicationCodec.OK) {
+            return; // fail closed
+        }
+        appliedSeq++;
+        final String ticker = codec.symbolTicker();
+        int id = symbolIdFor(ticker);
+        if (id < 0) {
+            if (nextSymbolId >= MAX_SECURITIES) {
+                id = -1; // capacity refused; deterministic everywhere
+            } else {
+                id = nextSymbolId++;
+                tickerById[id] = ticker;
+            }
+        }
+        ackBuffer.putLong(0, appliedSeq);
+        ackBuffer.putInt(8, id);
+        ackBuffer.putByte(12, KIND_SYMBOL_REGISTERED);
+        ackBuffer.putLong(13, codec.symbolRequestId());
+        offerEgress(session);
+    }
+
+    public int symbolIdFor(final String ticker) {
+        for (int i = 0; i < nextSymbolId; i++) {
+            if (ticker.equals(tickerById[i])) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    public int symbolCount() {
+        return nextSymbolId;
     }
 
     @Override
@@ -197,6 +250,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         for (final long[] security : risk.securityTuples()) {
             writeTuple(writer, T_SECURITY, security);
+        }
+        for (int id = 0; id < nextSymbolId; id++) {
+            final byte[] ascii = tickerById[id].getBytes(java.nio.charset.StandardCharsets.US_ASCII);
+            snapshotBuffer.putInt(0, T_SYMBOL);
+            snapshotBuffer.putInt(4, id);
+            snapshotBuffer.putInt(8, ascii.length);
+            snapshotBuffer.putBytes(12, ascii);
+            writer.write(snapshotBuffer, 0, 12 + ascii.length);
         }
         // Retention (insertion) order: restore preserves the eviction frontier (FR-IMRG14).
         for (final long[] entry : risk.idempotencyTuples()) {
@@ -301,6 +362,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             case T_PRICE -> engine.bootstrapPrice(
                 (int) buffer.getLong(offset + 4),
                 buffer.getLong(offset + 12));
+            case T_SYMBOL -> {
+                final int id = buffer.getInt(offset + 4);
+                final int tickerLength = buffer.getInt(offset + 8);
+                final byte[] ascii = new byte[tickerLength];
+                buffer.getBytes(offset + 12, ascii);
+                if (id < 0 || id >= MAX_SECURITIES || tickerById[id] != null) {
+                    throw new IllegalStateException("snapshot corrupt: symbol id " + id);
+                }
+                tickerById[id] = new String(ascii, java.nio.charset.StandardCharsets.US_ASCII);
+                nextSymbolId = Math.max(nextSymbolId, id + 1);
+            }
             case T_END -> {
                 finishLoad();
                 return true;

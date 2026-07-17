@@ -1,0 +1,16 @@
+# No syntax directive: it forces a network fetch of the BuildKit frontend image, which fails
+# offline or after a builder-cache prune, and this plain runtime Dockerfile needs no 1.x features.
+# The boot jar is unpacked so the image can start alternate mains (cluster node, proof client).
+FROM eclipse-temurin:21 AS unpack
+WORKDIR /opt/app
+ARG JAR_FILE
+COPY ${JAR_FILE} app.jar
+RUN mkdir extracted && cd extracted && jar -xf ../app.jar
+
+FROM eclipse-temurin:21-jre
+WORKDIR /opt/app
+COPY --from=unpack /opt/app/extracted/BOOT-INF/classes /opt/app/classes
+COPY --from=unpack /opt/app/extracted/BOOT-INF/lib /opt/app/lib
+EXPOSE 8080
+ENTRYPOINT ["java", "-cp", "/opt/app/classes:/opt/app/lib/*", \
+    "finos.traderx.ordermatcher.cluster.ClusterNodeMain"]
