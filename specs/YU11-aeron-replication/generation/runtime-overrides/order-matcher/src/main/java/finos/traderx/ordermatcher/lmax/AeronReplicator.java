@@ -82,8 +82,24 @@ public final class AeronReplicator implements ReplicationEventHandler {
         this.peerAuthenticated = peerAuthenticated;
     }
 
+    /** Live-peer destination queued for the single-writer thread to attach (the publication is
+     *  not thread-safe, so the retry thread must not touch it). Lets the archive leg record from
+     *  the stream origin while the peer is still unresolvable (crashed pod without a DNS entry). */
+    private volatile String pendingLiveDestination;
+
+    public void queueLiveDestination(String destination) {
+        if (destination != null && !destination.isBlank()) {
+            pendingLiveDestination = destination;
+        }
+    }
+
     @Override
     public void onEvent(InputEvent event, long sequence, boolean endOfBatch) {
+        String queuedDestination = pendingLiveDestination;
+        if (queuedDestination != null) {
+            pendingLiveDestination = null;
+            dataPublication.addDestination(queuedDestination);
+        }
         pollAcks();
         // One MDC publication fans each claimed frame to the local Archive and peer follower.
         // Both legs therefore share one session and one position space; the Archive recording is

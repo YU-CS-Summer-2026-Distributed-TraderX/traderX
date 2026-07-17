@@ -189,6 +189,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private SnapshotStore snapshotStore;
     private java.util.concurrent.ScheduledExecutorService snapshotScheduler;
     private java.util.concurrent.ScheduledExecutorService aeronPrimaryRetryScheduler;
+    private volatile boolean aeronPrimaryLivePathReady;
     private io.nats.client.Connection replicationConn;
     private ReplicationFollower replicationFollower;
     private io.aeron.Aeron aeronClient;
@@ -778,6 +779,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             return;
         }
 
+        aeronPrimaryLivePathReady = false;
         try {
             initAeronPrimaryDataPath();
         } catch (Exception ex) {
@@ -792,22 +794,32 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     }
 
     /** The Aeron control + MDC data leg for a primary; the leader epoch must already be claimed.
-     *  Extracted so a failed attempt (typically UnknownHostException while a crashed peer has no
-     *  DNS entry yet) can be retried without re-claiming an epoch. */
+     *
+     *  The publication is created with the LOCAL archive destination only — the pod's own
+     *  sidecar, always resolvable — so the epoch recording starts at the stream origin even
+     *  while the peer has no DNS entry (crashed pod, or a pair member stuck Pending). Without
+     *  this, a solo primary's early history exists only in its journal and no fresh follower can
+     *  ever join the recording (observed live: recording first sequence in the thousands,
+     *  FAULT_GAP loop). The control agent and the live-peer destination are the retryable parts;
+     *  the live destination is queued and attached by the single-writer ring thread. */
     private void initAeronPrimaryDataPath() {
         ensureAeronClient();
-        initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
-        aeronReplicator = new AeronReplicator(aeronClient,
-            aeronDataPublishChannel, aeronDataStreamId,
-            aeronAckSubscribeChannel, aeronAckStreamId,
-            currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
-            replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
-            aeronDataArchiveDestination, aeronDataLivePublishChannel);
-        boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
-        if (!transportReady) {
-            throw new IllegalStateException(
-                "Aeron MDC Archive destination did not connect before startup timeout");
+        if (aeronReplicator == null) {
+            aeronReplicator = new AeronReplicator(aeronClient,
+                aeronDataPublishChannel, aeronDataStreamId,
+                aeronAckSubscribeChannel, aeronAckStreamId,
+                currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
+                replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
+                aeronDataArchiveDestination, "");
+            boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
+            if (!transportReady) {
+                throw new IllegalStateException(
+                    "Aeron MDC Archive destination did not connect before startup timeout");
+            }
         }
+        initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
+        aeronReplicator.queueLiveDestination(aeronDataLivePublishChannel);
+        aeronPrimaryLivePathReady = true;
     }
 
     /** Degraded-solo escape hatch: without this, a primary that promoted while its crashed peer
@@ -832,7 +844,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     private void retryAeronPrimaryDataPath() {
         synchronized (this) {
-            if (!replicationRole.isPrimary() || aeronReplicator != null) return;
+            if (!replicationRole.isPrimary() || aeronPrimaryLivePathReady) return;
             try {
                 initAeronPrimaryDataPath();
                 if (delegatingReplicator != null) {
