@@ -19,7 +19,9 @@ BATCH="${4:-1000}"
 CONC="${5:-48}"
 CTX="${KUBE_CTX:-gke_traderx-501015_us-east1-b_traderx-lmax}"
 NS="${NAMESPACE:-traderx}"
-SVC="http://order-matcher.${NS}.svc.cluster.local:18110"
+# In HA mode the plain order-matcher Service round-robins across PRIMARY and standby, and the
+# standby refuses writes — point at order-matcher-primary. Override with MATCHER_SVC.
+SVC="${MATCHER_SVC:-http://order-matcher.${NS}.svc.cluster.local:18110}"
 RESULTS="$(dirname "$0")/results/gke-comparison.csv"
 
 read_fills() {
@@ -43,7 +45,8 @@ for i in $(seq 1 "$RUNS"); do
   F0=$(read_fills)
   T0=$(date +%s.%N)
   OUT=$(kubectl --context "$CTX" exec bench-runner -n "$NS" -- \
-    env "MATCHER_URL=${SVC}" node /batch-load.mjs --batch "$BATCH" --conc "$CONC" --secs "$SECS" 2>&1) || true
+    env "MATCHER_URL=${SVC}" "ACCOUNT=${ACCOUNT:-42422}" "SIDES=${SIDES:-}" \
+      "QTY=${QTY:-500}" "LIMIT=${LIMIT:-1000000}" "TICKERS=${TICKERS:-JPM,GS,COF,DFS}" node /batch-load.mjs --batch "$BATCH" --conc "$CONC" --secs "$SECS" 2>&1) || true
   T1=$(date +%s.%N)
   F1=$(read_fills)
   PEAK=$(read_peak)
