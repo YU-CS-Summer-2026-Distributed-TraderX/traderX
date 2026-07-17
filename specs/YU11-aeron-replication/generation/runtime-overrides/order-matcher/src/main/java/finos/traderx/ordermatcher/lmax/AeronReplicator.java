@@ -30,6 +30,7 @@ public final class AeronReplicator implements ReplicationEventHandler {
     private final FragmentHandler ackHandler = this::onAck;
     private final LongAdder offerFailures = new LongAdder();
     private final LongAdder invalidAcks = new LongAdder();
+    private volatile AeronPublicationSequenceMap publicationSequenceMap;
 
     private volatile long publishedSeq = -1;
     private volatile long followerAckedSeq = -1;
@@ -129,7 +130,17 @@ public final class AeronReplicator implements ReplicationEventHandler {
         int flags = shadow ? AeronReplicationCodec.INPUT_FLAG_SHADOW : 0;
         dataCodec.encodeInput(dataClaim.buffer(), dataClaim.offset(), event, inputSeq,
             leaderEpoch, flags);
+        long checksum = AeronReplicationCodec.checksum64(
+            dataClaim.buffer(), dataClaim.offset(), AeronReplicationCodec.INPUT_BYTES);
         dataClaim.commit();
+        AeronPublicationSequenceMap boundaryMap = publicationSequenceMap;
+        if (boundaryMap != null) {
+            // tryClaim's successful result is the position immediately after this frame. Capturing
+            // it here is exact; publication.position() sampled later by the BLP may include frames
+            // the upstream replication handler has already published.
+            boundaryMap.put(sequence, leaderEpoch, inputSeq, result, checksum,
+                dataPublication.sessionId());
+        }
         publishedSeq = inputSeq;
 
         if (endOfBatch && !shadow) awaitRequiredAck(inputSeq);
@@ -223,6 +234,9 @@ public final class AeronReplicator implements ReplicationEventHandler {
     public long invalidAckCount() { return invalidAcks.sum(); }
     public int publicationSessionId() { return dataPublication.sessionId(); }
     public long publicationPosition() { return dataPublication.position(); }
+    public void setPublicationSequenceMap(AeronPublicationSequenceMap map) {
+        this.publicationSequenceMap = map;
+    }
     public boolean archiveConnected() { return dataPublication.isConnected(); }
     public boolean connected() { return dataPublication.isConnected(); }
 

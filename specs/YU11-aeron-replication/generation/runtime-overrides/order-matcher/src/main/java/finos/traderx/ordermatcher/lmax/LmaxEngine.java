@@ -196,6 +196,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private AeronReplicator aeronReplicator;
     private AeronReplicator aeronShadowReplicator;
     private AeronReplicationFollower aeronFollower;
+    private final AeronPublicationSequenceMap aeronPublicationSequenceMap;
+    private final FollowerSequenceMap.Entry snapshotSequenceBoundary =
+        new FollowerSequenceMap.Entry();
+    private volatile AeronSnapshotBoundary lastAeronSnapshotBoundary = AeronSnapshotBoundary.NONE;
     /** Lineage-continuous business sequencing (event.seq = inputSeqBase + ringSeq): the Disruptor
      *  ring restarts at -1 on every reboot, but the replicated stream's numbering must survive the
      *  whole leader lineage. Boot sets it from the journal's proven replicated-input tail; promotion
@@ -442,6 +446,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.applicationEventPublisher = applicationEventPublisher;
         this.replicationRole = replicationRole;
         this.symbols = new SymbolTable(maxSecurities);
+        this.aeronPublicationSequenceMap = new AeronPublicationSequenceMap(aeronMappingCapacity);
     }
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -811,6 +816,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
                 replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
                 aeronDataArchiveDestination, "");
+            aeronReplicator.setPublicationSequenceMap(aeronPublicationSequenceMap);
             boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
             if (!transportReady) {
                 aeronReplicator.close();   // creation failed — release the publication before retry
@@ -2214,6 +2220,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      *  journal tail boundary it covers, so recovery loads it and replays only the tail (bounded). */
     private void writeSnapshot() {
         try {
+            long localSeq = matchingEngine.blpSeq() + 1L;
+            AeronSnapshotBoundary boundary = resolveSnapshotBoundary(localSeq);
             long offset = journaler == null ? 0L : journaler.lastSnapshotOffset();
             long jsSeq = (replicationFollower != null) ? replicationFollower.lastJetsStreamSeq() : -1L;
             BlpRiskState risk = matchingEngine.riskState();
@@ -2224,9 +2232,42 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 risk == null ? null : risk.accountTuples(),
                 risk == null ? null : risk.securityTuples(),
                 risk == null ? null : risk.idempotencyTuples()));
+            lastAeronSnapshotBoundary = boundary;
+            if (boundary.transferable()) {
+                log.info("Aeron snapshot boundary: epoch={} inputSeq={} position={} sessionId={}",
+                    boundary.leaderEpoch(), boundary.inputSeq(), boundary.recordingPosition(),
+                    boundary.dataSessionId());
+            } else if (replicationEnabled && replicationTransport == ReplicationTransport.AERON) {
+                log.warn("Snapshot at local ring seq {} has no exact Aeron boundary; it remains "
+                    + "valid for local recovery but cannot be transferred", localSeq);
+            }
         } catch (Exception ex) {
             log.warn("Snapshot write failed (continuing): {}", ex.toString());
         }
+    }
+
+    /**
+     * Snapshot callback runs before MatchingEngine publishes its applied sequence, hence the
+     * current local ring sequence is blpSeq()+1. Resolve that exact marker from the upstream map;
+     * never sample a live publication/follower watermark which may already be ahead.
+     */
+    private AeronSnapshotBoundary resolveSnapshotBoundary(long localSeq) {
+        boolean found = false;
+        if (replicationTransport == ReplicationTransport.AERON) {
+            if (replicationRole.isPrimary()) {
+                found = aeronPublicationSequenceMap.read(localSeq, snapshotSequenceBoundary);
+            } else if (aeronFollower != null) {
+                found = aeronFollower.readSequenceBoundary(localSeq, snapshotSequenceBoundary);
+            }
+        }
+        if (!found) return AeronSnapshotBoundary.NONE;
+        return new AeronSnapshotBoundary(snapshotSequenceBoundary.epoch,
+            snapshotSequenceBoundary.inputSeq, snapshotSequenceBoundary.recordingPosition,
+            snapshotSequenceBoundary.checksum, snapshotSequenceBoundary.dataSessionId);
+    }
+
+    AeronSnapshotBoundary lastAeronSnapshotBoundary() {
+        return lastAeronSnapshotBoundary;
     }
 
     /** Restore engine state (orders + positions + prices + trade counter + risk) from a snapshot.

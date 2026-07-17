@@ -35,6 +35,9 @@ class AeronReplicationRoundTripTest {
              AeronReplicationFollower follower = new AeronReplicationFollower(aeron,
                  CommonContext.IPC_CHANNEL, 1101, CommonContext.IPC_CHANNEL, 1102,
                  3L, ReplicationAckMode.ON_RING, 64, 1_000L)) {
+            AeronPublicationSequenceMap primaryBoundaries =
+                new AeronPublicationSequenceMap(64);
+            primary.setPublicationSequenceMap(primaryBoundaries);
             RingBuffer<InputEvent> ring = RingBuffer.createSingleProducer(InputEvent::newInstance, 64);
             follower.setInputRing(ring);
             CountDownLatch ready = new CountDownLatch(1);
@@ -42,7 +45,7 @@ class AeronReplicationRoundTripTest {
             assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
 
             InputEvent first = event(101, 11L);
-            first.seq = 0L;   // the wire inputSeq is the event's business sequence
+            first.seq = 0L;   // the wire inputSeq includes commands and replicated markers
             primary.onEvent(first, 0L, true);
             await(() -> follower.lastInputSeq() >= 0L, 5_000L);
 
@@ -60,6 +63,17 @@ class AeronReplicationRoundTripTest {
             assertThat(ring.get(1L).eventTimeMillis).isEqualTo(12L);
             assertThat(primary.followerAckedSeq()).isEqualTo(1L);
             assertThat(primary.degraded()).isFalse();
+
+            FollowerSequenceMap.Entry primaryBoundary = new FollowerSequenceMap.Entry();
+            FollowerSequenceMap.Entry followerBoundary = new FollowerSequenceMap.Entry();
+            assertThat(primaryBoundaries.read(1L, primaryBoundary)).isTrue();
+            assertThat(follower.readSequenceBoundary(1L, followerBoundary)).isTrue();
+            assertThat(primaryBoundary.inputSeq).isEqualTo(1L);
+            assertThat(primaryBoundary.epoch).isEqualTo(3L);
+            assertThat(primaryBoundary.recordingPosition)
+                .isEqualTo(followerBoundary.recordingPosition);
+            assertThat(primaryBoundary.dataSessionId).isEqualTo(followerBoundary.dataSessionId);
+            assertThat(primaryBoundary.checksum).isEqualTo(followerBoundary.checksum);
         }
     }
 

@@ -342,6 +342,9 @@ public final class AeronReplicationFollower implements AutoCloseable {
     public long lastLocalSeq() { return lastLocalSeq; }
     public long invalidFrameCount() { return invalidFrames.sum(); }
     public FollowerSequenceMap sequenceMap() { return sequenceMap; }
+    public boolean readSequenceBoundary(long localSeq, FollowerSequenceMap.Entry target) {
+        return sequenceMap.read(localSeq, target);
+    }
     public long pollThreadId() { return pollThreadId; }
     public boolean archiveReplaying() { return archiveReplaying; }
     public boolean archiveMerged() {
