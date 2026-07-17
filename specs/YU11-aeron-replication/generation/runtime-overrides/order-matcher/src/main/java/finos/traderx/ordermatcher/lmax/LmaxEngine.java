@@ -188,6 +188,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private ProjectorHandler projector;
     private SnapshotStore snapshotStore;
     private java.util.concurrent.ScheduledExecutorService snapshotScheduler;
+    private java.util.concurrent.ScheduledExecutorService aeronPrimaryRetryScheduler;
     private io.nats.client.Connection replicationConn;
     private ReplicationFollower replicationFollower;
     private io.aeron.Aeron aeronClient;
@@ -778,25 +779,73 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         }
 
         try {
-            ensureAeronClient();
-            initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
-            aeronReplicator = new AeronReplicator(aeronClient,
-                aeronDataPublishChannel, aeronDataStreamId,
-                aeronAckSubscribeChannel, aeronAckStreamId,
-                currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
-                replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
-                aeronDataArchiveDestination, aeronDataLivePublishChannel);
-            boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
-            if (!transportReady) {
-                throw new IllegalStateException(
-                    "Aeron MDC Archive destination did not connect before startup timeout");
-            }
+            initAeronPrimaryDataPath();
         } catch (Exception ex) {
             if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
             if (replicationFailurePolicy == ReplicationFailurePolicy.STRICT) {
                 throw new IllegalStateException("strict Aeron primary initialization failed", ex);
             }
-            log.warn("Aeron primary unavailable — running degraded-solo: {}", ex.getMessage());
+            log.warn("Aeron primary unavailable — running degraded-solo and retrying: {}",
+                ex.getMessage());
+            scheduleAeronPrimaryRetry();
+        }
+    }
+
+    /** The Aeron control + MDC data leg for a primary; the leader epoch must already be claimed.
+     *  Extracted so a failed attempt (typically UnknownHostException while a crashed peer has no
+     *  DNS entry yet) can be retried without re-claiming an epoch. */
+    private void initAeronPrimaryDataPath() {
+        ensureAeronClient();
+        initAeronControl(AeronPeerAuthenticator.ROLE_PRIMARY);
+        aeronReplicator = new AeronReplicator(aeronClient,
+            aeronDataPublishChannel, aeronDataStreamId,
+            aeronAckSubscribeChannel, aeronAckStreamId,
+            currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
+            replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
+            aeronDataArchiveDestination, aeronDataLivePublishChannel);
+        boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
+        if (!transportReady) {
+            throw new IllegalStateException(
+                "Aeron MDC Archive destination did not connect before startup timeout");
+        }
+    }
+
+    /** Degraded-solo escape hatch: without this, a primary that promoted while its crashed peer
+     *  had no DNS entry stays degraded forever — no epoch recording ever exists, so the
+     *  replacement can never bootstrap (observed live). Retries the data path every 2s until it
+     *  resolves or the role changes. */
+    private void scheduleAeronPrimaryRetry() {
+        if (replicationTransport != ReplicationTransport.AERON) return;
+        synchronized (this) {
+            if (aeronPrimaryRetryScheduler == null) {
+                aeronPrimaryRetryScheduler =
+                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                        Thread thread = new Thread(r, "blp-aeron-primary-retry");
+                        thread.setDaemon(true);
+                        return thread;
+                    });
+            }
+            aeronPrimaryRetryScheduler.schedule(this::retryAeronPrimaryDataPath,
+                2L, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    private void retryAeronPrimaryDataPath() {
+        synchronized (this) {
+            if (!replicationRole.isPrimary() || aeronReplicator != null) return;
+            try {
+                initAeronPrimaryDataPath();
+                if (delegatingReplicator != null) {
+                    delegatingReplicator.swapDelegate(selectedPrimaryReplicator());
+                }
+                log.info("Aeron primary data path recovered after degraded-solo (epoch={})",
+                    currentLeaderEpoch);
+            } catch (Exception ex) {
+                aeronReplicator = null;
+                log.warn("Aeron primary data path retry failed — still degraded-solo: {}",
+                    ex.getMessage());
+                scheduleAeronPrimaryRetry();
+            }
         }
     }
 
@@ -1285,6 +1334,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (snapshotScheduler != null) {
             snapshotScheduler.shutdownNow();   // stop emitting snapshot markers before the rings stop
         }
+        if (aeronPrimaryRetryScheduler != null) {
+            aeronPrimaryRetryScheduler.shutdownNow();
+        }
         try {
             if (inputDisruptor != null) {
                 inputDisruptor.shutdown(5, TimeUnit.SECONDS);
@@ -1425,6 +1477,14 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
      * the price in fixed-point ticks (e.g. the binary NATS tick subscriber) — skips the
      * BigDecimal parse/round entirely on the ingestion path. */
     public void submitPriceTick(String ticker, long priceTicks) {
+        // Single-writer discipline: a FOLLOWER's ring carries ONLY the replicated stream (which
+        // already includes the primary's sequenced ticks). Locally injecting NATS ticks on a
+        // follower double-applies prices, skews the ring cursor off the replicated watermark,
+        // and journals ring-space sequences into a business-sequence journal (observed live:
+        // ringCursor 1937 vs lastReplicatedInputSeq 947 at promotion).
+        if (replicationEnabled && !replicationRole.isPrimary()) {
+            return;
+        }
         int securityId = symbols.idFor(ticker);
         long seq = claimInputSlot();
         try {
