@@ -489,3 +489,27 @@ unicast MDC. The next design task is a bounded cold-follower bootstrap contract:
 
 Until those steps pass, retain NATS as the deployment default and do not claim YU11 HA or
 performance readiness.
+
+## Post-engagement addendum — 2026-07-17 (fable lane)
+
+Three updates after this recap was written; the sections above are preserved as the accurate
+state at engagement end.
+
+1. **The Aeron transport A/B now exists.** `AeronReplicationPhase0Test` (commit `d2530ed`),
+   matched line-for-line to the NATS Phase-0 harness: production MDC-UDP topology sustained
+   **520,520 events/s** mean (±2% over three 30-second runs) versus the File-backed NATS HA
+   baseline of 10,561 — **~49×**, with the same-day journaling control at 2.72M/s. Full tables,
+   caveats, and confidence in `scripts/bench/results/yu11-transport-2026-07-17.md`. The
+   performance premise of YU11 is confirmed; the open work is correctness only.
+2. **A third runtime defect was found on the parked cluster.** The replacement pod's app
+   container crash-looped past the recap's frozen state; on each fresh boot the follower receives
+   the primary's original hello (issued ~40 minutes earlier, replayed from the retained control
+   stream), rejects it with `AUTH_CLOCK` (code 8, >30s skew), and **terminally faults before ever
+   reaching Archive catch-up** — it never gets far enough to hit the `FAULT_GAP` this recap
+   documents. Freshness rejection of a replayed hello is correct; terminating the agent on the
+   first stale one is not, because replay of old hellos is a normal condition on a
+   retained/recorded stream. The agent should skip stale hellos and keep polling for a fresh one.
+3. **Defect ledger for the resumption plan** (in dependency order): stale-hello handling (small),
+   cross-epoch cold-follower bootstrap per the contract above (the real design task), graceful
+   Lease release on shutdown (YU02-owner fix, propagate). The parked kind cluster has now served
+   its diagnostic purpose.

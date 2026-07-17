@@ -7,6 +7,11 @@ result; provenance and confidence are stated for each group.
 
 ## Bottom line
 
+> **Superseded 2026-07-17 (post-engagement):** the Aeron-vs-NATS transport throughput A/B now
+> exists — see [Post-engagement Aeron Phase-0 results](#post-engagement-aeron-phase-0-results--2026-07-17)
+> at the end of this file. Percentile latency, durable-ACK cost, and booked-order E2E remain
+> unmeasured. The paragraph below is preserved as the accurate state at engagement end.
+
 There is **no measured YU11 Aeron throughput or percentile-latency result**. The planned
 `run-yu11-aeron-transport.sh` harness was documented but never implemented or run. Runtime work
 did not clear the replay/rejoin and failover correctness gates, so no honest Aeron events/s,
@@ -303,9 +308,10 @@ performance claims:
 
 ## What remains unmeasured
 
-- Aeron offered/s, follower-received/s, journaled/s, or applied/s.
+- ~~Aeron offered/s, follower-received/s, journaled/s, or applied/s.~~ Measured 2026-07-17; see
+  the post-engagement section below.
 - Aeron ACK p50/p95/p99 latency.
-- Aeron versus File-NATS three-run local A/B.
+- ~~Aeron versus File-NATS three-run local A/B.~~ Measured 2026-07-17; see below.
 - YU11 booked-order rate in kind or GKE.
 - Durable Aeron ACK cost versus on-ring.
 - Replay rate for a bounded retained backlog.
@@ -314,3 +320,62 @@ performance claims:
 - CPU, disk growth, retransmit, induced-loss, and Archive-lag comparisons.
 
 Any YU11 go/no-go must treat these as missing evidence, not zeroes and not inferred wins.
+
+## Post-engagement Aeron Phase-0 results — 2026-07-17
+
+Measured after the codeX engagement ended, on the fable lane, with the new
+`AeronReplicationPhase0Test` (owner layer, commit `d2530ed`), run via
+`scripts/bench/run-aeron-replication-phase0.sh`. The harness is matched line-for-line to
+`NatsReplicationPhase0Test`: 65,536 input ring, 1,024-record journal force batch, 256 publish
+batch, 65,536-event warm-up, identical event fill, 30-second timed window whose elapsed time
+includes the complete primary and follower drain, three runs per tier, fresh journals and a fresh
+embedded Media Driver per run, ON_RING ACK, `STRICT` failure policy (any silent loss fails the
+run), and a zero-fault assertion on the follower after every run.
+
+Tiers:
+
+- **single-control** — journaler + ReplicatorStub. Same-day journaling ceiling on this host state.
+- **aeron-ipc** — one IPC publication to the real `AeronReplicationFollower` (no fan-out;
+  transport upper bound).
+- **aeron-mdc-udp** — the YU11 production topology: one `control-mode=manual` MDC
+  `ExclusivePublication` fanned out to a drained archive destination and the real follower, both
+  over UDP loopback, ACK returning over UDP loopback. The archive destination is drained by a live
+  subscriber without disk recording (in production the Archive write happens in the sidecar
+  process, coupled to the matcher only through flow control, which the drain models). Both
+  replicated tiers include the real primary and follower journal fsync paths — the durability
+  authority in this design.
+
+| Tier | Run 1 | Run 2 | Run 3 | Mean events/s |
+|---|---:|---:|---:|---:|
+| single-control (journal only) | 2,661,726 | 2,973,514 | 2,519,733 | **2,718,324** |
+| aeron-ipc | 1,252,696 | 1,189,034 | 1,234,972 | **1,225,567** |
+| aeron-mdc-udp (production topology) | 515,693 | 531,679 | 514,187 | **520,520** |
+
+Comparators from earlier in this file (same methodology, same host class):
+File-backed NATS HA on-ring mean **10,561** events/s; its same-day control 4,433,293 events/s.
+
+Readings:
+
+- **Aeron production topology ≈ 49× the File-backed NATS HA transport** (520,520 vs 10,561).
+- **Replication tax collapses.** NATS HA ran at 0.24% of its same-day control; Aeron MDC runs at
+  19.1% of its same-day control (~5.2× cost), and Aeron IPC at 45%.
+- The same-day control here (2.72M/s) is lower than the NATS-day control (3.9–4.4M/s): the host
+  was also running two kind clusters, including the crash-looping YU11 replacement pod, during
+  measurement. Same-day control keeps the comparison honest; if anything the Aeron numbers are
+  understated.
+- At 520k events/s the replication transport has ~25× headroom over the best measured end-to-end
+  booked-order rate (21,770/s single-BLP on GKE), so with this transport the HA mode's bottleneck
+  should return to the edges (REST ingress, DB projector) rather than replication. That is an
+  inference, not a measurement — the E2E booked-order proof still requires the failover
+  correctness work.
+- Confidence: **high for this harness on this host** (runs within ±2% on the MDC tier); it says
+  nothing about ACK latency percentiles, durable ACK mode, loss/partition behaviour, or
+  cross-node network cost. Raw logs: `scripts/bench/results/aeron-replication-phase0-20260717-004427/`.
+
+The go/no-go implication: the ship gate "≥25% above the File-backed NATS HA baseline" is
+transport-level satisfied by a factor of ~49, and the performance premise of YU11 is confirmed.
+What stands between these numbers and a deployable YU11 is correctness, not speed: the
+cold-follower rejoin gap, the stale-hello `AUTH_CLOCK` terminal fault (found post-engagement on
+the parked cluster: a restarted follower receives the primary's original hello replayed from the
+retained control stream, rejects it for >30s clock skew, and terminally faults before ever
+reaching Archive catch-up), and the YU02-layer graceful-shutdown Lease release.
