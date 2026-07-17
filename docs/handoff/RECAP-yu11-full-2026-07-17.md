@@ -598,3 +598,111 @@ recreating the PVC; the cycle scripts in scratch do this automatically); PVC del
 verified complete before rescaling (a re-bind race resurrects old journals and splits the pair's
 origins); and the Lease flap rate under load is the epoch-churn driver — calmer hosts or YU02
 lease tuning materially improve the odds of staging any multi-minute HA scenario.
+
+## Final codeX recovery engagement — five slices and live proof
+
+The earlier “no-go / incomplete” conclusion remains an accurate record of the first codeX session,
+but it is superseded for YU11's cross-epoch replacement question by the work below. The detailed
+evidence, exact logs, and nextRef diagnosis are in
+[`PROOF-yu11-cross-epoch-recovery-2026-07-17.md`](PROOF-yu11-cross-epoch-recovery-2026-07-17.md).
+
+### What landed
+
+codeX implemented the recovery-bundle design in five local commits:
+
+| Commit | Slice |
+|---|---|
+| `fb4bf13` | Unified snapshot markers with the replicated input lineage and made local marker submission primary-only |
+| `1b15aba` | Captured exact marker epoch/input sequence/Archive position/checksum/session |
+| `2e0ddaa` | Added authenticated, checksummed bundle capture and transfer |
+| `27d767f` | Added crash-safe install of snapshot, symbols, journal anchor, and follower checkpoint |
+| `aefc885` | Prevented upstream run-ahead from overwriting the transferable marker boundary |
+
+The existing exact-cut path was preserved and reproved (`tail 1387 == boundary 1388 - 1`) before
+bundle work continued.
+
+The new path was then proven with an empty replacement PVC. The current epoch recording started at
+9685 while the replacement's local tail was -1, so exact-cut recovery correctly failed. The
+primary captured marker 10492 at Archive position 77568/session 1799446462. The follower installed
+the authenticated bundle, loaded `snapshot(@64)`, replayed zero local tail events, merged into the
+recording, and reached `2/2 Ready`. The stable order/read-model hash matched on both nodes. When the
+original primary was force-deleted, that bundle-recovered follower promoted at epoch 5 with
+`lastReplicatedInputSeq=12813` and the replacement rejoined.
+
+This closes the P1 “one-shot failover” gap for YU11's custom transport. Nothing was pushed and
+codeX did not touch GKE.
+
+### Dead end found during slice 5
+
+The initial transfer request repeatedly logged that snapshot local sequences 1117, 1208, and 1299
+had no exact Aeron boundary. The general publication sequence map was correct when written but too
+small as a handoff primitive: the upstream replication handler could publish enough later inputs
+to overwrite the marker entry before the BLP snapshot callback read it. The retained correction is
+a dedicated primitive marker register in `AeronReplicator`, with the volatile local sequence
+published last. This is the YU11 analogue of binding `onTakeSnapshot` to one applied Cluster log
+boundary in YU12.
+
+### nextOrderRef/ID reuse: exact diagnosis
+
+The zero-tail bundle install exposed `12 orders warm, nextRef 8`; after the second crash, the
+promoted follower reused `ord-013-0008`.
+
+The initially suspected bundle-normalization race is not the cause. Normalization copies
+`source.nextOrderRef()` and `source.orders()` from one `SnapshotStore.Data`. The source state is
+already inconsistent:
+
+- journal recovery restores the snapshot counter and replays `ORDER_NEW` into `MatchingEngine`
+  without advancing the counter;
+- live Aeron follower injection similarly applies `ORDER_NEW` without observing its orderRef;
+- a later snapshot therefore contains newer orders but the older independent atomic counter.
+
+Zero replay does not create the bug; it removes the paths that had masked it.
+
+A three-part diagnostic repair advanced the counter during journal replay and follower injection,
+and reconciled it against snapshot orders on load. A local image proved IDs 0013 and 0014 before
+crash, then 0015 after follower promotion. The change was intentionally not committed because it
+crosses three state-transition seams and a max-retained-order fallback is not a complete invariant
+under terminal-order eviction. This is now a YU12 snapshot-completeness requirement: the
+monotonic ID generator must be replicated and snapshotted state, and recovery must assert it is
+beyond every ID ever issued.
+
+The dedicated kind cluster is intentionally still running the local diagnostic image
+`sha256:8f1a57513cc8e464f6c7e15965b6d228810004da7779b13f79944e0f5e90c65f`; that image is not the
+committed branch state.
+
+### Risk-replica lag
+
+At the successful bundle boundary, the matching/read-model projection was equal, but the
+independent gateway replicas were not:
+
+```text
+primary  ready=true  watermark=2897 accounts=7 securities=28
+follower ready=false watermark=954  accounts=5 securities=16
+```
+
+Kubernetes nevertheless showed the follower `2/2 Ready`. The control feeds caught up during the
+later promotion and the promoted node admitted an order. This is a readiness/admission dependency
+that YU12 must make explicit: authoritative snapshotted BLP risk state and asynchronously refreshed
+gateway/control state cannot silently have different readiness semantics.
+
+### Timing and current state
+
+Fast witness is absent from the kind profile. Promotion took about 17 seconds to the role log in
+the decisive run. The “3-second gate” is the test script's final assertion on primary-label
+exposure, after a separate 10-second polling deadline; it is not the one-second terminating guard.
+P5 remains owned by the fable lane.
+
+The cluster was left running as requested with both matcher pods `2/2`: ordinal 0 primary and
+ordinal 1 standby. No push and no GKE mutation were performed.
+
+### What transfers to Aeron Cluster
+
+Most of YU11's custom Lease, control handshake, distributed Archive-catalog, and bundle mechanics
+should not be carried into state 12. The load-bearing transferable work is:
+
+1. a snapshot is valid only when bound to one exact applied replicated-log marker;
+2. the follower/recovered service must resume after exactly that boundary;
+3. snapshot completeness covers counters, ID generators, idempotency, risk reservations, symbol
+   identity, and control versions—not just visible book state;
+4. acceptance must include post-snapshot commands, recovery plus tail replay, promotion, and a
+   strict no-ID-reuse assertion.
