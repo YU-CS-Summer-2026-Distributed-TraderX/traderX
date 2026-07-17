@@ -275,10 +275,16 @@ public final class AeronReplicationFollower implements AutoCloseable {
             return;
         }
         if (lastInputSeq < 0 && archiveConfig != null && inputSeq != expectedFirstInputSeq) {
+            log.error("First fragment inputSeq={} != expectedFirstInputSeq={} (epoch={} "
+                    + "sessionId={} position={} replaying={})",
+                inputSeq, expectedFirstInputSeq, epoch, header.sessionId(), header.position(),
+                archiveReplaying);
             fault(FAULT_GAP);
             return;
         }
         if (lastInputSeq >= 0 && inputSeq != lastInputSeq + 1) {
+            log.error("Gap: fragment inputSeq={} after lastInputSeq={} (epoch={} replaying={})",
+                inputSeq, lastInputSeq, epoch, archiveReplaying);
             fault(FAULT_GAP);
             return;
         }
