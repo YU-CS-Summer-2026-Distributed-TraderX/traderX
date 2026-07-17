@@ -554,3 +554,47 @@ Validated live so far: the probe correctly reads the epoch boundary from a real 
 lineage base recomputes across boots (`base: 4801` from a 4,800-event applied history), and a
 fresh follower joining a long-running primary catches up from the recording origin. The full
 crash→rejoin→second-crash proof is the remaining E2E gate.
+
+## E2E campaign conclusions — 2026-07-17 (fable lane, end of night)
+
+Eight full wipe→launch→crash-test cycles were run. Additional defects found and fixed during the
+campaign (each from live evidence, committed separately):
+
+- `d16e3c9` — the bootstrap probe replayed on the shared replay endpoint (40126) and left
+  driver-side residue that stopped the subsequent ReplayMerge from ever forming an image
+  (`image=null, activeTransportCount=0`); the probe now uses its own port (40128, added to the
+  StatefulSet and NetworkPolicy) and is skipped entirely for a fresh journal.
+- `622c835` — followers locally injected NATS price ticks into their own ring (observed at
+  promotion: ringCursor 1937 vs lastReplicatedInputSeq 947): double-applied prices, a skewed
+  cursor, and ring-space sequences in a business-sequence journal. Follower tick ingress is now
+  role-gated. Also: a primary that promoted while its crashed peer had no DNS entry stayed
+  degraded-solo forever; the data path now retries every 2s.
+- `1e59c31` — the whole primary data path waited on the peer's DNS, so a solo-boot primary
+  recorded NOTHING for its solo window and no fresh follower could ever join. The publication is
+  now created with only the local archive destination (always resolvable); the live-peer
+  destination attaches later on the single-writer thread.
+- `24c0d66` — the transport retry nulled the replicator without closing it: one leaked publication
+  and one fresh Archive recording per 2-second retry (254 recordings in 9 minutes observed),
+  which broke newest-recording selection for every joiner.
+- `13ac1d4` — FAULT_GAP now logs the offending fragment (inputSeq, expected, session, position);
+  this evidence line was what cracked the last three defects.
+
+**Why the crash→rejoin proof did not land tonight, and what it means.** Under kind host load
+(50–190s Spring boots), Lease elections flap every few minutes; each flap claims a new epoch whose
+recording starts at the then-current watermark. A follower that faults and restarts during a flap
+window needs history that spans a PRIOR epoch's recording — and ReplayMerge replays exactly one
+recording. Observed terminally: `cannot bootstrap at boundary 159: local history ends at 39` —
+sequences 40–158 live only in the previous epoch's recording. This is the recap's original
+conclusion, now demonstrated from both directions: **cross-epoch history transfer (a snapshot
+bundle, or replay-chaining across epoch recordings) is the one remaining design requirement for a
+robust replacement path.** The bounded-journal-cut bootstrap implemented tonight is correct and
+complete for its designed case — a caught-up pair's crash failover — and every failure tonight was
+either an environmental race staging that case, or the honest fail-closed refusal of a join that
+would have silently diverged.
+
+Environmental findings for whoever runs this next: kind's local-path provisioner races the
+required anti-affinity (PVC lands on the occupied node; the pod wedges Pending — heal by
+recreating the PVC; the cycle scripts in scratch do this automatically); PVC deletion must be
+verified complete before rescaling (a re-bind race resurrects old journals and splits the pair's
+origins); and the Lease flap rate under load is the epoch-churn driver — calmer hosts or YU02
+lease tuning materially improve the odds of staging any multi-minute HA scenario.
