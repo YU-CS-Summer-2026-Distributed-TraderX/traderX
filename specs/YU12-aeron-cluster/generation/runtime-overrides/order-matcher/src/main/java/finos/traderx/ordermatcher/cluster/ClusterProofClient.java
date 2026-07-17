@@ -67,7 +67,11 @@ public final class ClusterProofClient {
                 System.out.println("ACK ref=" + ref + " at=" + now);
             });
 
-        AeronCluster client = connectWithRetry(clientContext);
+        // Kind finding: multi-endpoint ingress wedges on follower redirects (egress redirect
+        // never lands), while a direct-to-leader connect works. Cycle endpoints one at a time:
+        // the leader is found in <= N attempts, and re-found the same way after a failover.
+        final String[] endpointEntries = ingressEndpoints.split(",");
+        AeronCluster client = connectCycling(clientContext, endpointEntries);
         seed(client, codec, event, buffer, account, security);
         System.out.println("SEEDED account=" + account + " security=" + security);
 
@@ -87,23 +91,22 @@ public final class ClusterProofClient {
             } catch (final Exception e) {
                 System.out.println("RECONNECT cause=" + e.getClass().getSimpleName());
                 CloseHelper.quietClose(client);
-                client = connectWithRetry(clientContext.clone());
+                client = connectCycling(clientContext.clone(), endpointEntries);
             }
         }
     }
 
-    private static AeronCluster connectWithRetry(final AeronCluster.Context context) {
+    private static AeronCluster connectCycling(final AeronCluster.Context context,
+                                               final String[] endpointEntries) {
+        int attempt = 0;
         while (true) {
+            final String entry = endpointEntries[attempt++ % endpointEntries.length];
             try {
-                return AeronCluster.connect(context.clone());
+                final AeronCluster client = AeronCluster.connect(context.clone().ingressEndpoints(entry));
+                System.out.println("CONNECTED via " + entry);
+                return client;
             } catch (final Exception e) {
-                System.out.println("CONNECT-RETRY cause=" + e);
-                try {
-                    Thread.sleep(200);
-                } catch (final InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException(ie);
-                }
+                System.out.println("CONNECT-RETRY endpoint=" + entry + " cause=" + e.getClass().getSimpleName());
             }
         }
     }

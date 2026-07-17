@@ -5,7 +5,6 @@ metadata:
   labels:
     app: cluster-proof-client
 spec:
-  nodeName: traderx-yu12-cluster-worker3
   restartPolicy: Never
   containers:
     - name: proof-client

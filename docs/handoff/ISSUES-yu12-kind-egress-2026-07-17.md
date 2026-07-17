@@ -29,6 +29,19 @@ cluster/service error logs (`ClusterTool /data/cluster errors` clean on the lead
 - **Member↔member UDP** — provably fine (election + log replication work continuously).
 - **JVM/Unsafe flags** — fixed earlier (`--add-exports jdk.internal.misc`); all processes run.
 
+## NARROWED (same session, minutes later) — and worked around
+
+Exec-ing the proof client INSIDE the leader pod with a leader-only ingress list CONNECTED and
+traded immediately (SEEDED + ACK refs flowing). The broken leg is therefore precisely: the
+client wedges when its multi-endpoint connect lands on a FOLLOWER — the follower's egress
+redirect (NOT_LEADER + leader info) never reaches the client, on kind only (in-process it
+works). Leader-direct ingress + egress both work.
+
+**Workaround shipped** (`ClusterProofClient.connectCycling`): cycle single ingress endpoints
+per connect attempt — the leader is found in <= N attempts and re-found after failover. The
+gateway/feed clients should adopt the same pattern until the follower-redirect root cause
+(probe 1/4 below, now scoped to the redirect egress publication on followers) is closed.
+
 ## Next probes (in order, for the next session)
 
 1. Add `aeron-all` (or copy `AeronStat`) to the image and inspect the LEADER's driver counters
