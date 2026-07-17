@@ -54,7 +54,10 @@ primary="$(kubectl --context "${CONTEXT}" -n "${NAMESPACE}" get pods \
 [[ -n "${primary}" ]] || { echo "[error] no elected primary"; exit 1; }
 
 start_ms="$(now_ms)"
-kubectl --context "${CONTEXT}" -n "${NAMESPACE}" delete pod "${primary}" --wait=false
+# Model a process/node crash, not a graceful rollout. A normal pod deletion leaves the
+# old holder in Terminating and intentionally exercises LeaderElection's safety guard.
+kubectl --context "${CONTEXT}" -n "${NAMESPACE}" delete pod "${primary}" \
+  --grace-period=0 --force --wait=false
 deadline_ms=$((start_ms + 10000))
 promoted=""
 while (( $(now_ms) < deadline_ms )); do

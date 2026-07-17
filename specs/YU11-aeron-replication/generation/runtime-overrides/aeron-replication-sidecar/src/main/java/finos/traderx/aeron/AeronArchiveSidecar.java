@@ -50,8 +50,9 @@ public final class AeronArchiveSidecar {
                  .controlRequestChannel("aeron:ipc")
                  .controlResponseChannel("aeron:ipc"));
              HealthServer health = new HealthServer(config.healthPort(), config)) {
-            // The HA profiles record the matcher's local IPC publication. The matcher mirrors the
-            // same session to direct peer UDP, allowing replay-to-live merge without an MDC leg.
+            // The HA profiles make this inbound UDP recording subscription one destination of the
+            // matcher's single MDC publication. Archive replay and peer-live delivery therefore
+            // share the publication's exact session and position space.
             long inboundRecordingSubscriptionId = "disabled".equalsIgnoreCase(
                 config.inboundRecordingChannel()) ? -1L
                     : archive.startRecording(config.inboundRecordingChannel(),
@@ -86,7 +87,8 @@ public final class AeronArchiveSidecar {
                 env("AERON_ARCHIVE_REPLICATION_CHANNEL", "aeron:udp?endpoint=0.0.0.0:8012"),
                 env("AERON_ARCHIVE_RECORDING_EVENTS_CHANNEL", "aeron:ipc"),
                 env("AERON_RECORD_INBOUND_CHANNEL",
-                    env("AERON_RECORD_CHANNEL", "aeron:udp?endpoint=0.0.0.0:40123")),
+                    env("AERON_RECORD_CHANNEL",
+                        "aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data")),
                 outbound,
                 integerEnv("AERON_RECORD_STREAM_ID", 1101),
                 env("BLP_SBE_SCHEMA_CHECKSUM", SCHEMA_CHECKSUM));

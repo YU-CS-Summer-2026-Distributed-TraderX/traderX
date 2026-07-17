@@ -6,7 +6,7 @@
 |---|---|---|
 | `order-matcher:18110` | HTTP REST/UI | unchanged YU10 clients |
 | `order-matcher:18130` | FIX 4.4 over TCP | unchanged YU10 FIX initiators |
-| data UDP port | Aeron reliable unicast | peer order-matcher replication follower |
+| data UDP ports | Aeron manual unicast MDC | local Archive recording and peer replication follower |
 | ACK UDP port | Aeron reliable unicast | peer order-matcher replication primary |
 | control UDP port | Aeron reliable unicast | peer handshake, heartbeat, replay/snapshot control |
 | Archive control/replay UDP ports | Aeron Archive protocol | peer sidecar/application during catch-up |
@@ -29,10 +29,13 @@
 
 ## Networking
 
-- Data, ACK, control, and Archive replay are reliable unicast UDP between stable StatefulSet
-  ordinal DNS names on the headless order-matcher Service.
+- The primary's manual MDC publication sends one claimed frame to two unicast destinations: its
+  local Archive on UDP 40127 and the peer follower on UDP 40123. This preserves one Aeron session
+  and position space for Archive replay-to-live merge; MDC here does not use IP multicast.
+- ACK, control, and Archive replay are reliable unicast UDP between stable StatefulSet ordinal DNS
+  names on the headless order-matcher Service.
 - A namespace-scoped NetworkPolicy permits the named UDP ports only between
-  `app=order-matcher` pods. No Aeron port uses ingress-nginx, LoadBalancer, NodePort, multicast,
+  `app=order-matcher` pods. No Aeron port uses ingress-nginx, LoadBalancer, NodePort, IP multicast,
   or a host mapping.
 - Compose uses explicit primary/follower service names on one Docker network.
 - Kind uses a dedicated named multi-node cluster with at least two workers; the ordinary shared

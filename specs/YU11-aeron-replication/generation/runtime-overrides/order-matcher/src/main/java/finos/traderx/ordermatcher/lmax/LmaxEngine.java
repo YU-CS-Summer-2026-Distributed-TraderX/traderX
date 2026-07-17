@@ -118,6 +118,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final String aeronPeerId;
     private final String aeronDirectory;
     private final String aeronDataPublishChannel;
+    private final String aeronDataArchiveDestination;
     private final String aeronDataLivePublishChannel;
     private final String aeronDataSubscribeChannel;
     private final String aeronAckPublishChannel;
@@ -257,6 +258,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${blp.replication.peer-id:}") String aeronPeerId,
         @Value("${blp.replication.aeron.directory:/dev/shm/aeron/driver}") String aeronDirectory,
         @Value("${blp.replication.aeron.data-publish-channel:aeron:udp?endpoint=127.0.0.1:40123}") String aeronDataPublishChannel,
+        @Value("${blp.replication.aeron.data-archive-destination:}") String aeronDataArchiveDestination,
         @Value("${blp.replication.aeron.data-live-publish-channel:}") String aeronDataLivePublishChannel,
         @Value("${blp.replication.aeron.data-subscribe-channel:aeron:udp?endpoint=0.0.0.0:40123}") String aeronDataSubscribeChannel,
         @Value("${blp.replication.aeron.ack-publish-channel:aeron:udp?endpoint=127.0.0.1:40124}") String aeronAckPublishChannel,
@@ -363,10 +365,12 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.aeronDirectory = aeronDirectory;
         this.aeronDataPublishChannel = withAlias(
             resolveAeronChannel(aeronDataPublishChannel, podName, 40123, true), "yu11-data");
+        this.aeronDataArchiveDestination = aeronDataArchiveDestination == null
+            || aeronDataArchiveDestination.isBlank() ? ""
+                : resolveLocalAeronChannel(aeronDataArchiveDestination, podName, 40127);
         this.aeronDataLivePublishChannel = aeronDataLivePublishChannel == null
             || aeronDataLivePublishChannel.isBlank() ? ""
-                : withAlias(resolveAeronChannel(aeronDataLivePublishChannel,
-                    podName, 40123, true), "yu11-data");
+                : resolveAeronChannel(aeronDataLivePublishChannel, podName, 40123, true);
         this.aeronDataSubscribeChannel = resolveAeronChannel(aeronDataSubscribeChannel, podName, 40123, false);
         this.aeronAckPublishChannel = resolveAeronChannel(aeronAckPublishChannel, podName, 40124, true);
         this.aeronAckSubscribeChannel = resolveAeronChannel(aeronAckSubscribeChannel, podName, 40124, false);
@@ -576,8 +580,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             recoveryStatus = "follower-catching-up";
             if (replicationFollower != null) replicationFollower.start();
             if (aeronFollower != null) {
-                aeronFollower.start(this::followerReady, this::followerCatchingUp,
-                    this::followerFault);
+                aeronFollower.start(this::followerReady, this::followerFault);
             }
             if (aeronShadowFollower != null) {
                 aeronShadowFollower.start(this::shadowFollowerFault);
@@ -743,7 +746,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                         aeronAckSubscribeChannel, aeronAckStreamId,
                         currentLeaderEpoch, ReplicationAckMode.ON_RING,
                         ReplicationFailurePolicy.DEGRADED_SOLO, replicationAckTimeoutMs, true,
-                        this::aeronPeerAuthenticated, aeronDataLivePublishChannel);
+                        this::aeronPeerAuthenticated, aeronDataArchiveDestination,
+                        aeronDataLivePublishChannel);
                 } catch (Exception ex) {
                     if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
                     log.warn("Aeron shadow publisher unavailable: {}", ex.getMessage());
@@ -760,15 +764,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                 aeronAckSubscribeChannel, aeronAckStreamId,
                 currentLeaderEpoch, replicationAckMode, replicationFailurePolicy,
                 replicationAckTimeoutMs, false, this::aeronPeerAuthenticated,
-                aeronDataLivePublishChannel);
-            boolean transportReady = promoted
-                ? aeronReplicator.awaitArchiveConnected(aeronArchiveReplayTimeoutMs)
-                : aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
+                aeronDataArchiveDestination, aeronDataLivePublishChannel);
+            boolean transportReady = aeronReplicator.awaitConnected(aeronArchiveReplayTimeoutMs);
             if (!transportReady) {
                 throw new IllegalStateException(
-                    promoted
-                        ? "Aeron Archive publication did not connect before promotion timeout"
-                        : "Aeron Archive/live publications did not connect before startup timeout");
+                    "Aeron MDC Archive destination did not connect before startup timeout");
             }
         } catch (Exception ex) {
             if (ex instanceof IllegalArgumentException invalidConfig) throw invalidConfig;
@@ -852,12 +852,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         recoveryStatus = "follower-live";
         publishReadiness(ReadinessState.ACCEPTING_TRAFFIC);
         log.info("Follower caught up and ready (pod={})", podName);
-    }
-
-    private void followerCatchingUp() {
-        recoveryReady = false;
-        recoveryStatus = "follower-catching-up";
-        publishReadiness(ReadinessState.REFUSING_TRAFFIC);
     }
 
     private void followerFault() {
@@ -996,8 +990,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
                         aeronFollower.setDurabilityWatermarks(journaler::journaledSeq,
                             journaler::journalForceNanos, matchingEngine::blpSeq,
                             Path.of(journalPath).resolve("aeron-follower.checkpoint"), this::followerFault);
-                        aeronFollower.start(this::followerReady, this::followerCatchingUp,
-                            this::followerFault);
+                        aeronFollower.start(this::followerReady, this::followerFault);
                     }
                     if (aeronShadowFollower != null) {
                         aeronShadowFollower.start(this::shadowFollowerFault);

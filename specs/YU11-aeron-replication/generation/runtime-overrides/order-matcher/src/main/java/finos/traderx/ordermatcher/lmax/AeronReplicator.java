@@ -5,8 +5,6 @@ import io.aeron.ExclusivePublication;
 import io.aeron.Subscription;
 import io.aeron.logbuffer.BufferClaim;
 import io.aeron.logbuffer.FragmentHandler;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.LongAdder;
 import java.util.concurrent.TimeUnit;
@@ -18,10 +16,7 @@ import java.util.function.BooleanSupplier;
  * publication term buffer and coalesces follower ACK waits at Disruptor batch boundaries.
  */
 public final class AeronReplicator implements ReplicationEventHandler {
-    private static final Logger log = LoggerFactory.getLogger(AeronReplicator.class);
-
     private final ExclusivePublication dataPublication;
-    private final ExclusivePublication livePublication;
     private final Subscription ackSubscription;
     private final long leaderEpoch;
     private final ReplicationAckMode ackMode;
@@ -31,8 +26,7 @@ public final class AeronReplicator implements ReplicationEventHandler {
     private final BooleanSupplier peerAuthenticated;
     private final AeronReplicationCodec dataCodec = new AeronReplicationCodec();
     private final AeronReplicationCodec ackCodec = new AeronReplicationCodec();
-    private final BufferClaim archiveClaim = new BufferClaim();
-    private final BufferClaim liveClaim = new BufferClaim();
+    private final BufferClaim dataClaim = new BufferClaim();
     private final FragmentHandler ackHandler = this::onAck;
     private final LongAdder offerFailures = new LongAdder();
     private final LongAdder invalidAcks = new LongAdder();
@@ -47,7 +41,7 @@ public final class AeronReplicator implements ReplicationEventHandler {
                            ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
                            long ackTimeoutMs, boolean shadow) {
         this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, leaderEpoch,
-            ackMode, failurePolicy, ackTimeoutMs, shadow, () -> true, "");
+            ackMode, failurePolicy, ackTimeoutMs, shadow, () -> true, "", "");
     }
 
     public AeronReplicator(Aeron aeron, String dataChannel, int dataStreamId,
@@ -55,7 +49,7 @@ public final class AeronReplicator implements ReplicationEventHandler {
                            ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
                            long ackTimeoutMs, boolean shadow, BooleanSupplier peerAuthenticated) {
         this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, leaderEpoch,
-            ackMode, failurePolicy, ackTimeoutMs, shadow, peerAuthenticated, "");
+            ackMode, failurePolicy, ackTimeoutMs, shadow, peerAuthenticated, "", "");
     }
 
     public AeronReplicator(Aeron aeron, String dataChannel, int dataStreamId,
@@ -63,13 +57,22 @@ public final class AeronReplicator implements ReplicationEventHandler {
                            ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
                            long ackTimeoutMs, boolean shadow, BooleanSupplier peerAuthenticated,
                            String dataLiveChannel) {
+        this(aeron, dataChannel, dataStreamId, ackChannel, ackStreamId, leaderEpoch,
+            ackMode, failurePolicy, ackTimeoutMs, shadow, peerAuthenticated, "",
+            dataLiveChannel);
+    }
+
+    public AeronReplicator(Aeron aeron, String dataChannel, int dataStreamId,
+                           String ackChannel, int ackStreamId, long leaderEpoch,
+                           ReplicationAckMode ackMode, ReplicationFailurePolicy failurePolicy,
+                           long ackTimeoutMs, boolean shadow, BooleanSupplier peerAuthenticated,
+                           String archiveDestination, String liveDestination) {
         if (leaderEpoch < 0 || leaderEpoch > 0xffff_ffffL) {
             throw new IllegalArgumentException("leaderEpoch must fit uint32");
         }
         this.dataPublication = aeron.addExclusivePublication(dataChannel, dataStreamId);
-        this.livePublication = dataLiveChannel == null || dataLiveChannel.isBlank() ? null
-            : aeron.addExclusivePublication(withSessionId(dataLiveChannel,
-                dataPublication.sessionId()), dataStreamId);
+        addDestination(archiveDestination);
+        addDestination(liveDestination);
         this.ackSubscription = aeron.addSubscription(ackChannel, ackStreamId);
         this.leaderEpoch = leaderEpoch;
         this.ackMode = ackMode;
@@ -82,13 +85,14 @@ public final class AeronReplicator implements ReplicationEventHandler {
     @Override
     public void onEvent(InputEvent event, long sequence, boolean endOfBatch) {
         pollAcks();
-        // Always publish to the local Archive IPC leg. The direct peer UDP leg shares its session
-        // id, so ReplayMerge can move from the retained recording to the live unicast image.
+        // One MDC publication fans each claimed frame to the local Archive and peer follower.
+        // Both legs therefore share one session and one position space; the Archive recording is
+        // the live stream ReplayMerge later joins.
         if (!peerAuthenticated.getAsBoolean()) degraded = true;
         long result;
         long deadline = System.nanoTime() + ackTimeoutNs;
         do {
-            result = dataPublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, archiveClaim);
+            result = dataPublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, dataClaim);
             if (result >= 0) break;
             pollAcks();
             if (shadow || System.nanoTime() >= deadline) {
@@ -100,29 +104,10 @@ public final class AeronReplicator implements ReplicationEventHandler {
         } while (true);
 
         int flags = shadow ? AeronReplicationCodec.INPUT_FLAG_SHADOW : 0;
-        dataCodec.encodeInput(archiveClaim.buffer(), archiveClaim.offset(), event, sequence,
+        dataCodec.encodeInput(dataClaim.buffer(), dataClaim.offset(), event, sequence,
             leaderEpoch, flags);
-        archiveClaim.commit();
+        dataClaim.commit();
         publishedSeq = sequence;
-
-        if (livePublication != null) {
-            long liveResult;
-            long liveDeadline = System.nanoTime() + ackTimeoutNs;
-            do {
-                liveResult = livePublication.tryClaim(AeronReplicationCodec.INPUT_BYTES, liveClaim);
-                if (liveResult >= 0L) break;
-                pollAcks();
-                if (shadow || System.nanoTime() >= liveDeadline) {
-                    onLiveOfferFailure(sequence, liveResult);
-                    if (endOfBatch && !shadow) awaitRequiredAck(sequence);
-                    return;
-                }
-                Thread.onSpinWait();
-            } while (true);
-            dataCodec.encodeInput(liveClaim.buffer(), liveClaim.offset(), event, sequence,
-                leaderEpoch, flags);
-            liveClaim.commit();
-        }
 
         if (endOfBatch && !shadow) awaitRequiredAck(sequence);
     }
@@ -138,19 +123,10 @@ public final class AeronReplicator implements ReplicationEventHandler {
         publishedSeq = sequence;
     }
 
-    private void onLiveOfferFailure(long sequence, long result) {
-        offerFailures.increment();
-        degraded = true;
-        log.warn("Aeron live publication failed at seq={} result={}", sequence, result);
-        if (failurePolicy == ReplicationFailurePolicy.STRICT && !shadow) {
-            throw new IllegalStateException(
-                "strict Aeron live offer failed at seq=" + sequence + " result=" + result);
+    private void addDestination(String destination) {
+        if (destination != null && !destination.isBlank()) {
+            dataPublication.addDestination(destination);
         }
-    }
-
-    private static String withSessionId(String channel, int sessionId) {
-        if (channel.contains("session-id=")) return channel;
-        return channel + (channel.indexOf('?') >= 0 ? "|" : "?") + "session-id=" + sessionId;
     }
 
     private void awaitRequiredAck(long sequence) {
@@ -225,39 +201,30 @@ public final class AeronReplicator implements ReplicationEventHandler {
     public int publicationSessionId() { return dataPublication.sessionId(); }
     public long publicationPosition() { return dataPublication.position(); }
     public boolean archiveConnected() { return dataPublication.isConnected(); }
-    public boolean connected() {
-        return archiveConnected()
-            && (livePublication == null || livePublication.isConnected());
-    }
+    public boolean connected() { return dataPublication.isConnected(); }
 
     /**
-     * Wait outside the Disruptor path for both the local Archive leg and the peer-live leg. Without
-     * this startup barrier degraded-solo can consume the first ring sequences before either
-     * publication has an image, leaving a later healthy follower with an irrecoverable initial gap.
+     * Wait outside the Disruptor path for the local Archive destination. The peer may be absent in
+     * degraded-solo mode, but the single MDC publication must have its retention destination before
+     * the ring starts.
      */
     public boolean awaitConnected(long timeoutMs) {
-        return awaitConnection(timeoutMs, true);
-    }
-
-    /** Promotion must fence and resume before the dead peer returns; only local Archive is needed. */
-    public boolean awaitArchiveConnected(long timeoutMs) {
-        return awaitConnection(timeoutMs, false);
-    }
-
-    private boolean awaitConnection(long timeoutMs, boolean requirePeerLive) {
         long deadline = System.nanoTime()
             + TimeUnit.MILLISECONDS.toNanos(Math.max(1L, timeoutMs));
-        while (!(requirePeerLive ? connected() : archiveConnected())
-            && System.nanoTime() < deadline) {
+        while (!dataPublication.isConnected() && System.nanoTime() < deadline) {
             LockSupport.parkNanos(100_000L);
         }
-        return requirePeerLive ? connected() : archiveConnected();
+        return dataPublication.isConnected();
+    }
+
+    /** Compatibility name for callers that explicitly describe the retained Archive barrier. */
+    public boolean awaitArchiveConnected(long timeoutMs) {
+        return awaitConnected(timeoutMs);
     }
 
     @Override
     public void close() {
         dataPublication.close();
-        if (livePublication != null) livePublication.close();
         ackSubscription.close();
     }
 }

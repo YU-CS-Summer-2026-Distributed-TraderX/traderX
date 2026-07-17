@@ -66,7 +66,8 @@ services:
       BLP_REPLICATION_PEER_ID: order-matcher-follower
       BLP_REPLICATION_STATIC_ROLE: primary
       ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
-      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:ipc
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?control-mode=manual
+      BLP_AERON_DATA_ARCHIVE_DESTINATION: aeron:udp?endpoint=127.0.0.1:40127
       BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-follower:40123
       BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=aeron-primary:40123
       BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-follower:40124
@@ -99,8 +100,8 @@ services:
       AERON_HEALTH_PORT: "18080"
       AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
-      AERON_RECORD_INBOUND_CHANNEL: disabled
-      AERON_RECORD_OUTBOUND_CHANNEL: aeron:ipc?alias=yu11-data
+      AERON_RECORD_INBOUND_CHANNEL: aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data
+      AERON_RECORD_OUTBOUND_CHANNEL: ""
       BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
     volumes:
       - yu11-primary-data:/var/lib/traderx-lmax
@@ -113,6 +114,7 @@ services:
       - "40124/udp"
       - "40125/udp"
       - "40126/udp"
+      - "40127/udp"
       - "8010/udp"
       - "8011/udp"
       - "8012/udp"
@@ -133,7 +135,8 @@ services:
       BLP_REPLICATION_PEER_ID: order-matcher-primary
       BLP_REPLICATION_STATIC_ROLE: follower
       ORDER_MATCHER_JOURNAL_PATH: /var/lib/traderx-lmax/journal
-      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:ipc
+      BLP_AERON_DATA_PUBLISH_CHANNEL: aeron:udp?control-mode=manual
+      BLP_AERON_DATA_ARCHIVE_DESTINATION: aeron:udp?endpoint=127.0.0.1:40127
       BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-primary:40123
       BLP_AERON_DATA_SUBSCRIBE_CHANNEL: aeron:udp?endpoint=aeron-follower:40123
       BLP_AERON_ACK_PUBLISH_CHANNEL: aeron:udp?endpoint=aeron-primary:40124
@@ -166,8 +169,8 @@ services:
       AERON_HEALTH_PORT: "18080"
       AERON_ARCHIVE_CONTROL_CHANNEL: aeron:udp?endpoint=0.0.0.0:8010
       AERON_ARCHIVE_REPLICATION_CHANNEL: aeron:udp?endpoint=0.0.0.0:8012
-      AERON_RECORD_INBOUND_CHANNEL: disabled
-      AERON_RECORD_OUTBOUND_CHANNEL: aeron:ipc?alias=yu11-data
+      AERON_RECORD_INBOUND_CHANNEL: aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data
+      AERON_RECORD_OUTBOUND_CHANNEL: ""
       BLP_SBE_SCHEMA_CHECKSUM: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
     volumes:
       - yu11-follower-data:/var/lib/traderx-lmax
@@ -180,6 +183,7 @@ services:
       - "40124/udp"
       - "40125/udp"
       - "40126/udp"
+      - "40127/udp"
       - "8010/udp"
       - "8011/udp"
       - "8012/udp"

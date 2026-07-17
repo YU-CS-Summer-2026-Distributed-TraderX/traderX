@@ -9,9 +9,10 @@ Previous state: `YU10-fix-ingress`
 
 This pack adds a dual-capable Aeron + SBE replication leg to the `YU10-fix-ingress`
 order-matcher while retaining File-backed NATS JetStream as the default and rollback transport.
-The primary and follower exchange fixed 64-byte input records over reliable unicast UDP through
-per-pod Archiving Media Driver sidecars; the follower's journal remains the durable replication
-watermark and each pod's journal remains the business recovery authority.
+The primary sends each fixed 64-byte input record once through a manual unicast MDC publication
+whose destinations are the local Archive and peer follower. Both destinations therefore share one
+session and position space without using IP multicast. The follower's journal remains the durable
+replication watermark and each pod's journal remains the business recovery authority.
 
 Primary intent:
 

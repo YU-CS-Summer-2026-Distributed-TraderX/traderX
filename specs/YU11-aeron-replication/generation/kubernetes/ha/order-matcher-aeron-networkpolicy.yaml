@@ -18,6 +18,7 @@ spec:
         - {protocol: UDP, port: 40124}
         - {protocol: UDP, port: 40125}
         - {protocol: UDP, port: 40126}
+        - {protocol: UDP, port: 40127}
         - {protocol: UDP, port: 8010}
         - {protocol: UDP, port: 8011}
         - {protocol: UDP, port: 8012}
@@ -34,6 +35,7 @@ spec:
         - {protocol: UDP, port: 40124}
         - {protocol: UDP, port: 40125}
         - {protocol: UDP, port: 40126}
+        - {protocol: UDP, port: 40127}
         - {protocol: UDP, port: 8010}
         - {protocol: UDP, port: 8011}
         - {protocol: UDP, port: 8012}

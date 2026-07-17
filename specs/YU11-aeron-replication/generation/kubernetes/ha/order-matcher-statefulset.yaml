@@ -159,7 +159,9 @@ spec:
             - name: BLP_AERON_DIR
               value: "/dev/shm/aeron/driver"
             - name: BLP_AERON_DATA_PUBLISH_CHANNEL
-              value: "aeron:ipc"
+              value: "aeron:udp?control-mode=manual"
+            - name: BLP_AERON_DATA_ARCHIVE_DESTINATION
+              value: "auto"
             - name: BLP_AERON_DATA_LIVE_PUBLISH_CHANNEL
               value: "auto"
             - name: BLP_AERON_DATA_SUBSCRIBE_CHANNEL
@@ -292,6 +294,9 @@ spec:
             - name: aeron-replay
               containerPort: 40126
               protocol: UDP
+            - name: archive-data
+              containerPort: 40127
+              protocol: UDP
             - name: archive-control
               containerPort: 8010
               protocol: UDP
@@ -323,9 +328,9 @@ spec:
             - name: AERON_ARCHIVE_REPLICATION_CHANNEL
               value: aeron:udp?endpoint=0.0.0.0:8012
             - name: AERON_RECORD_INBOUND_CHANNEL
-              value: disabled
+              value: aeron:udp?endpoint=0.0.0.0:40127|alias=yu11-data
             - name: AERON_RECORD_OUTBOUND_CHANNEL
-              value: aeron:ipc?alias=yu11-data
+              value: ""
             - name: BLP_SBE_SCHEMA_CHECKSUM
               value: 45a46b6dac82b4620569a8c02507f558d887ff96ab919d4eb7c5aac09f60074e
           readinessProbe:
