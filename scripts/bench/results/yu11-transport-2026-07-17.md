@@ -312,7 +312,8 @@ performance claims:
   the post-engagement section below.
 - Aeron ACK p50/p95/p99 latency.
 - ~~Aeron versus File-NATS three-run local A/B.~~ Measured 2026-07-17; see below.
-- YU11 booked-order rate in kind or GKE.
+- ~~YU11 booked-order rate in kind or GKE.~~ Measured on GKE 2026-07-18; see the E2E section at
+  the end of this file.
 - Durable Aeron ACK cost versus on-ring.
 - Replay rate for a bounded retained backlog.
 - Force-delete crash failover time to accepted traffic.
@@ -379,3 +380,41 @@ cold-follower rejoin gap, the stale-hello `AUTH_CLOCK` terminal fault (found pos
 the parked cluster: a restarted follower receives the primary's original hello replayed from the
 retained control stream, rejects it for >30s clock skew, and terminally faults before ever
 reaching Archive catch-up), and the YU02-layer graceful-shutdown Lease release.
+
+## E2E booked-order results — 2026-07-18, YU11 Aeron HA live on GKE
+
+Measured after the overnight fixes landed. YU11 was deployed to the production GKE cluster
+(`traderx-lmax`): image `yu11-aeron-20260718` built from `83049c8`, StatefulSet replaced (the
+YU11 HA kustomization with the Archive sidecar, NetworkPolicy, and probe port 40128),
+`BLP_REPLICATION_TRANSPORT=aeron`, `BLP_REPLICATION_ENABLED=true`, **fresh matcher PVCs** (clean
+common origin — required: the surviving NATS-era journals are asymmetric and either fail closed
+or force a large divergence cut). Pair elected primary/standby cleanly; an authenticated order
+was accepted through `order-matcher-primary` before benchmarking.
+
+Protocol identical to the 2026-07-17 baseline: in-cluster `bench-runner` pod, account 11413,
+`SIDES=alternate`, `QTY=1`, `LIMIT=190`, `TICKERS=JPM,COF`, `--batch 1000 --conc 48 --secs 30`,
+three runs, no reset, routed at `order-matcher-primary`.
+
+| Mode | Run 1 | Run 2 | Run 3 | Failed |
+|---|---:|---:|---:|---:|
+| single-BLP (2026-07-17, replication off) | 21,770 | 15,429 | 10,505 | 0 |
+| File-NATS HA (2026-07-17) | 10,100 | 9,290 | 3,651 | 0 |
+| **Aeron HA (2026-07-18)** | **25,149** | **24,293** | 8,671 | 0 |
+
+Readings:
+
+- **The HA tax is gone at the E2E level.** File-NATS HA ran at ~46% of single-BLP; Aeron HA runs
+  at single-BLP parity or better (25,149 vs 21,770 on the cleanest runs). The honest claim is
+  "parity or better", not "+15%": today's book was freshly wiped while the single-BLP series ran
+  on a semi-warm book, and the comparison is next-day on the same cluster/params.
+- **The E2E ship gate is passed**: +149% over the File-NATS HA run-1 baseline (25,149 vs 10,100),
+  against a ≥25% requirement. The historical ≥35k absolute gate remains invalid on the
+  risk-screened basis (see the GKE comparator section); the recalibrated ceiling — single-BLP
+  parity — is met.
+- The run-3 decline is the known no-reset book-accumulation pattern (both baseline series showed
+  the same shape); run 1 is the clean sample. Submit rate reached 48,761/s (accepted), so the
+  remaining bottleneck is the REST ingress/output edges, exactly as the transport numbers
+  predicted — the YU10 tuning lever, not replication.
+- Raw rows: `traderX-YU09-ops-hardening/scripts/bench/results/gke-comparison.csv`, label
+  `yu11-aeron-ha`. This series predates the slice-1+ recovery work; rerun the same protocol as a
+  regression check when those slices deploy.
