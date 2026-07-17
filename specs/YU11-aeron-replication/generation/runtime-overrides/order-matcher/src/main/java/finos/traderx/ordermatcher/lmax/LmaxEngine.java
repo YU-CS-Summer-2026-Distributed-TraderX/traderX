@@ -903,7 +903,11 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private BootstrapPlan planFollowerBootstrap(AeronFollowerCheckpointStore.Record checkpoint,
                                                 AeronArchiveReplayMerge.Config replayConfig) {
         AeronPeerControlAgent agent = aeronControlAgent;
-        long deadline = System.nanoTime() + aeronArchiveReplayTimeoutMs * 1_000_000L;
+        // Boot-only wait, 3x the archive timeout: a follower by definition saw a live Lease
+        // holder, so the peer exists and authentication is pending, not absent — but under heavy
+        // host load (50-190s Spring starts observed on kind) 10s expires before the control
+        // session settles, and a needless legacy fallback after a real failover would restart-loop.
+        long deadline = System.nanoTime() + 3L * aeronArchiveReplayTimeoutMs * 1_000_000L;
         while (agent != null && !agent.sessionReady() && !aeronProtocolFaulted
             && System.nanoTime() < deadline) {
             java.util.concurrent.locks.LockSupport.parkNanos(1_000_000L);
