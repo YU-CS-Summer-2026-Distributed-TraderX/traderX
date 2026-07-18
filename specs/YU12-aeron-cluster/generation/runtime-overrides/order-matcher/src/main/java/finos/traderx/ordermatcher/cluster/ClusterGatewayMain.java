@@ -64,6 +64,11 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq}
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
+    // Bench metrics: every committed fill-kind egress ack is a booked order (run-gke-bench.sh
+    // reads traderx_order_events_total{event="fill"}). Written on the owner thread, read racily
+    // by the /metrics handler — plain volatile longs.
+    private volatile long fillEvents;
+    private volatile long acceptedOrders;
 
     public static void main(final String[] args) throws Exception {
         new ClusterGatewayMain().run();
@@ -89,7 +94,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
 
         final HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 64);
         server.setExecutor(Executors.newFixedThreadPool(8));
+        server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
+        server.createContext("/metrics", this::handleMetrics);
         server.createContext("/ready", exchange ->
             respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
         server.createContext("/health", exchange ->
@@ -189,6 +196,11 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                     buffer.getLong(offset), buffer.getInt(offset + 8), kind, buffer.getLong(offset + 13) };
             }
         }
+        // Booked-order metric: count every fill-kind ack (immediate or async on a later tick),
+        // independent of submit correlation — this is the bench's booked/s numerator.
+        if (kind == OutputEvent.KIND_ORDER_FILLED || kind == OutputEvent.KIND_ORDER_PARTIALLY_FILLED) {
+            fillEvents++;
+        }
     }
 
     /** Run a client-touching callable on the owner thread and wait for its result. */
@@ -226,6 +238,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 final long[] ack = lastOrderAck;
                 final boolean accepted = ack[2] != OutputEvent.KIND_ORDER_REJECTED
                     && ack[2] != OutputEvent.KIND_ORDER_NOT_FOUND;
+                if (accepted) {
+                    acceptedOrders++;
+                }
                 return new ExecResult(accepted, (int) ack[1], (byte) ack[2]);
             });
         } catch (final Exception e) {
@@ -257,6 +272,52 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 "{\"orderRef\":" + r.orderRef() + ",\"kind\":" + r.kind() + "}");
         } catch (final Exception e) {
             respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /** Bench load path: a JSON array of {accountId, security, side, quantity, limitPrice}.
+     *  Submits each through the same committed path; replies with accepted/total. */
+    private void handleBatch(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode arr = JSON.readTree(exchange.getRequestBody());
+            int accepted = 0;
+            int total = 0;
+            for (final JsonNode body : arr) {
+                total++;
+                final String ticker = body.hasNonNull("securityId")
+                    ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
+                final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
+                final int qty = body.path("quantity").asInt();
+                final long px = Math.round(body.path("limitPrice").asDouble() * 1_000_000d);
+                final ExecResult r = submitOrder("batch", body.path("accountId").asInt(), ticker, side, qty, px);
+                if (r != null && r.accepted()) {
+                    accepted++;
+                }
+            }
+            respond(exchange, 200, "{\"accepted\":" + accepted + ",\"total\":" + total + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /** Prometheus-text metrics the inherited bench harness reads (booked/s = delta of the fill
+     *  counter / elapsed). Format matches the order-matcher's traderx_order_events_total family. */
+    private void handleMetrics(final HttpExchange exchange) {
+        final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
+            + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n";
+        try {
+            final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        } catch (final Exception ignore) {
+            // scrape client went away
         }
     }
 

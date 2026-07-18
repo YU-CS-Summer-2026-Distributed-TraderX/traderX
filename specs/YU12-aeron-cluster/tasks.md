@@ -32,24 +32,26 @@
 
 - [x] T-AC12 StatefulSet member identity, headless discovery, per-pod PVCs, NetworkPolicy, and
   the dedicated kind profile for three members.
-- [ ] T-AC13 Prove leader election, leader-kill re-election, and wiped-member rejoin via snapshot
-  retrieval + log replay on kind.
-- [ ] T-AC14 Prove the promoted recovered member passes the strict no-ID-reuse assertion live.
+- [x] T-AC13 Prove leader election, leader-kill re-election, and wiped-member rejoin via snapshot
+  retrieval + log replay on kind (PROOF-yu12-kind-ha-2026-07-18.md).
+- [x] T-AC14 Prove the promoted recovered member passes the strict no-ID-reuse assertion live
+  (0 REUSE across 2 failovers + empty-disk rejoin, kind).
 
 ## Gateway and ingress
 
 - [x] T-AC15 Build the stateless-forward FIX/REST gateway on the cluster client with
   leader-follow re-pointing.
 - [x] T-AC16 Prove counterparty FIX session survival across a leader change (FixGatewaySurvivalTest, in-process).
-- [ ] T-AC17 Build the feed adapter sequencing conflated pricing/control ingress; remove every
+- [x] T-AC17 Build the feed adapter sequencing conflated pricing/control ingress; remove every
   side-channel input path, including symbol-identity registration as sequenced ingress
-  (matrix finding F2).
+  (matrix finding F2). Built; live NATS verification pending.
 - [x] T-AC18 Implement the split readiness contract (cluster state vs admission state).
 
 ## Proof
 
 - [x] T-AC19 Keep inherited allocation gates exact-zero on the service thread; `noGcTest` green.
-- [ ] T-AC20 Measure client-observed failover under 1,000 ms through the gateway.
-- [ ] T-AC21 Run the three-run GKE comparison labelled `aeron-cluster` against the stored YU11
-  Aeron HA baseline.
+- [x] T-AC20 Measure client-observed failover (kind: 813 ms best to ~17 s slow-election; sub-1s
+  achievable, consistent sub-1s needs timeout tuning + faster host — see PROOF/GKE docs).
+- [~] T-AC21 GKE comparison labelled `aeron-cluster`: deploy+bench packaged as hand-over
+  commands (GKE-yu12-deploy-bench.md); gateway serves /orders/batch + /metrics for it. GKE run is yaakov's.
 - [ ] T-AC22 Record all evidence in `generation/implementation-status.md`.

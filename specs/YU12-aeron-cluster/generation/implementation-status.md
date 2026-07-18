@@ -34,10 +34,14 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | Cluster apply-path allocation gate | `clusterAllocationGateTest`: two consecutive exact-zero 1M-event windows on the decode→generator→engine→drain path (NFR-AC01). |
 | Symbol identity (matrix F2) | `SymbolRegisterMessage` template + `ClusterSymbolRegistrationTest`: log-ordered idempotent assignment, deterministic capacity refusal, snapshot round-trip with derived generator. |
 | Containerized cluster on kind | 3/3 members Ready and a leader elected on `kind-traderx-yu12-cluster` (member-DNS await + halt-on-termination fixed the live `UnknownHostException` wedge). |
-| kind destructive proof | BLOCKED on one leg: cluster egress to non-member client pods never connects (`egress.isConnected=false` with a connected, consumed ingress). Full diagnosis, ruled-out causes, and resume path in `docs/handoff/ISSUES-yu12-kind-egress-2026-07-17.md`; `scripts/yu12/crash-proof-kind.sh` runs the whole crash/wipe/no-reuse matrix once the leg connects. |
-| Gateway tier (ADR-047 first cut) | `ClusterGatewayMain`: REST termination, FIFO committed-ack correlation, sequenced symbol resolution, leader-follow via the cluster client, split `/ready`. Compiles; runtime verification and FIX termination are the open remainder. |
+| kind destructive proof | RESOLVED 2026-07-18 (was blocked on a cross-pod egress leg — root cause: egress channel term-length overflowed the default `/dev/shm`; see the E2E proof row below). |
 | Feed adapter (ADR-045) | `FeedAdapterMain`: NATS `pricing.>` conflated into PRICE_TICK ingress with sequenced symbol registration. Compiles; live NATS verification open. |
 | GKE | Not touched (fable-owned YU11 image still deployed). The bench (label `aeron-cluster`) requires the gateway tier serving REST first; deploy/bench commands are user-run per working convention. |
+
+| kind HA proof (E2E, live) | `PROOF-yu12-kind-ha-2026-07-18.md`: 3-member cluster on kind, cross-pod proof client trading through the log; **0 ID reuse** across 2 failovers + an empty-disk member rejoin, strictly-increasing refs 1005..7457; client-observed failover 813 ms (fast) to ~17 s (slow Docker-Desktop election); final state 3/3 converged. Cross-pod egress unblocked by the term-length/`/dev/shm` fix (ISSUES-yu12-kind-egress). |
+| FIX gateway + survival | `FixGatewayAcceptor` + one-client `ClusterGatewayMain` (REST+FIX through the `OrderSubmitter` seam, endpoint-cycling leader-follow, /orders/batch + /metrics for the bench). `FixGatewaySurvivalTest` GREEN: FIX session survives a modelled leader blip (0 logouts, orders resume same session). |
+| Feed adapter | `FeedAdapterMain`: NATS pricing.> conflated into sequenced PRICE_TICK ingress + sequenced symbol registration. Built; live NATS verification pending. |
+| GKE | Not touched (0 nodes). Deploy+bench packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); gateway is bench-compatible. |
 
 ## Component status
 
@@ -45,7 +49,8 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 |---|---|
 | Spec pack, catalog, lineage docs | Scaffolded and validated |
 | Clustered service hosting (`onSessionMessage` + complete snapshot/restore + no-ID-reuse proof) | Proven single-member at full snapshot completeness (matrix verdict: Complete at this scope) |
-| Three-member cluster | Proven in-process; running elected on kind; destructive kind proof blocked on the egress leg (see handoff issue doc) |
-| Ingress gateway tier | REST cut built (compiles); runtime verification + FIX termination open |
+| Three-member cluster | Proven in-process AND live on kind: 0-ID-reuse across 2 failovers + empty-disk rejoin |
+| Ingress gateway tier | REST + FIX built on one cluster client; FIX session-survival proven; /orders/batch + /metrics for the bench; live REST/FIX-vs-cluster verification still open |
 | Feed-adapter consensus ingress | Built (compiles); live NATS verification open |
-| Recovery matrix / failover / GKE proofs | Unit slice green; kind/GKE runs open |
+| Recovery matrix / failover | Unit slice green; kind E2E no-ID-reuse proven; consistent sub-1s failover needs timeout tuning |
+| GKE proofs | Packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); run by yaakov |
