@@ -42,6 +42,21 @@ per connect attempt — the leader is found in <= N attempts and re-found after 
 gateway/feed clients should adopt the same pattern until the follower-redirect root cause
 (probe 1/4 below, now scoped to the redirect egress publication on followers) is closed.
 
+## Further ruled out (session end)
+
+- **hostNetwork client** — identical timeout (so not pod-network ingress filtering).
+- **UDP TX-checksum offload** (`ethtool -K eth0 tx-checksum-ip-generic off` on all four kind
+  nodes — the classic kind-on-Docker-Desktop UDP blackhole) — identical timeout.
+
+Final shape of the defect: the member's egress/redirect response connects ONLY when the client
+is in the member's own pod (proven live: exec'd client traded refs 1..4 through the log).
+Toward any other destination — pod IP, host IP, checksums fixed, policies absent — the egress
+publication never connects, while client→member ingress connects and commits fine. This now
+points at the member-side egress publication itself (creation, setup emission, or the
+`rejoin=false` response-channel semantics on these drivers) rather than the fabric. Probe 1
+below (driver counters on a member while a connect is pending) is decisive and should run
+first next session.
+
 ## Next probes (in order, for the next session)
 
 1. Add `aeron-all` (or copy `AeronStat`) to the image and inspect the LEADER's driver counters
