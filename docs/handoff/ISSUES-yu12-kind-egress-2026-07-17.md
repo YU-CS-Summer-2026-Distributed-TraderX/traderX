@@ -1,3 +1,29 @@
+# YU12 kind egress — ROOT-CAUSED AND FIXED (2026-07-18)
+
+**Resolved.** Cross-pod client trading works on kind: `CONNECTED via cluster-0`, `SEEDED`,
+orders acking through the consensus log from a separate pod.
+
+**Root cause:** the client egress channel had NO `term-length`, so Aeron defaulted to a 64MB
+term → a ~48MB log file. A container's default `/dev/shm` is 64MB, so the egress subscription's
+log could not be allocated and egress never connected — while ingress connected because its
+channel already carried `term-length=64k`. The bare-Aeron diagnostic made it explicit:
+`insufficient usable storage for new log of length=50335744 usable=18870272 in /dev/shm`.
+
+This reconciles every earlier observation: "same-pod worked" was never about network locality —
+the exec'd client ran inside a MEMBER pod, which mounts a 512Mi Memory `/dev/shm`; member↔member
+consensus worked for the same reason; raw pod-to-pod UDP worked (no Aeron log needed); every
+cross-pod client failed on the default 64MB `/dev/shm`.
+
+**Fix (two lines of defense):** `term-length=64k` on every client egress channel
+(`ClusterProofClient`, `FeedAdapterMain`, `ClusterGatewayMain`) bounds the egress log to ~192KB;
+plus a Memory `/dev/shm` mount on the client pods for headroom (matching the members). The
+endpoint-cycling connect stays — it is still correct for finding the leader across the
+multi-endpoint list and after failover.
+
+---
+
+## Historical investigation (preserved)
+
 # YU12 kind E2E — one open leg: cluster egress to external-client pods
 
 Status at hand-off (2026-07-17, pre-Shabbat cutoff). The three-member Aeron Cluster RUNS on

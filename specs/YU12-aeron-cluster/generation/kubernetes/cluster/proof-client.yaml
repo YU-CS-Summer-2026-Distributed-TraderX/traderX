@@ -26,6 +26,8 @@ spec:
           value: "100"
         - name: PROOF_GAP_MS
           value: "500"
+        - name: PROOF_EGRESS_PORT
+          value: "40460"
         - name: JAVA_TOOL_OPTIONS
           value: "-Xms128m -Xmx256m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
       resources:
@@ -35,3 +37,11 @@ spec:
         limits:
           cpu: 500m
           memory: 512Mi
+      volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi

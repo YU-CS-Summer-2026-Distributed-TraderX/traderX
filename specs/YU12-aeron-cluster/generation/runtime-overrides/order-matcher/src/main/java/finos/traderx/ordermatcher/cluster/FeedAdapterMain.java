@@ -60,7 +60,7 @@ public final class FeedAdapterMain {
             .aeronDirectoryName(aeronDir)
             .ingressChannel("aeron:udp?term-length=64k")
             .ingressEndpoints(ingressEndpoints)
-            .egressChannel("aeron:udp?endpoint=" + env("FEED_EGRESS_HOST", env("POD_IP", "localhost")) + ":0")
+            .egressChannel("aeron:udp?term-length=64k|endpoint=" + env("FEED_EGRESS_HOST", env("POD_IP", "localhost")) + ":" + env("FEED_EGRESS_PORT", "0"))
             .egressListener((sessionId, timestamp, egress, offset, length, header) -> {
                 if (egress.getByte(offset + 12) == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
                     final int id = egress.getInt(offset + 8);

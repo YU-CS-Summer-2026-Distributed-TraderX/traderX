@@ -89,7 +89,7 @@ public final class ClusterGatewayMain {
             .aeronDirectoryName(aeronDir)
             .ingressChannel("aeron:udp?term-length=64k")
             .ingressEndpoints(ingressEndpoints)
-            .egressChannel("aeron:udp?endpoint=" + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":0")
+            .egressChannel("aeron:udp?term-length=64k|endpoint=" + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":" + env("GATEWAY_EGRESS_PORT", "0"))
             .egressListener(this::onEgress));
         connected = true;
     }
