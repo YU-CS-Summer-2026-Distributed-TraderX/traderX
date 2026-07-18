@@ -40,7 +40,8 @@
 ## Gateway and ingress
 
 - [x] T-AC15 Build the stateless-forward FIX/REST gateway on the cluster client with
-  leader-follow re-pointing.
+  leader-follow re-pointing. Live-verified on kind: REST /orders + /orders/batch + /metrics, and a
+  POST served through a live leader-kill (orderRef 8056 after electing a new leader).
 - [x] T-AC16 Prove counterparty FIX session survival across a leader change (FixGatewaySurvivalTest, in-process).
 - [x] T-AC17 Build the feed adapter sequencing conflated pricing/control ingress; remove every
   side-channel input path, including symbol-identity registration as sequenced ingress

@@ -68,3 +68,21 @@ every client egress channel + a Memory `/dev/shm` mount. Full write-up:
   will run to an auto-verdict on a less resource-constrained host (or GKE).
 - Sub-1s failover as a CONSISTENT result (NFR-AC03): needs consensus-timeout tuning + a faster
   host; demonstrated achievable (813 ms sample), not yet the steady-state on kind.
+
+## Live gateway proof (REST + failover transparency)
+
+The gateway (`ClusterGatewayMain`) was deployed to the same kind cluster (Deployment + Service
+`order-matcher:18110`, FIX acceptor on `:18130`) and verified end-to-end:
+
+```
+POST /orders        {accountId:11, securityId:1, Buy, qty 10, limit 100}  -> {"orderRef":8052,"kind":1}   (accepted, real cluster lineage)
+POST /orders/batch  [x3]                                                   -> {"accepted":3,"total":3}
+GET  /metrics                                                              -> traderx_order_events_total{event="accepted"} 4   (bench format)
+```
+
+Then, **live failover transparency (ADR-047)**: the current leader (ordinal 0) was force-killed;
+member 1 was elected; the very next REST POST through the gateway — with NO gateway restart —
+succeeded on the first attempt: `{"orderRef":8056,"kind":1}`. The gateway's endpoint-cycling +
+owner-thread reconnect found the new leader and kept serving. Combined with `FixGatewaySurvivalTest`
+(FIX session survives a leader blip in-process), the counterparty-transparent-failover property is
+proven both live (REST) and at the session layer (FIX).
