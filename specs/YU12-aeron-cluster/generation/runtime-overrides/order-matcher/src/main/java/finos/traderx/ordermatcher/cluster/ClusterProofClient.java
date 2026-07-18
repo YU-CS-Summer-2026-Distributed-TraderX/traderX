@@ -75,7 +75,14 @@ public final class ClusterProofClient {
         seed(client, codec, event, buffer, account, security);
         System.out.println("SEEDED account=" + account + " security=" + security);
 
+        // Failover detection: AeronCluster signals session loss as a STATE, not an exception —
+        // offer() just stops making progress. So if no ack lands for reconnectAfterMs while we
+        // are still submitting, proactively close and re-find the leader. The GAP line (printed
+        // in the egress listener when an ack arrives after > gapMs) is the client-observed
+        // failover measurement (T-AC20).
+        final long reconnectAfterMs = Long.parseLong(env("PROOF_RECONNECT_MS", "2000"));
         long nextSendMillis = System.currentTimeMillis();
+        long lastReconnectMillis = 0;
         while (true) {
             try {
                 client.pollEgress();
@@ -83,9 +90,17 @@ public final class ClusterProofClient {
                 if (now >= nextSendMillis) {
                     newOrder(event, account, security, 100 * PX, 0L);
                     codec.encodeInput(buffer, 0, event, 0, 0, 0);
-                    if (client.offer(buffer, 0, AeronReplicationCodec.INPUT_BYTES) > 0) {
-                        nextSendMillis = now + intervalMs;
-                    }
+                    client.offer(buffer, 0, AeronReplicationCodec.INPUT_BYTES);
+                    nextSendMillis = now + intervalMs;
+                }
+                // lastAckMillis stays at the true last ack so the GAP line measures the real
+                // failover; reconnect attempts are rate-limited independently.
+                final boolean stalled = lastAckMillis[0] != 0 && now - lastAckMillis[0] > reconnectAfterMs;
+                if (client.isClosed() || (stalled && now - lastReconnectMillis > reconnectAfterMs)) {
+                    System.out.println("RECONNECT reason=" + (client.isClosed() ? "closed" : "stalled"));
+                    lastReconnectMillis = now;
+                    CloseHelper.quietClose(client);
+                    client = connectCycling(clientContext.clone(), endpointEntries);
                 }
                 Thread.yield();
             } catch (final Exception e) {

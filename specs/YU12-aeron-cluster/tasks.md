@@ -38,13 +38,13 @@
 
 ## Gateway and ingress
 
-- [ ] T-AC15 Build the stateless-forward FIX/REST gateway on the cluster client with
+- [x] T-AC15 Build the stateless-forward FIX/REST gateway on the cluster client with
   leader-follow re-pointing.
-- [ ] T-AC16 Prove counterparty FIX session survival across a leader change.
+- [x] T-AC16 Prove counterparty FIX session survival across a leader change (FixGatewaySurvivalTest, in-process).
 - [ ] T-AC17 Build the feed adapter sequencing conflated pricing/control ingress; remove every
   side-channel input path, including symbol-identity registration as sequenced ingress
   (matrix finding F2).
-- [ ] T-AC18 Implement the split readiness contract (cluster state vs admission state).
+- [x] T-AC18 Implement the split readiness contract (cluster state vs admission state).
 
 ## Proof
 
