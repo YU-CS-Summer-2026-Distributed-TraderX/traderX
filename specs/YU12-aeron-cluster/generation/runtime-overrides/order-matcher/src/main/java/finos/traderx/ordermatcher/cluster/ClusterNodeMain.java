@@ -108,6 +108,9 @@ public final class ClusterNodeMain {
                 + ",\"role\":\"" + service.role() + "\""
                 + ",\"started\":" + started
                 + ",\"applied\":" + (started ? service.engine().blpSeq() : -1)
+                // authoritative booked-trade counter (egress acks are best-effort and may drop
+                // under load; the bench must read booked/s here, not at the gateway)
+                + ",\"trades\":" + (started ? service.engine().tradeCounter() : -1)
                 + ",\"snapshots\":" + service.snapshotsTaken() + "}";
             respond(exchange, 200, body);
         });

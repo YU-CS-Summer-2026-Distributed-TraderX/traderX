@@ -97,6 +97,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
         server.createContext("/metrics", this::handleMetrics);
+        server.createContext("/seed", this::handleSeed);
         server.createContext("/ready", exchange ->
             respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
         server.createContext("/health", exchange ->
@@ -298,9 +299,70 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                     accepted++;
                 }
             }
-            respond(exchange, 200, "{\"accepted\":" + accepted + ",\"total\":" + total + "}");
+            // 201: the inherited bench harness (batch-load.mjs) counts a batch as accepted
+            // only on 201 Created.
+            respond(exchange, 201, "{\"accepted\":" + accepted + ",\"total\":" + total + "}");
         } catch (final Exception e) {
             respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /** Bench/ops seeding: POST {accountId, tickers:"JPM,GS,...", price} enables the account,
+     *  registers+enables each ticker, and publishes a price — all through the sequenced
+     *  ingress path (ADR-045: the consensus log is the only input). */
+    private void handleSeed(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final int accountId = body.path("accountId").asInt();
+            final String[] tickers = body.path("tickers").asText("").split(",");
+            final long priceTicks = Math.round(body.path("price").asDouble(150) * 1_000_000d);
+            final Boolean ok = onOwner(() -> {
+                long version = System.currentTimeMillis(); // monotonic across re-seeds
+                event.type = InputEvent.TYPE_ACCOUNT_CONTROL;
+                event.accountId = accountId;
+                event.securityId = 0;
+                event.setControlEnabled(true);
+                event.setControlVersion(version++);
+                offerBlocking();
+                for (final String ticker : tickers) {
+                    final int id = resolveSecurityId(ticker.trim());
+                    if (id < 0) {
+                        return false;
+                    }
+                    event.type = InputEvent.TYPE_SECURITY_CONTROL;
+                    event.accountId = 0;
+                    event.securityId = id;
+                    event.setControlEnabled(true);
+                    event.setControlVersion(version++);
+                    offerBlocking();
+                    event.type = InputEvent.TYPE_PRICE_TICK;
+                    event.side = 0;
+                    event.securityId = id;
+                    event.priceTicks = priceTicks;
+                    offerBlocking();
+                }
+                return true;
+            });
+            respond(exchange, Boolean.TRUE.equals(ok) ? 200 : 422, "{\"seeded\":" + ok + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /** Offer the current {@code event} with backpressure retry (owner thread only). */
+    private void offerBlocking() {
+        codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+        final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
+        while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
+            client.pollEgress();
+            if (System.currentTimeMillis() > deadline) {
+                throw new IllegalStateException("ingress offer timed out");
+            }
+            Thread.yield();
         }
     }
 

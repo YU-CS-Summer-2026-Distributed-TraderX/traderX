@@ -19,7 +19,7 @@ BATCH="${4:-1000}"
 CONC="${5:-48}"
 CTX="${KUBE_CTX:-gke_traderx-501015_us-east1-b_traderx-lmax}"
 NS="${NAMESPACE:-traderx}"
-SVC="http://order-matcher.${NS}.svc.cluster.local:18110"
+SVC="${MATCHER_SVC:-http://order-matcher.${NS}.svc.cluster.local:18110}"
 RESULTS="$(dirname "$0")/results/gke-comparison.csv"
 
 read_fills() {
@@ -43,7 +43,7 @@ for i in $(seq 1 "$RUNS"); do
   F0=$(read_fills)
   T0=$(date +%s.%N)
   OUT=$(kubectl --context "$CTX" exec bench-runner -n "$NS" -- \
-    env "MATCHER_URL=${SVC}" node /batch-load.mjs --batch "$BATCH" --conc "$CONC" --secs "$SECS" 2>&1) || true
+    env "MATCHER_URL=${SVC}" "SIDES=${SIDES:-}" "ACCOUNT=${ACCOUNT:-42422}" "LIMIT=${LIMIT:-1000000}" node /batch-load.mjs --batch "$BATCH" --conc "$CONC" --secs "$SECS" 2>&1) || true
   T1=$(date +%s.%N)
   F1=$(read_fills)
   PEAK=$(read_peak)

@@ -51,7 +51,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int MAX_SECURITIES = 64;
     static final int FILL_FULL_THRESHOLD = 100;
     static final int POOL_SIZE = 1024;
-    static final int OUTPUT_RING_SIZE = 4096;
+    // The service thread is BOTH producer (engine emits during apply) and consumer (drainOutputs
+    // after apply), so a single event whose output burst exceeds free ring space self-deadlocks in
+    // RingBuffer.next() — hit on GKE 2026-07-19 when a price tick mass-executed a ~20k-order book
+    // (3 slots per fill) against the old 4096 ring. Size must exceed 3x the worst resting-book
+    // cascade; 1<<18 covers ~87k fills in one apply (~26MB of pre-allocated slots).
+    static final int OUTPUT_RING_SIZE = 1 << 18;
     static final int MAX_ACCOUNTS = 64;
     static final int IDEMPOTENCY_CAPACITY = 1024;
     static final long CREDIT_LIMIT_TICKS = Long.MAX_VALUE / 4;
@@ -445,7 +450,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             return;
         }
         idle.reset();
-        for (int i = 0; i < 1000; i++) {
+        // 20 attempts is sub-millisecond worst case. The old bound (1000 x backoff idle, ~1s
+        // per undeliverable ack) let one non-draining client session throttle the whole state
+        // machine under load: apply collapsed to ~1 ack/s and the cluster appeared frozen
+        // (GKE bench, 2026-07-19). Egress is best-effort BY DESIGN — a slow client gets drops,
+        // never the state machine's time; the committed log remains the source of truth.
+        for (int i = 0; i < 20; i++) {
             if (session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH) > 0) {
                 return;
             }

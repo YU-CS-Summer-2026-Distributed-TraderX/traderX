@@ -173,3 +173,49 @@ reconnect-churn loop (4302 connects over 41 min on an otherwise healthy cluster)
 creates fresh pub/sub log buffers in its embedded driver's /dev/shm, so once churn starts,
 resource pressure can keep it churning. Test-client artifact (restart clears it); noted because
 any long-lived Aeron client that reconnects in a loop should bound its reconnect rate.
+
+## Throughput bench + two hosting bugs it flushed out (2026-07-19)
+
+Running `run-gke-bench.sh aeron-cluster` (batch 1000, conc 48, 30 s runs) required standing up
+the bench path (bench-runner pod, gateway `/seed` admin endpoint for control/price state — the
+engine fail-closes on unknown accounts/securities and on prices staler than
+`risk.price.max-age-ms`=30 s, so the bench keeps a 10 s price refresher running) and flushed out
+two REAL hosting bugs, both now fixed:
+
+1. **Egress emission throttled the state machine.** `offerEgress` retried an undeliverable ack
+   up to 1000 x backoff-idle (~1 s per ack): one non-draining client session collapsed apply to
+   ~1 ack/s — the cluster looked frozen. Bound is now 20 attempts (sub-ms); egress is
+   best-effort by design and a slow client gets drops, never the state machine's time.
+2. **Output-ring self-deadlock (the actual freeze).** The service thread is both producer
+   (engine emits during apply) and consumer (`drainOutputs` after apply). A price tick against
+   the bench's ~20k-order resting book emitted a fill cascade larger than the 4096-slot output
+   ring -> `RingBuffer.next()` parked forever inside apply, all three members identically
+   (deterministic log): consensus stayed up (elections, session accepts) but applied froze.
+   Confirmed by SIGQUIT thread dump (`clustered-service` parked in
+   `OutputPublisher.emitFillWithTradeAndPosition`). Ring is now 1<<18 with the sizing invariant
+   documented (must exceed 3x the worst single-event cascade). The enlarged ring replayed the
+   previously-wedging log clean through.
+
+Methodology note: gateway fill counters under-count under load (egress drops are by design), so
+the member health endpoint now exposes the engine's authoritative `trades` counter and booked/s
+is read from the LEADER's delta.
+
+### Results (3-member cluster, emptyDir, 400/200 timeouts, single-order gateway path)
+
+| run | booked/s (engine-authoritative) | applied/s | submit/s | failed |
+|---|---|---|---|---|
+| 1 | 907 | 928 | 786 | 0 |
+| 2 | **18,612** (cascade window) | 4,404 | 3,390 | 0 |
+| 3 | 1,104 | 1,124 | 590 | 0 |
+
+- **Sustained committed ingress through the current gateway: ~800-1,100 orders/s.** The
+  bottleneck is the gateway's one-order-at-a-time committed-ack round trip (~1.2 ms each on the
+  single owner thread) — NOT the cluster.
+- **The consensus+apply path has large headroom**: 18.6k booked/s observed while replicating
+  through Raft, and log replay after restart re-applied ~740k events in seconds. This mirrors
+  the YU11/production finding: the REST per-order ingress is the ceiling, not the BLP.
+- **NFR-AC02 (>= 25,149 booked/s) is NOT met via the per-order gateway path — as predicted in
+  the hand-over doc.** The identified lever is unchanged: pipeline the gateway owner thread
+  (offer many in flight, correlate acks by order id) and drive the bench through `/orders/batch`
+  amortized submits. The engine-side burst number says the target is reachable once ingress is
+  pipelined.
