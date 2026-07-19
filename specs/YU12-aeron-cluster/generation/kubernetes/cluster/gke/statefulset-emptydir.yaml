@@ -47,6 +47,36 @@ spec:
                 matchLabels:
                   app: order-matcher-cluster
               topologyKey: kubernetes.io/hostname
+      initContainers:
+        # DR restore: when RESTORE_FROM_GCS=1, member-0 seeds its (emptyDir) /data from the
+        # latest GCS backup before the JVM starts; members 1 & 2 come up empty and rejoin member-0
+        # via the proven catch-up. No-op on normal boot. Uses the journal-archive HMAC creds.
+        - name: restore-from-gcs
+          image: google/cloud-sdk:latest
+          env:
+            - name: RESTORE_FROM_GCS
+              value: "0"
+            - name: GS_ID
+              valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: access-key-id } }
+            - name: GS_SECRET
+              valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: secret-access-key } }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              ORD="${HOSTNAME##*-}"
+              [ "${RESTORE_FROM_GCS:-0}" = "1" ] || { echo "restore disabled — normal boot"; exit 0; }
+              [ "$ORD" = "0" ] || { echo "member $ORD rejoins fresh (only member-0 restores)"; exit 0; }
+              [ -s /data/cluster/recording.log ] && { echo "/data already populated — skip restore"; exit 0; }
+              echo "restoring member-0 /data from GCS latest.tgz ..."
+              export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+              python3 -m pip install --break-system-packages --quiet boto3 >/dev/null 2>&1
+              python3 -c "import boto3; from botocore.config import Config; boto3.client('s3',endpoint_url='https://storage.googleapis.com',aws_access_key_id='$GS_ID',aws_secret_access_key='$GS_SECRET',config=Config(signature_version='s3v4',s3={'addressing_style':'path'})).download_file('traderx-501015-order-matcher-journal-archive','yu12-cluster-snapshots/latest.tgz','/tmp/latest.tgz')"
+              mkdir -p /data && tar -xzSf /tmp/latest.tgz -C /data
+              echo "restored member-0: $(ls /data)"
+          volumeMounts:
+            - name: data
+              mountPath: /data
       containers:
         - name: cluster-node
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu12
