@@ -331,3 +331,25 @@ Remaining true statements:
   the log and rejoin converges.
 - PVCs for the archive remain the belt-and-suspenders option for whole-cluster-at-once loss
   (all three nodes dying simultaneously still loses the un-snapshotted tail on emptyDir).
+
+## Phase 0 baseline (joint plan): phase-resolved 400/200 control (2026-07-19)
+
+New instruments: election-state counter watcher (`ELECTION-PHASE state=<S> atMs=`), FIRST-APPLY
+stamp (first committed apply AS LEADER — the system SLO clock), 10 ms canary. Five kills,
+fresh c3 one-member-per-node epoch:
+
+| run | INIT (detection) | CANDIDATE_BALLOT | LEADER_READY | ROLE_LEADER | FIRST_APPLY |
+|---|---|---|---|---|---|
+| 1 | 400 | 424 | 645 | 646 | 784 |
+| 2 | 396 | 425 | 651 | 651 | 1588 |
+| 3 | 387 | 418 | 642 | 643 | 876 |
+| 4 | 409 | 446 | 677 | 678 | 860 |
+| 5 | 386 | 399 | 633 | 638 | 834 |
+
+Readings: detection = the 400 ms heartbeat timeout exactly; canvass/nominate/ballot entry is
+cheap (+10-40 ms); ballot->LEADER_INIT is the ~200 ms election chunk; ROLE_LEADER is tight at
+638-678 ms. FIRST_APPLY - ROLE_LEADER (~150-900 ms) is CLIENT-bound: the canary is the only
+input source, so the SLO includes client recovery (run 2's 1588 ms outlier == its 1553 ms
+client gap). Confirms the joint-plan attack: detection+ballot respond to the timeout ladder;
+the FIRST_APPLY tail collapses with native leader following. Client gaps at 10 ms cadence:
+739-1553 ms, reuse 0.
