@@ -25,9 +25,11 @@ spec:
         - name: PROOF_INGRESS_ENDPOINTS
           value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
         - name: PROOF_GAP_MS
-          value: "500"
+          value: "150"
+        - name: PROOF_RECONNECT_MS
+          value: "1000"
         - name: PROOF_INTERVAL_MS
-          value: "200"
+          value: "50"
         - name: PROOF_EGRESS_PORT
           value: "40460"
         - name: JAVA_TOOL_OPTIONS

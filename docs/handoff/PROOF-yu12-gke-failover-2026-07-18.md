@@ -78,3 +78,52 @@ rebuild — set on the StatefulSet:
   the 500 ms instability, isolate PVC-reattach vs election-round variance).
 - 3 nodes (quota bump) for true node-fault tolerance + the `run-gke-bench.sh aeron-cluster`
   throughput run against the 25,149 baseline (gateway already serves `/orders/batch` + `/metrics`).
+
+
+## Consistency investigation (2026-07-18, same session)
+
+The first pass saw a bimodal tail (occasional ~11-52s outages). Chasing consistency root-caused
+ALL of it to test/measurement artifacts, NOT the cluster:
+
+1. **Measurement bugs**: `settled()` first required applied-seq convergence read sequentially via
+   the API proxy — at 20 orders/s the cluster advances 20-60 orders between reads, so the check
+   never passed on a trading cluster (false "not settled"). Fixed to role-based (3 Running +
+   1 LEADER + 2 FOLLOWERS = quorum restored). Also: killing the next leader before the previous
+   member fully rejoined = a genuine 2-of-3-down (quorum loss) — correct long outage, not a bug;
+   fixed by a real catch-up margin between kills (one-fault-at-a-time).
+2. **The ~37s tail was the PROOF CLIENT, not the cluster.** The client's `connectCycling` blocked
+   the full 5s messageTimeout on the just-killed endpoint each cycle, and the stall clock was set
+   BEFORE that blocking call, so the stall re-fired the instant it returned — a reconnect churn
+   that tore down each freshly-established session before acks could flow, for ~37s until the
+   killed member's pod returned. The cluster had re-elected in ~1-2s the whole time (the client
+   logged repeated `CONNECTED via <leader>` during the "outage").
+
+Fixed the client (grace window starts AFTER connect completes; 1s message timeout so dead
+endpoints fail fast) and re-measured, fresh cluster, one-fault-at-a-time, tuned 1s heartbeat:
+
+```
+kills=4 -> client-observed outages: 192ms, 2099ms, 2102ms, 2155ms, 3115ms
+min=192ms  median=2102ms  max=3115ms  reuse=0
+```
+
+### Final characterization (GKE, emptyDir cluster dir, tuned 100ms/1s/500ms)
+
+- **Off the k8s control plane: yes.**
+- **Consistent + correct: yes** — no catastrophic outliers, 0 ID reuse across ~20 total kills.
+- **Client-observed failover: ~2-3 s typical, best 192 ms.** The ~2 s floor is partly the client's
+  own 2 s stall-before-reconnect threshold + the 1 s heartbeat-detection + ~1 s election.
+- **Sub-1s: achievable in the best case (~200 ms), NOT the consistent floor.** Consistent sub-1s
+  is bounded by two tuning knobs that both resist tightening: heartbeat-timeout below ~1 s caused
+  election instability here, and the client reconnect threshold below ~1-2 s risks churn. Getting a
+  consistent sub-1s floor is a focused stability/tuning task (heartbeat 600-800ms with a stability
+  check; client reconnect threshold ~500ms with the grace fix; possibly the AeronCluster client's
+  native leader-tracking instead of endpoint-cycling).
+
+### emptyDir vs PVC (important operational finding)
+
+Members on a **PVC** rejoin slowly on GKE (PVC detach/reattach when the replacement pod lands on
+the other node = minutes), leaving a long degraded window. Switching the cluster dir to
+**emptyDir** made rejoin fast (fresh-disk rejoin via consensus catch-up — durability is the Raft
+quorum, not the pod's disk). emptyDir is the right choice for cluster members on GKE for fast
+fault-tolerance recovery; pair it with periodic snapshots to durable storage if whole-cluster
+restart durability is needed.

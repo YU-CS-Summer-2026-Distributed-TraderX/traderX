@@ -44,6 +44,7 @@ public final class ClusterProofClient {
         final AeronCluster.Context clientContext = new AeronCluster.Context()
             .aeronDirectoryName(aeronDir)
             .ingressChannel("aeron:udp?term-length=64k")
+            .messageTimeoutNs(1_000_000_000L)
             .ingressEndpoints(ingressEndpoints)
             .egressChannel("aeron:udp?term-length=64k|endpoint=" + env("PROOF_EGRESS_HOST", env("POD_IP", "localhost")) + ":" + env("PROOF_EGRESS_PORT", "0"))
             .egressListener((clusterSessionId, timestamp, egress, offset, length, header) -> {
@@ -94,13 +95,17 @@ public final class ClusterProofClient {
                     nextSendMillis = now + intervalMs;
                 }
                 // lastAckMillis stays at the true last ack so the GAP line measures the real
-                // failover; reconnect attempts are rate-limited independently.
-                final boolean stalled = lastAckMillis[0] != 0 && now - lastAckMillis[0] > reconnectAfterMs;
-                if (client.isClosed() || (stalled && now - lastReconnectMillis > reconnectAfterMs)) {
+                // failover. The stall CLOCK restarts on each reconnect (stallBase = max of last
+                // ack and last reconnect) so a just-established session gets a full grace window
+                // to produce an ack before we tear it down again — without this the client churns
+                // reconnects every window and never lets acks resume (self-inflicted long outage).
+                final long stallBase = Math.max(lastAckMillis[0], lastReconnectMillis);
+                final boolean stalled = lastAckMillis[0] != 0 && now - stallBase > reconnectAfterMs;
+                if (client.isClosed() || stalled) {
                     System.out.println("RECONNECT reason=" + (client.isClosed() ? "closed" : "stalled"));
-                    lastReconnectMillis = now;
                     CloseHelper.quietClose(client);
                     client = connectCycling(clientContext.clone(), endpointEntries);
+                    lastReconnectMillis = System.currentTimeMillis(); // grace starts after connect
                 }
                 Thread.yield();
             } catch (final Exception e) {
