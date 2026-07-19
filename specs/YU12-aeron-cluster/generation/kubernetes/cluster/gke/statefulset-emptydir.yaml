@@ -61,11 +61,13 @@ spec:
             - name: CLUSTER_PORT_BASE
               value: "21800"
             - name: CLUSTER_HEARTBEAT_INTERVAL_MS
-              value: "100"
+              value: "50"
             - name: CLUSTER_HEARTBEAT_TIMEOUT_MS
-              value: "400"
-            - name: CLUSTER_ELECTION_TIMEOUT_MS
               value: "200"
+            - name: CLUSTER_ELECTION_TIMEOUT_MS
+              value: "100"
+            - name: CLUSTER_ELECTION_STATUS_INTERVAL_MS
+              value: "25"
             - name: CLUSTER_BASE_DIR
               value: "/data"
             - name: CLUSTER_AERON_DIR
