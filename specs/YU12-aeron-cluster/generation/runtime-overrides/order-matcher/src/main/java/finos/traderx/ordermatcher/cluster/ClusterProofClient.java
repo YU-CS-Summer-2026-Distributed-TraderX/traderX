@@ -47,7 +47,19 @@ public final class ClusterProofClient {
             .messageTimeoutNs(1_000_000_000L)
             .ingressEndpoints(ingressEndpoints)
             .egressChannel("aeron:udp?term-length=64k|endpoint=" + env("PROOF_EGRESS_HOST", env("POD_IP", "localhost")) + ":" + env("PROOF_EGRESS_PORT", "0"))
-            .egressListener((clusterSessionId, timestamp, egress, offset, length, header) -> {
+            .egressListener(new io.aeron.cluster.client.EgressListener() {
+                @Override
+                public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
+                                        final int leaderMemberId, final String ingressEndpoints1) {
+                    // Phase 1a: native leader following — the SAME session re-points its ingress.
+                    System.out.println("NEW-LEADER atMs=" + System.currentTimeMillis()
+                        + " session=" + clusterSessionId + " leader=" + leaderMemberId);
+                }
+
+                @Override
+                public void onMessage(final long clusterSessionId, final long timestamp,
+                                      final org.agrona.DirectBuffer egress, final int offset, final int length,
+                                      final io.aeron.logbuffer.Header header) {
                 final int ref = egress.getInt(offset + 8);
                 final byte kind = egress.getByte(offset + 12);
                 if (kind != OutputEvent.KIND_ORDER_ACCEPTED) {
@@ -66,13 +78,22 @@ public final class ClusterProofClient {
                 lastAckMillis[0] = now;
                 lastAckRef[0] = ref;
                 System.out.println("ACK ref=" + ref + " at=" + now);
+                }
             });
 
-        // Kind finding: multi-endpoint ingress wedges on follower redirects (egress redirect
-        // never lands), while a direct-to-leader connect works. Cycle endpoints one at a time:
-        // the leader is found in <= N attempts, and re-found the same way after a failover.
+        // Phase 1a (joint plan): PROOF_NATIVE_FOLLOW=1 connects ONCE with the FULL endpoint
+        // list and lets the replicated session follow NewLeaderEvent — no close, no cycling.
+        // newLeaderTimeoutNs is pinned explicitly: the default (2x the SERVER heartbeat
+        // timeout) shrinks under the timeout ladder to less than an election takes.
+        // The cycling path below remains the fallback (kind-era redirect-wedge workaround).
+        final boolean nativeFollow = "1".equals(env("PROOF_NATIVE_FOLLOW", "0"));
         final String[] endpointEntries = ingressEndpoints.split(",");
-        AeronCluster client = connectCycling(clientContext, endpointEntries);
+        if (nativeFollow) {
+            clientContext.newLeaderTimeoutNs(2_000_000_000L);
+        }
+        AeronCluster client = nativeFollow
+            ? connectFull(clientContext, ingressEndpoints)
+            : connectCycling(clientContext, endpointEntries);
         seed(client, codec, event, buffer, account, security);
         System.out.println("SEEDED account=" + account + " security=" + security);
 
@@ -84,6 +105,7 @@ public final class ClusterProofClient {
         final long reconnectAfterMs = Long.parseLong(env("PROOF_RECONNECT_MS", "2000"));
         long nextSendMillis = System.currentTimeMillis();
         long lastReconnectMillis = 0;
+        long lastStallLogMillis = 0;
         while (true) {
             try {
                 client.pollEgress();
@@ -101,7 +123,21 @@ public final class ClusterProofClient {
                 // reconnects every window and never lets acks resume (self-inflicted long outage).
                 final long stallBase = Math.max(lastAckMillis[0], lastReconnectMillis);
                 final boolean stalled = lastAckMillis[0] != 0 && now - stallBase > reconnectAfterMs;
-                if (client.isClosed() || stalled) {
+                if (nativeFollow) {
+                    // An ack stall is observability, never authority to destroy the replicated
+                    // session (codeX critique, adopted). Reconnect only on genuine close,
+                    // rate-limited to one attempt per second.
+                    if (stalled && now - lastStallLogMillis > 1000) {
+                        lastStallLogMillis = now;
+                        System.out.println("STALL ms=" + (now - stallBase) + " session=" + client.clusterSessionId());
+                    }
+                    if (client.isClosed() && now - lastReconnectMillis > 1000) {
+                        System.out.println("RECONNECT reason=closed");
+                        CloseHelper.quietClose(client);
+                        client = connectFull(clientContext.clone(), ingressEndpoints);
+                        lastReconnectMillis = System.currentTimeMillis();
+                    }
+                } else if (client.isClosed() || stalled) {
                     System.out.println("RECONNECT reason=" + (client.isClosed() ? "closed" : "stalled"));
                     CloseHelper.quietClose(client);
                     client = connectCycling(clientContext.clone(), endpointEntries);
@@ -111,7 +147,26 @@ public final class ClusterProofClient {
             } catch (final Exception e) {
                 System.out.println("RECONNECT cause=" + e.getClass().getSimpleName());
                 CloseHelper.quietClose(client);
-                client = connectCycling(clientContext.clone(), endpointEntries);
+                client = nativeFollow
+                    ? connectFull(clientContext.clone(), ingressEndpoints)
+                    : connectCycling(clientContext.clone(), endpointEntries);
+            }
+        }
+    }
+
+    /** Phase 1a: one connect against the full member list; the session then follows leadership
+     *  changes natively. Retries the whole connect (rate-limited) until the cluster answers. */
+    private static AeronCluster connectFull(final AeronCluster.Context context,
+                                            final String ingressEndpoints) {
+        while (true) {
+            try {
+                final AeronCluster client = AeronCluster.connect(context.clone().ingressEndpoints(ingressEndpoints));
+                System.out.println("CONNECTED-FULL session=" + client.clusterSessionId()
+                    + " leader=" + client.leaderMemberId() + " atMs=" + System.currentTimeMillis());
+                return client;
+            } catch (final Exception e) {
+                System.out.println("CONNECT-FULL-RETRY cause=" + e.getMessage());
+                try { Thread.sleep(1000); } catch (final InterruptedException ie) { Thread.currentThread().interrupt(); }
             }
         }
     }
