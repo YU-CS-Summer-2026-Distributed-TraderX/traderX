@@ -292,3 +292,31 @@ costs seconds: 60 s halves the tax for ~+3-6 s of worst-case recovery. Default a
 ~35 s at 6.4M events and growing — which is exactly what snapshots bound.)
 
 Real fix if the stall ever matters more: async/incremental snapshotting off the apply path.
+
+### Clean-cluster validation at the final config (2026-07-19)
+
+Fresh cluster epoch (full reset), 60 s snapshots, 400/200 timeouts, pipelined gateway:
+60 s flood delivered **2,248,000 orders / 0 failed (~37k/s — the best sustained run, less
+snapshot tax at 60 s)**; leader killed at 25 s → new leader in **778 ms**; killed member
+rejoined and converged mid-flood; **all three members ended at the identical trades counter
+(9,182,152)** — deterministic state equality; 0 ID reuse.
+
+### OPS HAZARD: emptyDir + `kubectl rollout restart` can lose the un-snapshotted tail
+
+Found the hard way (bench data only): k8s rolling restart waits for pod-Ready, and member
+readiness does NOT include catch-up — so successive members can be killed before the previous
+one finished replicating, and with emptyDir disks the log tail beyond the latest snapshot can be
+lost (one rollout here came back at an earlier applied position). Repeated wipe/replay cycles
+also left a mixed-era archive that stranded a rejoining member in a permanently stalled
+catch-up (service idle, replication waiting on ranges the quorum no longer had) — fixed only by
+a full reset.
+
+Rules until fixed properly:
+- **Never `kubectl rollout restart` the member StatefulSet casually.** Roll one member at a
+  time and wait for applied-convergence before the next (the sweep scripts' settle discipline),
+  or take the snapshot-bounded loss deliberately (now <= 60 s of events).
+- Pod-level faults (crash, node kill, single-member restart) remain safe and proven — quorum
+  holds the log and rejoin converges.
+- Proper fixes if this graduates from bench to production: readiness gating on catch-up
+  (leader-commit vs local-applied delta), or PVCs for the archive (with the known
+  minutes-long detach/reattach cost), or both.
