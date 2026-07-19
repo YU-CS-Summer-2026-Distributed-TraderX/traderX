@@ -106,6 +106,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private RingBuffer<OutputEvent> outputRing;
     private Sequence outputConsumed;
     private ClientSession activeSession; // apply-scoped: egress target for mid-apply backpressure drains
+    private boolean stampFirstApplyAsLeader; // Phase-0 SLO clock: armed on LEADER, fires once
 
     private long nextOrderRef = 1;
     private long highestIssuedRef;
@@ -182,6 +183,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         engine.onEvent(event, appliedSeq, true);
         activeSession = null;
         drainOutputs(session);
+        if (stampFirstApplyAsLeader) {
+            stampFirstApplyAsLeader = false;
+            System.out.println("FIRST-APPLY atMs=" + System.currentTimeMillis() + " seq=" + appliedSeq);
+        }
     }
 
     @Override
@@ -241,8 +246,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     @Override
     public void onRoleChange(final Cluster.Role newRole) {
         this.role = newRole;
-        // Failover instrument (T-AC20): wall-clock role transitions let a harness compute
-        // system-facing re-election time against a node-clock kill timestamp.
+        // Joint-plan Phase 0: the system-facing SLO clock stops at the first committed apply
+        // AS LEADER (a fast role change during a snapshot barrier is not "serving"), so arm the
+        // FIRST-APPLY stamp here. Cold branch: one println per election, never in the
+        // allocation-gate window (no role changes there).
+        if (newRole == Cluster.Role.LEADER) {
+            stampFirstApplyAsLeader = true;
+        }
         System.out.println("ROLE-CHANGE role=" + newRole + " atMs=" + System.currentTimeMillis());
     }
 
