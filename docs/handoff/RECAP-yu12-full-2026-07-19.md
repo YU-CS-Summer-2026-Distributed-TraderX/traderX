@@ -57,27 +57,30 @@ Baselines from prior states (GKE, booked orders/s through the full committed pat
 | YU11 Aeron replication (hand-built HA) | 25,149-parity, +149% over NATS HA |
 | YU12 cluster, single-order gateway path | ~800-1,100 sustained (per-order committed-ack wait ~1.2ms = the ceiling) |
 | YU12 engine burst through Raft (observed) | 18,612 booked/s |
-| **YU12 pipelined gateway (first flood)** | **28,896 booked/s, 24,037 submit/s** — past the bar |
+| **YU12 pipelined gateway (confirmed, 3 stable runs)** | **28,860-35,714 submit/s; 45,684-135,834 booked/s** — past the bar |
 
 - The consensus/apply path was never the bottleneck: 3-member Raft replication sustained an
   18.6k/s cascade and replayed a 740k-event log in seconds. The ceiling was the gateway's
   correctness-first one-order-at-a-time submit — same lesson as every prior state: **per-order
   ingress is the ceiling, not the BLP**.
 - Pipelining the gateway owner thread (offer the whole batch into the log, count acks as they
-  stream back FIFO) took one 200-order batch from ~250 ms to **38 ms**, and the full flood past
-  25k. Hardening of the gateway under that flood (HTTP pool, heap) is the current in-flight step;
-  a clean 3-run confirmation is pending.
+  stream back FIFO) took one 200-order batch from ~250 ms to **38 ms**, and the confirmed flood
+  to **29-36k committed submits/s and up to ~136k booked trades/s**, stable across 3 back-to-back
+  runs with zero failures and zero ID reuse (`05ccec4`). NFR-AC02 met and exceeded.
 
 ## Three real production-grade bugs the flood found (all fixed)
 
 1. **Egress emission throttled the state machine** — an undeliverable ack retried 1000× with
    backoff (~1 s per ack); one non-draining client collapsed apply to ~1 event/s. Now 20
    attempts, sub-ms; slow clients get drops, never the state machine's time.
-2. **Output-ring self-deadlock** — the service thread is both producer (engine emits during
-   apply) and consumer (drain after apply); a price tick mass-executing a ~20k-order resting
-   book overflowed the 4096-slot ring and parked `RingBuffer.next()` forever *inside apply* on
-   all three members (consensus up, applied frozen). Proven by SIGQUIT thread dump. Ring now
-   env-tunable: default 1<<16, GKE pins 1<<18. Sizing invariant documented.
+2. **Output-ring self-deadlock — a true poison pill** — the service thread is both producer
+   (engine emits during apply) and consumer (drain after apply); a price tick mass-executing the
+   resting book overflowed the ring and parked `RingBuffer.next()` forever *inside apply* on all
+   three members. Because the trigger lives in the committed log it wedged REPLAY too (a full
+   rolling restart came back leaderless, every member stuck at the same log position). Proven by
+   SIGQUIT thread dumps. Fixed for good with a backpressure-drain claim in a YU12 override of
+   `OutputPublisher` (`tryNext` + drain-inline-and-retry): unbounded cascades flow through a
+   bounded ring; the poisoned 1.4M-event log then replayed clean, releasing ~1.27M trapped fills.
 3. **Gateway self-eviction under load** — all 8 HTTP threads parked on batch futures, the
    readiness probe starved, k8s pulled the gateway out of the Service mid-bench. Pool now 64
    threads + heap 1g + CPU limit 2.
