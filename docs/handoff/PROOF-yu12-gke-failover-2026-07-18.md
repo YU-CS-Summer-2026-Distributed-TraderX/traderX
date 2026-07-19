@@ -373,3 +373,26 @@ Results across 5 leader kills at the 400/200 control config:
 
 Remaining failover budget is now: detection (heartbeat timeout) + ballot->ready + ~70 ms client
 hop — i.e., entirely the Phase-3 timeout ladder's territory (behind Phase-2 CPU isolation gates).
+
+## Phase 1b live validation: snapshot barrier defanged (2026-07-19)
+
+codeX's O(n) snapshot fix (`ecabf7c`, 1031x on the 100k/50k fixture) merged, deployed, and
+validated live on the Guaranteed-QoS c3 topology:
+
+- **Kill fired AT the snapshot tick** (the old worst case): ROLE_LEADER +683 ms,
+  **FIRST_APPLY +856 ms**, 0 reuse — indistinguishable from clean-kill baseline (806-810 ms).
+  The "role elected but service paralyzed for seconds" failure mode is gone.
+- **Barrier under max flood: ~8 s -> ~3 s** (43.6k submits/s sustained — new record — with
+  apply bursts of 130-275k/s; the s52 snapshot paused apply ~3 s then caught up in one burst).
+  ~5% duty at 60 s intervals, down from ~25%. The residual is NOT the fixed order scan (unit
+  callback is ~10 ms): suspects are the consensus-module/archive snapshot leg (recording
+  setup + fsync) — a follow-on if the remaining 3 s ever matters; it does not gate the
+  failover SLO (see the snapshot-tick kill above).
+- Phase-2 topology re-baseline: FIRST_APPLY 806/809/810 ms across 3 kills — a 3 ms spread
+  (Guaranteed QoS visibly collapsed variance vs 756-888 pre-isolation).
+- Canary lessons: non-marketable canary flow accumulates state until a risk cap silently
+  rejects everything (rejects still consume orderRefs — refs advancing does NOT prove
+  accepts); canary now submits marketable flow (limit == price) on a dedicated account.
+  Unexplained-but-noted: from the default-pool e2 node the canary's service acks never
+  arrived while consensus events and the gateway's acks did; canary pinned to the member
+  pool (100m, negligible), gateway stays isolated.
