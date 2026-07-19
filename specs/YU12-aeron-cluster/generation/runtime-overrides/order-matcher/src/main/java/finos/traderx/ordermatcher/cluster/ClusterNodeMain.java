@@ -57,6 +57,7 @@ public final class ClusterNodeMain {
         final ClusteredServiceContainer container = ClusteredServiceContainer.launch(contexts.container());
         final HttpServer health = healthServer(healthPort, memberId, hostnames, service);
         startSnapshotTrigger(aeronDir, service);
+        startElectionPhaseWatcher(aeronDir);
 
         System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
             + " portBase=" + portBase + " baseDir=" + baseDir);
@@ -127,6 +128,42 @@ public final class ClusterNodeMain {
         }, "snapshot-trigger");
         trigger.setDaemon(true);
         trigger.start();
+    }
+
+    /** Phase-0 harness: log every election-state transition with a node-clock timestamp so the
+     *  failover budget can be split into detection vs canvass vs ballot vs log-join
+     *  (`ELECTION-PHASE state=<S> atMs=<ms>`). ~1 ms poll of the CLUSTER_ELECTION_STATE counter
+     *  on a daemon thread — measurement infra, never in the apply path. */
+    private static void startElectionPhaseWatcher(final String aeronDir) {
+        final Thread watcher = new Thread(() -> {
+            try (io.aeron.Aeron aeron = io.aeron.Aeron.connect(
+                    new io.aeron.Aeron.Context().aeronDirectoryName(aeronDir))) {
+                final org.agrona.concurrent.status.CountersReader counters = aeron.countersReader();
+                int counterId = -1;
+                long last = -1;
+                while (true) {
+                    if (counterId < 0) {
+                        counterId = io.aeron.cluster.service.ClusterCounters.find(
+                            counters, io.aeron.AeronCounters.CLUSTER_ELECTION_STATE_TYPE_ID, 0);
+                    } else {
+                        final long code = counters.getCounterValue(counterId);
+                        if (code != last) {
+                            last = code;
+                            System.out.println("ELECTION-PHASE state="
+                                + io.aeron.cluster.ElectionState.get(code)
+                                + " atMs=" + System.currentTimeMillis());
+                        }
+                    }
+                    Thread.sleep(1);
+                }
+            } catch (final InterruptedException ignore) {
+                // shutdown
+            } catch (final Exception e) {
+                System.err.println("election-phase watcher stopped: " + e);
+            }
+        }, "election-phase-watcher");
+        watcher.setDaemon(true);
+        watcher.start();
     }
 
     private static int memberId() {
