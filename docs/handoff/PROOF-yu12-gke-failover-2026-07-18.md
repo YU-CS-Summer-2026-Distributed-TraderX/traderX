@@ -353,3 +353,23 @@ input source, so the SLO includes client recovery (run 2's 1588 ms outlier == it
 client gap). Confirms the joint-plan attack: detection+ballot respond to the timeout ladder;
 the FIRST_APPLY tail collapses with native leader following. Client gaps at 10 ms cadence:
 739-1553 ms, reuse 0.
+
+## Phase 1a: native leader following PROVEN — redirect wedge falsified (2026-07-19)
+
+`PROOF_NATIVE_FOLLOW=1`: one full-endpoint-list connect, explicit `newLeaderTimeoutNs(2s)`,
+ack stalls logged but never close the session, reconnect only on genuine close (rate-limited).
+
+Results across 5 leader kills at the 400/200 control config:
+- **The same cluster session (id 170) survived every kill** — 1 connect total, 5 NEW-LEADER
+  events, 0 reconnects, 0 ID reuse.
+- NEW-LEADER arrives ~equal to ROLE_LEADER (+640-780 ms); the client's next canary commits
+  ~10 ms later — FIRST_APPLY - ROLE_LEADER collapsed from ~150-900 ms (reconnect era) to a
+  consistent ~120-160 ms.
+- **Client-observed gaps: 740-888 ms — all sub-1s at the conservative config**, tracking the
+  system floor + ~60-80 ms (cycling-era baseline: 739-1657 ms bimodal).
+- **The kind "redirect wedge" did NOT reproduce on GKE** with the egress term-length//dev/shm
+  fixes in place: multi-endpoint initial connect + follower redirect work as designed. The
+  endpoint-cycling machinery is cleared for deletion (Phase 4 unified owner loop).
+
+Remaining failover budget is now: detection (heartbeat timeout) + ballot->ready + ~70 ms client
+hop — i.e., entirely the Phase-3 timeout ladder's territory (behind Phase-2 CPU isolation gates).
