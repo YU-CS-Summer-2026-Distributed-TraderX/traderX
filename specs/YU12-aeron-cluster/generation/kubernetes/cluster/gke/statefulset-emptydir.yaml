@@ -31,7 +31,7 @@ spec:
         app: order-matcher-cluster
     spec:
       nodeSelector:
-        cloud.google.com/gke-nodepool: blp-pool
+        cloud.google.com/gke-nodepool: blp-c3-pool
       tolerations:
         - key: workload
           operator: Equal
@@ -40,13 +40,13 @@ spec:
       terminationGracePeriodSeconds: 10
       affinity:
         podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: order-matcher-cluster
-                topologyKey: kubernetes.io/hostname
+          # required now that the pool guarantees one node per member (3x c3-standard-4):
+          # a node fault can take at most ONE member (true node-fault tolerance, joint plan Ph2)
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: order-matcher-cluster
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: cluster-node
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu12
