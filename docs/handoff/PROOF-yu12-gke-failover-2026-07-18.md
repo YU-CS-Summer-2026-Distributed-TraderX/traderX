@@ -301,7 +301,7 @@ snapshot tax at 60 s)**; leader killed at 25 s → new leader in **778 ms**; kil
 rejoined and converged mid-flood; **all three members ended at the identical trades counter
 (9,182,152)** — deterministic state equality; 0 ID reuse.
 
-### OPS HAZARD: emptyDir + `kubectl rollout restart` can lose the un-snapshotted tail
+### OPS HAZARD (NOW FIXED): emptyDir + `kubectl rollout restart` could lose the un-snapshotted tail
 
 Found the hard way (bench data only): k8s rolling restart waits for pod-Ready, and member
 readiness does NOT include catch-up — so successive members can be killed before the previous
@@ -311,12 +311,23 @@ also left a mixed-era archive that stranded a rejoining member in a permanently 
 catch-up (service idle, replication waiting on ranges the quorum no longer had) — fixed only by
 a full reset.
 
-Rules until fixed properly:
-- **Never `kubectl rollout restart` the member StatefulSet casually.** Roll one member at a
-  time and wait for applied-convergence before the next (the sweep scripts' settle discipline),
-  or take the snapshot-bounded loss deliberately (now <= 60 s of events).
-- Pod-level faults (crash, node kill, single-member restart) remain safe and proven — quorum
-  holds the log and rejoin converges.
-- Proper fixes if this graduates from bench to production: readiness gating on catch-up
-  (leader-commit vs local-applied delta), or PVCs for the archive (with the known
-  minutes-long detach/reattach cost), or both.
+**FIX SHIPPED AND PROVEN (same day): readiness now gates on catch-up.** `/ready` returns 200
+only when the member's applied sequence is within `CLUSTER_READY_MAX_LAG` (default 5000 events)
+of its furthest-ahead peer (read from the peers' `/health` over the headless service;
+unreachable peers ignored so cold start never wedges). k8s therefore cannot kill the next
+member until the restarted one has converged — the un-snapshotted tail always lives on a
+quorum. Probe: `timeoutSeconds: 2`, `failureThreshold: 120` (catch-up can take minutes under
+load; that is the gate working, not a hang).
+
+Proof under worst case — `kubectl rollout restart` issued 20 s into a 240 s ~27k orders/s
+flood: the gated roll took ~5 min (each member held until converged), the flood sustained
+through all three member restarts (6,469,000 submitted, 47,000 failed = 0.7%, the three
+election windows — REST-visible timeouts, retryable), and state advanced monotonically with
+**no regression** (applied 2.32M -> 8.81M, trades 9.18M -> 35.14M, all three members identical
+after, 0 ID reuse). The same operation that lost the tail before is now safe.
+
+Remaining true statements:
+- Pod-level faults (crash, node kill, single-member restart) were always safe — quorum holds
+  the log and rejoin converges.
+- PVCs for the archive remain the belt-and-suspenders option for whole-cluster-at-once loss
+  (all three nodes dying simultaneously still loses the un-snapshotted tail on emptyDir).

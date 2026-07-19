@@ -81,7 +81,12 @@ Baselines from prior states (GKE, booked orders/s through the full committed pat
    SIGQUIT thread dumps. Fixed for good with a backpressure-drain claim in a YU12 override of
    `OutputPublisher` (`tryNext` + drain-inline-and-retry): unbounded cascades flow through a
    bounded ring; the poisoned 1.4M-event log then replayed clean, releasing ~1.27M trapped fills.
-3. **Gateway self-eviction under load** — all 8 HTTP threads parked on batch futures, the
+3. **Rolling-restart tail loss (emptyDir)** — k8s readiness didn't gate on catch-up, so a
+   `rollout restart` could kill members before replication finished and lose the un-snapshotted
+   tail. Fixed: `/ready` is 200 only when applied is within `CLUSTER_READY_MAX_LAG` (5000) of
+   the furthest-ahead peer. Proven: rollout restart 20 s into a 240 s ~27k/s flood — 5-min gated
+   roll, no state regression (trades 9.18M -> 35.14M monotonic, members identical), 0 reuse.
+4. **Gateway self-eviction under load** — all 8 HTTP threads parked on batch futures, the
    readiness probe starved, k8s pulled the gateway out of the Service mid-bench. Pool now 64
    threads + heap 1g + CPU limit 2.
 

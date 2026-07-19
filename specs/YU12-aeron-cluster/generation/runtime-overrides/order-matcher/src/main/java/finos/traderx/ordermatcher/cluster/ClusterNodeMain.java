@@ -25,9 +25,9 @@ import java.util.List;
  *    {@code CLUSTER_AERON_DIR} (default /dev/shm/aeron-cluster).
  *
  * Health (stdlib HTTP on {@code HEALTH_PORT}, default 8080): {@code /health} reports member id,
- * role, applied sequence, and snapshot count; {@code /ready} is 200 once the service has
- * started (leadership and catch-up are the cluster's own concern, not a pod-readiness gate —
- * admission readiness lives at the gateway tier per ADR-045).
+ * role, applied sequence, trades, and snapshot count; {@code /ready} is 200 once the service
+ * has started AND this member is caught up to within {@code CLUSTER_READY_MAX_LAG} of its
+ * furthest-ahead peer — the gate that makes k8s rolling restarts safe on emptyDir members.
  */
 public final class ClusterNodeMain {
     public static void main(final String[] args) throws Exception {
@@ -55,7 +55,7 @@ public final class ClusterNodeMain {
         final ClusteredMediaDriver driver = ClusteredMediaDriver.launch(
             contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
         final ClusteredServiceContainer container = ClusteredServiceContainer.launch(contexts.container());
-        final HttpServer health = healthServer(healthPort, memberId, service);
+        final HttpServer health = healthServer(healthPort, memberId, hostnames, service);
         startSnapshotTrigger(aeronDir, service);
 
         System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
@@ -143,6 +143,7 @@ public final class ClusterNodeMain {
     }
 
     private static HttpServer healthServer(final int port, final int memberId,
+                                           final List<String> hostnames,
                                            final MatchingEngineClusteredService service) throws Exception {
         final HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/health", exchange -> {
@@ -157,10 +158,53 @@ public final class ClusterNodeMain {
                 + ",\"snapshots\":" + service.snapshotsTaken() + "}";
             respond(exchange, 200, body);
         });
-        server.createContext("/ready", exchange ->
-            respond(exchange, service.engine() != null ? 200 : 503, service.role().toString()));
+        // Readiness gates on CATCH-UP, not just service start: a member is ready only when its
+        // applied sequence is within CLUSTER_READY_MAX_LAG (default 5000 events, ~150ms of full
+        // flood) of the furthest-ahead peer, read from the peers' /health over the headless
+        // service. This is what makes `kubectl rollout restart` safe on emptyDir members — the
+        // rolling update cannot kill the next member until the restarted one has converged, so
+        // the un-snapshotted log tail always lives on a quorum (the tail-loss hazard documented
+        // in PROOF-yu12-gke-failover-2026-07-18.md). Unreachable peers are ignored so cold
+        // start and quorum-loss states never wedge on their own readiness.
+        final long maxLag = Long.parseLong(env("CLUSTER_READY_MAX_LAG", "5000"));
+        server.createContext("/ready", exchange -> {
+            final boolean started = service.engine() != null;
+            if (!started) {
+                respond(exchange, 503, "{\"ready\":false,\"reason\":\"not started\"}");
+                return;
+            }
+            final long mine = service.engine().blpSeq();
+            long maxPeer = -1;
+            for (int i = 0; i < hostnames.size(); i++) {
+                if (i == memberId) {
+                    continue;
+                }
+                maxPeer = Math.max(maxPeer, peerApplied(hostnames.get(i), port));
+            }
+            final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
+            respond(exchange, ready ? 200 : 503, "{\"ready\":" + ready
+                + ",\"applied\":" + mine + ",\"maxPeerApplied\":" + maxPeer + "}");
+        });
         server.start();
         return server;
+    }
+
+    /** Peer's applied sequence via its /health, or -1 if unreachable/unparsable (ignored). */
+    private static long peerApplied(final String hostname, final int port) {
+        try {
+            final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                java.net.URI.create("http://" + hostname + ":" + port + "/health").toURL().openConnection();
+            conn.setConnectTimeout(300);
+            conn.setReadTimeout(300);
+            try (java.io.InputStream in = conn.getInputStream()) {
+                final String body = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                final java.util.regex.Matcher m =
+                    java.util.regex.Pattern.compile("\"applied\":(-?\\d+)").matcher(body);
+                return m.find() ? Long.parseLong(m.group(1)) : -1;
+            }
+        } catch (final Exception e) {
+            return -1;
+        }
     }
 
     private static void respond(final com.sun.net.httpserver.HttpExchange exchange, final int code,

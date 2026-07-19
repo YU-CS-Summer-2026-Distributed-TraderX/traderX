@@ -86,7 +86,8 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
-            failureThreshold: 24
+            timeoutSeconds: 2
+            failureThreshold: 120
           livenessProbe:
             httpGet:
               path: /health
