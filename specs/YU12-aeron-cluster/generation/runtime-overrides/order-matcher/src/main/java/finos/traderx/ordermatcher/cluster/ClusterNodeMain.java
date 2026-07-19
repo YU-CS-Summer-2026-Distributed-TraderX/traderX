@@ -56,6 +56,7 @@ public final class ClusterNodeMain {
             contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
         final ClusteredServiceContainer container = ClusteredServiceContainer.launch(contexts.container());
         final HttpServer health = healthServer(healthPort, memberId, service);
+        startSnapshotTrigger(aeronDir, service);
 
         System.out.println("Cluster node up: memberId=" + memberId + " hostnames=" + hostnames
             + " portBase=" + portBase + " baseDir=" + baseDir);
@@ -84,6 +85,42 @@ public final class ClusterNodeMain {
                 }
             }
         }
+    }
+
+    /** Periodic snapshots (default every 30 s; CLUSTER_SNAPSHOT_INTERVAL_MS, 0 = off): the
+     *  leader toggles the consensus module's SNAPSHOT control counter — the same mechanism as
+     *  `ClusterTool snapshot` — and every member snapshots at the same log position. Bounds
+     *  restart replay to the tail since the last snapshot instead of the whole log. Log
+     *  segments are NOT purged here (recovery = latest snapshot + tail; purge is a separate
+     *  ops action). Only the leader toggles, so followers idle cheaply. */
+    private static void startSnapshotTrigger(final String aeronDir,
+                                             final MatchingEngineClusteredService service) {
+        final long intervalMs = Long.parseLong(env("CLUSTER_SNAPSHOT_INTERVAL_MS", "30000"));
+        if (intervalMs <= 0) {
+            return;
+        }
+        final Thread trigger = new Thread(() -> {
+            try (io.aeron.Aeron aeron = io.aeron.Aeron.connect(
+                    new io.aeron.Aeron.Context().aeronDirectoryName(aeronDir))) {
+                while (true) {
+                    Thread.sleep(intervalMs);
+                    if (service.role() != io.aeron.cluster.service.Cluster.Role.LEADER) {
+                        continue;
+                    }
+                    final org.agrona.concurrent.status.AtomicCounter toggle =
+                        io.aeron.cluster.ClusterControl.findControlToggle(aeron.countersReader(), 0);
+                    if (toggle != null) {
+                        io.aeron.cluster.ClusterControl.ToggleState.SNAPSHOT.toggle(toggle);
+                    }
+                }
+            } catch (final InterruptedException ignore) {
+                // shutdown
+            } catch (final Exception e) {
+                System.err.println("snapshot trigger stopped: " + e);
+            }
+        }, "snapshot-trigger");
+        trigger.setDaemon(true);
+        trigger.start();
     }
 
     private static int memberId() {

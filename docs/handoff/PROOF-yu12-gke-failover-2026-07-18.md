@@ -262,3 +262,14 @@ ConsensusModule's concurrent-session limit ("ERROR - concurrent session limit" o
 member rolling restart clears the session table; and with snapshots not yet scheduled, every
 restart replays the full log (fine at 1.4M events / ~25s, worth wiring `onTakeSnapshot` to a
 timer before the log grows unbounded).
+
+## Periodic snapshots (2026-07-19)
+
+`ClusterNodeMain` now runs a snapshot trigger (default every 30 s, `CLUSTER_SNAPSHOT_INTERVAL_MS`,
+0 = off): the leader toggles the consensus module's SNAPSHOT control counter — the same mechanism
+as `ClusterTool snapshot` — and all members snapshot at the same log position. Live on GKE:
+snapshots appeared within one interval on all members, and a force-killed member came back
+**fully caught up in 66 s** (pod reschedule + snapshot load + tail) with identical trades counter
+and the fail-closed snapshot load checks green — vs minutes of full-log replication before.
+Log segments are not purged (recovery = latest snapshot + tail); purge is a separate ops action
+when disk matters.
