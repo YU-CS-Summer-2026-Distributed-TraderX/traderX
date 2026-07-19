@@ -51,8 +51,14 @@
 ## Proof
 
 - [x] T-AC19 Keep inherited allocation gates exact-zero on the service thread; `noGcTest` green.
-- [x] T-AC20 Measure client-observed failover. GKE (tuned 1s heartbeat): client-facing ~200 ms
-  (transparent), system-facing ~2 s (12 s default); off-plane proven. PROOF-yu12-gke-failover-2026-07-18.md.
-- [~] T-AC21 GKE comparison labelled `aeron-cluster`: deploy+bench packaged as hand-over
-  commands (GKE-yu12-deploy-bench.md); gateway serves /orders/batch + /metrics for it. GKE run is yaakov's.
-- [ ] T-AC22 Record all evidence in `generation/implementation-status.md`.
+- [x] T-AC20 Measure failover. GKE final (100ms/400ms/200ms timeouts): system-facing
+  **653-716 ms idle, 724/778 ms under full flood** (node-clock-precise crash instrument);
+  client-facing best ~200 ms; off-plane proven across ~40 kills, 0 ID reuse everywhere.
+  PROOF-yu12-gke-failover-2026-07-18.md.
+- [x] T-AC21 GKE comparison labelled `aeron-cluster` RUN (user authorized GKE this session):
+  pipelined gateway sustains **28,860-35,714 submits/s, 45,684-135,834 booked/s** vs the 25,149
+  baseline — NFR-AC02 met and exceeded. Flood-hardening landed en route: bounded egress,
+  output-ring backpressure drain (poison-pill deadlock class killed), gateway probe/heap,
+  60 s snapshots (measured), catch-up-gated readiness (rolling restarts safe).
+  scripts/bench/results/gke-comparison.csv label `aeron-cluster-pipelined`.
+- [x] T-AC22 Evidence recorded in `generation/implementation-status.md` (2026-07-19 GKE section).

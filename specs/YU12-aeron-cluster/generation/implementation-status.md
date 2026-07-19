@@ -54,3 +54,28 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | Feed-adapter consensus ingress | Built (compiles); live NATS verification open |
 | Recovery matrix / failover | Unit slice green; kind E2E no-ID-reuse proven; consistent sub-1s failover needs timeout tuning |
 | GKE proofs | Packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); run by yaakov |
+
+## GKE campaign evidence (2026-07-18/19 — user-authorized GKE session)
+
+Full narrative + numbers: `docs/handoff/PROOF-yu12-gke-failover-2026-07-18.md` and
+`docs/handoff/RECAP-yu12-full-2026-07-19.md`.
+
+| Contract | Evidence |
+|---|---|
+| NFR-AC03 / SC-AC04 failover | **Met.** System-facing 653-716 ms idle, 724/778 ms under ~30k/s flood (members log `ROLE-CHANGE atMs`, harness node-clock-timestamps a `kill -9` of the java pid via exec — sh wrapper keeps the JVM off PID 1). Client-facing best ~200 ms. Off the k8s plane across ~40 leader kills; 0 ID reuse in every run. Timeouts 100/400/200 ms pinned in the GKE manifest; the old "500 ms destabilizes" was measurement artifact. |
+| NFR-AC02 / SC-AC05 throughput | **Met and exceeded.** Pipelined gateway (batch offered into the log, acks counted FIFO): 28,860-35,714 committed submits/s, 45,684-135,834 booked trades/s (leader's authoritative `trades` counter), 3 stable back-to-back runs, 0 failures, 0 reuse — vs the 25,149 baseline and ~10k NATS era. CSV label `aeron-cluster-pipelined`. |
+| Snapshots (ADR-046 operationalized) | Leader toggles the SNAPSHOT control counter every 60 s (`CLUSTER_SNAPSHOT_INTERVAL_MS`); member recovery 66 s (snapshot+tail) vs minutes of full replay. 60 s measured, not guessed: each snapshot is a log-position barrier costing ~8 s cluster-wide apply stall under flood (A/B: 31k/s at 30 s interval vs 46k/s without), while tail replay runs ~300k events/s. |
+| Safe rolling ops | `/ready` gates on catch-up (applied within `CLUSTER_READY_MAX_LAG`=5000 of the furthest-ahead peer) — `kubectl rollout restart` mid-flood proven safe: 5-min gated roll, trades 9.18M->35.14M monotonic, members identical after, 0 reuse. Closes the emptyDir tail-loss hazard (remaining exposure: all-3-nodes-at-once; PVC archive is the option). |
+| Hosting bugs found+fixed by flood | (1) egress retry throttled apply (bounded to 20 attempts); (2) output-ring self-deadlock incl. poisoned-log replay wedge — fixed via `OutputPublisher` backpressure-drain claim (YU12 override; tryNext + drain-inline-and-retry); (3) gateway probe starvation under load (HTTP pool 64, heap 1g). |
+| Bench operability | Gateway `/seed` (control+price through sequenced ingress; fail-closed risk needs it, price max-age 30 s → refresher), authoritative `trades` in member `/health` (gateway fill counters under-count when egress drops, by design). |
+| Regression | Suite 206/0 + `noGcTest` + all allocation gates green after every change above. |
+
+## Component status (2026-07-19)
+
+| Item | Current status |
+|---|---|
+| Three-member cluster on GKE | Proven: failover idle+under-load, throughput past baseline, snapshots, safe rolling restarts |
+| Ingress gateway tier | Pipelined batch path live-proven at 29-36k/s; single-order + FIX paths unchanged; per-order batch correlation (client key echo) open for production batch semantics |
+| Feed-adapter consensus ingress | Built (compiles); live NATS verification open (stack scaled to 0) |
+| Recovery matrix / failover | Fully proven on GKE; matrix F3 (config identity) still open |
+| Node-fault HA (one member per node) | Open: needs C2_CPUS quota 8->12 for a 3-node blp-pool |

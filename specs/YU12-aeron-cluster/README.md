@@ -2,7 +2,7 @@
 
 ![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
 
-Status: In implementation
+Status: Implemented and proven on GKE (failover, throughput, snapshots, safe rolling ops) — see generation/implementation-status.md
 Track: `architecture`
 Lineage role: `optional`
 Previous state: `YU11-aeron-replication`
