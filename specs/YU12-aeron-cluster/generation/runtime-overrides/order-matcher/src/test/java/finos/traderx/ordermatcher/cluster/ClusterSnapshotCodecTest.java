@@ -3,6 +3,7 @@ package finos.traderx.ordermatcher.cluster;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
 import finos.traderx.ordermatcher.lmax.InputEvent;
 import org.agrona.concurrent.UnsafeBuffer;
+import org.agrona.collections.IntHashSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -61,6 +62,21 @@ class ClusterSnapshotCodecTest {
             "duplicate retry creates no order");
         assertEquals(4, restored.engine().openOrderTuples().stream().mapToLong(t -> t[0]).max().orElse(0),
             "no new ref appears for a replayed duplicate");
+    }
+
+    @Test
+    void orderRecordsRemainByteIdenticalToLegacyOrdering() {
+        final MatchingEngineClusteredService source = newLiveService();
+        apply(source, cancel(3));
+        apply(source, cancel(1));
+
+        final List<byte[]> actual = captureOrderRecords(source);
+        final List<byte[]> legacy = legacyOrderRecords(source);
+
+        assertEquals(legacy.size(), actual.size());
+        for (int i = 0; i < legacy.size(); i++) {
+            assertArrayEquals(legacy.get(i), actual.get(i), "order record " + i);
+        }
     }
 
     // ----- fail-closed matrix (unit slice of T-AC11) -----------------------------------------
@@ -160,6 +176,53 @@ class ClusterSnapshotCodecTest {
         }
         assertTrue(done, "snapshot record stream must terminate with END");
         return restored;
+    }
+
+    private List<byte[]> captureOrderRecords(final MatchingEngineClusteredService source) {
+        final List<byte[]> records = new ArrayList<>();
+        source.writeSnapshot((buffer, offset, length) -> {
+            if (buffer.getInt(offset) == MatchingEngineClusteredService.T_ORDER) {
+                final byte[] copy = new byte[length];
+                buffer.getBytes(offset, copy);
+                records.add(copy);
+            }
+        });
+        return records;
+    }
+
+    /** The pre-fix order phase, retained here as an executable byte-order contract. */
+    private List<byte[]> legacyOrderRecords(final MatchingEngineClusteredService source) {
+        final int[] terminalFifo = source.engine().terminalOrderRefsFifo();
+        final IntHashSet terminalSet = new IntHashSet(terminalFifo.length * 2);
+        final List<long[]> allOrders = source.engine().allOrderTuples();
+        final List<byte[]> records = new ArrayList<>(allOrders.size());
+        for (final int ref : terminalFifo) {
+            terminalSet.add(ref);
+        }
+        for (final long[] order : allOrders) {
+            if (!terminalSet.contains((int) order[0])) {
+                records.add(orderRecord(order));
+            }
+        }
+        for (final int ref : terminalFifo) {
+            for (final long[] order : allOrders) {
+                if ((int) order[0] == ref) {
+                    records.add(orderRecord(order));
+                    break;
+                }
+            }
+        }
+        return records;
+    }
+
+    private byte[] orderRecord(final long[] tuple) {
+        final byte[] record = new byte[4 + Long.BYTES * tuple.length];
+        final UnsafeBuffer buffer = new UnsafeBuffer(record);
+        buffer.putInt(0, MatchingEngineClusteredService.T_ORDER);
+        for (int i = 0; i < tuple.length; i++) {
+            buffer.putLong(4 + Long.BYTES * i, tuple[i]);
+        }
+        return record;
     }
 
     private void feedHeader(final MatchingEngineClusteredService target, final long nextRef,

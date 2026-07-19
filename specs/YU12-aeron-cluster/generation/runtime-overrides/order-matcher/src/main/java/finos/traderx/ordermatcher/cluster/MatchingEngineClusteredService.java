@@ -24,8 +24,6 @@ import org.agrona.collections.IntHashSet;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 
-import java.util.List;
-
 /**
  * Hosts the deterministic {@link MatchingEngine} plus the authoritative {@link BlpRiskState}
  * inside an Aeron Cluster service (ADR-044).
@@ -134,6 +132,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     /** Fresh deterministic core; package-private so unit tests can drive the record codec. */
     void initEngine() {
+        initEngine(POOL_SIZE, POOL_SIZE);
+    }
+
+    /**
+     * Test-only sizing seam for snapshot fixtures whose retained state is intentionally much
+     * larger than the production spike defaults. Production always enters through
+     * {@link #initEngine()} and therefore keeps the exact same capacities.
+     */
+    void initEngine(final int initialPoolSize, final int terminalRetain) {
         this.outputRing = RingBuffer.createSingleProducer(OutputEvent::new, outputRingSize());
         this.outputConsumed = new Sequence(-1);
         this.outputRing.addGatingSequences(outputConsumed);
@@ -141,7 +148,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             CREDIT_LIMIT_TICKS, MAX_ORDER_QUANTITY, MAX_ORDER_NOTIONAL_TICKS, PRICE_MAX_AGE_MILLIS,
             new RiskMetrics());
         this.engine = new MatchingEngine(new OutputPublisher(outputRing, this::drainOnBackpressure), new HotPathMetrics(),
-            MAX_SECURITIES, FILL_FULL_THRESHOLD, POOL_SIZE, POOL_SIZE, POOL_SIZE, risk);
+            MAX_SECURITIES, FILL_FULL_THRESHOLD, initialPoolSize, POOL_SIZE, terminalRetain, risk);
         this.nextOrderRef = 1;
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
@@ -301,21 +308,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // order — restore re-marks terminals in write order, keeping eviction replica-identical.
         final int[] terminalFifo = engine.terminalOrderRefsFifo();
         final IntHashSet terminalSet = new IntHashSet(terminalFifo.length * 2);
-        final List<long[]> allOrders = engine.allOrderTuples();
+        final long[] orderTuple = new long[MatchingEngine.SNAPSHOT_ORDER_TUPLE_LENGTH];
         for (final int ref : terminalFifo) {
             terminalSet.add(ref);
         }
-        for (final long[] order : allOrders) {
-            if (!terminalSet.contains((int) order[0])) {
-                writeTuple(writer, T_ORDER, order);
+        for (int ref = 1; ref < engine.snapshotOrderIndexLength(); ref++) {
+            if (!terminalSet.contains(ref) && engine.copySnapshotOrderTuple(ref, orderTuple)) {
+                writeTuple(writer, T_ORDER, orderTuple);
             }
         }
         for (final int ref : terminalFifo) {
-            for (final long[] order : allOrders) {
-                if ((int) order[0] == ref) {
-                    writeTuple(writer, T_ORDER, order);
-                    break;
-                }
+            if (engine.copySnapshotOrderTuple(ref, orderTuple)) {
+                writeTuple(writer, T_ORDER, orderTuple);
             }
         }
         snapshotBuffer.putInt(0, T_END);

@@ -25,6 +25,8 @@ import java.lang.invoke.VarHandle;
  * half rounded up — re-evaluated per relevant sequenced event instead of per polling tick.
  */
 public final class MatchingEngine implements EventHandler<InputEvent> {
+    public static final int SNAPSHOT_ORDER_TUPLE_LENGTH = 15;
+
     private final OutputPublisher out;
     private final HotPathMetrics metrics;
     private final int fillFullThreshold;
@@ -315,12 +317,56 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         java.util.List<long[]> out = new java.util.ArrayList<>();
         for (RestingOrder o : ordersByRef) {
             if (o != null && o.orderRef != 0) {
-                out.add(new long[] { o.orderRef, o.accountId, o.securityId, o.side, o.quantity, o.remaining,
-                    o.limitPx, o.status, o.lastExecPx, o.lastFillQty, o.createdAtMillis, o.updatedAtMillis,
-                    o.riskReason, o.reservedNotional, o.reservedQty });
+                final long[] tuple = new long[SNAPSHOT_ORDER_TUPLE_LENGTH];
+                copySnapshotOrderTuple(o, tuple);
+                out.add(tuple);
             }
         }
         return out;
+    }
+
+    /**
+     * Length of the dense order-reference index used by snapshot serialization. Cold path only;
+     * callers scan refs in ascending order to preserve the established snapshot byte order.
+     */
+    public int snapshotOrderIndexLength() {
+        return ordersByRef.length;
+    }
+
+    /**
+     * Copy one retained order into the reusable 15-field snapshot tuple. Returns false for an
+     * absent/evicted ref. This keeps snapshot serialization O(index + terminals) without exposing
+     * mutable pooled orders or allocating one tuple per row.
+     */
+    public boolean copySnapshotOrderTuple(final int orderRef, final long[] target) {
+        if (target.length < SNAPSHOT_ORDER_TUPLE_LENGTH) {
+            throw new IllegalArgumentException(
+                "snapshot order tuple needs " + SNAPSHOT_ORDER_TUPLE_LENGTH + " fields");
+        }
+        final RestingOrder order = lookup(orderRef);
+        if (order == null || order.orderRef == 0) {
+            return false;
+        }
+        copySnapshotOrderTuple(order, target);
+        return true;
+    }
+
+    private static void copySnapshotOrderTuple(final RestingOrder order, final long[] target) {
+        target[0] = order.orderRef;
+        target[1] = order.accountId;
+        target[2] = order.securityId;
+        target[3] = order.side;
+        target[4] = order.quantity;
+        target[5] = order.remaining;
+        target[6] = order.limitPx;
+        target[7] = order.status;
+        target[8] = order.lastExecPx;
+        target[9] = order.lastFillQty;
+        target[10] = order.createdAtMillis;
+        target[11] = order.updatedAtMillis;
+        target[12] = order.riskReason;
+        target[13] = order.reservedNotional;
+        target[14] = order.reservedQty;
     }
 
     /**
