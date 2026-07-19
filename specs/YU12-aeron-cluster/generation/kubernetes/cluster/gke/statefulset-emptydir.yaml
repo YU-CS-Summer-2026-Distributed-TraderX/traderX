@@ -51,6 +51,10 @@ spec:
         - name: cluster-node
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu12
           imagePullPolicy: Always
+          # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
+          # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true
+          # crash with a node-clock timestamp, no pod-delete API latency in the measurement.
+          command: ["/bin/sh", "-c", "java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!"]
           env:
             - name: CLUSTER_HOSTNAMES
               value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
@@ -59,9 +63,9 @@ spec:
             - name: CLUSTER_HEARTBEAT_INTERVAL_MS
               value: "100"
             - name: CLUSTER_HEARTBEAT_TIMEOUT_MS
-              value: "1000"
+              value: "400"
             - name: CLUSTER_ELECTION_TIMEOUT_MS
-              value: "500"
+              value: "200"
             - name: CLUSTER_BASE_DIR
               value: "/data"
             - name: CLUSTER_AERON_DIR

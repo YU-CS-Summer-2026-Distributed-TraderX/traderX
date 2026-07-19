@@ -226,6 +226,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     @Override
     public void onRoleChange(final Cluster.Role newRole) {
         this.role = newRole;
+        // Failover instrument (T-AC20): wall-clock role transitions let a harness compute
+        // system-facing re-election time against a node-clock kill timestamp.
+        System.out.println("ROLE-CHANGE role=" + newRole + " atMs=" + System.currentTimeMillis());
     }
 
     @Override

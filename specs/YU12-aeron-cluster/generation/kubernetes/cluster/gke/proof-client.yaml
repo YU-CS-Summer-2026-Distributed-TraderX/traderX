@@ -27,7 +27,7 @@ spec:
         - name: PROOF_GAP_MS
           value: "150"
         - name: PROOF_RECONNECT_MS
-          value: "1000"
+          value: "500"
         - name: PROOF_INTERVAL_MS
           value: "50"
         - name: PROOF_EGRESS_PORT

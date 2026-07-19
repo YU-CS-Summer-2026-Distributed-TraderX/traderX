@@ -127,3 +127,49 @@ the other node = minutes), leaving a long degraded window. Switching the cluster
 quorum, not the pod's disk). emptyDir is the right choice for cluster members on GKE for fast
 fault-tolerance recovery; pair it with periodic snapshots to durable storage if whole-cluster
 restart durability is needed.
+
+## Sub-1s system-facing: ACHIEVED (2026-07-19)
+
+The earlier "500 ms heartbeat destabilizes" finding was an artifact of the then-broken
+measurement stack (PVC rejoin + proof-client churn). With the clean stack, tighter timeouts are
+stable and deliver consistent sub-1s re-election.
+
+### Precise instrument
+
+The health-poll harness has ~400-600 ms of built-in latency (pod-delete API round-trip + per-poll
+proxy cost), too coarse near 1 s. Replaced with node-clock timestamps at both ends:
+
+- Members log `ROLE-CHANGE role=... atMs=<epoch-ms>` from `onRoleChange` (shipped in the image).
+- The member container runs the JVM under a `/bin/sh -c` wrapper (PID 1 is unsignalable from
+  inside a PID namespace), so the harness can `kubectl exec` → print `date` ms on the LEADER's
+  node clock → `kill -9` the java pid in one shot: a true crash timestamped with no k8s API
+  latency. (`scratchpad/measure-system-facing-precise.sh`; GKE node clocks are NTP-synced.)
+- System-facing = kill timestamp → survivor's `ROLE-CHANGE role=LEADER` timestamp
+  (detection + election, the full system outage).
+
+### Results (emptyDir, interval 100 ms, one-fault-at-a-time, settled between kills)
+
+| heartbeat timeout / election | System-facing (precise) | Client-observed (proof client) |
+|---|---|---|
+| 1000 / 500 | — | 1554, 1588, 1605, 2598 ms |
+| 800 / 400 | — | 1547, 1566, 2554, 2569 ms |
+| 600 / 300 | 929, 977, 1070, 1417 ms | (client wedged, no data — below) |
+| **400 / 200** | **653, 662, 665, 665, 716 ms** | 838, 892, 1575, 1657 ms |
+
+- **400/200 is stable**: 4-minute idle soak with zero spurious role changes, then 9 further
+  clean settles across the kill runs. Zero ID reuse everywhere.
+- **System-facing is consistently sub-1s at 400/200**: 653-716 ms, tight spread (~650 ms ≈
+  400 ms detection ceiling + ~250 ms election). The manifest now pins 400/200 as the default.
+- Client-observed remains bimodal ~0.85 s / ~1.6 s: the extra ~0.8 s appears when the client's
+  endpoint-cycling reconnect tries the dead endpoint first and burns its 1 s connect timeout.
+  That is a property of the test client's reconnect strategy, not the cluster; native
+  AeronCluster leader-tracking (newLeaderEvent) is the known fix if sub-1s *client* floor is
+  ever required. Best observed client outage remains ~200 ms.
+
+### Caveat: proof-client wedge during full rollouts
+
+During a full 3-member rolling restart (not a failover) the proof client fell into a permanent
+reconnect-churn loop (4302 connects over 41 min on an otherwise healthy cluster) — each cycle
+creates fresh pub/sub log buffers in its embedded driver's /dev/shm, so once churn starts,
+resource pressure can keep it churning. Test-client artifact (restart clears it); noted because
+any long-lived Aeron client that reconnects in a loop should bound its reconnect rate.
