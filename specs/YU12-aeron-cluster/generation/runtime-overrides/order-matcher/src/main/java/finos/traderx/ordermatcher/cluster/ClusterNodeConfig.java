@@ -148,6 +148,13 @@ public final class ClusterNodeConfig {
         if (canvassMs > 0) {
             ctx.startupCanvassTimeoutNs(canvassMs * 1_000_000L);
         }
+        // Phase 3 (joint plan): the canvass-position publication quantum — Aeron default 100 ms —
+        // bounds how fast an election can advance past CANVASS; it must shrink with the rest of
+        // the ladder or it dominates the budget below ~200 ms profiles.
+        final long statusMs = envLong("CLUSTER_ELECTION_STATUS_INTERVAL_MS", 0);
+        if (statusMs > 0) {
+            ctx.electionStatusIntervalNs(statusMs * 1_000_000L);
+        }
     }
 
     private static long envLong(final String name, final long fallback) {
