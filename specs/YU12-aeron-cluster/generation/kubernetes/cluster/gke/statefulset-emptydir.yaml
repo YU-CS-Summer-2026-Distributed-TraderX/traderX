@@ -70,6 +70,8 @@ spec:
               value: "/data"
             - name: CLUSTER_AERON_DIR
               value: "/dev/shm/aeron-cluster"
+            - name: CLUSTER_OUTPUT_RING_SIZE
+              value: "262144"
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

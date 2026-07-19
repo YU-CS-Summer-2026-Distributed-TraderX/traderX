@@ -55,8 +55,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // after apply), so a single event whose output burst exceeds free ring space self-deadlocks in
     // RingBuffer.next() — hit on GKE 2026-07-19 when a price tick mass-executed a ~20k-order book
     // (3 slots per fill) against the old 4096 ring. Size must exceed 3x the worst resting-book
-    // cascade; 1<<18 covers ~87k fills in one apply (~26MB of pre-allocated slots).
-    static final int OUTPUT_RING_SIZE = 1 << 18;
+    // cascade. Default 1<<16 covers a ~21k-fill cascade (~10MB of pre-allocated slots — multi-
+    // member in-process tests OOM'd at 1<<18); deployments with bigger books set
+    // CLUSTER_OUTPUT_RING_SIZE (the GKE manifest pins 1<<18).
+    static final int OUTPUT_RING_SIZE = 1 << 16;
+
+    static int outputRingSize() {
+        final String env = System.getenv("CLUSTER_OUTPUT_RING_SIZE");
+        return env == null || env.isEmpty() ? OUTPUT_RING_SIZE : Integer.parseInt(env);
+    }
     static final int MAX_ACCOUNTS = 64;
     static final int IDEMPOTENCY_CAPACITY = 1024;
     static final long CREDIT_LIMIT_TICKS = Long.MAX_VALUE / 4;
@@ -125,7 +132,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     /** Fresh deterministic core; package-private so unit tests can drive the record codec. */
     void initEngine() {
-        this.outputRing = RingBuffer.createSingleProducer(OutputEvent::new, OUTPUT_RING_SIZE);
+        this.outputRing = RingBuffer.createSingleProducer(OutputEvent::new, outputRingSize());
         this.outputConsumed = new Sequence(-1);
         this.outputRing.addGatingSequences(outputConsumed);
         this.risk = new BlpRiskState(MAX_ACCOUNTS, MAX_SECURITIES, POOL_SIZE, IDEMPOTENCY_CAPACITY,
