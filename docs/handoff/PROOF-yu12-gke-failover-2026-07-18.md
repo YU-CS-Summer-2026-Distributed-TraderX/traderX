@@ -396,3 +396,24 @@ validated live on the Guaranteed-QoS c3 topology:
   Unexplained-but-noted: from the default-pool e2 node the canary's service acks never
   arrived while consensus events and the gateway's acks did; canary pinned to the member
   pool (100m, negligible), gateway stays isolated.
+
+## Phase 3: the timeout ladder (2026-07-19) — sub-500 client ACHIEVED
+
+All rungs: fresh epoch, 5-min idle soak (zero uncommanded elections — gate passed at every
+rung, including the 80 ms detector), 5 node-clock kills, native-follow client, 0 ID reuse.
+
+| Rung (interval/timeout/election/status ms) | ROLE_LEADER | FIRST_APPLY (SLO) | Client gap |
+|---|---|---|---|
+| control 100/400/200/100 | 638-678 | 806-810 | 740-888 |
+| A 50/200/100/25 | 309-476 | 429-623 | 420-619 |
+| B 25/120/60/10 | 200-240 | 357-403 | 376-405 |
+| C 20/80/40/10 | 161-225 | **275-368** | **279-453** |
+
+- **Client-facing < 500 ms: consistent** (10/10 kills at rungs B+C; best 279 ms).
+- **System-facing FIRST_APPLY: 275-368 ms consistent at rung C** — raw election is sub-200
+  (ROLE_LEADER 161-170 ms typical) but ~110-140 ms of client re-point/first-commit hop sits on
+  top. Further gains are CLIENT-side (pre-warmed ingress publications for instant re-point),
+  not tighter timeouts — matching both proposals' honest 250-350 ms bound for this design.
+- No margin failures anywhere on the ladder; the old "aggressive timeouts destabilize" belief
+  is fully retired (80 ms detector idle-stable on Guaranteed-QoS one-per-node placement).
+- Rung choice pending the loaded acceptance run (C vs B = numbers vs 1.5x detector margin).
