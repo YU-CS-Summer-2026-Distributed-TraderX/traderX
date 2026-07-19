@@ -5,8 +5,8 @@ metadata:
   labels:
     app: cluster-proof-client
 spec:
-  tolerations:
-    - {key: workload, operator: Equal, value: blp, effect: NoSchedule}
+  nodeSelector:
+    cloud.google.com/gke-nodepool: default-pool
   restartPolicy: Never
   containers:
     - name: proof-client

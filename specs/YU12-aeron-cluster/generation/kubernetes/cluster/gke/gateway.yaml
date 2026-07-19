@@ -29,11 +29,8 @@ spec:
       labels:
         app: cluster-gateway
     spec:
-      tolerations:
-        - key: workload
-          operator: Equal
-          value: blp
-          effect: NoSchedule
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: gateway
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu12
