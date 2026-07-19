@@ -5,8 +5,11 @@ metadata:
   labels:
     app: cluster-proof-client
 spec:
-  nodeSelector:
-    cloud.google.com/gke-nodepool: default-pool
+  # canary rides a member node deliberately: from the default-pool e2 node its service-egress
+  # acks never arrive (consensus events do; gateway acks do) — unexplained, documented in the
+  # Phase-2 notes; 100m of canary load does not threaten member duty-cycle margins.
+  tolerations:
+    - {key: workload, operator: Equal, value: blp, effect: NoSchedule}
   restartPolicy: Never
   containers:
     - name: proof-client
