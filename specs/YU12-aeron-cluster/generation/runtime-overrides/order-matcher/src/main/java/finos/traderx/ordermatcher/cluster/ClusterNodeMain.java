@@ -87,15 +87,21 @@ public final class ClusterNodeMain {
         }
     }
 
-    /** Periodic snapshots (default every 30 s; CLUSTER_SNAPSHOT_INTERVAL_MS, 0 = off): the
+    /** Periodic snapshots (default every 60 s; CLUSTER_SNAPSHOT_INTERVAL_MS, 0 = off): the
      *  leader toggles the consensus module's SNAPSHOT control counter — the same mechanism as
      *  `ClusterTool snapshot` — and every member snapshots at the same log position. Bounds
      *  restart replay to the tail since the last snapshot instead of the whole log. Log
      *  segments are NOT purged here (recovery = latest snapshot + tail; purge is a separate
-     *  ops action). Only the leader toggles, so followers idle cheaply. */
+     *  ops action). Only the leader toggles, so followers idle cheaply.
+     *  60 s measured as the sweet spot on GKE under a ~46k orders/s flood: each snapshot is a
+     *  log-position barrier costing ~8 s of cluster-wide apply stall at this state size (A/B
+     *  proven, 2026-07-19), while recovery is pod-restart dominated (~40-66 s) and the tail
+     *  replays at ~300k events/s — so shorter intervals buy seconds of recovery at a ~25%
+     *  sustained-flood throughput tax. Async/incremental snapshots are the real fix if the
+     *  stall ever matters more. */
     private static void startSnapshotTrigger(final String aeronDir,
                                              final MatchingEngineClusteredService service) {
-        final long intervalMs = Long.parseLong(env("CLUSTER_SNAPSHOT_INTERVAL_MS", "30000"));
+        final long intervalMs = Long.parseLong(env("CLUSTER_SNAPSHOT_INTERVAL_MS", "60000"));
         if (intervalMs <= 0) {
             return;
         }

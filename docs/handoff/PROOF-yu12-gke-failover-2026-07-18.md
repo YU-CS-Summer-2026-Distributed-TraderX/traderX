@@ -273,3 +273,22 @@ snapshots appeared within one interval on all members, and a force-killed member
 and the fail-closed snapshot load checks green — vs minutes of full-log replication before.
 Log segments are not purged (recovery = latest snapshot + tail); purge is a separate ops action
 when disk matters.
+
+## Leader kill under full flood + snapshot interval A/B (2026-07-19)
+
+**Failover holds under load.** Killed the leader (node-clock precise java-kill) 25 s into a 60 s
+~31k orders/s flood: new leader in **724 ms** (vs 653-716 ms idle), the flood completed with
+**1,871,000 submitted / 0 failed / 0 ID reuse**, and the killed member rejoined and caught up
+mid-flood in ~18 s while the cluster kept serving.
+
+**Snapshot interval: 60 s, measured, not shorter.** 1 s-resolution applied-sampling during
+floods showed each snapshot is a log-position barrier costing ~8 s of cluster-wide apply stall
+at this state size. A/B (same flood, `CLUSTER_SNAPSHOT_INTERVAL_MS=0`): stalls gone, flood
+finished in ~43 s (**~46k orders/s**) vs 60 s with 30 s snapshots (~31k/s) — a ~25% sustained
+tax at 30 s intervals, plus an ~8 s ack-latency spike per snapshot. Recovery, meanwhile, is
+pod-restart dominated (~40-66 s) and tail replay runs at ~300k events/s, so a longer interval
+costs seconds: 60 s halves the tax for ~+3-6 s of worst-case recovery. Default and manifest now
+60 s. (Side proof: with snapshots disabled, a member restart regressed to full-log replay —
+~35 s at 6.4M events and growing — which is exactly what snapshots bound.)
+
+Real fix if the stall ever matters more: async/incremental snapshotting off the apply path.
