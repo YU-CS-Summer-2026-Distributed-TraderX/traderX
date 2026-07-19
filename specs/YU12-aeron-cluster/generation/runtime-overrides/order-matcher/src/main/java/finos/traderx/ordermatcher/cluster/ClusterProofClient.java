@@ -27,6 +27,10 @@ public final class ClusterProofClient {
         final int account = Integer.parseInt(env("PROOF_ACCOUNT", "11"));
         final int security = Integer.parseInt(env("PROOF_SECURITY", "1"));
         final String aeronDir = env("PROOF_AERON_DIR", "/dev/shm/aeron-proof");
+        // Marketable by default (limit == seeded price): orders fill and go terminal instead of
+        // resting forever — a non-marketable canary accumulates open state until a risk cap
+        // rejects everything silently (bit us at ~ref 99k; rejects still consume orderRefs).
+        final long limitPx = Long.parseLong(env("PROOF_LIMIT_PX", "150")) * PX;
 
         final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
             .aeronDirectoryName(aeronDir)
@@ -111,7 +115,7 @@ public final class ClusterProofClient {
                 client.pollEgress();
                 final long now = System.currentTimeMillis();
                 if (now >= nextSendMillis) {
-                    newOrder(event, account, security, 100 * PX, 0L);
+                    newOrder(event, account, security, limitPx, 0L);
                     codec.encodeInput(buffer, 0, event, 0, 0, 0);
                     client.offer(buffer, 0, AeronReplicationCodec.INPUT_BYTES);
                     nextSendMillis = now + intervalMs;
