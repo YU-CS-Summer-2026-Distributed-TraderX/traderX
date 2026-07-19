@@ -64,6 +64,14 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq}
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
+    // Pipelined-batch ack accounting (owner thread only; pollEgress runs on the owner thread).
+    // Acks per session are FIFO in log order, so counting order-lifecycle acks matches offers.
+    // Caveat: async order updates for RESTING orders (a later price tick filling them) would
+    // interleave and skew the count — exact per-order correlation needs a client key echoed in
+    // egress. Fine for fully-marketable flow; the engine trades counter is the booked truth.
+    private boolean batchActive;
+    private int batchOutstanding;
+    private int batchAccepted;
     // Bench metrics: every committed fill-kind egress ack is a booked order (run-gke-bench.sh
     // reads traderx_order_events_total{event="fill"}). Written on the owner thread, read racily
     // by the /metrics handler — plain volatile longs.
@@ -93,7 +101,10 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         awaitConnected();
 
         final HttpServer server = HttpServer.create(new InetSocketAddress(httpPort), 64);
-        server.setExecutor(Executors.newFixedThreadPool(8));
+        // 64: under pipelined-batch load every in-flight batch parks one HTTP thread on its
+        // owner-queue future (up to ~12s each); with only 8 threads the readiness probe starved
+        // behind them and k8s pulled the gateway out of the Service mid-bench.
+        server.setExecutor(Executors.newFixedThreadPool(64));
         server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
         server.createContext("/metrics", this::handleMetrics);
@@ -196,6 +207,13 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 lastOrderAck = new long[] {
                     buffer.getLong(offset), buffer.getInt(offset + 8), kind, buffer.getLong(offset + 13) };
             }
+            if (batchActive && batchOutstanding > 0) {
+                batchOutstanding--;
+                if (kind != OutputEvent.KIND_ORDER_REJECTED && kind != OutputEvent.KIND_ORDER_NOT_FOUND) {
+                    batchAccepted++;
+                    acceptedOrders++;
+                }
+            }
         }
         // Booked-order metric: count every fill-kind ack (immediate or async on a later tick),
         // independent of submit correlation — this is the bench's booked/s numerator.
@@ -206,9 +224,14 @@ public final class ClusterGatewayMain implements OrderSubmitter {
 
     /** Run a client-touching callable on the owner thread and wait for its result. */
     private <T> T onOwner(final java.util.concurrent.Callable<T> callable) throws Exception {
+        return onOwner(callable, ACK_TIMEOUT_MS + 2_000);
+    }
+
+    private <T> T onOwner(final java.util.concurrent.Callable<T> callable, final long timeoutMs)
+            throws Exception {
         final FutureTask<T> ft = new FutureTask<>(callable);
         tasks.add(ft);
-        return ft.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
+        return ft.get(timeoutMs, TimeUnit.MILLISECONDS);
     }
 
     // ----- OrderSubmitter (called by REST + FIX threads) -------------------------------------
@@ -277,7 +300,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     }
 
     /** Bench load path: a JSON array of {accountId, security, side, quantity, limitPrice}.
-     *  Submits each through the same committed path; replies with accepted/total. */
+     *  PIPELINED (NFR-AC02): the owner thread offers every order into the consensus log without
+     *  per-order round trips and counts the acks as they stream back — the per-order committed-ack
+     *  wait (~1.2ms each) was the ~1k/s ceiling; amortizing it is where YU11's 25k+/s came from. */
     private void handleBatch(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -285,20 +310,62 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 return;
             }
             final JsonNode arr = JSON.readTree(exchange.getRequestBody());
-            int accepted = 0;
-            int total = 0;
+            final int total = arr.size();
+            final int[] accounts = new int[total];
+            final String[] tickers = new String[total];
+            final char[] sides = new char[total];
+            final int[] qtys = new int[total];
+            final long[] pxs = new long[total];
+            int i = 0;
             for (final JsonNode body : arr) {
-                total++;
-                final String ticker = body.hasNonNull("securityId")
+                tickers[i] = body.hasNonNull("securityId")
                     ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
-                final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
-                final int qty = body.path("quantity").asInt();
-                final long px = Math.round(body.path("limitPrice").asDouble() * 1_000_000d);
-                final ExecResult r = submitOrder("batch", body.path("accountId").asInt(), ticker, side, qty, px);
-                if (r != null && r.accepted()) {
-                    accepted++;
-                }
+                sides[i] = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
+                accounts[i] = body.path("accountId").asInt();
+                qtys[i] = body.path("quantity").asInt();
+                pxs[i] = Math.round(body.path("limitPrice").asDouble() * 1_000_000d);
+                i++;
             }
+            final long batchBudgetMs = ACK_TIMEOUT_MS + total * 5L;
+            final Integer batchResult = onOwner(() -> {
+                final long deadline = System.currentTimeMillis() + batchBudgetMs;
+                batchActive = true;
+                batchOutstanding = 0;
+                batchAccepted = 0;
+                try {
+                    for (int n = 0; n < total; n++) {
+                        final int securityId = resolveSecurityId(tickers[n]);
+                        if (securityId < 0) {
+                            continue; // unresolvable ticker: never offered, never acked
+                        }
+                        event.type = InputEvent.TYPE_ORDER_NEW;
+                        event.side = sides[n] == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY;
+                        event.orderRef = 0;
+                        event.accountId = accounts[n];
+                        event.securityId = securityId;
+                        event.qty = qtys[n];
+                        event.limitPx = pxs[n];
+                        event.priceTicks = 0L;
+                        event.eventTimeMillis = 0;
+                        codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                        while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
+                            client.pollEgress(); // drains acks (frees ingress window) while backpressured
+                            if (System.currentTimeMillis() > deadline) {
+                                return batchAccepted;
+                            }
+                        }
+                        batchOutstanding++;
+                        client.pollEgress();
+                    }
+                    while (batchOutstanding > 0 && System.currentTimeMillis() < deadline) {
+                        client.pollEgress();
+                    }
+                    return batchAccepted;
+                } finally {
+                    batchActive = false;
+                }
+            }, batchBudgetMs + 2_000);
+            final int accepted = batchResult == null ? 0 : batchResult;
             // 201: the inherited bench harness (batch-load.mjs) counts a batch as accepted
             // only on 201 Created.
             respond(exchange, 201, "{\"accepted\":" + accepted + ",\"total\":" + total + "}");

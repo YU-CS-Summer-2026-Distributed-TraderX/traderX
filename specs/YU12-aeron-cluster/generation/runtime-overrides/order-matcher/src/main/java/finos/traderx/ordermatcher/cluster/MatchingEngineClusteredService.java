@@ -105,6 +105,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private MatchingEngine engine;
     private RingBuffer<OutputEvent> outputRing;
     private Sequence outputConsumed;
+    private ClientSession activeSession; // apply-scoped: egress target for mid-apply backpressure drains
 
     private long nextOrderRef = 1;
     private long highestIssuedRef;
@@ -138,7 +139,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.risk = new BlpRiskState(MAX_ACCOUNTS, MAX_SECURITIES, POOL_SIZE, IDEMPOTENCY_CAPACITY,
             CREDIT_LIMIT_TICKS, MAX_ORDER_QUANTITY, MAX_ORDER_NOTIONAL_TICKS, PRICE_MAX_AGE_MILLIS,
             new RiskMetrics());
-        this.engine = new MatchingEngine(new OutputPublisher(outputRing), new HotPathMetrics(),
+        this.engine = new MatchingEngine(new OutputPublisher(outputRing, this::drainOnBackpressure), new HotPathMetrics(),
             MAX_SECURITIES, FILL_FULL_THRESHOLD, POOL_SIZE, POOL_SIZE, POOL_SIZE, risk);
         this.nextOrderRef = 1;
         this.highestIssuedRef = 0;
@@ -177,7 +178,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         event.seq = ++appliedSeq;
         event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
+        activeSession = session; // backpressure drain target while the engine emits (same thread)
         engine.onEvent(event, appliedSeq, true);
+        activeSession = null;
         drainOutputs(session);
     }
 
@@ -435,6 +438,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     }
 
     // ----- egress ----------------------------------------------------------------------------
+
+    /** Backpressure hook: the engine (on THIS thread) hit a full output ring mid-apply; drain the
+     *  published tail to egress so the claim can retry. Without this a single event's fill cascade
+     *  larger than the ring self-deadlocks the state machine — including on replay (poison log). */
+    private void drainOnBackpressure() {
+        drainOutputs(activeSession);
+    }
 
     /** Drain engine outputs emitted by the just-applied event and echo them to the session. */
     private void drainOutputs(final ClientSession session) {

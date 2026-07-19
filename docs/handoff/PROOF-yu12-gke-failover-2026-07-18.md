@@ -219,3 +219,46 @@ is read from the LEADER's delta.
   (offer many in flight, correlate acks by order id) and drive the bench through `/orders/batch`
   amortized submits. The engine-side burst number says the target is reachable once ingress is
   pipelined.
+
+## Pipelined gateway: past the 25k bar (2026-07-19)
+
+Pipelining the gateway owner thread (offer the whole batch into the consensus log, count acks
+FIFO as they stream back — no per-order committed-ack wait) plus hardening it (HTTP pool 8->64
+so probes never starve behind parked batch threads; heap 1g) delivered, stable across 3
+back-to-back 30s floods, zero failures, zero ID reuse, no member or gateway restarts:
+
+| run | booked/s (engine trades) | applied/s | submit/s |
+|---|---|---|---|
+| 1 | 45,684 | 20,310 | 28,860 |
+| 2 | **135,834** | 31,247 | 28,961 |
+| 3 | 122,415 | 34,746 | **35,714** |
+
+- **Committed order ingress: ~29-36k orders/s** through REST -> gateway -> Raft consensus ->
+  deterministic engine, vs the 25,149 booked/s NFR-AC02 baseline and the ~10k NATS-era ceiling.
+- **Trade booking: up to ~136k trades/s** (price-tick cascades against the resting book execute
+  inside the cluster at engine speed). Single-batch latency: 500 orders committed in 75 ms.
+- NFR-AC02: **met and exceeded**.
+
+### The deadlock that fixed-size rings could not fix
+
+The first pipelined flood exposed that the output-ring self-deadlock was unwinnable by sizing:
+a cascade eventually outgrew the 262k ring too, and because the trigger lives in the committed
+log it wedged REPLAY on every member — a true poison pill (a full rolling restart came back
+leaderless: every member parked at the same log position inside
+`OutputPublisher.emitFillWithTradeAndPosition`, and the elected leader waited forever in
+`joinLogAsLeader` for its wedged service).
+
+Root fix (YU12 override of `OutputPublisher`): the claim path takes an optional backpressure
+hook — `tryNext` instead of blocking `next`; on `InsufficientCapacityException` the hook drains
+the published tail to egress inline (producer and consumer are the same thread) and the claim
+retries. Unbounded cascades now flow through a bounded ring; the poisoned 1.4M-event log
+replayed straight through, releasing ~1.27M trapped fills. Non-cluster hostings (separate
+consumer threads) keep the blocking claim.
+
+Operational notes from the same session: a full rolling restart of the emptyDir cluster leaves
+the members leaderless only if the service wedges (fixed above) — otherwise the log survives via
+quorum catch-up; leaked client sessions from crash-looping test clients can exhaust the
+ConsensusModule's concurrent-session limit ("ERROR - concurrent session limit" on connect) — a
+member rolling restart clears the session table; and with snapshots not yet scheduled, every
+restart replays the full log (fine at 1.4M events / ~25s, worth wiring `onTakeSnapshot` to a
+timer before the log grows unbounded).

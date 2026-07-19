@@ -59,7 +59,7 @@ spec:
             - name: FIX_SESSION_COMPIDS
               value: "CLIENT1"
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xms192m -Xmx384m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              value: "-Xms256m -Xmx1g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: http
               containerPort: 18110
@@ -74,11 +74,11 @@ spec:
             failureThreshold: 24
           resources:
             requests:
-              cpu: 200m
-              memory: 448Mi
+              cpu: 250m
+              memory: 640Mi
             limits:
-              cpu: "1"
-              memory: 768Mi
+              cpu: "2"
+              memory: 1536Mi
           volumeMounts:
             - name: shm
               mountPath: /dev/shm
