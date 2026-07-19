@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU12 — Aeron Cluster BLP Consensus</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(16px,1.65vw,21px);color:var(--ink);max-width:66ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:12px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(14px,1.4vw,17.5px);line-height:1.42}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;flex:1;min-width:150px}
+.card .n{font-family:var(--mono);font-size:clamp(17px,2.4vw,28px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:12.5px;margin-top:6px}
+.callout{margin-top:20px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:15px 19px;color:var(--ink);font-size:clamp(14px,1.45vw,17.5px);max-width:80ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px}
+.box h3{font-size:17px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:9px}
+.box p{font-size:clamp(13px,1.3vw,15.5px)}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.3vw,15px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:1000px;line-height:1.9}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.bars{display:flex;flex-direction:column;gap:16px;margin-top:16px;width:min(840px,96%)}
+.bar{display:grid;grid-template-columns:210px 1fr auto;align-items:center;gap:18px}
+.bar .name{font-size:14.5px;color:var(--dim)}
+.bar .track{height:28px;background:#0e1622;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.bar .fill{height:100%;border-radius:7px;background:var(--grad);min-width:6px}
+.bar .fill.lo{background:linear-gradient(135deg,#5e8bff,#8b7bff)}
+.bar .fill.dim{background:linear-gradient(135deg,#3b4a66,#495874)}
+.bar .val{font-family:var(--mono);font-size:15.5px;color:var(--ink);white-space:nowrap}
+.mult{font-family:var(--mono);font-weight:700;font-size:clamp(24px,4vw,48px);letter-spacing:-.02em}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+/* speaker notes — hidden from the audience; press N to toggle a presenter panel */
+.notes{display:none}
+body.notes-on .slide.active .notes{display:block;position:fixed;left:0;right:0;bottom:0;z-index:60;
+  background:#080c13;border-top:2px solid var(--accent2);padding:16px 34px 22px;max-height:48vh;overflow:auto;
+  box-shadow:0 -12px 44px rgba(0,0,0,.55)}
+.notes h4{color:var(--accent2);font-family:var(--mono);font-size:11.5px;letter-spacing:.14em;text-transform:uppercase;margin:12px 0 6px}
+.notes h4:first-child{margin-top:0}
+.notes p{font-size:14px;line-height:1.5;margin-bottom:7px;max-width:none;color:var(--dim)}
+.notes ul{margin:4px 0 8px;gap:4px}
+.notes li{font-size:13.5px;padding-left:20px;line-height:1.45;color:var(--dim)}
+.notes li:before{top:.5em;width:8px;height:8px}
+.notes b{color:var(--ink)}
+.notes-hint{position:fixed;bottom:26px;right:22px;font-family:var(--mono);font-size:11px;color:var(--faint);z-index:50}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.bar{grid-template-columns:130px 1fr auto}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU12</div>
+  <h1>Aeron Cluster<br><span class="grad">BLP Consensus</span></h1>
+  <p class="lead" style="margin-top:22px">YU11 proved the Aeron transport and cross-epoch recovery — but correct HA rested on a tower of hand-built machinery, and failover still sat on the Kubernetes control plane. YU12 replaces all of it with <b style="color:var(--ink)">Raft consensus</b>: the <b style="color:var(--ink)">BLP matching engine</b> runs as a replicated state machine across three members, elects leaders <b style="color:var(--ink)">inside the cluster</b>, and recovers a wiped member as a primitive. Failover drops to <b style="color:var(--ink)">sub-second, off the control plane</b>, and the ID-reuse bug is gone by construction.</p>
+  <div class="foot"><span>YU12 · consensus replaces hand-built HA</span><span>Aeron Cluster · Raft · off-plane</span></div>
+  <aside class="notes">
+    <h4>Speaker notes · slide 1</h4>
+    <p><b>Yes — this is still our BLP matching engine.</b> "BLP" is the Business Logic Processor: the same deterministic, single-threaded matching + risk core we've carried since the early states. YU12 does <b>not</b> rewrite it — the engine runs unchanged. What changed is how it's fed (everything now arrives through the consensus log) and how it's replicated (three copies kept identical by Raft).</p>
+    <p><b>The one-line story:</b> YU11 gave us correct high-availability, but built it by hand — lease election, a witness tiebreaker, snapshot-bundle transfer. YU12 throws that machinery away and lets Aeron's Raft consensus provide election, log replication, and wiped-member recovery as built-in primitives.</p>
+  </aside>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The gap YU11 left</div>
+  <h2>Correct HA — but hand-built, brick by brick</h2>
+  <ul>
+    <li><b>A tower of bespoke machinery.</b> Lease election, a fast-witness CAS tiebreaker, checksummed snapshot-bundle transfer, journal-cut bootstrap, lineage-continuous sequencing — every one hand-written, and every one a place an adversarial-timing bug can hide.</li>
+    <li><b>Fencing was a proof you had to keep holding.</b> "A partition minority must not admit orders" was maintained by witness logic — not a structural guarantee.</li>
+    <li><b>Failover still on the k8s control plane.</b> Lease renewal + pod-termination observation set a floor of seconds.</li>
+    <li><b>And it surfaced an ID-reuse bug.</b> A generator living outside the replicated state reissued an order ID after promotion.</li>
+  </ul>
+  <div class="callout">The question YU12 answers: what if election, log replication, and empty-disk recovery were <b>consensus primitives</b> instead of code we maintain — and split-brain were <b>structurally impossible</b> rather than fenced?</div>
+  <div class="foot"><span>Why YU12 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 MECHANISM -->
+<div class="slide">
+  <div class="tag">THE MECHANISM · RAFT CONSENSUS</div>
+  <h2>The BLP matching engine as a replicated state machine</h2>
+  <p class="lead">The inherited BLP matching engine (<code style="font-family:var(--mono)">MatchingEngine</code>) runs <b style="color:var(--ink)">unchanged</b> as an Aeron Cluster <code style="font-family:var(--mono)">ClusteredService</code>. Three members; Raft majority vote provides leader election, log replication, and commit ordering. Every input — orders, cancels, price ticks, control updates — enters <b style="color:var(--ink)">only</b> as a committed consensus-log message, then applies <b style="color:var(--ink)">single-threaded</b> through the same engine and two-tier risk.</p>
+  <div class="flow">
+    client  →  gateway  →  <span class="g">Raft consensus log</span> (majority commit)  →  apply (single thread)  →  BLP matching engine + risk  →  output<br>
+    <span class="f">— every member applies the identical committed sequence, in the same order —</span>
+  </div>
+  <div class="callout"><b>Split-brain is structurally impossible</b>: a partition minority can't win a majority vote, so it can't elect a leader, extend the log, or admit an order — no witness, no fencing proof to maintain. A wiped member rejoins by pulling a snapshot and replaying the log: a Cluster <b>primitive</b>, not five hand-built slices.</div>
+  <div class="foot"><span>FR-AC01…12 · consensus, not fencing</span><span>03</span></div>
+</div>
+
+<!-- 4 CORRECTNESS -->
+<div class="slide">
+  <div class="tag">CORRECTNESS · NO ID REUSE, BY CONSTRUCTION</div>
+  <h2>The bug that took YU11 a diagnosis is gone by design</h2>
+  <p class="lead">In YU11 the <code style="font-family:var(--mono)">nextOrderRef</code> generator lived outside the replicated state, so a promoted node could reissue an order ID. In the cluster there <i>is</i> nowhere outside the replicated state for it to live.</p>
+  <ul style="margin-top:14px">
+    <li><b>Every future-output generator is cluster state.</b> orderRef, trade counters, idempotency, risk reservations, symbol identity, control versions — all carried in the log and in <code style="font-family:var(--mono)">onTakeSnapshot</code>, bound to an <i>exact</i> applied log position.</li>
+    <li><b>Recovery fails closed.</b> On load and on promotion the service asserts every restored generator <b>strictly exceeds every ID ever issued</b> — not merely every ID still retained in memory. A violation refuses readiness.</li>
+  </ul>
+  <div class="callout">Proven: <b>zero order-ID reuse across ~80 leader kills</b> and every recovery-matrix case. The no-reuse property is now a structural guarantee, not a test that has to keep passing.</div>
+  <div class="foot"><span>FR-AC07/09 · NFR-AC04 · assert-beyond-every-ID</span><span>04</span></div>
+</div>
+
+<!-- 5 FAILOVER -->
+<div class="slide">
+  <div class="tag">LIVE PROOF · FAILOVER OFF THE CONTROL PLANE</div>
+  <h2>Failover, elected inside the cluster</h2>
+  <div class="bars">
+    <div class="bar"><span class="name">Aeron defaults (10s timeout)</span><div class="track"><div class="fill dim" style="width:96%"></div></div><span class="val">12,000 ms</span></div>
+    <div class="bar"><span class="name">First tune 100 / 1000 / 500</span><div class="track"><div class="fill lo" style="width:16%"></div></div><span class="val">~2,000 ms</span></div>
+    <div class="bar"><span class="name">100 / 400 / 200</span><div class="track"><div class="fill" style="width:6.5%"></div></div><span class="val">806 ms</span></div>
+    <div class="bar"><span class="name">Shipping — 50 / 200 / 100</span><div class="track"><div class="fill" style="width:4.2%"></div></div><span class="val">429–623 ms</span></div>
+  </div>
+  <div class="callout" style="margin-top:22px"><b>~80 leader kills, Raft-internal</b> — k8s only reschedules the corpse. Numbers are <b>system-facing FIRST_APPLY</b> (kill → first order committed by the new leader), measured node-clock-precise (exec into the leader, print a millisecond timestamp, <code style="font-family:var(--mono)">kill -9</code> in one shot). The shipping config is the tightest one that stays rock-solid election-stable under a full flood. And the <b>FIX/REST gateway survives the leader change</b>: the counterparty session doesn't drop.</div>
+  <div class="foot"><span>NFR-AC03 · system-facing, off-plane</span><span>05</span></div>
+  <aside class="notes">
+    <h4>The three numbers — every "X / Y / Z" is three consensus timeouts, in milliseconds</h4>
+    <ul>
+      <li><b>X = heartbeat interval</b> — how often the leader sends "I'm alive" pings.</li>
+      <li><b>Y = heartbeat timeout</b> — how long a follower waits with no ping before it declares the leader dead and starts an election. This is the <b>detection window</b> and the single biggest lever.</li>
+      <li><b>Z = election timeout</b> — bounds the voting round (the random nomination delay is up to half of Z).</li>
+    </ul>
+    <p><b>"First tune"</b> = our first step off Aeron's out-of-the-box defaults (200 / 10000 / 1000 — a 10-second timeout, which is why the default failover is ~12 s). "Tune" just means we set these as env values; they change live, no rebuild. So 100/1000/500 → 100/400/200 → shipping 50/200/100 is us tightening the detection and election windows one step at a time. (The shipping config adds a 4th knob too: a 25 ms canvass-status interval.)</p>
+    <h4>What the callout means, plain-English</h4>
+    <p><b>"system-facing FIRST_APPLY"</b> — we time from the instant we kill the leader to the instant the <b>new</b> leader commits and applies the first order. That's "the cluster is matching orders again," not merely "a leader got elected."</p>
+    <p><b>"node-clock-precise"</b> — to keep measurement error out of the number, the test prints a millisecond timestamp and runs <code>kill -9</code> in the <b>same command on the leader's own machine</b>, so no network or API delay sneaks in. The new leader stamps its own clock when it applies the first order; the machine clocks are NTP-synced, so the gap between the two is the true outage.</p>
+    <p><b>"election-stable under a full flood"</b> — we ship the fastest timeout config that never causes a <b>false</b> election under heavy load. Tighter settings hit 275 ms, but during the brief snapshot pause a too-twitchy follower wrongly thinks the leader died and holds a needless election. We ship the tightest config that never does that.</p>
+    <p><b>"the FIX/REST gateway survives the leader change"</b> — the gateway holds one long-lived cluster session; when leadership moves, that session follows the new leader automatically, so the trader's connection never drops and their next order just goes through.</p>
+  </aside>
+</div>
+
+<!-- 5b SUB-SECOND CAMPAIGN -->
+<div class="slide">
+  <div class="tag">HOW · TWO INDEPENDENT DESIGNS, CROSS-CRITIQUED</div>
+  <h2>Chasing sub-second: what actually moved the numbers</h2>
+  <div class="two">
+    <div class="box">
+      <div class="sub">CLIENT-FACING · &lt; 500 ms ACHIEVED</div>
+      <h3>Native leader following</h3>
+      <p style="margin-top:6px">The old client tore down its session on an ack stall and burned a 1 s connect timeout on the dead endpoint — a 1.6 s bimodal tail. Aeron Cluster sessions are <b style="color:var(--ink)">replicated state</b>: the client now holds one session across the kill, re-points on <code style="font-family:var(--mono)">NewLeaderEvent</code>, never reconnects. <b style="color:var(--ink)">10 / 10 kills sub-500 ms, best 279 ms.</b> The "kind redirect wedge" that forced the old workaround was the /dev/shm bug in disguise — falsified on GKE, the cycling machinery is deletable.</p>
+    </div>
+    <div class="box">
+      <div class="sub">SYSTEM-FACING · PHASE-RESOLVED TUNING</div>
+      <h3>The timeout ladder, soak-gated</h3>
+      <p style="margin-top:6px">Instrumented every Aeron election phase with a live counter watcher, then swept the timeouts one fresh epoch per rung — each rung soak-proven before the next. Raw leader election lands in <b style="color:var(--ink)">161–170 ms</b>, and full failover to the first committed order (FIRST_APPLY) in <b style="color:var(--ink)">275–368 ms</b> — all measured node-clock-precise across the whole ladder.</p>
+    </div>
+  </div>
+  <div class="callout">Placement earned the stability: migrated to <b>one member per c3 node</b> (required anti-affinity, Guaranteed QoS) — variance collapsed to a 3 ms spread. No CPU-quota bump was needed; the newer c3 family had free quota all along.</div>
+  <div class="foot"><span>joint plan · Phases 0–3 · fable + codeX</span><span>06</span></div>
+  <aside class="notes">
+    <h4>What this slide is</h4>
+    <p>This is the "HOW we made failover fast" slide, split into the two things that matter differently: how long <b>the trader's connection</b> is disrupted (client-facing) versus how long the <b>cluster itself</b> is without a leader (system-facing).</p>
+    <h4>Left box — client-facing (the big win)</h4>
+    <p>Old behaviour: when the leader died, the client threw away its connection and reconnected from scratch — and often wasted a full second trying the dead node first, giving a jumpy 0.8–1.6 s. The fix: an Aeron Cluster session is <b>replicated data</b>, so the very same session can be handed to the new leader. The client now just receives a "NewLeaderEvent" message and keeps going — no reconnect at all. Result: all 10 test kills recovered in under half a second, best 279 ms. Bonus: the old "wedge" bug that forced the reconnect workaround turned out to be the same /dev/shm bug we'd already fixed elsewhere — so a whole pile of workaround code can be deleted.</p>
+    <h4>Right box — system-facing</h4>
+    <p>We added instrumentation that logs each internal step of an election, then swept the timeout settings rung by rung, proving each one stable before moving on. The pure leader election is very fast — 161–170 ms — and the full "first order actually served" time is 275–368 ms: the election plus the short hop for the client to re-point to the new leader. Every number was measured node-clock-precise.</p>
+    <h4>Bottom line</h4>
+    <p>The consistency came from hardware placement: each of the 3 members now sits on its own dedicated c3 node with guaranteed CPU, which dropped the run-to-run spread to 3 ms. And it cost nothing extra — the c3 machine family had spare quota, so no quota request was needed.</p>
+  </aside>
+</div>
+
+<!-- 6 THROUGHPUT -->
+<div class="slide">
+  <div class="tag">LIVE PROOF · THROUGHPUT PAST THE BAR</div>
+  <h2>Consensus was never the bottleneck</h2>
+  <div class="bars">
+    <div class="bar"><span class="name">NATS-sequenced HA (YU02 era)</span><div class="track"><div class="fill lo" style="width:7%"></div></div><span class="val">~10,100 / s</span></div>
+    <div class="bar"><span class="name">Single-BLP parity — the bar</span><div class="track"><div class="fill lo" style="width:18%"></div></div><span class="val">25,149 / s</span></div>
+    <div class="bar"><span class="name">YU12 pipelined gateway</span><div class="track"><div class="fill" style="width:96%"></div></div><span class="val">up to 135,834 / s</span></div>
+  </div>
+  <ul style="margin-top:20px">
+    <li><b>29,000–43,600 submit/s</b> committed, <b>up to 135,834 booked/s</b> — stable back-to-back runs, zero failures, zero ID reuse; 43.6k/s is the standing record on the c3 topology.</li>
+    <li><b>The apply path had headroom to spare.</b> Raft sustained an 18.6k/s cascade and replayed a 740k-event log in seconds. The ceiling was the gateway's one-order-at-a-time submit — pipelining took a 200-order batch from ~250 ms to <b>38 ms</b>.</li>
+  </ul>
+  <div class="callout">Same lesson as every prior state: <b>per-order ingress is the ceiling, not the BLP.</b> NFR-AC02 (≥ 25,149 booked/s) met and exceeded; booked/s read from the engine's authoritative trades counter.</div>
+  <div class="foot"><span>NFR-AC02 · pipelined gateway</span><span>07</span></div>
+  <aside class="notes">
+    <h4>The point of this slide</h4>
+    <p>People worry that adding consensus — three machines agreeing on every single order — will throttle throughput. It doesn't. The cluster was never the bottleneck.</p>
+    <h4>The three bars</h4>
+    <p>Our old NATS-based HA did about 10,100 orders/sec. The number to beat is 25,149/sec — that's a single, non-replicated BLP ("parity," the acceptance bar). YU12 booked up to 135,834/sec.</p>
+    <h4>Two different numbers — don't mix them up</h4>
+    <p><b>submit/sec</b> = orders accepted into the log per second (we hit 29,000–43,600). <b>booked/sec</b> = trades actually executed per second (up to 135,834). One order can set off a cascade of many trades, which is why booked is the larger number.</p>
+    <h4>Why it's fast, and what the real ceiling is</h4>
+    <p>The engine always had headroom — it replayed a 740,000-event log in seconds. The real bottleneck was the gateway sending orders one at a time and waiting for each confirmation (~1.2 ms each). "Pipelining" means firing a whole batch into the log at once and collecting the confirmations as they stream back; that took a 200-order batch from 250 ms down to 38 ms. So the ceiling is how fast you can push orders <b>in</b> (the gateway), not the matching or the consensus — and we clear the acceptance bar several times over.</p>
+  </aside>
+</div>
+
+<!-- 7 FLOOD BUGS — commented out per request (2026-07-19); uncomment to restore -->
+<!--
+<div class="slide">
+  <div class="tag">HARD-WON · WHAT ONLY A REAL FLOOD FINDS</div>
+  <h2>Four production bugs, found by flooding the cluster</h2>
+  <div class="two">
+    <div class="box" style="border-left:3px solid var(--bad)">
+      <div class="sub" style="color:var(--bad)">THE POISON PILL</div>
+      <h3>Output-ring self-deadlock</h3>
+      <p style="margin-top:6px">The service thread is both producer (engine emits during apply) and consumer (drain after apply). A price tick mass-executing the book overflowed the ring and parked <code style="font-family:var(--mono)">next()</code> forever <i>inside apply</i> — on all three members. The trigger lived in the committed log, so it wedged <b style="color:var(--ink)">replay</b> too: a rolling restart came back leaderless, every member stuck at the same position. Fixed with a backpressure-drain claim (<code style="font-family:var(--mono)">tryNext</code> + drain-inline); the poisoned 1.4M-event log then replayed clean, releasing ~1.27M trapped fills.</p>
+    </div>
+    <div class="box">
+      <div class="sub">THREE MORE</div>
+      <ul style="margin-top:2px;gap:11px">
+        <li><b>Egress throttled the state machine.</b> An undeliverable ack retried 1000× (~1 s each) collapsed apply to ~1 event/s → now 20 attempts; slow clients get drops, never the engine's time.</li>
+        <li><b>Rolling-restart tail loss (emptyDir).</b> Readiness didn't gate on catch-up → <code style="font-family:var(--mono)">/ready</code> is 200 only within 5,000 of the furthest-ahead peer; proven across a rollout mid-flood, no regression.</li>
+        <li><b>Gateway self-eviction.</b> All 8 HTTP threads parked on batch futures starved the readiness probe → pool now 64.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout">These are deterministic-replication bugs — identical on every replica, surviving restart. You only find them by flooding a real deployment; each was root-caused from SIGQUIT thread dumps and fixed for good.</div>
+  <div class="foot"><span>hosting hardening · flood-tested</span><span>08</span></div>
+</div>
+-->
+
+<!-- 8 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>Hand-built HA, replaced by consensus</h2>
+  <p class="lead">YU12 hosts the deterministic BLP matching core inside an Aeron Cluster — election, log replication, and empty-disk recovery become Raft primitives, split-brain becomes impossible, and the ID-reuse bug is dissolved by construction. Failover drops to sub-second, off the control plane, the client rides the leader change on one surviving session, and throughput clears the bar many times over.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">429–623 ms</div><div class="l">system-facing failover, off-plane</div></div>
+    <div class="card"><div class="n grad">&lt; 500 ms</div><div class="l">client-facing, session survives</div></div>
+    <div class="card"><div class="n grad">136k / s</div><div class="l">booked, pipelined — past the bar</div></div>
+    <div class="card"><div class="n grad">0 reuse</div><div class="l">across ~80 kills, by construction</div></div>
+  </div>
+  <div class="foot"><span>YU12 · Aeron Cluster BLP Consensus</span><span>08</span></div>
+</div>
+
+</div>
+
+<div class="notes-hint">N — notes</div>
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">8</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}if(e.key==='n'||e.key==='N'){document.body.classList.toggle('notes-on')}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav')&&!e.target.closest('.notes'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

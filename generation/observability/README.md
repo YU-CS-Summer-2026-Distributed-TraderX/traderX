@@ -27,3 +27,15 @@ Wired into the existing TraderX monitoring stack on GKE (2026-07-19).
 restart grafana. UID `yu12-cluster`, title "YU12 Aeron Cluster — live". Live at
 grafana.yaakovseif.dev. Panels: leader-per-member state timeline (failover viz), throughput,
 applied-per-member, replication lag, snapshots.
+
+### GKE ingress note (root_url)
+The GKE ingress (`cluster-addons/traderx-ingress.yaml`) routes `grafana.yaakovseif.dev/` at the
+**root** to `grafana:3000`, not under a `/grafana/` path. The generated grafana deployment ships
+with `GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana/` + `SERVE_FROM_SUB_PATH=true` (correct
+for the local compose/tilt setup where grafana lives behind a path). On GKE that makes grafana
+301-redirect `/` → `http://localhost/grafana/` — unreachable. Override on GKE only:
+
+    kubectl set env deploy/grafana -n traderx \
+      GF_SERVER_ROOT_URL='https://grafana.yaakovseif.dev/' \
+      GF_SERVER_SERVE_FROM_SUB_PATH='false' \
+      GF_SERVER_DOMAIN='grafana.yaakovseif.dev'
