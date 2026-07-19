@@ -417,3 +417,28 @@ rung, including the 80 ms detector), 5 node-clock kills, native-follow client, 0
 - No margin failures anywhere on the ladder; the old "aggressive timeouts destabilize" belief
   is fully retired (80 ms detector idle-stable on Guaranteed-QoS one-per-node placement).
 - Rung choice pending the loaded acceptance run (C vs B = numbers vs 1.5x detector margin).
+
+### Rung A under load: kills during flood (2026-07-19, final)
+
+Three leader kills fired during an active flood at the shipping config (50/200/100/25):
+**FIRST_APPLY 453 / 517 / 554 ms, 0 ID reuse** — barely above the idle band (429-623 ms).
+Caveat recorded honestly: the flood generator degraded after the first kill because the
+GATEWAY still runs the legacy owner loop (isClosed-only reconnect) and loses its session on
+failover — so kills 2-3 ran under partial load (canary + residual). This elevates Phase 4
+(unified native-follow owner loop for the gateway) from cleanup to the top remaining item: it
+is both the REST-availability-across-failover fix and the prerequisite for fully-loaded
+acceptance kills.
+
+## Campaign scoreboard (end of 2026-07-19)
+
+| Target | Verdict |
+|---|---|
+| Client-facing < 500 ms | **ACHIEVED** consistently on quiet clusters (10/10 kills, best 279 ms); 420-619 ms at the flood-stable shipping config |
+| System-facing < 200 ms | **DECLINED honestly**: 275-368 ms at the tightest stable-idle rung; raw election reaches 161-170 ms but the client re-point hop (~110-140 ms) and the flood constraint (snapshot-leg duty stall > 120 ms) bound the deployable floor |
+| Shipping config | Rung A 50/200/100/25 — flood-soak clean, FIRST_APPLY 429-623 ms idle / 453-554 ms under load, pinned in the manifest |
+| Correctness | 0 ID reuse across ~80 kills; one canary session survived every kill |
+
+Remaining (in order): Phase 4 gateway unified owner loop (+ delete endpoint cycling);
+Phase 5 trimmed acceptance at rung A (25 idle + 25 loaded incl. snapshot-tick kills);
+non-blocking snapshot leg (unlocks sub-120 ms detectors under flood); client ingress
+pre-warm (attacks the ~110-140 ms re-point hop toward sub-200 system).
