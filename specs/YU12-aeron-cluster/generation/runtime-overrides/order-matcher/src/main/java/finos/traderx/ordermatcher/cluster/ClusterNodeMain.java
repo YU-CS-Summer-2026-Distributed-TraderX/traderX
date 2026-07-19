@@ -222,6 +222,27 @@ public final class ClusterNodeMain {
             respond(exchange, ready ? 200 : 503, "{\"ready\":" + ready
                 + ",\"applied\":" + mine + ",\"maxPeerApplied\":" + maxPeer + "}");
         });
+        // Prometheus scrape surface (Grafana YU12 dashboard): each member exports its own signals
+        // labelled by memberId, so Prometheus scraping all three renders per-node role/lag/snapshots.
+        server.createContext("/metrics", exchange -> {
+            final boolean started = service.engine() != null;
+            final int role = service.role() == io.aeron.cluster.service.Cluster.Role.LEADER ? 1 : 0;
+            final long applied = started ? service.engine().blpSeq() : 0;
+            final long trades = started ? service.engine().tradeCounter() : 0;
+            final String m = "{member=\"" + memberId + "\"} ";
+            final String body =
+                  "# TYPE traderx_cluster_role gauge\ntraderx_cluster_role" + m + role + "\n"
+                + "# TYPE traderx_cluster_applied counter\ntraderx_cluster_applied" + m + applied + "\n"
+                + "# TYPE traderx_cluster_trades counter\ntraderx_cluster_trades" + m + trades + "\n"
+                + "# TYPE traderx_cluster_snapshots counter\ntraderx_cluster_snapshots" + m + service.snapshotsTaken() + "\n"
+                + "# TYPE traderx_cluster_up gauge\ntraderx_cluster_up" + m + (started ? 1 : 0) + "\n";
+            final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        });
         server.start();
         return server;
     }
