@@ -17,7 +17,7 @@ JAR="$(ls "${OM}"/build/libs/*.jar | grep -v plain | head -1)"
 [[ -n "${JAR}" ]] || { echo "[fail] no boot jar built"; exit 1; }
 
 echo "[build] docker image ${IMAGE} from ${JAR}"
-docker build -f "${OM}/Dockerfile.cluster" \
+docker build ${YU12_PLATFORM:+--platform ${YU12_PLATFORM}} -f "${OM}/Dockerfile.cluster" \
   --build-arg JAR_FILE="build/libs/$(basename "${JAR}")" \
   -t "${IMAGE}" "${OM}"
 

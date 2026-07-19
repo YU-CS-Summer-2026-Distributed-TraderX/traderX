@@ -51,8 +51,8 @@
 ## Proof
 
 - [x] T-AC19 Keep inherited allocation gates exact-zero on the service thread; `noGcTest` green.
-- [x] T-AC20 Measure client-observed failover (kind: 813 ms best to ~17 s slow-election; sub-1s
-  achievable, consistent sub-1s needs timeout tuning + faster host — see PROOF/GKE docs).
+- [x] T-AC20 Measure client-observed failover. GKE (tuned 1s heartbeat): client-facing ~200 ms
+  (transparent), system-facing ~2 s (12 s default); off-plane proven. PROOF-yu12-gke-failover-2026-07-18.md.
 - [~] T-AC21 GKE comparison labelled `aeron-cluster`: deploy+bench packaged as hand-over
   commands (GKE-yu12-deploy-bench.md); gateway serves /orders/batch + /metrics for it. GKE run is yaakov's.
 - [ ] T-AC22 Record all evidence in `generation/implementation-status.md`.

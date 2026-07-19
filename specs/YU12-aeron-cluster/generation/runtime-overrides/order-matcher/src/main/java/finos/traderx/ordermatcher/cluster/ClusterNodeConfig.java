@@ -113,6 +113,12 @@ public final class ClusterNodeConfig {
             .serviceCount(1)
             .replicationChannel("aeron:udp?endpoint=" + host + ":0")
             .deleteDirOnStart(cleanStart);
+        // Failover speed lever (NFR-AC03): the Aeron defaults (leaderHeartbeatTimeout 10s) put
+        // failover detection at ~10-12s on ANY hardware — confirmed on GKE. These make detection
+        // and election aggressive so client-observed failover drops to the low seconds / sub-second.
+        // Env-tunable (ns = ms * 1e6) so the sweet spot can be found without a rebuild; 0 = keep
+        // the Aeron default. Constraint: heartbeatTimeout > heartbeatInterval, election >= interval.
+        applyTimeoutMs(consensusModuleContext);
 
         final ClusteredServiceContainer.Context containerContext = new ClusteredServiceContainer.Context()
             .aeronDirectoryName(aeronDir)
@@ -122,5 +128,30 @@ public final class ClusterNodeConfig {
             .serviceId(0);
 
         return new Contexts(mediaDriverContext, archiveContext, consensusModuleContext, containerContext);
+    }
+
+    /** Apply env-provided consensus timeouts (milliseconds; 0/unset = Aeron default). */
+    private static void applyTimeoutMs(final ConsensusModule.Context ctx) {
+        final long intervalMs = envLong("CLUSTER_HEARTBEAT_INTERVAL_MS", 0);
+        final long timeoutMs = envLong("CLUSTER_HEARTBEAT_TIMEOUT_MS", 0);
+        final long electionMs = envLong("CLUSTER_ELECTION_TIMEOUT_MS", 0);
+        final long canvassMs = envLong("CLUSTER_STARTUP_CANVASS_TIMEOUT_MS", 0);
+        if (intervalMs > 0) {
+            ctx.leaderHeartbeatIntervalNs(intervalMs * 1_000_000L);
+        }
+        if (timeoutMs > 0) {
+            ctx.leaderHeartbeatTimeoutNs(timeoutMs * 1_000_000L);
+        }
+        if (electionMs > 0) {
+            ctx.electionTimeoutNs(electionMs * 1_000_000L);
+        }
+        if (canvassMs > 0) {
+            ctx.startupCanvassTimeoutNs(canvassMs * 1_000_000L);
+        }
+    }
+
+    private static long envLong(final String name, final long fallback) {
+        final String v = System.getenv(name);
+        return v == null || v.isEmpty() ? fallback : Long.parseLong(v);
     }
 }
