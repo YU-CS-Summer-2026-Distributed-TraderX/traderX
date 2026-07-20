@@ -183,6 +183,16 @@ public final class ClusterNodeMain {
                                            final List<String> hostnames,
                                            final MatchingEngineClusteredService service) throws Exception {
         final HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+        // Dedicated thread pool: without it the stdlib server runs every handler on ONE dispatcher
+        // thread, so a slow /ready (synchronous peer HTTP below) head-of-line-blocks the liveness
+        // /health probe until it times out — the flood-time SIGKILL cause. MAX_PRIORITY so the
+        // handler wins a CPU slot even while the Aeron duty-cycle threads are saturating the node.
+        server.setExecutor(java.util.concurrent.Executors.newFixedThreadPool(6, r -> {
+            final Thread t = new Thread(r, "health-http");
+            t.setDaemon(true);
+            t.setPriority(Thread.MAX_PRIORITY);
+            return t;
+        }));
         server.createContext("/health", exchange -> {
             final boolean started = service.engine() != null;
             final String body = "{\"memberId\":" + memberId
@@ -204,24 +214,45 @@ public final class ClusterNodeMain {
         // in PROOF-yu12-gke-failover-2026-07-18.md). Unreachable peers are ignored so cold
         // start and quorum-loss states never wedge on their own readiness.
         final long maxLag = Long.parseLong(env("CLUSTER_READY_MAX_LAG", "5000"));
-        server.createContext("/ready", exchange -> {
-            final boolean started = service.engine() != null;
-            if (!started) {
-                respond(exchange, 503, "{\"ready\":false,\"reason\":\"not started\"}");
-                return;
-            }
-            final long mine = service.engine().blpSeq();
-            long maxPeer = -1;
-            for (int i = 0; i < hostnames.size(); i++) {
-                if (i == memberId) {
-                    continue;
+        // The catch-up decision needs synchronous peer HTTP (peerApplied below), which is slow under
+        // flood — so compute it on a background sampler every 250ms and have /ready read the cached
+        // result. The request path then never blocks on a peer, so the probe stays fast under load.
+        final java.util.concurrent.atomic.AtomicReference<String> readyBody =
+            new java.util.concurrent.atomic.AtomicReference<>("{\"ready\":false,\"reason\":\"not started\"}");
+        final java.util.concurrent.atomic.AtomicBoolean readyFlag =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+        final Thread readySampler = new Thread(() -> {
+            while (true) {
+                try {
+                    if (service.engine() == null) {
+                        readyFlag.set(false);
+                        readyBody.set("{\"ready\":false,\"reason\":\"not started\"}");
+                    } else {
+                        final long mine = service.engine().blpSeq();
+                        long maxPeer = -1;
+                        for (int i = 0; i < hostnames.size(); i++) {
+                            if (i == memberId) {
+                                continue;
+                            }
+                            maxPeer = Math.max(maxPeer, peerApplied(hostnames.get(i), port));
+                        }
+                        final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
+                        readyFlag.set(ready);
+                        readyBody.set("{\"ready\":" + ready + ",\"applied\":" + mine
+                            + ",\"maxPeerApplied\":" + maxPeer + "}");
+                    }
+                    Thread.sleep(250);
+                } catch (final InterruptedException e) {
+                    return;
+                } catch (final Exception e) {
+                    // transient peer/engine hiccup — keep the last decision and retry
                 }
-                maxPeer = Math.max(maxPeer, peerApplied(hostnames.get(i), port));
             }
-            final boolean ready = maxPeer < 0 || mine >= maxPeer - maxLag;
-            respond(exchange, ready ? 200 : 503, "{\"ready\":" + ready
-                + ",\"applied\":" + mine + ",\"maxPeerApplied\":" + maxPeer + "}");
-        });
+        }, "health-ready-sampler");
+        readySampler.setDaemon(true);
+        readySampler.start();
+        server.createContext("/ready", exchange ->
+            respond(exchange, readyFlag.get() ? 200 : 503, readyBody.get()));
         // Prometheus scrape surface (Grafana YU12 dashboard): each member exports its own signals
         // labelled by memberId, so Prometheus scraping all three renders per-node role/lag/snapshots.
         server.createContext("/metrics", exchange -> {

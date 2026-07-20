@@ -120,19 +120,21 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 120
-          # Liveness must catch a DEADLOCKED member, not a BUSY one. Under high-throughput flood
-          # (~100k+ orders/s) the in-JVM health server on :8080 is starved by the consensus/apply
-          # duty cycle and can't answer /health within the default 1s timeout — with a tight probe
-          # k8s SIGKILLs a perfectly-alive member (exit 137), which cascades into leader loss and a
-          # cluster-wide crash-loop. Generous timeout + failureThreshold tolerate a saturated-but-
-          # alive member (~2 min of slow /health) while still restarting a genuinely hung one.
+          # Liveness must catch a DEAD member, not a BUSY one. An httpGet /health probe runs app
+          # logic and needs the JVM's HTTP thread scheduled — under ~100k+ orders/s flood the Aeron
+          # duty cycle saturates the node and starves it, so k8s SIGKILLs a perfectly-alive member
+          # (exit 137) → cascading leader loss → crash-loop → recovery-replay death-spiral. A
+          # tcpSocket probe is answered by the KERNEL (it completes the SYN for the listening socket
+          # from the accept backlog regardless of whether the JVM accept thread runs), so a busy or
+          # replaying member passes, while a dead/exited JVM (socket closed) still fails and restarts.
+          # A wedged-but-alive member is handled by Raft (voted out) and by readiness (traffic shed),
+          # not by liveness. Health server is also hardened (dedicated MAX_PRIORITY pool + off-path
+          # /ready sampler) so /ready/metrics stay responsive for readiness + the Grafana dashboard.
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8080
             initialDelaySeconds: 45
             periodSeconds: 15
-            timeoutSeconds: 10
             failureThreshold: 8
           # Guaranteed QoS (joint plan Phase 2): request==limit so the consensus/driver duty
           # cycle never rides CFS burst credit; 3 CPU leaves ~0.9 for daemonsets on c3-standard-4.
