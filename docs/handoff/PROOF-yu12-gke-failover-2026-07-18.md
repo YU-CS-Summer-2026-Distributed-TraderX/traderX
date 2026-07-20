@@ -239,6 +239,34 @@ back-to-back 30s floods, zero failures, zero ID reuse, no member or gateway rest
   inside the cluster at engine speed). Single-batch latency: 500 orders committed in 75 ms.
 - NFR-AC02: **met and exceeded**.
 
+### Apples-to-apples re-measurement (2026-07-20, c3 one-member-per-node)
+
+The 2026-07-19 table above read `booked/s` from the leader's engine `trades` counter but drove a
+**cascade** workload (price ticks fill many resting orders → booking amplified far above ingress),
+so booked (135k) ≫ submit (29k). Re-measured on the current **c3-standard-4, one-member-per-node**
+cluster with a **self-match** workload (SIDES=alternate, limit==seeded price → ~1 fill per order,
+so booked ≈ applied ≈ submit), reading `booked/s` from the leader `trades` delta AND cross-checking
+`submit/s` against `applied/s` (authoritative committed delta). Warmed up first.
+
+| conc / batch | booked/s | applied/s | submit/s | sub/appl | restarts |
+|---|---|---|---|---|---|
+| burst peak (batch=1000) | **134,755** | **134,755** | 133,973 | 0.99 | 0 (that run) |
+| 8 / 200 (sustained, 3 runs) | 30,936 / 29,332 / 31,992 | =booked | =booked | 0.99 | 0 |
+| 16 / 200 (sustained) | 49,342 / 39,667 / (snapshot dip) | =booked | =booked | 0.99–1.00 | 0 |
+
+- **`submit/s` is validated** — it tracks `applied/s` at ratio ~0.99, so the batch-201 accounting
+  is NOT over-counting; committed ingress is real.
+- **Committed ingress on c3 is far higher than the old c2 3-on-2 figure**: ~30k sustained (conc=8,
+  rock-steady across 3 runs, 0 restarts), ~40-49k at conc=16, **burst ~134k** — vs the 29-36k the
+  old nodes topped out at. The 25,149 booked/s NFR-AC02 bar is now cleared *sustainably*, not just
+  in a burst.
+- **The 134k is a burst, not sustainable.** At batch=1000 the members saturate — the in-JVM health
+  server starves (liveness pressure) and the log grows fast; sustained flood at that rate restarts a
+  member and can trigger a recovery-replay death-spiral (large log replay > liveness tolerance).
+  Throttling to batch=200 keeps CPU headroom for the health server and holds steady with 0 restarts.
+  Remaining hardening levers: move the health server off the hot duty-cycle thread, bound the log via
+  archive segment purge-after-snapshot, and/or admission-throttle ingress.
+
 ### The deadlock that fixed-size rings could not fix
 
 The first pipelined flood exposed that the output-ring self-deadlock was unwinnable by sizing:
