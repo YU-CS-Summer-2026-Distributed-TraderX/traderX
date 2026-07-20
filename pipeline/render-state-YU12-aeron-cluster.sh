@@ -68,6 +68,7 @@ for source in \
   system/adr-045-consensus-log-single-input.md \
   system/adr-046-cluster-snapshot-completeness.md \
   system/adr-047-ingress-gateway-tier.md \
+  system/adr-048-trade-egress-nats-bridge.md \
   tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do
