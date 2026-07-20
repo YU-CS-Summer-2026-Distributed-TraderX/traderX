@@ -39,8 +39,9 @@ spec:
       labels:
         app: cluster-gateway
     spec:
-      nodeSelector:
-        cloud.google.com/gke-nodepool: default-pool
+      # No node pin: the gateway is stateless-forward and runs on any non-member pool (default-pool
+      # or std-pool). Removing the default-pool pin let scale-out replicas schedule onto std-pool
+      # once its capacity was added — the members' blp-c3-pool stays reserved via its taint.
       containers:
         - name: gateway
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu12
