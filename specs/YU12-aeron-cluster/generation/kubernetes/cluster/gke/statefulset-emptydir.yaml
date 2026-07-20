@@ -120,13 +120,20 @@ spec:
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 120
+          # Liveness must catch a DEADLOCKED member, not a BUSY one. Under high-throughput flood
+          # (~100k+ orders/s) the in-JVM health server on :8080 is starved by the consensus/apply
+          # duty cycle and can't answer /health within the default 1s timeout — with a tight probe
+          # k8s SIGKILLs a perfectly-alive member (exit 137), which cascades into leader loss and a
+          # cluster-wide crash-loop. Generous timeout + failureThreshold tolerate a saturated-but-
+          # alive member (~2 min of slow /health) while still restarting a genuinely hung one.
           livenessProbe:
             httpGet:
               path: /health
               port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            failureThreshold: 6
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 8
           # Guaranteed QoS (joint plan Phase 2): request==limit so the consensus/driver duty
           # cycle never rides CFS burst credit; 3 CPU leaves ~0.9 for daemonsets on c3-standard-4.
           resources:
@@ -148,4 +155,11 @@ spec:
             sizeLimit: 512Mi
         - name: data
           emptyDir:
-            sizeLimit: 2Gi
+            # The Aeron consensus log + archive live here. Under high-throughput bench load the
+            # archive grows fast (~10-20 MB/s at ~100k orders/s); a 2Gi cap fills in minutes and
+            # k8s EVICTS the pod (cascading eviction → lost leader → throughput collapse). The
+            # node's local NVMe backs this (95G, ~44GiB allocatable ephemeral) and there is one
+            # member per node, so give it generous headroom. ponytail: 20Gi buys ~15-30 min of
+            # sustained flood; the real bound is archive segment purge-after-snapshot if runs go
+            # longer than that.
+            sizeLimit: 20Gi
