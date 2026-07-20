@@ -111,6 +111,12 @@ spec:
             # restart replay (tcpSocket liveness now tolerates the longer replay without a kill).
             - name: CLUSTER_SNAPSHOT_INTERVAL_MS
               value: "300000"
+            # Leader-side cluster-egress → NATS /trades bridge (YU12): every booked trade is
+            # published to trade-processor, which persists Trade + Position to the DB and republishes
+            # the /accounts/{id}/trades + /positions feeds the UI subscribes to. Only the leader
+            # publishes; the deterministic apply thread only does a non-blocking enqueue.
+            - name: TRADE_BRIDGE_NATS_URL
+              value: "nats://nats-broker:4222"
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

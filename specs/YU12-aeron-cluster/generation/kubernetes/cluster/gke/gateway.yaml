@@ -7,6 +7,12 @@ metadata:
 spec:
   selector:
     app: cluster-gateway
+  # Horizontal scale-out (burst-free ingress): each gateway replica holds its OWN AeronCluster
+  # session + owner thread, and the cluster assigns order refs globally, so REST batches fan out
+  # across replicas with no coordination — N replicas = N× parallel batch submission, the real fix
+  # for sustaining ~134k without the single-owner-thread ceiling. REST is stateless per request so
+  # it round-robins freely; FIX sessions are stateful per CompID, so pin a FIX client to one replica.
+  sessionAffinity: ClientIP
   ports:
     - name: http
       port: 18110
@@ -20,6 +26,10 @@ kind: Deployment
 metadata:
   name: cluster-gateway
 spec:
+  # Scale-out ready: bump replicas to add owner threads. Each pod is independent (own cluster
+  # session, own POD_IP:egress). On the current cluster both e2 pools are ~99% CPU, so more
+  # replicas need default-pool node capacity first (a gcloud node-pool resize); once there is room,
+  # `kubectl scale deploy/cluster-gateway --replicas=N` and the order-matcher-gw Service load-balances.
   replicas: 1
   selector:
     matchLabels:

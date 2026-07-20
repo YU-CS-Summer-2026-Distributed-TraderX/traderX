@@ -118,6 +118,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
     private volatile Cluster.Role role = Cluster.Role.FOLLOWER;
+    // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
+    // is set, so default behaviour is unchanged. Null on every member until then.
+    private TradeNatsPublisher tradeBridge;
 
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
@@ -127,6 +130,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         initEngine();
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
+        }
+        final String bridgeUrl = System.getenv("TRADE_BRIDGE_NATS_URL");
+        if (bridgeUrl != null && !bridgeUrl.isBlank()) {
+            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", 1 << 16);
+            tradeBridge.start();
         }
     }
 
@@ -265,6 +273,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     @Override
     public void onTerminate(final Cluster cluster) {
+        if (tradeBridge != null) {
+            tradeBridge.stop();
+        }
     }
 
     // ----- snapshot record codec (package-private: unit-tested without a cluster) --------------
@@ -465,6 +476,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final long cursor = outputRing.getCursor();
         for (long seq = outputConsumed.get() + 1; seq <= cursor; seq++) {
             final OutputEvent out = outputRing.get(seq);
+            // Leader-side trade bridge: every booked trade → NATS /trades → trade-processor → DB +
+            // positions + UI. Leader-only so followers never duplicate; offer is non-blocking so the
+            // deterministic apply thread is never held up by NATS.
+            if (out.kind == OutputEvent.KIND_TRADE_BOOKED && role == Cluster.Role.LEADER
+                && tradeBridge != null) {
+                tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
+                    out.side, out.tradeQty, out.tradePx);
+            }
             ackBuffer.putLong(0, out.inputSeq);
             ackBuffer.putInt(8, out.orderRef);
             ackBuffer.putByte(12, out.kind);
