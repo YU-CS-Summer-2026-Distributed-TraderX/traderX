@@ -25,3 +25,18 @@ Client-observed failover is bounded by Raft election plus gateway re-point rathe
 session death, and the under-one-second gate is measured at this tier. The order path gains one
 in-cluster hop. Gateway loss drops counterparty sessions to ordinary reconnect while cluster
 order state is unaffected — recorded as TD-AC01.
+
+## Horizontal scale-out (ingress throughput)
+
+The tier is **stateful per instance but shares nothing** between instances: each gateway pod holds
+its own AeronCluster session, its own single owner thread (which correlates acks FIFO), and its own
+FIX sessions. That single owner thread is the ingress ceiling — one thread submitting pipelined
+batches. So the tier **scales out horizontally**: N replicas open N independent cluster sessions =
+N× parallel batch submission, and because order refs are assigned globally by the cluster there is
+no cross-replica coordination. This is the burst-free path past the single-owner-thread ceiling
+(~134k orders/s on one gateway); the eventual limit becomes the cluster's Raft commit rate.
+
+REST is stateless per request, so the `order-matcher-gw` Service round-robins batches across
+replicas freely. FIX sessions are stateful per CompID, so the Service carries `sessionAffinity:
+ClientIP` to pin a FIX counterparty to one replica. Scheduling N replicas needs node capacity
+(a node-pool resize) — recorded as an ops prerequisite, not an architectural constraint.

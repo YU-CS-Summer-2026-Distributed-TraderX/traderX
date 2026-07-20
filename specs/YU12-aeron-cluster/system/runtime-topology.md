@@ -19,13 +19,21 @@
   applies to the single service thread.
 - **fix-gateway tier**: terminates counterparty FIX sessions and REST connections, screens
   admission against control-feed state, forwards through the Aeron Cluster client, and re-points
-  on leader change without dropping counterparty sessions.
+  on leader change without dropping counterparty sessions. **Scales out horizontally** — each
+  replica holds its own cluster session + owner thread, so N replicas = N× parallel ingress; the
+  `order-matcher-gw` Service round-robins REST and pins FIX with `sessionAffinity: ClientIP`
+  (ADR-047).
 - **feed adapter**: consumes inherited NATS pricing/control subjects and publishes conflated
   ticks and policy updates as cluster ingress.
+- **trade-egress bridge** (`TradeNatsPublisher`, ADR-048): on the leader, republishes every booked
+  trade from the deterministic apply stream to NATS `/trades` (non-blocking enqueue off the apply
+  thread), so cluster fills reach `trade-processor` → the SQL DB → the UI blotter/position feeds.
 - **NATS/JetStream**: inherited non-replication roles only — pricing, control feeds, output
-  distribution, EOD gating. No replication leg, no witness bucket.
-- **Projector/read-model, MariaDB, downstream services**: unchanged inherited CQRS topology fed
-  by committed cluster outputs.
+  distribution (incl. the trade-egress bridge), EOD gating. No replication leg, no witness bucket.
+- **trade-processor, MariaDB, position-service, UI, downstream services**: unchanged inherited CQRS
+  topology, now fed by committed cluster outputs via the trade-egress bridge — `trade-processor`
+  consumes `/trades`, persists Trade + Position to MariaDB, and republishes `/accounts/*/trades` +
+  `/positions` to the UI's NATS websocket.
 
 ## Networking
 

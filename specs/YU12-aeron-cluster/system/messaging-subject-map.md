@@ -8,12 +8,18 @@ endpoint moves from the order-matcher process to the gateway tier.
 ## Subject Families
 
 - `/trades`
-  - producer: `trade-service`
+  - producer: `trade-service` (legacy REST path); **YU12 adds the Aeron Cluster leader's trade-egress
+    bridge (`TradeNatsPublisher`) as the primary producer** — every booked trade (`KIND_TRADE_BOOKED`
+    on the deterministic apply stream) is published here so the cluster's fills reach `trade-processor`
+    → the SQL DB → the `/accounts/*/trades` + `/positions` UI feeds. Not the gateway egress (best-effort,
+    submitting-session-only). Leader-only (no follower dupes); at-least-once, keyed by `tradeSeq`+side so
+    `trade-processor` (Trade JPA id) dedups. Enabled by `TRADE_BRIDGE_NATS_URL`. See ADR-048.
   - consumer: `trade-processor`
   - delivery: `point-to-point`
   - wildcard: `no`
   - scope: `global`
-  - payload: validated trade order with stamped execution price
+  - payload: `NatsEnvelope<TradeOrder>` (`type` must equal `TradeOrder`); `payload` = `{id, state,
+    security, quantity, price, accountId, side}` with stamped execution price
 
 - `/accounts/<accountId>/trades`
   - producer: `trade-processor`

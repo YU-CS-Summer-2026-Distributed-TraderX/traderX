@@ -45,7 +45,7 @@ flowchart LR
 | Node | Kind | Label | Notes |
 | --- | --- | --- | --- |
 | `counterparty` | external | FIX + REST counterparties | Unchanged external contracts: FIX 4.4 sessions and REST/UI order entry. |
-| `gateway` | service | FIX/REST gateway tier | Terminates counterparty sessions, screens admission against control-feed state, and forwards through the cluster client; sessions survive leader changes. |
+| `gateway` | service | FIX/REST gateway tier | Terminates counterparty sessions, screens admission against control-feed state, and forwards through the cluster client; sessions survive leader changes. Scales out horizontally — each replica is an independent cluster session + owner thread, so N replicas give N× ingress; REST round-robins, FIX pins via `sessionAffinity: ClientIP` (ADR-047). |
 | `cluster_client` | service | Aeron Cluster client | Speaks the cluster ingress/egress protocol and routes to the current leader natively. |
 | `feed_adapter` | service | Feed adapter | Consumes inherited NATS pricing and control subjects, conflates per symbol, and publishes ticks and policy updates as cluster ingress. |
 | `consensus_leader` | service | Leader: Consensus Module + log | Raft leader sequences ingress into the replicated log and commits on majority acknowledgement. |
@@ -53,7 +53,7 @@ flowchart LR
 | `service_container` | service | ClusteredService: MatchingEngine + risk | Single-threaded deterministic apply of committed messages through the inherited matching and two-tier risk core on every member. |
 | `snapshot_store` | store | Cluster snapshots + per-pod log PVC | onTakeSnapshot state bound to the applied log position: book, ID generators, idempotency, risk, symbols, control versions. |
 | `egress` | queue | Committed output egress | Leader-emitted committed outputs: order lifecycle events, fills, and admission responses. |
-| `projector` | service | Projector / read-model | Unchanged CQRS side draining committed outputs to MariaDB and inherited NATS distribution subjects. |
+| `projector` | service | Projector / read-model | Unchanged CQRS side draining committed outputs to MariaDB and inherited NATS distribution subjects. Realized in YU12 by the leader-side **trade-egress bridge** (`TradeNatsPublisher`, ADR-048): every booked trade on the deterministic apply stream is republished to NATS `/trades`, where `trade-processor` persists Trade + Position to MariaDB and republishes the `/accounts/*/trades` + `/positions` UI feeds. Not the gateway egress (best-effort, one-sided). |
 | `nats` | queue | NATS (pricing, control, distribution) | Inherited subjects for pricing, control feeds, and output distribution; no replication or witness role. |
 | `db` | store | MariaDB read model | Inherited read-model and downstream service storage. |
 
