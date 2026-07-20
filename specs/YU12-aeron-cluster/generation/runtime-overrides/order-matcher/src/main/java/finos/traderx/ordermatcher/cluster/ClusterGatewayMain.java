@@ -107,6 +107,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         server.setExecutor(Executors.newFixedThreadPool(64));
         server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
+        server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/seed", this::handleSeed);
         server.createContext("/ready", exchange ->
@@ -377,6 +378,48 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     /** Bench/ops seeding: POST {accountId, tickers:"JPM,GS,...", price} enables the account,
      *  registers+enables each ticker, and publishes a price — all through the sequenced
      *  ingress path (ADR-045: the consensus log is the only input). */
+    /** Market trade from the trade ticket (FR-09B08), the path the web UI's create-order button
+     *  takes: trade-service validates ticker + account, then POSTs the TradeOrder here. The engine
+     *  books it at the security's last market price with no order and no matching, so the payload
+     *  carries no price. Fire-and-forget by contract — trade-service does not block on the booking
+     *  result — so this acks the sequenced offer, not the fill; the booked trade reaches the DB and
+     *  the UI over the leader's NATS /trades bridge. */
+    private void handleTrade(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final int accountId = body.path("accountId").asInt();
+            final String ticker = body.hasNonNull("securityId")
+                ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
+            final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
+            final int qty = body.path("quantity").asInt();
+            final Boolean sequenced = onOwner(() -> {
+                final int securityId = resolveSecurityId(ticker);
+                if (securityId < 0) {
+                    return false; // unresolvable ticker: never offered
+                }
+                event.type = InputEvent.TYPE_TRADE_NEW;
+                event.side = side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY;
+                event.orderRef = 0;
+                event.accountId = accountId;
+                event.securityId = securityId;
+                event.qty = qty;
+                event.limitPx = 0L;   // market trade: the engine stamps the BLP's last tick
+                event.priceTicks = 0L; // clientOrderKey slot; ticket dedup is deferred
+                event.eventTimeMillis = 0;
+                offerBlocking();
+                return true;
+            });
+            respond(exchange, Boolean.TRUE.equals(sequenced) ? 200 : 422,
+                "{\"sequenced\":" + sequenced + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
     private void handleSeed(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
