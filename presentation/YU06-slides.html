@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU06 — EOD Price Production</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .r{color:var(--bad)} .code .t{color:var(--accent)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU06</div>
+  <h1>EOD Price Production<br><span class="grad">& the overnight batch chain</span></h1>
+  <p class="lead" style="margin-top:22px">The first <b style="color:var(--ink)">end-of-day</b> state. After the close, produce official closing prices, gate them on data quality, and drive a downstream overnight job — wired as a <b style="color:var(--ink)">durable, fail-safe event chain</b>.</p>
+  <div class="foot"><span>YU06 · the batch world</span><span>close → gate → publish → P&amp;L</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>Everything so far was intraday</h2>
+  <ul>
+    <li><b>No official closing prices.</b> Trades matched all day, but nothing produced the signed-off marks a firm's overnight jobs run on.</li>
+    <li><b>No overnight batch.</b> P&amp;L, NAV, margin, regulatory NAV — the back-office chain that runs <em>after</em> the close simply didn't exist.</li>
+    <li><b>No data-quality sign-off.</b> A stale, spiked, or missing price could feed a downstream job unchecked — a silent, expensive error.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">Official EOD marks and the overnight batch chain (P&amp;L, NAV, margin, regulatory) are core back-office infrastructure for any trading platform.</div>
+  <div class="foot"><span>Why YU06 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 THE CHAIN -->
+<div class="slide">
+  <div class="tag">THE CHAIN · FAIL-SAFE, NOT A WORKFLOW ENGINE</div>
+  <h2>One durable event chain</h2>
+  <div class="flow">
+    <span class="a">session close</span> <span class="f">→</span> <span class="a">quality gate</span> <span class="f">→</span> <span class="g">immutable versioned snapshot</span>
+    <span class="f">→</span> durable <span class="g">EOD_PRICES_READY</span> <span class="f">(JetStream)</span>
+    <span class="f">→</span> consumer marks positions <span class="f">→</span> <span class="g">eod.pnl.done</span>
+  </div>
+  <div class="callout"><b>Producer</b> in trade-processor, <b>consumer</b> in position-service — a lightweight event chain (NFR-EOD07), <b>strictly downstream</b> of the matching engine: no change to the BLP hot path or its schema (NFR-EOD03).</div>
+  <div class="foot"><span>close → gate → snapshot → gate-event → P&amp;L</span><span>03</span></div>
+</div>
+
+<!-- 4 VERSIONED IMMUTABLE -->
+<div class="slide">
+  <div class="kicker">Step 1 · official closes</div>
+  <h2>A versioned, immutable snapshot</h2>
+  <p class="lead">Session close takes each instrument's <b style="color:var(--ink)">last trade price</b> and writes a snapshot keyed by (date, <b style="color:var(--ink)">version</b>). Re-running production is a <b style="color:var(--ink)">new version</b> — never a mutation. Every consumer of a version sees identical prices (NFR-EOD01).</p>
+  <pre class="code"><span class="c">// close twice for the same date — live on kind</span>
+close #1  → version 1   status=PUBLISHED   instruments=20
+close #2  → version 2   status=PUBLISHED   <span class="c">(new version; v1 untouched)</span>
+override  → version N   <span class="c">writes a corrected price as a NEW version, prior stays immutable</span></pre>
+  <div class="foot"><span>FR-EOD03/20 · correction = new version</span><span>04</span></div>
+</div>
+
+<!-- 5 QUALITY GATE (money) -->
+<div class="slide">
+  <div class="tag">STEP 2 · THE FAIL-SAFE GATE</div>
+  <h2>A bad price cannot be published</h2>
+  <p class="lead">A price that's <b style="color:var(--ink)">stale</b>, a <b style="color:var(--ink)">spike</b> (beyond a % move vs the prior close), or <b style="color:var(--ink)">missing</b> is flagged, and <b style="color:var(--ink)">publication is blocked</b> until every flag is resolved. An operator override (with a reason) resolves it as a new version.</p>
+  <pre class="code"><span class="c">// live: an expected instrument with no price → MISSING</span>
+close                  v9   status=<span class="r">DRAFT</span>   flagged=1   <span class="c">(QLTY = MISSING → publish BLOCKED)</span>
+override QLTY @100     v10  quality=OVERRIDDEN   reason="manual close"
+publish                v10  status=<span class="k">PUBLISHED</span></pre>
+  <div class="callout">No downstream job ever consumes an un-signed-off price. The block holds even with auto-publish on — the gate is fail-safe by construction (FR-EOD23).</div>
+  <div class="foot"><span>FR-EOD10/11/23 · stale / spike / missing</span><span>05</span></div>
+</div>
+
+<!-- 6 DURABLE CHAIN (money) -->
+<div class="slide">
+  <div class="tag">STEP 3 · THE DURABLE GATE EVENT</div>
+  <h2>Publish drives the overnight job</h2>
+  <p class="lead">Publishing emits <b style="color:var(--ink)">EOD_PRICES_READY</b> on a durable JetStream stream. position-service's consumer marks positions <b style="color:var(--ink)">only against the exact snapshot version</b> named in the event — never live ticks — writes the P&amp;L, and emits <b style="color:var(--ink)">eod.pnl.done</b>.</p>
+  <pre class="code"><span class="c">// live: consumer output for the published version</span>
+eod pnl marked accounts=4 halted=0 rows=6 date=… version=4
+published eod.pnl.done  {"accountsMarked":4,"accountsHalted":0,"version":4}</pre>
+  <div class="callout"><b>Durable:</b> a consumer that was offline when the event fired still receives it on reconnect (NFR-EOD02) — verified live: a reconnecting consumer <b>replayed the retained stream and caught up</b> on every published version.</div>
+  <div class="foot"><span>FR-EOD21/30/31 · version-pinned, durable</span><span>06</span></div>
+</div>
+
+<!-- 7 CONSUMER HALT -->
+<div class="slide">
+  <div class="kicker">Step 4 · consumer fail-safe</div>
+  <h2>Held back, never guessed</h2>
+  <p class="lead">An account with any holding that has no published close is <b style="color:var(--ink)">halted</b> — held back from marking rather than marked with a guessed or stale price (FR-EOD32). Redelivery of the gate event is idempotent (NFR-EOD05).</p>
+  <pre class="code"><span class="c">// live: an account holds a security absent from the published universe</span>
+<span class="r">HALT account=10031</span>  reason=missing_or_flagged_closing_price  version=5
+eod pnl marked accounts=3 <span class="r">halted=1</span>   <span class="c">(others marked; 10031 held back)</span></pre>
+  <div class="foot"><span>FR-EOD32 · fail-safe halt, bounded metrics</span><span>07</span></div>
+</div>
+
+<!-- 8 DISCIPLINE -->
+<div class="slide">
+  <div class="tag">DISCIPLINE · SAME AS THE FRONT OFFICE</div>
+  <h2>Off the hot path, event-sourced end to end</h2>
+  <div class="row" style="margin-top:20px">
+    <div class="card"><div class="n grad">0</div><div class="l">changes to the BLP hot path or schema (NFR-EOD03)</div></div>
+    <div class="card"><div class="n grad">1 event</div><div class="l">a durable gate event, not a workflow engine (NFR-EOD07)</div></div>
+    <div class="card"><div class="n grad">idempotent</div><div class="l">redelivered gate events reprocess safely (NFR-EOD05)</div></div>
+  </div>
+  <p style="margin-top:20px" class="lead">The same discipline as YU04's durable feeds and YU05's journal-sourced reports — versioned, durable, fail-safe — now applied to the overnight batch world.</p>
+  <div class="foot"><span>Downstream, durable, deterministic</span><span>08</span></div>
+</div>
+
+<!-- 9 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>From intraday to the overnight world</h2>
+  <p class="lead">YU06 gives the platform its <b style="color:var(--ink)">first end-of-day chain</b>: official closing prices, gated on quality, versioned and immutable, published through a durable event, and consumed fail-safe — the back-office backbone a real trading system runs every night.</p>
+  <div class="callout">Next: YU07 turns market data into a first-class asset — a historical tick store (real TAQ data) for backtesting and, eventually, richer TCA and VWAP.</div>
+  <div class="foot"><span>YU06 · EOD Price Production</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">9</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

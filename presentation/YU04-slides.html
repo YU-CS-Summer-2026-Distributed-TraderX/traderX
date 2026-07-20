@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU04 — Durable Control Feeds</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:62ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:190px}
+.card .n{font-family:var(--mono);font-size:clamp(22px,3vw,38px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.ctrl{width:min(980px,96%);border-collapse:collapse;margin-top:8px;font-size:clamp(13px,1.35vw,17px)}
+.ctrl th,.ctrl td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
+.ctrl th{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.ctrl td.c{color:var(--ink);font-weight:600}
+.ctrl code{font-family:var(--mono);font-size:.92em;color:var(--dim)}
+.ok{font-family:var(--mono);color:var(--accent2)}
+.rej{font-family:var(--mono);color:var(--bad)}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:72ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(13px,1.4vw,17px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin-top:14px;max-width:920px;line-height:1.9}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.75;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:940px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}.ctrl th:nth-child(2),.ctrl td:nth-child(2){display:none}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU04</div>
+  <h1>Durable<br><span class="grad">Control Feeds</span></h1>
+  <p class="lead" style="margin-top:22px">YU03 built the risk engine; YU04 makes its <b style="color:var(--ink)">risk universe</b> — every account and security it screens against — a <b style="color:var(--ink)">live, durable, event-sourced feed</b>. The same discipline the order book already had, now applied to control state.</p>
+  <div class="foot"><span>YU04 · features &amp; live demo</span><span>outbox → JetStream → replica</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>YU03's control state was a one-shot fetch</h2>
+  <p class="lead">The gateway replica learned its account/security universe from a <b style="color:var(--ink)">single REST call at startup — and was never updated again while running</b>. An account or security that changed after boot was invisible to it until the next restart; with no versions or watermarks, it couldn't even <b style="color:var(--ink)">detect</b> that it was stale. And the startup fetch itself could race changes happening mid-fetch.</p>
+  <div class="callout" style="border-left-color:var(--warn)">For a compliance system that's an audit finding, not a bug: <b>"the account was disabled an hour ago — the gateway never heard."</b> The screening universe must track the source of truth continuously, not once per boot.</div>
+  <div class="foot"><span>Why YU04 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 DESIGN: OUTBOX -->
+<div class="slide">
+  <div class="tag">DESIGN · TRANSACTIONAL OUTBOX</div>
+  <h2>The feed can never diverge from the source</h2>
+  <div class="two">
+    <div class="box">
+      <h3>Publish from the same transaction</h3>
+      <div class="sub">account-service · reference-data</div>
+      <p>Every control change writes the business record <b style="color:var(--ink)">and</b> an outbox row in <b style="color:var(--ink)">one database transaction</b>. A publisher ships outbox rows to JetStream in strict version order — never skipping a failed row. If the write committed, the feed will carry it.</p>
+    </div>
+    <div class="box">
+      <h3>Two independent durable streams</h3>
+      <div class="sub">TRADERX_CONTROL_ACCOUNT · TRADERX_CONTROL_SECURITY</div>
+      <p>JetStream (not fire-and-forget NATS): retained, replayable, deduplicated by stable message id. A replica that was <b style="color:var(--ink)">offline when a delta was published still receives it</b> on reconnect.</p>
+    </div>
+  </div>
+  <div class="foot"><span>First state to touch account-service &amp; reference-data persistence</span><span>03</span></div>
+</div>
+
+<!-- 4 DESIGN: BOOTSTRAP -->
+<div class="slide">
+  <div class="tag">DESIGN · WATERMARKED BOOTSTRAP</div>
+  <h2>A replica is ready only when it's caught up</h2>
+  <div class="flow">
+    <span class="a">subscribe</span> + buffer live deltas
+    <span class="f">→</span> fetch <span class="g">watermarked snapshot</span> <span class="f">(epoch · version · count · checksum)</span>
+    <span class="f">→</span> verify &amp; install atomically
+    <span class="f">→</span> apply buffered deltas <span class="f">above the watermark, in order</span>
+    <span class="f">→</span> <span class="g">consume live</span>
+  </div>
+  <ul style="margin-top:18px">
+    <li><b>Readiness is gated per source:</b> the gateway admits orders only once <b>every</b> source has caught up to its high watermark — it never screens against a partial universe.</li>
+    <li><b>No race window:</b> deltas that arrive during the snapshot fetch are buffered and applied after — a change can be missed by neither path.</li>
+  </ul>
+  <div class="foot"><span>ADR-019 · subscribe → snapshot → catch-up → live</span><span>04</span></div>
+</div>
+
+<!-- 5 INTO THE BLP — the feed lands in the engine -->
+<div class="slide">
+  <div class="tag">CONTINUOUSLY LIVE · INTO THE BLP</div>
+  <h2>The feed lands in the engine, in sequence</h2>
+  <p class="lead">A source-of-truth change doesn't just refresh the edge replica. The subscriber runs the <b style="color:var(--ink)">same two-tier write as the operator control plane</b> — update the replica, then sequence a versioned control event into the BLP's input ring. One sink, two sources: the authoritative engine tracks the live universe in global order, no restart.</p>
+  <pre class="code"><span class="c">// ReplicaBootstrap — the durable-feed delta handler, per account/security delta</span>
+<span class="t">replicas</span>.applyAccount(delta.accountId(), true, sourceVersion);   <span class="c">// tier 1: edge replica</span>
+<span class="t">engine</span>.submitAccountControl(delta.accountId(), true, localVersion); <span class="c">// tier 2: same BLP ring as orders</span>
+
+<span class="c">// the exact two calls RiskControlController makes for an operator POST —</span>
+<span class="c">// live JetStream feed and human control plane converge on one sequenced sink.</span></pre>
+  <div class="foot"><span>source → outbox → JetStream → subscriber → [replica + BLP event]</span><span>05</span></div>
+</div>
+
+<!-- 6 LIVE PROOF (the money slide) -->
+<div class="slide">
+  <div class="kicker">Live demo · both proofs green on kind</div>
+  <h2>Live when it's up. Durable when it's not.</h2>
+  <table class="ctrl">
+    <tr><th>Proof</th><th>What happened</th><th>Result</th></tr>
+    <tr><td class="c">Live delta<br><code style="font-size:.8em">yu04-live-delta.sh</code></td><td><code>POST /stocks Z3230</code> → outbox → JetStream → replica</td><td class="ok">in replica ~1s later · no restart</td></tr>
+    <tr><td class="c">Offline catch-up<br><code style="font-size:.8em">yu04-offline-catchup.sh</code></td><td>order-matcher scaled to <b>0</b> → <code>POST /stocks Z3249</code> while down → scaled back up</td><td class="ok">present after bootstrap</td></tr>
+    <tr><td class="c">Same live change on YU03</td><td>no feed existed — replica held its boot-time snapshot</td><td class="rej">invisible until next restart</td></tr>
+  </table>
+  <div class="callout">Together the two rows are the whole state: the universe now <b>tracks the source live</b> while the gateway is up, and JetStream retention means an offline window loses nothing — it resumes, catches up, and only then declares ready. No operator re-push, no manual reconciliation.</div>
+  <div class="foot"><span>Measured live on kind · 2026-07-14</span><span>06</span></div>
+</div>
+
+<!-- 6 FAULT ISOLATION -->
+<div class="slide">
+  <div class="tag">FAULT HANDLING · PER-SOURCE</div>
+  <h2>A bad feed quarantines itself — and only itself</h2>
+  <ul>
+    <li><b>Every delta carries a source epoch + monotonic version.</b> The replica detects gaps, version regressions, epoch changes, and checksum/count mismatches — corruption can't be silently applied.</li>
+    <li><b>Quarantine is per source:</b> a fault on the security feed re-bootstraps the security feed; the account feed keeps serving. Readiness is revoked until the quarantined source is clean again.</li>
+    <li><b>Recovery is automatic:</b> quarantine → fresh snapshot → catch-up → ready. No operator in the loop.</li>
+    <li><b>Redeliveries dedupe</b> via stable per-version message ids — a republished row is a no-op, not a double-apply.</li>
+  </ul>
+  <div class="foot"><span>Verified in unit tests: gap / reorder / epoch-change / overflow / re-bootstrap</span><span>07</span></div>
+</div>
+
+<!-- 7 ZERO HOT-PATH IMPACT -->
+<div class="slide">
+  <div class="kicker">Design · cost of durability</div>
+  <h2>All of this happens off the hot path</h2>
+  <p class="lead">The control feed only changes <b style="color:var(--ink)">how the gateway's edge replica is fed</b>. The BLP decision path, the journal and replication wire formats, and the snapshot format are untouched — replica state is rebuilt on every boot, never journaled, so replay determinism is preserved by construction.</p>
+  <div class="row" style="margin-top:26px">
+    <div class="card"><div class="n grad">0</div><div class="l">changes to the BLP decision path</div></div>
+    <div class="card"><div class="n grad">edge</div><div class="l">replica state is edge-only, rebuilt each boot</div></div>
+    <div class="card"><div class="n grad">1 txn</div><div class="l">business record + outbox row commit together</div></div>
+  </div>
+  <div class="foot"><span>NFR: journal/snapshot/replication formats unchanged</span><span>08</span></div>
+</div>
+
+<!-- 8 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>Control state joins the event-sourced world</h2>
+  <p class="lead">After YU04, <b style="color:var(--ink)">no risk-relevant state depends on a pod staying alive</b>. Orders were already journaled and replayable; now the control universe is durable, versioned, and self-healing too — a restarted BLP or a promoted failover replica inherits the <b style="color:var(--ink)">exact</b> current risk state, provably.</p>
+  <div class="callout">Next: YU05 extends this discipline past the trade — settlement lifecycle, reconciliation, regulatory reporting, and real authentication.</div>
+  <div class="foot"><span>YU04 · Durable Control Feeds</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">8</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

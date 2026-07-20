@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU09 — Ops Hardening</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU09</div>
+  <h1>Ops<br><span class="grad">Hardening</span></h1>
+  <p class="lead" style="margin-top:22px">YU02–YU08 built what the platform <b style="color:var(--ink)">does</b>. YU09 is the first state about what it takes to <b style="color:var(--ink)">run</b> it — credentials, disk, deploy safety, and a real incident playbook. No new feature; the maturity gap between "works in a demo" and "you can operate it."</p>
+  <div class="foot"><span>YU09 · operability, not features</span><span>secrets · journal · deploy · DR</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>Correct isn't the same as operable</h2>
+  <ul>
+    <li><b>Credentials lived in committed manifests.</b> A repo checkout exposed working DB and JWT secrets.</li>
+    <li><b>The journal grew without bound.</b> One ever-growing file on the pod's PVC — eventual disk exhaustion, and nothing off-box if the volume was lost.</li>
+    <li><b>A stale jar could deploy silently.</b> A Docker layer-cache hit on <code style="font-family:var(--mono)">COPY build/libs/*.jar</code> could bake yesterday's bytecode into a "new" image.</li>
+    <li><b>No runbook.</b> A real node/zone/DB incident had no documented recovery path.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">These aren't correctness bugs — they're the operational sharp edges that turn a working system into a 3am page. YU09 closes four of them.</div>
+  <div class="foot"><span>Why YU09 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 SECRETS -->
+<div class="slide">
+  <div class="tag">HARDENING 1 · CREDENTIALS, FAIL-CLOSED</div>
+  <h2>No credential lives in git</h2>
+  <p class="lead">DB and JWT/dev-token credentials move out of manifests into Kubernetes Secrets via <code style="font-family:var(--mono)">secretKeyRef</code> (FR-OH01–04). The Secrets are <b style="color:var(--ink)">required</b> — a missing one is a visible <code style="font-family:var(--mono)">CreateContainerConfigError</code>, never a silent fall back to a dev default (NFR-OH04).</p>
+  <pre class="code"><span class="c">// proof: scan the whole deploy path for literal creds</span>
+literal cred values in the 5 Deployments + StatefulSet   <span class="k">0 ✔</span>
+MARIADB_PASSWORD              secretKeyRef ✔  database-deployment.yaml
+DATABASE_DBPASS              secretKeyRef ✔  order-matcher-deployment.yaml
+AUTH_JWT_SECRET              secretKeyRef ✔  order-matcher-deployment.yaml
+AUTH_DEV_TOKEN_MASTER_SECRET secretKeyRef ✔  trade-processor-deployment.yaml</pre>
+  <div class="foot"><span>SC-OH03 · every cred via a Secret, prod StatefulSet included</span><span>03</span></div>
+</div>
+
+<!-- 4 JOURNAL (money) -->
+<div class="slide">
+  <div class="tag">HARDENING 2 · BOUNDED + DURABLE JOURNAL</div>
+  <h2>The journal rotates and survives</h2>
+  <p class="lead">At every snapshot boundary the active journal is closed off as an <b style="color:var(--ink)">immutable segment</b> and a fresh file takes over — bounding local disk — then each segment uploads to GCS via HMAC, off-box (FR-OH20/21). <b style="color:var(--ink)">Fail-safe:</b> a segment that fails to upload is never deleted (FR-OH23); the upload runs off the journaler thread (NFR-OH02); off by default, zero throughput cost (NFR-OH01).</p>
+  <pre class="code"><span class="c">// live: forced a 20s snapshot boundary, archival enabled</span>
+input-events-1784143382024.journal   10,375,424   <span class="c">← rotated (immutable)</span>
+input-events-1784143483062.journal       57,024   <span class="c">← rotated (immutable)</span>
+input-events.journal                       1,280   <span class="k">← active, reset ✔</span>
+<span class="r">WARN</span> archival enabled but GCS HMAC unset — segments KEPT on disk  <span class="c">(FR-OH23)</span></pre>
+  <div class="foot"><span>SC-OH04 · snapshot boundary → new segment, active bounded</span><span>04</span></div>
+</div>
+
+<!-- 5 STALE JAR -->
+<div class="slide">
+  <div class="tag">HARDENING 3 · DEPLOY SAFETY</div>
+  <h2>Never ship a stale jar</h2>
+  <p class="lead">The publish pipeline now runs <code style="font-family:var(--mono)">gradlew --no-daemon clean bootJar</code> before every <code style="font-family:var(--mono)">docker build</code>, for every JVM build context (FR-OH30). A Docker cache hit on the jar copy can no longer bake stale bytecode into a "new" image — the jar is always freshly compiled first.</p>
+  <pre class="code"><span class="c">// publish-generated-state-branch.sh — ordering is the whole point</span>
+L2336  ./gradlew --no-daemon clean bootJar   <span class="c">(fresh jar)</span>
+L2340  docker build -t $image …              <span class="k">← always after the rebuild ✔</span>
+       guarded to contexts with a build.gradle · pinned by a regression check</pre>
+  <div class="callout">A build reproducibility guarantee: what deploys is always what the current source compiles to, not whatever jar happened to be on disk.</div>
+  <div class="foot"><span>SC-OH06 · fresh compile before every image build</span><span>05</span></div>
+</div>
+
+<!-- 6 DR RUNBOOK -->
+<div class="slide">
+  <div class="tag">HARDENING 4 · INCIDENT READINESS</div>
+  <h2>A runbook for the real topology</h2>
+  <p class="lead">A written DR runbook covers the failure modes the cluster can actually suffer — scoped honestly to how it's <b style="color:var(--ink)">actually</b> deployed (single-zone GKE, single-replica MariaDB), not an idealized HA diagram (FR-OH40).</p>
+  <div class="row" style="margin-top:20px">
+    <div class="card"><div class="n grad">Pod</div><div class="l">order-matcher / BLP loss — reschedule + journal replay</div></div>
+    <div class="card"><div class="n grad">Node</div><div class="l">blp-pool / default-pool loss — blast radius + recovery</div></div>
+    <div class="card"><div class="n grad">Zone</div><div class="l">single-zone reality — what's lost, how to restore</div></div>
+    <div class="card"><div class="n grad">Data</div><div class="l">MariaDB loss — projection is a rebuildable read-model</div></div>
+  </div>
+  <div class="callout">Each mode documents blast radius, recovery procedure, and the observed RPO/RTO — an honest account of a single-zone deployment, not a promise the topology can't keep.</div>
+  <div class="foot"><span>FR-OH40 · pod · node · zone · data</span><span>06</span></div>
+</div>
+
+<!-- 7 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>From "it works" to "you can run it"</h2>
+  <p class="lead">YU09 adds no feature — it makes the eight states before it <b style="color:var(--ink)">safe to operate</b>: secrets out of git, disk bounded and durable, deploys reproducible, incidents documented.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">Secrets</div><div class="l">fail-closed, no credential in the repo</div></div>
+    <div class="card"><div class="n grad">Journal</div><div class="l">bounded + archived, fail-safe</div></div>
+    <div class="card"><div class="n grad">Deploy</div><div class="l">always a fresh compile</div></div>
+    <div class="card"><div class="n grad">DR</div><div class="l">an honest, tested runbook</div></div>
+  </div>
+  <div class="callout">The operability layer under the whole roadmap — the difference between a demo and a system someone is on call for.</div>
+  <div class="foot"><span>YU09 · Ops Hardening</span><span>07</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">7</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

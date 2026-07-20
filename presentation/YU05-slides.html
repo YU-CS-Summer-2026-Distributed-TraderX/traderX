@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU05 — Post-Trade Compliance</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.ctrl{width:min(1000px,98%);border-collapse:collapse;margin-top:8px;font-size:clamp(13px,1.3vw,17px)}
+.ctrl th,.ctrl td{text-align:left;padding:10px 14px;border-bottom:1px solid var(--line)}
+.ctrl th{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.ctrl td.c{color:var(--ink);font-weight:600}
+.ctrl code{font-family:var(--mono);font-size:.9em;color:var(--dim)}
+.ok{font-family:var(--mono);color:var(--accent2)} .rej{font-family:var(--mono);color:var(--bad)}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:74ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.75;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:940px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}.ctrl th:nth-child(2),.ctrl td:nth-child(2){display:none}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU05</div>
+  <h1>Post-Trade<br><span class="grad">Compliance</span></h1>
+  <p class="lead" style="margin-top:22px">The front office matches, screens, and controls risk. YU05 is the <b style="color:var(--ink)">back office</b> — settlement, reconciliation, regulatory reporting, TCA, and real auth — built on one idea: <b style="color:var(--ink)">because the journal is the source of truth, every compliance obligation is a deterministic projection of it.</b></p>
+  <div class="foot"><span>YU05 · four capabilities, one record</span><span>settlement · recon · regulatory · TCA · auth</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>A fast, safe matcher still isn't a broker's system</h2>
+  <ul>
+    <li><b>Trades booked and forgotten</b> — marked settled the instant they booked; no real T+N lifecycle.</li>
+    <li><b>A read model you had to <em>trust</em></b> — the async MariaDB projection could silently drift from the authoritative journal, with no way to prove it hadn't.</li>
+    <li><b>No reproducible audit trail</b> — a regulator query answered from a mutable projection isn't defensible.</li>
+    <li><b>A shared-token stopgap</b> — every service trusted one secret; no real identity or per-account entitlement.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">These are the back-office &amp; compliance pillars a sell-side OMS lives or dies on — settlement, recon, regulatory reporting, best-execution (TCA), and access control.</div>
+  <div class="foot"><span>Why YU05 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 THE SPINE -->
+<div class="slide">
+  <div class="tag">THE SPINE · JOURNAL = SOURCE OF TRUTH</div>
+  <h2>Every obligation is a projection of the journal</h2>
+  <p class="lead">One executed fill — symbol, price, qty, side, account, timestamp, deterministic trade id — sourced from the order-matcher journal. Settlement, reconciliation, regulatory export, and TCA are all <b style="color:var(--ink)">views over that record</b>, plus the auth layer that makes exposing it safe.</p>
+  <div class="callout"><b>Strictly downstream of the BLP.</b> None of it sits on the order-admission path; none mutates journal or BLP state (NFR-PTC09). Settlement/recon write only their own MariaDB rows; full-history and regulatory exports are read-only <b>shadow replays</b>. Same discipline as every state: new capability, hot-path determinism untouched.</div>
+  <div class="foot"><span>Event sourcing pays off downstream</span><span>03</span></div>
+</div>
+
+<!-- 4 SETTLEMENT -->
+<div class="slide">
+  <div class="kicker">Capability 1 · settlement lifecycle</div>
+  <h2>A trade now has a life: Processing → Settled</h2>
+  <p class="lead">A booked trade starts <b style="color:var(--ink)">Processing</b> with a computed <b style="color:var(--ink)">T+N</b> settlement date (default T+1 business day) and advances to <b style="color:var(--ink)">Settled</b> on a scheduled sweep — or a manual operator force.</p>
+  <pre class="code"><span class="c"># live on kind — books a crossing pair, then force-settles the new trade</span>
+$ bash yu05-settlement.sh
+
+  <span class="c">·</span> books a crossing IBM pair        <span class="c">→ one fill → one trade row</span>
+  <span class="c">·</span> reads it: state=<span class="t">Processing</span>, settlementDate = T+1
+  <span class="c">·</span> POST /trades/{id}/settlement/force   <span class="c">(operator override, admin JWT)</span>
+  <span class="c">·</span> re-reads: state=<span class="k">Settled</span></pre>
+  <div class="callout"><b>T+N</b> = trade date plus N business days — when cash and securities actually change hands. Equities settle <b>T+1</b> (next business day) under the current US standard; the delay is the window we model as <code style="font-family:var(--mono)">Processing</code>.</div>
+  <div class="foot"><span>FR-PTC02/06 · T+N sweep or manual force</span><span>04</span></div>
+</div>
+
+<!-- 5 RECONCILIATION (money slide) -->
+<div class="slide">
+  <div class="tag">CAPABILITY 2 · THE CQRS INTEGRITY CHECK</div>
+  <h2>Proving the read model hasn't drifted</h2>
+  <p class="lead">A <b style="color:var(--ink)">scheduled sweep runs every 10s</b>, paging new journal blotter entries forward from a cursor and classifying each against its MariaDB row. <code style="font-family:var(--mono);color:var(--dim)">GET /recon/status</code> just reads the latest running totals — it doesn't recompute on request.</p>
+  <pre class="code"><span class="c">// ReconciliationService — runs every 10s, forward-only via a cursor</span>
+<span class="k">@Scheduled</span>(fixedDelayString = "${recon.poll.interval-ms:10000}")
+void sweep(){ for (e : blotterSince(cursor)) classify(e); }
+<span class="c">//  not in DB → MISSING_IN_PROJECTION · fields differ → FIELD_MISMATCH · else MATCHED</span></pre>
+  <pre class="code"><span class="c">// on-demand full-history orphan sweep (admin) — the reverse case, live:</span>
+local=11   journal-backed=7   <span class="r">orphan_in_projection=4</span>
+→ TRADE-22214-AABBCC, -DDEEFF, -GGHHII, TRADE-52355-AABBCC   <span class="c">(DB-seed rows,</span>
+                                                             <span class="c"> no journal fill behind them)</span></pre>
+  <div class="callout">Those 4 orphans are the manually-seeded DB trades — no journal event backs them, so the sweep flags them. Recon catches drift <b>in both directions</b>, by construction.</div>
+  <div class="foot"><span>FR-PTC04/10 · journal ↔ projection</span><span>05</span></div>
+</div>
+
+<!-- 6 REGULATORY (money slide) -->
+<div class="slide">
+  <div class="tag">CAPABILITY 3 · REPRODUCIBLE AUDIT</div>
+  <h2>Answer a regulator from the source of truth</h2>
+  <p class="lead">The regulatory export replays every lifecycle event (accept, reject, partial, fill, cancel, book) in an input-sequence range — <b style="color:var(--ink)">sourced from the journal, never the projection</b> — and is a <b style="color:var(--ink)">pure function of (range, seed)</b>. No wall-clock, no live query.</p>
+  <pre class="code"><span class="c">// GET /regulatory/report?fromSeq=0&toSeq=1000000 — called twice, live</span>
+call 1     records=16     sha=c5a81b094d08eff5
+call 2     records=16     sha=<span class="k">c5a81b094d08eff5</span>
+→ byte-identical across calls ✔   (reproducible from the journal, not the projection)</pre>
+  <div class="callout"><b>range</b> = the <code style="font-family:var(--mono)">[fromSeq, toSeq]</code> journal window to report. <b>seed</b> = the fixed initial book the replay starts from — the same starting condition the live engine booted with. Each call spins up a fresh <b>shadow engine</b>, seeds it, and replays the journal: same journal + same seed → identical records, every time.</div>
+  <div class="foot"><span>FR-PTC20/21 · pure function of (journal range, seed)</span><span>06</span></div>
+</div>
+
+<!-- 7 TCA -->
+<div class="slide">
+  <div class="kicker">Capability 4 · transaction-cost analysis</div>
+  <h2>Execution quality, off the hot path</h2>
+  <p class="lead">Per-trade TCA (transaction-cost analysis) — arrival price, a TWAP benchmark, and signed slippage-in-bps — computed entirely read-side in trade-processor against a <b style="color:var(--ink)">price-history store</b> fed by the existing tick feed. No new data source, no BLP involvement.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">-102.3</div><div class="l">slippage bps · META trd-09b-4</div></div>
+    <div class="card"><div class="n grad">502.90</div><div class="l">TWAP benchmark vs 508.04 exec</div></div>
+    <div class="card"><div class="n grad">19</div><div class="l">price-history samples used</div></div>
+  </div>
+  <div class="callout"><b>TWAP</b> = time-weighted average price — the benchmark the fill is compared against. <b>bps</b> = basis points (1 bps = 0.01%). Convention: <b>positive = worse than benchmark, negative = better</b>. So −102.3 bps is <b style="color:var(--accent2)">price improvement</b> — this Sell filled ~1.02% <em>above</em> TWAP.</div>
+  <p style="margin-top:16px;font-size:clamp(13px,1.3vw,16px)">TCA computes wherever the security has captured price history; a symbol with no ticks in range returns a null benchmark rather than a guess — honest by construction.</p>
+  <div class="foot"><span>FR-PTC30/32 · read-side only</span><span>07</span></div>
+</div>
+
+<!-- 8 AUTH -->
+<div class="slide">
+  <div class="tag">CAPABILITY 5 · REAL AUTH &amp; ENTITLEMENTS</div>
+  <h2>Real identity, per-account entitlement</h2>
+  <p class="lead">Every endpoint now requires an <b style="color:var(--ink)">HS256-verified JWT</b> (JDK crypto only), replacing the shared-token stopgap. Two entitlement axes, both enforced live:</p>
+  <p style="margin-top:-6px;font-size:clamp(13px,1.3vw,16px)"><b style="color:var(--ink)">Cross-account</b> = an endpoint returning data spanning many accounts (e.g. the firm-wide regulatory report), so it needs an <code style="font-family:var(--mono)">admin</code> claim; an <b style="color:var(--ink)">account-scoped</b> token may only touch its own account's data.</p>
+  <table class="ctrl">
+    <tr><th>Caller</th><th>Endpoint</th><th>Result</th></tr>
+    <tr><td class="c">admin</td><td><code>/regulatory/report</code> (cross-account)</td><td class="ok">200</td></tr>
+    <tr><td class="c">account-scoped</td><td><code>/regulatory/report</code> (cross-account)</td><td class="rej">401 · no admin claim</td></tr>
+    <tr><td class="c">account-scoped (22214)</td><td><code>/tca/report</code> · own-account trade</td><td class="ok">200</td></tr>
+    <tr><td class="c">account-scoped (22214)</td><td><code>/tca/report</code> · another account's trade</td><td class="rej">403 · not entitled</td></tr>
+  </table>
+  <div class="callout">And the admission path gets an optional <b>memory-only entitlement gate</b> — a JWT-principal check before an order is screened or sequenced, adding <b>zero</b> synchronous lookup to the hot path (FR-PTC42).</div>
+  <div class="foot"><span>FR-PTC40/41/42 · HS256 JWT + entitlements</span><span>08</span></div>
+</div>
+
+<!-- 9 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>From a risk-controlled matcher to a compliance-grade OMS</h2>
+  <p class="lead">YU05 turns the journal into a <b style="color:var(--ink)">compliance backbone</b>: real settlement, provable read-model integrity, a byte-for-byte reproducible audit trail, execution analytics, and real identity — <b style="color:var(--ink)">all strictly downstream, none of it touching the hot path.</b></p>
+  <div class="callout">Next: YU06 pushes the same event-sourced discipline into the overnight batch world — EOD price production gating a downstream P&amp;L chain on a durable "prices ready" event.</div>
+  <div class="foot"><span>YU05 · Post-Trade Compliance</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">9</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

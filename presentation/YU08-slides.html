@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU08 — Execution Algo Engine</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU08</div>
+  <h1>Execution<br><span class="grad">Algo Engine</span></h1>
+  <p class="lead" style="margin-top:22px">A large order is no longer one market-moving print. YU08 adds a <b style="color:var(--ink)">parent-order execution layer</b> — TWAP and VWAP algorithms that slice an order over time and drip child orders into the book, through the <b style="color:var(--ink)">exact same</b> risk-checked path as a manual order.</p>
+  <div class="foot"><span>YU08 · parent orders, sliced</span><span>TWAP · VWAP · durable resume</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>One big order moves the book against you</h2>
+  <ul>
+    <li><b>Only one execution primitive.</b> Every order — 100 shares or 100,000 — hit the book as a single print. A large one walks the book and signals intent.</li>
+    <li><b>No scheduling, no participation strategy.</b> No way to spread a parent order across time, or to size slices by when the market actually trades.</li>
+    <li><b>YU07's data sat unused.</b> We built a real tick store (live + NYSE TAQ) — but nothing consumed it to make execution decisions.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">A sell-side OMS needs execution algorithms as table stakes. YU08 is the first component that both <em>schedules</em> execution and <em>consumes</em> the historical market data YU07 produced.</div>
+  <div class="foot"><span>Why YU08 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 THE COMPONENT -->
+<div class="slide">
+  <div class="tag">THE COMPONENT · INDEPENDENT SERVICE ON :18120</div>
+  <h2>Two algorithms, one scheduler</h2>
+  <div class="two">
+    <div class="box">
+      <h3>TWAP — time-weighted</h3>
+      <div class="sub">equal slices across the duration</div>
+      <p>Splits the parent quantity into <b style="color:var(--ink)">equal buckets</b> over the requested window; the integer-division remainder folds into the last bucket. A bucket is submitted as its start time comes due (FR-AE02).</p>
+    </div>
+    <div class="box">
+      <h3>VWAP — volume-weighted</h3>
+      <div class="sub">slices follow a volume profile</div>
+      <p>Sizes buckets by a <b style="color:var(--ink)">volume profile</b> — heavier when the market trades more (open/close). The profile comes from a pluggable source: a synthetic U-curve, or YU07's real tick store (FR-AE03).</p>
+    </div>
+  </div>
+  <div class="callout">Runs as its own Spring Boot service and its own Deployment — <b>no change to the order-matcher BLP</b>: no new Disruptor rings, journal, or matching code (NFR-AE01/04).</div>
+  <div class="foot"><span>execution-algo-engine · new process, reused stack</span><span>03</span></div>
+</div>
+
+<!-- 4 NO SPECIAL PATH (money 1) -->
+<div class="slide">
+  <div class="tag">THE KEY IDEA · NO PRIVILEGED LANE</div>
+  <h2>Every child is just an order</h2>
+  <p class="lead">Each child order is submitted to order-matcher's <b style="color:var(--ink)">same <code style="font-family:var(--mono)">POST /orders</code></b> as a hand-entered order — same risk gateway (YU03's SEC 15c3-5 checks), same BLP. Algorithmic flow is risk-checked <em>identically</em>; there is no bypass (FR-AE04, NFR-AE02).</p>
+  <pre class="code"><span class="c">// live: TWAP 300 IBM Buy, 30s / 10s buckets — one query away on :18120</span>
+bucket targets   [100, 100, 100]  sum=300   <span class="c">(equal + remainder-in-last)</span>
+t+ 5s  RUNNING    submitted=1/3 filled=1/3  child=<span class="t">ord-013-0034</span>
+t+10s  RUNNING    submitted=2/3 filled=2/3  child=<span class="t">ord-013-0036</span>
+t+20s  <span class="k">COMPLETED</span>  submitted=3/3 filled=3/3  child=<span class="t">ord-013-0039</span>
+<span class="c">// every child got a real order-matcher id, passed risk, and filled ✔</span></pre>
+  <div class="foot"><span>SC-AE04 · children via the shared order path, progress live</span><span>04</span></div>
+</div>
+
+<!-- 5 VWAP + DUCKDB (money 2) -->
+<div class="slide">
+  <div class="tag">THE PAYOFF · YU07 DATA, PUT TO WORK</div>
+  <h2>VWAP slices by real volume</h2>
+  <p class="lead">VWAP bucket sizes are <b style="color:var(--ink)">not</b> a flat split — they follow the volume profile. The <code style="font-family:var(--mono)">duckdb</code> source queries YU07's tick store for the symbol's trades; any security with no history <b style="color:var(--ink)">falls back</b> to the synthetic curve, so it never blocks (FR-AE09).</p>
+  <pre class="code"><span class="c">// live: same 600-share IBM order, two algos</span>
+TWAP (flat)      [100, 100, 100, 100, 100, 100]   sum=600
+VWAP (profile)   [136,  92,  70,  70,  92, 140]   sum=600   <span class="k">← U-shaped ✔</span></pre>
+  <div class="foot"><span>SC-AE05 · volume-weighted, with safe fallback</span><span>05</span></div>
+</div>
+
+<!-- 6 DURABILITY -->
+<div class="slide">
+  <div class="kicker">Live proof · durable resume</div>
+  <h2>It owns its own recovery</h2>
+  <p class="lead">Every parent-order transition is appended to the engine's own <b style="color:var(--ink)">JetStream stream before</b> it touches memory. On restart it replays that stream — same event-sourced discipline as the BLP, one layer up (FR-AE07/08, NFR-AE03).</p>
+  <pre class="code"><span class="c">// live: 500-share TWAP, 6 buckets — kill the pod mid-run</span>
+BEFORE KILL    submitted=3/6  children=[<span class="t">…0059, …0060, …0061</span>]
+<span class="r">✗ kubectl delete pod</span>   → Kubernetes reschedules → replayed 116 events
+AFTER RESTART  submitted=3/6  children kept ✔  <span class="c">(rebuilt, not re-created)</span>
+FINAL          <span class="k">COMPLETED</span> 6/6  <span class="k">6 unique children</span>  <span class="c">— no bucket re-submitted ✔</span></pre>
+  <div class="callout">No operator intervention, no synchronous fetch to another service, no double-submission on replay — the schedule and observed fills survive a crash.</div>
+  <div class="foot"><span>SC-AE06 · resume from JetStream, exactly-once buckets</span><span>06</span></div>
+</div>
+
+<!-- 7 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>An event-sourced execution layer</h2>
+  <p class="lead">YU08 adds real execution algorithms — <b style="color:var(--ink)">scheduled, risk-checked, durable</b> — that put YU07's market data to work, without touching the matching engine underneath.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">Shared path</div><div class="l">children risk-checked exactly like manual orders</div></div>
+    <div class="card"><div class="n grad">Real data</div><div class="l">VWAP profiles from YU07's tick store, with fallback</div></div>
+    <div class="card"><div class="n grad">Durable</div><div class="l">crash-resume from its own JetStream stream</div></div>
+  </div>
+  <div class="foot"><span>YU08 · Execution Algo Engine</span><span>07</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">7</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU03 — In-Memory Risk Gateway</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:62ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:190px}
+.card .n{font-family:var(--mono);font-size:clamp(22px,3vw,38px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+/* controls table */
+.ctrl{width:min(920px,96%);border-collapse:collapse;margin-top:8px;font-size:clamp(13px,1.35vw,17px)}
+.ctrl th,.ctrl td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line)}
+.ctrl th{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--faint)}
+.ctrl td.c{color:var(--ink);font-weight:600}
+.ctrl code{font-family:var(--mono);font-size:.92em;color:var(--dim)}
+.ok{font-family:var(--mono);color:var(--accent2)}
+.rej{font-family:var(--mono);color:var(--bad)}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:72ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.75;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:920px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}.ctrl th:nth-child(2),.ctrl td:nth-child(2){display:none}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU03</div>
+  <h1>In-Memory<br><span class="grad">Risk Gateway</span></h1>
+  <p class="lead" style="margin-top:22px">Pre-trade risk control on the hot path. YU02's engine matched <b style="color:var(--ink)">any</b> valid-ticker order; YU03 makes every order pass real risk checks first — <b style="color:var(--ink)">in memory, no per-order database call</b>.</p>
+  <div class="foot"><span>YU03 · features &amp; live demo</span><span>SEC Rule 15c3-5</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>YU02 had zero pre-trade risk control</h2>
+  <p class="lead">The matcher's only "limit" was the order's own limit price. No credit, buying-power, exposure, restriction, or kill-switch checks — an order with a valid ticker simply matched and filled. That's not a system a broker or exchange can run.</p>
+  <div class="callout" style="border-left-color:var(--warn)">Control baseline: <b>SEC Rule 15c3-5 (Market Access)</b> — pre-set credit &amp; capital limits, erroneous-order checks, restrictions, and a kill switch, enforced <b>before</b> an order reaches the market.</div>
+  <div class="foot"><span>Why YU03 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 DESIGN -->
+<div class="slide">
+  <div class="tag">DESIGN · TWO TIERS</div>
+  <h2>Fast screening, then an authoritative decision</h2>
+  <div class="two">
+    <div class="box">
+      <h3>In-memory admission gateway</h3>
+      <div class="sub">preliminary · no DB/REST per order</div>
+      <p>Holds event-fed local replicas of account status, entitlements, restrictions, risk limits, kill switch, and price freshness. Fails <b style="color:var(--ink)">closed</b> on staleness or version gaps.</p>
+    </div>
+    <div class="box">
+      <h3>The BLP decides authoritatively</h3>
+      <div class="sub">deterministic · in sequence order</div>
+      <p>The single-writer engine re-checks and <b style="color:var(--ink)">reserves exact exposure in global sequence order</b> before an order is executable. That determinism is why it belongs in the BLP — rejects replay identically from the journal.</p>
+    </div>
+  </div>
+  <div class="foot"><span>Two-tier architecture</span><span>03</span></div>
+</div>
+
+<!-- 4 CONTROLS (the money slide) -->
+<div class="slide">
+  <div class="kicker">Live demo · it blocks bad orders</div>
+  <h2>Every control, enforced pre-trade</h2>
+  <table class="ctrl">
+    <tr><th>Control</th><th>Trigger</th><th>Result</th></tr>
+    <tr><td class="c">Valid order</td><td><code>acct 22214, IBM Buy 10 @200</code></td><td class="ok">201 · NEW (booked)</td></tr>
+    <tr><td class="c">Unknown account</td><td><code>acct 99999</code></td><td class="rej">422 · UNKNOWN_ACCOUNT</td></tr>
+    <tr><td class="c">Price collar</td><td><code>IBM @400 · +115% vs mkt 186</code></td><td class="rej">422 · PRICE_COLLAR</td></tr>
+    <tr><td class="c">Max order size</td><td><code>qty 2,000,000 &gt; 1,000,000 cap</code></td><td class="rej">422 · ORDER_SIZE</td></tr>
+    <tr><td class="c">Restricted security</td><td><code>operator restricts IBM</code></td><td class="rej">422 · RESTRICTED</td></tr>
+    <tr><td class="c">Kill switch</td><td><code>operator halts trading</code></td><td class="rej">422 · KILL_SWITCH</td></tr>
+  </table>
+  <div class="foot"><span>All measured live on kind</span><span>04</span></div>
+</div>
+
+<!-- 5 CONTROL PLANE -->
+<div class="slide">
+  <div class="tag">CONTROL PLANE · LIVE</div>
+  <h2>Operators steer risk in real time</h2>
+  <ul>
+    <li><b>Restrict a security or flip the kill switch live</b> — demonstrated engage → orders rejected → disengage → orders flow again, in seconds.</li>
+    <li><b>Versioned &amp; sequenced.</b> Every control change is a numbered event applied on the single-writer BLP — no racy in-place mutation.</li>
+    <li><b>Restricting cancels resting orders</b> through explicit sequenced CANCEL events (FR-IMRG24) — never a silent book change.</li>
+    <li><b>Authenticated</b> — control calls carry an operator identity + a risk-control token.</li>
+  </ul>
+  <div class="foot"><span>Operator control plane</span><span>05</span></div>
+</div>
+
+<!-- 6 WRITE PATH — how a control reaches the engine -->
+<div class="slide">
+  <div class="tag">HOW IT REACHES THE ENGINE</div>
+  <h2>A control change is an event, not a mutation</h2>
+  <p class="lead">Every control does two things: it updates the edge replica, and it <b style="color:var(--ink)">sequences a versioned control event onto the same input ring as orders</b>. The single-writer BLP applies it to its authoritative risk state in global order — so a control and the orders around it can't race, and the whole decision is journaled and replayable.</p>
+  <pre class="code"><span class="c">// RiskControlController — operator POST /risk/control/account</span>
+<span class="t">replicas</span>.applyAccount(id, enabled);             <span class="c">// tier 1: edge replica (pre-screen)</span>
+<span class="t">engine</span>.submitAccountControl(id, enabled, version);  <span class="c">// tier 2: event onto the BLP input ring</span>
+
+<span class="c">// MatchingEngine — the single BLP thread, in sequence with orders</span>
+<span class="k">case</span> TYPE_ACCOUNT_CONTROL     -&gt; onAccountControl(e);      <span class="c">// → authoritative BlpRiskState</span>
+<span class="k">case</span> TYPE_RESTRICTION_CONTROL -&gt; onRestrictionControl(e);  <span class="c">// + sequenced CANCELs (FR-IMRG24)</span></pre>
+  <div class="foot"><span>Same ring as orders · journaled · replayable</span><span>06</span></div>
+</div>
+
+<!-- 7 NEARLY FREE -->
+<div class="slide">
+  <div class="kicker">Design · cost of risk</div>
+  <h2>Real risk control, nearly free</h2>
+  <p class="lead">Every check runs against <b style="color:var(--ink)">in-memory, event-fed replicas</b> — zero synchronous DB or REST lookup per order (FR-IMRG01). A risk decision is a handful of in-memory comparisons on the hot path, not a database round-trip.</p>
+  <div class="row" style="margin-top:26px">
+    <div class="card"><div class="n grad">0</div><div class="l">synchronous DB calls per risk decision</div></div>
+    <div class="card"><div class="n grad">in-seq</div><div class="l">exposure reserved in global order</div></div>
+    <div class="card"><div class="n grad">in-mem</div><div class="l">checks hit local replicas, not the DB</div></div>
+  </div>
+  <div class="foot"><span>In-memory = nearly free</span><span>07</span></div>
+</div>
+
+<!-- 7 AUDIT -->
+<div class="slide">
+  <div class="tag">DETERMINISM · AUDIT</div>
+  <h2>Authoritative decisions are sequenced &amp; replayable</h2>
+  <ul>
+    <li><b>Every authoritative BLP decision is on the journaled ring</b> — accept-and-reserve, or reject — alongside every control &amp; reservation event. None enter the book or emit a market-facing event on reject.</li>
+    <li><b>Deterministic in sequence order</b> — the same event stream reconstructs the same accept/reject decisions, every replay.</li>
+    <li><b>Cheap edge rejects are not journaled</b> — the gateway refuses obviously-bad traffic at the HTTP edge, before the ring (that's the point of tier 1). The audit record is the authoritative risk decisions, not every malformed 422.</li>
+    <li>That's the <b>SEC 15c3-5 audit story</b>: a replayable record of every risk-limit reservation and authoritative rejection — what was blocked and why.</li>
+  </ul>
+  <div class="foot"><span>Auditable by construction</span><span>08</span></div>
+</div>
+
+<!-- 8 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>From a fast matcher to a risk-controlled OMS</h2>
+  <p class="lead">YU03 turns YU02's fast-but-naive engine into a <b style="color:var(--ink)">risk-controlled admission system</b> — the first real sell-side-OMS tier. Pre-trade controls, a live operator control plane, and a deterministic audit trail, all without giving up throughput.</p>
+  <div class="callout">Next tiers on the OMS path: FIX order-entry connectivity, full order lifecycle (modify/cancel/replace, TIF), and settlement.</div>
+  <div class="foot"><span>YU03 · In-Memory Risk Gateway</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">8</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

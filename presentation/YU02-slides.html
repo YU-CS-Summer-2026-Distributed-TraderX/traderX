@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU02 — LMAX Kubernetes</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(94,200,255,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:60ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:14px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.row{display:flex;gap:22px;flex-wrap:wrap;margin-top:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px;flex:1;min-width:200px}
+.card .n{font-family:var(--mono);font-size:clamp(26px,3.4vw,44px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px;letter-spacing:.02em}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;
+  font-family:var(--mono);font-size:12px;color:var(--faint)}
+/* log-scale throughput bars */
+.bars{display:flex;flex-direction:column;gap:20px;margin-top:12px;width:min(760px,92%)}
+.bar{display:grid;grid-template-columns:170px 1fr auto;align-items:center;gap:18px}
+.bar .name{font-size:15px;color:var(--dim)}
+.bar .track{height:26px;background:#0e1622;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.bar .fill{height:100%;border-radius:7px;background:var(--grad)}
+.bar .fill.mid{background:linear-gradient(135deg,#5ec8ff,#5e8bff)}
+.bar .fill.lo{background:linear-gradient(135deg,#5e8bff,#8b7bff)}
+.bar .val{font-family:var(--mono);font-size:16px;color:var(--ink);white-space:nowrap}
+.note{font-family:var(--mono);font-size:12px;color:var(--faint);margin-top:6px}
+.callout{margin-top:22px;background:rgba(94,200,255,.07);border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:70ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:28px;align-items:start}
+.modebox{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px 24px}
+.modebox h3{font-size:18px;margin-bottom:6px}
+.modebox .sub{font-family:var(--mono);font-size:12px;color:var(--accent);margin-bottom:12px}
+.chk{color:var(--accent2)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;
+  border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.bar{grid-template-columns:120px 1fr auto}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU02</div>
+  <h1>LMAX Kubernetes:<br><span class="grad">the architectural pivot</span></h1>
+  <p class="lead" style="margin-top:22px">The <b style="color:var(--ink)">order-matcher</b> stops being a database-bound service and becomes the <b style="color:var(--ink)">LMAX Business Logic Processor</b> — single-threaded, in-memory, event-sourced — deployed on Kubernetes with real CI/CD and failover.</p>
+  <div class="foot"><span>YU02 · features &amp; results</span><span>live: yaakovseif.dev</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>A database call on every order is a wall</h2>
+  <p class="lead">The traditional matcher did a <b style="color:var(--ink)">synchronous DB round-trip per order</b> — the throughput ceiling and the latency floor. YU02 replaces that path with the LMAX Disruptor architecture: match in memory, persist asynchronously.</p>
+  <div class="row" style="margin-top:34px">
+    <div class="card"><div class="n" style="color:var(--bad)">DB per order</div><div class="l">old matcher — synchronous, serialized</div></div>
+    <div class="card"><div class="n grad">in-memory</div><div class="l">LMAX BLP — match now, persist later</div></div>
+  </div>
+  <div class="foot"><span>Why YU02 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 FEATURE 1 -->
+<div class="slide">
+  <div class="tag">FEATURE 01 · THE CORE</div>
+  <h2>A single-threaded, event-sourced matching engine</h2>
+  <ul>
+    <li><b>One thread, no locks.</b> Orders are sequenced onto a Disruptor ring buffer; the engine matches on a single thread — deterministic, contention-free.</li>
+    <li><b>In-memory book.</b> No synchronous DB call on the hot path; the match happens at memory speed.</li>
+    <li><b>CQRS.</b> MariaDB becomes an <b>async read-model projection</b>, not the source of truth — the event journal is.</li>
+    <li><b>Deterministic replay.</b> The same event stream always rebuilds the same state — the foundation for recovery and HA.</li>
+  </ul>
+  <div class="foot"><span>The BLP core</span><span>03</span></div>
+</div>
+
+<!-- 4 FEATURE 2 -->
+<div class="slide">
+  <div class="tag">FEATURE 02 · DURABILITY</div>
+  <h2>Journal + snapshot — fast recovery, no data loss</h2>
+  <ul>
+    <li><b>Every input event is journaled to disk</b> before the engine acts on it.</li>
+    <li><b>Periodic snapshots</b> checkpoint in-memory state at a consistent boundary.</li>
+    <li><b>On restart, replay</b> the journal from the last snapshot forward — recovery in seconds, not a cold rebuild.</li>
+    <li><b>Readiness-gated:</b> the pod refuses traffic until replay completes, so no half-recovered engine ever serves an order.</li>
+  </ul>
+  <div class="foot"><span>Durability &amp; recovery</span><span>04</span></div>
+</div>
+
+<!-- 5 FEATURE 3 -->
+<div class="slide">
+  <div class="tag">FEATURE 03 · KUBERNETES</div>
+  <h2>Two runtime modes on GKE</h2>
+  <div class="two" style="margin-top:6px">
+    <div class="modebox">
+      <h3>Single-BLP</h3>
+      <div class="sub">1 replica · max throughput</div>
+      <p>One engine, no replication overhead. The fastest path — used when throughput matters more than instant failover.</p>
+    </div>
+    <div class="modebox">
+      <h3>HA StatefulSet</h3>
+      <div class="sub">2 replicas · failover</div>
+      <p>Leader election (Kubernetes Lease) + <b style="color:var(--ink)">NATS JetStream</b> warm-standby replication. Pod-GET fast failover promotes the standby in <b style="color:var(--ink)">~2–3s</b> on real pod death.</p>
+    </div>
+  </div>
+  <div class="foot"><span>Deployment modes</span><span>05</span></div>
+</div>
+
+<!-- 6 FEATURE 4 -->
+<div class="slide">
+  <div class="tag">FEATURE 04 · CI/CD</div>
+  <h2>GitOps deploys with a human approval gate</h2>
+  <ul>
+    <li><b>Cloud Build → Cloud Deploy.</b> A <b>git push</b> automatically builds, tests, and pushes a uniquely-tagged image.</li>
+    <li><b>Nothing touches the live cluster until a human approves</b> the release — the gate is enforced, not advisory.</li>
+    <li><b>Git is the source of truth</b> — closes the drift class of bug where prod runs an image older than the committed fix.</li>
+    <li><b>Live in production</b> at <b>yaakovseif.dev</b>.</li>
+  </ul>
+  <div class="foot"><span>Delivery pipeline</span><span>06</span></div>
+</div>
+
+<!-- 7 RESULTS THROUGHPUT -->
+<div class="slide">
+  <div class="kicker">Results · throughput</div>
+  <h2>The engine is not the bottleneck</h2>
+  <div class="bars">
+    <div class="bar"><span class="name">Matching core</span><div class="track"><div class="fill" style="width:93%"></div></div><span class="val">~6,000,000 / s</span></div>
+    <div class="bar"><span class="name">Single-BLP E2E</span><div class="track"><div class="fill mid" style="width:21%"></div></div><span class="val">~42,000 / s</span></div>
+    <div class="bar"><span class="name">HA E2E</span><div class="track"><div class="fill lo" style="width:16%"></div></div><span class="val">~32,000 / s</span></div>
+  </div>
+  <div class="note">log scale · core = BLP thread only; E2E = REST → match → journal → DB (+ replication for HA)</div>
+  <div class="callout">The core runs <b>~150× faster</b> than the full pipeline. The ceiling is the <b>edges</b> — REST ingress and the DB projector — <b>not</b> the matching engine. That's the good place to be.</div>
+  <div class="foot"><span>Throughput</span><span>07</span></div>
+</div>
+
+<!-- 8 HA FAILOVER -->
+<div class="slide">
+  <div class="tag">RESILIENCE · HA FAILOVER</div>
+  <h2>How the standby takes over</h2>
+  <ul>
+    <li><b>Leader election (Kubernetes Lease).</b> The two BLP replicas compete for a k8s Lease; the holder is <b>PRIMARY</b> and renews it, the other is a hot <b>STANDBY</b> watching the lease.</li>
+    <li><b>Warm-standby replication (NATS JetStream).</b> The primary streams every input event to a durable JetStream stream; the standby replays them continuously, so its in-memory book stays identical — <b>no cold rebuild</b> on takeover.</li>
+    <li><b>Pod-GET fast failover.</b> Rather than wait a full lease TTL, the standby checks the primary pod directly — on real pod death it promotes in <b>~2–3s</b>.</li>
+    <li><b>No split-brain.</b> Admission is fenced: a replica that isn't <em>provably</em> the leader refuses orders (fail-closed), so at most one engine ever serves.</li>
+  </ul>
+  <div class="row" style="margin-top:24px">
+    <div class="card"><div class="n grad">~2–3s</div><div class="l">real-kill failover to the warm standby</div></div>
+    <div class="card"><div class="n grad">1</div><div class="l">exactly one promotion — no split-brain</div></div>
+    <div class="card"><div class="n grad">0</div><div class="l">events lost — replayed from the journal/stream</div></div>
+  </div>
+  <div class="foot"><span>HA failover</span><span>08</span></div>
+</div>
+
+<!-- 9 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>Exchange-grade core, production-shaped system</h2>
+  <p class="lead">The matching engine already runs in the <b style="color:var(--ink)">millions/s</b>. The architecture is production-shaped: event-sourced, journaled, HA with sub-3s failover, GitOps CI/CD — proven live and propagated across all 8 states.</p>
+  <div class="callout" style="border-left-color:var(--accent2)">Next production gap lives at the <b>edges</b> (binary ingress, DB decoupling) and in <b>OMS breadth</b> (FIX connectivity, settlement).</div>
+  <div class="foot"><span>YU02 · LMAX Kubernetes</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">9</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

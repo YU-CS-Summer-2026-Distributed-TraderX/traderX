@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU07 — Historical Tick Store</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU07</div>
+  <h1>Historical<br><span class="grad">Tick Store</span></h1>
+  <p class="lead" style="margin-top:22px">Every state so far ran on synthetic or live-only prices. YU07 makes <b style="color:var(--ink)">market data a first-class, queryable asset</b> — TraderX's own live ticks and real NYSE TAQ data, in one columnar store, one query away.</p>
+  <div class="foot"><span>YU07 · market data as data</span><span>capture · normalize · query</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>The platform had no memory of the market</h2>
+  <ul>
+    <li><b>Prices were ephemeral.</b> Ticks flowed on the bus and vanished — nothing stored history to query later.</li>
+    <li><b>No real data for the analytics that need it.</b> VWAP volume profiles, better TCA benchmarks, VaR return series — all need <em>stored, historical</em> ticks.</li>
+    <li><b>Synthetic-only.</b> No path to fold in real third-party market data (NYSE TAQ) alongside the platform's own.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">Stored, queryable market data is the raw material for execution algos (YU08), execution-quality analytics (YU05 TCA), and risk/scenario work — it's infrastructure the rest of the roadmap builds on.</div>
+  <div class="foot"><span>Why YU07 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 THE COMPONENT -->
+<div class="slide">
+  <div class="tag">THE COMPONENT · CAPTURE + NORMALIZE + QUERY</div>
+  <h2>Two sources, one schema</h2>
+  <div class="two">
+    <div class="box">
+      <h3>Live capture</h3>
+      <div class="sub">passive NATS subscriber · zero hot-path impact</div>
+      <p>Subscribes to the existing <b style="color:var(--ink)">pricing.*</b> and <b style="color:var(--ink)">trades</b> broadcasts and batches rows to columnar <b style="color:var(--ink)">Parquet</b>, partitioned by source/date/symbol. No ack, so a capture outage can't back-pressure any publisher (NFR-TS01/02).</p>
+    </div>
+    <div class="box">
+      <h3>TAQ normalize</h3>
+      <div class="sub">real NYSE TAQ → the same schema</div>
+      <p>Ingests NYSE TAQ <b style="color:var(--ink)">Consolidated Quotes and Trades</b> files into the <b style="color:var(--ink)">identical</b> Parquet schema — <b style="color:var(--ink)">streamed straight from the zip</b> (<code style="font-family:var(--mono)">unzip -p</code>), never extracting the multi-GB CSV to disk (NFR-TS03).</p>
+    </div>
+  </div>
+  <div class="callout">Proven libraries — <b>DuckDB</b> for columnar query, <code style="font-family:var(--mono)">unzip</code> for archive streaming — not a hand-rolled format or engine (NFR-TS04).</div>
+  <div class="foot"><span>capture (live) + normalize (TAQ) → Parquet</span><span>03</span></div>
+</div>
+
+<!-- 4 UNIFIED QUERY (money) -->
+<div class="slide">
+  <div class="tag">THE PAYOFF · ONE QUERY, BOTH SOURCES</div>
+  <h2>Live and historical, uniformly</h2>
+  <p class="lead">Every row carries a <b style="color:var(--ink)">source</b> field (<code style="font-family:var(--mono)">live</code> vs <code style="font-family:var(--mono)">taq</code>), so a single DuckDB-over-Parquet query reads across both — filtered by symbol/date — with no per-source special-casing (FR-TS06/07).</p>
+  <pre class="code"><span class="c">// self-check: capture rows + real TAQ sample → one store → one query</span>
+source=<span class="t">live</span>  event_type=price_tick  rows=1   <span class="c">(TraderX pricing.*)</span>
+source=<span class="t">live</span>  event_type=trade       rows=2
+source=<span class="k">taq</span>   event_type=quote       rows=4   <span class="c">(NYSE Consolidated Quotes)</span>
+source=<span class="k">taq</span>   event_type=trade       rows=2   <span class="c">(NYSE Consolidated Trades)</span>
+VWAP(IBM) across the store = 136.6000   <span class="c">— live + TAQ trades, one query ✔</span></pre>
+  <div class="foot"><span>SC-TS04 · read_parquet(hive_partitioning) across sources</span><span>04</span></div>
+</div>
+
+<!-- 5 LIVE CAPTURE PROOF -->
+<div class="slide">
+  <div class="kicker">Live proof · off the running cluster</div>
+  <h2>Capturing the platform's own ticks</h2>
+  <p class="lead">Pointed at the live cluster's NATS, the capturer records real TraderX ticks into the unified store — <b style="color:var(--ink)">no change to the order path</b>, just a passive subscriber.</p>
+  <pre class="code"><span class="c">// capture.py against the running cluster, 25s window</span>
+subscribed to pricing.* and /accounts/*/trades
+flushed 45 rows … flushed 45 rows … flushed 15 rows
+captured rows=<span class="k">105</span>  symbols=<span class="k">20</span>  files=51   source=live
+   NVDA  price_tick  price=892.182 …   JPM  price_tick  price=195.485 …</pre>
+  <div class="callout">Runs as an independent, restart-safe process writing to Parquet (local or GCS via an S3-compatible HMAC key) — capacity and availability fully decoupled from the trading path.</div>
+  <div class="foot"><span>FR-TS01/02 · real cluster ticks, zero hot-path impact</span><span>05</span></div>
+</div>
+
+<!-- 6 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>A data foundation for everything downstream</h2>
+  <p class="lead">YU07 turns fleeting market data into a <b style="color:var(--ink)">durable, unified, queryable store</b> — the platform's own ticks and real NYSE TAQ in one schema. It's the raw material the rest of the roadmap consumes.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">VWAP</div><div class="l">real volume profiles for YU08's execution algos</div></div>
+    <div class="card"><div class="n grad">TCA</div><div class="l">dense history to fix YU05's null benchmarks</div></div>
+    <div class="card"><div class="n grad">VaR</div><div class="l">return/scenario series for future risk work</div></div>
+  </div>
+  <div class="callout">Next: YU08 puts this data to work — TWAP/VWAP execution algorithms that slice a parent order using real volume profiles from this store.</div>
+  <div class="foot"><span>YU07 · Historical Tick Store</span><span>06</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">6</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

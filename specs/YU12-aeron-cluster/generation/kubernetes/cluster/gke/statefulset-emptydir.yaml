@@ -104,8 +104,13 @@ spec:
               value: "/dev/shm/aeron-cluster"
             - name: CLUSTER_OUTPUT_RING_SIZE
               value: "262144"
+            # Snapshot is a log-position barrier: under ~134k flood the apply loop stalls a few
+            # seconds while state is written, and in-flight gateway batches can exceed their ack
+            # budget → a throughput dip. 60s put a barrier inside most bench runs; 300s keeps
+            # typical runs (< 5 min) barrier-free while still snapshotting often enough to bound
+            # restart replay (tcpSocket liveness now tolerates the longer replay without a kill).
             - name: CLUSTER_SNAPSHOT_INTERVAL_MS
-              value: "60000"
+              value: "300000"
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
@@ -135,7 +140,12 @@ spec:
               port: 8080
             initialDelaySeconds: 45
             periodSeconds: 15
-            failureThreshold: 8
+            # 5s dial + 20 misses ≈ 5 min of continuous saturation tolerated before restart. Even a
+            # tcpSocket probe can i/o-timeout when a multi-minute flood starves the node's network
+            # softirq; a truly dead JVM (socket closed) still fails instantly and restarts. Raft +
+            # readiness handle a wedged-but-alive member, so erring long here is safe.
+            timeoutSeconds: 5
+            failureThreshold: 20
           # Guaranteed QoS (joint plan Phase 2): request==limit so the consensus/driver duty
           # cycle never rides CFS burst credit; 3 CPU leaves ~0.9 for daemonsets on c3-standard-4.
           resources:

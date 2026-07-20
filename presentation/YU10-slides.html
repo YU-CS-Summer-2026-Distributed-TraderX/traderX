@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU10 — FIX Order-Entry Ingress</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU10</div>
+  <h1>FIX<br><span class="grad">Order-Entry Ingress</span></h1>
+  <p class="lead" style="margin-top:22px">YU02–YU09 built a hardened OMS — but the only way in was a bespoke REST API. YU10 adds the front door the industry actually speaks: a standard <b style="color:var(--ink)">FIX 4.4</b> session, terminated inside the matching engine, feeding the exact same ring, risk screen, journal, and database as REST.</p>
+  <div class="foot"><span>YU10 · the counterparty front door</span><span>QuickFIX/J · in-process · fail-closed</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The gap YU09 left</div>
+  <h2>A hardened OMS no counterparty could connect to</h2>
+  <ul>
+    <li><b>FIX is the protocol of the sell-side.</b> Brokers, exchanges, and buy-side desks integrate over FIX — almost nobody writes to a custom REST API.</li>
+    <li><b>REST was the only order-entry surface.</b> Correct, risk-screened, journaled — but not the door a real trading partner arrives at.</li>
+    <li><b>REST has a per-order ceiling.</b> Every order pays an HTTP parse + JSON envelope + a blocked request/response round-trip; two internal experiments to widen it (async MVC, microbatching) both <i>regressed</i> throughput. The ceiling is the transport, not the engine.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">The difference between "a working demo trading system" and "a system a counterparty can actually onboard to." YU10 closes it without touching the matching core.</div>
+  <div class="foot"><span>Why YU10 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 MECHANISM -->
+<div class="slide">
+  <div class="tag">THE MECHANISM · IN-PROCESS ACCEPTOR</div>
+  <h2>A FIX order is bit-identical to a REST order past the front door</h2>
+  <p class="lead">A QuickFIX/J acceptor runs <b style="color:var(--ink)">inside</b> the order-matcher (no separate gateway, no internal hop). The session thread translates each message onto the same multi-producer input ring REST uses — same risk screen, same journal, same DB projection, same recovery.</p>
+  <div class="flow">
+    <span class="a">FIX session (:18130)</span>  →  translate  →  <span class="g">input ring</span>  →  risk screen  →  match  →  journal<br>
+    <span class="f">— identical from the ring onward to a REST order —</span><br>
+    match  →  <span class="g">output ring</span>  →  ExecutionReport handler  →  <span class="a">session (async)</span>
+  </div>
+  <div class="callout">QuickFIX/J owns the hard part — the session layer: logon, heartbeats, sequence numbers, resend windows, persistent stores. The reference engine, not a hand-rolled subset.</div>
+  <div class="foot"><span>ADR-034 · engine + topology</span><span>03</span></div>
+</div>
+
+<!-- 4 IDENTITY -->
+<div class="slide">
+  <div class="tag">SECURITY · FAIL-CLOSED IDENTITY</div>
+  <h2>A session logs on with proof, or it doesn't log on</h2>
+  <ul>
+    <li><b>JWT at logon.</b> <code style="font-family:var(--mono)">Password(554)</code> carries a JWT, resolved once through the <i>same</i> entitlement gate the REST path uses — reused for every message on the session.</li>
+    <li><b>Mapped CompID.</b> <code style="font-family:var(--mono)">SenderCompID</code> must be in a committed allowlist bound to one account. No fallback, no anonymous account.</li>
+    <li><b>Fail-closed regardless of the REST flag.</b> A brand-new surface has no installed base to keep working, so it starts closed — unmapped CompID or bad/absent token is rejected at logon.</li>
+    <li><b>Cluster-internal.</b> The port isn't internet-exposed; TLS/mTLS is the recorded gate before any public exposure.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--accent2)"><b>Verified live:</b> a session presenting a garbage token never reaches the application — rejected at logon. A valid token + mapped CompID trades.</div>
+  <div class="foot"><span>ADR-036 · one credential system, fail-closed</span><span>04</span></div>
+</div>
+
+<!-- 5 LIFECYCLE + CORRELATION -->
+<div class="slide">
+  <div class="tag">CORRECTNESS · ASYNC LIFECYCLE + DURABLE CORRELATION</div>
+  <h2>Orders stream in, reports stream out, nothing is lost or ambiguous</h2>
+  <div class="two">
+    <div class="box">
+      <div class="sub">MESSAGES</div>
+      <h3>In: D / F / H</h3>
+      <p style="margin-top:6px">NewOrderSingle, OrderCancelRequest, OrderStatusRequest → the same internal commands REST produces.<br><b style="color:var(--ink)">Out:</b> ExecutionReport (New / Fill / Canceled / Rejected, risk reason in Text 58), OrderCancelReject — async, ordered per order.</p>
+    </div>
+    <div class="box">
+      <div class="sub">CORRELATION</div>
+      <h3>Durable ClOrdID ledger</h3>
+      <p style="margin-top:6px">Binds each client order id to the internal order ref, on the PVC — joined on a field every event already carries. No change to the wire format or matching core. Rehydrates on restart; a re-used ClOrdID is rejected as a duplicate.</p>
+    </div>
+  </div>
+  <div class="foot"><span>ADR-035 · ADR-037 · ledger + four-outcome model</span><span>05</span></div>
+</div>
+
+<!-- 6 PROOF -->
+<div class="slide">
+  <div class="tag">LIVE PROOF · MEASURED</div>
+  <h2>The same engine, two front doors — benchmarked</h2>
+  <div class="row">
+    <div class="card"><div class="n grad">5,213/s</div><div class="l">FIX completed lifecycles, one session</div></div>
+    <div class="card"><div class="n grad">3,479/s</div><div class="l">REST, same window — FIX ~1.5× on 1 connection vs 256</div></div>
+    <div class="card"><div class="n grad">77,055</div><div class="l">FIX orders in 10s → DB projection grew by exactly that</div></div>
+  </div>
+  <ul style="margin-top:22px">
+    <li><b>FIX/REST equivalence, proven.</b> FIX orders land in the same read model, risk state, journal, and DB projection as REST — checked to the row.</li>
+    <li><b>Durability under restart.</b> A 336,575-entry correlation ledger rehydrated across a pod restart; re-used client order ids correctly rejected.</li>
+    <li><b>No-GC guarantee intact.</b> 148 tests green; the hot-path zero-allocation gates stay exact-zero with FIX active — the report handler is enqueue-only on the ring thread.</li>
+  </ul>
+  <div class="foot"><span>SC-FIX01…06 · matched-methodology control</span><span>06</span></div>
+</div>
+
+<!-- 7 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>From a demo you show to a system you can onboard</h2>
+  <p class="lead">YU10 makes the OMS reachable by a standard counterparty stack — fail-closed, correlated, recoverable — and dissolves REST's single-order ceiling with FIX's async session model, all without touching the deterministic matching core.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">FIX 4.4</div><div class="l">in-process acceptor, same engine as REST</div></div>
+    <div class="card"><div class="n grad">Fail-closed</div><div class="l">JWT + mapped CompID at logon</div></div>
+    <div class="card"><div class="n grad">Durable</div><div class="l">correlation ledger + OrderStatusRequest recovery</div></div>
+    <div class="card"><div class="n grad">Async</div><div class="l">streamed reports, no per-order round-trip</div></div>
+  </div>
+  <!--<div class="callout">Honest next lever: the completed-lifecycle ceiling is the shared single-threaded output/report path (the LMAX single-writer principle applied to output) — a throughput tuning target for the GKE run, not a correctness gap.</div> -->
+  <div class="foot"><span>YU10 · FIX Order-Entry Ingress</span><span>07</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">7</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

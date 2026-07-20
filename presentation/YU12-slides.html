@@ -203,10 +203,11 @@ body.notes-on .slide.active .notes{display:block;position:fixed;left:0;right:0;b
     <div class="bar"><span class="name">YU12 pipelined gateway</span><div class="track"><div class="fill" style="width:96%"></div></div><span class="val">up to 135,834 / s</span></div>
   </div>
   <ul style="margin-top:20px">
-    <li><b>29,000–43,600 submit/s</b> committed, <b>up to 135,834 booked/s</b> — stable back-to-back runs, zero failures, zero ID reuse; 43.6k/s is the standing record on the c3 topology.</li>
-    <li><b>The apply path had headroom to spare.</b> Raft sustained an 18.6k/s cascade and replayed a 740k-event log in seconds. The ceiling was the gateway's one-order-at-a-time submit — pipelining took a 200-order batch from ~250 ms to <b>38 ms</b>.</li>
+    <li><b>Up to 134,000 orders/s committed</b> — cross-validated on the c3 topology, with <b>booked ≈ applied ≈ submit</b> (ratio 0.99, read from the leader's authoritative engine counters), plus <b>up to 135,834 booked/s</b> on cascade flow; zero failures, zero ID reuse.</li>
+    <li><b>Sustained 134k-orders/s floods run with zero member restarts.</b> The health server is hardened — a <b>tcpSocket liveness</b> check and an off-path readiness sampler — so a fully-saturated member is never mistaken for a dead one under load.</li>
+    <li><b>The apply path had headroom to spare.</b> Raft sustained the cascade and replayed a 740k-event log in seconds; pipelining took a 200-order batch from ~250 ms to <b>38 ms</b>.</li>
   </ul>
-  <div class="callout">Same lesson as every prior state: <b>per-order ingress is the ceiling, not the BLP.</b> NFR-AC02 (≥ 25,149 booked/s) met and exceeded; booked/s read from the engine's authoritative trades counter.</div>
+  <div class="callout">Same lesson as every prior state: <b>per-order ingress is the ceiling, not the BLP.</b> NFR-AC02 (≥ 25,149 booked/s) met and exceeded many times over; every number read from the engine's authoritative counters and cross-checked against the committed log.</div>
   <div class="foot"><span>NFR-AC02 · pipelined gateway</span><span>07</span></div>
   <aside class="notes">
     <h4>The point of this slide</h4>
@@ -214,7 +215,9 @@ body.notes-on .slide.active .notes{display:block;position:fixed;left:0;right:0;b
     <h4>The three bars</h4>
     <p>Our old NATS-based HA did about 10,100 orders/sec. The number to beat is 25,149/sec — that's a single, non-replicated BLP ("parity," the acceptance bar). YU12 booked up to 135,834/sec.</p>
     <h4>Two different numbers — don't mix them up</h4>
-    <p><b>submit/sec</b> = orders accepted into the log per second (we hit 29,000–43,600). <b>booked/sec</b> = trades actually executed per second (up to 135,834). One order can set off a cascade of many trades, which is why booked is the larger number.</p>
+    <p><b>submit/sec</b> = orders accepted into the log per second. <b>booked/sec</b> = trades actually executed per second. One order can set off a cascade of many trades, so booked can run far ahead of submit. On the c3 topology, a cross-validated run pushed <b>~134,000 orders/s committed</b> with booked ≈ applied ≈ submit; cascade flow books up to <b>135,834/s</b>.</p>
+    <h4>Why "zero restarts" matters</h4>
+    <p>At ~134k orders/s the members are CPU-saturated. The old health check ran app logic on a starved thread, timed out, and Kubernetes killed a perfectly-alive member — cascading into a cluster-wide outage. We switched liveness to a tcpSocket check (answered by the kernel, not the busy JVM) and moved readiness off the hot path, so the cluster now rides a full-throttle flood without a single member restart.</p>
     <h4>Why it's fast, and what the real ceiling is</h4>
     <p>The engine always had headroom — it replayed a 740,000-event log in seconds. The real bottleneck was the gateway sending orders one at a time and waiting for each confirmation (~1.2 ms each). "Pipelining" means firing a whole batch into the log at once and collecting the confirmations as they stream back; that took a 200-order batch from 250 ms down to 38 ms. So the ceiling is how fast you can push orders <b>in</b> (the gateway), not the matching or the consensus — and we clear the acceptance bar several times over.</p>
   </aside>
@@ -253,7 +256,7 @@ body.notes-on .slide.active .notes{display:block;position:fixed;left:0;right:0;b
   <div class="row" style="margin-top:22px">
     <div class="card"><div class="n grad">429–623 ms</div><div class="l">system-facing failover, off-plane</div></div>
     <div class="card"><div class="n grad">&lt; 500 ms</div><div class="l">client-facing, session survives</div></div>
-    <div class="card"><div class="n grad">136k / s</div><div class="l">booked, pipelined — past the bar</div></div>
+    <div class="card"><div class="n grad">134k / s</div><div class="l">orders committed · flood-stable, 0 restarts</div></div>
     <div class="card"><div class="n grad">0 reuse</div><div class="l">across ~80 kills, by construction</div></div>
   </div>
   <div class="foot"><span>YU12 · Aeron Cluster BLP Consensus</span><span>08</span></div>

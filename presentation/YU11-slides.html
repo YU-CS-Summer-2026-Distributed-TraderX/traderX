@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>YU11 — Aeron + SBE BLP Replication</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:160px}
+.card .n{font-family:var(--mono);font-size:clamp(18px,2.6vw,30px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:78ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.32vw,15.5px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:980px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+/* log/linear throughput bars (house pattern from YU02) */
+.bars{display:flex;flex-direction:column;gap:18px;margin-top:16px;width:min(820px,96%)}
+.bar{display:grid;grid-template-columns:180px 1fr auto;align-items:center;gap:18px}
+.bar .name{font-size:15px;color:var(--dim)}
+.bar .track{height:30px;background:#0e1622;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.bar .fill{height:100%;border-radius:7px;background:var(--grad);min-width:6px}
+.bar .fill.lo{background:linear-gradient(135deg,#5e8bff,#8b7bff)}
+.bar .val{font-family:var(--mono);font-size:16px;color:var(--ink);white-space:nowrap}
+.mult{font-family:var(--mono);font-weight:700;font-size:clamp(26px,4.4vw,52px);letter-spacing:-.02em}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.bar{grid-template-columns:120px 1fr auto}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · State YU11</div>
+  <h1>Aeron + SBE<br><span class="grad">BLP Replication</span></h1>
+  <p class="lead" style="margin-top:22px">YU10 gave the OMS a front door — but high availability still rode the YU02 File-backed NATS leg, which ate most of the engine's booked-order capacity. YU11 rebuilds the replication <b style="color:var(--ink)">transport</b> on Aeron + SBE — <b style="color:var(--ink)">~49× faster</b>, zero-copy, zero-GC — and proves a <b style="color:var(--ink)">cross-epoch recovery</b> path: a wiped replacement rejoins from a checksummed snapshot bundle and can promote on the next failure.</p>
+  <div class="foot"><span>YU11 · the replication transport, rebuilt</span><span>Aeron MDC · SBE 64-byte · durable ACK</span></div>
+</div>
+
+<!-- 2 WHY -->
+<div class="slide">
+  <div class="kicker">The gap YU10 left</div>
+  <h2>The engine was fast; its replication was the tax</h2>
+  <ul>
+    <li><b>HA cost most of the throughput.</b> The warm-standby leg replicated every input over File-backed NATS at ~10.6k events/s — so the HA deployment booked far fewer orders than a single BLP. Safety was paid for in throughput.</li>
+    <li><b>An ACK meant "queued," not "durable."</b> The path could acknowledge replication that was still only in memory on the follower — not yet forced to its journal.</li>
+    <li><b>Failover sat on the Kubernetes control plane.</b> Lease renewal + pod-termination observation set the floor, and a wiped replacement had no proven way back after a leader change — effectively <i>one-shot</i> failover.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">The matching core was never the bottleneck (~6M ops/s). The replication <b>transport</b> was — in both its throughput and its recovery story.</div>
+  <div class="foot"><span>Why YU11 exists</span><span>02</span></div>
+</div>
+
+<!-- 3 MECHANISM -->
+<div class="slide">
+  <div class="tag">THE MECHANISM · AERON + SBE, ZERO-COPY</div>
+  <h2>One sidecar, one publication, a fixed 64-byte message</h2>
+  <p class="lead">An Archiving Media Driver runs as a sidecar in each order-matcher pod. Each input event is encoded into a <b style="color:var(--ink)">fixed 64-byte SBE message written directly inside the <code style="font-family:var(--mono)">tryClaim</code> buffer</b> — no intermediate copy. A single manual-<b style="color:var(--ink)">MDC</b> publication fans the same fragment to the local Archive <i>and</i> the peer follower, so both share one session and one position.</p>
+  <div class="flow">
+    input event  →  SBE encode in <span class="a">tryClaim</span> (64B)  →  <span class="g">one MDC publication</span>  →  { local Archive · peer follower }<br>
+    <span class="f">— one session · one position · one fragment boundary —</span><br>
+    follower:  journal the fragment  →  <span class="g">durable ACK</span>  <span class="f">(never before journaledSeq advances)</span>
+  </div>
+  <div class="callout">Aeron replaces <b>only</b> the replication data/ACK leg — one flag (<code style="font-family:var(--mono)">BLP_REPLICATION_TRANSPORT=nats|aeron</code>) with NATS-authoritative shadow comparison and one-value rollback. Matching, risk, journal, and CQRS are untouched.</div>
+  <div class="foot"><span>FR-AR01…05 · one leg, flag-selected</span><span>03</span></div>
+</div>
+
+<!-- 4 THROUGHPUT -->
+<div class="slide">
+  <div class="tag">LIVE PROOF · MATCHED-METHODOLOGY A/B</div>
+  <h2>~49× the replication throughput — the HA tax is gone</h2>
+  <div class="bars">
+    <div class="bar"><span class="name">Aeron MDC (UDP)</span><div class="track"><div class="fill" style="width:96%"></div></div><span class="val">520,520 / s</span></div>
+    <div class="bar"><span class="name">File-NATS HA</span><div class="track"><div class="fill lo" style="width:2%"></div></div><span class="val">10,561 / s</span></div>
+  </div>
+  <div class="row" style="margin-top:24px;align-items:center">
+    <div><span class="mult grad">≈49×</span><div class="l" style="color:var(--faint);font-family:var(--mono);font-size:13px">replication events/s · ±2% over 3×30s</div></div>
+    <div class="card"><div class="n grad">25,149 / s</div><div class="l">booked E2E — single-BLP parity (+149% vs the NATS-HA era)</div></div>
+    <div class="card"><div class="n grad">2.72M / s</div><div class="l">same-day journaling control — transport has headroom</div></div>
+  </div>
+  <div class="callout">The replication leg is no longer the ceiling — end to end, Aeron HA books orders at <b>single-BLP parity</b>. Harness matched line-for-line to the NATS Phase-0 control; the win is the transport, not the methodology.</div>
+  <div class="foot"><span>NFR-AR03 · 520,520 vs 10,561 events/s</span><span>04</span></div>
+</div>
+
+<!-- 5 CROSS-EPOCH RECOVERY -->
+<div class="slide">
+  <div class="tag">CORRECTNESS · CROSS-EPOCH RECOVERY</div>
+  <h2>A wiped replacement rejoins — and can promote on the next failure</h2>
+  <p class="lead">The hard part of hand-built HA isn't the happy path — it's a replacement member with an <b style="color:var(--ink)">empty disk</b> joining a cluster whose leader has already moved to a new epoch. YU11 proves it end to end.</p>
+  <div class="two" style="margin-top:16px">
+    <div class="box">
+      <div class="sub">THE CONTRACT</div>
+      <h3>Snapshot bundle, bound to an exact boundary</h3>
+      <p style="margin-top:6px">A promoted primary exposes a checksummed snapshot + journal bundle stamped with its exact <code style="font-family:var(--mono)">(epoch, inputSeq, Archive position, session)</code>. The joiner installs it crash-safely, replays zero local tail, merges into the live recording, and reaches Ready with <b style="color:var(--ink)">matching order/read-model hashes on both nodes</b>.</p>
+    </div>
+    <div class="box">
+      <div class="sub">PROVEN LIVE</div>
+      <h3>Empty PVC → rejoin → 2nd failover</h3>
+      <p style="margin-top:6px">Empty PVC → bundle at marker 10492 / Archive pos 77568 → <code style="font-family:var(--mono)">snapshot(@64)</code> loaded → <b style="color:var(--ink)">2/2 Ready</b>. The original primary was force-deleted; the bundle-recovered follower <b style="color:var(--ink)">promoted at epoch 5</b> and a fresh replacement rejoined. The "one-shot failover" gap is closed.</p>
+    </div>
+  </div>
+  <div class="callout">Getting here was an honest journey: a split-publication dead-end (8 compensating fixes), the <b>MDC pivot</b> that made one publication carry one shared stream, then <b>lineage-continuous sequencing</b> — business sequence numbered across the leader lineage, not the ring — so a cut journal can prove continuity across an epoch change.</div>
+  <div class="foot"><span>SC-AR03 · empty-PVC bootstrap + second failover</span><span>05</span></div>
+</div>
+
+<!-- 6 THE BUG IT SURFACED -->
+<div class="slide">
+  <div class="tag">HONEST FINDING · A LATENT BUG, EXPOSED</div>
+  <h2>An ID generator living outside replicated state reused an order ID</h2>
+  <p class="lead">Zero-tail bundle install removed the paths that had masked a latent bug — and exposed it cleanly: <code style="font-family:var(--mono)">12 orders warm, nextRef 8</code>; after the second crash, the promoted follower reissued <code style="font-family:var(--mono)">ord-013-0008</code>.</p>
+  <ul style="margin-top:14px">
+    <li><b>Root cause.</b> The monotonic <code style="font-family:var(--mono)">nextOrderRef</code> counter lived <i>outside</i> the deterministic replicated state. Journal replay and follower injection both apply <code style="font-family:var(--mono)">ORDER_NEW</code> without advancing it → a later snapshot holds newer orders but a stale counter → the promoted node reissues an ID it already used.</li>
+    <li><b>The fix is structural.</b> Every future-output generator must be part of the replicated, snapshotted state, and recovery must assert it exceeds <i>every ID ever issued</i> — not merely every ID still retained in memory.</li>
+  </ul>
+  <div class="callout">The principle YU11 pins down: <b>snapshot completeness</b> covers counters, ID generators, idempotency, risk reservations, symbol identity, and control versions — not just the visible book.</div>
+  <div class="foot"><span>Snapshot completeness · every future-output generator</span><span>06</span></div>
+</div>
+
+<!-- 7 TAKEAWAY -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>The replication transport, rebuilt and proven</h2>
+  <p class="lead">YU11 rebuilds the BLP's replication leg on <b style="color:var(--ink)">Aeron + SBE</b> — ~49× the throughput, zero-copy and zero-GC — so high availability no longer costs most of the engine's booked-order capacity. And it proves the hard case: a wiped replica rejoins from a checksummed snapshot bundle across a leader epoch and can promote on the next failure.</p>
+  <div class="row" style="margin-top:22px">
+    <div class="card"><div class="n grad">≈49×</div><div class="l">Aeron MDC replication vs File-NATS</div></div>
+    <div class="card"><div class="n grad">25,149/s</div><div class="l">booked — single-BLP parity</div></div>
+    <div class="card"><div class="n grad">Cross-epoch</div><div class="l">replacement rejoin + 2nd failover, proven</div></div>
+    <div class="card"><div class="n grad">Zero-GC</div><div class="l">64-byte SBE, transport threads exact-zero</div></div>
+  </div>
+  <div class="callout">Honest boundary: correct HA here rests on a lot of bespoke machinery — Lease election, a fast-witness tiebreaker, snapshot-bundle transfer, journal-cut bootstrap — and failover still runs on the Kubernetes control plane (Lease-based, seconds, not sub-second). What YU11 proves is the transport premise and the cross-epoch recovery path.</div>
+  <div class="foot"><span>YU11 · Aeron + SBE BLP Replication</span><span>07</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">7</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

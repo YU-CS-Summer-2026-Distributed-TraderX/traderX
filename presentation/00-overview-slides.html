@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TraderX-LMAX — Overview</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:78ch}
+.three{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:14px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box.hi{border-color:var(--accent2);box-shadow:0 0 0 1px rgba(123,255,176,.25)}
+.box h3{font-size:clamp(16px,1.7vw,20px);margin-bottom:4px}
+.box .sub{font-family:var(--mono);font-size:11px;color:var(--faint);margin-bottom:12px;letter-spacing:.03em}
+.box .good{color:var(--accent2);font-weight:650;font-size:clamp(13px,1.35vw,16px);line-height:1.4}
+.box p{font-size:clamp(13px,1.3vw,15.5px);margin-top:8px}
+.pill{display:inline-block;font-family:var(--mono);font-size:12px;padding:4px 9px;border-radius:6px;margin:3px 4px 0 0;
+  background:rgba(255,255,255,.03);border:1px solid var(--line);color:var(--ink)}
+.pill.f{color:var(--faint)}
+.pill .lc{font-size:9.5px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;margin-right:6px;padding:1px 5px;border-radius:4px}
+.lc.pre{color:var(--accent);background:rgba(94,200,255,.16)}
+.lc.om{color:var(--accent2);background:rgba(123,255,176,.16)}
+.lc.post{color:var(--warn);background:rgba(255,207,107,.16)}
+.lc.sup{color:var(--faint);background:rgba(255,255,255,.06)}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-family:var(--mono);font-size:11.5px;color:var(--dim);margin:-6px 0 6px}
+.legend b{padding:1px 6px;border-radius:4px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:10px}
+.tier{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:center;padding:15px 0;border-bottom:1px solid var(--line)}
+.tier:last-child{border-bottom:none}
+.tier .name{font-weight:750;font-size:clamp(15px,1.6vw,19px)}
+.tier .name span{display:block;font-family:var(--mono);font-size:11px;color:var(--faint);font-weight:400;margin-top:3px}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.three{grid-template-columns:1fr}.tier{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · Overview</div>
+  <h1>One exchange-grade core,<br><span class="grad">three possible systems</span></h1>
+  <p class="lead" style="margin-top:22px">A FINOS TraderX fork whose order-matcher is re-built as an <b style="color:var(--ink)">LMAX Disruptor Business Logic Processor</b> — single-threaded, in-memory, event-sourced — then extended state-by-state toward a production trading platform.</p>
+  <div class="foot"><span>Overview · read this first</span><span>YU02 → YU12</span></div>
+</div>
+
+<!-- 2 THE GOAL -->
+<div class="slide">
+  <div class="kicker">The goal</div>
+  <h2>Make it as production-like as possible</h2>
+  <p class="lead">Start from an engine that is already <b style="color:var(--ink)">exchange-grade</b> — the LMAX BLP benches ~6M ops/s, replays deterministically from its journal, and fails over in ~2–3s — and add real production capabilities on top, one state at a time, <b style="color:var(--ink)">without ever giving up that core's determinism</b>.</p>
+  <div class="callout">The same core is the right foundation for <b>three very different kinds of trading system</b> — and each defines "good" differently. That choice is what shapes the roadmap.</div>
+  <div class="foot"><span>Exchange-grade core → production system</span><span>02</span></div>
+</div>
+
+<!-- 3 THREE TARGETS -->
+<div class="slide">
+  <div class="tag">THREE TARGETS · THREE DEFINITIONS OF "GOOD"</div>
+  <h2>Same engine, three destinations</h2>
+  <div class="three">
+    <div class="box">
+      <h3>Exchange matching engine</h3>
+      <div class="sub">NASDAQ · CME · LMAX EXCHANGE · BINANCE CORE</div>
+      <div class="good">throughput · determinism · fairness · resilience</div>
+      <p>Match everyone's orders in one fair, deterministic sequence, and never lose state.</p>
+    </div>
+    <div class="box hi">
+      <h3>Sell-side execution / OMS</h3>
+      <div class="sub">A BANK / BROKER PLATFORM · ← OUR DIRECTION</div>
+      <div class="good">correctness · risk · compliance · FIX · settlement</div>
+      <p>Take client orders safely: pre-trade risk, controls, audit, settlement, best-execution.</p>
+    </div>
+    <div class="box">
+      <h3>HFT prop firm</h3>
+      <div class="sub">CITADEL · VIRTU · JUMP</div>
+      <div class="good">latency — above everything else</div>
+      <p>Be first. Nanoseconds decide P&amp;L; every other concern bends to speed.</p>
+    </div>
+  </div>
+  <div class="callout">The LMAX BLP core underneath is the same for all three. They diverge in <b>what they optimize</b> — so picking a target is picking a definition of "good."</div>
+  <div class="foot"><span>The core is the base for all three</span><span>03</span></div>
+</div>
+
+<!-- 4 WHICH STATE ON WHICH TARGET -->
+<div class="slide">
+  <div class="kicker">The map</div>
+  <h2>Which state serves which target</h2>
+  <div class="legend">
+    <span>row = target &nbsp;·&nbsp; colour = trade-lifecycle stage:</span>
+    <span><b class="lc pre">pre-trade</b></span>
+    <span><b class="lc om">order-matcher</b></span>
+    <span><b class="lc post">post-trade</b></span>
+    <span><b class="lc sup">platform / data</b></span>
+  </div>
+  <div>
+    <div class="tier">
+      <div class="name">Exchange engine<span>the foundation + its HA hardening</span></div>
+      <div>
+        <span class="pill"><i class="lc om">order-matcher</i>YU02 · LMAX Kubernetes</span><span class="pill"><i class="lc om">resilience</i>YU11 · Aeron replication</span><span class="pill"><i class="lc om">consensus</i>YU12 · Aeron Cluster</span>
+        <p style="margin-top:8px">The BLP core: Disruptor ring, in-memory match, journal + snapshots, HA failover, deterministic replay — exchange-grade by construction. YU11 rebuilds the replication leg on <b style="color:var(--ink)">Aeron + SBE</b> (~49×, HA tax gone) with proven cross-epoch recovery; YU12 replaces the hand-built HA with <b style="color:var(--ink)">Raft consensus</b> — off-plane sub-second failover, split-brain impossible.</p>
+      </div>
+    </div>
+    <div class="tier">
+      <div class="name" style="color:var(--accent2)">Sell-side OMS<span>the build-out</span></div>
+      <div>
+        <span class="pill"><i class="lc pre">pre-trade</i>YU03 · risk gateway</span><span class="pill"><i class="lc pre">pre-trade</i>YU04 · durable control</span><span class="pill"><i class="lc om">order-matcher</i>YU08 · execution algos</span><span class="pill"><i class="lc om">order-matcher</i>YU10 · FIX order-entry</span><span class="pill"><i class="lc post">post-trade</i>YU05 · settlement / compliance</span><span class="pill"><i class="lc post">post-trade</i>YU06 · EOD batch chain</span><span class="pill"><i class="lc sup">data</i>YU07 · tick store</span><span class="pill"><i class="lc sup">ops</i>YU09 · ops hardening</span>
+        <p style="margin-top:8px">Pre-trade risk &amp; control, execution, the standard <b style="color:var(--ink)">FIX</b> counterparty front door, post-trade settlement/compliance/EOD, plus the market-data and ops platform a broker needs.</p>
+      </div>
+    </div>
+    <div class="tier">
+      <div class="name" style="color:var(--faint)">HFT prop firm<span>Throughput and Latency, speed is key</span></div>
+      <div>
+        <span class="pill"><i class="lc om">SBE</i>YU11 · Aeron replication</span><span class="pill"><i class="lc om">throughput</i>YU12 · Aeron Cluster</span>
+        <p style="margin-top:8px">The no-GC, single-threaded, mechanical-sympathy engine is the seed. <b style="color:var(--ink)">YU11</b> takes the first step into <b style="color:var(--ink)">SBE</b> — fixed 64-byte binary messages encoded zero-copy on the wire, the format HFT lives on. <b style="color:var(--ink)">YU12</b> is the first step toward <b style="color:var(--ink)">low latency &amp; high throughput</b>: the consensus log plus zero-GC single-thread apply sustain a pipelined ~136k booked/s and drop failover to sub-second. Full HFT latency — binary/SBE <i>ingress</i>, kernel bypass, PTP clock sync — stays deferred so it never blocks OMS work.</p>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span>row = target · colour = lifecycle stage</span><span>04</span></div>
+</div>
+
+<!-- 5 WHERE WE ARE -->
+<div class="slide">
+  <div class="kicker">Where we are &amp; what's next</div>
+  <h2>Core done, OMS building, HFT deferred</h2>
+  <ul style="list-style:none;display:flex;flex-direction:column;gap:14px;margin-top:6px">
+    <li style="padding-left:28px;position:relative"><span style="position:absolute;left:0;color:var(--accent2)">✓</span> <b style="color:var(--ink)">Exchange core — done, and HA-hardened.</b> Exchange-grade throughput, determinism, and HA failover (YU02) validated live; the replication leg rebuilt on Aeron + SBE (YU11), then the hand-built HA replaced by Raft consensus — off-plane sub-second failover, split-brain impossible (YU12).</li>
+    <li style="padding-left:28px;position:relative"><span style="position:absolute;left:0;color:var(--accent)">▸</span> <b style="color:var(--ink)">Sell-side OMS — actively building.</b> Risk, control, settlement/compliance, EOD, tick data, execution algos, ops, and the FIX counterparty front door all landed (YU03–YU10).</li>
+  </ul>
+  <div class="callout">Across all three, today's ceiling isn't the engine (~6M ops/s) — it's the <b>edges</b>: REST/JSON ingress and the projector→DB write path (~1k rows/s). Binary (SBE/Aeron) ingress is both the throughput lever and the FIX-gateway prerequisite.</div>
+  <div class="foot"><span>TraderX-LMAX · Overview</span><span>05</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">5</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>

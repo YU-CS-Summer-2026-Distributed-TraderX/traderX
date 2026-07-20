@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TAQ Ingestion — OneDrive → DuckDB → GCS</title>
+<style>
+:root{
+  --bg:#0b0f17; --panel:#131a26; --line:#243044;
+  --ink:#eaf0fb; --dim:#9fb0c9; --faint:#6b7c98;
+  --accent:#5ec8ff; --accent2:#7bffb0; --warn:#ffcf6b; --bad:#ff7b8e;
+  --grad:linear-gradient(135deg,#5ec8ff,#7bffb0);
+  --mono:'SF Mono',ui-monospace,Menlo,Consolas,monospace;
+  --sans:'Inter',-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);overflow:hidden}
+.deck{position:relative;width:100vw;height:100vh;overflow:hidden}
+@media(min-width:769px){.deck{max-width:calc(100vh*16/9);max-height:calc(100vw*9/16);margin:auto;position:absolute;inset:0}}
+.slide{position:absolute;inset:0;padding:56px 72px;display:flex;flex-direction:column;justify-content:center;
+  opacity:0;visibility:hidden;transition:opacity .35s;background:
+  radial-gradient(1200px 600px at 85% -10%,rgba(123,255,176,.08),transparent 60%),var(--bg);overflow:hidden}
+.slide.active{opacity:1;visibility:visible}
+.kicker{font-family:var(--mono);font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:var(--accent2);margin-bottom:14px}
+h1{font-size:clamp(30px,4.6vw,60px);line-height:1.05;font-weight:800;letter-spacing:-.02em}
+h2{font-size:clamp(24px,3.2vw,40px);line-height:1.12;font-weight:800;letter-spacing:-.02em;margin-bottom:20px}
+.grad{background:var(--grad);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+p{color:var(--dim);font-size:clamp(15px,1.5vw,19px);line-height:1.5}
+.lead{font-size:clamp(17px,1.7vw,22px);color:var(--ink);max-width:64ch}
+ul{list-style:none;display:flex;flex-direction:column;gap:13px;margin-top:8px}
+li{position:relative;padding-left:30px;color:var(--dim);font-size:clamp(15px,1.45vw,18px);line-height:1.45}
+li b{color:var(--ink);font-weight:650}
+li:before{content:"";position:absolute;left:0;top:.55em;width:11px;height:11px;border-radius:3px;background:var(--grad)}
+.tag{display:inline-block;font-family:var(--mono);font-size:12px;color:var(--accent2);border:1px solid var(--line);
+  border-radius:999px;padding:4px 12px;margin-bottom:18px;background:rgba(123,255,176,.06)}
+.foot{position:absolute;bottom:26px;left:72px;right:72px;display:flex;justify-content:space-between;font-family:var(--mono);font-size:12px;color:var(--faint)}
+.row{display:flex;gap:20px;flex-wrap:wrap;margin-top:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px;flex:1;min-width:180px}
+.card .n{font-family:var(--mono);font-size:clamp(20px,3vw,34px);font-weight:700;letter-spacing:-.02em}
+.card .l{color:var(--faint);font-size:13px;margin-top:6px}
+.callout{margin-top:22px;background:rgba(123,255,176,.07);border:1px solid var(--line);border-left:3px solid var(--accent2);
+  border-radius:10px;padding:16px 20px;color:var(--ink);font-size:clamp(15px,1.5vw,18px);max-width:76ch}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:26px;align-items:start;margin-top:6px}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 22px}
+.box h3{font-size:18px;margin-bottom:6px}
+.box .sub{font-family:var(--mono);font-size:12px;color:var(--accent2);margin-bottom:10px}
+.flow{font-family:var(--mono);font-size:clamp(12px,1.35vw,16px);color:var(--ink);background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:14px;max-width:960px;line-height:1.95}
+.flow .a{color:var(--accent)} .flow .g{color:var(--accent2)} .flow .f{color:var(--faint)}
+.code{font-family:var(--mono);font-size:clamp(11px,1.12vw,15px);line-height:1.7;white-space:pre;background:#0d1420;
+  border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin-top:16px;color:var(--dim);max-width:960px;overflow-x:auto}
+.code .k{color:var(--accent2)} .code .c{color:var(--faint)} .code .t{color:var(--accent)} .code .r{color:var(--bad)}
+.progress{position:fixed;top:0;left:0;height:3px;background:var(--grad);transition:width .3s;z-index:50}
+.nav{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);display:flex;gap:16px;align-items:center;z-index:50}
+.nav button{background:rgba(255,255,255,.06);border:1px solid var(--line);color:var(--ink);width:38px;height:38px;border-radius:50%;cursor:pointer;font-size:16px}
+.nav button:hover{background:rgba(255,255,255,.13)}
+.count{font-family:var(--mono);font-size:13px;color:var(--faint)}
+@media(max-width:768px){.slide{padding:30px 24px}.two{grid-template-columns:1fr}.foot{left:24px;right:24px}}
+</style>
+</head>
+<body>
+<div class="progress" id="pb"></div>
+<div class="deck">
+
+<!-- 1 TITLE -->
+<div class="slide active">
+  <div class="kicker">TraderX-LMAX · Data infrastructure</div>
+  <h1>Loading a real<br><span class="grad">market-data corpus</span></h1>
+  <p class="lead" style="margin-top:22px">~650&nbsp;GB of NYSE TAQ, out of a OneDrive share and into a queryable columnar store — <b style="color:var(--ink)">moved at datacenter speed, normalized without ever touching disk</b>.</p>
+  <div class="foot"><span>OneDrive/SharePoint → GCS → DuckDB → Parquet</span><span>infrastructure, not a YUxx state</span></div>
+</div>
+
+<!-- 2 THE PROBLEM -->
+<div class="slide">
+  <div class="kicker">The problem</div>
+  <h2>The right data, behind the wrong wall</h2>
+  <ul>
+    <li><b>Source:</b> a <b>OneDrive / SharePoint</b> share — daily NYSE TAQ quote &amp; trade zips, Feb + Mar 2025, <b>~650&nbsp;GB</b> total.</li>
+    <li><b>Destination:</b> the tick store — <code style="font-family:var(--mono)">gs://…/ticks</code> as Parquet, partitioned by source/date/symbol, so DuckDB can now query the data.</li>
+    <li><b>The hard part was both transport and storage.</b> The share sat behind an org OAuth policy we couldn't get past, and the files are too big to stage on a laptop.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)">Two problems, deliberately separated: <b>transport</b> (get raw zips into the cloud, fast) and <b>normalize</b> (TAQ CSV → unified Parquet, disk-free). Each got its own clean solution.</div>
+  <div class="foot"><span>~650 GB · locked share · too big for a laptop</span><span>02</span></div>
+</div>
+
+<!-- 3 TWO STAGES -->
+<div class="slide">
+  <div class="tag">THE SHAPE · TWO STAGES, ONE PREFIX BETWEEN THEM</div>
+  <h2>Land the raw zips, then process them in-cloud</h2>
+  <div class="two">
+    <div class="box">
+      <h3>Stage 1 — transport</h3>
+      <div class="sub">SharePoint → gs://…/_raw-taq/</div>
+      <p>Get every raw zip into a GCS staging prefix <b style="color:var(--ink)">untouched</b> — no decompression, no conversion. Solved with rclone over WebDAV + a GCE VM (next slide).</p>
+    </div>
+    <div class="box">
+      <h3>Stage 2 — normalize</h3>
+      <div class="sub">gs://…/_raw-taq/ → gs://…/ticks/*.parquet</div>
+      <p>Runs <b style="color:var(--ink)">inside the GKE cluster</b>, in-region with the bucket. Streams each zip back out of GCS, decompresses + normalizes in-flight, writes Parquet <b style="color:var(--ink)">back to GCS</b> — never leaving the region, never hitting disk.</p>
+    </div>
+  </div>
+  <div class="callout">Landing raw first decouples a one-shot transport from a fast, repeatable, idempotent processing step. Re-run Stage 2 as often as you want without re-touching the source share.</div>
+  <div class="foot"><span>transport once · process (re-process) freely</span><span>03</span></div>
+</div>
+
+<!-- 4 STAGE 1 — TRANSPORT BREAKTHROUGH (money) -->
+<div class="slide">
+  <div class="tag">STAGE 1 · THE TRANSPORT BREAKTHROUGH</div>
+  <h2>Beat the OAuth wall with WebDAV session cookies</h2>
+  <ul style="margin-top:0">
+    <li><b>Three dead ends first:</b> rclone's OneDrive OAuth → <code style="font-family:var(--mono)">AADSTS65004</code> (needs Azure AD admin consent — blocked); CLI hydration → dead (a raw <code style="font-family:var(--mono)">read()</code> never triggers a download, 0.00 CPU); manual Finder clicks → 30&nbsp;Mbps, one human click per file.</li>
+    <li><b>The insight:</b> SharePoint libraries speak <b>WebDAV</b>, and rclone can auth with the browser's own <code style="font-family:var(--mono)">FedAuth</code>/<code style="font-family:var(--mono)">rtFa</code> session cookies — <b>no OAuth app, no admin consent</b> (the exact blocker), just an existing sign-in.</li>
+  </ul>
+  <pre class="code"><span class="c"># SharePoint doc library over WebDAV, authed with browser session cookies</span>
+rclone config create yu-sp <span class="k">webdav</span> \
+  url=<span class="t">"https://&lt;tenant&gt;-my.sharepoint.com/personal/&lt;user&gt;/Documents"</span> \
+  vendor=other headers=<span class="t">"Cookie,FedAuth=&lt;v&gt;; rtFa=&lt;v&gt;"</span>
+
+<span class="c"># run it ON a GCE VM in us-east1, 8 parallel streams → datacenter speed</span>
+rclone copy yu-sp:NYSE-TAQ-DATA gcs-tick-store:.../<span class="k">_raw-taq</span> <span class="t">--transfers 8</span></pre>
+  <div class="callout">SharePoint throttles <b>per-stream, not per-account</b>, so 8 streams ran at full speed at once. <b>~1.5&nbsp;Gbps aggregate moved ~650&nbsp;GB in ~1–1.5&nbsp;h, unattended</b> — vs days of manual clicks at 30&nbsp;Mbps. Cookies minted on the laptop still worked from the datacenter IP.</div>
+  <div class="foot"><span>WebDAV + cookies · GCE VM · --transfers 8</span><span>04</span></div>
+</div>
+
+<!-- 5 STAGE 2 — THE PIPELINE (money) -->
+<div class="slide">
+  <div class="tag">STAGE 2 · ONE PROCESS, ZERO DISK</div>
+  <h2>Stream → decompress → normalize → write, all in one pipe</h2>
+  <div class="flow">
+<span class="f">gs://…/_raw-taq/taq_quotes_YYYYMMDD_csv.zip</span>
+        │
+        ▼
+<span class="a">gcloud storage cat</span>   <span class="f">stream the zip out of GCS (bytes, not a download)</span>
+        │
+        ▼
+<span class="a">funzip</span>               <span class="f">decompress the single entry inline, on the fly</span>
+        │
+        ▼
+<span class="a">python3 ingest_taq_quotes.py</span>  →  <span class="a">DuckDB</span>  <span class="f">read_csv('/dev/stdin') → normalize</span>
+        │
+        ▼
+<span class="g">gs://…/ticks/source=taq/dt=…/symbol=…/*.parquet</span>   <span class="f">ZSTD, Hive-partitioned</span>
+  </div>
+  <div class="callout">One process, one pipe. The multi-GB decompressed CSV <b>never lands on disk</b>; there's no intermediate Parquet on disk either — DuckDB reads the pipe and writes straight to GCS. Peak disk stays bounded by one output partition (NFR-TS03).</div>
+  <div class="foot"><span>gcloud storage cat | funzip | duckdb → gs://</span><span>05</span></div>
+</div>
+
+<!-- 6 NORMALIZE -->
+<div class="slide">
+  <div class="kicker">Normalize · DuckDB as the streaming ETL engine</div>
+  <h2>One <code style="font-family:var(--mono)">COPY</code> does read + normalize + write</h2>
+  <pre class="code"><span class="k">COPY</span> (
+  <span class="k">SELECT</span> SYM_ROOT              <span class="k">AS</span> symbol,
+         <span class="t">'quote'</span>               <span class="k">AS</span> event_type,
+         DATE + TIME_M         <span class="k">AS</span> ts,
+         BID, BIDSIZ, ASK, ASKSIZ,          <span class="c">-- unified schema</span>
+         EX                    <span class="k">AS</span> venue,
+         <span class="t">'taq'</span>                 <span class="k">AS</span> source,
+         QU_SEQNUM             <span class="k">AS</span> seq,
+         DATE                  <span class="k">AS</span> dt
+  <span class="k">FROM</span> read_csv(<span class="t">'/dev/stdin'</span>, header=true, auto_detect=true)  <span class="c">-- the pipe</span>
+  <span class="k">WHERE</span> SYM_ROOT <span class="k">IS NOT NULL AND</span> DATE <span class="k">IS NOT NULL AND</span> TIME_M <span class="k">IS NOT NULL</span>
+)
+<span class="k">TO</span> <span class="t">'gs://traderx-501015-tick-store/ticks'</span>
+   (FORMAT PARQUET, COMPRESSION ZSTD,
+    PARTITION_BY (source, dt, symbol), OVERWRITE_OR_IGNORE true);</pre>
+  <div class="callout"><b>Proven tool, not a hand-rolled loader.</b> DuckDB reads the un-seekable pipe in a single pass (can't count then copy), maps NYSE's CQ columns onto the same schema live capture uses, and writes partitioned ZSTD Parquet to GCS over its S3-compatible httpfs path.</div>
+  <div class="foot"><span>ingest_taq_quotes.py · one pass, pipe → gs://</span><span>06</span></div>
+</div>
+
+<!-- 7 AT SCALE -->
+<div class="slide">
+  <div class="tag">STAGE 2 AT SCALE · 28 FILES, IN-CLUSTER, HANDS-OFF</div>
+  <h2>A Kubernetes batch job, idempotent and self-terminating</h2>
+  <div class="row">
+    <div class="card"><div class="n grad">28</div><div class="l">daily quotes files, as an Indexed Job (parallelism 3)</div></div>
+    <div class="card"><div class="n grad">27+1</div><div class="l">main job succeeded 27/28; 1 OOM outlier via a retry job</div></div>
+    <div class="card"><div class="n grad">→ 0</div><div class="l">watcher scales node pools to 0 on completion</div></div>
+  </div>
+  <ul style="margin-top:20px">
+    <li><b>Idempotent.</b> A completed-list guard (<code style="font-family:var(--mono)">.stage2-completed.txt</code>) skips files already ingested — each run writes uniquely-named Parquet, so a naive rerun would duplicate rows.</li>
+    <li><b>The OOM outlier.</b> <code style="font-family:var(--mono)">2025-03-11</code> (~39&nbsp;GB) blew the 5&nbsp;Gi limit — a separate retry job with <code style="font-family:var(--mono)">DUCKDB_THREADS=2</code> + more memory brought it home. 28/28.</li>
+    <li><b>Digest-pinned images.</b> Pinned by <code style="font-family:var(--mono)">@sha256</code>, not a reused tag, so nodes can't serve a stale cached build after a fix.</li>
+  </ul>
+  <div class="callout" style="border-left-color:var(--warn)"><b>War story:</b> <code style="font-family:var(--mono)">funzip</code>'s harmless exit-noise tripped <code style="font-family:var(--mono)">set -o pipefail</code> → false FAILED → the job retry-looped → <b>12–23× duplicate partitions</b>. Fix: key success on the <em>normalizer's</em> exit (<code style="font-family:var(--mono)">PIPESTATUS[2]</code>), not the pipe's. Wiped the dupes, kept the raw zips, re-ran clean.</div>
+  <div class="foot"><span>Indexed Job · idempotent · cost-terminating</span><span>07</span></div>
+</div>
+
+<!-- 8 THE PAYOFF -->
+<div class="slide">
+  <div class="tag">THE PAYOFF · ONE QUERY, BOTH SOURCES</div>
+  <h2>Real TAQ lands next to TraderX's own ticks</h2>
+  <p class="lead">Because the normalizer targets the <b style="color:var(--ink)">identical schema</b> as live capture, ingested TAQ sits beside the platform's own ticks — every row tagged <code style="font-family:var(--mono)">source</code> (<code style="font-family:var(--mono)">taq</code> vs <code style="font-family:var(--mono)">live</code>). One DuckDB-over-Parquet query spans both.</p>
+  <pre class="code"><span class="c">// read_parquet(hive_partitioning=true) reconstructs source/dt/symbol as columns</span>
+source=<span class="k">taq</span>   dt=2025-02-03  symbol=IBM   event_type=quote   <span class="c">(NYSE Consolidated Quotes)</span>
+source=<span class="t">live</span>  dt=2026-07-…   symbol=IBM   event_type=trade   <span class="c">(TraderX pricing bus)</span>
+
+VWAP · daily-return · quoted-spread recipes  →  <span class="g">one store, one query, no per-source code</span></pre>
+  <div class="callout">This is the raw material for <b>YU08's VWAP execution algos</b> (real volume profiles), <b>YU05's TCA benchmarks</b> (dense history instead of null), and future <b>VaR</b> return series.</div>
+  <div class="foot"><span>unified schema · source=taq + source=live</span><span>08</span></div>
+</div>
+
+<!-- 9 TAKEAWAY + CAVEAT -->
+<div class="slide">
+  <div class="kicker">Takeaway</div>
+  <h2>Transport once, normalize forever</h2>
+  <div class="two">
+    <div class="box">
+      <h3>What made it work</h3>
+      <div class="sub">the two insights</div>
+      <p><b style="color:var(--ink)">Auth with what already works</b> (browser cookies over WebDAV) instead of fighting the OAuth policy; and <b style="color:var(--ink)">move the compute to the data</b> (a GCE VM in-region, parallel streams). Then a disk-bounded DuckDB pipe does the rest.</p>
+    </div>
+    <div class="box">
+      <h3>The one honest caveat</h3>
+      <div class="sub">cookie lifetime</div>
+      <p>Session cookies expire in a few hours — perfect for a <b style="color:var(--ink)">one-shot bulk transfer</b> that finishes inside one lifetime, not a standing scheduled sync. A recurring pipeline would still want the OAuth path (the pending IT consent).</p>
+    </div>
+  </div>
+  <div class="callout">The result: a <b>disk-bounded, idempotent, in-cloud</b> path that turns any NYSE TAQ drop into queryable Parquet — proven on ~650&nbsp;GB, reusable for the next corpus without a line of new code.</div>
+  <div class="foot"><span>OneDrive → GCS → DuckDB → Parquet</span><span>09</span></div>
+</div>
+
+</div>
+
+<div class="nav">
+  <button onclick="go(cur-1)">←</button>
+  <span class="count"><span id="cur">1</span> / <span id="tot">9</span></span>
+  <button onclick="go(cur+1)">→</button>
+</div>
+<script>
+let cur=1;const S=document.querySelectorAll('.slide');const T=S.length;
+document.getElementById('tot').textContent=T;
+function go(n){cur=Math.max(1,Math.min(T,n));S.forEach((s,i)=>s.classList.toggle('active',i===cur-1));
+  document.getElementById('cur').textContent=cur;document.getElementById('pb').style.width=(cur/T*100)+'%';}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();go(cur+1)}if(e.key==='ArrowLeft'){e.preventDefault();go(cur-1)}});
+document.addEventListener('click',e=>{if(!e.target.closest('.nav'))go(cur+1)});
+go(1);
+</script>
+</body>
+</html>
