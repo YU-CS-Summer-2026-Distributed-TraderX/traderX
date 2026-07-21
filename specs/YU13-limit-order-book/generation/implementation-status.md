@@ -214,12 +214,37 @@ sub-200 ms failovers were invisible to it. Do not measure this with a coarse pro
 best-ever client-observed 192 ms — the crossing book did not regress failover; the median is
 better than the parent's best case.
 
-The distribution is **bimodal** and that is a real property, not noise: a fast mode (~83–182 ms,
-3 in-flight requests lost) and a slow mode (~673–848 ms, 32 lost), roughly 3:2 across these
-samples with identical code and kill command. The likely discriminator is whether the gateway
-holding the probe's connection could follow the leader change natively or had to re-establish its
-cluster session. Worth closing before the number goes on a slide — quote the median with the
-range, never the best alone.
+### The bimodality — root-caused and fixed
+
+The two modes were not noise and not cluster-side. Running `/orders` and `/ready` as independent
+probes at the same cadence separated them: `/ready` is gateway-local (200 only while the gateway's
+cluster session is up, never touches the leader), so if it fails alongside `/orders` the outage is
+the GATEWAY re-establishing, not the cluster electing.
+
+| Killed member | `/ready` fail window | `/orders` gap |
+|---|---|---|
+| m2 | 41 ms | 201 ms |
+| **m0** | **1270 ms** | **1316 ms** |
+
+`/ready` and `/orders` failed for the same window, and the only variable was WHICH member died —
+a 31x penalty. Cause: `connectCycling()` declared `int attempt = 0` as a LOCAL, so every reconnect
+tried ingress endpoint 0 first. `GATEWAY_INGRESS_ENDPOINTS` is ordered `0=…,1=…,2=…`, so whenever
+member 0 was the member that died, the gateway blocked on the dead endpoint's connect timeout
+before trying a live one. Killing m1/m2 hit a live endpoint immediately — the fast mode.
+
+Fixed: the first reconnect attempt now hands Aeron the COMPLETE member list so the cluster client
+resolves the leader itself; single-endpoint cycling remains as a fallback with a rotating start
+(`connectRotation` persists across reconnects) so a dead endpoint is never retried first twice.
+
+| | before | after |
+|---|---|---|
+| killing m1/m2 | 83, 141, 182, 201 ms | 162, 204 ms |
+| **killing m0** | **673, 848, 1316 ms** | **222, 445 ms** |
+| worst observed | **1316 ms** | **445 ms** |
+
+The bimodality is gone — member 0 is no longer an outlier and the >600 ms tail is eliminated.
+Quote **median ~200 ms, worst ~450 ms**. This mattered beyond the number: member 0 is the first
+pod of the StatefulSet, so the slow path was the one most likely to be hit in practice.
 
 Measurement notes that cost real time here:
 

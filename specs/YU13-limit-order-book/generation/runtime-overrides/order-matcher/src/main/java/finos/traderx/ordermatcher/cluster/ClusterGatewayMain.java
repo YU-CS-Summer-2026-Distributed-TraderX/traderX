@@ -57,6 +57,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private String ingressEndpoints;
     private String aeronDir;
     private String[] endpointEntries;
+    // Persists across reconnects so the single-endpoint fallback does not restart at the same
+    // (possibly dead) endpoint every time — see connectCycling().
+    private int connectRotation;
     private AeronCluster client;
     private volatile boolean connected;
     private volatile boolean running = true;
@@ -176,11 +179,25 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         }
     }
 
-    /** Cycle single endpoints until the leader accepts a session (owner thread only). */
+    /**
+     * Reconnect to the cluster (owner thread only).
+     *
+     * The first attempt hands Aeron the COMPLETE member list so the cluster client resolves the
+     * leader itself. This used to cycle single endpoints starting at a local {@code attempt = 0}
+     * — i.e. always endpoint 0 first — so whenever member 0 was the member that died, every
+     * reconnect blocked on the dead endpoint's connect timeout before trying a live one. Measured
+     * on GKE: killing member 0 cost a 1270ms gateway-session gap vs 41ms killing member 2, a 31x
+     * penalty decided purely by WHICH pod died, and the sole cause of the bimodal failover
+     * distribution (~85-180ms fast mode vs ~670-850ms slow mode). Single-endpoint cycling is kept
+     * as the fallback, with a rotating start so a dead endpoint is not retried first every time.
+     */
     private void connectCycling() {
         int attempt = 0;
         while (running) {
-            final String entry = endpointEntries[attempt++ % endpointEntries.length];
+            final String entry = attempt == 0
+                ? ingressEndpoints
+                : endpointEntries[(connectRotation + attempt) % endpointEntries.length];
+            attempt++;
             try {
                 CloseHelper.quietClose(client);
                 client = AeronCluster.connect(new AeronCluster.Context()
@@ -191,6 +208,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                         + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                         + env("GATEWAY_EGRESS_PORT", "0"))
                     .egressListener(this::onEgress));
+                connectRotation = (connectRotation + 1) % endpointEntries.length;
                 connected = true;
                 return;
             } catch (final Exception e) {
