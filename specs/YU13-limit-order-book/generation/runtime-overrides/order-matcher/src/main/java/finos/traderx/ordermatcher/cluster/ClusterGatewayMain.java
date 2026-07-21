@@ -212,9 +212,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 CloseHelper.quietClose(client);
                 client = AeronCluster.connect(new AeronCluster.Context()
                     .aeronDirectoryName(aeronDir)
-                    .ingressChannel("aeron:udp?term-length=1m")
+                    .ingressChannel("aeron:udp?term-length=4m")
                     .ingressEndpoints(entry)
-                    .egressChannel("aeron:udp?term-length=1m|endpoint="
+                    .egressChannel("aeron:udp?term-length=4m|endpoint="
                         + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                         + env("GATEWAY_EGRESS_PORT", "0"))
                     .egressListener(this::onEgress));
