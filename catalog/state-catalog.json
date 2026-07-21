@@ -694,6 +694,29 @@
         "branch": "code/generated-state-YU13-limit-order-book",
         "tag": "generated/YU13-limit-order-book/v1"
       }
+    },
+    {
+      "id": "YU14-listed-equity-options",
+      "title": "Listed Equity Options",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU14-listed-equity-options",
+      "previous": [
+        "YU13-limit-order-book"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU14-listed-equity-options",
+        "runtime": "inherits YU13-limit-order-book runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU14-listed-equity-options",
+        "tag": "generated/YU14-listed-equity-options/v1"
+      }
     }
   ]
 }

@@ -1,0 +1,39 @@
+{
+  "title": "YU14-listed-equity-options architecture",
+  "stateId": "YU14-listed-equity-options",
+  "parentState": "YU13-limit-order-book",
+  "description": "Listed equity options trade on the inherited crossing limit-order book as ordinary securities: an option contract is its unpadded OCC symbol with a two-sided book, so registration, quoting, crossing, partial fills, and cancels reuse every YU13 path unchanged. Symbol registration derives the contract multiplier (100 for OCC option symbols, 1 otherwise) deterministically from the committed ticker and installs it in the risk state; every notional the risk gate computes multiplies by it, and the format-3 snapshot carries it per security with fail-closed restore. Underlying, strike, expiry, call/put, counterparty, and currency stay out of the consensus log: they are reference data, derived from the identifier or joined by accountId at extract time.",
+  "inheritsFrom": "YU13-limit-order-book",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    { "id": "counterparty", "kind": "external", "label": "FIX + REST counterparties", "description": "Two-sided order flow in equities and listed options; option orders name the contract by its unpadded OCC symbol." },
+    { "id": "gateway", "kind": "service", "label": "FIX/REST gateway tier", "description": "Inherited unchanged: terminates sessions, screens admission, forwards through the cluster client. /seed registers option chains exactly as equity tickers; the SBE ticker field is 32 bytes so OCC symbols fit." },
+    { "id": "cluster_client", "kind": "service", "label": "Aeron Cluster client", "description": "Forwards SBE ingress (including OCC-symbol registrations) to the current leader and receives committed egress acks." },
+    { "id": "consensus", "kind": "service", "label": "Aeron Cluster consensus (leader + followers)", "description": "Raft majority replicates one committed input log; the committed SymbolRegister ticker is the sole in-log source of instrument identity." },
+    { "id": "registration", "kind": "service", "label": "Symbol registration + OccSymbol", "description": "Cold path: assigns the deterministic securityId and derives the contract multiplier as a pure function of the committed ticker — OCC option symbol yields 100, anything else 1 — identically on every member and replay." },
+    { "id": "risk_gate", "kind": "service", "label": "BlpRiskState (multiplier-aware)", "description": "Dense per-security contractMultiplier beside the inherited control rows. Reserve, market-trade, executed-exposure, and concentration math all compute quantity x price x multiplier; overflow rejects ORDER_NOTIONAL." },
+    { "id": "matching_engine", "kind": "service", "label": "MatchingEngine + LimitBook (unchanged)", "description": "The YU13 crossing book verbatim: an option contract is a securityId with a two-sided book; price-time priority, partial fills, market-cancel, and cancel semantics are instrument-agnostic." },
+    { "id": "snapshot_store", "kind": "store", "label": "Cluster snapshots + per-pod log PVC", "description": "Format 3: the security record carries the contract multiplier; restore fails closed on multiplier < 1 or a non-3 format. All other records byte-identical to YU13." },
+    { "id": "egress", "kind": "queue", "label": "Committed output egress", "description": "Inherited unchanged: both-side fills, trades, positions; option fills are ordinary security outputs keyed by OCC ticker." },
+    { "id": "reference_data", "kind": "store", "label": "Reference data (instruments + counterparties)", "description": "instruments.csv: type/underlying/strike/expiry/callPut/multiplier/currency, every derivable column a pure function of the OCC ticker. counterparties.csv: accountId to counterpartyId/nettingSetId/currency." },
+    { "id": "risk_extract", "kind": "external", "label": "Risk-engine positions extract", "description": "Joins positions to counterparty by accountId and to instrument attributes by ticker; notional is derived as quantity x last price x multiplier — agreeing with in-cluster accounting by construction." },
+    { "id": "nats", "kind": "queue", "label": "NATS + CQRS read model", "description": "Inherited distribution: /trades bridge, trade-processor, MariaDB, position/blotter feeds — option rows flow as ordinary securities." }
+  ],
+  "edges": [
+    { "from": "counterparty", "to": "gateway", "label": "equity + option orders (OCC symbols)" },
+    { "from": "gateway", "to": "cluster_client", "label": "screened commands + symbol registrations (32-byte ticker)" },
+    { "from": "cluster_client", "to": "consensus", "label": "SBE ingress to current leader" },
+    { "from": "consensus", "to": "registration", "label": "committed SymbolRegister (ticker)" },
+    { "from": "registration", "to": "risk_gate", "label": "securityId + derived multiplier (100 option / 1 other)" },
+    { "from": "consensus", "to": "matching_engine", "label": "committed orders in log order" },
+    { "from": "matching_engine", "to": "risk_gate", "label": "decide/reserve/consume at qty x price x multiplier" },
+    { "from": "risk_gate", "to": "matching_engine", "label": "ACCEPTED reservation, or multiplied-notional rejection" },
+    { "from": "risk_gate", "to": "snapshot_store", "label": "T_SECURITY row + multiplier (format 3)" },
+    { "from": "snapshot_store", "to": "risk_gate", "label": "restore multiplier; fail closed if < 1" },
+    { "from": "matching_engine", "to": "egress", "label": "paired fills + trades + positions (instrument-agnostic)" },
+    { "from": "egress", "to": "nats", "label": "inherited /trades bridge + read-model projection" },
+    { "from": "nats", "to": "risk_extract", "label": "positions by accountId + ticker" },
+    { "from": "reference_data", "to": "risk_extract", "label": "counterparty/netting join + instrument attributes + currency" }
+  ]
+}
