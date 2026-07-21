@@ -40,4 +40,16 @@
 - [x] T-LOB13 Match-latency histogram benchmark: p50/p99/p99.9/p99.99/max in ns for resting
   inserts, limit crosses, and market orders under closed-loop load (`MatchLatencyBenchmarkTest`).
 - [x] T-LOB14 Re-bench booked throughput on a live kind cluster with two-sided marketable flow
-  against the NFR-AC02 baseline; run the kind HA recovery proof on the crossing engine.
+  and run the kind HA recovery proof on the crossing engine. 10,533 booked trades/s on kind (not
+  like-for-like with the GKE-measured 25,149 bar — see `generation/implementation-status.md`); HA
+  proof in `docs/handoff/PROOF-yu13-kind-ha-crossing-book.md` (format-2 snapshot round-trips the
+  full resting book across a failover, price-time priority preserved, book identical on all
+  members, zero ID reuse across two crashes).
+
+## Carried forward
+
+- [ ] T-LOB15 Like-for-like GKE throughput run against the 25,149 NFR-AC02 bar on the crossing
+  engine (the kind number is environment-bound, not engine-bound).
+- [ ] T-LOB16 Empty-disk rejoin into an already-advanced cluster is blocked by the inherited
+  Aeron 1.51 term-history defect (`ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md`), verified
+  independent of the crossing book. Needs the Aeron-level fix.
