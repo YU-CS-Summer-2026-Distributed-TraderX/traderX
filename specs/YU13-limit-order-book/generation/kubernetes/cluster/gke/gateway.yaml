@@ -50,10 +50,10 @@ spec:
     rollingUpdate:
       maxSurge: 0
       maxUnavailable: 1
-  # 4 replicas is the measured scale-out tier: with the REST Service affinity-free (see above),
-  # requests fan out across four independent cluster sessions and owner threads. The default pool
-  # plus three std-pool nodes provide one non-member node per gateway.
-  replicas: 4
+  # 3 replicas is the retained tier: at fixed conc=64, four gateways did not beat three because
+  # the leader/member apply path was already saturated. The default pool plus two std-pool nodes
+  # provide one non-member node per gateway.
+  replicas: 3
   selector:
     matchLabels:
       app: cluster-gateway
