@@ -40,6 +40,7 @@ tracks:
       - YU11-aeron-replication
       - YU12-aeron-cluster
       - YU13-limit-order-book
+      - YU14-listed-equity-options
   functional:
     description: "Functional capability expansion states."
     states:
@@ -67,6 +68,7 @@ tracks:
       - YU11-aeron-replication
       - YU12-aeron-cluster
       - YU13-limit-order-book
+      - YU14-listed-equity-options
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -264,3 +266,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU13-limit-order-book/spec.md
+  - id: YU14-listed-equity-options
+    previous:
+      - YU13-limit-order-book
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU14-listed-equity-options/spec.md

@@ -4,15 +4,18 @@
 **Repo:** `YU-CS-Summer-2026-Distributed-TraderX/traderX` on GitHub.
 **Active branch:** `lmax-kubernetes-blp-ha` — pushed and up to date as of 2026-07-03.
 
-> **Spec-kit lineage update (2026-07-20):** the team-authored state line now continues through
-> `YU10-fix-ingress`, `YU11-aeron-replication`, `YU12-aeron-cluster`, and
-> `YU13-limit-order-book`. YU11 is parented on
+> **Spec-kit lineage update (2026-07-21):** the team-authored state line now continues through
+> `YU10-fix-ingress`, `YU11-aeron-replication`, `YU12-aeron-cluster`,
+> `YU13-limit-order-book`, and `YU14-listed-equity-options`. YU11 is parented on
 > YU10 and adds a rollback-safe Aeron+SBE BLP replication transport while retaining NATS as the
 > default. YU12 is parented on YU11 and moves BLP HA to Aeron Cluster Raft consensus hosting the
 > deterministic matching/risk core. YU13 is parented on YU12 and replaces the price-triggered
 > auto-fill matcher with a genuine crossing limit-order book (price-time priority, limit/market/
 > cancel, partial fills) hosted unchanged in the ClusteredService, with the whole resting book
-> serialized into a format-2 snapshot. The
+> serialized into a format-2 snapshot. YU14 is parented on YU13 and adds listed equity options
+> as ordinary securities (unpadded OCC-symbol identity) with a contract-multiplier-aware risk
+> gate and a format-3 snapshot; counterparty/currency/notional live as extract-time reference
+> data in its spec pack. The
 > historical GKE branch/runbook below remains useful operational background; use the selected
 > YU state pack and its generated artifacts as the source for state-specific work.
 

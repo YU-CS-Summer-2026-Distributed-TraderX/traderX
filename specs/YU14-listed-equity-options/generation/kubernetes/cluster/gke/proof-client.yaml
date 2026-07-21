@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cluster-proof-client
+  labels:
+    app: cluster-proof-client
+spec:
+  # canary rides a member node deliberately: from the default-pool e2 node its service-egress
+  # acks never arrive (consensus events do; gateway acks do) — unexplained, documented in the
+  # Phase-2 notes; 100m of canary load does not threaten member duty-cycle margins.
+  tolerations:
+    - {key: workload, operator: Equal, value: blp, effect: NoSchedule}
+  restartPolicy: Never
+  containers:
+    - name: proof-client
+      image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu14
+      imagePullPolicy: Always
+      command:
+        - java
+        - -cp
+        - /opt/app/classes:/opt/app/lib/*
+        - finos.traderx.ordermatcher.cluster.ClusterProofClient
+      env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: PROOF_INGRESS_ENDPOINTS
+          value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+        - name: PROOF_GAP_MS
+          value: "100"
+        - name: PROOF_RECONNECT_MS
+          value: "500"
+        - name: PROOF_INTERVAL_MS
+          value: "10"
+        - name: PROOF_EGRESS_PORT
+          value: "40460"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Xms128m -Xmx256m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi

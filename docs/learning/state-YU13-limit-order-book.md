@@ -8,7 +8,7 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 
 - Previous state(s): [YU12-aeron-cluster](/docs/learning/state-YU12-aeron-cluster)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU14-listed-equity-options](/docs/learning/state-YU14-listed-equity-options)
 
 ## Convergence Metadata
 

@@ -34,6 +34,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU11-aeron-replication`
 - `YU12-aeron-cluster`
 - `YU13-limit-order-book`
+- `YU14-listed-equity-options`
 
 ## References
 
