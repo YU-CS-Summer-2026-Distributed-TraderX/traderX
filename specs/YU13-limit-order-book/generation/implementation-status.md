@@ -293,8 +293,112 @@ cluster whose book was EMPTY with no format-2 snapshot content, and no snapshot/
 appears in the joiner's logs — the failure is entirely inside log replication, before the service
 loads any state. Three members starting together from empty always converge (done four times).
 
+## Real TAQ order flow on the crossing engine (OSFF-3, 2026-07-21)
+
+The demo realism beat: real historical NYSE flow crossing on the Raft-consensus book.
+
+**Curation.** DuckDB on the tick-store pod (data-local, GCS HMAC already in env) over the YU07
+store (`gs://traderx-501015-tick-store/ticks/source=taq/`): 7 symbols (odd count, per the harness
+side-alternation trap) — AAPL, MSFT, NVDA, TSLA, AMZN, META, JPM, all inside the seeded 20-ticker
+universe — 2025-03-03 09:30–10:00 ET, `event_type='trade'` prints only. **1,138,793 real prints,
+$18.2B notional**, tick-rule aggressor side (47.3% buy — a down-open day), prices rounded to the
+0.001 grid. 38.6 MB CSV in `scripts/bench/results/taq/`. (`kubectl cp` silently truncated the file
+at ~35 MB — transfer big files with gzip + `exec cat` and md5-check both ends.)
+
+**Method — trade-print replay.** Each print becomes a passive limit at the print price plus an
+aggressor limit at the same price on the other side; the pair is order-insensitive (whichever
+lands first rests, the other crosses at the resting price), so a sequenced replay reproduces
+every historical print at its historical price, the book self-cleans to empty, and positions stay
+a near-flat random walk. Passive and aggressor accounts rotate over the 7 real SQL accounts and
+are always distinct. `scripts/bench/taq-replay.mjs`:
+
+- `--mode paced` — sim-clock at `--speed`× real time, ONE in-flight batch. **Must target a single
+  gateway pod**: the `order-matcher-gw` Service round-robins across gateways, which interleaves
+  batches and lets fills slip off the historical price. Sequential batches through one gateway =
+  exact global ordering.
+- `--mode max` — `--conc` workers race sequential chunks through the Service. Real flow at max
+  ingest; cross-pair interleaving can fill at a better resting price than the print (stated, not
+  hidden).
+- Orders do NOT refresh risk price-freshness (only `TYPE_PRICE_TICK` does; 30 s max age), so the
+  harness seeds each symbol at its first-print price upfront and re-`/seed`s per symbol every 8 s
+  at the latest replayed price — pointed at a DIFFERENT gateway than the replay stream, or the
+  refresher queues behind a stalled batch on the same owner thread.
+
+**Results (GKE, 3× c3 members, fixed image, fresh epoch, seeded first):**
+
+| Run | Result |
+|---|---|
+| Paced 5× (the flagship) | 1,138,793 prints in 360.2 s — pacing held exactly. 2,277,155/2,277,586 orders accepted (**431 policy rejects, 0.019%**, including both sides of the two 2,111,072-share NVDA opening blocks vs the 1M-share order-size cap — the 15c3-5 gate working). 0 HTTP failures. 2,276,892 trade records booked. |
+| Post-run state | **Book returned to exactly empty on all 3 members** (open=0, order-hash=0); position hash, nextOrderRef, applied position **byte-identical across members** after ~2.4M trades. |
+| Booked-rate timeline | Tracks real market intensity: ~20k booked/s at the compressed 09:30 burst decaying to ~4k/s by 10:00 — the shape of the open, on a consensus-replicated book. |
+| Max-rate (conc 8, via Service) | 1,138,793 prints in 78.1 s — **14,589 prints/s, 29,172 accepted orders/s**. Client-bound (one bench pod, conc 8), NOT the cluster ceiling — the 75k booked/s pipelined figure stands. |
+| Single ordered stream ceiling | ~7,700 prints/s (15.3k orders/s) through one gateway at batch=100. |
+
+**Two new traps recorded:**
+
+- **Band-anchor vs real prices.** The book's price band (±$65.5) anchors on each security's FIRST
+  limit price of the epoch and never re-anchors. An epoch that has traded bench flow at 150
+  collars real prices (AAPL 241.81 and MSFT 388.49 rejected PRICE_COLLAR while NVDA 114 passed).
+  Replay real prices on a fresh epoch, or ensure the first limit per symbol is at the real level.
+- **Batch size vs the ack window.** At 200 prints (400 orders) per POST, the gateway's pipelined
+  ack wait loses egress acks under crossing load (2 booked events per print) and every lossy
+  batch burns its full ~7 s ack budget — a single-stream run stalls hard. batch=100 is
+  stall-free; the default in taq-replay.mjs.
+
+## T-LOB16 RESOLVED: the "empty-disk rejoin defect" was our NetworkPolicy, not Aeron (2026-07-21)
+
+The OSFF-3 retest disproved BOTH prior theories (inherited Aeron 1.51 defect; stale-PVC
+hypothesis). The wedge reproduced on kind with a genuinely fresh, empty PVC — and the leader
+showed zero replication activity during the joiner's attempts, which localized it to
+connectivity:
+
+- **Root cause:** `ClusterNodeConfig` (mirroring the Aeron 1.51 sample) left three channels on
+  ephemeral ports (`endpoint=host:0`): the archive client's controlResponseChannel, the Archive's
+  replicationChannel, and the ConsensusModule's replicationChannel. The kind NetworkPolicy admits
+  UDP 21800–22200 only, so FOLLOWER_LOG_REPLICATION traffic lands on an ephemeral port and is
+  **silently dropped** — the joiner loops INIT→CANVASS→FOLLOWER_LOG_REPLICATION at `applied=-1`
+  forever, with no error on either side (UDP).
+- **Why it masqueraded as an Aeron defect:** PVC-preserving restarts use FOLLOWER_CATCHUP on the
+  in-block transfer port (allowed) — so "members with state rejoin, wiped members wedge" looked
+  exactly like an empty-disk-rejoin bug. And GKE never applies that policy to the cluster pods
+  (the gke kustomization omits it), hence "works on GKE, wedges on kind".
+- **Smoking-gun experiment:** deleting the policy un-wedged a 10-minute-stuck joiner within 10 s
+  (applied −1 → fully caught up).
+- **Fix:** pin the three channels to fixed offsets 6/7/8 in each member's 100-port block (inside
+  the policy range). `ClusterNodeConfig.java` in the YU12 layer; propagated to the YU12 lane.
+- **Acceptance (kind, policy ENFORCED, fixed image):** empty-disk rejoin into an aged cluster
+  (3 leadership terms, snapshots, 1000 trades) caught up in <30 s; a PVC-preserving restart
+  caught up too; all three members byte-identical after; full suite 227/0;
+  ThreeMemberClusterTest passes solo in 26 s (its documented parallel-load flakiness stands).
+- **Distinguish the two wedges.** The 2026-07-19 GKE issue
+  (`ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md`) is a DIFFERENT mechanism with a different
+  signature: an explicit `ArchiveException: requested replay start position=0 …` storm after ~46
+  leadership terms accumulated degenerate RecordingLog entries — real Aeron 1.51 behavior at
+  heavy term churn, unaffected by today's finding, remediation (clean reset) stands. The kind
+  wedge (T-LOB14/T-LOB16) is SILENT — no exception anywhere — and was the policy bug. Triage by
+  signature: exception storm → term poisoning; silence → check replication-port reachability
+  first. The kind empty-disk-rejoin acceptance line is **unblocked**: a config rule (pin
+  replication ports / scope policies to cover them), not an engine limitation.
+- GKE redeployed on the fixed image (`cluster-node@sha256:242ddd30…`), fresh epoch, re-seeded.
+  Failover spot-check on the fixed build: **124 / 348 / 223 ms** client gap across rotated
+  leader kills (20 ms probe) — consistent with the recorded ~200 ms median / ~450 ms worst, no
+  regression from the port pinning.
+
+## Failover presentation framing (decision for the talk)
+
+- **The headline number is the idle client-observed one: median ~200 ms, worst ~450 ms** — "what
+  a trader sees when a node dies", measured node-clock-free as the client gap (last success
+  before → first success after) with a ≤20 ms probe and rotated member kills.
+- **The ~8–12 s figure under a 30–60k orders/s flood answers a different question** — "how long
+  until a saturated pipeline is back to full throughput when all gateways lose their sessions at
+  once and a backlog must drain". It goes in a backup slide / spoken caveat WITH that context,
+  never on the same slide as the 200 ms number, never averaged with it.
+- Never present FIRST-APPLY or ROLE-CHANGE-derived times as client-facing (they measure cluster
+  liveness and pod teardown, not service restoration).
+
 ## Open
 
-- A like-for-like GKE throughput run against the 25,149 bar on the crossing engine.
-- The inherited Aeron 1.51 empty-disk-rejoin defect (YU12 issue) blocks that acceptance line on
-  any aged epoch; it needs the Aeron-level fix, not a YU13 change.
+- Tail latency on a tuned host (OSFF-3 #2) — see the scoping in the OSFF-3 handoff STATUS:
+  a dedicated-VM engine-bench rerun is feasible on GCP; ef_vi is not acquirable there and
+  DPDK needs the commercial Aeron premium media driver, so the talk keeps the honest line —
+  nanoseconds in the engine, microseconds wire-to-wire in software, nanoseconds only in silicon.

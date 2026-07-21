@@ -29,6 +29,15 @@ public final class ClusterNodeConfig {
     public static final int MEMBER_FACING_PORT_OFFSET = 3;
     public static final int LOG_PORT_OFFSET = 4;
     public static final int TRANSFER_PORT_OFFSET = 5;
+    // Fixed ports for the channels Aeron's sample config leaves ephemeral (`:0`). An ephemeral
+    // bind escapes any port-scoped NetworkPolicy: empty-disk join replicates the log/recordings
+    // onto these channels, and a policy that only admits the 21800+ block silently drops them —
+    // the joiner then loops INIT->CANVASS->FOLLOWER_LOG_REPLICATION at applied=-1 forever (the
+    // wedge previously misattributed to an Aeron 1.51 defect, T-LOB16). PVC-preserving restarts
+    // hid it because FOLLOWER_CATCHUP uses the in-block transfer port.
+    public static final int ARCHIVE_RESPONSE_PORT_OFFSET = 6;
+    public static final int ARCHIVE_REPLICATION_PORT_OFFSET = 7;
+    public static final int CM_REPLICATION_PORT_OFFSET = 8;
 
     /** Everything needed to launch one member: pass the first three to
      *  {@code ClusteredMediaDriver.launch} and the last to {@code ClusteredServiceContainer.launch}. */
@@ -90,9 +99,9 @@ public final class ClusterNodeConfig {
             .archiveDir(archiveDir)
             .controlChannel("aeron:udp?endpoint=" + host + ":" + port(memberId, portBase, ARCHIVE_CONTROL_PORT_OFFSET))
             .archiveClientContext(new AeronArchive.Context()
-                .controlResponseChannel("aeron:udp?endpoint=" + host + ":0"))
+                .controlResponseChannel("aeron:udp?endpoint=" + host + ":" + port(memberId, portBase, ARCHIVE_RESPONSE_PORT_OFFSET)))
             .localControlChannel("aeron:ipc?term-length=64k")
-            .replicationChannel("aeron:udp?endpoint=" + host + ":0")
+            .replicationChannel("aeron:udp?endpoint=" + host + ":" + port(memberId, portBase, ARCHIVE_REPLICATION_PORT_OFFSET))
             .recordingEventsEnabled(false)
             .threadingMode(ArchiveThreadingMode.SHARED)
             .deleteArchiveOnStart(cleanStart);
@@ -111,7 +120,7 @@ public final class ClusterNodeConfig {
             .clusterDir(clusterDir)
             .archiveContext(localArchiveClient.clone())
             .serviceCount(1)
-            .replicationChannel("aeron:udp?endpoint=" + host + ":0")
+            .replicationChannel("aeron:udp?endpoint=" + host + ":" + port(memberId, portBase, CM_REPLICATION_PORT_OFFSET))
             .deleteDirOnStart(cleanStart);
         // Failover speed lever (NFR-AC03): the Aeron defaults (leaderHeartbeatTimeout 10s) put
         // failover detection at ~10-12s on ANY hardware — confirmed on GKE. These make detection
