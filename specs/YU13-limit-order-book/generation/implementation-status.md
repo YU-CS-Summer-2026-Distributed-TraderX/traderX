@@ -160,6 +160,67 @@ harness rotates tickers per order while alternating sides by index, so with an E
 each symbol receives only one side and nothing ever crosses on a real book. Use an odd ticker
 count.
 
+## Wire-to-wire REST latency on GKE (2026-07-21)
+
+Client-observed round trip for ONE order through the synchronous REST path — HTTP in, gateway
+forwards over Aeron ingress, Raft commits, the service applies, committed egress ack, HTTP out.
+Measured in-cluster at CONSTANT ARRIVAL RATE with latency taken from the INTENDED send time, so
+a stalled system cannot hide its own stalls (coordinated omission). Self-crossing single account
+so the flow keeps booking rather than drifting into POSITION_LIMIT rejects.
+
+| Offered rate | p50 | p90 | p99 | p99.9 | max | failed |
+|---|---|---|---|---|---|---|
+| 100/s | **1.42 ms** | 2.33 ms | **8.55 ms** | **13.97 ms** | 18.5 ms | 0 |
+| 250/s | 5.78 ms | 9.31 ms | 13.74 ms | 19.94 ms | 32.3 ms | 0 |
+| 500/s | 6.48 ms | 14.81 ms | 33.05 ms | 53.80 ms | 108 ms | 0 |
+| 1000/s | collapse (multi-second queueing) | | | | | 7,444 |
+
+Quote the 100/s row: it is the unsaturated latency. The synchronous per-order path saturates
+between 500/s and 1000/s because each gateway serializes offer→commit→ack on its owner thread —
+which is exactly why the throughput path is a pipelined batch endpoint (75k booked/s) and the
+per-order path is not. Same cluster, two different contracts; do not mix the numbers.
+
+**A 40 ms measurement trap found and fixed here.** The first readings showed p50 ≈ 43 ms flat
+regardless of rate. `/ready` — which never touches the cluster — measured the same 42.6 ms, so it
+was not the matching path at all: the JDK `com.sun.net.httpserver` writes response headers and
+body as two small segments with Nagle enabled, and the client's delayed-ACK timer then adds its
+~40 ms. Fresh sockets (no reuse) dropped it to 2.8 ms, confirming it. Setting
+`-Dsun.net.httpserver.nodelay=true` on the gateway took `/ready` from 42.6 ms to **2.50 ms** with
+keep-alive. This was taxing every keep-alive REST client — including the UI — and any latency
+number taken before this fix was ~97% HTTP artifact. The flag belongs in the gateway manifest.
+
+## Failover on the crossing engine, node-clock precise (2026-07-21)
+
+This closes the YU12 open issue `HANDOFF-issue-yu12-failover-measurement.md`, which recorded that
+a clean pod-kill number had never actually been taken (the planned kill did not execute that
+session). Measured its way: a timestamped probe at one order / 200 ms, reporting FAILED REQUEST
+COUNT and the gap between last-success-before and first-success-after — not "first-fail to
+last-fail", which overstates an outage that is really a few scattered failures.
+
+Three clean leader kills (`--grace-period=0 --force`, leader confirmed by role before each kill):
+
+| Round | Killed | Failed / total | Success rate | Client gap |
+|---|---|---|---|---|
+| 1 | m1 | 2 / 299 | 99.33% | **602 ms** |
+| 2 | m2 | 2 / 224 | 99.11% | **602 ms** |
+| 3 | m1 | 2 / 224 | 99.11% | **802 ms** |
+
+**Client-facing failover is ~600–800 ms and costs 2 in-flight requests** — consistent with the
+parent state's 653–716 ms, so the crossing book did not regress failover.
+
+Two things this measurement taught, both worth keeping:
+
+- **Failover under saturation is a different number.** Repeating the kill under a 30–60k orders/s
+  batch flood gives ~8–12 s of zero/degraded throughput, because all three gateways lose their
+  cluster session at once and must reconnect while a large backlog drains. Both numbers are real;
+  they answer different questions. Quote ~600 ms for "what does a trader see when a node dies",
+  and the flood figure only with its context.
+- **`FIRST-APPLY` is not a client-facing metric.** Measuring kill → the new leader's first applied
+  message gave ~12.5 s under flood and ~10 s on an idle cluster — because it cannot fire until
+  some client message actually reaches the new leader. It measures cluster liveness, not service
+  restoration. Likewise, kill → `ROLE-CHANGE(LEADER)` measured ~2.6 s, but ~2 s of that is the pod
+  actually terminating after `kubectl delete` returns, not Raft election.
+
 ## HA recovery proof on the crossing engine (T-LOB14)
 
 Full evidence in `docs/handoff/PROOF-yu13-kind-ha-crossing-book.md`. Fixture: ten asks @150.050

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# failover-nodeclock.sh — node-clock-precise failover measurement for the Aeron Cluster.
+#
+# Why node-clock: timing from the laptop that issues `kubectl delete` folds in kubectl round
+# trip, API-server scheduling and laptop/cluster clock skew — tens to hundreds of ms of error on
+# a number whose whole point is being sub-second. Both stamps here come from the CLUSTER's clocks:
+#   t0 = `date +%s%3N` run INSIDE a pod immediately before the kill
+#   t1 = the new leader's own "ROLE-CHANGE role=LEADER atMs=" / "FIRST-APPLY atMs=" stdout stamps
+#
+# Two numbers are reported and they mean different things:
+#   electionMs  = t0 -> ROLE-CHANGE(LEADER).  Raft elected a new leader.
+#   servingMs   = t0 -> FIRST-APPLY.          The new leader APPLIED its first committed message,
+#                                             i.e. the system is actually serving again.
+# servingMs is the system-facing SLO. It is only meaningful with load in flight: FIRST-APPLY
+# cannot fire until a client message reaches the new leader, so on an idle cluster it measures
+# "time until someone happened to send something" (observed ~10s idle). ALWAYS run with load.
+#
+# Usage: CONTEXT=<kctx> NS=traderx ROUNDS=3 bash failover-nodeclock.sh
+set -uo pipefail
+CTX="${CONTEXT:?set CONTEXT}"; NS="${NS:-traderx}"; ROUNDS="${ROUNDS:-3}"
+kc() { kubectl --context "$CTX" -n "$NS" --request-timeout=60s "$@"; }
+
+role() { kc exec order-matcher-cluster-"$1" -- sh -c 'curl -s -m 5 localhost:8080/metrics' 2>/dev/null \
+         | awk 'index($1,"traderx_cluster_role{")==1{print $2}'; }
+leader() { for i in 0 1 2; do [ "$(role $i)" = "1" ] && echo "$i" && return; done; }
+applied() { kc exec order-matcher-cluster-"$1" -- sh -c 'curl -s -m 5 localhost:8080/metrics' 2>/dev/null \
+            | awk 'index($1,"traderx_cluster_applied{")==1{print $2}'; }
+
+# Full log, not --tail=N: members emit heavy ELECTION-PHASE output and a small tail window
+# silently drops the very stamps we are looking for (this cost a whole measurement run).
+stamp() { # <member> <marker> <t0> -> latest atMs >= t0
+  kc logs order-matcher-cluster-"$1" 2>/dev/null \
+    | awk -v m="$2" -v t0="$3" '$0 ~ m {for(i=1;i<=NF;i++) if ($i ~ /^atMs=/) {split($i,a,"="); if (a[2]+0>=t0+0) v=a[2]}} END{if(v!="")print v}'
+}
+
+for r in $(seq 1 "$ROUNDS"); do
+  L=$(leader)
+  if [ -z "$L" ]; then echo "round $r: no leader yet, waiting"; sleep 15; continue; fi
+
+  # Confirm load is actually flowing, otherwise servingMs is meaningless.
+  A1=$(applied "$L"); sleep 2; A2=$(applied "$L")
+  if [ -z "$A1" ] || [ "$A2" = "$A1" ]; then
+    echo "round $r: WARNING no traffic is being applied (applied stuck at ${A1:-?}) — start load first"; fi
+
+  T0=$(kc exec bench-runner -- date +%s%3N 2>/dev/null | tr -d '\r')
+  kc delete pod order-matcher-cluster-"$L" --grace-period=0 --force >/dev/null 2>&1
+
+  RC=""; FA=""; NEW=""
+  for _ in $(seq 1 90); do
+    for i in 0 1 2; do
+      [ "$i" = "$L" ] && continue
+      [ -z "$RC" ] && RC=$(stamp "$i" "ROLE-CHANGE role=LEADER" "$T0") && [ -n "$RC" ] && NEW="$i"
+      if [ -n "$NEW" ]; then f=$(stamp "$NEW" "FIRST-APPLY" "$T0"); [ -n "$f" ] && FA="$f"; fi
+    done
+    [ -n "$FA" ] && break
+    sleep 0.5
+  done
+
+  if [ -n "$FA" ]; then
+    echo "FAILOVER round=$r killed=m$L promoted=m$NEW electionMs=$((RC - T0)) servingMs=$((FA - T0))"
+  elif [ -n "$RC" ]; then
+    echo "FAILOVER round=$r killed=m$L promoted=m$NEW electionMs=$((RC - T0)) servingMs=NO-FIRST-APPLY(no load?)"
+  else
+    echo "FAILOVER round=$r killed=m$L no promotion observed within 45s"
+  fi
+
+  until [ "$(kc get pod order-matcher-cluster-"$L" --no-headers 2>/dev/null | awk '{print $2}')" = "1/1" ]; do sleep 3; done
+  sleep 20
+done
