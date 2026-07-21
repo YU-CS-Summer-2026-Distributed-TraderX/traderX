@@ -65,3 +65,24 @@ progression, so quorum and state were never at risk.
   `java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.cluster.ClusterTool /data/cluster recording-log`
   `java -cp "/opt/app/classes:/opt/app/lib/*" io.aeron.archive.ArchiveTool /data/archive describe`
   Degenerate (0,0) TERM entries + a local log recording starting mid-stream = confirmed.
+
+## ADDENDUM 2026-07-21 (YU13/OSFF-3 retest): a SECOND, unrelated wedge was hiding under this name
+
+The kind reproductions attributed to this issue (T-LOB14 "empty-disk rejoin blocked",
+T-LOB16) were a DIFFERENT defect: **the kind NetworkPolicy (UDP 21800–22200 only) silently
+dropping archive/log replication traffic**, because `ClusterNodeConfig` left the archive
+client controlResponseChannel, Archive replicationChannel, and ConsensusModule
+replicationChannel on ephemeral ports (`endpoint=host:0`, the Aeron sample default). The
+joiner loops INIT→CANVASS→FOLLOWER_LOG_REPLICATION at `applied=-1` with **no exception
+anywhere** — while THIS issue's signature is an explicit `ArchiveException: requested replay
+start position=0 …` storm. Deleting the policy un-wedged a stuck joiner in <10 s; pinning
+the three channels to port offsets 6/7/8 (in-block, in-policy) fixed it properly —
+empty-disk rejoin into an aged cluster now converges in <30 s on kind WITH the policy
+enforced (227/0 tests; GKE redeployed on the fixed image, failover unchanged:
+124/348/223 ms rotated kills).
+
+**Triage split:** exception storm + degenerate (0,0) TERM entries → this issue (real Aeron
+1.51 behavior at heavy term churn; remediation unchanged). Silent replication loop, no
+exception → check replication-port reachability (NetworkPolicy/firewall vs ephemeral binds)
+FIRST. GKE never applied the policy to cluster pods, which is why the silent variant never
+appeared there. Fix commit in both the YU12 and YU13 lanes (`ClusterNodeConfig.java`).
