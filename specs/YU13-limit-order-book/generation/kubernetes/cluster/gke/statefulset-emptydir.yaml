@@ -31,7 +31,7 @@ spec:
         app: order-matcher-cluster
     spec:
       nodeSelector:
-        cloud.google.com/gke-nodepool: blp-c3-pool
+        cloud.google.com/gke-nodepool: blp-c4d-tuned-pool
       tolerations:
         - key: workload
           operator: Equal
@@ -40,7 +40,8 @@ spec:
       terminationGracePeriodSeconds: 10
       affinity:
         podAntiAffinity:
-          # required now that the pool guarantees one node per member (3x c3-standard-4):
+          # required now that the pool guarantees one node per member (3x c4d-standard-8,
+          # threadsPerCore=1, four visible physical cores):
           # a node fault can take at most ONE member (true node-fault tolerance, joint plan Ph2)
           requiredDuringSchedulingIgnoredDuringExecution:
             - labelSelector:
@@ -153,11 +154,12 @@ spec:
             timeoutSeconds: 5
             failureThreshold: 20
           # Guaranteed QoS (joint plan Phase 2): request==limit so the consensus/driver duty
-          # cycle never rides CFS burst credit; 3 CPU leaves ~0.9 for daemonsets on c3-standard-4.
+          # cycle never rides CFS burst credit; CPU Manager static pins three exclusive CPUs and
+          # leaves ~0.9 allocatable CPU for kube/system work on each SMT-disabled C4D node.
           resources:
             requests:
               cpu: "3"
-              # 4Gi: the member is alone on a 16GB c3 node. 2Gi died two ways in the 2026-07-21
+              # 4Gi: the member is alone on a 31GB C4D node. 2Gi died two ways in the 2026-07-21
               # 148k/s soak: the orderRef index array OOM'd a 512m heap at ~33M cumulative
               # orders (engine bug, see implementation-status "sweep postmortem"), and a 201MB
               # replay publication could not fit in the 512Mi shm during the ensuing catch-up.
