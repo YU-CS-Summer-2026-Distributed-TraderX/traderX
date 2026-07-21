@@ -396,9 +396,30 @@ connectivity:
 - Never present FIRST-APPLY or ROLE-CHANGE-derived times as client-facing (they measure cluster
   liveness and pod teardown, not service restoration).
 
+## Engine tail on a dedicated pinned host (OSFF-3 #2, 2026-07-21)
+
+`MatchLatencyBenchmarkTest` rerun on a dedicated, otherwise-idle GCE `c3-standard-8`
+(Temurin 21, `taskset -c 2-7`, no other load), two runs, reproducible:
+
+| Op | p50 | p99 | p99.9 | p99.99 | max |
+|---|---|---|---|---|---|
+| resting insert | 352 ns | ~500 ns | **~665 ns** | ~8–10 µs | 24–107 µs |
+| limit cross | 870 ns | ~1.35 µs | **~4.4 µs** | **~12 µs** | 20–55 µs |
+| market order | 946 ns | ~1.5 µs | ~4.5 µs | ~12.6 µs | ~2.6 ms (one op — see note) |
+
+Read against the shared-laptop numbers above: **the tail collapses ~7–13×** (cross p99.9
+15.4 µs → 4.4 µs, p99.99 83.6 µs → 12 µs, max 272 µs → 20–55 µs) while p50 roughly doubles —
+the laptop's M-series core is simply faster per-op than the c3 Xeon vCPU, but the shared-host
+scheduling/JIT noise WAS the tail, exactly as claimed. Honest slide line: the p99.9+ tail is
+the host, not the book; a quiet pinned core buys an order of magnitude in the tail before any
+exotic tuning. One ~2.6 ms outlier op on the market path reproduces in both runs (1 in 250k, a
+JVM safepoint/GC event; p99.99 stays ~12.6 µs) — quote percentiles, not max. Next rungs if ever
+needed, in ROI order: Epsilon on the bench JVM, `isolcpus`/`nohz_full` (kernel cmdline on a
+dedicated VM), then AOT. Kernel-bypass wire-to-wire stays literature-cited: no ef_vi on GCP,
+and Aeron's ef_vi/DPDK media driver is the commercial premium tier.
+
 ## Open
 
-- Tail latency on a tuned host (OSFF-3 #2) — see the scoping in the OSFF-3 handoff STATUS:
-  a dedicated-VM engine-bench rerun is feasible on GCP; ef_vi is not acquirable there and
-  DPDK needs the commercial Aeron premium media driver, so the talk keeps the honest line —
-  nanoseconds in the engine, microseconds wire-to-wire in software, nanoseconds only in silicon.
+- Nothing blocking the talk. Deferred: async snapshot off the hot thread (no measurement has
+  pointed at it), Epsilon/isolcpus/AOT rungs of the tail ladder above, GKE overlay could add a
+  cluster NetworkPolicy now that replication ports are pinned (optional hardening).
