@@ -69,7 +69,7 @@ spec:
             # which has no endpoints in this state — every 10s sweep was a ConnectException.
             # Back it off to daily until the cluster gateway exposes a blotter surface
             # (binds recon.poll.interval-ms via Spring relaxed env binding).
-            - name: RECON_POLL_INTERVALMS
+            - name: RECON_POLL_INTERVAL_MS
               value: "86400000"
             - name: CORS_ALLOWED_ORIGINS
               value: "http://localhost:8080,http://127.0.0.1:8080"
