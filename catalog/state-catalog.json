@@ -671,6 +671,29 @@
         "branch": "code/generated-state-YU12-aeron-cluster",
         "tag": "generated/YU12-aeron-cluster/v1"
       }
+    },
+    {
+      "id": "YU13-limit-order-book",
+      "title": "Crossing Limit-Order Book",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU13-limit-order-book",
+      "previous": [
+        "YU12-aeron-cluster"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU13-limit-order-book",
+        "runtime": "inherits YU12-aeron-cluster runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU13-limit-order-book",
+        "tag": "generated/YU13-limit-order-book/v1"
+      }
     }
   ]
 }
