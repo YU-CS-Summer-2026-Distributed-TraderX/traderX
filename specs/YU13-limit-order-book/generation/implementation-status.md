@@ -418,8 +418,76 @@ needed, in ROI order: Epsilon on the bench JVM, `isolcpus`/`nohz_full` (kernel c
 dedicated VM), then AOT. Kernel-bypass wire-to-wire stays literature-cited: no ef_vi on GCP,
 and Aeron's ef_vi/DPDK media driver is the commercial premium tier.
 
+## Throughput sweep + in-process benchmark (OSFF-3 follow-up, 2026-07-21 EOD)
+
+**New headline: 146–165k booked/s** (leader trade-counter, 60 s runs, conc 48 × batch 200,
+fresh epoch, gateways spread one-per-node) — reproduced four times: 146,500 / 148,031 /
+164,949 / 163,755. **This roughly doubles T-LOB15's 75k and reaches the never-reproduced
+"135k burst" territory as a measured sustained-for-a-minute figure.** The enabling change is
+topology, not code: the gateway Deployment had no anti-affinity, and when the scheduler packs
+all three gateways onto one 2-vCPU node (observed directly today) the tier tops out near the
+old ~75k. `podAntiAffinity` added to the gke gateway manifest — note `preferred` does NOT
+guarantee spread through a rolling update (all three re-packed onto one node; had to recycle
+pods sequentially to spread them). Batch size is a cliff, not a dial: batch 200 is the knee,
+and batch ≥ 500 collapses outright (owner-thread queueing pushes whole batches past the 30 s
+client timeout — this also finally explains the unexplained 2026-07-20 "batch=1000 gave ~2k/s").
+
+**In-process journaled benchmark re-run on the crossing engine** (harness updated in the YU13
+layer: the auto-fill-era all-BUY generator rests forever on a real book — sides now alternate
+so every pair crosses; driver test `JournaledBlpBenchmarkDriverTest`, env-gated
+`RUN_BLP_BENCH=1`): **1,134,658 orders/s sustained on a GKE-class c3 VM** (1,561,764 on the
+laptop — faster core), output ring ~3.8–5.3M events/s. Two implications: the engine tier has
+~7× headroom over even the new 165k REST figure, and **a remembered "~6M/s" almost certainly
+refers to output EVENTS/s** (each order fans out to ~3–6 output events), not orders/s.
+
+### Sweep postmortem — the leak that caps sustained throughput (REAL BUG, fix identified)
+
+The first soak (~33M cumulative orders) killed the cluster, and the failure chain is worth
+recording precisely:
+
+1. **`MatchingEngine.ordersByRef` grows with cumulative order count, not live orders.** It is
+   a flat array indexed by orderRef, doubled to cover the highest ref ever issued and never
+   shrunk; terminal eviction nulls entries but the array itself is ~4 B/slot × total orders.
+   At ~33M orders (~130 MB + a doubling copy) it OOM'd the members' then-512m heap on the
+   LEADER mid-apply. Inherited from the 009b bounded-retention design (the RETENTION is
+   bounded; the INDEX never was) — it affects the whole lineage, not just YU13. It also costs
+   throughput before it kills: run 3 of the confirmation set decayed to 109k booked/s as the
+   array (and GC pressure) grew. **Fix identified:** replace with an `Int2ObjectHashMap`
+   bounded by open+retained orders (snapshot iteration must sort refs for determinism); needs
+   the full gate suite + HA re-proof — a session of its own, filed as follow-up.
+2. **The OOM cascaded into a wedge via undersized /dev/shm**: the recovering member's replay
+   publication needed a 201 MB log buffer against 178 MB usable shm (512Mi limit).
+3. Mitigations applied + deployed: member heap 512m → 1536m, shm 512Mi → 1Gi, pod memory
+   2Gi → 4Gi (each member is alone on a 16 GB node). This moves the wall ~4× out
+   (~100M+ orders/epoch); it does not remove it — the index fix does.
+4. Under the ensuing apply backlog, price ticks applied late and the risk gate correctly
+   fail-closed with PRICE_STALE rejections (~5.6M orders) — the 15c3-5 gate working as
+   designed under overload, worth saying on stage.
+
+### Where the next throughput lives (gateway tier analysis, ranked)
+
+The engine does 1.13M orders/s in-process on this hardware; REST books 165k. The gap is the
+gateway tier, whose structure is: 64 HTTP threads (JSON parse) feeding ONE owner thread per
+gateway that does resolve→encode→offer→pollEgress for every order, with committed acks
+returning on a 64k-term egress channel that DROPS under load (a lossy batch then burns its
+full ~10 s ack budget — the batch-500 cliff and the single-stream batch-200 stalls are both
+this).
+
+1. **More gateways × guaranteed spread** (done for 3; scale replicas with nodes) — measured
+   2× today; scales roughly linearly until members/consensus saturate.
+2. **Fix the lossy-batch full-budget wait**: complete a batch on the ack high-water mark
+   (appliedSeq ≥ last offered) instead of requiring every individual ack — removes the batch
+   cliff, unlocks batch 500–1000 (fewer HTTP round-trips per order).
+3. **Raise the egress/ingress term buffers** (64k → 1–4M) — directly cuts ack drops, the root
+   of both stall modes.
+4. **Binary/SBE ingress or leaner JSON** (Jackson tree-parse per order on HTTP threads) —
+   secondary; CPU is currently gateway-node-bound before parse cost dominates.
+5. **Bypass HTTP for machine flow** (Aeron ingress client / the FIX gateway) — the REST hop
+   is a convenience contract, not the product's fast path.
+
 ## Open
 
-- Nothing blocking the talk. Deferred: async snapshot off the hot thread (no measurement has
-  pointed at it), Epsilon/isolcpus/AOT rungs of the tail ladder above, GKE overlay could add a
-  cluster NetworkPolicy now that replication ports are pinned (optional hardening).
+- **The `ordersByRef` unbounded-index bug** (above) — the one real blocker on calling 165k
+  "sustained" unqualified; fix identified, gate-heavy, do in a dedicated session.
+- Deferred: async snapshot off the hot thread (still nothing points at it),
+  Epsilon/isolcpus/AOT tail rungs, GKE cluster NetworkPolicy (safe now ports are pinned).

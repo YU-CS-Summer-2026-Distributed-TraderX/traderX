@@ -118,7 +118,7 @@ spec:
             - name: TRADE_BRIDGE_NATS_URL
               value: "nats://nats-broker:4222"
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              value: "-Xms512m -Xmx1536m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
@@ -157,10 +157,14 @@ spec:
           resources:
             requests:
               cpu: "3"
-              memory: 2Gi
+              # 4Gi: the member is alone on a 16GB c3 node. 2Gi died two ways in the 2026-07-21
+              # 148k/s soak: the orderRef index array OOM'd a 512m heap at ~33M cumulative
+              # orders (engine bug, see implementation-status "sweep postmortem"), and a 201MB
+              # replay publication could not fit in the 512Mi shm during the ensuing catch-up.
+              memory: 4Gi
             limits:
               cpu: "3"
-              memory: 2Gi
+              memory: 4Gi
           volumeMounts:
             - name: data
               mountPath: /data
@@ -170,7 +174,7 @@ spec:
         - name: shm
           emptyDir:
             medium: Memory
-            sizeLimit: 512Mi
+            sizeLimit: 1Gi
         - name: data
           emptyDir:
             # The Aeron consensus log + archive live here. Under high-throughput bench load the
