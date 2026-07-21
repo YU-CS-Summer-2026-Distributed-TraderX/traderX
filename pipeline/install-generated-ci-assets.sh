@@ -240,6 +240,9 @@ case "${STATE_ID}" in
   YU12-aeron-cluster)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster")
     ;;
+  YU13-limit-order-book)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster" "YU13-limit-order-book")
+    ;;
 esac
 
 state_allows_dir() {
