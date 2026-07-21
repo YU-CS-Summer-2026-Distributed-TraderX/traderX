@@ -48,8 +48,10 @@
 
 ## Carried forward
 
-- [ ] T-LOB15 Like-for-like GKE throughput run against the 25,149 NFR-AC02 bar on the crossing
-  engine (the kind number is environment-bound, not engine-bound).
+- [x] T-LOB15 Like-for-like GKE throughput run against the 25,149 NFR-AC02 bar on the crossing
+  engine. Done 2026-07-21: 62,333 booked trades/s cold, 75,440 warm (conc 48 x batch 200, zero
+  failures) on `blp-c3-pool` — 2.5-3x the bar. Book returns to zero open orders after each run;
+  all three members identical after ~4.5M trades. See `generation/implementation-status.md`.
 - [ ] T-LOB16 Empty-disk rejoin into an already-advanced cluster is blocked by the inherited
   Aeron 1.51 term-history defect (`ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md`), verified
   independent of the crossing book. Needs the Aeron-level fix.

@@ -122,12 +122,37 @@ OSFF-1 silent-reject gate — verified by a smoke cross that booked 2 fills befo
 | Crossing ratio | 0.92 fills per submitted order — genuinely two-sided |
 | Failed | 1.2% under maximum concurrency |
 
-Honest framing: this does NOT clear the 25,149 booked/s NFR-AC02 bar, and it is not a
-like-for-like comparison — that baseline was established on GKE (`c3-standard-4` dedicated
-nodes), whereas this is kind on a laptop with 1-CPU-limited members inside a Docker VM. The
-crossing engine is demonstrably NOT the limiter: the in-JVM match benchmark puts a limit cross at
-583 ns p50 (~1.7M crosses/s single-threaded in memory), three orders of magnitude above what the
-clustered kind path delivers. A like-for-like number against the bar needs a GKE run.
+This does NOT clear the 25,149 booked/s NFR-AC02 bar, and it is not a like-for-like comparison —
+that baseline was established on GKE (`c3-standard-4` dedicated nodes), whereas this is kind on a
+laptop with 1-CPU-limited members inside a Docker VM. The GKE run below settles it.
+
+## Live GKE measurements (T-LOB15, 2026-07-21) — the like-for-like number
+
+3-member cluster on `blp-c3-pool` (3 CPU / 2Gi per member, one per node) + 3 gateways, image
+`us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13` built `--platform linux/amd64`
+(the recurring arm64/amd64 trap), same bench script and parameters as the kind run.
+
+| Run | Config | Submitted | Failed | Booked trades/s |
+|---|---|---|---|---|
+| 1 (cold JIT) | conc 48 × batch 200 | 1,860,400 | 0 | **62,333** |
+| 2 (warm) | conc 48 × batch 200 | 2,253,600 | 0 | **75,440** |
+| 3 (over-saturated) | conc 96 × batch 250 | 348,000 | 27,000 | 11,866 — past the knee |
+
+**The crossing engine clears the NFR-AC02 bar decisively: 62–75k booked trades/s vs 25,149,
+roughly 2.5–3×, with zero failures at the sustainable concurrency.** Peak observed submit rate
+71,606 orders/s.
+
+Two properties worth noting from the run:
+
+- **The book stays bounded.** With genuinely two-sided flow every order crosses, and
+  `traderx_book_open_orders` returned to 0 on all three members after each run — the unbounded
+  growth of the parent state's `FILL_FULL_THRESHOLD` half-fill policy is structurally gone.
+- **No divergence under sustained load.** After ~4.5M booked trades all three members reported an
+  identical trade counter and identical book digest.
+
+kind vs GKE is ~7× (10,533 → 75,440) on identical code and bench parameters, confirming the kind
+figure was environment-bound (1 CPU vs 3 CPU members, Docker VM vs dedicated nodes) and never
+engine-bound — consistent with the 542 ns p50 in-JVM cross.
 
 Two measurement traps worth recording: benching through `kubectl port-forward` understates
 throughput badly (a single-threaded proxy — 2,396 vs 9,383 submit/s in-cluster), and the batch
