@@ -45,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 public final class ClusterGatewayMain implements OrderSubmitter {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long ACK_TIMEOUT_MS = 10_000;
+    private static final long BATCH_FENCE_RETRY_MS = 5;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
@@ -77,6 +78,15 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private boolean batchActive;
     private int batchOutstanding;
     private int batchAccepted;
+    // A sequenced cancel of reserved orderRef=0 is offered after the final batch order. New-order
+    // batches can never emit KIND_ORDER_NOT_FOUND for ref 0, so that ack is an unambiguous fence
+    // whose appliedSeq is beyond every earlier order on this session. Repeated cancel fences are
+    // side-effect-free and cover a dropped fence ack without touching reference or risk state.
+    private boolean batchFenceAwaiting;
+    private long batchFenceAppliedSeq = -1;
+    private volatile long batchFenceOffers;
+    private volatile long batchHighWaterCompletions;
+    private volatile long batchHighWaterTimeouts;
     // Bench metrics: every committed fill-kind egress ack is a booked order (run-gke-bench.sh
     // reads traderx_order_events_total{event="fill"}). Written on the owner thread, read racily
     // by the /metrics handler — plain volatile longs.
@@ -231,6 +241,11 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             lastSymbolAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
         } else if (OutputEvent.isOrderLifecycleKind(kind) || kind == OutputEvent.KIND_ORDER_NOT_FOUND) {
+            if (batchActive && batchFenceAwaiting && kind == OutputEvent.KIND_ORDER_NOT_FOUND
+                    && buffer.getInt(offset + 8) == 0) {
+                batchFenceAppliedSeq = Math.max(batchFenceAppliedSeq, buffer.getLong(offset));
+                return;
+            }
             // Resting-class byte (FR-LOB07): 1 = counterparty resting-order update from someone
             // else's cross — never the direct response to an offer, so it must not complete
             // lastOrderAck or decrement batch accounting.
@@ -384,6 +399,8 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 batchActive = true;
                 batchOutstanding = 0;
                 batchAccepted = 0;
+                batchFenceAwaiting = false;
+                batchFenceAppliedSeq = -1;
                 try {
                     for (int n = 0; n < total; n++) {
                         final int securityId = resolveSecurityId(tickers[n]);
@@ -409,11 +426,43 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                         batchOutstanding++;
                         client.pollEgress();
                     }
+                    if (batchOutstanding > 0) {
+                        event.type = InputEvent.TYPE_ORDER_CANCEL;
+                        event.side = 0;
+                        event.orderRef = 0;
+                        event.accountId = 0;
+                        event.securityId = 0;
+                        event.qty = 0;
+                        event.limitPx = 0;
+                        event.priceTicks = 0;
+                        event.eventTimeMillis = 0;
+                        codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                        batchFenceAwaiting = true;
+                        long nextFenceAt = 0;
+                        while (System.currentTimeMillis() < deadline) {
+                            client.pollEgress();
+                            if (batchFenceAppliedSeq >= 0) {
+                                batchHighWaterCompletions++;
+                                return batchAccepted;
+                            }
+                            final long now = System.currentTimeMillis();
+                            if (now >= nextFenceAt) {
+                                if (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) > 0) {
+                                    batchFenceOffers++;
+                                    nextFenceAt = now + BATCH_FENCE_RETRY_MS;
+                                }
+                            }
+                            Thread.yield();
+                        }
+                        batchHighWaterTimeouts++;
+                        return batchAccepted;
+                    }
                     while (batchOutstanding > 0 && System.currentTimeMillis() < deadline) {
                         client.pollEgress();
                     }
                     return batchAccepted;
                 } finally {
+                    batchFenceAwaiting = false;
                     batchActive = false;
                 }
             }, batchBudgetMs + 2_000);
@@ -551,7 +600,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
             + "traderx_market_trades_total{outcome=\"booked\"} " + marketTradesBooked + "\n"
-            + "traderx_market_trades_total{outcome=\"rejected\"} " + marketTradesRejected + "\n";
+            + "traderx_market_trades_total{outcome=\"rejected\"} " + marketTradesRejected + "\n"
+            + "traderx_gateway_batch_fences_total{state=\"offered\"} " + batchFenceOffers + "\n"
+            + "traderx_gateway_batch_high_water_total{outcome=\"completed\"} "
+                + batchHighWaterCompletions + "\n"
+            + "traderx_gateway_batch_high_water_total{outcome=\"timeout\"} "
+                + batchHighWaterTimeouts + "\n";
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
