@@ -7,6 +7,7 @@ import com.sun.net.httpserver.HttpServer;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
 import finos.traderx.ordermatcher.lmax.InputEvent;
 import finos.traderx.ordermatcher.lmax.OutputEvent;
+import finos.traderx.ordermatcher.risk.RiskReason;
 import io.aeron.cluster.client.AeronCluster;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
@@ -62,6 +63,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
 
     // Owner-thread-only ack scratch (set by the egress listener between poll calls).
     private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq}
+    private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
     // Pipelined-batch ack accounting (owner thread only; pollEgress runs on the owner thread).
@@ -77,6 +79,11 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     // by the /metrics handler — plain volatile longs.
     private volatile long fillEvents;
     private volatile long acceptedOrders;
+    // Market-trade (/trades, the UI create-order path) outcome counters — the market-trade path
+    // emits KIND_TRADE_BOOKED/REJECTED, neither of which the order-lifecycle metrics above count,
+    // so without these a stage mis-seed books nothing with no visible signal. Owner-thread writes.
+    private volatile long marketTradesBooked;
+    private volatile long marketTradesRejected;
 
     public static void main(final String[] args) throws Exception {
         new ClusterGatewayMain().run();
@@ -220,6 +227,20 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         // independent of submit correlation — this is the bench's booked/s numerator.
         if (kind == OutputEvent.KIND_ORDER_FILLED || kind == OutputEvent.KIND_ORDER_PARTIALLY_FILLED) {
             fillEvents++;
+        }
+        // Market-trade decision (/trades): KIND_TRADE_BOOKED (fresh accept) or KIND_TRADE_ACCEPTED
+        // (idempotent replay) = booked; KIND_TRADE_REJECTED carries the RiskReason ordinal at 21.
+        // handleTrade offers with lastTradeAck=null, so the first decision after its offer wins.
+        if (kind == OutputEvent.KIND_TRADE_BOOKED || kind == OutputEvent.KIND_TRADE_ACCEPTED
+                || kind == OutputEvent.KIND_TRADE_REJECTED) {
+            if (lastTradeAck == null) {
+                lastTradeAck = new long[] {kind, buffer.getByte(offset + 21)};
+            }
+            if (kind == OutputEvent.KIND_TRADE_REJECTED) {
+                marketTradesRejected++;
+            } else {
+                marketTradesBooked++;
+            }
         }
     }
 
@@ -381,9 +402,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     /** Market trade from the trade ticket (FR-09B08), the path the web UI's create-order button
      *  takes: trade-service validates ticker + account, then POSTs the TradeOrder here. The engine
      *  books it at the security's last market price with no order and no matching, so the payload
-     *  carries no price. Fire-and-forget by contract — trade-service does not block on the booking
-     *  result — so this acks the sequenced offer, not the fill; the booked trade reaches the DB and
-     *  the UI over the leader's NATS /trades bridge. */
+     *  carries no price. SYNCHRONOUS by design: this path is the UI create-order button ONLY (one
+     *  human click — the bench never touches it, it drives /orders + /orders/batch), so waiting for
+     *  the committed decision costs no throughput that matters and lets us answer 200 booked /
+     *  422 + RiskReason on reject. Fire-and-forget here returned a green 200 on a risk-rejected
+     *  trade and the order silently vanished — a reject leaves NO NATS/DB/UI trace (only a booked
+     *  trade rides the /trades bridge), so the 200 was the only signal and it lied. */
     private void handleTrade(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -396,10 +420,10 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
             final int qty = body.path("quantity").asInt();
-            final Boolean sequenced = onOwner(() -> {
+            final long[] ack = onOwner(() -> {
                 final int securityId = resolveSecurityId(ticker);
-                if (securityId < 0) {
-                    return false; // unresolvable ticker: never offered
+                if (securityId < 0) { // unresolvable ticker: never offered — answer as the risk gate would
+                    return new long[] {OutputEvent.KIND_TRADE_REJECTED, RiskReason.UNKNOWN_SECURITY.ordinal()};
                 }
                 event.type = InputEvent.TYPE_TRADE_NEW;
                 event.side = side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY;
@@ -410,11 +434,22 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 event.limitPx = 0L;   // market trade: the engine stamps the BLP's last tick
                 event.priceTicks = 0L; // clientOrderKey slot; ticket dedup is deferred
                 event.eventTimeMillis = 0;
-                offerBlocking();
-                return true;
+                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                lastTradeAck = null;
+                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastTradeAck != null)) {
+                    return null; // no committed decision within timeout: ambiguous, not a reject
+                }
+                return lastTradeAck;
             });
-            respond(exchange, Boolean.TRUE.equals(sequenced) ? 200 : 422,
-                "{\"sequenced\":" + sequenced + "}");
+            if (ack == null) {
+                respond(exchange, 504, "{\"error\":\"no committed decision\"}");
+                return;
+            }
+            if (ack[0] != OutputEvent.KIND_TRADE_REJECTED) {
+                respond(exchange, 200, "{\"booked\":true}");
+            } else {
+                respond(exchange, 422, "{\"booked\":false,\"reason\":\"" + RiskReason.values()[(int) ack[1]] + "\"}");
+            }
         } catch (final Exception e) {
             respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
         }
@@ -480,7 +515,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
      *  counter / elapsed). Format matches the order-matcher's traderx_order_events_total family. */
     private void handleMetrics(final HttpExchange exchange) {
         final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
-            + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n";
+            + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
+            + "traderx_market_trades_total{outcome=\"booked\"} " + marketTradesBooked + "\n"
+            + "traderx_market_trades_total{outcome=\"rejected\"} " + marketTradesRejected + "\n";
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
