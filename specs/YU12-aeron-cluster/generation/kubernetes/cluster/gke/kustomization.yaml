@@ -9,3 +9,4 @@ resources:
   - statefulset-emptydir.yaml
   - gateway.yaml
   - backup-cronjob.yaml
+  - seed-accounts-job.yaml

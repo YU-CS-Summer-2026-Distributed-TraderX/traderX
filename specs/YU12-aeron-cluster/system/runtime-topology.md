@@ -21,8 +21,9 @@
   admission against control-feed state, forwards through the Aeron Cluster client, and re-points
   on leader change without dropping counterparty sessions. **Scales out horizontally** — each
   replica holds its own cluster session + owner thread, so N replicas = N× parallel ingress; the
-  `order-matcher-gw` Service round-robins REST and pins FIX with `sessionAffinity: ClientIP`
-  (ADR-047).
+  `order-matcher-gw` Service round-robins REST (no affinity) and the separate
+  `order-matcher-gw-fix` Service pins FIX with `sessionAffinity: ClientIP` — k8s affinity is
+  per-Service, not per-port, so one combined Service would pin REST too (ADR-047).
 - **feed adapter**: consumes inherited NATS pricing/control subjects and publishes conflated
   ticks and policy updates as cluster ingress.
 - **trade-egress bridge** (`TradeNatsPublisher`, ADR-048): on the leader, republishes every booked

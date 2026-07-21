@@ -11,12 +11,31 @@ spec:
   # session + owner thread, and the cluster assigns order refs globally, so REST batches fan out
   # across replicas with no coordination — N replicas = N× parallel batch submission, the real fix
   # for sustaining ~134k without the single-owner-thread ceiling. REST is stateless per request so
-  # it round-robins freely; FIX sessions are stateful per CompID, so pin a FIX client to one replica.
-  sessionAffinity: ClientIP
+  # it round-robins freely (NO sessionAffinity here — k8s affinity is per-Service, not per-port,
+  # and ClientIP on this Service pinned all REST load from one client IP to ONE pod: 2 of 3
+  # gateways sat at 0 accepted orders, 41k via Service vs 64k direct). FIX needs stickiness, so it
+  # gets its own Service below (order-matcher-gw-fix).
   ports:
     - name: http
       port: 18110
       targetPort: 18110
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw-fix
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # FIX sessions are stateful per CompID (each replica is its own acceptor with its own sequence
+  # numbers) — a client bouncing between pods breaks the session. Keep FIX pinned here.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
     - name: fix
       port: 18130
       targetPort: 18130

@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trade-service
+  namespace: traderx
+  labels:
+    app: trade-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trade-service
+  template:
+    metadata:
+      labels:
+        app: trade-service
+    spec:
+      containers:
+        - name: trade-service
+          image: traderx/trade-service:state009
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18092
+              protocol: TCP
+          env:
+            - name: TRADING_SERVICE_PORT
+              value: "18092"
+            - name: ACCOUNT_SERVICE_HOST
+              value: "account-service"
+            - name: REFERENCE_DATA_HOST
+              value: "reference-data"
+            - name: PEOPLE_SERVICE_HOST
+              value: "people-service"
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: PRICE_SERVICE_HOST
+              value: "price-publisher"
+            # YU12: the cluster gateway Service (order-matcher-primary is the pre-cluster BLP
+            # Service and has 0 endpoints in this state — a POST there is connection-refused).
+            - name: ORDER_MATCHER_URL
+              value: "http://order-matcher-gw:18110"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "http://localhost:8080,http://127.0.0.1:8080"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+            - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_LIVENESSSTATE_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_READINESSSTATE_ENABLED
+              value: "true"
+          startupProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 18
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
