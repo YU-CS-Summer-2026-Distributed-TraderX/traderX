@@ -361,7 +361,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         for (final int ref : terminalFifo) {
             terminalSet.add(ref);
         }
-        for (int ref = 1; ref < engine.snapshotOrderIndexLength(); ref++) {
+        for (final int ref : engine.snapshotOrderRefsAscending()) {
             if (!terminalSet.contains(ref) && engine.copySnapshotOrderTuple(ref, orderTuple)) {
                 writeTuple(writer, T_ORDER, orderTuple);
             }

@@ -3,6 +3,8 @@ package finos.traderx.ordermatcher.lmax;
 import com.lmax.disruptor.EventHandler;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.RiskReason;
+import org.agrona.BitUtil;
+import org.agrona.collections.Int2ObjectHashMap;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
@@ -47,7 +49,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // (FR-IMRG12/13). Null = risk disabled (legacy construction paths and parity tests).
     private final BlpRiskState risk;
 
-    private RestingOrder[] ordersByRef;          // dense index: orderRef -> entry
+    // orderRef -> entry, bounded by open + retained-terminal orders. NOT a flat array: a
+    // ref-indexed array grows with the highest ref EVER issued (~4 B/slot x cumulative order
+    // count, never shrunk) — the unbounded index that decayed throughput and OOM'd the 33M-order
+    // soak (2026-07-21 postmortem). Presized in the constructor so it never rehashes after
+    // warmup (zero steady-state allocation, NGC-01).
+    private final Int2ObjectHashMap<RestingOrder> ordersByRef;
     private final LimitBook[] booksBySecurity;   // per-security two-sided book (lazy, log-driven)
     private final long[] lastPxBySecurity;       // last TRADE price; Px.NONE = no trade yet
     private int bookLevels;
@@ -118,13 +125,19 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         // fillFullThreshold is retained for construction-site compatibility only: YU13's
         // crossing book fills exactly what the opposite side offers — there is no
         // threshold-driven half-fill policy any more.
-        this.ordersByRef = new RestingOrder[16_384];
         this.booksBySecurity = new LimitBook[maxSecurities];
         this.lastPxBySecurity = new long[maxSecurities];
         this.bookLevels = envInt("BOOK_LEVELS", DEFAULT_BOOK_LEVELS);
         this.bookTickPx = envLong("BOOK_TICK_PX", DEFAULT_BOOK_TICK_PX);
         this.positions = new PositionBook(positionCapacity);
         this.terminalCap = Math.max(0, terminalRetain);
+        // Steady-state index population = retained terminals + the open-order working set (the
+        // pool proxies the latter: past it, takeFromPool already allocates anyway). Table sized
+        // at 2x that over a 0.55 load factor => threshold ~2.2x expected entries, so the map
+        // never rehashes after warmup (NGC-01). terminalCap 0 = unbounded retention (tests).
+        final int steadyOrders = Math.max(16, this.terminalCap + Math.max(initialPoolSize, 1024));
+        this.ordersByRef = new Int2ObjectHashMap<>(
+            BitUtil.findNextPositivePowerOfTwo(steadyOrders * 2), 0.55f);
         this.terminalRing = this.terminalCap > 0 ? new int[this.terminalCap] : null;
         for (int i = 0; i < initialPoolSize; i++) {
             RestingOrder pooled = new RestingOrder();
@@ -325,8 +338,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public RecoveryDigest recoveryDigest() {
         long orderHash = 0L;
         int openOrders = 0;
-        for (RestingOrder o : ordersByRef) {
-            if (o == null || o.orderRef == 0 || !o.isOpen()) {
+        for (RestingOrder o : ordersByRef.values()) {
+            if (o.orderRef == 0 || !o.isOpen()) {
                 continue;
             }
             long h = 1125899906842597L;
@@ -358,15 +371,17 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return h;
     }
 
-    /** Open orders as {orderRef, status, remaining, limitPx, accountId, securityId} (debug/verify only). */
+    /** Open orders as {orderRef, status, remaining, limitPx, accountId, securityId}, ascending
+     *  ref (debug/verify only). */
     public java.util.List<long[]> openOrderTuples() {
         java.util.List<long[]> out = new java.util.ArrayList<>();
-        for (RestingOrder o : ordersByRef) {
-            if (o == null || o.orderRef == 0 || !o.isOpen()) {
+        for (RestingOrder o : ordersByRef.values()) {
+            if (o.orderRef == 0 || !o.isOpen()) {
                 continue;
             }
             out.add(new long[] { o.orderRef, o.status, o.remaining, o.limitPx, o.accountId, o.securityId });
         }
+        out.sort((a, b) -> Long.compare(a[0], b[0]));
         return out;
     }
 
@@ -385,32 +400,40 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         return tradeCounter;
     }
 
-    /** Every order still addressable in the book (open AND terminal), as
+    /** Every order still addressable in the book (open AND terminal), ascending ref, as
      *  {ref, acct, sec, side, qty, rem, limitPx, status, lastExecPx, lastFillQty, createdMs,
      *  updatedMs, riskReason, reservedNotional, reservedQty}. */
     public java.util.List<long[]> allOrderTuples() {
         java.util.List<long[]> out = new java.util.ArrayList<>();
-        for (RestingOrder o : ordersByRef) {
-            if (o != null && o.orderRef != 0) {
+        for (RestingOrder o : ordersByRef.values()) {
+            if (o.orderRef != 0) {
                 final long[] tuple = new long[SNAPSHOT_ORDER_TUPLE_LENGTH];
                 copySnapshotOrderTuple(o, tuple);
                 out.add(tuple);
             }
         }
+        out.sort((a, b) -> Long.compare(a[0], b[0]));
         return out;
     }
 
     /**
-     * Length of the dense order-reference index used by snapshot serialization. Cold path only;
-     * callers scan refs in ascending order to preserve the established snapshot byte order.
+     * Every indexed orderRef in ascending order. Cold path only (snapshot serialization): the
+     * map iterates in hash order, so callers needing the established ascending-ref snapshot
+     * byte order (ADR-046) take this sorted copy instead.
      */
-    public int snapshotOrderIndexLength() {
-        return ordersByRef.length;
+    public int[] snapshotOrderRefsAscending() {
+        final int[] refs = new int[ordersByRef.size()];
+        int n = 0;
+        for (final RestingOrder o : ordersByRef.values()) {
+            refs[n++] = o.orderRef;
+        }
+        java.util.Arrays.sort(refs);
+        return refs;
     }
 
     /**
      * Copy one retained order into the reusable 15-field snapshot tuple. Returns false for an
-     * absent/evicted ref. This keeps snapshot serialization O(index + terminals) without exposing
+     * absent/evicted ref. This keeps snapshot serialization O(retained orders) without exposing
      * mutable pooled orders or allocating one tuple per row.
      */
     public boolean copySnapshotOrderTuple(final int orderRef, final long[] target) {
@@ -861,23 +884,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     }
 
     private RestingOrder lookup(int orderRef) {
-        if (orderRef < 0 || orderRef >= ordersByRef.length) {
-            return null;
-        }
-        return ordersByRef[orderRef];
+        return ordersByRef.get(orderRef);
     }
 
     private void index(RestingOrder o) {
-        if (o.orderRef >= ordersByRef.length) {
-            int newLength = ordersByRef.length;
-            while (newLength <= o.orderRef) {
-                newLength *= 2;
-            }
-            RestingOrder[] grown = new RestingOrder[newLength];
-            System.arraycopy(ordersByRef, 0, grown, 0, ordersByRef.length);
-            ordersByRef = grown;
-        }
-        ordersByRef[o.orderRef] = o;
+        ordersByRef.put(o.orderRef, o);
     }
 
     private RestingOrder takeFromPool() {
@@ -915,17 +926,13 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         terminalCount++;
     }
 
-    /** Drop an aged-out terminal order from the dense index and return its entry to the pool (BLP thread).
+    /** Drop an aged-out terminal order from the ref index and return its entry to the pool (BLP thread).
      *  It was already off the book (unlinked at the terminal transition), so this only frees memory. */
     private void evictOrder(int orderRef) {
-        if (orderRef < 0 || orderRef >= ordersByRef.length) {
-            return;
-        }
-        RestingOrder o = ordersByRef[orderRef];
+        RestingOrder o = ordersByRef.remove(orderRef);
         if (o == null) {
             return;
         }
-        ordersByRef[orderRef] = null;
         o.nextFree = freeList;   // recycle; takeFromPool resets fields on reuse
         freeList = o;
     }

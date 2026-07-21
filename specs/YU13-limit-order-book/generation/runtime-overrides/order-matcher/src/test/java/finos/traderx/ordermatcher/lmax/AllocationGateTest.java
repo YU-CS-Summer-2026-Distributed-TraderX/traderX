@@ -68,8 +68,9 @@ class AllocationGateTest {
     // $0..$131.07 at the 0.001 grid): the crossing level must stay in-band or every mix order
     // rejects PRICE_COLLAR and the gate measures nothing.
     private static final long CROSS_PX = 100_000_000L;
-    // Above the largest ref the biggest (noGc 3M-event) budget can issue; the first warm-up
-    // publish at REF_CEILING-1 grows ordersByRef once so the measured phase never regrows it.
+    // Above the largest ref the biggest (noGc 3M-event) budget can issue. ordersByRef is a
+    // bounded map now (sized by open+retained, not the highest ref), so a huge ref costs one
+    // entry — the warm-up publish at REF_CEILING-1 keeps the sparse-high-ref path exercised.
     private static final int REF_CEILING = 2_000_000;
     private static final int TERMINAL_RETAIN = 8_192;
     private static final int POOL_SIZE = 16_384;
@@ -144,7 +145,7 @@ class AllocationGateTest {
 
             // ----- warm-up: startup allocation allowed; covers every branch, pre-grows every
             // ----- index, and reaches terminal-retention eviction equilibrium.
-            publishOrder(ring, REF_CEILING - 1, 0, SIDE_BUY, RESTING_LIMIT_PX, 100); // grows ordersByRef once
+            publishOrder(ring, REF_CEILING - 1, 0, SIDE_BUY, RESTING_LIMIT_PX, 100); // sparse high ref: one map entry
             int terminalRef = nextRef;
             for (int i = 0; i < 64; i++) {
                 publishOrder(ring, nextRef++, 1, SIDE_BUY, RESTING_LIMIT_PX, 10);
