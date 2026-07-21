@@ -63,10 +63,19 @@ const bodies = cfg.tickers.map((_, offset) => {
   // and the book stays bounded — use it to build a big JOURNAL without tripping the risk
   // position cap (an all-Buy run starts drawing POSITION_LIMIT 422s after cap/qty orders).
   const alternate = (process.env.SIDES || '') === 'alternate';
+  // Keep every request self-crossing even when --batch is not divisible by the full
+  // ticker/side cycle (2 * ticker count). The old batch=200 + 3-ticker body left two
+  // unmatched resting orders at shutdown, so authoritative booked != applied by exactly 2
+  // despite zero rejects. Preserve the established round-robin sequence for the largest
+  // complete cycle prefix, then close the even-sized tail as explicit same-ticker pairs.
+  const cycle = 2 * cfg.tickers.length;
+  const balancedPrefix = alternate ? cfg.batch - (cfg.batch % cycle) : cfg.batch;
   const orders = Array.from({ length: cfg.batch }, (_, j) => ({
     accountId: cfg.account,
-    security: cfg.tickers[(offset + j) % cfg.tickers.length],
-    side: alternate && j % 2 === 1 ? 'Sell' : 'Buy',
+    security: j < balancedPrefix
+      ? cfg.tickers[(offset + j) % cfg.tickers.length]
+      : cfg.tickers[(offset + Math.floor((j - balancedPrefix) / 2)) % cfg.tickers.length],
+    side: alternate && (j < balancedPrefix ? j : j - balancedPrefix) % 2 === 1 ? 'Sell' : 'Buy',
     quantity: cfg.qty,
     limitPrice: cfg.limit,
   }));
