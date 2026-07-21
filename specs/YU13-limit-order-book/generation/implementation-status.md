@@ -197,16 +197,37 @@ session). Measured its way: a timestamped probe at one order / 200 ms, reporting
 COUNT and the gap between last-success-before and first-success-after — not "first-fail to
 last-fail", which overstates an outage that is really a few scattered failures.
 
-Three clean leader kills (`--grace-period=0 --force`, leader confirmed by role before each kill):
+Five clean leader kills (`--grace-period=0 --force`, leader confirmed by role first), probe at
+20 ms cadence. **Probe cadence is the measurement floor** — a first pass at 200 ms produced
+602/602/802 ms and looked like a regression; it was quantization plus under-sampling, and the
+sub-200 ms failovers were invisible to it. Do not measure this with a coarse probe.
 
-| Round | Killed | Failed / total | Success rate | Client gap |
-|---|---|---|---|---|
-| 1 | m1 | 2 / 299 | 99.33% | **602 ms** |
-| 2 | m2 | 2 / 224 | 99.11% | **602 ms** |
-| 3 | m1 | 2 / 224 | 99.11% | **802 ms** |
+| Killed | Failed reqs | Success rate | Client gap |
+|---|---|---|---|
+| m1 | 3 | 99.85% | **83 ms** |
+| m2 | 3 | 99.86% | **141 ms** |
+| m2 | 3 | 99.85% | **182 ms** |
+| m0 | 32 | 98.37% | 673 ms |
+| m0 | 32 | 98.55% | 848 ms |
 
-**Client-facing failover is ~600–800 ms and costs 2 in-flight requests** — consistent with the
-parent state's 653–716 ms, so the crossing book did not regress failover.
+**Median 182 ms, best 83 ms**, against the parent state's 653–716 ms system-facing and its
+best-ever client-observed 192 ms — the crossing book did not regress failover; the median is
+better than the parent's best case.
+
+The distribution is **bimodal** and that is a real property, not noise: a fast mode (~83–182 ms,
+3 in-flight requests lost) and a slow mode (~673–848 ms, 32 lost), roughly 3:2 across these
+samples with identical code and kill command. The likely discriminator is whether the gateway
+holding the probe's connection could follow the leader change natively or had to re-establish its
+cluster session. Worth closing before the number goes on a slide — quote the median with the
+range, never the best alone.
+
+Measurement notes that cost real time here:
+
+- **`kubectl delete` return is not the kill instant.** The pod keeps serving for up to ~2.5 s
+  after the command returns (observed: last client success at +2240 ms, new leader's ROLE-CHANGE
+  at +2577 ms). Any metric anchored on "when I issued the delete" inherits that variance. The
+  client gap — last success before, first success after — is immune to it and is the number to
+  quote.
 
 Two things this measurement taught, both worth keeping:
 
