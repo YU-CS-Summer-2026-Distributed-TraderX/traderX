@@ -33,6 +33,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU10-fix-ingress`
 - `YU11-aeron-replication`
 - `YU12-aeron-cluster`
+- `YU13-limit-order-book`
 
 ## References
 
