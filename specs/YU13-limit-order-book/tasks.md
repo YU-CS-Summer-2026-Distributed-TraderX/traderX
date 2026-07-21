@@ -39,5 +39,5 @@
   from tick-triggered fills to crossing flow, preserving each test's original proof intent.
 - [x] T-LOB13 Match-latency histogram benchmark: p50/p99/p99.9/p99.99/max in ns for resting
   inserts, limit crosses, and market orders under closed-loop load (`MatchLatencyBenchmarkTest`).
-- [ ] T-LOB14 Re-bench booked throughput on a live kind cluster with two-sided marketable flow
+- [x] T-LOB14 Re-bench booked throughput on a live kind cluster with two-sided marketable flow
   against the NFR-AC02 baseline; run the kind HA recovery proof on the crossing engine.

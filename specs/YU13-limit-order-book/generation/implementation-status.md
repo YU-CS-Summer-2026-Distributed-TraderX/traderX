@@ -66,19 +66,103 @@ Status as of 2026-07-20. Verified on the JVM (kind-free); the live-cluster bench
 `MatchLatencyBenchmarkTest`, per-order match op measured on the BLP thread under closed-loop
 load (no coordinated omission), nanoseconds — the engine's own number, not wire-to-wire:
 
+Captured on a quiescent machine (kind workload scaled to zero), 250k–500k measured ops per class:
+
 | Op | p50 | p99 | p99.9 | p99.99 | max |
 |---|---|---|---|---|---|
-| resting insert | 167 ns | 750 ns | 10.7 µs | 42.7 µs | 291 µs |
-| limit cross | 583 ns | 2.2 µs | 23.3 µs | 81.1 µs | 601 µs |
-| market order | 584 ns | 2.3 µs | 27.9 µs | 71.9 µs | 2.2 ms |
+| resting insert | 167 ns | 583 ns | 2.04 µs | 32.1 µs | 136.6 µs |
+| limit cross | 542 ns | 1.88 µs | 15.4 µs | 83.6 µs | 272.4 µs |
+| market order | 584 ns | 2.04 µs | 15.7 µs | 74.8 µs | 1.20 ms |
 
-The median match is sub-microsecond; the tail is JIT/scheduling on a shared dev machine, not the
-book operation. Honest talk line: the match is nanoseconds, wire-to-wire is microseconds in
-software.
+The median match is sub-microsecond and p99 is under 2 µs. The tail beyond p99.9 is JIT
+compilation, safepoints, and OS scheduling on a shared dev machine — not the book operation; a
+tuned host (AOT/GraalVM or Zing ReadyNow, isolated cores, Epsilon) is where the p99.99 goes. Do
+not quote p50 alone: the tail is the number that matters. Honest talk line: the match is
+nanoseconds, wire-to-wire is microseconds in software, nanoseconds only in silicon.
 
-## Open (T-LOB14)
+## Reconciliation with the YU12 lane (2026-07-21)
 
-- Live kind-cluster throughput re-measurement on the crossing engine with genuinely two-sided
-  marketable flow, against the NFR-AC02 baseline (25,149 booked/s).
-- The kind HA recovery proof (crash → promote → empty-disk rejoin → second crash, 0 reuse, book
-  identical on all members) on the crossing engine.
+YU12's `3394186` (synchronous `/trades`) and `2f5a813` (seed-job hardening,
+`RECON_POLL_INTERVAL_MS`, gateway replicas=3) were merged in. `2f5a813` cherry-picked cleanly
+(none of its manifests are shadowed by a YU13 layer). `3394186` could NOT be cherry-picked: it
+patches `ClusterGatewayMain`/`MatchingEngineClusteredService` in the YU12 layer, and YU13 carries
+its own copies which win at generation — so it was hand-merged into the YU13 copies.
+
+Two collisions resolved in the merge:
+
+- **Egress ack byte 21.** `3394186` writes the RiskReason ordinal at byte 21; YU13 already uses
+  byte 21 for the resting-update class. The two live in different spec layers, so git could not
+  flag it. RiskReason moved to byte 22; ack length unchanged (24).
+- **`KIND_TRADE_BOOKED` is no longer unique to `/trades`.** The crossing book emits it for BOTH
+  sides of every ORDER match, so the ack kind alone would let a foreign fill answer a `/trades`
+  request (a 200 for someone else's trade) and would inflate the new market-trade metric with all
+  crossing fills. Byte 23 now carries a market-trade class, stamped for the duration of a
+  `TYPE_TRADE_NEW` apply (covering mid-apply backpressure drains); the gateway gates both the
+  correlation and the counters on it. Verified live: three `/trades` calls against a cluster that
+  had just booked two crossing fills reported exactly `booked=1, rejected=2` — un-inflated.
+
+`422` vs `504` preserved exactly: 422 is a committed business rejection carrying its RiskReason;
+504 means no committed decision arrived (failover/timeout — ambiguous, the trade may still
+commit). Live-verified: valid trade → 200 `{"booked":true}`; unseeded security → 422
+`UNKNOWN_SECURITY`; unknown account → 422 `UNKNOWN_ACCOUNT`.
+
+Re-run as a hot-path change after the ack-layout edit: `test` 227/0, `noGcTest` + `riskNoGcTest`,
+and all four allocation gates green.
+
+## Live kind measurements (T-LOB14, 2026-07-21)
+
+3-member cluster + 3 gateways on kind (one member per worker, 1 CPU / 1536Mi each), image pinned
+`traderx/cluster-node:yu13`, 7 real accounts + a 20-ticker reference universe seeded FIRST (the
+OSFF-1 silent-reject gate — verified by a smoke cross that booked 2 fills before any bench ran).
+
+| Measurement | Value |
+|---|---|
+| Submit rate (in-cluster, 3 gateways, conc 48 × batch 200) | ~10,267 orders/s |
+| Booked trades/s (leader engine trade counter, 2 per cross) | **10,533/s** |
+| Crossing ratio | 0.92 fills per submitted order — genuinely two-sided |
+| Failed | 1.2% under maximum concurrency |
+
+Honest framing: this does NOT clear the 25,149 booked/s NFR-AC02 bar, and it is not a
+like-for-like comparison — that baseline was established on GKE (`c3-standard-4` dedicated
+nodes), whereas this is kind on a laptop with 1-CPU-limited members inside a Docker VM. The
+crossing engine is demonstrably NOT the limiter: the in-JVM match benchmark puts a limit cross at
+583 ns p50 (~1.7M crosses/s single-threaded in memory), three orders of magnitude above what the
+clustered kind path delivers. A like-for-like number against the bar needs a GKE run.
+
+Two measurement traps worth recording: benching through `kubectl port-forward` understates
+throughput badly (a single-threaded proxy — 2,396 vs 9,383 submit/s in-cluster), and the batch
+harness rotates tickers per order while alternating sides by index, so with an EVEN ticker count
+each symbol receives only one side and nothing ever crosses on a real book. Use an odd ticker
+count.
+
+## HA recovery proof on the crossing engine (T-LOB14)
+
+Full evidence in `docs/handoff/PROOF-yu13-kind-ha-crossing-book.md`. Fixture: ten asks @150.050
+arriving FIRST, ten @150.000 arriving SECOND — arrival order and price order deliberately
+disagree, so the fill pattern is a falsifiable test of price priority.
+
+Proven across two crashes and two promotions, asserted from the members' own book digests:
+
+- Snapshot format 2 **round-trips the full two-level resting book across a failover**: the killed
+  leader reloaded its own snapshot and reconstructed a book hash byte-identical to the members
+  that never restarted.
+- **Price-time priority survives the failover** — the post-failover sweep consumed exactly the ten
+  better-priced asks (the ones that arrived second) and left the worse level untouched.
+- **Book identical on all three members** at every checkpoint; a snapshot-recovered member later
+  won an election and led successfully.
+- **Zero ID reuse**: `nextOrderRef` strictly monotonic 1 → 21 → 22 → 23 → 24 across both crashes.
+- **Determinism across epochs**: the same input sequence replayed in a different epoch after a
+  full wipe produced the identical book hash.
+
+NOT proven — **empty-disk rejoin into an already-advanced cluster**. The joiner wedges in consensus
+log replication (`applied=-1`). This is the inherited Aeron 1.51 defect documented in the YU12 lane
+(`ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md`), not a YU13 regression: it reproduced on a
+cluster whose book was EMPTY with no format-2 snapshot content, and no snapshot/format/band error
+appears in the joiner's logs — the failure is entirely inside log replication, before the service
+loads any state. Three members starting together from empty always converge (done four times).
+
+## Open
+
+- A like-for-like GKE throughput run against the 25,149 bar on the crossing engine.
+- The inherited Aeron 1.51 empty-disk-rejoin defect (YU12 issue) blocks that acceptance line on
+  any aged epoch; it needs the Aeron-level fix, not a YU13 change.
