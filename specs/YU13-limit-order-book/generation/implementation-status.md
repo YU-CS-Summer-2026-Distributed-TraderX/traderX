@@ -440,7 +440,7 @@ laptop — faster core), output ring ~3.8–5.3M events/s. Two implications: the
 ~7× headroom over even the new 165k REST figure, and **a remembered "~6M/s" almost certainly
 refers to output EVENTS/s** (each order fans out to ~3–6 output events), not orders/s.
 
-### Sweep postmortem — the leak that caps sustained throughput (REAL BUG, fix identified)
+### Sweep postmortem — the leak that caps sustained throughput (FIXED — see next section)
 
 The first soak (~33M cumulative orders) killed the cluster, and the failure chain is worth
 recording precisely:
@@ -463,6 +463,42 @@ recording precisely:
 4. Under the ensuing apply backlog, price ticks applied late and the risk gate correctly
    fail-closed with PRICE_STALE rejections (~5.6M orders) — the 15c3-5 gate working as
    designed under overload, worth saying on stage.
+
+### ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone
+
+**Fix (commit a6776e8).** `ordersByRef` is now an Agrona `Int2ObjectHashMap<RestingOrder>`
+bounded by open + retained-terminal orders, presized at construction (2× the steady population
+of terminalCap + pool over a 0.55 load factor) so it never rehashes after warmup — Epsilon
+`noGcTest`/`riskNoGcTest` double as proof of zero steady-state map allocation. Snapshot
+serialization takes `snapshotOrderRefsAscending()` (sorted copy, cold path) to preserve the
+established ascending-ref byte order; retained terminal rows still follow in exact
+eviction-FIFO order (ADR-046). `openOrderTuples`/`allOrderTuples` sort by ref so the
+executable byte-order contract test is unchanged. Gates: full suite 228/0, all four
+allocation gates, both Epsilon gates green.
+
+**Soak (GKE, fresh epoch, same 3×c3 members + 3 gateways, image `cluster-node:yu13`
+@sha256:9c77663).** conc 48 × batch 200, SIDES=alternate QTY=500 LIMIT=150 TICKERS=JPM,GS,COF,
+8 s `/seed` refresher, account rotated per 120 s chunk (see trap below):
+
+| Measure | Result |
+|---|---|
+| Cumulative booked trades | **136,400,990 in ~14.6 min** (leader trade counter) |
+| Booked rate, 30 s windows | 130–170k/s throughout; **no downward trend 18M → 136M** |
+| First vs last fresh-account chunk | 143.6k/s (chunk 1) vs **150.7k/s (chunk 7)** — the old code was at 109k/s by 30M |
+| Member parity | applied=136,402,195 and trades identical on all 3 members; 3 snapshots taken mid-soak, no divergence — the sorted-ref snapshot path proven live |
+| Heap / stability | working set plateaus ~0.9–1.0 Gi on 4 Gi pods, flat vs order count; **0 restarts** |
+| Book | returns to ~0 open orders after load stops |
+
+Bonus stress from the aborted first attempt (same image, prior epoch): ~159M orderRefs issued /
+126M applied — ~96M of them risk-rejected — with all members healthy. Under the old flat array
+that epoch alone is a ~640 MB index per member plus a doubling copy: certain OOM.
+
+**New trap — the per-account credit wall.** `executedNotional` accumulates GROSS per fill and is
+never released; against `CREDIT_LIMIT_TICKS = Long.MAX_VALUE/4` an account walls after exactly
+~30.7M booked orders of 500 × $150 (first soak attempt stalled at trades=30,744,566 with orders
+still applying — every one CREDIT_LIMIT-rejected). HTTP-level counters show `failed=0` because
+the batch endpoint 2xxes; the tell is the trades counter freezing while `applied` keeps rising.
+Long benches must rotate accounts (7 seeded accounts ≈ 215M-order budget per epoch).
 
 ### Where the next throughput lives (gateway tier analysis, ranked)
 
@@ -487,7 +523,7 @@ this).
 
 ## Open
 
-- **The `ordersByRef` unbounded-index bug** (above) — the one real blocker on calling 165k
-  "sustained" unqualified; fix identified, gate-heavy, do in a dedicated session.
+- ~~The `ordersByRef` unbounded-index bug~~ — **fixed and soak-proven 2026-07-21** (136M booked
+  orders, no decay, stable heap; section above). 165k booked/s is now "sustained" unqualified.
 - Deferred: async snapshot off the hot thread (still nothing points at it),
   Epsilon/isolcpus/AOT tail rungs, GKE cluster NetworkPolicy (safe now ports are pinned).
