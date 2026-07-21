@@ -45,11 +45,11 @@ kind: Deployment
 metadata:
   name: cluster-gateway
 spec:
-  # Scale-out ready: bump replicas to add owner threads. Each pod is independent (own cluster
-  # session, own POD_IP:egress). On the current cluster both e2 pools are ~99% CPU, so more
-  # replicas need default-pool node capacity first (a gcloud node-pool resize); once there is room,
-  # `kubectl scale deploy/cluster-gateway --replicas=N` and the order-matcher-gw Service load-balances.
-  replicas: 1
+  # 3 replicas is the baseline: with the REST Service now affinity-free (see above), the three
+  # gateways actually share load, which is the whole point of the split. Each pod is independent
+  # (own cluster session, own POD_IP:egress) so they scale linearly; std-pool has the capacity
+  # (3 ran here all session). Bump higher with `kubectl scale deploy/cluster-gateway --replicas=N`.
+  replicas: 3
   selector:
     matchLabels:
       app: cluster-gateway
