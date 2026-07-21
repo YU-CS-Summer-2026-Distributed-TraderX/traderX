@@ -64,7 +64,10 @@ class AllocationGateTest {
     private static final int SECURITIES = 4;
     private static final int RESTING_PER_SECURITY = 256;
     private static final long RESTING_LIMIT_PX = 50_000_000L;   // deep bids: never crossed
-    private static final long CROSS_PX = 200_000_000L;          // the mix's crossing level
+    // Inside the default band anchored by the $50 deep bids (base clamps to 0; ±$65.5 covers
+    // $0..$131.07 at the 0.001 grid): the crossing level must stay in-band or every mix order
+    // rejects PRICE_COLLAR and the gate measures nothing.
+    private static final long CROSS_PX = 100_000_000L;
     // Above the largest ref the biggest (noGc 3M-event) budget can issue; the first warm-up
     // publish at REF_CEILING-1 grows ordersByRef once so the measured phase never regrows it.
     private static final int REF_CEILING = 2_000_000;

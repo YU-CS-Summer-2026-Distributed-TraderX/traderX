@@ -41,11 +41,13 @@ public final class LimitBook {
     private int openOrders;
 
     public LimitBook(int levels, long tickTicks) {
+        // Constant messages: this class is on the banned-API gate's hot-path scan list
+        // (no runtime string concat in the constant pool).
         if (Integer.bitCount(levels) != 1 || levels < 64) {
-            throw new IllegalArgumentException("book levels must be a power of two >= 64: " + levels);
+            throw new IllegalArgumentException("book levels must be a power of two >= 64");
         }
         if (tickTicks <= 0) {
-            throw new IllegalArgumentException("book tick must be positive: " + tickTicks);
+            throw new IllegalArgumentException("book tick must be positive");
         }
         this.levels = levels;
         this.tickTicks = tickTicks;

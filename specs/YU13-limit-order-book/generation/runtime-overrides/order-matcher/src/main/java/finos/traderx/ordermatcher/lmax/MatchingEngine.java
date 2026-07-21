@@ -32,10 +32,13 @@ import java.lang.invoke.VarHandle;
 public final class MatchingEngine implements EventHandler<InputEvent> {
     public static final int SNAPSHOT_ORDER_TUPLE_LENGTH = 15;
 
-    /** Book band width in ticks (power of two); identical on every member (config identity). */
-    public static final int DEFAULT_BOOK_LEVELS = 1 << 16;
-    /** Book grid: Px units per tick; 10_000 = one cent at the Px x1e6 scale. */
-    public static final long DEFAULT_BOOK_TICK_PX = 10_000L;
+    /** Book band width in ticks (power of two); identical on every member (config identity).
+     *  1&lt;&lt;17 ticks at the 0.001 grid = a $131.07 band (±$65.5 around the anchor). */
+    public static final int DEFAULT_BOOK_LEVELS = 1 << 17;
+    /** Book grid: Px units per tick. 1_000 = 0.001 — the exact 3dp granularity every edge
+     *  price already carries (Px rounds to 3dp HALF_UP), so every price the edges can
+     *  produce sits on the grid; only raw sub-0.001 ingress is off-grid. */
+    public static final long DEFAULT_BOOK_TICK_PX = 1_000L;
 
     private final OutputPublisher out;
     private final HotPathMetrics metrics;
@@ -167,7 +170,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
 
     /** Test seam: set band width / grid before any book exists. */
     public void setBookGeometry(int levels, long tickPx) {
-        requireNoBooks("book geometry");
+        requireNoBooks();
         this.bookLevels = levels;
         this.bookTickPx = tickPx;
     }
@@ -177,15 +180,16 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         if (levels == bookLevels && tickPx == bookTickPx) {
             return;
         }
-        requireNoBooks("snapshot book geometry");
+        requireNoBooks();
         this.bookLevels = levels;
         this.bookTickPx = tickPx;
     }
 
-    private void requireNoBooks(String what) {
+    private void requireNoBooks() {
         for (LimitBook book : booksBySecurity) {
             if (book != null) {
-                throw new IllegalStateException(what + " cannot change after a book exists");
+                // Constant message: banned-API gate forbids runtime string concat here.
+                throw new IllegalStateException("book geometry cannot change after a book exists");
             }
         }
     }
@@ -267,16 +271,17 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         index(o);
         if (o.isOpen()) {
             final LimitBook book = bookFor(securityId);
+            // Constant messages: this class is scanned by the banned-API gate (no runtime
+            // string concat anywhere in the constant pool); the offending row is recoverable
+            // from the restore position in the member log.
             if (!book.onGrid(limitPx)) {
-                throw new IllegalStateException("restore corrupt: off-grid open limit " + limitPx
-                    + " for order " + orderRef);
+                throw new IllegalStateException("restore corrupt: off-grid open order limit price");
             }
             final int slot = book.slotFor(limitPx);
             if (slot == LimitBook.NO_LEVEL) {
                 // Fail closed: an open order the restored band cannot hold means the band
                 // anchor or geometry did not survive restore intact.
-                throw new IllegalStateException("restore incomplete: open order " + orderRef
-                    + " limit " + limitPx + " outside restored book band");
+                throw new IllegalStateException("restore incomplete: open order outside restored book band");
             }
             book.append(o, slot);
         } else {

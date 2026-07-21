@@ -1,0 +1,43 @@
+{
+  "title": "YU13-limit-order-book architecture",
+  "stateId": "YU13-limit-order-book",
+  "parentState": "YU12-aeron-cluster",
+  "description": "A genuine crossing limit-order book replaces price-triggered auto-fill inside the inherited Aeron Cluster ClusteredService. A committed order reaches the deterministic engine, which either rests it in its security's two-sided LimitBook or crosses it against resting opposite-side orders best-price-first, FIFO within a level, at the resting price. Every match books a trade on BOTH sides; the committed outputs feed the unchanged egress, gateway ack, trade-bridge, and CQRS read-model paths. Determinism, zero-allocation, and complete snapshot recovery are inherited unchanged; the snapshot now serializes the whole resting book.",
+  "inheritsFrom": "YU12-aeron-cluster",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    { "id": "counterparty", "kind": "external", "label": "FIX + REST counterparties", "description": "Two-sided marketable order flow: resting and aggressing orders on both sides of the book." },
+    { "id": "gateway", "kind": "service", "label": "FIX/REST gateway tier", "description": "Terminates counterparty sessions, forwards screened orders through the cluster client, and correlates each committed egress ack — counting only direct (non-resting) order-lifecycle acks so counterparty resting-order updates never skew offer/ack accounting." },
+    { "id": "cluster_client", "kind": "service", "label": "Aeron Cluster client", "description": "Forwards SBE ingress to the current leader and receives committed egress acks carrying the resting-update class byte." },
+    { "id": "feed_adapter", "kind": "service", "label": "Feed adapter", "description": "Sequences conflated price ticks and control updates as cluster ingress; ticks feed risk freshness and seed a security's mark only until its book first trades." },
+    { "id": "consensus", "kind": "service", "label": "Aeron Cluster consensus (leader + followers)", "description": "Raft majority replicates one committed input log; log order IS the crossing book's time priority, identical on every member and replay." },
+    { "id": "matching_engine", "kind": "service", "label": "MatchingEngine (crossing)", "description": "Applies each committed order on the single service thread: admits the limit on the price grid and inside the band, then rests it or crosses it against the opposite book." },
+    { "id": "limit_book", "kind": "service", "label": "Per-security LimitBook", "description": "Two-sided array-indexed price levels with intrusive FIFO queues of pooled orders; O(1) best-price lookup, append, reduce, and unlink; zero-allocation steady state." },
+    { "id": "snapshot_store", "kind": "store", "label": "Cluster snapshots + per-pod log PVC", "description": "Format 2: header carries book geometry, per-security band anchors precede open rows, and open rows in ascending-reference order rebuild each level's exact FIFO on restore." },
+    { "id": "egress", "kind": "queue", "label": "Committed output egress", "description": "Both sides of every match emit an order update, a booked trade, and a position update; the resting side is flagged FLAG_RESTING_UPDATE." },
+    { "id": "trade_bridge", "kind": "service", "label": "Leader trade-egress bridge", "description": "Republishes every booked trade to NATS /trades — two per cross (both sides), each keyed by its own tradeSeq+side." },
+    { "id": "projector", "kind": "service", "label": "Projector / read-model", "description": "Projects order lifecycle, two-sided fills, and positions to the read model." },
+    { "id": "nats", "kind": "queue", "label": "NATS (pricing, control, distribution)", "description": "Inherited pricing/control feeds and output distribution, including the /trades bridge." },
+    { "id": "db", "kind": "store", "label": "MariaDB read model", "description": "Persisted trades and positions from committed crossing outputs." }
+  ],
+  "edges": [
+    { "from": "counterparty", "to": "gateway", "label": "FIX 4.4 session / REST order entry (both sides)" },
+    { "from": "gateway", "to": "cluster_client", "label": "screened limit / market / cancel commands" },
+    { "from": "nats", "to": "feed_adapter", "label": "pricing + control subjects" },
+    { "from": "feed_adapter", "to": "cluster_client", "label": "conflated ticks + policy updates" },
+    { "from": "cluster_client", "to": "consensus", "label": "SBE ingress to current leader" },
+    { "from": "consensus", "to": "matching_engine", "label": "committed orders in log order (= time priority)" },
+    { "from": "matching_engine", "to": "limit_book", "label": "rest at level tail, or cross best-price-first FIFO" },
+    { "from": "limit_book", "to": "matching_engine", "label": "resting head + best bid/ask for crossing" },
+    { "from": "matching_engine", "to": "snapshot_store", "label": "onTakeSnapshot: geometry + band anchors + book rows" },
+    { "from": "snapshot_store", "to": "matching_engine", "label": "recovery: rebuild book FIFO, fail closed off-grid / out-of-band" },
+    { "from": "matching_engine", "to": "egress", "label": "paired both-side fills + trades + positions" },
+    { "from": "egress", "to": "cluster_client", "label": "admission responses + resting-update acks" },
+    { "from": "egress", "to": "trade_bridge", "label": "leader-only booked trades (two per cross)" },
+    { "from": "egress", "to": "projector", "label": "order lifecycle + two-sided fills" },
+    { "from": "trade_bridge", "to": "nats", "label": "/trades republish" },
+    { "from": "projector", "to": "db", "label": "read-model projection" },
+    { "from": "projector", "to": "nats", "label": "inherited distribution subjects" }
+  ]
+}
