@@ -8,7 +8,7 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 - Previous state(s): [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU13-limit-order-book](/docs/learning/state-YU13-limit-order-book)
 
 ## Convergence Metadata
 

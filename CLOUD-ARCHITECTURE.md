@@ -7,13 +7,16 @@ order-matcher (BLP) HA/single-BLP modes, throughput characteristics, and the ope
 
 ## Spec-kit lineage note
 
-The team-authored state lineage now reaches `YU12-aeron-cluster`, parented on
-`YU11-aeron-replication` (itself parented on `YU10-fix-ingress`). YU11 keeps the File-backed
-NATS replication path as the default and adds a flag-selected Aeron+SBE path with per-pod
-Archive sidecars; YU12 replaces the hand-built HA machinery with Aeron Cluster Raft consensus
-(three members, odd quorum) hosting the deterministic matching/risk core. This document
-describes the inherited GKE baseline and user-run capacity commands; the exact runtime
-contracts live in `specs/YU11-aeron-replication/` and `specs/YU12-aeron-cluster/`.
+The team-authored state lineage now reaches `YU13-limit-order-book`, parented on
+`YU12-aeron-cluster` (itself parented on `YU11-aeron-replication` → `YU10-fix-ingress`). YU11
+keeps the File-backed NATS replication path as the default and adds a flag-selected Aeron+SBE
+path with per-pod Archive sidecars; YU12 replaces the hand-built HA machinery with Aeron Cluster
+Raft consensus (three members, odd quorum) hosting the deterministic matching/risk core; YU13
+replaces the price-triggered auto-fill matcher with a genuine crossing limit-order book
+(price-time priority, limit/market/cancel, partial fills) inside that same ClusteredService,
+serializing the whole resting book into the cluster snapshot. This document describes the
+inherited GKE baseline and user-run capacity commands; the exact runtime contracts live in
+`specs/YU12-aeron-cluster/` and `specs/YU13-limit-order-book/`.
 
 ---
 

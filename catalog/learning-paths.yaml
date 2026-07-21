@@ -39,6 +39,7 @@ tracks:
       - YU10-fix-ingress
       - YU11-aeron-replication
       - YU12-aeron-cluster
+      - YU13-limit-order-book
   functional:
     description: "Functional capability expansion states."
     states:
@@ -65,6 +66,7 @@ tracks:
       - YU10-fix-ingress
       - YU11-aeron-replication
       - YU12-aeron-cluster
+      - YU13-limit-order-book
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -255,3 +257,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU12-aeron-cluster/spec.md
+  - id: YU13-limit-order-book
+    previous:
+      - YU12-aeron-cluster
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU13-limit-order-book/spec.md
