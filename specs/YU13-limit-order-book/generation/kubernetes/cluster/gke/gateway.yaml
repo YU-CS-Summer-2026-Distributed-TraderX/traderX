@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # Horizontal scale-out (burst-free ingress): each gateway replica holds its OWN AeronCluster
+  # session + owner thread, and the cluster assigns order refs globally, so REST batches fan out
+  # across replicas with no coordination — N replicas = N× parallel batch submission, the real fix
+  # for sustaining ~134k without the single-owner-thread ceiling. REST is stateless per request so
+  # it round-robins freely (NO sessionAffinity here — k8s affinity is per-Service, not per-port,
+  # and ClientIP on this Service pinned all REST load from one client IP to ONE pod: 2 of 3
+  # gateways sat at 0 accepted orders, 41k via Service vs 64k direct). FIX needs stickiness, so it
+  # gets its own Service below (order-matcher-gw-fix).
+  ports:
+    - name: http
+      port: 18110
+      targetPort: 18110
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw-fix
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # FIX sessions are stateful per CompID (each replica is its own acceptor with its own sequence
+  # numbers) — a client bouncing between pods breaks the session. Keep FIX pinned here.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+    - name: fix
+      port: 18130
+      targetPort: 18130
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-gateway
+spec:
+  # 3 replicas is the baseline: with the REST Service now affinity-free (see above), the three
+  # gateways actually share load, which is the whole point of the split. Each pod is independent
+  # (own cluster session, own POD_IP:egress) so they scale linearly; std-pool has the capacity
+  # (3 ran here all session). Bump higher with `kubectl scale deploy/cluster-gateway --replicas=N`.
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cluster-gateway
+  template:
+    metadata:
+      labels:
+        app: cluster-gateway
+    spec:
+      # No node pin: the gateway is stateless-forward and runs on any non-member pool (default-pool
+      # or std-pool). Removing the default-pool pin let scale-out replicas schedule onto std-pool
+      # once its capacity was added — the members' blp-c3-pool stays reserved via its taint.
+      containers:
+        - name: gateway
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13
+          imagePullPolicy: Always
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.ClusterGatewayMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GATEWAY_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            - name: GATEWAY_HTTP_PORT
+              value: "18110"
+            - name: GATEWAY_EGRESS_PORT
+              value: "40470"
+            - name: FIX_ACCEPTOR_PORT
+              value: "18130"
+            - name: FIX_SESSION_COMPIDS
+              value: "CLIENT1"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms256m -Xmx1g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: http
+              containerPort: 18110
+            - name: fix
+              containerPort: 18130
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 18110
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: 250m
+              memory: 640Mi
+            limits:
+              cpu: "2"
+              memory: 1536Mi
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

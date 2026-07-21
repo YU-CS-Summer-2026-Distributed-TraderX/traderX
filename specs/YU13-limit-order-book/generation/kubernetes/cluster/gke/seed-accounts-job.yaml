@@ -1,0 +1,60 @@
+# Account/security enablement for the REAL order flow (OSFF-1). The engine's risk gate rejects any
+# TRADE_NEW whose account is not control-enabled, whose security is not enabled, or whose security
+# has no price tick (UNKNOWN_ACCOUNT / ACCOUNT_DISABLED / UNKNOWN_SECURITY / PRICE_MISSING in
+# BlpRiskState.decideMarketTrade) — and the UI path has no /seed step, so without this job every
+# UI create-order sequences fine and then silently books nothing. Seeds ONLY the 7 real SQL
+# accounts: arbitrary accounts trade in-cluster but FK-fail on persist and poison Hibernate batch
+# flushes in trade-processor.
+#
+# Control events land in the consensus log, so one successful run survives restarts and failover.
+# Re-run after a full cluster wipe: kubectl -n traderx delete job seed-real-accounts; re-apply.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-real-accounts
+  labels:
+    app: seed-real-accounts
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        app: seed-real-accounts
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: busybox:1.36
+          command:
+            - sh
+            - -ec
+            - |
+              GW=http://order-matcher-gw:18110
+              until wget -qO- -T 5 "$GW/ready" >/dev/null 2>&1; do echo waiting-for-gateway; sleep 2; done
+              # Ticker universe from reference-data itself, so this follows REFERENCE_DATA_SUPPORTED_TICKERS.
+              TICKERS=$(wget -qO- -T 10 http://reference-data:18085/stocks \
+                | grep -o '"ticker":"[^"]*"' | cut -d'"' -f4 | tr '\n' ',' | sed 's/,$//')
+              [ -n "$TICKERS" ] || { echo "no tickers from reference-data"; exit 1; }
+              echo "seeding tickers: $TICKERS"
+              # ponytail: flat price seed (150, the bench convention) — wire per-ticker live prices
+              # into the cluster if position P&L realism ever matters.
+              # Retry per account: /seed 422s transiently when it lands on a gateway pod mid-roll
+              # (session not yet connected → symbol-register times out). A whole-Job restart would
+              # re-do the finished accounts; a short in-script retry rides out the roll instead.
+              for A in 10031 11413 22214 42422 44044 52355 62654; do
+                n=0
+                until wget -qO- -T 15 --header='Content-Type: application/json' \
+                    --post-data="{\"accountId\":$A,\"tickers\":\"$TICKERS\",\"price\":150}" \
+                    "$GW/seed" 2>/dev/null | grep -q '"seeded":true'; do
+                  n=$((n+1)); [ "$n" -ge 40 ] && { echo "account $A: gave up after $n tries"; exit 1; }
+                  echo "account $A: seed not ready (try $n), gateway may be rolling; retrying"; sleep 3
+                done
+                echo " account $A seeded"
+              done
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi

@@ -94,8 +94,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** Egress ack kind for symbol registration (outside OutputEvent's 1..8 range). */
     public static final byte KIND_SYMBOL_REGISTERED = 100;
 
-    // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, byte restingClass at 21
-    // (1 = counterparty resting-order update, 0 = direct response to the acked input — FR-LOB07).
+    // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
+    //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
+    //  22 riskReason   — RiskReason ordinal, so a synchronous /trades reject can answer WHY
+    //                    (YU12 3394186 put this at 21; moved here because 21 is taken above);
+    //  23 marketTrade  — 1 = this output came from a TYPE_TRADE_NEW apply. YU13's crossing book
+    //                    emits KIND_TRADE_BOOKED twice per MATCH for ordinary order fills, so
+    //                    kind alone no longer identifies the /trades path; without this byte the
+    //                    gateway would answer a market trade from a foreign fill's ack.
     static final int EGRESS_ACK_LENGTH = 24;
 
     /** Snapshot transport seam: production offers to the cluster snapshot publication; tests
@@ -116,6 +122,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private RingBuffer<OutputEvent> outputRing;
     private Sequence outputConsumed;
     private ClientSession activeSession; // apply-scoped: egress target for mid-apply backpressure drains
+    // Apply-scoped: true while a TYPE_TRADE_NEW is being applied, so every output drained for it
+    // (including mid-apply backpressure drains) is stamped as a market-trade decision. YU13's
+    // crossing book emits KIND_TRADE_BOOKED for both sides of every ORDER match, so the ack kind
+    // alone can no longer tell the /trades path from ordinary fills.
+    private boolean applyingMarketTrade;
     private boolean stampFirstApplyAsLeader; // Phase-0 SLO clock: armed on LEADER, fires once
 
     private long nextOrderRef = 1;
@@ -208,9 +219,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
         activeSession = session; // backpressure drain target while the engine emits (same thread)
+        applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
         engine.onEvent(event, appliedSeq, true);
         activeSession = null;
         drainOutputs(session);
+        applyingMarketTrade = false;
         if (stampFirstApplyAsLeader) {
             stampFirstApplyAsLeader = false;
             System.out.println("FIRST-APPLY atMs=" + System.currentTimeMillis() + " seq=" + appliedSeq);
@@ -245,6 +258,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(12, KIND_SYMBOL_REGISTERED);
         ackBuffer.putLong(13, codec.symbolRequestId());
         ackBuffer.putByte(21, (byte) 0);
+        ackBuffer.putByte(22, (byte) 0);
+        ackBuffer.putByte(23, (byte) 0);
         offerEgress(session);
     }
 
@@ -518,6 +533,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // Correlation class (FR-LOB07): counterparty resting-order updates never complete an
             // offer's direct ack — the gateway skips them in offer/ack accounting.
             ackBuffer.putByte(21, (out.flags & OutputEvent.FLAG_RESTING_UPDATE) != 0 ? (byte) 1 : (byte) 0);
+            ackBuffer.putByte(22, out.riskReason);
+            ackBuffer.putByte(23, applyingMarketTrade ? (byte) 1 : (byte) 0);
             offerEgress(session);
         }
         outputConsumed.set(cursor);
