@@ -460,9 +460,14 @@ recording precisely:
 3. Mitigations applied + deployed: member heap 512m → 1536m, shm 512Mi → 1Gi, pod memory
    2Gi → 4Gi (each member is alone on a 16 GB node). This moves the wall ~4× out
    (~100M+ orders/epoch); it does not remove it — the index fix does.
-4. Under the ensuing apply backlog, price ticks applied late and the risk gate correctly
-   fail-closed with PRICE_STALE rejections (~5.6M orders) — the 15c3-5 gate working as
-   designed under overload, worth saying on stage.
+4. ~5.6M orders in these runs were risk-rejected with no booked record. CORRECTED attribution
+   (2026-07-21, after the soak session found the credit wall below): originally read as
+   PRICE_STALE under apply backlog, but the confirmation runs all used ONE account (62654,
+   ~30.5M cumulative orders) and the counter froze at trades=30,744,570 — within 4 of the
+   soak's measured `CREDIT_LIMIT` wall at ~30.7M orders of 500 × $150. These were credit-wall
+   rejections; run 3's "decay to 109k" was substantially the wall cutting in, on top of index
+   growth. Still the 15c3-5 gate fail-closing correctly — but the right slide line is the
+   credit gate, not staleness.
 
 ### ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone
 
