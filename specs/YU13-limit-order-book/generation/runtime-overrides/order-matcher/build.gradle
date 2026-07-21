@@ -210,6 +210,14 @@ tasks.named('test', Test) {
     excludeTestsMatching 'finos.traderx.ordermatcher.lmax.AeronTransportAllocationGateTest.*'
     excludeTestsMatching 'finos.traderx.ordermatcher.cluster.ClusterServiceAllocationGateTest.*'
   }
+  // YU13: each @SpringBootTest context warm-starts a book per seed security, and the crossing
+  // book's per-security level arrays are a few MB each (band = BOOK_LEVELS ticks). Across the
+  // suite's many cached Spring contexts in one worker JVM that overran Gradle's ~512m default and
+  // OOM'd the lmaxEngine bean. Give the worker headroom and recycle it periodically so cached
+  // contexts are released — a test-infra concern only (a production member runs a multi-GB heap
+  // and one book per traded security). The isolated allocation gates keep their own pinned -Xmx.
+  maxHeapSize = '2g'
+  forkEvery = 30
   dependsOn baseAllocationGate, riskAllocationGate, aeronAllocationGate, clusterAllocationGate
 }
 
