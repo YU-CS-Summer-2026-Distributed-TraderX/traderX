@@ -134,9 +134,13 @@ ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight"
+# kind compares the DOCKER manifest digest against containerd's config digest, so it decides an
+# image is "not yet present" every single time and re-copies 194MB into four nodes. On a host where
+# three busy-spinning Aeron members already burn ~150-200% CPU each, that load can take longer than
+# the whole proof. SKIP_KIND_LOAD=1 when the nodes demonstrably already have both tags.
 for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
   docker image inspect "${img}" >/dev/null 2>&1 || fail "image ${img} not present locally"
-  kind load docker-image "${img}" --name "${CTX#kind-}" >/dev/null
+  [[ "${SKIP_KIND_LOAD:-0}" == "1" ]] || kind load docker-image "${img}" --name "${CTX#kind-}" >/dev/null
 done
 ${K} get deploy trade-processor >/dev/null 2>&1 || fail "trade-processor is not deployed"
 [[ "$(${K} get deploy trade-processor -o jsonpath='{.status.readyReplicas}')" == "1" ]] \
