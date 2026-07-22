@@ -35,6 +35,13 @@ public final class OutputEvent {
      * egress stream can no longer skew offer/ack accounting (FR-LOB07).
      */
     public static final int FLAG_RESTING_UPDATE = 1 << 6;
+    /**
+     * This order update is the committed result of an atomic replace (ADR-058), not a fresh create.
+     * The ack {@code kind} stays in the ordinary lifecycle range on purpose — a replace answers with
+     * the order's current status, so gateway correlation needs no new case — and this flag is what
+     * lets counters and any future read model tell a replace from a create.
+     */
+    public static final int FLAG_REPLACE = 1 << 7;
 
     public long inputSeq;         // correlates gateway acks (request/response events)
     public byte kind;

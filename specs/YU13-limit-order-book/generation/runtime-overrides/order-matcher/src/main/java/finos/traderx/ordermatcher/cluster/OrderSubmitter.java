@@ -8,8 +8,19 @@ package finos.traderx.ordermatcher.cluster;
  * interface, a cluster-client reconnect on leader change never touches the counterparty session.
  */
 public interface OrderSubmitter {
-    /** Committed outcome of one order. {@code accepted} false ⇒ risk/validation rejected it. */
-    record ExecResult(boolean accepted, int orderRef, byte kind) { }
+    /**
+     * Committed outcome of one order. {@code accepted} false ⇒ risk/validation rejected it, and
+     * {@code riskReason} is the engine's own {@code RiskReason} ordinal for WHY, carried on egress
+     * ack byte 22. Without it a REST reject was a bare {@code kind:2} with no cause — which is how
+     * a 30s bench came to report a green 2xx on every request while the engine silently rejected
+     * 296,000 orders on CREDIT_LIMIT. The market-trade path already answered with its reason; the
+     * order path now does too.
+     */
+    record ExecResult(boolean accepted, int orderRef, byte kind, byte riskReason) {
+        public ExecResult(boolean accepted, int orderRef, byte kind) {
+            this(accepted, orderRef, kind, (byte) 0);
+        }
+    }
 
     /**
      * Sequence one order through the cluster and return its committed outcome. Thread-safe:
@@ -33,6 +44,28 @@ public interface OrderSubmitter {
      * it cannot substantiate.
      */
     default ExecResult submitCancel(int orderRef) {
+        return null;
+    }
+
+    /**
+     * Sequence an ATOMIC replace of {@code orderRef} — one command, cancel-and-add inside a single
+     * apply (ADR-058). {@code quantity} is the new TOTAL quantity; account, security and side are
+     * not passed because FIX forbids changing them and the engine reads them off the original.
+     *
+     * <p>{@code accepted} true ⇒ the order now stands at the new size/price under the SAME
+     * orderRef. False ⇒ nothing changed, and {@code kind} says why: {@code KIND_ORDER_NOT_FOUND}
+     * for an unknown ref, {@code KIND_ORDER_REJECTED} for a rejected replace (bad quantity, price
+     * off grid or outside the collar, risk), and the order's own terminal kind when it was already
+     * done. Returns null on post-publish ambiguity, exactly as {@link #submitOrder}.
+     *
+     * <p>The atomicity is the point: there is no committed state in which the client's order has
+     * been cancelled but the replacement has not been accepted, so a rejection can never leave them
+     * with nothing, and one request never produces two lifecycle messages.
+     *
+     * <p>Default: unsupported at this tier, reported as ambiguity so no caller claims a rejection
+     * it cannot substantiate.
+     */
+    default ExecResult submitReplace(int orderRef, String clOrdId, int quantity, long limitPxTicks) {
         return null;
     }
 }

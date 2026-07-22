@@ -33,6 +33,7 @@ import quickfix.field.OrigClOrdID;
 import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
 import quickfix.fix44.OrderCancelReject;
+import quickfix.fix44.OrderCancelReplaceRequest;
 import quickfix.fix44.OrderCancelRequest;
 
 import java.util.Collections;
@@ -170,6 +171,8 @@ public final class FixGatewayAcceptor {
                     onNewOrderSingle((NewOrderSingle) message, sessionId);
                 } else if ("F".equals(msgType)) {
                     onOrderCancelRequest((OrderCancelRequest) message, sessionId);
+                } else if ("G".equals(msgType)) {
+                    onOrderCancelReplaceRequest((OrderCancelReplaceRequest) message, sessionId);
                 }
             } catch (final FieldNotFound ignore) {
                 // malformed; QuickFIX/J session layer already validated structure
@@ -251,10 +254,86 @@ public final class FixGatewayAcceptor {
             return sessionId.getTargetCompID() + '\001' + clOrdId;
         }
 
-        private int resolveOrderRef(final OrderCancelRequest cancel, final String qualifiedOrigClOrdId)
+        /**
+         * OrderCancelReplaceRequest (G), answered by ONE sequenced atomic replace (ADR-058).
+         *
+         * <p>The FIX-level contract is what makes atomicity visible to a counterparty: exactly one
+         * response per request. Either an ExecutionReport with {@code ExecType=5} (Replace) — the
+         * order now stands at the new size/price, under the same OrderID — or an OrderCancelReject
+         * with the OLD order left untouched and still live. A cancel-then-add implementation could
+         * not offer that: a rejected add answers one request with a cancel confirm AND a reject,
+         * and leaves the counterparty with no order at all.
+         */
+        private void onOrderCancelReplaceRequest(final OrderCancelReplaceRequest replace,
+                                                 final SessionID sessionId) throws FieldNotFound {
+            final String clOrdId = replace.getString(ClOrdID.FIELD);
+            final String origClOrdId = replace.getString(OrigClOrdID.FIELD);
+            final char side = replace.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
+            final String ticker = replace.isSetField(Symbol.FIELD)
+                ? replace.getString(Symbol.FIELD).trim().toUpperCase() : "";
+            final int qty = (int) replace.getDouble(OrderQty.FIELD);
+            if (!replace.isSetField(Price.FIELD)) {
+                // A replace always carries a limit price; the engine rejects an absent one anyway
+                // (a market order never rests, so there is nothing to replace). Answering here
+                // rather than letting the FieldNotFound path swallow it keeps the FIX contract
+                // "exactly one response per request" true.
+                sendCancelReject(sessionId, "ord-" + resolveOrderRef(replace, qualify(sessionId, origClOrdId)),
+                    clOrdId, origClOrdId, OrdStatus.REJECTED, CxlRejReason.OTHER,
+                    "replace requires Price(44)", CxlRejResponseTo.ORDER_CANCEL_REPLACE_REQUEST);
+                return;
+            }
+            final long limitPxTicks = Math.round(replace.getDouble(Price.FIELD) * 1_000_000d);
+
+            final int orderRef = resolveOrderRef(replace, qualify(sessionId, origClOrdId));
+            if (orderRef <= 0) {
+                sendCancelReject(sessionId, "NONE", clOrdId, origClOrdId, OrdStatus.REJECTED,
+                    CxlRejReason.UNKNOWN_ORDER, "unknown OrigClOrdID; resend with OrderID (37)",
+                    CxlRejResponseTo.ORDER_CANCEL_REPLACE_REQUEST);
+                return;
+            }
+
+            final OrderSubmitter.ExecResult result =
+                submitter.submitReplace(orderRef, qualify(sessionId, clOrdId), qty, limitPxTicks);
+            if (result == null) {
+                // Post-publish ambiguity: the replace may yet apply, so no reject may be sent.
+                log.warn("FIX replace of ord-{} ambiguous (no committed ack)", orderRef);
+                return;
+            }
+            if (!result.accepted()) {
+                final boolean unknown = result.kind() == OutputEvent.KIND_ORDER_NOT_FOUND;
+                sendCancelReject(sessionId, unknown ? "NONE" : "ord-" + orderRef, clOrdId, origClOrdId,
+                    unknown ? OrdStatus.REJECTED : ordStatusOf(result.kind()),
+                    unknown ? CxlRejReason.UNKNOWN_ORDER : CxlRejReason.TOO_LATE_TO_CANCEL,
+                    unknown ? "no such order" : "replace rejected; order unchanged",
+                    CxlRejResponseTo.ORDER_CANCEL_REPLACE_REQUEST);
+                return;
+            }
+            // The order keeps its ref, so the NEW ClOrdID must now resolve to it too — otherwise a
+            // follow-up cancel by OrigClOrdID would 'unknown order' an order that plainly exists.
+            refByClOrdId.put(qualify(sessionId, clOrdId), orderRef);
+            final boolean filled = result.kind() == OutputEvent.KIND_ORDER_FILLED;
+            final ExecutionReport report = new ExecutionReport(
+                new OrderID("ord-" + orderRef),
+                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecType(ExecType.REPLACED),
+                new OrdStatus(filled ? OrdStatus.FILLED : OrdStatus.NEW),
+                new Side(side == 'S' ? Side.SELL : Side.BUY),
+                new LeavesQty(filled ? 0 : qty),
+                new CumQty(filled ? qty : 0),
+                new AvgPx(0));
+            report.set(new ClOrdID(clOrdId));
+            report.set(new OrigClOrdID(origClOrdId));
+            if (!ticker.isEmpty()) {
+                report.set(new Symbol(ticker));
+            }
+            report.set(new OrderQty(qty));
+            send(report, sessionId, clOrdId);
+        }
+
+        private int resolveOrderRef(final quickfix.Message request, final String qualifiedOrigClOrdId)
             throws FieldNotFound {
-            if (cancel.isSetField(OrderID.FIELD)) {
-                final String orderId = cancel.getString(OrderID.FIELD);
+            if (request.isSetField(OrderID.FIELD)) {
+                final String orderId = request.getString(OrderID.FIELD);
                 if (orderId.startsWith("ord-")) {
                     try {
                         return Integer.parseInt(orderId.substring(4));
@@ -307,12 +386,22 @@ public final class FixGatewayAcceptor {
         private void sendCancelReject(final SessionID sessionId, final String orderId,
                                       final String clOrdId, final String origClOrdId,
                                       final char ordStatus, final int rejReason, final String text) {
+            sendCancelReject(sessionId, orderId, clOrdId, origClOrdId, ordStatus, rejReason, text,
+                CxlRejResponseTo.ORDER_CANCEL_REQUEST);
+        }
+
+        /** CxlRejResponseTo(434) must say which request was rejected — a replace reject carrying
+         *  ORDER_CANCEL_REQUEST tells the counterparty their cancel failed, not their replace. */
+        private void sendCancelReject(final SessionID sessionId, final String orderId,
+                                      final String clOrdId, final String origClOrdId,
+                                      final char ordStatus, final int rejReason, final String text,
+                                      final char respondingTo) {
             final OrderCancelReject reject = new OrderCancelReject(
                 new OrderID(orderId),
                 new ClOrdID(clOrdId),
                 new OrigClOrdID(origClOrdId),
                 new OrdStatus(ordStatus),
-                new CxlRejResponseTo(CxlRejResponseTo.ORDER_CANCEL_REQUEST));
+                new CxlRejResponseTo(respondingTo));
             reject.set(new CxlRejReason(rejReason));
             reject.set(new Text(text));
             send(reject, sessionId, clOrdId);

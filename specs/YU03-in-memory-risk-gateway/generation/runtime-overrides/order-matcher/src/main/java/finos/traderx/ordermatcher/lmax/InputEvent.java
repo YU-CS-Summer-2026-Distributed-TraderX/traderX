@@ -39,6 +39,22 @@ public final class InputEvent {
     public static final byte TYPE_SECURITY_CONTROL = 8;
     public static final byte TYPE_POLICY_CONTROL = 9;
     public static final byte TYPE_RESTRICTION_CONTROL = 10;
+    /**
+     * Atomic cancel-and-add of an existing order in ONE apply (YU13, ADR-058). Deliberately a new
+     * command type on the EXISTING {@code InputEventMessage} (SBE template 1) rather than a new
+     * template: the codec copies {@code commandType} through without interpreting it, so replace
+     * costs no schema change at all. Template ids 1-8 are already allocated across the lineage —
+     * 8 is YU15's {@code RiskExtractMessage}, which a YU13 worktree cannot see.
+     *
+     * <p>Payload, using the established type-discriminated slots:
+     * {@code orderRef} = the order being replaced (same slot ORDER_CANCEL uses),
+     * {@code qty} = the new TOTAL quantity, {@code limitPx} = the new limit price,
+     * {@code priceTicks} = the {@code clientOrderKey} of the replace request.
+     * {@code accountId}, {@code securityId} and {@code side} are NOT carried: FIX forbids changing
+     * them on a replace, so the engine reads them off the original order, which is also the only
+     * copy the log can prove.
+     */
+    public static final byte TYPE_ORDER_REPLACE = 11;
 
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;

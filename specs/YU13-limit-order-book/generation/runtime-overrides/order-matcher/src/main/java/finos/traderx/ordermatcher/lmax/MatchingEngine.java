@@ -93,6 +93,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long lastEventTimeMillis;
     private long ordersNew;
     private long ordersCancel;
+    private long ordersReplace;
     private long ordersForceFill;
     private long priceTicks;
     private long tradesNew;
@@ -226,6 +227,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         switch (e.type) {
             case InputEvent.TYPE_ORDER_NEW -> { ordersNew++; onNewOrder(e); }
             case InputEvent.TYPE_ORDER_CANCEL -> { ordersCancel++; onCancel(e); }
+            case InputEvent.TYPE_ORDER_REPLACE -> { ordersReplace++; onReplace(e); }
             case InputEvent.TYPE_FORCE_FILL -> { ordersForceFill++; onForceFill(e); }
             case InputEvent.TYPE_PRICE_TICK -> { priceTicks++; onPriceTick(e); }
             case InputEvent.TYPE_TRADE_NEW -> { tradesNew++; onTradeNew(e); }
@@ -805,6 +807,135 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         }
     }
 
+    /**
+     * Atomic replace: cancel-and-add of one live order inside a SINGLE apply (ADR-058).
+     *
+     * <p>Modelling replace as two sequenced operations was the tempting shortcut and it is wrong.
+     * cancel-then-add leaves a window in which the client's order does not exist, so a rejected add
+     * (risk gate, price collar) leaves them with NOTHING and answers one request with two messages;
+     * add-then-cancel briefly doubles the exposure the risk gate sees and lets an immediately
+     * marketable new order fill on both. One sequenced command removes the window by construction:
+     * there is no point between the two halves at which any observer — member, replay, or client —
+     * can be scheduled.
+     *
+     * <p>The order KEEPS its orderRef. FIX 4.4 permits it, and it is the strongest form of the
+     * atomicity this command exists for: the client's order identity is never even momentarily
+     * absent. It also means the replace consumes no value from the orderRef generator, so the
+     * generator stays exactly what the snapshot header says it is.
+     *
+     * <p>Structure: everything that can FAIL is evaluated before anything is mutated, so a rejected
+     * replace leaves the original order bit-identical — including its risk reservation, which is
+     * released and then restored from the two numbers {@code release} zeroed.
+     *
+     * <p>Queue priority is LOST, except on a strict size-down at an unchanged price. That is the
+     * rule real venues use, and it is the only case where nothing about the order becomes more
+     * aggressive; every other replace goes to the tail of its level, which is what "cancel and add"
+     * means for time priority.
+     *
+     * <p><b>Compound case — replace x self-trade prevention (the case neither ADR covered).</b> The
+     * replaced order is unlinked from the book BEFORE it crosses, so it is an aggressor and can
+     * never meet itself. If it meets OTHER resting orders of the same account, cancel-oldest fires
+     * on those and the replace survives — the aggressor is never the side STP cancels. So a client
+     * that asked only to modify an order can never be left with nothing by STP, and the ordering is
+     * fixed by the code path rather than by timing: the replace commits, then matching runs, then
+     * STP acts within matching. Identical on every member and on replay.
+     */
+    private void onReplace(InputEvent e) {
+        // Idempotent retry (FR-IMRG14): a replace key already decided maps to its ONE original
+        // decision. Re-emit the order as it stands; never apply the replace twice.
+        if (risk != null && e.clientOrderKey() != 0L) {
+            final int originalRef = risk.existingOrderRef(e.clientOrderKey());
+            if (originalRef >= 0) {
+                final RestingOrder original = lookup(originalRef);
+                if (original != null) {
+                    out.emitOrderUpdate(original, e.seq, 0, false,
+                        lastPxBySecurity[original.securityId], e.ingressNanos);
+                    return;
+                }
+            }
+        }
+        final RestingOrder o = lookup(e.orderRef);
+        if (o == null) {
+            out.emitOrderNotFound(e.seq, e.ingressNanos);
+            return;
+        }
+        final long px = lastPxBySecurity[o.securityId];
+        if (!o.isOpen()) {
+            // Too late to replace. NOT the terminal-republish that cancel does: republishing a
+            // FILLED order emits KIND_ORDER_FILLED, which is exactly what a replace that filled on
+            // the way in also emits — the gateway could not tell "replaced and filled" from "was
+            // already done", and would report the second as a success. A reject is unambiguous, and
+            // the order is untouched either way.
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.INVALID.ordinal(), px, e.ingressNanos);
+            return;
+        }
+
+        final LimitBook book = bookFor(o.securityId);
+        final int filled = o.quantity - o.remaining;
+        final int newRemaining = e.qty - filled;
+        final long newLimitPx = e.limitPx;
+        // A replace to a quantity at or below what already executed cannot be honoured as a
+        // modification, and turning it into a cancel would answer a modify request with a
+        // termination the client did not ask for. Reject; the order stands.
+        if (e.qty <= 0 || newRemaining <= 0 || newLimitPx <= Px.NONE || !book.onGrid(newLimitPx)) {
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.INVALID.ordinal(), px, e.ingressNanos);
+            return;
+        }
+        final int newSlot = book.slotFor(newLimitPx);
+        if (newSlot == LimitBook.NO_LEVEL) {
+            out.emitRequestRejected(o, e.seq, (byte) RiskReason.PRICE_COLLAR.ordinal(), px, e.ingressNanos);
+            return;
+        }
+
+        if (risk != null) {
+            // Release BEFORE deciding: evaluating the new order on top of the old order's own
+            // reservation double-counts the account's exposure, and would reject an ordinary
+            // size-DOWN for using credit it is in the middle of giving back.
+            final long heldNotional = o.reservedNotional;
+            final int heldQty = o.reservedQty;
+            risk.release(o.accountId, o.securityId, o.side, o);
+            final long decideStart = System.nanoTime();
+            final RiskReason decision = risk.decideAndReserve(e.clientOrderKey(), 0L, o.orderRef,
+                o.accountId, o.securityId, o.side, positions.get(o.accountId, o.securityId),
+                newRemaining, newLimitPx, e.eventTimeMillis, o);
+            metrics.recordRiskDecisionLatency(System.nanoTime() - decideStart);
+            if (decision != RiskReason.ACCEPTED) {
+                // Exact restore: release() zeroed both the account aggregates and the holder, so
+                // putting the same two numbers back leaves exposure bit-identical to before.
+                risk.reaccumulateReservation(o.accountId, o.securityId, o.side, heldNotional, heldQty);
+                o.setReservation(heldNotional, heldQty);
+                out.emitRequestRejected(o, e.seq, (byte) decision.ordinal(), px, e.ingressNanos);
+                return;
+            }
+        }
+
+        // ---- committed from here: nothing below can fail ----
+        if (newLimitPx == o.limitPx && newRemaining < o.remaining && o.isResting()) {
+            book.reduce(o, o.remaining - newRemaining);   // keeps its queue slot: strict size-down
+            o.quantity = e.qty;
+            o.remaining = newRemaining;
+            o.updatedAtMillis = e.eventTimeMillis;
+            out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_REPLACE, true, px, e.ingressNanos);
+            return;
+        }
+        if (o.isResting()) {
+            book.remove(o);   // unlink while remaining still holds the OLD open quantity
+        }
+        o.quantity = e.qty;
+        o.remaining = newRemaining;
+        o.limitPx = newLimitPx;
+        o.status = filled > 0 ? RestingOrder.STATUS_PARTIALLY_FILLED : RestingOrder.STATUS_NEW;
+        o.updatedAtMillis = e.eventTimeMillis;
+        // Ack first, exactly as onNewOrder does: the first non-resting order-lifecycle ack after an
+        // offer is the gateway's correlation contract, and a replace that crosses would otherwise
+        // have its fill ack arrive first.
+        out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_REPLACE, true, px, e.ingressNanos);
+        cross(o, book, e);
+        if (o.remaining > 0) {
+            book.append(o, newSlot);   // tail of its level: a replace surrenders time priority
+        }
+    }
+
     private void onForceFill(InputEvent e) {
         RestingOrder o = lookup(e.orderRef);
         if (o == null) {
@@ -1033,6 +1164,11 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long countOrdersCancel() {
         readFence();
         return ordersCancel;
+    }
+
+    public long countOrdersReplace() {
+        readFence();
+        return ordersReplace;
     }
 
     public long countForceFills() {
