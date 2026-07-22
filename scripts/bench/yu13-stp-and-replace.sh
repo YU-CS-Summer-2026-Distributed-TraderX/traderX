@@ -92,9 +92,23 @@ roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is
     "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+  # kubectl's StatefulSet rollout status returned here while member 0 was STILL ON THE OLD IMAGE.
+  # For a change in the deterministic core that is not a cosmetic race: a self-cross applied in
+  # that window fills on the old member and cancels on the new ones, and the three state machines
+  # diverge PERMANENTLY. It happened on 2026-07-22 and this proof caught it. Wait for the fact --
+  # every pod running the target image AND ready -- not for the controller's opinion of it.
+  local tries=0
+  until [[ "$(${K} get pods -l app=order-matcher-cluster \
+      -o jsonpath='{range .items[*]}{.spec.containers[0].image}{" "}{.status.containerStatuses[0].ready}{"\n"}{end}' \
+      | sort -u | tr -d '\n')" == "${image} true" ]]; do
+    tries=$((tries + 1)); [[ ${tries} -lt 120 ]] || fail "members never all reached ${image} and ready"
+    sleep 5
+  done
   start_pf
   seed
-  echo "  members + gateway now on ${image}"
+  # And prove the members agree BEFORE any traffic, so a later disagreement cannot be blamed on
+  # the step that produced it.
+  echo "  members + gateway now on ${image}; book agreed at [$(digest_consensus)]"
 }
 
 seed() {
