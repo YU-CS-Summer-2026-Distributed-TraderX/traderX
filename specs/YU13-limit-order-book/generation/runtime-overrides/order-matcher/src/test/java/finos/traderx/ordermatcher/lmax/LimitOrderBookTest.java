@@ -459,8 +459,9 @@ class LimitOrderBookTest {
         List<Emitted> events = drain();
         assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, mine).kind(),
             "repriced to the better level, so it is hit first");
+        assertTrue(events.stream().noneMatch(e -> e.orderRef() == behind),
+            "the order queued behind is untouched: it emits nothing and still rests at 150.00");
         assertEquals(1, engine.book(SEC).openOrders());
-        assertNotEquals(behind, 0);
     }
 
     @Test
@@ -477,7 +478,9 @@ class LimitOrderBookTest {
         assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, first).kind(),
             "size-down at an unchanged price keeps time priority, so `first` still fills first");
         assertEquals(60, lastOrderUpdate(events, first).lastFillQty());
-        assertNotEquals(second, 0);
+        assertTrue(events.stream().noneMatch(e -> e.orderRef() == second),
+            "the order behind never traded, so priority really was kept");
+        assertEquals(1, engine.book(SEC).openOrders(), "only the untouched order is left resting");
     }
 
     @Test
