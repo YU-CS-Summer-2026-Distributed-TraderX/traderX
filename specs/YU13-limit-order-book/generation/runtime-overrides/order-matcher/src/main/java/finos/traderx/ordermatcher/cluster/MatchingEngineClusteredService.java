@@ -71,7 +71,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return env == null || env.isEmpty() ? OUTPUT_RING_SIZE : Integer.parseInt(env);
     }
     static final int MAX_ACCOUNTS = 64;
-    static final int IDEMPOTENCY_CAPACITY = 1024;
+    /**
+     * Duplicate-suppression window, GLOBAL across every session (FR-IMRG14).
+     *
+     * <p>1024 was not a small window, it was a decorative one. A count-based bound only becomes a
+     * protection WINDOW via the arrival rate, and this table is shared by every session: at kind's
+     * measured ~240 FIX orders/s it bought ~4.3s; on the batch path at 438k/s it bought ~2.3ms; and
+     * at 500 sessions it was ~2 orders of protection each — MORE sessions made the window SHORTER.
+     * A FIX client reconnect takes seconds to tens of seconds, so a resend almost always landed
+     * past the eviction frontier and double-booked. Verified by eviction, not computed: a key
+     * resent after 1100 intervening distinct keys returned a NEW orderRef.
+     *
+     * <p>256Ki sizes the window for where resends actually happen — the session path at a projected
+     * ~3k/s — giving ~90s of cover. Entries are 28 bytes in the snapshot (4-byte type + 3 longs),
+     * so a full table adds ~7MB to a snapshot and ~8.5MB of presized heap; both are measured in
+     * this state's bench rather than assumed, because snapshot duration is an apply-thread freeze.
+     * Presized at construction, so the 250x table never rehashes on the hot path (NGC-01).
+     */
+    static final int IDEMPOTENCY_CAPACITY = 256 * 1024;
     static final long CREDIT_LIMIT_TICKS = Long.MAX_VALUE / 4;
     static final int MAX_ORDER_QUANTITY = 1_000_000;
     static final long MAX_ORDER_NOTIONAL_TICKS = Long.MAX_VALUE / 4;

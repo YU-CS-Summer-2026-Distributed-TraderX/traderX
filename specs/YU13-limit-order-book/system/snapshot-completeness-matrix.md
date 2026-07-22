@@ -50,7 +50,7 @@ ADR-045 removes all side-channel input). Tests: `AeronClusterSpikeTest` (cluster
 | Risk accounts (enabled, executed exposure) | `BlpRiskState` | `T_ACCOUNT` | `bootstrapAccount` | n/a | spike: executedNotional survives both recoveries | Complete |
 | Risk securities (enabled, restricted, price freshness) | `BlpRiskState` | `T_SECURITY` | `bootstrapSecurity` | n/a | spike: post-recovery orders accepted (would reject UNKNOWN_SECURITY if lost) | Complete |
 | Reservation aggregates | `BlpRiskState` account/exposure arrays | deliberately NOT captured | rebuilt via `reaccumulateReservation` from order rows | aggregates ≡ per-order rows by construction | spike: reservedNotional exact across snapshot+tail, zero-tail, duplicate-retry, and fill-out | Complete (derived by design, FR-IMRG21) |
-| Idempotency keys/decisions/refs + retention (eviction) order | `BlpRiskState` | `T_IDEMPOTENCY` in retention order | `bootstrapIdempotency` in write order | n/a | spike: key retried after TWO recoveries answers original ref 2, reserves nothing; codec: `idempotencyEntriesSurviveRestore` | Complete |
+| Idempotency keys/decisions/refs + retention (eviction) order | `BlpRiskState` | `T_IDEMPOTENCY` in retention order | `bootstrapIdempotency` in write order | n/a | spike: key retried after TWO recoveries answers original ref 2, reserves nothing; codec: `idempotencyEntriesSurviveRestore`, and `raisedIdempotencyCapacityRidesTheSnapshotCompletelyAtAMeasuredCost` asserts all 256Ki entries reach the snapshot at a measured 28 bytes each | Complete |
 | Idempotency evicted-history count (`idempotencyInsertions`/frontier) | `BlpRiskState` | not captured | resets to restored size | n/a | no external consumer | Non-authoritative (telemetry) |
 | Symbol identity (ticker ↔ securityId) | `SymbolTable` at the ingress edge (`symbols.tab`) | not cluster state | — | — | — | **Defect F2 (open)**: see findings |
 | Gateway control-feed admission state | `GatewayReplicaStore` etc., outside the deterministic core | excluded by ADR-045 split-readiness contract | — | admission waits for validity at/beyond recovery boundary | 3-member/kind phase | Needs ground-truth check (workstream 4) |
@@ -77,7 +77,9 @@ ADR-045 removes all side-channel input). Tests: `AeronClusterSpikeTest` (cluster
   a sequenced ingress event so the mapping is replicated/snapshotted state, and gateways read
   it from the cluster. Until then the single-gateway file persistence carries it — the same
   guarantee as the parent state, unchanged by this workstream.
-- **F3 — configuration identity (open check).** Pool sizes, risk limits, idempotency capacity,
+- **F3 — configuration identity (open check).** Pool sizes, risk limits, idempotency capacity
+  (raised 1024 → 256Ki in this state — a member left at the old value would evict a resend its
+  peers still answer, i.e. divergence, so it is config identity in the strict sense),
   and now the book geometry (`BOOK_LEVELS`, `BOOK_TICK_PX`) shape deterministic behavior — a
   differing grid or band would place the same order at a different level or reject a limit one
   member accepts. Members with differing values would diverge on identical logs. Book geometry
