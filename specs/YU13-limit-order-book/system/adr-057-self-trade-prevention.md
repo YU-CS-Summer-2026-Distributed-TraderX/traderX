@@ -241,6 +241,15 @@ be verified, not assumed, when the code lands.
   ever cancels the *resting* side, so the replaced order can never be STP-cancelled — a client who
   asked only to modify an order can never be left with nothing. It *can* cause its own other resting
   orders to be cancelled, inside the same apply. Ordering is fixed by the code path, not by timing.
+- **A rolling member upgrade is a divergence window, and this policy cannot be rolled gradually.**
+  Observed live: mid-rollout the StatefulSet ran member 2 on the STP build while members 0 and 1
+  were still on the old one. A self-cross applied in that window fills on two members and cancels on
+  the third — three state machines, one log, three answers. Nothing in the system prevents it,
+  because the policy is a compile-time property rather than replicated state. The operational rule
+  is therefore: roll all three members with no self-crossing traffic in flight (or accept the
+  window). Note that the *same* sequenced control event that makes STP per-account (see §*Scope*)
+  is also what would make it safely rollable — the members would agree because the policy would be
+  in the log, not in the binary. That is a second, independent argument for the upgrade.
 - The engine counts STP cancels (`traderx_stp_cancels`, per member) so the rate is measurable
   instead of inferred. It is telemetry, not replicated state — like `ordersNew` and `ordersCancel`,
   it generates no identifier and is deliberately not snapshotted.
