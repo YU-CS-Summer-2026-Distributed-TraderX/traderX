@@ -30,6 +30,11 @@ import java.lang.invoke.VarHandle;
  * order's limit; the security's last price is an OUTPUT of matching (the last trade
  * price), never a fill trigger. Market orders (no limit price) execute immediately
  * against the book and cancel any unfilled remainder — they never rest.
+ *
+ * Self-trade prevention is GLOBAL and cancel-oldest (ADR-057): when an aggressor meets a resting
+ * order of its own account, the resting order is cancelled and the aggressor continues into the
+ * liquidity behind it. The policy is a fixed property of the engine, not a per-order or per-account
+ * choice — see the ADR for why that is a deliberate simplification and what the upgrade costs.
  */
 public final class MatchingEngine implements EventHandler<InputEvent> {
     public static final int SNAPSHOT_ORDER_TUPLE_LENGTH = 15;
@@ -92,6 +97,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long priceTicks;
     private long tradesNew;
     private long controlEvents;
+    private long selfTradesPrevented;   // ADR-057: resting orders cancelled by cancel-oldest STP
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
     private volatile int pinCpu = -1;   // perf profile: BLP CPU to pin on start (<0 = unpinned)
@@ -654,6 +660,18 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 break;
             }
             final RestingOrder r = book.headAt(restingSide, opp);
+            // Self-trade prevention, cancel-oldest (ADR-057). One int compare against replicated
+            // state on the apply thread, so every member and every replay reaches it identically.
+            // Cancel-oldest is not a preference: cross() re-reads headAt each iteration, so a
+            // policy that SKIPS a self order without removing it returns the same order forever
+            // and the apply loop never terminates — on all three members and on replay. Removing
+            // the head is what lets the loop advance, and it is also the only policy that lets the
+            // aggressor reach genuine counterparties queued BEHIND its own stale quote.
+            if (r.accountId == a.accountId) {
+                preventSelfTrade(r, e, book);
+                opp = buy ? book.bestAskSlot() : book.bestBidSlot();
+                continue;
+            }
             final int fillQty = Math.min(a.remaining, r.remaining);
             lastPxBySecurity[a.securityId] = levelPx;   // the last trade price is a matching OUTPUT
             applyMatchFill(r, fillQty, levelPx, e, OutputEvent.FLAG_RESTING_UPDATE, book);
@@ -712,6 +730,41 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         final long tradeSeq = ++tradeCounter;
         out.emitFillWithTradeAndPosition(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks,
             e.seq, flags, lastPxBySecurity[o.securityId], e.ingressNanos);
+    }
+
+    /**
+     * Cancel a resting order the aggressor would otherwise have self-traded against (ADR-057).
+     *
+     * Mechanically identical to {@link #onCancel} — unlink, release the reservation exactly once,
+     * mark terminal, emit — with two differences that are the whole client-facing contract:
+     *
+     * <ul>
+     *   <li>{@code riskReason = SELF_TRADE_PREVENTED}, which reaches the client on egress ack byte
+     *       22. It is what distinguishes "the venue cancelled this to prevent a self-trade" from
+     *       "my own cancel succeeded" (reason ACCEPTED) and from a rejection (a different kind).</li>
+     *   <li>{@code FLAG_RESTING_UPDATE}, because this is an UNSOLICITED cancel of an order that is
+     *       not the input being applied. Without it the gateway's first-direct-ack correlation
+     *       would answer the aggressor's own offer with a CANCELED ack for a different order, and
+     *       the batch outstanding count would go wrong (FR-LOB07).</li>
+     * </ul>
+     *
+     * The aggressor is never the one cancelled, which is what makes the compound case with an
+     * atomic replace decidable: a replace's new order can trigger this against the participant's
+     * other resting orders, but can never itself be removed by it.
+     */
+    private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
+        book.remove(r);   // unlink while remaining is still open qty (the level aggregate subtracts it)
+        if (risk != null) {
+            risk.release(r.accountId, r.securityId, r.side, r);   // released exactly once (FR-IMRG16)
+        }
+        r.status = RestingOrder.STATUS_CANCELED;
+        r.remaining = 0;
+        r.riskReason = (byte) RiskReason.SELF_TRADE_PREVENTED.ordinal();
+        r.updatedAtMillis = e.eventTimeMillis;
+        markTerminal(r.orderRef);
+        selfTradesPrevented++;
+        out.emitOrderUpdate(r, e.seq, OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_RESTING_UPDATE,
+            true, lastPxBySecurity[r.securityId], e.ingressNanos);
     }
 
     /** Cancel a market order's unfilled remainder in place: market orders never rest (FR-LOB04). */
@@ -1000,6 +1053,13 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long countControlEvents() {
         readFence();
         return controlEvents;
+    }
+
+    /** Resting orders cancelled by self-trade prevention (ADR-057). The authoritative count: egress
+     *  acks are best-effort and drop under flood, so a gateway-side tally undercounts. */
+    public long countSelfTradesPrevented() {
+        readFence();
+        return selfTradesPrevented;
     }
 
     /** The authoritative risk state (null when risk is disabled). Edge readers must quiesce or

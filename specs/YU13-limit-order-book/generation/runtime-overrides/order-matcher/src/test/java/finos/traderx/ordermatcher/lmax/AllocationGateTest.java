@@ -68,6 +68,14 @@ class AllocationGateTest {
     // $0..$131.07 at the 0.001 grid): the crossing level must stay in-band or every mix order
     // rejects PRICE_COLLAR and the gate measures nothing.
     private static final long CROSS_PX = 100_000_000L;
+    // Two-account flow (ADR-057). The gate used ONE account for both sides, so every cross in it
+    // was a self-trade: under cancel-oldest STP it booked zero trades and the gate's own
+    // "paired trade booking did not run" sanity assertion caught it — which is exactly what that
+    // assertion is for. Maker and taker are now distinct, and ACCT_SELF drives the STP branch on
+    // purpose so the new code path is inside the measured window rather than outside it.
+    private static final int ACCT_MAKER = 43;
+    private static final int ACCT_TAKER = 42;
+    private static final int ACCT_SELF = 44;
     // Above the largest ref the biggest (noGc 3M-event) budget can issue. ordersByRef is a
     // bounded map now (sized by open+retained, not the highest ref), so a huge ref costs one
     // entry — the warm-up publish at REF_CEILING-1 keeps the sparse-high-ref path exercised.
@@ -96,7 +104,9 @@ class AllocationGateTest {
     void hotPathIsAllocationFreeInSteadyStateWithRiskGating() throws Exception {
         BlpRiskState risk = new BlpRiskState(64, SECURITIES + 8, 16_384, 1024,
             Long.MAX_VALUE / 4, Integer.MAX_VALUE, Long.MAX_VALUE / 4, 30_000L, new RiskMetrics());
-        risk.putAccount(42, true);
+        risk.putAccount(ACCT_TAKER, true);
+        risk.putAccount(ACCT_MAKER, true);
+        risk.putAccount(ACCT_SELF, true);
         for (int sec = 0; sec < SECURITIES + 2; sec++) {
             risk.putSecurity(sec, true); // 0..SECURITIES-1 (resting book) + 4,5 (warm-up edge cases)
         }
@@ -176,7 +186,7 @@ class AllocationGateTest {
             }
             for (int sec = 0; sec < SECURITIES; sec++) { // market-order branches: cross + remainder cancel
                 publishOrder(ring, nextRef++, sec, SIDE_SELL, CROSS_PX, 300);
-                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, 42, sec, SIDE_BUY, 400, Px.NONE, 0L);
+                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, ACCT_TAKER, sec, SIDE_BUY, 400, Px.NONE, 0L);
             }
             publish(ring, InputEvent.TYPE_ORDER_CANCEL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
             publish(ring, InputEvent.TYPE_FORCE_FILL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
@@ -210,7 +220,9 @@ class AllocationGateTest {
 
             // Sanity: the measured phase really drove the full crossing mix through the BLP.
             long steadyCycles = steadyEvents / 16L;
-            assertTrue(blp.countPriceTicks() >= steadyCycles * 9L, "tick mix did not run");
+            assertTrue(blp.countPriceTicks() >= steadyCycles * 7L, "tick mix did not run");
+            assertTrue(blp.countSelfTradesPrevented() >= steadyCycles - 16L,
+                "self-trade-prevention branch did not run inside the measured window");
             assertTrue(blp.countOrdersNew() >= steadyCycles * 4L - 16L, "create mix did not run");
             assertTrue(blp.autoFillSuccess() >= steadyCycles * 2L - 16L, "crossing mix did not run");
             assertTrue(blp.tradeCounter() >= steadyCycles * 4L - 16L, "paired trade booking did not run");
@@ -235,8 +247,8 @@ class AllocationGateTest {
      * The shared warm-up/steady-state mix; identical branch profile in both phases so the
      * JIT compiles exactly the code the measurement runs. Per 16 events: 1 resting sell,
      * 1 exactly-crossing buy, 1 resting sell + 1 partially-crossing market buy (remainder
-     * cancel), 1 terminal cancel, 1 terminal force-fill, 1 unknown-order command, 9 price
-     * ticks. The book is level-neutral per cycle: every rested order is fully consumed
+     * cancel), 1 terminal cancel, 1 terminal force-fill, 1 unknown-order command, 1 self-crossing
+     * sell + market buy pair (the ADR-057 cancel-oldest branch), 7 price ticks. The book is level-neutral per cycle: every rested order is fully consumed
      * within its own cycle.
      */
     private static int runMix(RingBuffer<InputEvent> ring, int nextRef, int events,
@@ -258,11 +270,20 @@ class AllocationGateTest {
                 publishOrder(ring, nextRef++, sec, SIDE_SELL, CROSS_PX, 300);
             } else if (m == 8) {
                 // market buy: fills the 300 resting, cancels the 100 remainder in place
-                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, 42, sec, SIDE_BUY, 400, Px.NONE, 0L);
+                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, ACCT_TAKER, sec, SIDE_BUY, 400, Px.NONE, 0L);
             } else if (m == 10) {
                 publish(ring, InputEvent.TYPE_FORCE_FILL, terminalRef, 0, 0, (byte) 0, 0, 0L, 0L);
             } else if (m == 12) {
                 publish(ring, InputEvent.TYPE_ORDER_CANCEL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
+            } else if (m == 14) {
+                // STP pair, level-neutral by construction: this ask is the only one at CROSS_PX...
+                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, ACCT_SELF, sec, SIDE_SELL, 500,
+                    CROSS_PX, 0L);
+            } else if (m == 15) {
+                // ...and this MARKET buy from the same account cancels it (cancel-oldest) and then
+                // finds no asks left, so its own remainder is cancelled in place and it never rests.
+                publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, ACCT_SELF, sec, SIDE_BUY, 500,
+                    Px.NONE, 0L);
             } else {
                 publishTick(ring, sec, 60_000_000L + ((i & 7) * 1_000_000L));
             }
@@ -272,7 +293,8 @@ class AllocationGateTest {
 
     private static void publishOrder(RingBuffer<InputEvent> ring, int orderRef, int securityId,
                                      byte side, long limitPx, int qty) {
-        publish(ring, InputEvent.TYPE_ORDER_NEW, orderRef, 42, securityId, side, qty, limitPx, 0L);
+        publish(ring, InputEvent.TYPE_ORDER_NEW, orderRef,
+            side == SIDE_SELL ? ACCT_MAKER : ACCT_TAKER, securityId, side, qty, limitPx, 0L);
     }
 
     private static void publishTick(RingBuffer<InputEvent> ring, int securityId, long priceTicks) {
