@@ -8,6 +8,8 @@ import io.aeron.cluster.service.ClusteredService;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
+import org.agrona.concurrent.IdleStrategy;
+import org.agrona.concurrent.SleepingMillisIdleStrategy;
 import org.agrona.concurrent.NoOpLock;
 
 import java.io.File;
@@ -81,6 +83,32 @@ public final class ClusterNodeConfig {
         return sb.toString();
     }
 
+    /**
+     * Opt-in non-spinning idle for LOCAL correctness work (kind), off by default.
+     *
+     * <p>A member runs four Aeron agent threads — media driver (SHARED), archive (SHARED),
+     * consensus module, clustered service — and Aeron's default backoff idle parks for at most 1ms,
+     * so an IDLE member still burns most of a core. Measured on a kind cluster: four nodes at
+     * 145–205% CPU each on an 11-CPU Docker VM doing nothing at all. That is what produced a 2.3x
+     * run-to-run throughput spread on identical bytes, the SnapshotBarrier 50ms timing flake, the
+     * ThreeMemberCluster election timeout, and eventually a kube-apiserver that fell over
+     * mid-proof.
+     *
+     * <p>{@code CLUSTER_IDLE_SLEEP_MS=1} trades that away for a millisecond of latency per idle
+     * poll. It is the right trade for the thing kind is actually for — correctness and HA proofs,
+     * where the assertions are on state, not on time — and it DISQUALIFIES the deployment for any
+     * latency or throughput number. Default 0 = Aeron's own strategies, so every measurement taken
+     * before this existed remains reproducible.
+     */
+    static long sleepingIdleMs() {
+        final String v = System.getenv("CLUSTER_IDLE_SLEEP_MS");
+        return v == null || v.isEmpty() ? 0L : Long.parseLong(v);
+    }
+
+    static IdleStrategy sleepingIdle() {
+        return new SleepingMillisIdleStrategy(sleepingIdleMs());
+    }
+
     public static Contexts contexts(final int memberId, final List<String> hostnames, final int portBase,
                                     final String aeronDir, final File baseDir,
                                     final ClusteredService service, final boolean cleanStart) {
@@ -93,6 +121,9 @@ public final class ClusterNodeConfig {
             .threadingMode(ThreadingMode.SHARED)
             .termBufferSparseFile(true)
             .dirDeleteOnStart(true);
+        if (sleepingIdleMs() > 0) {
+            mediaDriverContext.sharedIdleStrategy(sleepingIdle());
+        }
 
         final Archive.Context archiveContext = new Archive.Context()
             .aeronDirectoryName(aeronDir)
@@ -105,6 +136,9 @@ public final class ClusterNodeConfig {
             .recordingEventsEnabled(false)
             .threadingMode(ArchiveThreadingMode.SHARED)
             .deleteArchiveOnStart(cleanStart);
+        if (sleepingIdleMs() > 0) {
+            archiveContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        }
 
         final AeronArchive.Context localArchiveClient = new AeronArchive.Context()
             .lock(NoOpLock.INSTANCE)
@@ -128,6 +162,9 @@ public final class ClusterNodeConfig {
         // Env-tunable (ns = ms * 1e6) so the sweet spot can be found without a rebuild; 0 = keep
         // the Aeron default. Constraint: heartbeatTimeout > heartbeatInterval, election >= interval.
         applyTimeoutMs(consensusModuleContext);
+        if (sleepingIdleMs() > 0) {
+            consensusModuleContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        }
 
         final ClusteredServiceContainer.Context containerContext = new ClusteredServiceContainer.Context()
             .aeronDirectoryName(aeronDir)
@@ -135,6 +172,9 @@ public final class ClusterNodeConfig {
             .clusterDir(clusterDir)
             .clusteredService(service)
             .serviceId(0);
+        if (sleepingIdleMs() > 0) {
+            containerContext.idleStrategySupplier(ClusterNodeConfig::sleepingIdle);
+        }
 
         return new Contexts(mediaDriverContext, archiveContext, consensusModuleContext, containerContext);
     }
