@@ -138,3 +138,27 @@ number the consumer reconciles its base NPV against.
   own header so any discrepancy hunt starts from a written convention rather than a guess.
 - Whether computed risk results flow back for a UI or dashboard surface. The subject family is
   named so `risk.analytics.*` slots alongside `risk.extract.*` with nothing renamed.
+
+## Lineage reconciliation with YU13 (2026-07-22)
+
+**Code** — cherry-picks `cdb62dc0` (complete gateway batches on the applied high-water fence) and
+`77ab0b15` (1 MiB gateway Aeron term buffers) landed on 2026-07-21 but were never regenerated or
+tested. Verified 2026-07-22: `generate-state.sh YU15-eod-risk-extract` EXIT=0, generated-tree suite
+**258 / 0** (the recorded baseline, unchanged), all four allocation gates and both Epsilon gates
+(`noGcTest` + `riskNoGcTest`) green.
+
+**Manifests — nothing to merge here, and not for the reason the brief assumed.** The 7-22 brief
+expected YU15 to inherit YU14's `gke/` copies "through the layer chain". It does not.
+`pipeline/render-state-<state>.sh` copies `generation/kubernetes` with a plain per-state `cp -R`
+from that state's own spec dir — there is **no cross-layer overlay for the kubernetes tree at all**.
+Consequence: `generated/.../YU15-eod-risk-extract/runtime/kubernetes/` contains only `cluster/`
+(the kind tier) and **no `gke/` directory whatsoever**.
+
+**This blocks the `gs://` delivery proof (brief 04).** A GKE deploy of YU15 has no manifests to
+apply. Applying YU14's `specs/YU14-.../generation/kubernetes/cluster/gke/` would run the
+`cluster-node:yu14` image, not YU15. YU15 needs its own `generation/kubernetes/cluster/gke/`
+directory — the YU14 set retagged `:yu15`, plus the `gs://` sink URI and the HMAC secret pair —
+before that proof can run. Not built here: it is brief 04's scope and needs the cluster to verify.
+
+The kind path (`generation/kubernetes/cluster/`) is unaffected by the YU13 GKE campaign and was
+correctly left alone.
