@@ -31,7 +31,11 @@ public final class RestingOrder implements finos.traderx.ordermatcher.risk.Reser
     public int remaining;
     public long limitPx;
     public byte status;
-    public byte riskReason;       // RiskReason ordinal; ACCEPTED (0) unless BLP-rejected (FR-IMRG15)
+    // RiskReason ordinal; ACCEPTED (0) unless BLP-rejected (FR-IMRG15), or SELF_TRADE_PREVENTED on
+    // an order the venue cancelled to stop a self-trade (ADR-057) — the one value that rides a
+    // CANCELED rather than a REJECTED order. Serialized in the snapshot order tuple, so the enum is
+    // append-only.
+    public byte riskReason;
     public long lastExecPx = Px.NONE;
     public int lastFillQty;
     public long createdAtMillis;

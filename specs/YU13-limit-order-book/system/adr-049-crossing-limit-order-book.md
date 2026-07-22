@@ -36,5 +36,8 @@ member and on every replay. Matching adds no clocks, no comparators, and no new 
   bench flow must be genuinely two-sided to produce fills at all.
 - The threshold half-fill policy and the tick-driven fill scan are removed; every inherited test
   that drove fills with ticks restates its proof through crossing flow.
-- Self-crossing (an account matching its own resting order) is permitted; the book has no
-  self-trade prevention.
+- ~~Self-crossing (an account matching its own resting order) is permitted; the book has no
+  self-trade prevention.~~ **Superseded by [ADR-057](adr-057-self-trade-prevention.md)**, which is
+  implemented: an aggressor meeting a resting order of its own account cancels that resting order
+  (cancel-oldest) and continues. Self-crossing is no longer possible. Edited here rather than left
+  to be contradicted elsewhere, because this line is the one a reader checks.

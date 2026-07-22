@@ -23,6 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class LimitOrderBookTest {
     private static final int ACCT = 22214;
     private static final int ACCT2 = 44044;
+    // A third account for aggressors in scenarios that are about price/time priority rather than
+    // self-trade prevention: with cancel-oldest STP (ADR-057) an aggressor sharing an account with
+    // any resting order it meets now cancels it instead of filling it.
+    private static final int ACCT3 = 62654;
     private static final int SEC = 2;
     private static final long PX150 = 150_000_000L;   // $150.00 — on the cent grid
     private static final long CENT = 10_000L;
@@ -40,6 +44,7 @@ class LimitOrderBookTest {
                 Long.MAX_VALUE / 4, Long.MAX_VALUE / 4, new RiskMetrics());
             risk.putAccount(ACCT, true);
             risk.putAccount(ACCT2, true);
+            risk.putAccount(ACCT3, true);
             risk.putSecurity(SEC, true);
             risk.putLimits(50_000_000, Long.MAX_VALUE / 4);
         }
@@ -166,7 +171,7 @@ class LimitOrderBookTest {
         int sellLowSecond = limit(ACCT2, InputEvent.SIDE_SELL, 100, PX150);   // 150.00, arrives 2nd
         drain();
 
-        int buy = limit(ACCT2, InputEvent.SIDE_BUY, 250, PX150 + CENT);
+        int buy = limit(ACCT3, InputEvent.SIDE_BUY, 250, PX150 + CENT);
         List<Emitted> events = drain();
 
         // Price priority: both 150.00 orders fill before the 150.01 order.
@@ -293,7 +298,7 @@ class LimitOrderBookTest {
         cancel(middle);
         drain();
 
-        int buy = limit(ACCT2, InputEvent.SIDE_BUY, 200, PX150);
+        int buy = limit(ACCT3, InputEvent.SIDE_BUY, 200, PX150);
         List<Emitted> events = drain();
         assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, first).kind());
         assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, lastOrder).kind());
@@ -360,5 +365,65 @@ class LimitOrderBookTest {
         limit(ACCT, InputEvent.SIDE_BUY, 75, PX150 - 3 * CENT);     // rests
         MatchingEngine.RecoveryDigest d = engine.recoveryDigest();
         return new long[] { d.orderHash(), d.positionHash(), d.openOrders(), d.tradeCounter() };
+    }
+
+    // ----- self-trade prevention (ADR-057: cancel-oldest) -------------------------------------
+
+    @Test
+    void selfMatchCancelsTheRestingOrderAndLetsTheAggressorReachRealLiquidity() {
+        newEngine(false);
+        // The ADR's worked scenario: A(other) 30 and S(self) 40 at 150.00, B(other) 50 at 150.02.
+        int other30 = limit(ACCT2, InputEvent.SIDE_SELL, 30, PX150);
+        int self40 = limit(ACCT, InputEvent.SIDE_SELL, 40, PX150);
+        int other50 = limit(ACCT2, InputEvent.SIDE_SELL, 50, PX150 + 2 * CENT);
+        drain();
+
+        int aggressor = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150 + 5 * CENT);
+        List<Emitted> events = drain();
+
+        // The self order is CANCELED, not filled, and says why.
+        Emitted selfUpdate = lastOrderUpdate(events, self40);
+        assertEquals(OutputEvent.KIND_ORDER_CANCELED, selfUpdate.kind());
+        assertEquals((byte) RiskReason.SELF_TRADE_PREVENTED.ordinal(), selfUpdate.riskReason());
+        assertTrue((selfUpdate.flags() & OutputEvent.FLAG_RESTING_UPDATE) != 0,
+            "an unsolicited STP cancel must never complete the aggressor's own ack correlation");
+
+        // This is the whole argument for cancel-oldest: the aggressor reaches BOTH genuine
+        // counterparties, including the one queued behind its own stale quote.
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, other30).kind());
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, other50).kind());
+        assertEquals(20, lastOrderUpdate(events, aggressor).remainingQty(), "30 + 50 filled, 20 rests");
+        assertEquals(1, engine.countSelfTradesPrevented());
+        // Nothing self-traded: 30 + 50 on each side.
+        assertEquals(4, engine.tradeCounter());
+    }
+
+    @Test
+    void selfMatchReleasesTheCancelledOrdersReservationExactlyOnce() {
+        newEngine(true);
+        int self = limit(ACCT, InputEvent.SIDE_SELL, 40, PX150);
+        long reservedWhileResting = engine.riskState().reservedSellNotional(ACCT);
+        assertNotEquals(0L, reservedWhileResting, "a resting sell holds a reservation");
+        limit(ACCT, InputEvent.SIDE_BUY, 40, PX150);   // self-marketable: STP cancels `self`
+        assertEquals(OutputEvent.KIND_ORDER_CANCELED, lastOrderUpdate(drain(), self).kind());
+        assertEquals(0L, engine.riskState().reservedSellNotional(ACCT),
+            "the STP cancel released the resting order's exposure, like any other cancel");
+        assertEquals(0, engine.tradeCounter(), "a self-trade booked nothing");
+    }
+
+    @Test
+    void aWholeSelfStackedLevelIsClearedInOneApplyWithoutWedging() {
+        // The termination property: cross() re-reads headAt each iteration, so a policy that
+        // skipped instead of removing would spin here forever on every member and on replay.
+        newEngine(false);
+        for (int i = 0; i < 50; i++) {
+            limit(ACCT, InputEvent.SIDE_SELL, 10, PX150);
+        }
+        drain();
+        limit(ACCT, InputEvent.SIDE_BUY, 500, PX150);
+        drain();
+        assertEquals(50, engine.countSelfTradesPrevented());
+        assertEquals(0, engine.tradeCounter());
+        assertEquals(1, engine.book(SEC).openOrders(), "only the aggressor is left resting");
     }
 }

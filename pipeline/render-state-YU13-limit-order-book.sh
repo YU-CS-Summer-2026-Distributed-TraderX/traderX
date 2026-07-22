@@ -67,6 +67,7 @@ for source in \
   system/adr-049-crossing-limit-order-book.md \
   system/adr-050-banded-price-level-arrays.md \
   system/adr-051-last-trade-price-output.md \
+  system/adr-057-self-trade-prevention.md \
   tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do
