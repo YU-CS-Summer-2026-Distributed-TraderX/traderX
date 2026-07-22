@@ -63,6 +63,7 @@ flowchart TB
   SYU12_aeron_cluster["YU12-aeron-cluster: Aeron Cluster BLP Consensus"]
   SYU13_limit_order_book["YU13-limit-order-book: Crossing Limit-Order Book"]
   SYU14_listed_equity_options["YU14-listed-equity-options: Listed Equity Options"]
+  SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -90,6 +91,7 @@ flowchart TB
   SYU11_aeron_replication -.-> SYU12_aeron_cluster
   SYU12_aeron_cluster -.-> SYU13_limit_order_book
   SYU13_limit_order_book -.-> SYU14_listed_equity_options
+  SYU14_listed_equity_options -.-> SYU15_eod_risk_extract
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -119,6 +121,7 @@ flowchart TB
   click SYU12_aeron_cluster href "/specs/YU12-aeron-cluster" "Open State YU12-aeron-cluster Spec Pack"
   click SYU13_limit_order_book href "/specs/YU13-limit-order-book" "Open State YU13-limit-order-book Spec Pack"
   click SYU14_listed_equity_options href "/specs/YU14-listed-equity-options" "Open State YU14-listed-equity-options Spec Pack"
+  click SYU15_eod_risk_extract href "/specs/YU15-eod-risk-extract" "Open State YU15-eod-risk-extract Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -158,6 +161,7 @@ flowchart TB
 | [`YU12-aeron-cluster`](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster/system/architecture) | [link](pathname:///specs/YU12-aeron-cluster/system/runtime-topology) | [link](pathname:///docs/learning/state-YU12-aeron-cluster) | [code/generated-state-YU12-aeron-cluster](https://github.com/finos/traderX/tree/code/generated-state-YU12-aeron-cluster) |
 | [`YU13-limit-order-book`](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book/system/architecture) | [link](pathname:///specs/YU13-limit-order-book/system/runtime-topology) | [link](pathname:///docs/learning/state-YU13-limit-order-book) | [code/generated-state-YU13-limit-order-book](https://github.com/finos/traderX/tree/code/generated-state-YU13-limit-order-book) |
 | [`YU14-listed-equity-options`](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options/system/architecture) | [link](pathname:///specs/YU14-listed-equity-options/system/runtime-topology) | [link](pathname:///docs/learning/state-YU14-listed-equity-options) | [code/generated-state-YU14-listed-equity-options](https://github.com/finos/traderX/tree/code/generated-state-YU14-listed-equity-options) |
+| [`YU15-eod-risk-extract`](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract/system/architecture) | [link](pathname:///specs/YU15-eod-risk-extract/system/runtime-topology) | [link](pathname:///docs/learning/state-YU15-eod-risk-extract) | [code/generated-state-YU15-eod-risk-extract](https://github.com/finos/traderX/tree/code/generated-state-YU15-eod-risk-extract) |
 
 ## Swimlane View
 
@@ -188,6 +192,7 @@ flowchart TB
     SYU12_aeron_cluster["YU12-aeron-cluster: Aeron Cluster BLP Consensus"]
     SYU13_limit_order_book["YU13-limit-order-book: Crossing Limit-Order Book"]
     SYU14_listed_equity_options["YU14-listed-equity-options: Listed Equity Options"]
+    SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -230,6 +235,7 @@ flowchart TB
   SYU11_aeron_replication -.-> SYU12_aeron_cluster
   SYU12_aeron_cluster -.-> SYU13_limit_order_book
   SYU13_limit_order_book -.-> SYU14_listed_equity_options
+  SYU14_listed_equity_options -.-> SYU15_eod_risk_extract
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

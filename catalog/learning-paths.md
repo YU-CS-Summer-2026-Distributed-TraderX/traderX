@@ -39,6 +39,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU12-aeron-cluster`
 - `YU13-limit-order-book`
 - `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ### Functional
 
@@ -67,6 +68,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU12-aeron-cluster`
 - `YU13-limit-order-book`
 - `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ### Convergence
 
@@ -107,3 +109,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU12-aeron-cluster` | YU11-aeron-replication | `none` | `false` | `optional` | `specs/YU12-aeron-cluster/spec.md` |
 | `YU13-limit-order-book` | YU12-aeron-cluster | `none` | `false` | `optional` | `specs/YU13-limit-order-book/spec.md` |
 | `YU14-listed-equity-options` | YU13-limit-order-book | `none` | `false` | `optional` | `specs/YU14-listed-equity-options/spec.md` |
+| `YU15-eod-risk-extract` | YU14-listed-equity-options | `none` | `false` | `optional` | `specs/YU15-eod-risk-extract/spec.md` |

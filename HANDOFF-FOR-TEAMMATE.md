@@ -6,7 +6,7 @@
 
 > **Spec-kit lineage update (2026-07-21):** the team-authored state line now continues through
 > `YU10-fix-ingress`, `YU11-aeron-replication`, `YU12-aeron-cluster`,
-> `YU13-limit-order-book`, and `YU14-listed-equity-options`. YU11 is parented on
+> `YU13-limit-order-book`, `YU14-listed-equity-options`, and `YU15-eod-risk-extract`. YU11 is parented on
 > YU10 and adds a rollback-safe Aeron+SBE BLP replication transport while retaining NATS as the
 > default. YU12 is parented on YU11 and moves BLP HA to Aeron Cluster Raft consensus hosting the
 > deterministic matching/risk core. YU13 is parented on YU12 and replaces the price-triggered
@@ -15,7 +15,12 @@
 > serialized into a format-2 snapshot. YU14 is parented on YU13 and adds listed equity options
 > as ordinary securities (unpadded OCC-symbol identity) with a contract-multiplier-aware risk
 > gate and a format-3 snapshot; counterparty/currency/notional live as extract-time reference
-> data in its spec pack. The
+> data in its spec pack. YU15 is parented on YU14 and produces the end-of-day risk extract for the
+> external pricing/risk engine: a sequenced marker names a consensus sequence, every member renders
+> the identical position cut at it, and the leader's cut is joined with the published closing prices
+> and the counterparty mapping into one immutable, byte-reproducible CSV fixture announced on
+> `risk.extract.ready`. Positions come from the replicated state machine rather than the SQL read
+> model, so every account is frozen at the same instant. The
 > historical GKE branch/runbook below remains useful operational background; use the selected
 > YU state pack and its generated artifacts as the source for state-specific work.
 

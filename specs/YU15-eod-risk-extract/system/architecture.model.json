@@ -1,0 +1,39 @@
+{
+  "title": "YU15-eod-risk-extract architecture",
+  "stateId": "YU15-eod-risk-extract",
+  "parentState": "YU14-listed-equity-options",
+  "description": "The end-of-day risk extract turns the completion of the overnight P&L batch into one immutable, byte-reproducible portfolio fixture. eod.pnl.done triggers the producer; a sequenced risk-extract marker through the consensus log names a sequence N; every member renders the identical position cut at N and the leader publishes it over NATS; the producer joins that cut with the published closing-price version and the counterparty reference data, sends a second marker to witness that nothing traded during the build, and writes one write-once object announced on risk.extract.ready. Positions come from the replicated state machine, never from the asynchronous SQL read model — state at a consensus sequence is a consistent cut by construction, which is what makes the consumer's VaR mathematically valid.",
+  "inheritsFrom": "YU14-listed-equity-options",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    { "id": "eod_chain", "kind": "service", "label": "YU06 EOD batch chain", "description": "trade-processor publishes the immutable closing-price version; position-service marks against exactly that version and emits eod.pnl.done. Inherited unchanged — this state adds a subscriber, not a step." },
+    { "id": "pnl_done", "kind": "queue", "label": "eod.pnl.done (JetStream)", "description": "The only trigger. Chosen over eod.prices.ready because it fires after P&L exists, so the consumer's reconciliation target is already written. Durable consumer, so a failed extract is redelivered rather than lost." },
+    { "id": "producer", "kind": "service", "label": "Risk-extract producer", "description": "RiskExtractMain: same image as the node and gateway, different main. Opens a fresh cluster session per batch, offers the marker, receives the cut, joins marks and reference data, writes the object, announces it." },
+    { "id": "consensus", "kind": "service", "label": "Aeron Cluster consensus (leader + followers)", "description": "Inherited: one totally-ordered committed log applied identically by every member. The marker is ordinary ingress — it occupies a sequence and mutates nothing." },
+    { "id": "marker", "kind": "service", "label": "Sequenced extract marker (SBE template 8)", "description": "Carries only the stamp: request id, session date, closing-price version. On apply, every member advances appliedSeq, renders the cut, and records its SHA-256. Routed by template id ahead of the order-flow branch, so the hot path is untouched." },
+    { "id": "engine_state", "kind": "store", "label": "Replicated positions + last trade prices + multipliers", "description": "The engine's PositionBook (quantity, weighted average cost), lastPxBySecurity from YU13, and the YU14 contract multiplier — all replicated state, all read at the same sequence." },
+    { "id": "cut", "kind": "queue", "label": "risk.extract.cut (NATS)", "description": "One message carrying the whole cut and its own row count, so truncation is detectable. Leader-only publish over a non-blocking SPSC queue and daemon thread — the ADR-048 shape, so the apply thread never blocks on the network." },
+    { "id": "price_snapshot", "kind": "store", "label": "eod_price_snapshot (published closes)", "description": "Immutable rows addressed by (session_date, version). Safe to read at any time precisely because a correction is a new version, never an update — unlike the positions read model." },
+    { "id": "reference_data", "kind": "store", "label": "counterparties.csv (accountId to counterparty)", "description": "Inherited from YU14 and rendered into the image. Supplies counterparty identifier, netting set, and currency as row attributes; the extract never nets by them." },
+    { "id": "fixture", "kind": "store", "label": "Immutable extract object (+ its cut)", "description": "Write-once under (sessionDate, priceVersion, consensusSequence), file:// on kind and gs:// in cloud. The cut is stored beside the fixture so the fixture can be rebuilt and byte-compared without the cluster." },
+    { "id": "ready", "kind": "queue", "label": "risk.extract.ready (NATS)", "description": "Carries the URI, the stamp, the row count, both hashes, and the quiescence witness sequence. Named so a risk.analytics.* return path slots in later without renaming this one." },
+    { "id": "risk_engine", "kind": "external", "label": "Pricing and risk engine", "description": "Pulls the object when announced, prices it, and computes VaR. Applies netting and CSA treatment itself; scores the identical portfolio across CPU, GPU, and TPU because the bytes are identical." }
+  ],
+  "edges": [
+    { "from": "eod_chain", "to": "pnl_done", "label": "P&L marked against the published version" },
+    { "from": "pnl_done", "to": "producer", "label": "durable trigger (sessionDate, version)" },
+    { "from": "producer", "to": "consensus", "label": "risk-extract marker as sequenced ingress" },
+    { "from": "consensus", "to": "marker", "label": "committed marker, applied on every member" },
+    { "from": "marker", "to": "engine_state", "label": "read state at sequence N" },
+    { "from": "engine_state", "to": "cut", "label": "canonical cut rendered + hashed (leader publishes)" },
+    { "from": "cut", "to": "producer", "label": "one message, self-counting rows" },
+    { "from": "price_snapshot", "to": "producer", "label": "published closes for (sessionDate, version)" },
+    { "from": "reference_data", "to": "producer", "label": "counterparty, netting set, currency by accountId" },
+    { "from": "producer", "to": "consensus", "label": "second marker: quiescence witness (must land at N+1)" },
+    { "from": "producer", "to": "fixture", "label": "write-once object + its cut" },
+    { "from": "producer", "to": "ready", "label": "announce URI + stamp + hashes" },
+    { "from": "ready", "to": "risk_engine", "label": "pull on announcement" },
+    { "from": "fixture", "to": "risk_engine", "label": "byte-identical portfolio fixture" }
+  ]
+}

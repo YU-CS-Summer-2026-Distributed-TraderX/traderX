@@ -41,6 +41,7 @@ tracks:
       - YU12-aeron-cluster
       - YU13-limit-order-book
       - YU14-listed-equity-options
+      - YU15-eod-risk-extract
   functional:
     description: "Functional capability expansion states."
     states:
@@ -69,6 +70,7 @@ tracks:
       - YU12-aeron-cluster
       - YU13-limit-order-book
       - YU14-listed-equity-options
+      - YU15-eod-risk-extract
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -273,3 +275,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU14-listed-equity-options/spec.md
+  - id: YU15-eod-risk-extract
+    previous:
+      - YU14-listed-equity-options
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU15-eod-risk-extract/spec.md

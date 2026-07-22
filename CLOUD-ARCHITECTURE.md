@@ -7,8 +7,9 @@ order-matcher (BLP) HA/single-BLP modes, throughput characteristics, and the ope
 
 ## Spec-kit lineage note
 
-The team-authored state lineage now reaches `YU14-listed-equity-options`, parented on
-`YU13-limit-order-book` (itself parented on `YU12-aeron-cluster` → `YU11-aeron-replication` →
+The team-authored state lineage now reaches `YU15-eod-risk-extract`, parented on
+`YU14-listed-equity-options` (itself parented on `YU13-limit-order-book` → `YU12-aeron-cluster` →
+`YU11-aeron-replication` →
 `YU10-fix-ingress`). YU11 keeps the File-backed NATS replication path as the default and adds a
 flag-selected Aeron+SBE path with per-pod Archive sidecars; YU12 replaces the hand-built HA
 machinery with Aeron Cluster Raft consensus (three members, odd quorum) hosting the
@@ -16,10 +17,13 @@ deterministic matching/risk core; YU13 replaces the price-triggered auto-fill ma
 genuine crossing limit-order book (price-time priority, limit/market/cancel, partial fills)
 inside that same ClusteredService, serializing the whole resting book into the cluster
 snapshot; YU14 adds listed equity options as ordinary securities (OCC-symbol identity) with a
-contract-multiplier-aware risk gate and a format-3 snapshot. This document describes the
+contract-multiplier-aware risk gate and a format-3 snapshot; YU15 adds the end-of-day risk
+extract, where a sequenced marker names a consensus sequence, every member renders the identical
+position cut at it, and the leader's cut is joined with the published closing prices into one
+immutable, byte-reproducible portfolio fixture announced on NATS. This document describes the
 inherited GKE baseline and user-run capacity commands; the exact runtime contracts live in
-`specs/YU12-aeron-cluster/`, `specs/YU13-limit-order-book/`, and
-`specs/YU14-listed-equity-options/`.
+`specs/YU12-aeron-cluster/`, `specs/YU13-limit-order-book/`,
+`specs/YU14-listed-equity-options/`, and `specs/YU15-eod-risk-extract/`.
 
 ---
 
