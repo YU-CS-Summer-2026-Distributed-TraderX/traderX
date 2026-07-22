@@ -232,6 +232,42 @@ class ClusterSnapshotCodecTest {
     // ----- fail-closed matrix (unit slice of T-AC11) -----------------------------------------
 
     @Test
+    void raisedIdempotencyCapacityRidesTheSnapshotCompletelyAtAMeasuredCost() {
+        // IDEMPOTENCY_CAPACITY went 1024 -> 256Ki. This set is REPLICATED and SNAPSHOTTED, and
+        // snapshot duration is an apply-thread freeze, so the cost is measured here rather than
+        // assumed: every entry must reach the snapshot, and the marginal bytes must be exactly
+        // 28 per entry (4-byte record type + 3 longs).
+        final MatchingEngineClusteredService source = newLiveService();
+        final int capacity = MatchingEngineClusteredService.IDEMPOTENCY_CAPACITY;
+        for (int i = 1; i <= capacity; i++) {
+            source.risk().bootstrapIdempotency(0x9E3779B97F4A7C15L * i, i, (byte) 0);
+        }
+
+        final long[] totalBytes = { 0 };
+        final int[] idempotencyRecords = { 0 };
+        final long startNanos = System.nanoTime();
+        source.writeSnapshot((buffer, offset, length) -> {
+            totalBytes[0] += length;
+            if (buffer.getInt(offset) == MatchingEngineClusteredService.T_IDEMPOTENCY) {
+                idempotencyRecords[0]++;
+            }
+        });
+        final long writeNanos = System.nanoTime() - startNanos;
+
+        // Printed, not asserted: a wall-clock assertion on a shared CI runner is a flake generator.
+        System.out.printf("IDEMPOTENCY-SNAPSHOT-COST capacity=%d records=%d totalBytes=%d writeMs=%.1f%n",
+            capacity, idempotencyRecords[0], totalBytes[0], writeNanos / 1e6);
+
+        assertEquals(capacity, idempotencyRecords[0],
+            "every retained idempotency entry must ride the snapshot, or a restored member "
+                + "answers a resend differently from its peers");
+        final long idempotencyBytes = (long) capacity * 28L;
+        assertTrue(totalBytes[0] >= idempotencyBytes && totalBytes[0] < idempotencyBytes + 65_536L,
+            "idempotency snapshot cost must be 28 bytes/entry (" + idempotencyBytes + "), got "
+                + totalBytes[0]);
+    }
+
+    @Test
     void unknownRecordTypeFailsClosed() {
         final MatchingEngineClusteredService target = newRestoreTarget();
         feedHeader(target, 10, 9, 0, 0);
