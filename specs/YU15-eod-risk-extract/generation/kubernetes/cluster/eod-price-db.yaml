@@ -1,40 +1,11 @@
-# The published closing-price snapshot the extract marks equities against. Only the two YU06
-# tables the producer reads are created here — the cluster topology has no trade-processor or
-# position-service, and the producer never touches positions in SQL by design (ADR-055).
+# The TraderX database for the cluster tier. It runs the state's OWN schema — the ConfigMap
+# comes from generation/runtime-overrides/kubernetes-runtime/manifests/base/, referenced by the
+# kustomization — so a proof taken here exercises exactly the DDL this state ships rather than a
+# hand-written subset of it. That matters for the widened instrument-identifier columns: the
+# thing under test IS the schema.
 #
-# The seeded rows stand in for a session trade-processor already published: they are addressed
-# by (session_date, version) and immutable, which is the property that makes reading them safe.
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: eod-price-db-init
-data:
-  10-eod-schema.sql: |
-    CREATE TABLE eod_price_session (
-      session_date DATE NOT NULL,
-      version INTEGER NOT NULL,
-      status VARCHAR(16) CHECK (status in ('DRAFT', 'PUBLISHED')),
-      instrument_count INTEGER NOT NULL DEFAULT 0,
-      flagged_count INTEGER NOT NULL DEFAULT 0,
-      created_at DATETIME,
-      published_at DATETIME,
-      PRIMARY KEY (session_date, version)
-    );
-
-    -- VARCHAR(32), not YU06's VARCHAR(16): an unpadded OCC option symbol is 19 characters and
-    -- would truncate. The extract does not depend on options being present here — they fall back
-    -- to the engine's last trade at N — but a truncated symbol would silently mis-mark an option.
-    CREATE TABLE eod_price_snapshot (
-      session_date DATE NOT NULL,
-      version INTEGER NOT NULL,
-      security VARCHAR(32) NOT NULL,
-      closing_price DECIMAL(18,6),
-      quality VARCHAR(16) CHECK (quality in ('OK', 'STALE', 'SPIKE', 'MISSING', 'OVERRIDDEN')),
-      source_tick_millis BIGINT,
-      override_reason VARCHAR(255),
-      PRIMARY KEY (session_date, version, security),
-      FOREIGN KEY (session_date, version) REFERENCES eod_price_session(session_date, version)
-    );
+# Both init keys are mounted the way the real database Deployment mounts them: 001 on a fresh
+# volume, 900-migrations on every start.
 ---
 apiVersion: v1
 kind: Service
@@ -86,9 +57,14 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 5
             failureThreshold: 24
+          args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
           volumeMounts:
             - name: init
-              mountPath: /docker-entrypoint-initdb.d
+              mountPath: /docker-entrypoint-initdb.d/001-initialSchema.sql
+              subPath: 001-initialSchema.sql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/900-migrations.sql
+              subPath: 900-migrations.sql
           resources:
             requests:
               cpu: 100m
@@ -98,4 +74,4 @@ spec:
       volumes:
         - name: init
           configMap:
-            name: eod-price-db-init
+            name: database-init-sql

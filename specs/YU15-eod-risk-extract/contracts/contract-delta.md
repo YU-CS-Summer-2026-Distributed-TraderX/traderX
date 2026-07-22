@@ -91,6 +91,24 @@ first.
 cluster now reports itself caught up, which it is; previously it reported `-1` and never rejoined
 the Service.
 
+## 8. Database schema (widened columns)
+
+Every instrument-identifier column is `VARCHAR(32)`, up from `VARCHAR(15)`/`VARCHAR(16)`:
+`positions.security`, `trades.security`, `orderbook.security`, `eod_price_snapshot.security`,
+`eod_position_pnl.security`, `stocks.ticker`, `stocks_control_outbox.ticker`.
+
+Purely widening, so every existing row and query is unaffected. `900-migrations.sql` gains seven
+matching `ALTER TABLE ... MODIFY COLUMN` statements, because the block's `CREATE TABLE IF NOT
+EXISTS` statements cannot alter a table that already exists — the same reason YU05's
+`settlementdate` needed an explicit `ADD COLUMN`. This is the first migration in the lineage that
+modifies rather than only adds.
+
+Effect: an option fill published by the ADR-048 trade bridge now persists. Before this, MariaDB's
+strict mode rejected it with `Data too long for column 'security'` and the SQL blotter, the
+positions read model, and the YU06 price chain silently excluded every option.
+
+The JPA entities were already correct (`@Column(length = 50)`), so no service code changed.
+
 ## Not changed
 
 Order, trade, position, risk, settlement, reconciliation, regulatory, TCA, and EOD payload shapes

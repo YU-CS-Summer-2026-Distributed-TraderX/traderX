@@ -21,13 +21,15 @@ kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
 echo "[apply] cluster kustomization"
 kubectl --context "${CTX}" apply -k "${KDIR}"
 
-# The kind kustomization does not include gateway.yaml (inherited from the YU12 layout).
-echo "[apply] gateway"
+# Two files sit outside the kustomization — see the note in kustomization.yaml.
+echo "[apply] gateway + database schema"
 kubectl --context "${CTX}" -n traderx apply -f "${KDIR}/gateway.yaml"
+kubectl --context "${CTX}" -n traderx apply \
+  -f "${ROOT}/specs/YU15-eod-risk-extract/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
 
 echo "[wait] 3/3 members ready"
 kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-cluster --timeout=300s
-for d in nats eod-price-db cluster-gateway risk-extract; do
+for d in nats eod-price-db trade-processor cluster-gateway risk-extract; do
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s
 done

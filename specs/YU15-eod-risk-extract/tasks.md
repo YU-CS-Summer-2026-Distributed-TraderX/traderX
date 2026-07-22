@@ -35,6 +35,15 @@
 - [x] T-RXT12 — Live acceptance proof `scripts/bench/yu15-risk-extract.sh`: trigger, cross-member
       hash agreement, quiescence witness, byte-identical rebuild, immutable object, and a deleted
       member replaying to the stamped sequence and re-rendering the identical cut.
-- [x] T-RXT13 — Full regression: `test`, `noGcTest`, `riskNoGcTest`, all four allocation gates.
-- [x] T-RXT14 — `generation/implementation-status.md` written with verification evidence; state
+- [x] T-RXT13 — Widen every instrument-identifier column to `VARCHAR(32)` in both the fresh-volume
+      and migrations blocks, with explicit `ALTER TABLE ... MODIFY COLUMN` statements — the
+      migrations block's `CREATE TABLE IF NOT EXISTS` cannot widen a table that already exists, the
+      same reason YU05's `settlementdate` needed an explicit `ADD COLUMN`. The JPA entities already
+      declared `@Column(length = 50)`, so only the schema was ever the constraint.
+- [x] T-RXT14 — Prove it on the real chain: `scripts/bench/yu15-option-persistence.sh` narrows the
+      columns back to an older state's widths, shows the option fill rejected with `Data too long`
+      while the cluster books it regardless, applies the shipped migration to the populated volume,
+      and shows the next cross persisting with the symbol intact.
+- [x] T-RXT15 — Full regression: `test`, `noGcTest`, `riskNoGcTest`, all four allocation gates.
+- [x] T-RXT16 — `generation/implementation-status.md` written with verification evidence; state
       docs synced.

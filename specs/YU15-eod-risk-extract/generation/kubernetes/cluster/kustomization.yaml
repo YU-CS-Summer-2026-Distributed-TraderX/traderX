@@ -6,5 +6,10 @@ resources:
   - networkpolicy.yaml
   - nats.yaml
   - eod-price-db.yaml
+  - trade-processor.yaml
   - risk-extract.yaml
-# gateway.yaml is applied separately (inherited from the YU12 kind layout) — see the start script.
+# Applied separately by the start script, NOT part of this kustomization:
+#   - gateway.yaml (inherited from the YU12 kind layout)
+#   - ../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
+#     (kustomize cannot reference a file outside its root; referencing it in place keeps exactly
+#     one copy of the schema, so a proof taken here tests the DDL the state actually ships)

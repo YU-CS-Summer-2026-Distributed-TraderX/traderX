@@ -60,6 +60,10 @@
   without the cluster.
 - FR-RXT15: Cluster readiness SHALL be determined by a member's consensus-log position, so a member
   restored from a snapshot into an idle cluster reports itself caught up.
+- FR-RXT16: Every instrument-identifier column in the SQL schema SHALL be wide enough to hold an
+  unpadded OCC option symbol, so an option fill published by the trade bridge persists to the read
+  model rather than being rejected. The migration SHALL widen an already-populated database, not
+  only a freshly created one.
 
 ## Non-Functional Requirements
 
@@ -81,9 +85,9 @@
   rows. The row count in the header detects an overrun; chunking or writing the cut directly to the
   object store is the path past it.
 - TD-RXT02: Listed options are marked from the engine's last trade because no published close
-  exists for them. Every `security` column in the SQL schema is `VARCHAR(15)`/`VARCHAR(16)` while an
-  unpadded OCC symbol is 19 characters, so options cannot round-trip the read model or the YU06
-  price chain at all.
+  exists for them — `PriceHistoryStore` is fed only by the synthetic `pricing.*` feed, which
+  carries no option contracts. The schema half of this is fixed (FR-RXT16); the price-feed half
+  is not, so options still have no published close to reconcile against.
 - TD-RXT03: The mapping from account to counterparty is one-to-one reference data. Whether that is
   sufficient for the consumer's netting logic, or whether a counterparty entity with its own
   attributes is needed, is an open question with the consumer.
@@ -101,3 +105,7 @@
   cluster last trade at the cut sequence, with multiplier-aware market value.
 - SC-RXT07: An unmarkable row, an unmapped account, and a truncated cut each abort the extract.
 - SC-RXT08: The order-matcher suite and all allocation and epsilon-GC gates pass.
+- SC-RXT09: An option cross booked on the cluster persists both trade rows and both position rows
+  with its 19-character OCC symbol intact, through the real bridge → NATS → trade-processor chain.
+- SC-RXT10: Applying the state's `900-migrations.sql` to a database carrying an older state's
+  narrow columns widens them in place.

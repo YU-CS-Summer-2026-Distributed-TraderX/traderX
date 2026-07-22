@@ -12,7 +12,8 @@ NATS broker with JetStream and a database holding the published closing prices.
 | `ClusterGatewayMain` | `cluster-gateway` Deployment | Inherited unchanged: REST and FIX ingress, forwarded through the cluster client. |
 | `RiskExtractMain` | `risk-extract` Deployment | The EOD producer. Same image, different main. |
 | `nats-server --jetstream` | `nats` Deployment | Trigger stream, cut transport, announcement transport. |
-| `mariadb` | `eod-price-db` Deployment | The two YU06 price tables, read-only from this state's view. |
+| `mariadb` | `eod-price-db` Deployment | The state's own schema, from the `database-init-sql` ConfigMap. Read-only from the producer's view; written by `trade-processor`. |
+| `trade-processor` | `trade-processor` Deployment | Consumes the ADR-048 trade bridge's `/trades` and persists Trade + Position. Present so the option-persistence path is exercised, not assumed. |
 
 ## Components
 
@@ -62,5 +63,6 @@ stream idempotently, and connects to the cluster and the database only when a ba
 | An account holds a position but has no counterparty mapping | The whole extract aborts. |
 | Price database unavailable | The extract fails and is redelivered. With `RISK_EXTRACT_JDBC_URL` deliberately unset, every row instead marks from the cluster's last trade and says so per row. |
 | Object already exists at the key | The write is refused — on a filesystem by `CREATE_NEW`, on GCS by `if-generation-match: 0`. A redelivered trigger cannot replace a fixture already scored against. |
+| An option fill reaches `trade-processor` | Persists with its full OCC symbol. Before the widened columns this failed with `Data too long for column 'security'` and the fill was lost from SQL while remaining booked in the cluster. |
 | A member restarts during the EOD window | It replays, re-renders the identical cut for any marker in the replayed range, and rejoins the Service on its consensus-log position — it does not have to wait for trading to resume. |
 | Leader changes between the two markers | The producer's session follows the new leader; if the session is lost the marker ack times out and the extract is retried rather than emitted against a partial view. |

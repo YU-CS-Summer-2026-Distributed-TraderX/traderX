@@ -2,8 +2,9 @@
 
 ## Local (kind)
 
-The state runs on the inherited cluster tier plus three additions: NATS, a database holding the
-published closing prices, and the extract producer.
+The state runs on the inherited cluster tier plus four additions: NATS, a database running the
+state's own schema, `trade-processor` (so the option-persistence path is exercised rather than
+assumed), and the extract producer.
 
 ```bash
 # 1. generate and build
@@ -24,8 +25,9 @@ for body in \
   curl -s -X POST http://localhost:18110/orders -H 'Content-Type: application/json' -d "$body"
 done
 
-# 5. run the acceptance proof
-bash scripts/bench/yu15-risk-extract.sh
+# 5. run the acceptance proofs
+bash scripts/bench/yu15-risk-extract.sh        # the extract: cut, quiescence, reproducibility
+bash scripts/bench/yu15-option-persistence.sh  # options reach SQL, and the migration fixes an old DB
 
 # teardown
 bash scripts/yu15/stop-cluster-kind.sh
@@ -60,6 +62,25 @@ The announcement carries everything needed to fetch and verify the result:
 RISK-EXTRACT-READY {"schema":1,"uri":"file:///data/risk-extracts/2026-07-22/v1/seq-1544685.csv",
   "consensusSequence":1544685,"quiesceWitnessSequence":1544686,"rows":14,
   "cutSha256":"f10a554d...","sha256":"79e57c8d..."}
+```
+
+## Verifying option persistence
+
+`yu15-option-persistence.sh` demonstrates the bug before fixing it: it narrows the
+instrument-identifier columns back to an older state's widths, books an option cross, and shows
+`trade-processor` rejecting it with `Data too long for column 'security'` while the cluster books
+it regardless. It then applies the state's own `900-migrations.sql` — read from the applied
+ConfigMap, exactly what the `schema-migrate` initContainer mounts — and books another cross that
+persists with its 19-character OCC symbol intact.
+
+To check the schema directly:
+
+```bash
+kubectl --context kind-traderx-yu12-cluster -n traderx exec deploy/eod-price-db -- \
+  mariadb -utraderx -ptraderx traderx -e "
+    SELECT table_name, column_name, character_maximum_length
+    FROM information_schema.columns
+    WHERE table_schema='traderx' AND column_name IN ('security','ticker') ORDER BY table_name;"
 ```
 
 ## Verifying the properties yourself

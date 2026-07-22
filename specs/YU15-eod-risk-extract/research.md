@@ -18,9 +18,12 @@ committed log, so the state of the replicated state machine at any log sequence 
 construction, a state that genuinely existed — atomically, across all accounts. No coordination is
 needed to obtain it; only a way to name a sequence.
 
-A second, blunter reason points the same way: every `security` column in the SQL schema is
-`VARCHAR(15)` or `VARCHAR(16)`, and an unpadded OCC option symbol is 19 characters. The read model
-cannot represent a listed option at all.
+A second, blunter reason pointed the same way when this state was designed: every `security` column
+in the SQL schema was `VARCHAR(15)` or `VARCHAR(16)`, and an unpadded OCC option symbol is 19
+characters, so the read model could not represent a listed option at all. That is fixed here — the
+columns are `VARCHAR(32)` and an option fill now persists — but it does not change the argument
+above. Even a read model that can store every instrument is still sampled per-account at whatever
+moment its upsert landed, which is the property that makes it unusable as a VaR input.
 
 ## How to name a sequence
 
@@ -62,9 +65,9 @@ cluster cut without reintroducing the problem the cut exists to solve.
 
 The extract does not read `eod_position_pnl`. It recomputes market value from the same published
 price version using the same formula, which reproduces that table's values exactly for equities
-while still being correct for portfolios the read model cannot represent. It also removes a
-dependency on a table that is empty for any account holding an option, because YU06's fail-safe
-halts an entire account when any of its holdings is unpriced.
+while remaining correct for a cut the read model has not caught up to. It also removes a dependency
+on a table that is empty for any account holding an option, because YU06's fail-safe halts an
+entire account when any of its holdings is unpriced.
 
 ## Why quiescence is witnessed rather than assumed
 

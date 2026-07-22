@@ -33,6 +33,7 @@ applied on top:
 | `lmax/AeronReplicationCodec.java` | YU14 | encode/decode for template 8 |
 | `cluster/MatchingEngineClusteredService.java` | YU14 | marker branch, cut render + hash, leader-side bridge, consensus-position accessor |
 | `cluster/ClusterNodeMain.java` | YU13 | readiness and the applied metric report the consensus position; `blpSeq` stays visible as `engineApplied` |
+| `kubernetes-runtime/manifests/base/database-init-configmap.yaml` | YU06 | instrument-identifier columns widened to `VARCHAR(32)` in both blocks, plus the `ALTER TABLE ... MODIFY COLUMN` migrations |
 
 New files add no override risk: `RiskExtractCut`, `RiskExtractCsv`, `RiskExtractCutPublisher`,
 `RiskExtractGcsSink`, `RiskExtractMain`, and `RiskExtractTest`.
@@ -40,7 +41,12 @@ New files add no override risk: `RiskExtractCut`, `RiskExtractCsv`, `RiskExtract
 ## Kubernetes Assets
 
 `generation/kubernetes/cluster/` carries the inherited cluster tier retagged to `yu15`, plus
-`nats.yaml`, `eod-price-db.yaml`, and `risk-extract.yaml`. The NetworkPolicy gains the producer's
-pod label in its ingress allowlist — without it the producer's Aeron client silently cannot reach
-any member. As in the parent, `gateway.yaml` is not part of the kustomization and is applied
-separately by the start script.
+`nats.yaml`, `eod-price-db.yaml`, `trade-processor.yaml`, and `risk-extract.yaml`. The database
+runs the state's own DDL: `eod-price-db.yaml` mounts the `database-init-sql` ConfigMap from the
+runtime-overrides layer, so there is exactly one copy of the schema and a proof taken on kind
+tests what the state actually ships. Kustomize cannot reference a file outside its root, so that
+ConfigMap is applied separately by the start script, alongside `gateway.yaml` — which the parent
+also keeps outside the kustomization.
+
+The NetworkPolicy gains the producer's pod label in its ingress allowlist; without it the
+producer's Aeron client silently cannot reach any member.

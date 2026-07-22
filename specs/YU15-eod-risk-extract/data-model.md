@@ -94,6 +94,34 @@ Write-once: `CREATE_NEW` on a filesystem sink, `x-goog-if-generation-match: 0` o
 accounts. `instruments.csv` — the instrument universe. Rendered into the runtime image so the
 producer reads them from the classpath directory rather than a mounted volume.
 
+## Instrument-identifier column widths (changed)
+
+YU14 made listed options tradeable, but every instrument-identifier column in the SQL schema was
+sized for an equity ticker. An unpadded OCC symbol is 19 characters, so MariaDB's strict mode
+rejected the insert and every option fill the ADR-048 trade bridge published was dropped by
+`trade-processor` — the blotter, the positions read model, and the YU06 price chain silently
+excluded every option. All of them are `VARCHAR(32)` here:
+
+| Table | Column | Was | Now |
+|---|---|---|---|
+| `positions` | `security` | `VARCHAR(15)` | `VARCHAR(32)` |
+| `trades` | `security` | `VARCHAR(15)` | `VARCHAR(32)` |
+| `orderbook` | `security` | `VARCHAR(16)` | `VARCHAR(32)` |
+| `eod_price_snapshot` | `security` | `VARCHAR(16)` | `VARCHAR(32)` |
+| `eod_position_pnl` | `security` | `VARCHAR(16)` | `VARCHAR(32)` |
+| `stocks` | `ticker` | `VARCHAR(16)` | `VARCHAR(32)` |
+| `stocks_control_outbox` | `ticker` | `VARCHAR(16)` | `VARCHAR(32)` |
+
+The JPA entities already declared `@Column(length = 50)` on `Trade.security` and
+`Position.security`, so the schema was the only constraint and no Java changed.
+
+`900-migrations.sql` carries seven matching `ALTER TABLE ... MODIFY COLUMN` statements. That block
+is what the database Deployment's `schema-migrate` initContainer applies to an already-populated
+PVC on every start, and `CREATE TABLE IF NOT EXISTS` is a no-op against a table that already
+exists — so widening the `CREATE` statements alone would fix only freshly created databases. This
+is the first migration in the lineage that modifies rather than only adds; re-running a `MODIFY`
+against an already-widened column is a no-op.
+
 ## Read, not written
 
 `eod_price_snapshot` and `eod_price_session` (YU06) are read for the stamped
