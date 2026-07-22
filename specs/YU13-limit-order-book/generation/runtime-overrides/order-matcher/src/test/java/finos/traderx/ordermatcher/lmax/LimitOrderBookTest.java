@@ -77,6 +77,17 @@ class LimitOrderBookTest {
         return limit(accountId, side, qty, Px.NONE);
     }
 
+    /** Sequenced atomic replace (ADR-058): new TOTAL quantity and new limit price, same orderRef. */
+    private void replace(int orderRef, int newQty, long newLimitPx) {
+        InputEvent e = new InputEvent();
+        e.type = InputEvent.TYPE_ORDER_REPLACE;
+        e.orderRef = orderRef;
+        e.qty = newQty;
+        e.limitPx = newLimitPx;
+        e.eventTimeMillis = 1_000 + nextSeq;
+        engine.onEvent(e, nextSeq++, true);
+    }
+
     private void cancel(int orderRef) {
         InputEvent e = new InputEvent();
         e.type = InputEvent.TYPE_ORDER_CANCEL;
@@ -425,5 +436,153 @@ class LimitOrderBookTest {
         assertEquals(50, engine.countSelfTradesPrevented());
         assertEquals(0, engine.tradeCounter());
         assertEquals(1, engine.book(SEC).openOrders(), "only the aggressor is left resting");
+    }
+
+    // ----- atomic replace (ADR-058) -----------------------------------------------------------
+
+    @Test
+    void replaceRepricesInOneApplyKeepingTheOrderRefAndLosingQueuePriority() {
+        newEngine(false);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150);
+        int behind = limit(ACCT2, InputEvent.SIDE_BUY, 100, PX150);   // queued behind `mine`
+        drain();
+
+        replace(mine, 100, PX150 + CENT);   // reprice up: leaves 150.00, joins 150.01
+        Emitted ack = lastOrderUpdate(drain(), mine);
+        assertEquals(OutputEvent.KIND_ORDER_ACCEPTED, ack.kind());
+        assertEquals(mine, ack.orderRef(), "the order keeps its ref: identity is never absent");
+        assertTrue((ack.flags() & OutputEvent.FLAG_REPLACE) != 0);
+        assertEquals(2, engine.book(SEC).openOrders(), "one order in, one order out — not two orders");
+
+        // Now the only 150.00 bid is the OTHER account's, so a seller hitting 150.00 meets it.
+        limit(ACCT2, InputEvent.SIDE_SELL, 100, PX150 + CENT);
+        List<Emitted> events = drain();
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, mine).kind(),
+            "repriced to the better level, so it is hit first");
+        assertEquals(1, engine.book(SEC).openOrders());
+        assertNotEquals(behind, 0);
+    }
+
+    @Test
+    void strictSizeDownAtTheSamePriceKeepsQueuePriority() {
+        newEngine(false);
+        int first = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150);
+        int second = limit(ACCT2, InputEvent.SIDE_BUY, 100, PX150);
+        drain();
+        replace(first, 60, PX150);          // strict size-down, price unchanged
+        drain();
+
+        limit(ACCT2, InputEvent.SIDE_SELL, 60, PX150);
+        List<Emitted> events = drain();
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, first).kind(),
+            "size-down at an unchanged price keeps time priority, so `first` still fills first");
+        assertEquals(60, lastOrderUpdate(events, first).lastFillQty());
+        assertNotEquals(second, 0);
+    }
+
+    @Test
+    void rejectedReplaceLeavesTheOriginalOrderExactlyAsItWas() {
+        newEngine(false);
+        engine.setBookGeometry(64, CENT);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150);   // anchors the band
+        drain();
+
+        replace(mine, 100, PX150 + 64 * CENT);   // outside the band
+        Emitted rejected = lastOrderUpdate(drain(), mine);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, rejected.kind());
+        assertEquals((byte) RiskReason.PRICE_COLLAR.ordinal(), rejected.riskReason());
+        // The point of atomicity: the order is not gone, it is untouched.
+        assertEquals(RestingOrder.STATUS_NEW, rejected.status());
+        assertEquals(100, rejected.remainingQty());
+        assertEquals(1, engine.book(SEC).openOrders());
+
+        // And it is still tradeable at its ORIGINAL price.
+        limit(ACCT2, InputEvent.SIDE_SELL, 100, PX150);
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(drain(), mine).kind());
+    }
+
+    @Test
+    void rejectedReplaceRestoresTheReservationBitForBit() {
+        newEngine(true);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150);
+        drain();
+        long before = engine.riskState().reservedBuyNotional(ACCT);
+
+        // Must fail INSIDE the risk gate, after the release — a shape check would be rejected
+        // before anything was released and would prove nothing about the restore.
+        replace(mine, 2_000_000, PX150);   // above maxOrderQuantity -> ORDER_SIZE
+        Emitted rejected = lastOrderUpdate(drain(), mine);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, rejected.kind());
+        assertEquals((byte) RiskReason.ORDER_SIZE.ordinal(), rejected.riskReason());
+        assertEquals(before, engine.riskState().reservedBuyNotional(ACCT),
+            "a rejected replace must leave the account's exposure bit-identical");
+        assertEquals(100, rejected.remainingQty());
+    }
+
+    @Test
+    void replaceOfAnUnknownOrTerminalOrderIsAlwaysARejectNeverASuccess() {
+        newEngine(false);
+        replace(999_999, 10, PX150);
+        assertEquals(OutputEvent.KIND_ORDER_NOT_FOUND, drain().get(0).kind());
+
+        int mine = limit(ACCT, InputEvent.SIDE_SELL, 10, PX150);
+        limit(ACCT2, InputEvent.SIDE_BUY, 10, PX150);   // fills `mine`
+        drain();
+        replace(mine, 20, PX150);
+        // A terminal FILLED order must NOT be republished as FILLED here: that is exactly what a
+        // replace which crossed on the way in also emits, and the gateway could not tell them apart.
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, lastOrderUpdate(drain(), mine).kind());
+    }
+
+    @Test
+    void replaceCrossesOnTheWayInAndStpFiresInsideTheSameApplyWithoutLosingTheReplacedOrder() {
+        // The compound case neither ADR covered. The replaced order is unlinked before it crosses,
+        // so it is an aggressor: cancel-oldest can only remove the participant's OTHER resting
+        // orders, never the one they asked to modify.
+        newEngine(false);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 100, PX150 - 5 * CENT);   // far from the market
+        int myOtherSell = limit(ACCT, InputEvent.SIDE_SELL, 40, PX150);        // same account
+        int realSell = limit(ACCT2, InputEvent.SIDE_SELL, 60, PX150);          // genuine counterparty
+        drain();
+
+        replace(mine, 100, PX150);   // now marketable into BOTH sells
+        List<Emitted> events = drain();
+
+        assertEquals(OutputEvent.KIND_ORDER_CANCELED, lastOrderUpdate(events, myOtherSell).kind());
+        assertEquals((byte) RiskReason.SELF_TRADE_PREVENTED.ordinal(),
+            lastOrderUpdate(events, myOtherSell).riskReason());
+        assertEquals(OutputEvent.KIND_ORDER_FILLED, lastOrderUpdate(events, realSell).kind());
+        // The replaced order survives, partially filled — never "left with nothing".
+        Emitted mineFinal = lastOrderUpdate(events, mine);
+        assertEquals(OutputEvent.KIND_ORDER_PARTIALLY_FILLED, mineFinal.kind());
+        assertEquals(40, mineFinal.remainingQty(), "60 filled against the genuine counterparty");
+        assertEquals(1, engine.countSelfTradesPrevented());
+        assertEquals(1, engine.book(SEC).openOrders(), "the replaced remainder rests");
+    }
+
+    @Test
+    void replayReproducesTheIdenticalBookThroughStpAndReplace() {
+        long[] a = runStpReplaceSession();
+        long[] b = runStpReplaceSession();
+        assertEquals(a[0], b[0], "order hash");
+        assertEquals(a[1], b[1], "position hash");
+        assertEquals(a[2], b[2], "open orders");
+        assertEquals(a[3], b[3], "trade counter");
+        assertNotEquals(0, a[2], "script must leave a resting book");
+    }
+
+    private long[] runStpReplaceSession() {
+        newEngine(true);
+        orderRefCounter = 0;
+        tick(PX150);
+        int selfQuote = limit(ACCT, InputEvent.SIDE_SELL, 80, PX150 + CENT);
+        limit(ACCT2, InputEvent.SIDE_SELL, 120, PX150 + CENT);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 200, PX150 - 2 * CENT);
+        replace(mine, 200, PX150 + CENT);          // marketable: STP kills selfQuote, fills vs ACCT2
+        limit(ACCT2, InputEvent.SIDE_BUY, 50, PX150 - CENT);
+        replace(mine, 90, PX150 + CENT);           // size-down of the resting remainder
+        cancel(selfQuote);                          // already STP-terminal: republished unchanged
+        MatchingEngine.RecoveryDigest d = engine.recoveryDigest();
+        return new long[] { d.orderHash(), d.positionHash(), d.openOrders(), d.tradeCounter() };
     }
 }
