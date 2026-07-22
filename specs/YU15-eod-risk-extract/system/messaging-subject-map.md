@@ -117,6 +117,16 @@ The parent state's removed surfaces — `$KV.TRADERX_BLP_FAST_WITNESS.>` and the
 data/ACK/control replication channels — have no successor here; their roles are internal to the
 consensus protocol.
 
+## YU15 change: `pricing.<TICKER>` carries listed option contracts
+
+The subject, payload shape, producer and consumers are unchanged; the universe is wider. An option
+contract is quoted under its unpadded OCC symbol (`pricing.AAPL260918C00240000`) exactly as an
+equity is under its ticker, with `source` reading `black-scholes` for a derived contract. The
+binary companion subject `pricing-tick-bin.<TICKER>` carries the same contracts.
+
+Without this, options are `MISSING` in every EOD snapshot and YU06's fail-safe halts any account
+holding one, so no account with an option position is ever marked.
+
 ## YU15 addition: EOD risk-extract subjects
 
 - `eod.pnl.done` (JetStream, stream `TRADERX_EOD`) — **now consumed**

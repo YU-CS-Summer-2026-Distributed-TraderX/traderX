@@ -34,14 +34,22 @@ applied on top:
 | `cluster/MatchingEngineClusteredService.java` | YU14 | marker branch, cut render + hash, leader-side bridge, consensus-position accessor |
 | `cluster/ClusterNodeMain.java` | YU13 | readiness and the applied metric report the consensus position; `blpSeq` stays visible as `engineApplied` |
 | `kubernetes-runtime/manifests/base/database-init-configmap.yaml` | YU06 | instrument-identifier columns widened to `VARCHAR(32)` in both blocks, plus the `ALTER TABLE ... MODIFY COLUMN` migrations |
+| `price-publisher/src/main.js` | YU02 | option chain config, contract registration, derived ticks; the quoting itself lives in the new `option-quotes.js` |
+| `price-publisher/data/snapshot-prices.json` | YU02 | AAPL/MSFT bootstrap spots aligned with the strikes the seeded chain was designed around |
+| `price-publisher/package.json` | YU02 | `npm test` script for the option-quote tests |
+| `trade-processor/.../EodQualityChecker.java` | YU06 | instrument-aware spike threshold |
+| `trade-processor/.../EodPriceServiceTest.java` | YU06 | constructor call site for the new threshold |
+| `position-service/.../EodPnlConsumer.java` | YU06 | multiplier-aware market value |
 
 New files add no override risk: `RiskExtractCut`, `RiskExtractCsv`, `RiskExtractCutPublisher`,
-`RiskExtractGcsSink`, `RiskExtractMain`, and `RiskExtractTest`.
+`RiskExtractGcsSink`, `RiskExtractMain`, `RiskExtractTest`, price-publisher's `option-quotes.js`
+and its test, and the `OccSymbols` predicate in trade-processor and position-service.
 
 ## Kubernetes Assets
 
 `generation/kubernetes/cluster/` carries the inherited cluster tier retagged to `yu15`, plus
-`nats.yaml`, `eod-price-db.yaml`, `trade-processor.yaml`, and `risk-extract.yaml`. The database
+`nats.yaml`, `eod-price-db.yaml`, `trade-processor.yaml`, `eod-chain.yaml` (price-publisher +
+position-service), and `risk-extract.yaml`. The database
 runs the state's own DDL: `eod-price-db.yaml` mounts the `database-init-sql` ConfigMap from the
 runtime-overrides layer, so there is exactly one copy of the schema and a proof taken on kind
 tests what the state actually ships. Kustomize cannot reference a file outside its root, so that

@@ -2,9 +2,10 @@
 
 ## Local (kind)
 
-The state runs on the inherited cluster tier plus four additions: NATS, a database running the
-state's own schema, `trade-processor` (so the option-persistence path is exercised rather than
-assumed), and the extract producer.
+The state runs on the inherited cluster tier plus the pieces the extract's trigger actually needs:
+NATS, a database running the state's own schema, the YU06 EOD chain (`price-publisher`,
+`trade-processor`, `position-service`) and the extract producer. Nothing in the proof is
+hand-seeded — the chain runs for real.
 
 ```bash
 # 1. generate and build
@@ -39,21 +40,28 @@ loudly with the triage hint if orders are accepted but nothing fills.
 
 ## Taking an extract by hand
 
-The producer's only trigger is `eod.pnl.done`. Publish one and watch it work:
+The producer's only trigger is `eod.pnl.done`, and the EOD chain emits it. Close a session and
+watch the whole thing run:
 
 ```bash
 K="kubectl --context kind-traderx-yu12-cluster -n traderx"
 
-# the published closing-price version the extract marks equities against
-$K exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -e "
-  INSERT INTO eod_price_session VALUES ('2026-07-22',1,'PUBLISHED',2,0,NOW(),NOW());
-  INSERT INTO eod_price_snapshot VALUES ('2026-07-22',1,'AAPL',241.500000,'OK',NULL,NULL);"
+TOKEN=$($K exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \
+  -H "X-Auth-Master-Secret: kind-local-dev-token-secret-not-a-real-credential" \
+  -H "Content-Type: application/json" \
+  -d "{\"subject\":\"manual\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}"')
 
-# fire the trigger (see scripts/bench/yu15-risk-extract.sh for the wire-protocol publish)
-$K port-forward svc/nats 14222:4222 &
+$K exec deploy/trade-processor -- sh -c \
+  "curl -fsS -X POST 'http://localhost:18091/eod/session/close' -H 'Authorization: Bearer $TOKEN'"
 
-# watch the producer
-$K logs -f deploy/risk-extract
+$K logs -f deploy/risk-extract      # and: $K logs deploy/position-service | grep 'eod pnl'
+```
+
+What the feed is quoting, and with which model inputs:
+
+```bash
+$K exec deploy/price-publisher -- wget -qO- http://localhost:18100/health
+$K exec deploy/price-publisher -- wget -qO- http://localhost:18100/prices/AAPL260918C00240000
 ```
 
 The announcement carries everything needed to fetch and verify the result:

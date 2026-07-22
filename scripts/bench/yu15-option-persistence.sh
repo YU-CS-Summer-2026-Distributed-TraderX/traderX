@@ -31,7 +31,13 @@ BUYER=22214
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
-sql()  { ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>/dev/null; }
+# Errors are surfaced, not swallowed: a silently failing ALTER would make the proof look like it
+# passed a step it never ran.
+# Errors are surfaced, not swallowed: a silently failing ALTER would make the proof look like it
+# passed a step it never ran. The `|| true` is on the grep, which exits 1 when a statement
+# produces no output at all — which is the normal case for DELETE and ALTER.
+sql()  { ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+           | { grep -v "Using a password on the command line" || true; }; }
 
 widths() {
   sql "SELECT CONCAT(table_name,'.',column_name,'=',character_maximum_length)
@@ -63,6 +69,18 @@ ${K} get deploy trade-processor >/dev/null 2>&1 || fail "trade-processor is not 
 echo "[ok] gateway ready, trade-processor up, trade bridge enabled"
 
 step "1. narrow the columns back to an older state's widths"
+# A database created before this state never held an option row — the columns could not store one.
+# Now that the feed quotes the chain and the bridge persists option fills, real 19-character rows
+# exist, and MariaDB (correctly) refuses to shrink a column under them. Clear them first so the
+# starting state is a faithful older-schema database rather than an impossible hybrid.
+sql "DELETE FROM eod_position_pnl WHERE CHAR_LENGTH(security) > 16;
+     DELETE FROM eod_price_snapshot WHERE CHAR_LENGTH(security) > 16;
+     DELETE FROM trades WHERE CHAR_LENGTH(security) > 15;
+     DELETE FROM positions WHERE CHAR_LENGTH(security) > 15;
+     DELETE FROM orderbook WHERE CHAR_LENGTH(security) > 16;
+     DELETE FROM stocks WHERE CHAR_LENGTH(ticker) > 16;
+     DELETE FROM stocks_control_outbox WHERE CHAR_LENGTH(ticker) > 16;"
+
 # Exactly the definitions YU06 and earlier ship. This is what any database created before this
 # state looks like.
 sql "ALTER TABLE positions MODIFY COLUMN security VARCHAR(15);
@@ -103,7 +121,8 @@ ${K} get configmap database-init-sql -o "jsonpath={.data['900-migrations\\.sql']
 grep -c "MODIFY COLUMN security\|MODIFY COLUMN ticker" /tmp/yu15-900-migrations.sql | sed 's/^/  MODIFY statements in the migration: /'
 ${K} exec -i deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx < /tmp/yu15-900-migrations.sql
 widths | sed 's/^/  /'
-widths | grep -qv "=32$" && fail "a column is still narrow after the migration"
+NARROW="$(widths | grep -cv '=32$' || true)"
+[[ "${NARROW}" == "0" ]] || fail "${NARROW} column(s) still narrow after the migration"
 echo "[ok] every instrument-identifier column widened in place, on a populated volume"
 
 step "4. book another option cross — it must land intact"

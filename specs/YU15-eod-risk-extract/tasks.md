@@ -44,6 +44,21 @@
       columns back to an older state's widths, shows the option fill rejected with `Data too long`
       while the cluster books it regardless, applies the shipped migration to the populated volume,
       and shows the next cross persisting with the symbol intact.
+- [x] T-RXT17 — Quote the listed option chain in price-publisher: OCC parsing and Black-Scholes at
+      a flat implied vol in `src/option-quotes.js`, derived from the underlying's tick on every
+      publish (never walked independently), with the model inputs reported on `/health` and eleven
+      `node:test` cases covering parsing, put-call parity, intrinsic floors, and monotonicity.
+- [x] T-RXT18 — Instrument-aware spike threshold in `EodQualityChecker`, so an option's ordinary
+      day-over-day move does not flag and block publication of the whole session. Staleness and
+      missing checks unchanged.
+- [x] T-RXT19 — Multiplier-aware market value in `EodPnlConsumer`, so an option row in
+      `eod_position_pnl` states its real exposure and agrees with the extract exactly.
+- [x] T-RXT20 — Align the feed's bootstrap spots for AAPL/MSFT with the strikes the seeded chain
+      and `instruments.csv` were designed around, so the listed contracts are not all deep out of
+      the money the moment they are quoted.
+- [x] T-RXT21 — Rewrite the acceptance proof to drive the real chain end to end: session close →
+      published prices → P&L → `eod.pnl.done` → extract. Nothing hand-seeded, nothing
+      hand-published.
 - [x] T-RXT15 — Full regression: `test`, `noGcTest`, `riskNoGcTest`, all four allocation gates.
 - [x] T-RXT16 — `generation/implementation-status.md` written with verification evidence; state
       docs synced.

@@ -14,22 +14,32 @@ snapshot is safe in a way reading `positions` is not: it is addressed by `(sessi
 and never updated — a correction is a new version — so the read is a lookup in a frozen table
 rather than a race, and it is reproducible forever.
 
-That chain covers equities and not options. `PriceHistoryStore` is fed only by the synthetic
-`pricing.<ticker>` feed the price-publisher broadcasts, which carries no option contracts, so an
-option is `MISSING` in every snapshot. Two further consequences follow: `eod_price_snapshot.security`
-is `VARCHAR(16)` and an unpadded OCC symbol is 19 characters, and YU06's fail-safe halts an
-**entire account** if any holding is unpriced — so under the existing chain an account holding one
-option produces no `eod_position_pnl` rows at all.
+That chain did not originally cover options. `PriceHistoryStore` is fed only by the
+`pricing.<ticker>` feed the price-publisher broadcasts, which carried no option contracts, so an
+option was `MISSING` in every snapshot — and YU06's fail-safe halts an **entire account** if any
+holding is unpriced, so an account holding one option produced no `eod_position_pnl` rows at all.
+A second, independent blocker sat underneath it: `eod_price_snapshot.security` was `VARCHAR(16)`
+and an unpadded OCC symbol is 19 characters.
 
-Meanwhile the cluster already knows an option's last trade price. YU13's engine keeps
-`lastPxBySecurity` as replicated state, and the cut reads it at the same sequence N as the
-positions themselves.
+Both are now fixed. The columns are widened, and price-publisher quotes the listed chain off its
+underlyings (Black-Scholes at a flat implied vol, derived on every tick from the underlying's
+current price rather than walked independently, so a call and a put on the same strike cannot
+contradict each other). An option therefore has a published close exactly like an equity, and the
+whole chain runs for it end to end.
+
+The cluster also knows an option's last trade price — YU13's engine keeps `lastPxBySecurity` as
+replicated state, read at the same sequence N as the positions — which is what the extract used
+before the feed covered options, and what it still falls back to.
 
 ## Decision
 
 A row is marked from the **published close** when `eod_price_snapshot` has a usable price for its
 security at the stamped `(sessionDate, version)`. Otherwise it is marked from the **cut's own last
-trade price at N**. Every row records which, in a `markSource` column
+trade price at N**. With the feed quoting the listed chain, the published close is now the normal
+path for options as well as equities, and the last-trade path is a genuine fallback — for an
+instrument the feed does not carry — rather than the standing arrangement for a whole asset class.
+
+Every row records which, in a `markSource` column
 (`EOD_SNAPSHOT` / `CLUSTER_LAST_TRADE_AT_N`) alongside a `markQuality` column carrying either
 YU06's quality classification or `LAST_TRADE`.
 
@@ -52,15 +62,27 @@ For an equity in the normal EOD flow, the mark is YU06's published close and `ma
 `quantity × closing_price × 1` — the same number `eod_position_pnl.market_value` holds, so the
 tie-out the consumer asked for is exact by construction.
 
-For a listed option, the mark is the last price the contract traded at on our own book at the cut
-sequence. It is cut-consistent by construction (same N as the position), it is the number the risk
-gate itself used, and it is stamped so nothing is hidden. It is not a settlement price from a
-listed-options feed, which is what a production system would eventually reconcile against.
+For a listed option, the mark is the published close from the same snapshot version, so the same
+tie-out holds — and because both `eod_position_pnl` and the extract apply the contract multiplier,
+the two agree exactly rather than by a factor of 100. What our feed publishes is a modelled quote
+at a flat implied vol, not a settlement price from a listed-options venue, which is what a
+production system would eventually reconcile against; the vol and rate are reported on
+price-publisher's `/health` so a consumer can reproduce our marks precisely.
+
+Where the feed does not carry an instrument, the row still falls back to the engine's last trade at
+N and says so in `markSource`. That path is cut-consistent by construction and is the number the
+risk gate itself used, so a portfolio is never blocked on a missing quote.
 
 The extract does not read `eod_position_pnl`. It recomputes market value from the same published
-price version using the same formula, which reproduces that table's value exactly for equities
-while remaining correct for a portfolio the async read model cannot represent — and it removes a
-dependency on a table that is empty for any account holding an option.
+price version using the same formula, so the two agree for every instrument type — but the extract
+is computed on the consistent cut and stays correct when the async read model has not caught up.
 
-Where the two disagree, the extract is the one computed on a consistent cut and `eod_position_pnl`
-is the async approximation.
+Where the two disagree it is a lag artefact, not a methodology difference: the extract is computed
+on the consistent cut and `eod_position_pnl` is the async approximation.
+
+One new obligation falls out of quoting options: a 20% day-over-day move is a data-quality alarm
+for an equity and unremarkable for a leveraged contract, so the spike gate is instrument-aware
+(`eod.quality.max-move-pct` for equities, `eod.quality.max-move-pct-option` for OCC symbols).
+Holding options to the equity threshold would have flagged them, and a single flagged instrument
+blocks publication of the entire session — so it would have taken the whole EOD chain down,
+equities included, rather than merely mis-flagging options.

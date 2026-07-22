@@ -109,6 +109,43 @@ positions read model, and the YU06 price chain silently excluded every option.
 
 The JPA entities were already correct (`@Column(length = 50)`), so no service code changed.
 
+## 9. Market-data feed (extended)
+
+`price-publisher` now quotes listed option contracts alongside equities on the existing
+`pricing.<TICKER>` and `pricing-tick-bin.<TICKER>` subjects. The payload shape is unchanged; the
+`source` field reads `black-scholes` for a derived contract. No consumer changes.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `PRICE_OPTION_CONTRACTS` | the YU14 seeded chain (24 contracts) | OCC symbols to quote; empty quotes equities only |
+| `PRICE_OPTION_IV` | `0.25` | Flat implied vol for every contract |
+| `PRICE_OPTION_RATE` | `0.04` | Risk-free rate |
+| `PRICE_OPTION_MIN_PREMIUM` | `0.01` | Floor for a far out-of-the-money quote |
+
+`GET /health` reports `optionContracts` and an `optionModel` block carrying the model name, implied
+vol and rate — so a consumer reconciling against our option marks can reproduce them exactly. A
+contract whose underlying is absent from the feed is skipped rather than quoted off a fabricated
+price.
+
+## 10. EOD quality gate (changed threshold)
+
+| Property | Default | Applies to |
+|---|---|---|
+| `eod.quality.max-move-pct` | `20` | everything except OCC option symbols (unchanged) |
+| `eod.quality.max-move-pct-option` | `200` | OCC option symbols (new) |
+
+Staleness and missing-price classification are unchanged for every instrument, and the fail-safe
+still halts an account on any unusable holding. Only the spike band differs, because a 20%
+day-over-day move is an alarm for an equity and unremarkable for a leveraged contract — and one
+flagged instrument blocks publication of the whole session.
+
+## 11. EOD P&L market value (changed for options)
+
+`eod_position_pnl.market_value` is now `quantity × closing_price × contractMultiplier`. Equities
+carry multiplier 1 and are unchanged bit for bit; an option row now states its real exposure and
+agrees exactly with the extract's `marketValue` for the same row, rather than differing by the
+multiplier.
+
 ## Not changed
 
 Order, trade, position, risk, settlement, reconciliation, regulatory, TCA, and EOD payload shapes

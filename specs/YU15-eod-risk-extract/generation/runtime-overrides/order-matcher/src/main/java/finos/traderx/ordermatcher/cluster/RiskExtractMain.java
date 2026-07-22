@@ -94,6 +94,9 @@ public final class RiskExtractMain {
         final String stream = env("EOD_STREAM", "TRADERX_EOD");
         final String pnlDone = env("EOD_PNL_DONE_SUBJECT", "eod.pnl.done");
         final String durable = env("RISK_EXTRACT_DURABLE", "risk-extract");
+        // The other subject on the shared YU06 stream. We never consume it, but the stream must
+        // carry it or trade-processor's gate event has nowhere to land.
+        final String pricesReady = env("EOD_PRICES_READY_SUBJECT", "eod.prices.ready");
 
         final String aeronDir = env("RISK_EXTRACT_AERON_DIR", "/dev/shm/aeron-risk-extract");
         final MediaDriver driver = MediaDriver.launch(new MediaDriver.Context()
@@ -105,7 +108,7 @@ public final class RiskExtractMain {
         this.aeronDir = aeronDir;
         final Connection nats = connectNats(natsUrl);
 
-        ensureStream(nats, stream, pnlDone);
+        ensureStream(nats, stream, pricesReady, pnlDone);
         final JetStream js = nats.jetStream();
         final Dispatcher dispatcher = nats.createDispatcher();
         js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
@@ -128,12 +131,33 @@ public final class RiskExtractMain {
     /**
      * Idempotently ensure the EOD stream exists, exactly as position-service's consumer does at
      * its end. Whichever side starts first creates it; neither has to be started first.
+     *
+     * <p>It must declare the WHOLE subject family, not just the one subject this process consumes.
+     * The stream is shared with the YU06 chain, and whichever side creates it fixes its subject
+     * list — so a stream created here carrying only {@code eod.pnl.done} leaves trade-processor's
+     * {@code eod.prices.ready} publish with no responder, silently breaking the batch chain
+     * upstream of us. An already-existing stream missing a subject is repaired rather than
+     * tolerated, since that is exactly the damage an earlier incomplete create leaves behind.
      */
     private static void ensureStream(final Connection nats, final String stream,
-                                     final String subject) throws Exception {
+                                     final String... subjects) throws Exception {
         final io.nats.client.JetStreamManagement jsm = nats.jetStreamManagement();
         try {
-            jsm.getStreamInfo(stream);
+            final io.nats.client.api.StreamInfo info = jsm.getStreamInfo(stream);
+            final java.util.List<String> existing = info.getConfiguration().getSubjects();
+            final java.util.List<String> merged = new java.util.ArrayList<>(existing);
+            for (final String subject : subjects) {
+                if (!merged.contains(subject)) {
+                    merged.add(subject);
+                }
+            }
+            if (merged.size() != existing.size()) {
+                jsm.updateStream(io.nats.client.api.StreamConfiguration.builder(info.getConfiguration())
+                    .subjects(merged)
+                    .build());
+                System.out.println("RISK-EXTRACT repaired stream " + stream
+                    + " subjects=" + existing + " -> " + merged);
+            }
             return;
         } catch (final io.nats.client.JetStreamApiException e) {
             if (e.getApiErrorCode() != 10059) { // 10059 = stream not found
@@ -142,10 +166,11 @@ public final class RiskExtractMain {
         }
         jsm.addStream(io.nats.client.api.StreamConfiguration.builder()
             .name(stream)
-            .subjects(subject)
+            .subjects(subjects)
             .storageType(io.nats.client.api.StorageType.File)
             .build());
-        System.out.println("RISK-EXTRACT created stream " + stream + " subject=" + subject);
+        System.out.println("RISK-EXTRACT created stream " + stream
+            + " subjects=" + java.util.Arrays.toString(subjects));
     }
 
     /**

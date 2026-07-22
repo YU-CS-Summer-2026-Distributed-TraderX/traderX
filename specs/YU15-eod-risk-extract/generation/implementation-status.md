@@ -15,14 +15,20 @@ Status: implemented and verified on kind.
 | Delivery | `RiskExtractGcsSink` — write-once over the YU09 S3-over-GCS transport |
 | Readiness | `ClusterNodeMain` reports the consensus-log position (T-RXT07) |
 | Schema | Instrument-identifier columns widened to `VARCHAR(32)` with `ALTER ... MODIFY` migrations (T-RXT13) |
-| Runtime | NATS, a database running the state's own DDL, `trade-processor`, producer Deployment, NetworkPolicy allowlist entry |
+| Feed | `price-publisher` quotes the listed chain off its underlyings — Black-Scholes at a flat IV, derived every tick (T-RXT17) |
+| Quality | Instrument-aware spike threshold, so an option's ordinary move does not block the session (T-RXT18) |
+| P&L | Multiplier-aware `eod_position_pnl.market_value`, so an option row agrees with the extract (T-RXT19) |
+| Runtime | NATS, a database running the state's own DDL, the full EOD chain (`price-publisher`, `trade-processor`, `position-service`), producer Deployment, NetworkPolicy allowlist entry |
 | Proof | `RiskExtractTest` (16 tests), `scripts/bench/yu15-risk-extract.sh` (7 steps), `scripts/bench/yu15-option-persistence.sh` (4 steps) |
 
 ## Verification
 
 | Proof | Result |
 |---|---|
-| Generated-tree suite | **258 / 0** (YU14 carried 242; +16 YU15 tests) |
+| order-matcher suite | **258 / 0** (YU14 carried 242; +16 YU15 tests) |
+| trade-processor suite | **63 / 0** (+6 instrument-aware spike cases) |
+| position-service suite | **10 / 0** (+2 multiplier cases) |
+| price-publisher suite | **11 / 0** (`node:test`, no framework dependency added) |
 | Epsilon gates | `noGcTest` + `riskNoGcTest` pass |
 | Allocation gates | all four, executed fresh (`--rerun-tasks`) |
 | Clean generation | `bash pipeline/generate-state.sh YU15-eod-risk-extract` → **EXIT=0** |
@@ -30,16 +36,17 @@ Status: implemented and verified on kind.
 
 ### Live kind proof (`scripts/bench/yu15-risk-extract.sh`, all 7 steps)
 
-Cluster `kind-traderx-yu12-cluster`, 3 members + gateway + NATS + price DB + producer.
+Cluster `kind-traderx-yu12-cluster`: 3 members + gateway + NATS + database + the full EOD chain
+(price-publisher, trade-processor, position-service) + producer.
 
 | Step | Result |
 |---|---|
-| Trigger | Publishing `eod.pnl.done` — and nothing else — produced a delivered object and a `risk.extract.ready` announcement |
-| Consistent cut | All 3 members logged `sha256=f10a554d…` at sequence 1544685 |
-| Quiescence | `quiesceWitnessSequence` 1544686 == 1544685 + 1 |
-| Reproducible | `--rebuild` from the stored `.cut` byte-compared equal to the delivered `.csv` (14 rows) |
-| Immutable | Object present at `file:///data/risk-extracts/2026-07-22/v1/seq-1544685.csv`, write-once |
-| Recovery | `order-matcher-cluster-2` deleted → replayed to 1544685 → re-rendered `sha256=f10a554d…` |
+| Trigger | The **real** chain: `/eod/session/close` published v6 with **44 instruments, 0 flagged, including all 24 option contracts at quality OK**; position-service marked `accounts=3 halted=0 rows=8` and emitted `eod.pnl.done`; the extract fired off that event. Nothing hand-seeded, nothing hand-published |
+| Consistent cut | All 3 members logged `sha256=9272038c…` at sequence 1544715 |
+| Quiescence | `quiesceWitnessSequence` 1544716 == 1544715 + 1 |
+| Reproducible | `--rebuild` from the stored `.cut` byte-compared equal to the delivered `.csv` (18 rows) |
+| Immutable | Object present at `file:///data/risk-extracts/2026-07-22/v6/seq-1544715.csv`, write-once |
+| Recovery | `order-matcher-cluster-2` deleted → replayed to the stamped sequence → re-rendered the identical `sha256` |
 | Readiness | The restarted member rejoined the Service; a rolling restart of all three members completed, which it could not before T-RXT07 |
 
 ### Live option-persistence proof (`scripts/bench/yu15-option-persistence.sh`, all 4 steps)
@@ -68,16 +75,23 @@ one.
 
 ### The delivered fixture
 
-Mark sourcing behaved exactly as ADR-056 specifies — equities on the published close, options on
-the cluster's last trade at N, each stamped:
+**Every row now carries `markSource=EOD_SNAPSHOT` and `markQuality=OK`** — options included. The
+`CLUSTER_LAST_TRADE_AT_N` fallback is no longer exercised in the normal path, which is exactly what
+ADR-056 intends now the feed covers the chain:
 
 ```
-22214,AAPL,EQUITY,10,1,241.800000,241.500000,EOD_SNAPSHOT,OK,2415.000000,-3.000000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01
-22214,AAPL260918C00240000,OPTION,10,100,3.900010,4.000000,CLUSTER_LAST_TRADE_AT_N,LAST_TRADE,4000.000000,99.990000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01
+22214,AAPL,EQUITY,13,1,241.800000,241.477000,EOD_SNAPSHOT,OK,3139.201000,-4.199000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01
+22214,AAPL260918C00240000,OPTION,10,100,3.900010,10.709000,EOD_SNAPSHOT,OK,10709.000000,6808.990000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01
+22214,AAPL261218C00260000,OPTION,5,100,2.400000,9.503000,EOD_SNAPSHOT,OK,4751.500000,3551.500000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01
 ```
 
-The option row is the multiplier proof end to end: 10 contracts × $4.00 × 100 = $4,000.00 of
+The option row is the multiplier proof end to end: 10 contracts × $10.709 × 100 = $10,709 of
 notional, from a multiplier that lives in cluster state and rides the format-3 snapshot.
+
+**The tie-out closes exactly.** For the same row, `eod_position_pnl` records
+`AAPL261218C00260000 qty 5 close 9.503 market_value 4751.500000` and the fixture records
+`marketValue 4751.500000`. Before the multiplier fix these differed by exactly 100x — on the very
+number the consumer reconciles its base NPV against.
 
 ## Notes for the next lane
 
@@ -97,10 +111,21 @@ notional, from a multiplier that lives in cluster state and rides the format-3 s
 - **The in-process `ThreeMemberClusterTest` is sensitive to host load.** It timed out once while a
   busy kind cluster saturated the machine (load average 20, Docker VM at 686% CPU) and passed on
   re-run and in isolation. It is a contention flake, not a regression.
-- **The EOD price feed still has no option contracts.** The schema half of the options blocker is
-  fixed, but `PriceHistoryStore` is fed only by the synthetic `pricing.*` publisher, so options
-  still have no published close and YU06's fail-safe still halts any account holding one. That is
-  why ADR-056's fallback exists and why it is still needed.
+- **A shared JetStream stream is fixed by whoever creates it first.** The producer originally
+  created `TRADERX_EOD` carrying only `eod.pnl.done`, which left trade-processor's
+  `eod.prices.ready` publish with no responder and broke the batch chain *upstream* of us —
+  visible only once the real chain ran. `ensureStream` now declares the whole subject family and
+  repairs an existing stream that is missing one. Watch for this pattern wherever two services
+  ensure the same stream.
+- **Option quotes are modelled, not observed.** Flat implied vol (`PRICE_OPTION_IV`, default 0.25)
+  and rate (`PRICE_OPTION_RATE`, default 0.04), reported on price-publisher's `/health` so a
+  consumer can reproduce our marks exactly. A real venue would publish settlement prices.
+- **A contract whose underlying is absent from `PRICE_TICKERS` is skipped, not quoted.** Adding
+  contracts on a new underlying means adding the underlying too, or they silently never price —
+  and an unpriced holding halts its whole account.
+- **The option-persistence proof clears option rows before narrowing the columns.** Now that the
+  feed quotes the chain and fills persist, real 19-character rows exist and MariaDB correctly
+  refuses to shrink a column under them.
 - **GCS delivery is built but proven only against `file://`.** The GKE overlay needs the `gs://`
   sink URI and the HMAC secret pair; the parallel lane owns that cluster.
 

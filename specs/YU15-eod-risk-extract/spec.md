@@ -64,6 +64,15 @@
   unpadded OCC option symbol, so an option fill published by the trade bridge persists to the read
   model rather than being rejected. The migration SHALL widen an already-populated database, not
   only a freshly created one.
+- FR-RXT17: The market-data feed SHALL quote every listed option contract, deriving each quote from
+  its underlying's current tick so that contracts on the same underlying stay mutually consistent,
+  and SHALL NOT walk an option's premium independently of its underlying.
+- FR-RXT18: The EOD quality gate's maximum-move threshold SHALL be instrument-aware, so a leveraged
+  contract's ordinary day-over-day move is not flagged as a spike and does not block publication of
+  the whole session. Staleness and missing-price checks SHALL be unchanged for every instrument.
+- FR-RXT19: EOD P&L market value SHALL apply the contract multiplier, so an option's recorded
+  market value is its real exposure and agrees with the extract rather than differing by the
+  multiplier.
 
 ## Non-Functional Requirements
 
@@ -84,10 +93,14 @@
 - TD-RXT01: The cut is one NATS message, bounded by the 1MB default payload at roughly 15k position
   rows. The row count in the header detects an overrun; chunking or writing the cut directly to the
   object store is the path past it.
-- TD-RXT02: Listed options are marked from the engine's last trade because no published close
-  exists for them — `PriceHistoryStore` is fed only by the synthetic `pricing.*` feed, which
-  carries no option contracts. The schema half of this is fixed (FR-RXT16); the price-feed half
-  is not, so options still have no published close to reconcile against.
+- TD-RXT02: Option closes are modelled quotes — Black-Scholes at one flat implied vol off the
+  underlying's tick — not settlement prices from a listed-options venue, which is what a production
+  system would reconcile against. The vol and rate are reported on price-publisher's `/health` so a
+  consumer can reproduce our marks exactly.
+- TD-RXT04: The OCC option predicate now exists in three modules (`order-matcher`'s `OccSymbol`,
+  which is canonical, plus copies in `trade-processor` and `position-service`). They are separate
+  Gradle builds and the format is an unchanging industry standard, so the copies are deliberate —
+  but they are copies.
 - TD-RXT03: The mapping from account to counterparty is one-to-one reference data. Whether that is
   sufficient for the consumer's netting logic, or whether a counterparty entity with its own
   attributes is needed, is an open question with the consumer.
@@ -109,3 +122,8 @@
   with its 19-character OCC symbol intact, through the real bridge → NATS → trade-processor chain.
 - SC-RXT10: Applying the state's `900-migrations.sql` to a database carrying an older state's
   narrow columns widens them in place.
+- SC-RXT11: A session close prices every listed option contract with quality `OK` and publishes
+  with zero flagged instruments.
+- SC-RXT12: No account is halted by the EOD P&L consumer, and `eod_position_pnl` carries option
+  rows whose market value equals the extract's for the same row.
+- SC-RXT13: Every row of the delivered fixture carries `markSource=EOD_SNAPSHOT`.

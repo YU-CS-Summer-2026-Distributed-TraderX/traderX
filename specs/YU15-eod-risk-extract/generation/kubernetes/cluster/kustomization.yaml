@@ -7,6 +7,7 @@ resources:
   - nats.yaml
   - eod-price-db.yaml
   - trade-processor.yaml
+  - eod-chain.yaml
   - risk-extract.yaml
 # Applied separately by the start script, NOT part of this kustomization:
 #   - gateway.yaml (inherited from the YU12 kind layout)

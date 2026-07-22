@@ -2,8 +2,8 @@
 # yu15-risk-extract.sh — the EOD risk-extract acceptance proof, end to end on kind.
 #
 # Proves, in order:
-#   1. the trigger is real           — publishing eod.pnl.done (YU06's documented contract) is the
-#                                      only input; nothing else pokes the producer
+#   1. the trigger is real           — the whole YU06 chain runs (session close → published
+#                                      prices → P&L → eod.pnl.done); nothing is hand-seeded
 #   2. the cut is a consistent cut   — every member logs the same RISK-EXTRACT-CUT sha256 for the
 #                                      same sequence N, so N names one portfolio, not three
 #   3. quiescence was verified       — the announcement's quiesceWitnessSequence == N + 1
@@ -16,8 +16,7 @@ set -euo pipefail
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
-SESSION_DATE="${SESSION_DATE:-$(date -u +%F)}"
-PRICE_VERSION="${PRICE_VERSION:-1}"
+EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
 K="kubectl --context ${CTX} -n ${NS}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
@@ -29,51 +28,63 @@ gateway_url()  { echo "http://order-matcher:18110"; }
 step "0. preflight"
 ${K} get pod -l app=order-matcher-cluster -o name | wc -l | grep -q 3 || fail "need 3 cluster members"
 POD="$(extract_pod)"; [[ -n "${POD}" ]] || fail "no risk-extract pod"
-echo "[ok] producer=${POD}"
+for d in price-publisher trade-processor position-service; do
+  ${K} get deploy "${d}" >/dev/null 2>&1 || fail "${d} is not deployed - the EOD chain cannot run"
+done
+echo "[ok] producer=${POD}, EOD chain present"
 
-step "1. publish the closing-price snapshot for ${SESSION_DATE} v${PRICE_VERSION}"
-# Stands in for trade-processor's /eod/prices/{date}/publish. The rows are immutable once
-# PUBLISHED, which is exactly why the producer is allowed to read them.
-${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -e "
-  DELETE FROM eod_price_snapshot WHERE session_date='${SESSION_DATE}' AND version=${PRICE_VERSION};
-  DELETE FROM eod_price_session  WHERE session_date='${SESSION_DATE}' AND version=${PRICE_VERSION};
-  INSERT INTO eod_price_session VALUES ('${SESSION_DATE}',${PRICE_VERSION},'PUBLISHED',2,0,NOW(),NOW());
-  INSERT INTO eod_price_snapshot VALUES ('${SESSION_DATE}',${PRICE_VERSION},'AAPL',241.500000,'OK',NULL,NULL);
-  INSERT INTO eod_price_snapshot VALUES ('${SESSION_DATE}',${PRICE_VERSION},'MSFT',388.750000,'OK',NULL,NULL);
-" >/dev/null
-echo "[ok] AAPL 241.50, MSFT 388.75 published (options intentionally absent — no pricing.* feed)"
-
-step "2. fire the trigger: eod.pnl.done"
+step "1. run the real EOD chain: session close -> published prices -> P&L -> eod.pnl.done"
+# Nothing is hand-seeded and nothing is hand-published. price-publisher quotes the equity universe
+# AND the listed option chain; trade-processor closes the session and publishes the version;
+# position-service marks every account against it and emits eod.pnl.done, which is the only thing
+# that starts the extract.
 BEFORE="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
-# The nats image carries no CLI, so publish over the wire protocol itself. This is a plain core
-# publish onto the subject the TRADERX_EOD stream captures — byte for byte what position-service
-# emits at the end of its EOD run, so the trigger under test is the real contract.
-${K} port-forward svc/nats 14222:4222 >/tmp/yu15-nats-pf.log 2>&1 &
-PF_PID=$!
-trap 'kill ${PF_PID} 2>/dev/null || true' EXIT
-sleep 3
-python3 - "${SESSION_DATE}" "${PRICE_VERSION}" <<'PYEOF' || fail "could not publish eod.pnl.done"
-import socket, sys, json
-payload = json.dumps({"sessionDate": sys.argv[1], "version": int(sys.argv[2]),
-                      "accountsMarked": 2, "accountsHalted": 0, "completedAtMillis": 0})
-s = socket.create_connection(("127.0.0.1", 14222), timeout=10)
-s.recv(4096)                                  # INFO
-s.sendall(b"CONNECT {\"verbose\":false}\r\n")
-s.sendall(f"PUB eod.pnl.done {len(payload)}\r\n{payload}\r\n".encode())
-s.sendall(b"PING\r\n")
-assert b"PONG" in s.recv(4096)
-s.close()
-PYEOF
 
+TOKEN="$(${K} exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \
+  -H "X-Auth-Master-Secret: '"${EOD_MASTER_SECRET}"'" \
+  -H "Content-Type: application/json" \
+  -d "{\"subject\":\"yu15-proof\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":900}"' 2>/dev/null)"
+[[ -n "${TOKEN}" ]] || fail "could not mint an admin token from trade-processor"
+
+CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
+  "curl -fsS -X POST 'http://localhost:18091/eod/session/close' -H 'Authorization: Bearer ${TOKEN}'" 2>/dev/null)"
+[[ -n "${CLOSE}" ]] || fail "/eod/session/close returned nothing"
+
+eval "$(printf '%s' "${CLOSE}" | python3 -c '
+import sys, json
+r = json.load(sys.stdin)
+opts = [i for i in r["instruments"] if len(i["security"]) > 15]
+print("SESSION_DATE=" + r["sessionDate"])
+print("PRICE_VERSION=" + str(r["version"]))
+print("CLOSE_STATUS=" + r["status"])
+print("CLOSE_FLAGGED=" + str(r["flaggedCount"]))
+print("CLOSE_INSTRUMENTS=" + str(r["instrumentCount"]))
+print("CLOSE_OPTIONS=" + str(len(opts)))
+print("CLOSE_OPTIONS_OK=" + str(sum(1 for i in opts if i["quality"] == "OK")))
+')"
+
+[[ "${CLOSE_STATUS}" == "PUBLISHED" ]] \
+  || fail "session close did not publish (status ${CLOSE_STATUS}, flagged ${CLOSE_FLAGGED})"
+[[ "${CLOSE_OPTIONS}" -gt 0 ]] || fail "no option contracts priced - is price-publisher quoting the chain?"
+[[ "${CLOSE_OPTIONS_OK}" == "${CLOSE_OPTIONS}" ]] \
+  || fail "${CLOSE_OPTIONS_OK}/${CLOSE_OPTIONS} options priced clean; one flagged instrument blocks the session"
+echo "[ok] ${SESSION_DATE} v${PRICE_VERSION} PUBLISHED - ${CLOSE_INSTRUMENTS} instruments, 0 flagged,"
+echo "     including ${CLOSE_OPTIONS} option contracts, all quality OK"
+
+step "2. the extract fires off the real eod.pnl.done"
 for _ in $(seq 1 60); do
   AFTER="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
   [[ "${AFTER}" -gt "${BEFORE}" ]] && break
   sleep 2
 done
 [[ "${AFTER:-0}" -gt "${BEFORE}" ]] || {
-  ${K} logs "${POD}" --tail=40
-  fail "no RISK-EXTRACT-READY after the trigger"
+  ${K} logs deploy/position-service --tail=15
+  ${K} logs "${POD}" --tail=30
+  fail "no RISK-EXTRACT-READY after the EOD chain completed"
 }
+PNL="$(${K} logs deploy/position-service --tail=-1 | grep 'eod pnl marked' | tail -1)"
+echo "[ok] position-service: ${PNL#*: }"
+[[ "${PNL}" == *"halted=0"* ]] || fail "an account was halted - an unpriced holding blocks its P&L"
 READY="$(${K} logs "${POD}" --tail=-1 | grep 'RISK-EXTRACT-READY' | tail -1 | sed 's/^RISK-EXTRACT-READY //')"
 echo "[ok] ${READY}"
 

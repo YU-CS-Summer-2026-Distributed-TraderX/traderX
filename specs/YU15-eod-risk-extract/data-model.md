@@ -122,6 +122,22 @@ exists — so widening the `CREATE` statements alone would fix only freshly crea
 is the first migration in the lineage that modifies rather than only adds; re-running a `MODIFY`
 against an already-widened column is a no-op.
 
+## Option quote inputs (market data)
+
+An option's quote is derived, not stored: everything but the model inputs comes from the OCC symbol
+and the underlying's current tick.
+
+| Input | Source | Default |
+|---|---|---|
+| underlying spot / open / close | the underlying's live tick | — |
+| strike, expiry, call/put | derived from the OCC symbol (ADR-052) | — |
+| implied volatility | `PRICE_OPTION_IV` | `0.25` (flat across all contracts) |
+| risk-free rate | `PRICE_OPTION_RATE` | `0.04` |
+| premium floor | `PRICE_OPTION_MIN_PREMIUM` | `0.01` |
+
+The vol and rate are reported on price-publisher's `/health` so a consumer can reproduce our marks
+exactly. Quotes are floored at intrinsic value, so a quote can never imply a free arbitrage.
+
 ## Read, not written
 
 `eod_price_snapshot` and `eod_price_session` (YU06) are read for the stamped

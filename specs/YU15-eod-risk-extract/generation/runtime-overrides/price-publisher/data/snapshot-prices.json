@@ -1,0 +1,82 @@
+{
+  "AAPL": {
+    "openPrice": 240.1,
+    "closePrice": 241.8
+  },
+  "MSFT": {
+    "openPrice": 386.9,
+    "closePrice": 388.5
+  },
+  "AMZN": {
+    "openPrice": 184.1,
+    "closePrice": 185.5
+  },
+  "GOOGL": {
+    "openPrice": 165.9,
+    "closePrice": 167.1
+  },
+  "META": {
+    "openPrice": 499.7,
+    "closePrice": 503.2
+  },
+  "NVDA": {
+    "openPrice": 901.4,
+    "closePrice": 910.8
+  },
+  "TSLA": {
+    "openPrice": 169.2,
+    "closePrice": 172.0
+  },
+  "IBM": {
+    "openPrice": 186.0,
+    "closePrice": 187.4
+  },
+  "BAC": {
+    "openPrice": 41.1,
+    "closePrice": 41.7
+  },
+  "C": {
+    "openPrice": 59.2,
+    "closePrice": 58.6
+  },
+  "JPM": {
+    "openPrice": 194.1,
+    "closePrice": 195.8
+  },
+  "GS": {
+    "openPrice": 401.7,
+    "closePrice": 404.2
+  },
+  "MS": {
+    "openPrice": 90.5,
+    "closePrice": 91.1
+  },
+  "UBS": {
+    "openPrice": 29.4,
+    "closePrice": 29.9
+  },
+  "DB": {
+    "openPrice": 16.8,
+    "closePrice": 17.05
+  },
+  "COF": {
+    "openPrice": 149.2,
+    "closePrice": 150.3
+  },
+  "DFS": {
+    "openPrice": 126.4,
+    "closePrice": 127.65
+  },
+  "FNMA": {
+    "openPrice": 1.12,
+    "closePrice": 1.145
+  },
+  "FIS": {
+    "openPrice": 74.7,
+    "closePrice": 75.2
+  },
+  "FNF": {
+    "openPrice": 49.5,
+    "closePrice": 49.95
+  }
+}

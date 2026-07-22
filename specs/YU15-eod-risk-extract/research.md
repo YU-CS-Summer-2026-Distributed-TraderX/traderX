@@ -69,6 +69,43 @@ while remaining correct for a cut the read model has not caught up to. It also r
 on a table that is empty for any account holding an option, because YU06's fail-safe halts an
 entire account when any of its holdings is unpriced.
 
+## Why the feed quotes options, rather than the book pricing them
+
+Options had no published close because `PriceHistoryStore` is fed only from `pricing.*`, and the
+publisher quoted equities only. Two ways to close that gap presented themselves.
+
+**Feed our own trade prints into the price history.** `trade-processor` already consumes `/trades`,
+so an option's last execution on our own book is right there. But this system's architecture is
+explicit that `pricing.*` is *market data* and the EOD close is derived from market data;
+executions are a different kind of observation. It also does not work for the instrument that
+matters most — a contract held but not traded today has no print, and the staleness window that
+correctly detects a dead equity feed would flag it, blocking the session. Marking a position
+requires a price whether or not it traded, which is precisely what a quote feed provides and a
+print does not.
+
+**Quote them from the feed.** The publisher already random-walks equities within volatility bands;
+options become instruments it derives rather than walks. Nothing downstream changes: the tick
+payload, `PriceTickHandler`, `PriceHistoryStore`, the universe resolution, and the publication gate
+all treat an option exactly like an equity.
+
+The premium has to come from somewhere, and the choice is not neutral. An independently walked
+premium would drift free of its underlying, letting a call and a put on the same strike contradict
+each other — no pricing engine can reconcile against that. Intrinsic-plus-a-constant is not a model
+a consumer's theoretical value could ever agree with. So the feed prices Black-Scholes off the
+underlying's current tick at one flat implied vol, floored at intrinsic. Flat is deliberate: a
+consumer running the same inputs reproduces our mark exactly, and a volatility smile would be a
+modelling opinion this venue has no business asserting. It is market-data simulation — the venue
+must quote something — and it stays out of the risk system, which still marks positions from the
+published close exactly as it does an equity's.
+
+Quoting options forces one other change. The spike gate compares a close to the prior published
+close and flags a move beyond a threshold; a single flagged instrument blocks publication of the
+whole session. A 20% day-over-day move is a genuine alarm for an equity and entirely ordinary for a
+leveraged contract, so holding options to the equity band would have taken down the entire EOD
+chain, equities included, every time an underlying moved a little. The band is therefore
+instrument-aware — and only the band: staleness, missing-price detection, and the account-level
+fail-safe are unchanged for every instrument.
+
 ## Why quiescence is witnessed rather than assumed
 
 The extract joins state from two different subsystems: positions from the cluster at sequence N,

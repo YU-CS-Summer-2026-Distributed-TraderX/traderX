@@ -96,10 +96,14 @@ spec:
             # which has no endpoints in this topology — back it off to daily (inherited note).
             - name: RECON_POLL_INTERVAL_MS
               value: "86400000"
-            # The EOD price producer is not exercised here; the extract's marks are seeded
-            # directly against the immutable snapshot tables.
+            # A session close produces a version and, with nothing flagged, publishes it and emits
+            # eod.prices.ready — the real YU06 gate, not a hand-seeded table.
             - name: EOD_SESSION_AUTO_PUBLISH
-              value: "false"
+              value: "true"
+            # Price every instrument the feed has been seen quoting, which now includes the option
+            # chain. Left unset it defaults to exactly that.
+            - name: EOD_QUALITY_STALENESS_SECONDS
+              value: "300"
             - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
               value: "health,prometheus,info"
           readinessProbe:
