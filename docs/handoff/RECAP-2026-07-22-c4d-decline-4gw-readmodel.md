@@ -119,7 +119,95 @@ measured 372k and 327k over 20 s, and the first banked rows 320.8k and 426.0k. T
 recurrence is now weaker than on 07-21; if it returns, instrument first (recap item 4 of 07-21)
 before changing allocation code.
 
-## 5. Reporting boundaries (unchanged and extended)
+## 5. The profile — what binds at the retained operating point
+
+Per-thread CPU accounting (`/proc/<pid>/task` deltas, two windows per run) across all four
+gateways, the leader and one follower, at the retained 4gw/b1000/c64 point, with the
+trade-processor as a controlled variable:
+
+| Row | Booked/s | Ack loss | tp state |
+|---|---:|---:|---|
+| profiled, tp down | **423,735** | 2.14% | scaled to 0 |
+| profiled, tp alive | **402,116** | 2.57% | alive, sharing a gateway node |
+
+**No thread saturates anywhere.** Clean gateways run their two hot threads —
+`cluster-client-owner` and the SHARED-mode embedded MediaDriver — at ~60–65% of a core each;
+HTTP dispatch is ~2% (batching already amortized JSON/HTTP); the leader totals ~1.4 of 3 cores
+with its driver thread the hottest single thread in the system (~72% of a core); consensus module
+~18%. Client-side load generation measured 0.25 cores — not the limiter. Raising concurrency
+(c96: 376k, c128: 361k, 20 s checks at the pre-discipline config) does not raise throughput.
+
+**Named bottleneck: gateway-node CPU exhaustion by co-tenancy, not any service thread.** The
+original e2-standard-2 gateway nodes ran at ~96% node CPU under flood (gateway ~1.05 cores +
+NATS + bench-runner + system on 1.93 allocatable). The controlled tp-alive row makes the
+mechanism exact: the gateway sharing a node with the 4Gi trade-processor collapsed from 1.24 to
+0.58 cores while the other three could not absorb the difference — a −5.1% fleet effect from one
+noisy neighbor.
+
+**Ranked lever verdict:**
+1. **Gateway CPU discipline + isolation from read-model neighbors** — directly evidenced (§6).
+2. **Transport/receiver scheduling** — the egress UDP loss (§7) is receiver-starvation-shaped;
+   dedicated gateway cores likely attack it at the source.
+3. **Consensus-boundary batching — not implied**: consensus is at ~18% of one core.
+4. **Binary ingress — rejected at the batch path**: HTTP/JSON measures ~2–4% of a core.
+
+## 6. Gateway CPU discipline (partial, quota-bounded)
+
+`CPUS_ALL_REGIONS` is 32/32 — no node of any type can be added, so the full experiment
+(4× `c2d-standard-8`, SMT off, static CPU manager, Guaranteed integer-CPU gateways; C2D_CPUS
+quota itself is free at 0/100) is **blocked pending a quota raise**. The quota-neutral core of
+the lever — evicting co-tenants (NATS broker, bench-runner) onto the one already-noisy node so
+three of four gateways run clean — was run instead, with a fresh epoch and the standard bank:
+
+| Config | Banked rows | Median | Ack loss |
+|---|---|---:|---:|
+| co-tenanted (§2) | 425,973 / 422,427 / 382,116 | 422,427 | 1.69–2.09% |
+| de-tenanted | 438,109 / 441,898 / 423,089 | **438,109** | 1.83–2.21% |
+
++3.7% median, and the low-side spread tightened from 382k to 423k — the variance WAS the
+co-tenancy. Placement changes are live-ops only (bench-runner pod re-pinned, nats-broker
+nodeSelector patch); no manifest changed for this. **The retained-tier `gateway.yaml` change that
+DOES need propagation is `d3fb201` (replicas 3→4): YU14 shadows
+`specs/YU13.../kubernetes/cluster/gke/gateway.yaml` and needs a hand-merge, not a cherry-pick.**
+Trade-processor placement is now capacity-driven (its 4Gi request lands it on whichever gateway
+node fits); until the tuned pool exists, benched rows should state tp up/down.
+
+## 7. Aeron transport mechanism — why 4 MiB timed out, why 1 MiB stands
+
+Counters captured per run (CnC `CountersReader` dump, all gateways + leader) on 1 MiB and on a
+2 MiB build (`cluster-node:yu13-2m`, fresh epoch, three banked rows):
+
+| Terms | Banked rows | Median | Ack loss |
+|---|---|---:|---:|
+| 1 MiB (de-tenanted, §6) | 438,109 / 441,898 / 423,089 | **438,109** | 1.83–2.21% |
+| 2 MiB | 306,548 / 350,064 / 378,531 | **350,064** | 0.148–0.247% |
+
+The loss source: egress UDP overruns at ~50 MB/s per gateway on busy shared nodes — per 20 s run
+at 1 MiB the four gateways sent ~55k NAKs and the leader logged ~54k sender flow-control
+back-pressure events and ~48 MB retransmitted.
+
+The mechanism, from the counter deltas:
+- **1 MiB is lossy-fast**: the term rotates quickly, unrepaired gaps become unrecoverable, the
+  egress client skips them and keeps consuming. ~2% of fill acks die, throughput is unthrottled,
+  and the high-water fence protocol (which needs only appliedSeq progress, not every ack) stays
+  prompt — zero timeouts.
+- **2 MiB is reliable-slow**: the deeper window keeps NAKed ranges repairable (loss collapses
+  15×; 147–175 MB retransmitted per 60 s run), but Aeron egress is an ordered stream — every gap
+  **head-of-line blocks** delivery until its retransmit lands. Fence acks arrive late, batch
+  pipelining throttles: −20% median.
+- **4 MiB was the same failure, past the contract edge**: a 4× repair window turns bursts of loss
+  into fence-ack stalls long enough to trip the 10 s ack timeout — the three high-water timeout
+  rejections of 07-21. Lower ack loss did not make it safe; delivery *latency*, not delivery
+  *completeness*, is what the batch contract prices.
+
+**Verdict: 1 MiB stands as the retained throughput configuration.** 2 MiB is a documented
+clean-ack operating point (~0.2% loss at ~350k/s) if a use-case ever prices ack completeness over
+throughput. The real lever against the loss itself is receiver-side scheduling (dedicated gateway
+cores, §6), possibly plus driver socket-buffer sizing — not term geometry. Source and live state
+are restored to 1 MiB (image digest `ba2ac500…`); the 2m image remains in GAR as
+`cluster-node:yu13-2m`.
+
+## 8. Reporting boundaries (unchanged and extended)
 
 - Batch-path booked/s (this document) stays distinct from synchronous per-order REST.
 - 345 ms node-clock role transition stays distinct from client-gap failover; idle stays distinct
@@ -128,6 +216,8 @@ before changing allocation code.
   at 320–426k/s; the read model persists at the §4 rate. State both, never one as the other.
 - Read-model-quiescent rows (07-22) and read-model-loaded rows (07-21) are different conditions —
   label them.
-- The 07-21 recap's "no 300k claim" applied to that campaign's banked set; today's 320.8k (3gw)
-  and 422.4k (4gw) medians are new banked rows under the same gates, with the read-model-down
-  condition stated.
+- The 07-21 recap's "no 300k claim" applied to that campaign's banked set; today's 320.8k (3gw),
+  422.4k (4gw co-tenanted) and 438.1k (4gw de-tenanted) medians are new banked rows under the
+  same gates, with the read-model condition stated per row.
+- The 2 MiB rows (350.1k median, ~0.2% loss) are a different operating point, not an improvement
+  or regression on the 1 MiB rows — never mix them in one series.
