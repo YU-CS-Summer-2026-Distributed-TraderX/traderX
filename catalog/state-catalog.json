@@ -717,6 +717,29 @@
         "branch": "code/generated-state-YU14-listed-equity-options",
         "tag": "generated/YU14-listed-equity-options/v1"
       }
+    },
+    {
+      "id": "YU15-eod-risk-extract",
+      "title": "EOD Risk Extract",
+      "status": "draft",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU15-eod-risk-extract",
+      "previous": [
+        "YU14-listed-equity-options"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU15-eod-risk-extract",
+        "runtime": "inherits YU14-listed-equity-options runtime harness"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU15-eod-risk-extract",
+        "tag": "generated/YU15-eod-risk-extract/v1"
+      }
     }
   ]
 }

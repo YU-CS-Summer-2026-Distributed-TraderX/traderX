@@ -512,11 +512,12 @@ case "${STATE_ID}" in
     copy_script_if_exists "status-state-YU09-ops-hardening-generated.sh"
     copy_script_if_exists "test-state-YU09-ops-hardening.sh"
     ;;
-  YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options)
+  YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options|YU15-eod-risk-extract)
     # YU10 inherits the YU09 runtime; YU11 inherits that complete chain and overlays Aeron
     # replication plus its sidecar/runtime assets. YU12 adds cluster hosting; YU13 overlays the
     # crossing book without changing the run harness; YU14 overlays the option instrument
-    # model/risk multiplier without changing the run harness.
+    # model/risk multiplier without changing the run harness; YU15 adds the EOD risk-extract
+    # producer alongside it, again without changing the run harness.
     copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
     copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
     copy_script_if_exists "status-state-010-kubernetes-runtime-generated.sh"
@@ -570,29 +571,35 @@ case "${STATE_ID}" in
       copy_script_if_exists "status-state-YU11-aeron-replication-generated.sh"
       copy_script_if_exists "test-state-YU11-aeron-replication.sh"
     fi
-    if [[ "${STATE_ID}" == "YU12-aeron-cluster" || "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" ]]; then
+    if [[ "${STATE_ID}" == "YU12-aeron-cluster" || "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
       copy_script_if_exists "start-state-YU12-aeron-cluster-generated.sh"
       copy_script_if_exists "stop-state-YU12-aeron-cluster-generated.sh"
       copy_script_if_exists "status-state-YU12-aeron-cluster-generated.sh"
       copy_script_if_exists "test-state-YU12-aeron-cluster.sh"
     fi
-    if [[ "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" ]]; then
+    if [[ "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
       copy_script_if_exists "start-state-YU13-limit-order-book-generated.sh"
       copy_script_if_exists "stop-state-YU13-limit-order-book-generated.sh"
       copy_script_if_exists "status-state-YU13-limit-order-book-generated.sh"
       copy_script_if_exists "test-state-YU13-limit-order-book.sh"
     fi
-    if [[ "${STATE_ID}" == "YU14-listed-equity-options" ]]; then
+    if [[ "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
       copy_script_if_exists "start-state-YU14-listed-equity-options-generated.sh"
       copy_script_if_exists "stop-state-YU14-listed-equity-options-generated.sh"
       copy_script_if_exists "status-state-YU14-listed-equity-options-generated.sh"
       copy_script_if_exists "test-state-YU14-listed-equity-options.sh"
     fi
+    if [[ "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
+      copy_script_if_exists "start-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "stop-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "status-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "test-state-YU15-eod-risk-extract.sh"
+    fi
     ;;
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds|YU05-post-trade-compliance|YU06-eod-price-production|YU07-historical-tick-store|YU08-execution-algo-engine|YU09-ops-hardening|YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options)
+  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds|YU05-post-trade-compliance|YU06-eod-price-production|YU07-historical-tick-store|YU08-execution-algo-engine|YU09-ops-hardening|YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options|YU15-eod-risk-extract)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins

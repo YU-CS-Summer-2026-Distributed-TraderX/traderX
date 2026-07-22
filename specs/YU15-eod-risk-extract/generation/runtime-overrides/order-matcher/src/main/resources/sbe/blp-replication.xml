@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sbe:messageSchema xmlns:sbe="http://fixprotocol.io/2016/sbe"
+                   package="finos.traderx.ordermatcher.replication.sbe"
+                   id="111"
+                   version="1"
+                   semanticVersion="1.0.0"
+                   byteOrder="littleEndian">
+  <types>
+    <composite name="messageHeader" description="Standard 8-byte SBE message header">
+      <type name="blockLength" primitiveType="uint16"/>
+      <type name="templateId" primitiveType="uint16"/>
+      <type name="schemaId" primitiveType="uint16"/>
+      <type name="version" primitiveType="uint16"/>
+    </composite>
+    <type name="sha256" primitiveType="uint8" length="32"/>
+    <type name="ticker32" primitiveType="char" length="32"/>
+  </types>
+
+  <sbe:message name="InputEventMessage" id="1" blockLength="56">
+    <field name="inputSeq" id="1" type="uint64" offset="0"/>
+    <field name="eventTimeMillis" id="2" type="int64" offset="8"/>
+    <field name="limitPx" id="3" type="int64" offset="16"/>
+    <field name="priceTicks" id="4" type="int64" offset="24"/>
+    <field name="orderRef" id="5" type="uint32" offset="32"/>
+    <field name="accountId" id="6" type="uint32" offset="36"/>
+    <field name="securityId" id="7" type="uint32" offset="40"/>
+    <field name="qty" id="8" type="int32" offset="44"/>
+    <field name="leaderEpoch" id="9" type="uint32" offset="48"/>
+    <field name="commandType" id="10" type="uint8" offset="52"/>
+    <field name="side" id="11" type="uint8" offset="53"/>
+    <field name="flags" id="12" type="uint16" offset="54"/>
+  </sbe:message>
+
+  <sbe:message name="DurableAckMessage" id="2" blockLength="32">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="flags" id="2" type="uint32" offset="4"/>
+    <field name="inputSeq" id="3" type="uint64" offset="8"/>
+    <field name="recordingPosition" id="4" type="int64" offset="16"/>
+    <field name="journalForceNanos" id="5" type="uint64" offset="24"/>
+  </sbe:message>
+
+  <sbe:message name="PeerHelloMessage" id="3" blockLength="152">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="role" id="2" type="uint8" offset="4"/>
+    <field name="ordinal" id="3" type="uint8" offset="5"/>
+    <field name="flags" id="4" type="uint16" offset="6"/>
+    <field name="nonce" id="5" type="uint64" offset="8"/>
+    <field name="issuedAtMillis" id="6" type="int64" offset="16"/>
+    <field name="clusterIdHash" id="7" type="sha256" offset="24"/>
+    <field name="peerIdHash" id="8" type="sha256" offset="56"/>
+    <field name="schemaChecksumHash" id="9" type="sha256" offset="88"/>
+    <field name="authTag" id="10" type="sha256" offset="120"/>
+  </sbe:message>
+
+  <sbe:message name="HeartbeatMessage" id="4" blockLength="80">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="role" id="2" type="uint8" offset="4"/>
+    <field name="flags" id="3" type="uint8" offset="5"/>
+    <field name="reserved" id="4" type="uint16" offset="6"/>
+    <field name="senderNanos" id="5" type="uint64" offset="8"/>
+    <field name="highestInputSeq" id="6" type="uint64" offset="16"/>
+    <field name="journaledSeq" id="7" type="uint64" offset="24"/>
+    <field name="appliedSeq" id="8" type="uint64" offset="32"/>
+    <field name="recordingPosition" id="9" type="int64" offset="40"/>
+    <field name="authTag" id="10" type="sha256" offset="48"/>
+  </sbe:message>
+
+  <sbe:message name="ReplayRequestMessage" id="5" blockLength="32">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="flags" id="2" type="uint32" offset="4"/>
+    <field name="fromInputSeq" id="3" type="uint64" offset="8"/>
+    <field name="fromRecordingPosition" id="4" type="int64" offset="16"/>
+    <field name="correlationId" id="5" type="uint64" offset="24"/>
+  </sbe:message>
+
+  <sbe:message name="SnapshotManifestMessage" id="6" blockLength="192">
+    <field name="leaderEpoch" id="1" type="uint32" offset="0"/>
+    <field name="schemaVersion" id="2" type="uint16" offset="4"/>
+    <field name="flags" id="3" type="uint16" offset="6"/>
+    <field name="inputSeq" id="4" type="uint64" offset="8"/>
+    <field name="archivePosition" id="5" type="int64" offset="16"/>
+    <field name="snapshotLength" id="6" type="uint64" offset="24"/>
+    <field name="symbolsLength" id="7" type="uint64" offset="32"/>
+    <field name="snapshotHash" id="8" type="sha256" offset="40"/>
+    <field name="symbolsHash" id="9" type="sha256" offset="72"/>
+    <field name="dataSessionId" id="10" type="int32" offset="104"/>
+    <field name="reserved" id="11" type="uint32" offset="108"/>
+    <field name="correlationId" id="12" type="uint64" offset="112"/>
+    <field name="payloadChecksum" id="13" type="uint64" offset="120"/>
+    <field name="schemaChecksumHash" id="14" type="sha256" offset="128"/>
+    <field name="authTag" id="15" type="sha256" offset="160"/>
+  </sbe:message>
+  <sbe:message name="SymbolRegisterMessage" id="7" blockLength="40"
+               description="YU12 symbol identity as sequenced cluster ingress; YU14 widens the ticker to 32 bytes so unpadded OCC option symbols register">
+    <field name="requestId" id="1" type="uint64" offset="0"/>
+    <field name="ticker" id="2" type="ticker32" offset="8"/>
+  </sbe:message>
+  <sbe:message name="RiskExtractMessage" id="8" blockLength="24"
+               description="YU15 EOD risk-extract marker: a sequenced no-op command whose only effect is to name a consensus sequence N at which every member materialises the same position cut">
+    <field name="requestId" id="1" type="uint64" offset="0"/>
+    <field name="sessionDateEpochDay" id="2" type="int64" offset="8"/>
+    <field name="priceVersion" id="3" type="uint32" offset="16"/>
+    <field name="reserved" id="4" type="uint32" offset="20"/>
+  </sbe:message>
+</sbe:messageSchema>
