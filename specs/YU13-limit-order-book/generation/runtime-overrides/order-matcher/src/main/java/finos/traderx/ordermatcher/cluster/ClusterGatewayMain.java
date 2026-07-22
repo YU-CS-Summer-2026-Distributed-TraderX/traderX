@@ -308,6 +308,39 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         return ft.get(timeoutMs, TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * Duplicate suppression key for a client order id (FR-IMRG14).
+     *
+     * <p>This deliberately does NOT port YU10's {@code ClOrdIdLedger}. That ledger is gateway-local,
+     * file-backed and unbounded, and it lives on the Spring acceptor that does not run. The engine
+     * already carries the authoritative mechanism: {@code BlpRiskState} keeps a bounded, LRU-evicted
+     * {@code clientOrderKey -> (decision, orderRef)} table INSIDE the replicated state machine, it is
+     * written to every snapshot in retention order, and {@code MatchingEngine.onNewOrder} answers a
+     * repeat key by re-emitting the ORIGINAL order rather than creating a second one. All that was
+     * missing was a gateway that supplies a key instead of the hardcoded 0. Consequences that a
+     * gateway-local ledger could not give: three members agree, the verdict survives gateway restart
+     * AND a reconnect onto a different gateway replica, and there is no rehydration step to cost.
+     *
+     * <p>Zero-allocation FNV-1a over the chars — no {@code getBytes}, no intermediate String. 64 bits
+     * because a collision here means a DISTINCT order is silently answered with a previous order's
+     * outcome; 32 bits would collide around 77k live keys.
+     *
+     * <p>Returns 0 for a null/blank id, and 0 is the engine's "no idempotency key" sentinel. That is
+     * what keeps every existing bench harness behaving exactly as before: the batch path never sets a
+     * key, and a REST order that omits {@code clientOrderId} stays key-less rather than colliding with
+     * every other key-less order on a shared default.
+     */
+    private static long clientOrderKey(final String clOrdId) {
+        if (clOrdId == null || clOrdId.isEmpty()) {
+            return 0L;
+        }
+        long hash = 0xcbf29ce484222325L;
+        for (int i = 0; i < clOrdId.length(); i++) {
+            hash = (hash ^ clOrdId.charAt(i)) * 0x100000001b3L;
+        }
+        return hash == 0L ? 1L : hash;   // never collide with the "no key" sentinel
+    }
+
     // ----- OrderSubmitter (called by REST + FIX threads) -------------------------------------
 
     @Override
@@ -326,7 +359,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 event.securityId = securityId;
                 event.qty = qty;
                 event.limitPx = limitPxTicks;
-                event.priceTicks = 0L; // clientOrderKey slot; FIX ClOrdID dedup is deferred
+                event.priceTicks = clientOrderKey(clOrdId);
                 event.eventTimeMillis = 0;
                 codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
                 lastOrderAck = null;
@@ -435,7 +468,10 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
             final int qty = body.path("quantity").asInt();
             final long px = Math.round(body.path("limitPrice").asDouble() * 1_000_000d);
-            final ExecResult r = submitOrder(body.path("clientOrderId").asText("rest"),
+            // Defaulted to "" rather than the old constant "rest": now that clOrdId feeds the
+            // idempotency key, a shared default would make every key-less REST order a duplicate of
+            // the first one. Empty means "no key", which is the pre-existing behaviour exactly.
+            final ExecResult r = submitOrder(body.path("clientOrderId").asText(""),
                 body.path("accountId").asInt(), ticker, side, qty, px);
             if (r == null) {
                 respond(exchange, 504, "{\"error\":\"no committed ack\"}");
