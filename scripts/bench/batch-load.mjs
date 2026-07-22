@@ -15,6 +15,7 @@
 //   --batch K   orders per batch request                         (default 50)
 //   --secs S    run for S seconds; 0 = until Ctrl-C              (default 0)
 //   env: MATCHER_URL (http://localhost:18110), ACCOUNT (42422),
+//        ACCOUNTS ("" = single-account; "A,B" with SIDES=alternate = two-account flow),
 //        TICKERS (JPM,GS,COF,DFS — must be price-published), QTY (500), LIMIT (1000000)
 //
 // Output line mirrors max-load.mjs so the orchestrator parses it identically:
@@ -32,6 +33,9 @@ const flag = (name, env, def) => {
 const cfg = {
   matcherUrl: (process.env.MATCHER_URL || 'http://localhost:18110').replace(/\/$/, ''),
   account: Number(flag('--account', 'ACCOUNT', 42422)),
+  // ACCOUNTS="A,B" switches SIDES=alternate from one self-crossing account to a two-account
+  // flow. Empty (the default) keeps every pre-existing harness byte-identical.
+  accounts: (process.env.ACCOUNTS || '').split(',').map((s) => Number(s.trim())).filter(Boolean),
   conc: Number(flag('--conc', 'CONC', 16)),
   batch: Math.max(1, Number(flag('--batch', 'BATCH', 50))),
   durationSecs: Number(flag('--secs', 'DURATION_SECS', 0)),
@@ -70,15 +74,42 @@ const bodies = cfg.tickers.map((_, offset) => {
   // complete cycle prefix, then close the even-sized tail as explicit same-ticker pairs.
   const cycle = 2 * cfg.tickers.length;
   const balancedPrefix = alternate ? cfg.batch - (cfg.batch % cycle) : cfg.batch;
-  const orders = Array.from({ length: cfg.batch }, (_, j) => ({
-    accountId: cfg.account,
-    security: j < balancedPrefix
-      ? cfg.tickers[(offset + j) % cfg.tickers.length]
-      : cfg.tickers[(offset + Math.floor((j - balancedPrefix) / 2)) % cfg.tickers.length],
-    side: alternate && (j < balancedPrefix ? j : j - balancedPrefix) % 2 === 1 ? 'Sell' : 'Buy',
-    quantity: cfg.qty,
-    limitPrice: cfg.limit,
-  }));
+  // Two-account flow (ACCOUNTS="A,B"). EVERY benchmark before 2026-07-22 ran one account with
+  // SIDES=alternate — i.e. every fill in the corpus was a self-trade, which books ZERO under any
+  // self-trade-prevention policy. The order sequence here is byte-identical to the single-account
+  // shape (same sides, tickers, quantities, prices, batch structure); the ONLY field that changes
+  // is accountId, so a before/after number isolates STP rather than the load shape.
+  //
+  // Buyer and seller SWAP every consecutive Buy/Sell pair, so each account's net position returns
+  // to zero every two pairs. Holding the roles fixed instead (A always buys) walls the buyer on
+  // POSITION_LIMIT after maxPositionQuantity/qty orders — ~4k at the shipped 1e6 cap — which is why
+  // the single self-crossing account existed in the first place.
+  //
+  // SINGLE TICKER ONLY. The established rotation puts consecutive orders on DIFFERENT securities
+  // (with an even ticker count a ticker is even one-sided within a body), so the Buy/Sell pair this
+  // pairing relies on is only a real cross when tickers.length === 1. With 4 tickers the arithmetic
+  // lands every JPM buy AND every JPM sell on the same account — 100% self-trades, the exact thing
+  // this mode exists to remove. Refuse rather than mis-measure.
+  const twoAccount = alternate && cfg.accounts.length >= 2;
+  if (twoAccount && cfg.tickers.length !== 1) {
+    console.error('[batch] ACCOUNTS= requires exactly one TICKERS entry (see the note in the source)');
+    process.exit(2);
+  }
+  const orders = Array.from({ length: cfg.batch }, (_, j) => {
+    const seq = j < balancedPrefix ? j : j - balancedPrefix;
+    const sell = alternate && seq % 2 === 1;
+    return {
+      // The aggressor is always the second of a pair and the resting order the first, so a cross
+      // is never same-account: no STP cancel can fire from the harness's own sequence.
+      accountId: twoAccount ? cfg.accounts[(Math.floor(seq / 2) + (sell ? 1 : 0)) % 2] : cfg.account,
+      security: j < balancedPrefix
+        ? cfg.tickers[(offset + j) % cfg.tickers.length]
+        : cfg.tickers[(offset + Math.floor((j - balancedPrefix) / 2)) % cfg.tickers.length],
+      side: sell ? 'Sell' : 'Buy',
+      quantity: cfg.qty,
+      limitPrice: cfg.limit,
+    };
+  });
   return Buffer.from(JSON.stringify(orders));
 });
 
