@@ -16,7 +16,7 @@
 //   --secs S    run for S seconds; 0 = until Ctrl-C              (default 0)
 //   env: MATCHER_URL (http://localhost:18110), ACCOUNT (42422),
 //        ACCOUNTS ("" = single-account; "A,B" with SIDES=alternate = two-account flow),
-//        TICKERS (JPM,GS,COF,DFS — must be price-published), QTY (500), LIMIT (1000000)
+//        TICKERS (JPM,GS,COF,DFS — must be price-published), QTY (500), LIMIT (150 dollars)
 //
 // Output line mirrors max-load.mjs so the orchestrator parses it identically:
 //   "submitted=<orders accepted> failed=<orders rejected>"  (counts ORDERS, not requests)
@@ -45,7 +45,16 @@ const cfg = {
   // on one starved request and the run would never end. Tune with --req-timeout / REQ_TIMEOUT_MS.
   reqTimeoutMs: Math.max(1000, Number(flag('--req-timeout', 'REQ_TIMEOUT_MS', 30000))),
   qty: Number(process.env.QTY || 500),
-  limit: Number(process.env.LIMIT || 1_000_000),
+  // limitPrice is a DOLLAR price (the gateway multiplies by 1e6). The old default of 1_000_000
+  // meant $1,000,000/share and has now produced TWO distinct silent-failure modes, both of which
+  // kept every HTTP response at 2xx while the engine rejected everything:
+  //   * with a real price collar, every order lands outside the band a $150-ish market anchored
+  //     -> blanket PRICE_COLLAR;
+  //   * with the collar widened, each fill carries $500,000,000 of notional against
+  //     CREDIT_LIMIT_TICKS = Long.MAX/4, so an account walls after exactly 4,611 fills.
+  // A default that fails silently in two different ways is a trap, not a default. $150 is the
+  // seeded market price, so orders are marketable without being absurd; override with LIMIT.
+  limit: Number(process.env.LIMIT || 150),
   tickers: (process.env.TICKERS || 'JPM,GS,COF,DFS').split(',').map((t) => t.trim().toUpperCase()),
 };
 
