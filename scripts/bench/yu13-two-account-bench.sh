@@ -192,6 +192,14 @@ print("  member agreement (nextRef, resting, bookHash):",
       "IDENTICAL" if len(set(tails)) == 1 else f"DIVERGED {tails}")
 PY
 echo "  gateway accepted delta: $(( GW_ACC1 - GW_ACC0 ))   fill-ack delta: $(( GW_FILL1 - GW_FILL0 ))"
-echo "  gateway STP-cancel acks: $(gw_metric 'event="self_trade_prevented"' || echo 'n/a (pre-STP image)')"
+# Read from the MEMBERS, not the gateway: egress acks are best-effort and drop under flood, so a
+# gateway-side tally undercounts exactly when the number matters. Blank on a pre-STP image.
+printf "  self-trades prevented (per member):"
+for m in 0 1 2; do
+  printf " %s" "$(${K} exec "order-matcher-cluster-${m}" -- \
+    sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+    | awk '/^traderx_stp_cancels/ {print $2}' || echo n/a)"
+done
+echo
 
 done
