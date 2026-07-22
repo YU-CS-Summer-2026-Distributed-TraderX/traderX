@@ -187,14 +187,14 @@ public final class FixGatewayAcceptor {
                 ? Integer.parseInt(order.getString(quickfix.field.Account.FIELD)) : defaultAccountId;
 
             final OrderSubmitter.ExecResult result =
-                submitter.submitOrder(clOrdId, accountId, ticker, side, qty, limitPxTicks);
+                submitter.submitOrder(qualify(sessionId, clOrdId), accountId, ticker, side, qty, limitPxTicks);
             if (result == null) {
                 // Post-publish ambiguity: no reject may be sent; the counterparty reconciles.
                 log.warn("FIX order {} ambiguous (no committed ack)", clOrdId);
                 return;
             }
             if (result.accepted()) {
-                refByClOrdId.put(clOrdId, result.orderRef());
+                refByClOrdId.put(qualify(sessionId, clOrdId), result.orderRef());
             }
             sendReport(sessionId, clOrdId, ticker, side, qty, result);
         }
@@ -214,7 +214,7 @@ public final class FixGatewayAcceptor {
             final String ticker = cancel.isSetField(Symbol.FIELD)
                 ? cancel.getString(Symbol.FIELD).trim().toUpperCase() : "";
 
-            final int orderRef = resolveOrderRef(cancel, origClOrdId);
+            final int orderRef = resolveOrderRef(cancel, qualify(sessionId, origClOrdId));
             if (orderRef <= 0) {
                 sendCancelReject(sessionId, "NONE", clOrdId, origClOrdId, OrdStatus.REJECTED,
                     CxlRejReason.UNKNOWN_ORDER, "unknown OrigClOrdID; resend with OrderID (37)");
@@ -238,7 +238,20 @@ public final class FixGatewayAcceptor {
                 unknown ? "no such order" : "order already terminal");
         }
 
-        private int resolveOrderRef(final OrderCancelRequest cancel, final String origClOrdId)
+        /**
+         * ClOrdID is unique per SESSION per day, not globally — FIX 4.4 §"Unique identifier". Two
+         * counterparties both numbering their orders from 1 is entirely legal, so the raw ClOrdID
+         * cannot be the idempotency key: the second session's order 1 would be suppressed as a
+         * duplicate of the first session's. Qualifying by SenderCompID is what makes the engine's
+         * clientOrderKey mean what FIX says ClOrdID means.
+         */
+        private String qualify(final SessionID sessionId, final String clOrdId) {
+            // Octal escape, not a literal control byte in the source: SOH cannot appear inside a
+            // CompID or a ClOrdID, so it is a separator no client value can forge.
+            return sessionId.getTargetCompID() + '\001' + clOrdId;
+        }
+
+        private int resolveOrderRef(final OrderCancelRequest cancel, final String qualifiedOrigClOrdId)
             throws FieldNotFound {
             if (cancel.isSetField(OrderID.FIELD)) {
                 final String orderId = cancel.getString(OrderID.FIELD);
@@ -250,7 +263,7 @@ public final class FixGatewayAcceptor {
                     }
                 }
             }
-            final Integer mapped = refByClOrdId.get(origClOrdId);
+            final Integer mapped = refByClOrdId.get(qualifiedOrigClOrdId);
             return mapped == null ? -1 : mapped;
         }
 
@@ -288,7 +301,7 @@ public final class FixGatewayAcceptor {
                 }
             }
             send(report, sessionId, clOrdId);
-            refByClOrdId.remove(origClOrdId);
+            refByClOrdId.remove(qualify(sessionId, origClOrdId));
         }
 
         private void sendCancelReject(final SessionID sessionId, final String orderId,
