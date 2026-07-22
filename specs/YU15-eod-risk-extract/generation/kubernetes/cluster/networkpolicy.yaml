@@ -20,6 +20,9 @@ spec:
         - podSelector:
             matchLabels:
               app: cluster-gateway
+        - podSelector:
+            matchLabels:
+              app: risk-extract
       ports:
         - protocol: UDP
           port: 21800

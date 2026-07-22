@@ -656,6 +656,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return lastLoadedNextOrderRef;
     }
 
+    /**
+     * Position on the committed consensus log — restored from the snapshot header and advanced by
+     * every sequenced input. This, not the engine's {@code blpSeq}, is what "how far has this
+     * member caught up" means: a member restored from a snapshot holds state as of this sequence
+     * even though its engine has applied no events since (YU15, T-RXT07).
+     */
+    public long appliedSeq() {
+        return appliedSeq;
+    }
+
     /** Consensus sequence the most recent risk-extract marker landed at (YU15), or -1. */
     public long lastExtractCutSeq() {
         return lastExtractCutSeq;

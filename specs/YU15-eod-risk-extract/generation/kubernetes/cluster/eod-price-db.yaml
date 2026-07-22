@@ -1,0 +1,101 @@
+# The published closing-price snapshot the extract marks equities against. Only the two YU06
+# tables the producer reads are created here — the cluster topology has no trade-processor or
+# position-service, and the producer never touches positions in SQL by design (ADR-055).
+#
+# The seeded rows stand in for a session trade-processor already published: they are addressed
+# by (session_date, version) and immutable, which is the property that makes reading them safe.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eod-price-db-init
+data:
+  10-eod-schema.sql: |
+    CREATE TABLE eod_price_session (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      status VARCHAR(16) CHECK (status in ('DRAFT', 'PUBLISHED')),
+      instrument_count INTEGER NOT NULL DEFAULT 0,
+      flagged_count INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME,
+      published_at DATETIME,
+      PRIMARY KEY (session_date, version)
+    );
+
+    -- VARCHAR(32), not YU06's VARCHAR(16): an unpadded OCC option symbol is 19 characters and
+    -- would truncate. The extract does not depend on options being present here — they fall back
+    -- to the engine's last trade at N — but a truncated symbol would silently mis-mark an option.
+    CREATE TABLE eod_price_snapshot (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      closing_price DECIMAL(18,6),
+      quality VARCHAR(16) CHECK (quality in ('OK', 'STALE', 'SPIKE', 'MISSING', 'OVERRIDDEN')),
+      source_tick_millis BIGINT,
+      override_reason VARCHAR(255),
+      PRIMARY KEY (session_date, version, security),
+      FOREIGN KEY (session_date, version) REFERENCES eod_price_session(session_date, version)
+    );
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eod-price-db
+  labels:
+    app: eod-price-db
+spec:
+  selector:
+    app: eod-price-db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eod-price-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eod-price-db
+  template:
+    metadata:
+      labels:
+        app: eod-price-db
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_DATABASE
+              value: traderx
+            - name: MARIADB_USER
+              value: traderx
+            - name: MARIADB_PASSWORD
+              value: traderx
+            - name: MARIADB_ROOT_PASSWORD
+              value: traderx
+          ports:
+            - name: mysql
+              containerPort: 3306
+          readinessProbe:
+            exec:
+              command: ["mariadb-admin", "ping", "-utraderx", "-ptraderx"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 24
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: init
+          configMap:
+            name: eod-price-db-init

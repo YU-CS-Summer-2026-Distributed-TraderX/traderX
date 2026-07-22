@@ -113,6 +113,22 @@ class RiskExtractTest {
     }
 
     @Test
+    void aRestoredMemberReportsItsConsensusPositionWhileIdle() {
+        // Readiness compares this number against peers'. The engine's blpSeq is -1 on a member
+        // that restored from a snapshot and has applied no events since — which is the normal
+        // state of every member during an EOD window — so readiness must not be derived from it.
+        final MatchingEngineClusteredService source = portfolio();
+        final long sourceSeq = source.appliedSeq();
+        assertTrue(sourceSeq > 0);
+
+        final MatchingEngineClusteredService replica = restore(source);
+        assertEquals(-1, replica.engine().blpSeq(),
+            "sanity: a freshly restored engine has applied no events of its own");
+        assertEquals(sourceSeq, replica.appliedSeq(),
+            "a restored member knows the consensus sequence its state corresponds to");
+    }
+
+    @Test
     void aPositionOnAnUnregisteredSecurityFailsClosed() {
         // A risk extract that silently omits a position is worse than no extract.
         assertThrows(IllegalStateException.class, () -> RiskExtractCut.render(

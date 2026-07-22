@@ -4,3 +4,7 @@ namespace: traderx
 resources:
   - statefulset.yaml
   - networkpolicy.yaml
+  - nats.yaml
+  - eod-price-db.yaml
+  - risk-extract.yaml
+# gateway.yaml is applied separately (inherited from the YU12 kind layout) — see the start script.

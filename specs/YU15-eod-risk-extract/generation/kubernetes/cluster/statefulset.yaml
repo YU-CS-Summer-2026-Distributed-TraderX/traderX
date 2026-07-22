@@ -42,7 +42,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: cluster-node
-          image: traderx/cluster-node:yu14
+          image: traderx/cluster-node:yu15
           imagePullPolicy: IfNotPresent
           env:
             - name: CLUSTER_HOSTNAMES
@@ -53,6 +53,10 @@ spec:
               value: "/data"
             - name: CLUSTER_AERON_DIR
               value: "/dev/shm/aeron-cluster"
+            # YU15: leader-side position-cut bridge. Unset leaves the marker inert (it still
+            # sequences and renders on every member, it just publishes nowhere).
+            - name: RISK_EXTRACT_NATS_URL
+              value: "nats://nats:4222"
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

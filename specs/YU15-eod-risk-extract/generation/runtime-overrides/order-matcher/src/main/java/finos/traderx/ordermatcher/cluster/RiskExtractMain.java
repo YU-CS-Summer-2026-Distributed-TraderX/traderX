@@ -61,6 +61,7 @@ public final class RiskExtractMain {
         new UnsafeBuffer(new byte[AeronReplicationCodec.RISK_EXTRACT_BYTES]);
 
     private AeronCluster client;
+    private String aeronDir;
     private volatile long[] lastExtractAck; // {seq, rows, requestId}
     private long nextRequestId = 1;
 
@@ -101,11 +102,10 @@ public final class RiskExtractMain {
             .termBufferSparseFile(true)
             .dirDeleteOnStart(true));
 
-        final Connection nats = Nats.connect(new Options.Builder()
-            .server(natsUrl).connectionTimeout(Duration.ofSeconds(10)).maxReconnects(-1).build());
+        this.aeronDir = aeronDir;
+        final Connection nats = connectNats(natsUrl);
 
-        connectCluster(aeronDir);
-
+        ensureStream(nats, stream, pnlDone);
         final JetStream js = nats.jetStream();
         final Dispatcher dispatcher = nats.createDispatcher();
         js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
@@ -126,6 +126,45 @@ public final class RiskExtractMain {
     }
 
     /**
+     * Idempotently ensure the EOD stream exists, exactly as position-service's consumer does at
+     * its end. Whichever side starts first creates it; neither has to be started first.
+     */
+    private static void ensureStream(final Connection nats, final String stream,
+                                     final String subject) throws Exception {
+        final io.nats.client.JetStreamManagement jsm = nats.jetStreamManagement();
+        try {
+            jsm.getStreamInfo(stream);
+            return;
+        } catch (final io.nats.client.JetStreamApiException e) {
+            if (e.getApiErrorCode() != 10059) { // 10059 = stream not found
+                throw e;
+            }
+        }
+        jsm.addStream(io.nats.client.api.StreamConfiguration.builder()
+            .name(stream)
+            .subjects(subject)
+            .storageType(io.nats.client.api.StorageType.File)
+            .build());
+        System.out.println("RISK-EXTRACT created stream " + stream + " subject=" + subject);
+    }
+
+    /**
+     * A once-a-day batch producer must not die because a dependency was slow to come up — it would
+     * simply not exist when the batch fires. Retry forever; the pod is useless until NATS is there.
+     */
+    private static Connection connectNats(final String url) throws InterruptedException {
+        while (true) {
+            try {
+                return Nats.connect(new Options.Builder()
+                    .server(url).connectionTimeout(Duration.ofSeconds(10)).maxReconnects(-1).build());
+            } catch (final Exception e) {
+                System.out.println("RISK-EXTRACT waiting for NATS at " + url + ": " + e);
+                Thread.sleep(2000);
+            }
+        }
+    }
+
+    /**
      * One EOD batch. Any failure leaves the message unacked so JetStream redelivers: the extract is
      * addressed by {@code (sessionDate, version, sequence)} and written write-once, so a retry
      * either produces a new sequence or refuses to clobber — never a half-written fixture.
@@ -138,6 +177,10 @@ public final class RiskExtractMain {
             final int version = event.getInt("version");
             System.out.println("RISK-EXTRACT trigger sessionDate=" + sessionDate + " version=" + version);
 
+            // A fresh cluster session per batch: a session opened at startup would be hours stale
+            // (and possibly pointing at a former leader) by the time the batch actually fires.
+            // AeronCluster.connect finds the current leader from the endpoint list on its own.
+            connectCluster(aeronDir);
             // Subscribe BEFORE the marker so the cut cannot arrive before we are listening.
             final Subscription cutSub = nats.subscribe(cutSubject);
             try {
@@ -177,6 +220,8 @@ public final class RiskExtractMain {
                 msg.ack();
             } finally {
                 cutSub.unsubscribe();
+                CloseHelper.quietClose(client);
+                client = null;
             }
         } catch (final Exception ex) {
             // No ack: JetStream redelivers. Nothing partial was published or announced.
