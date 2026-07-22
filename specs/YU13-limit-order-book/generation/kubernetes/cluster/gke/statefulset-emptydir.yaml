@@ -54,6 +54,15 @@ spec:
         # via the proven catch-up. No-op on normal boot. Uses the journal-archive HMAC creds.
         - name: restore-from-gcs
           image: google/cloud-sdk:latest
+          # Init containers participate in pod QoS classification. Equal CPU/memory request and
+          # limit keep the pod Guaranteed so static CPU Manager can pin the 3-CPU member container.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
           env:
             - name: RESTORE_FROM_GCS
               value: "0"
