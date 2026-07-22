@@ -14,3 +14,5 @@ Parent: `YU12-aeron-cluster`
 | FD-LOB08 | Extend the cluster snapshot to format 2: header carries book geometry, each created book's band anchor precedes its order rows, and open rows in ascending-reference order rebuild each level's exact FIFO; fail closed on an off-grid or out-of-band restored row and on a legacy (format 1) snapshot. |
 | FD-LOB09 | Carry a resting-update class byte on every egress ack; count only direct acks in gateway offer/ack and pipelined-batch accounting, and count both sides of a cross in the booked-fill metric. |
 | FD-LOB10 | Unlink an open resting order from its price level in O(1) on cancel; force-fill an open order by unlinking it and executing the full remainder at the last trade price (falling back to its limit when no price has printed). |
+| FD-LOB11 | Prevent self-trades globally with cancel-oldest (ADR-057): when an aggressor meets a resting order of the same account, cancel the resting order with `RiskReason.SELF_TRADE_PREVENTED` (appended, never inserted) flagged as an unsolicited resting update, and let the aggressor continue into the liquidity behind it. |
+

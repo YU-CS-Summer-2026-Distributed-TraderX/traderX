@@ -27,6 +27,11 @@ class ClusterSnapshotCodecTest {
     private static final long PX = 1_000_000L;
     private static final long CENT = 10_000L;
     private static final int ACCOUNT = 11;
+    // A SECOND account for the aggressor side. These scenarios crossed one account against itself,
+    // which cancel-oldest self-trade prevention (ADR-057) now correctly refuses to fill — the
+    // restored-book proofs measure FIFO and band survival, not STP, so the taker is made distinct
+    // rather than the proof weakened.
+    private static final int ACCOUNT_TAKER = 12;
     private static final int SECURITY = 1;
     private static final int HEADER_BYTES = 52;
 
@@ -106,7 +111,7 @@ class ClusterSnapshotCodecTest {
         apply(source, newOrder(InputEvent.SIDE_SELL, 150 * PX, 0L));            // ref 5: ask 150.00, 1st
         apply(source, newOrder(InputEvent.SIDE_SELL, 150 * PX, 0L));            // ref 6: ask 150.00, 2nd
         apply(source, newOrder(InputEvent.SIDE_SELL, 150 * PX + CENT, 0L));     // ref 7: ask 150.01
-        apply(source, newOrder(InputEvent.SIDE_BUY, 150 * PX, 88L, 4));         // ref 8: fills 4 of ref 5
+        apply(source, takerOrder(InputEvent.SIDE_BUY, 150 * PX, 88L, 4));       // ref 8: fills 4 of ref 5
         assertEquals(7, source.engine().openOrderTuples().size(),
             "sanity: 4 resting bids + 3 resting asks; the crossing buy (ref 8) went terminal");
 
@@ -114,7 +119,7 @@ class ClusterSnapshotCodecTest {
 
         // Same crossing order into both: it must consume ref 5's REMAINDER first (queue head),
         // then ref 6, then ref 7 — identical fills, identical resulting state.
-        final InputEvent sweep = newOrder(InputEvent.SIDE_BUY, 151 * PX, 0L, 30);
+        final InputEvent sweep = takerOrder(InputEvent.SIDE_BUY, 151 * PX, 0L, 30);
         apply(source, sweep);
         apply(restored, copyOf(sweep));
 
@@ -191,6 +196,7 @@ class ClusterSnapshotCodecTest {
 
         final MatchingEngineClusteredService restored = restore(source);
         final InputEvent cross = newOrderFor(optionId, InputEvent.SIDE_BUY, 5 * PX, 0L, 3);
+        cross.accountId = ACCOUNT_TAKER;   // not a self-trade (ADR-057)
         apply(source, cross);
         apply(restored, copyOf(cross));
         assertTrue(source.engine().tradeCounter() > tradesBefore, "the option cross books");
@@ -301,6 +307,7 @@ class ClusterSnapshotCodecTest {
         final MatchingEngineClusteredService service = new MatchingEngineClusteredService();
         service.initEngine();
         apply(service, accountControl(ACCOUNT, true));
+        apply(service, accountControl(ACCOUNT_TAKER, true));
         apply(service, securityControl(SECURITY, true));
         apply(service, priceTick(150 * PX));
         apply(service, newOrder(InputEvent.SIDE_BUY, 100 * PX, 0L));
@@ -426,6 +433,15 @@ class ClusterSnapshotCodecTest {
 
     private InputEvent newOrder(final byte side, final long limitPx, final long clientOrderKey) {
         return newOrder(side, limitPx, clientOrderKey, 10);
+    }
+
+    /** Aggressor variant: same order, submitted by the OTHER account so the cross is not a
+     *  self-trade (ADR-057). */
+    private InputEvent takerOrder(final byte side, final long limitPx, final long clientOrderKey,
+                                  final int qty) {
+        final InputEvent e = newOrder(side, limitPx, clientOrderKey, qty);
+        e.accountId = ACCOUNT_TAKER;
+        return e;
     }
 
     private InputEvent newOrder(final byte side, final long limitPx, final long clientOrderKey,

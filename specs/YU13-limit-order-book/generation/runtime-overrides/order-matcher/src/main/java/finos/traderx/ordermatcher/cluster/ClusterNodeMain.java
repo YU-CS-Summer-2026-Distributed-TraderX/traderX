@@ -277,7 +277,12 @@ public final class ClusterNodeMain {
                 + "# TYPE traderx_book_open_orders gauge\ntraderx_book_open_orders" + m + (d == null ? 0 : d.openOrders()) + "\n"
                 + "# TYPE traderx_book_order_hash gauge\ntraderx_book_order_hash" + m + (d == null ? 0L : d.orderHash()) + "\n"
                 + "# TYPE traderx_book_position_hash gauge\ntraderx_book_position_hash" + m + (d == null ? 0L : d.positionHash()) + "\n"
-                + "# TYPE traderx_cluster_next_order_ref gauge\ntraderx_cluster_next_order_ref" + m + service.nextOrderRef() + "\n";
+                + "# TYPE traderx_cluster_next_order_ref gauge\ntraderx_cluster_next_order_ref" + m + service.nextOrderRef() + "\n"
+                // ADR-057: resting orders cancelled by self-trade prevention. Read HERE and not
+                // at the gateway — egress acks are best-effort and drop under flood, so a
+                // gateway tally silently undercounts exactly when the number matters.
+                + "# TYPE traderx_stp_cancels counter\ntraderx_stp_cancels" + m
+                + (started ? service.engine().countSelfTradesPrevented() : 0L) + "\n";
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
             exchange.sendResponseHeaders(200, bytes.length);
