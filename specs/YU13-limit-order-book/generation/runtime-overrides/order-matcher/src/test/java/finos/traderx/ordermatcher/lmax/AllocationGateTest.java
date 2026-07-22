@@ -188,6 +188,25 @@ class AllocationGateTest {
                 publishOrder(ring, nextRef++, sec, SIDE_SELL, CROSS_PX, 300);
                 publish(ring, InputEvent.TYPE_ORDER_NEW, nextRef++, ACCT_TAKER, sec, SIDE_BUY, 400, Px.NONE, 0L);
             }
+            // Every atomic-replace REJECT branch (ADR-058), warmed here rather than left cold. The
+            // measured mix only ever takes the accepted path, and an uncommon-trap on a cold branch
+            // deoptimises into a heap rematerialisation of an otherwise scalar-replaced object —
+            // which shows up as a one-off ~72-byte "allocation" the gate cannot distinguish from a
+            // real leak. Warming every branch is the gate's own doctrine; this handler was the gap.
+            int replaceProbe = nextRef++;
+            publishOrder(ring, replaceProbe, 0, SIDE_BUY, RESTING_LIMIT_PX, 100);
+            publishReplace(ring, replaceProbe, 100, RESTING_LIMIT_PX);        // accepted: unlink + re-add
+            publishReplace(ring, replaceProbe, 60, RESTING_LIMIT_PX);         // accepted: size-down keeps priority
+            publishReplace(ring, replaceProbe, 0, RESTING_LIMIT_PX);          // reject: quantity
+            publishReplace(ring, replaceProbe, 60, Px.NONE);                  // reject: no limit price
+            publishReplace(ring, replaceProbe, 60, RESTING_LIMIT_PX + 1);     // reject: off grid
+            publishReplace(ring, replaceProbe, 60, 200_000_000L);             // reject: outside the band
+            // Rejected INSIDE the risk gate, so the release-then-restore path is warmed too: the
+            // shape checks above all fire before anything is released and would leave it cold.
+            publishReplace(ring, replaceProbe, Integer.MAX_VALUE, RESTING_LIMIT_PX);
+            publishReplace(ring, missingRef, 10, RESTING_LIMIT_PX);           // reject: unknown ref
+            publish(ring, InputEvent.TYPE_ORDER_CANCEL, replaceProbe, 0, 0, (byte) 0, 0, 0L, 0L);
+            publishReplace(ring, replaceProbe, 10, RESTING_LIMIT_PX);         // reject: already terminal
             publish(ring, InputEvent.TYPE_ORDER_CANCEL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
             publish(ring, InputEvent.TYPE_FORCE_FILL, missingRef, 0, 0, (byte) 0, 0, 0L, 0L);
             publish(ring, (byte) 99, 0, 0, 0, (byte) 0, 0, 0L, 0L); // unknown type
@@ -220,7 +239,9 @@ class AllocationGateTest {
 
             // Sanity: the measured phase really drove the full crossing mix through the BLP.
             long steadyCycles = steadyEvents / 16L;
-            assertTrue(blp.countPriceTicks() >= steadyCycles * 7L, "tick mix did not run");
+            assertTrue(blp.countPriceTicks() >= steadyCycles * 6L, "tick mix did not run");
+            assertTrue(blp.countOrdersReplace() >= steadyCycles - 16L,
+                "atomic-replace branch did not run inside the measured window");
             assertTrue(blp.countSelfTradesPrevented() >= steadyCycles - 16L,
                 "self-trade-prevention branch did not run inside the measured window");
             assertTrue(blp.countOrdersNew() >= steadyCycles * 4L - 16L, "create mix did not run");
@@ -247,12 +268,14 @@ class AllocationGateTest {
      * The shared warm-up/steady-state mix; identical branch profile in both phases so the
      * JIT compiles exactly the code the measurement runs. Per 16 events: 1 resting sell,
      * 1 exactly-crossing buy, 1 resting sell + 1 partially-crossing market buy (remainder
-     * cancel), 1 terminal cancel, 1 terminal force-fill, 1 unknown-order command, 1 self-crossing
-     * sell + market buy pair (the ADR-057 cancel-oldest branch), 7 price ticks. The book is level-neutral per cycle: every rested order is fully consumed
+     * cancel), 1 atomic replace of the resting sell (ADR-058), 1 terminal cancel, 1 terminal
+     * force-fill, 1 unknown-order command, 1 self-crossing sell + market buy pair (the ADR-057
+     * cancel-oldest branch), 6 price ticks. The book is level-neutral per cycle: every rested order is fully consumed
      * within its own cycle.
      */
     private static int runMix(RingBuffer<InputEvent> ring, int nextRef, int events,
                               int terminalRef, int missingRef) {
+        int lastSellRef = 0;
         for (int i = 0; i < events; i++) {
             int m = i & 15;
             // Per-CYCLE security rotation: all four order events of one 16-event cycle must hit
@@ -261,7 +284,14 @@ class AllocationGateTest {
             // bound and drains the pool — caught by this very gate).
             int sec = (i >> 4) & 3;
             if (m == 0) {
+                lastSellRef = nextRef;
                 publishOrder(ring, nextRef++, sec, SIDE_SELL, CROSS_PX, 500);
+            } else if (m == 1) {
+                // Atomic replace (ADR-058) on the measured path: same size, same price, so it
+                // unlinks and re-appends at the level tail and stays level-neutral — the ask is at
+                // CROSS_PX and the permanent book is bids at RESTING_LIMIT_PX, so it cannot cross.
+                publish(ring, InputEvent.TYPE_ORDER_REPLACE, lastSellRef, 0, 0, (byte) 0, 500,
+                    CROSS_PX, 0L);
             } else if (m == 2) {
                 publishOrder(ring, nextRef++, sec, SIDE_BUY, CROSS_PX, 500);   // full cross
             } else if (m == 4) {
@@ -295,6 +325,10 @@ class AllocationGateTest {
                                      byte side, long limitPx, int qty) {
         publish(ring, InputEvent.TYPE_ORDER_NEW, orderRef,
             side == SIDE_SELL ? ACCT_MAKER : ACCT_TAKER, securityId, side, qty, limitPx, 0L);
+    }
+
+    private static void publishReplace(RingBuffer<InputEvent> ring, int orderRef, int qty, long limitPx) {
+        publish(ring, InputEvent.TYPE_ORDER_REPLACE, orderRef, 0, 0, (byte) 0, qty, limitPx, 0L);
     }
 
     private static void publishTick(RingBuffer<InputEvent> ring, int securityId, long priceTicks) {

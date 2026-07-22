@@ -66,7 +66,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private volatile boolean running = true;
 
     // Owner-thread-only ack scratch (set by the egress listener between poll calls).
-    private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq}
+    private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq, riskReason}
     private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
@@ -93,6 +93,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private volatile long fillEvents;
     private volatile long acceptedOrders;
     private volatile long canceledOrders;
+    private volatile long replacedOrders;
     // Market-trade (/trades, the UI create-order path) outcome counters — the market-trade path
     // emits KIND_TRADE_BOOKED/REJECTED, neither of which the order-lifecycle metrics above count,
     // so without these a stage mis-seed books nothing with no visible signal. Owner-thread writes.
@@ -136,6 +137,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         // orderRef. A cancel that silently books an order is the worst available failure mode; a
         // sibling path 404s on old replicas instead.
         server.createContext("/cancel", this::handleCancel);
+        server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/seed", this::handleSeed);
@@ -260,7 +262,8 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             if (!restingUpdate) {
                 if (lastOrderAck == null) { // first DIRECT order-kind ack after the offer wins
                     lastOrderAck = new long[] {
-                        buffer.getLong(offset), buffer.getInt(offset + 8), kind, buffer.getLong(offset + 13) };
+                        buffer.getLong(offset), buffer.getInt(offset + 8), kind, buffer.getLong(offset + 13),
+                        buffer.getByte(offset + 22) };
                 }
                 if (batchActive && batchOutstanding > 0) {
                     batchOutstanding--;
@@ -330,6 +333,15 @@ public final class ClusterGatewayMain implements OrderSubmitter {
      * key, and a REST order that omits {@code clientOrderId} stays key-less rather than colliding with
      * every other key-less order on a shared default.
      */
+    /** {@code ,"reason":"CREDIT_LIMIT"} on a rejected result, empty otherwise. Cold path (one
+     *  synchronous REST response), so the allocation here never reaches the batch ingress. */
+    private static String reasonField(final ExecResult r) {
+        if (r.accepted() || r.riskReason() < 0 || r.riskReason() >= RiskReason.values().length) {
+            return "";
+        }
+        return ",\"reason\":\"" + RiskReason.values()[r.riskReason()] + "\"";
+    }
+
     private static long clientOrderKey(final String clOrdId) {
         if (clOrdId == null || clOrdId.isEmpty()) {
             return 0L;
@@ -372,7 +384,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 if (accepted) {
                     acceptedOrders++;
                 }
-                return new ExecResult(accepted, (int) ack[1], (byte) ack[2]);
+                return new ExecResult(accepted, (int) ack[1], (byte) ack[2], (byte) ack[4]);
             });
         } catch (final Exception e) {
             return null; // ambiguous/timeout: caller must not claim rejection
@@ -420,14 +432,102 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 if (kind == OutputEvent.KIND_ORDER_CANCELED) {
                     canceledOrders++;
                 }
-                return new ExecResult(kind == OutputEvent.KIND_ORDER_CANCELED, orderRef, kind);
+                return new ExecResult(kind == OutputEvent.KIND_ORDER_CANCELED, orderRef, kind,
+                    (byte) lastOrderAck[4]);
             });
         } catch (final Exception e) {
             return null; // ambiguous/timeout: caller must not claim the order still rests
         }
     }
 
+    /**
+     * Atomic replace ingress (ADR-058). One sequenced {@code TYPE_ORDER_REPLACE}; the engine does
+     * cancel-and-add in a single apply and the order keeps its orderRef, so there is no committed
+     * state in which the client's order is gone but its replacement has not been accepted.
+     *
+     * <p>No SBE template was added. {@code AeronReplicationCodec} copies {@code commandType}
+     * through without interpreting it, so a new {@link InputEvent} type rides template 1 exactly as
+     * cancel does — which also avoids claiming a template id from a worktree that cannot see the
+     * whole lineage (8 is already YU15's {@code RiskExtractMessage}).
+     */
+    @Override
+    public ExecResult submitReplace(final int orderRef, final String clOrdId, final int qty,
+                                    final long limitPxTicks) {
+        if (orderRef <= 0) {
+            return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
+        }
+        try {
+            return onOwner(() -> {
+                event.type = InputEvent.TYPE_ORDER_REPLACE;
+                event.side = 0;
+                event.orderRef = orderRef;
+                event.accountId = 0;   // read off the original order: FIX forbids changing either
+                event.securityId = 0;
+                event.qty = qty;
+                event.limitPx = limitPxTicks;
+                event.priceTicks = clientOrderKey(clOrdId);
+                event.eventTimeMillis = 0;
+                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                lastOrderAck = null;
+                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastOrderAck != null)) {
+                    return null;
+                }
+                final byte kind = (byte) lastOrderAck[2];
+                // A replace never terminates its own target, so any non-reject lifecycle kind here
+                // means the order now stands at the new size/price (ACCEPTED, or FILLED if it
+                // crossed on the way in). "Already terminal" comes back as a reject, not as the
+                // order's old terminal kind — see MatchingEngine.onReplace.
+                final boolean accepted = kind != OutputEvent.KIND_ORDER_REJECTED
+                    && kind != OutputEvent.KIND_ORDER_NOT_FOUND;
+                if (accepted) {
+                    replacedOrders++;
+                }
+                return new ExecResult(accepted, orderRef, kind, (byte) lastOrderAck[4]);
+            });
+        } catch (final Exception e) {
+            return null; // ambiguous/timeout: caller must not claim the order is unchanged
+        }
+    }
+
     // ----- REST -------------------------------------------------------------------------------
+
+    /**
+     * POST /replace {"orderRef":N,"quantity":Q,"limitPrice":P} — 200 replaced, 422 rejected (the
+     * order still stands unchanged), 409 already terminal, 404 unknown.
+     *
+     * <p>A sibling path, deliberately NOT /orders/replace, for the same measured reason /cancel is:
+     * {@code HttpServer} routes by longest prefix, so a replica rolled forward before its peers
+     * would hand /orders/replace to /orders and book the replace body as a NEW order.
+     */
+    private void handleReplace(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            if (!body.hasNonNull("orderRef") || !body.hasNonNull("quantity")
+                || !body.hasNonNull("limitPrice")) {
+                respond(exchange, 400, "{\"error\":\"orderRef, quantity and limitPrice required\"}");
+                return;
+            }
+            final int orderRef = body.get("orderRef").asInt();
+            final ExecResult r = submitReplace(orderRef, body.path("clientOrderId").asText(""),
+                body.get("quantity").asInt(),
+                Math.round(body.get("limitPrice").asDouble() * 1_000_000d));
+            if (r == null) {
+                respond(exchange, 504, "{\"error\":\"no committed ack\"}");
+                return;
+            }
+            final int code = r.accepted() ? 200
+                : r.kind() == OutputEvent.KIND_ORDER_NOT_FOUND ? 404
+                : r.kind() == OutputEvent.KIND_ORDER_REJECTED ? 422 : 409;
+            respond(exchange, code, "{\"orderRef\":" + orderRef + ",\"kind\":" + r.kind()
+                + ",\"replaced\":" + r.accepted() + reasonField(r) + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
 
     /** POST /cancel {"orderRef":N} — 200 canceled, 409 already terminal, 404 unknown. */
     private void handleCancel(final HttpExchange exchange) {
@@ -478,7 +578,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 return;
             }
             respond(exchange, r.accepted() ? 200 : 422,
-                "{\"orderRef\":" + r.orderRef() + ",\"kind\":" + r.kind() + "}");
+                "{\"orderRef\":" + r.orderRef() + ",\"kind\":" + r.kind() + reasonField(r) + "}");
         } catch (final Exception e) {
             respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
         }
@@ -718,6 +818,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
             + "traderx_order_events_total{event=\"canceled\"} " + canceledOrders + "\n"
+            + "traderx_order_events_total{event=\"replaced\"} " + replacedOrders + "\n"
             + "traderx_market_trades_total{outcome=\"booked\"} " + marketTradesBooked + "\n"
             + "traderx_market_trades_total{outcome=\"rejected\"} " + marketTradesRejected + "\n"
             + "traderx_gateway_batch_fences_total{state=\"offered\"} " + batchFenceOffers + "\n"

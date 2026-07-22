@@ -68,6 +68,7 @@ for source in \
   system/adr-050-banded-price-level-arrays.md \
   system/adr-051-last-trade-price-output.md \
   system/adr-057-self-trade-prevention.md \
+  system/adr-058-atomic-order-replace.md \
   tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do
