@@ -92,6 +92,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     // by the /metrics handler — plain volatile longs.
     private volatile long fillEvents;
     private volatile long acceptedOrders;
+    private volatile long canceledOrders;
     // Market-trade (/trades, the UI create-order path) outcome counters — the market-trade path
     // emits KIND_TRADE_BOOKED/REJECTED, neither of which the order-lifecycle metrics above count,
     // so without these a stage mis-seed books nothing with no visible signal. Owner-thread writes.
@@ -129,6 +130,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         server.setExecutor(Executors.newFixedThreadPool(64));
         server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
+        // Deliberately NOT /orders/cancel. HttpServer routes by longest prefix, so during a rolling
+        // gateway update an older replica has no /orders/cancel context and would hand the request
+        // to /orders — measured: it sequenced the cancel body as a NEW order and returned an
+        // orderRef. A cancel that silently books an order is the worst available failure mode; a
+        // sibling path 404s on old replicas instead.
+        server.createContext("/cancel", this::handleCancel);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/seed", this::handleSeed);
@@ -339,7 +346,82 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         }
     }
 
+    /**
+     * Cancel ingress (FR-LOB09). No new SBE template and no engine change: {@code TYPE_ORDER_CANCEL}
+     * already rides {@link InputEvent}'s {@code orderRef} slot — it is the very message this gateway
+     * offers as the pipelined-batch high-water fence — and {@code MatchingEngine.onCancel} already
+     * unlinks the resting order, releases its risk reservation exactly once, and emits either
+     * {@code KIND_ORDER_CANCELED} or {@code KIND_ORDER_NOT_FOUND}. What was missing was only a
+     * caller that supplies a real orderRef instead of the reserved 0.
+     *
+     * <p>Correlation safety: {@code emitOrderNotFound} hardcodes orderRef 0 in its ack, so a
+     * cancel-of-unknown is correlated by the owner thread's FIFO ordering, not by ref. That is
+     * sound here and load-bearing — {@code handleBatch} holds the owner thread for a whole batch,
+     * so a client cancel can never interleave with the fence's own orderRef-0 NOT_FOUND ack.
+     */
+    @Override
+    public ExecResult submitCancel(final int orderRef) {
+        if (orderRef <= 0) {
+            return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // 0 is the reserved fence ref
+        }
+        try {
+            return onOwner(() -> {
+                event.type = InputEvent.TYPE_ORDER_CANCEL;
+                event.side = 0;
+                event.orderRef = orderRef;
+                event.accountId = 0;
+                event.securityId = 0;
+                event.qty = 0;
+                event.limitPx = 0;
+                event.priceTicks = 0L;
+                event.eventTimeMillis = 0;
+                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                lastOrderAck = null;
+                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastOrderAck != null)) {
+                    return null;
+                }
+                final byte kind = (byte) lastOrderAck[2];
+                // "Accepted" means the order is gone from the book. Cancel of an already-CANCELED
+                // order also reports CANCELED — the engine re-publishes a terminal order unchanged
+                // (009 parity), which makes a retried cancel idempotent rather than an error.
+                if (kind == OutputEvent.KIND_ORDER_CANCELED) {
+                    canceledOrders++;
+                }
+                return new ExecResult(kind == OutputEvent.KIND_ORDER_CANCELED, orderRef, kind);
+            });
+        } catch (final Exception e) {
+            return null; // ambiguous/timeout: caller must not claim the order still rests
+        }
+    }
+
     // ----- REST -------------------------------------------------------------------------------
+
+    /** POST /cancel {"orderRef":N} — 200 canceled, 409 already terminal, 404 unknown. */
+    private void handleCancel(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            if (!body.hasNonNull("orderRef")) {
+                respond(exchange, 400, "{\"error\":\"orderRef required\"}");
+                return;
+            }
+            final int orderRef = body.get("orderRef").asInt();
+            final ExecResult r = submitCancel(orderRef);
+            if (r == null) {
+                respond(exchange, 504, "{\"error\":\"no committed ack\"}");
+                return;
+            }
+            final int code = r.accepted() ? 200
+                : r.kind() == OutputEvent.KIND_ORDER_NOT_FOUND ? 404 : 409;
+            respond(exchange, code, "{\"orderRef\":" + orderRef + ",\"kind\":" + r.kind()
+                + ",\"canceled\":" + r.accepted() + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
 
     private void handleOrder(final HttpExchange exchange) {
         try {
@@ -599,6 +681,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private void handleMetrics(final HttpExchange exchange) {
         final String body = "traderx_order_events_total{event=\"fill\"} " + fillEvents + "\n"
             + "traderx_order_events_total{event=\"accepted\"} " + acceptedOrders + "\n"
+            + "traderx_order_events_total{event=\"canceled\"} " + canceledOrders + "\n"
             + "traderx_market_trades_total{outcome=\"booked\"} " + marketTradesBooked + "\n"
             + "traderx_market_trades_total{outcome=\"rejected\"} " + marketTradesRejected + "\n"
             + "traderx_gateway_batch_fences_total{state=\"offered\"} " + batchFenceOffers + "\n"
