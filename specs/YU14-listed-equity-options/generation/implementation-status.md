@@ -109,3 +109,33 @@ first-limit sticky).
 - One `/seed` call per option contract (each carries its own premium price) — 24 calls for the
   packaged chain, all cold-path.
 - The bench harness side-alternation trap carries forward: use an ODD ticker count.
+
+## Lineage reconciliation with YU13 (2026-07-22)
+
+YU14 was cut before the YU13 gateway/GKE campaign. Both halves are now reconciled.
+
+**Code** — cherry-picks `cdb62dc0` (complete gateway batches on the applied high-water fence) and
+`77ab0b15` (1 MiB gateway Aeron term buffers) landed on 2026-07-21 but were never regenerated or
+tested. Verified 2026-07-22: `generate-state.sh YU14-listed-equity-options` EXIT=0, generated-tree
+suite **242 / 0** (the recorded baseline, unchanged), all four allocation gates and both Epsilon
+gates (`noGcTest` + `riskNoGcTest`) green. The 4 MiB experiment pair (`2ca90189` → `5273a881`) was
+correctly skipped — it cancels.
+
+**Manifests** — hand-merged, not cherry-picked. `gke/gateway.yaml` and `gke/statefulset-emptydir.yaml`
+are shadowed at this layer, so a pick would have applied cleanly and changed nothing that runs.
+Merged deltas: gateway `replicas: 3 → 4` (`d3fb2016`, supersedes `d39df719`), hard hostname
+anti-affinity (`2228e313`), C4D pool selector + `blp-c4d-tuned-pool` (`a90e5be7`), and Guaranteed QoS
+through the restore init container (`3b28a61e`). Only the `cluster-node:yu14` image tag now differs
+from YU13's copies — verified by diff. Confirmed in the **rendered** output
+(`kubectl kustomize` on the generated tree, EXIT=0): `cluster-gateway` replicas 4,
+`requiredDuringSchedulingIgnoredDuringExecution` hostname anti-affinity on both workloads,
+`nodeSelector: blp-c4d-tuned-pool`, member cpu/memory requests == limits ("3"/4Gi), restore-init
+requests == limits (100m/256Mi), and the `:yu14` tag throughout.
+
+**`c4d-node-system-config.yaml` — the brief's trap, corrected.** It was not "inherited but
+unreferenced": it was **absent from this branch entirely** (it arrived with `a90e5be7`, which YU14
+never received), so it is now copied in — byte-identical to YU13's. It is deliberately **not** added
+to `gke/kustomization.yaml`'s `resources`: it is a kubelet config for
+`gcloud container node-pools create --system-config-from-file`, not a Kubernetes object, and listing
+it fails the entire kustomization with `missing Resource metadata` (verified). A comment in
+`kustomization.yaml` now records that, so the file stops reading as an accidental orphan.
