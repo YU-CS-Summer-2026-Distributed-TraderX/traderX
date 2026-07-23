@@ -70,6 +70,38 @@ distributed-path ceiling and is still above ~149k, unmeasured. There is a free c
 - **Partitioning the engine is NOT justified** — members at ~33% CPU are the opposite of a consensus
   wall. Building it now scales past a limit that is not binding (Brief 08's explicit warning).
 
+## Booking addendum — match/s and wire-to-wire-to-match latency (the reject path's counterpart)
+
+The ladder above is the **reject path** (unseeded → `UNKNOWN_SECURITY`): submit/s, no matching. To
+answer "of that, how many *match*, and is the latency to a matched confirmation?", a **booking** ladder
+was run with securities seeded (JPM=2 on two-account crossing, `TRADE_BRIDGE` off, price refreshed
+≤8 s). Key mechanic: for a marketable crossing order the **match runs inside the same committed apply
+that produces the accept-ack**, so the submit→ack latency on a booking run *is* wire-to-wire-to-match
+(the ack just doesn't enumerate fills). Ground truth match/s = leader `traderx_cluster_trades` delta.
+
+| offered (paced) | committed acks/s | match/s (trades, fine) | latency p50 / p99 / max | in-flight/conn | state |
+|---:|---:|---:|---|---:|---|
+| 40k | 40k | ~40k | 3 ms / 15 ms / 30 ms | 5 | clean |
+| 100k | 100k | ~100k (bursts 120–130k) | 7.5 ms / 45 ms / 68 ms | 13 | **near knee** |
+| 140k | 131k | bursts ~160k | 60–430 ms / **1.7–2.7 s** / 3 s | 800–1300 | **saturated** |
+
+- **match/s ≈ submit/s ≈ offered, ~1:1** on the two-account crossing flow — total trades delta equalled
+  total offered to <0.01% at every rung, i.e. **every crossing order books**. (Semantics: the `trades`
+  counter increments ~once per booked order-fill; a distinct buy↔sell *match* = two fills = two
+  increments, so distinct matches/s ≈ half the quoted number.)
+- **Booking commits up to ~130k/s** (140k offered → 131k acks) — close to the ~149k reject-path submit
+  ceiling, so **matching adds only modest per-order cost** over rejecting. The **sustainable** rate with
+  sane latency is ~100k (p99 45 ms); past it (~140k) the cluster saturates and latency blows to seconds
+  (queueing, not system latency — report the unsaturated rows).
+- **Wire-to-wire-to-match latency (unsaturated): p50 3–7.5 ms, p99 15–45 ms** — essentially the same as
+  the reject-path commit latency, because the match is part of the acked apply. This is client
+  round-trip over raw TCP (includes c2d↔c4d hops), not server-internal.
+- **Position-cap constraint (honest):** `/risk/control/*` 404s in this topology so the 1M cap couldn't
+  be lifted; each two-account pair walls at ~2M trade-events (1M position). Each booking rung therefore
+  used a **fresh seeded pair** (42422/22214 → 44044/52355 → 10031/62654); all seven seeded accounts are
+  now position-loaded, so a further booking run needs a fresh epoch. Rates above are the clean pre-cap
+  windows; the earlier blast attempt hit the cap in ~5 s and is excluded.
+
 ## Honesty ledger
 
 - 12k is retired; report it only as "coasting, generator-limited, 0 backpressure."
