@@ -174,6 +174,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/seed", this::handleSeed);
+        server.createContext("/resolve", this::handleResolve);
         server.createContext("/ready", exchange ->
             respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
         server.createContext("/health", exchange ->
@@ -189,8 +190,18 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             fix.start();
             Runtime.getRuntime().addShutdownHook(new Thread(fix::stop));
         }
+
+        // Binary order-entry fast path (lever 4), additive alongside FIX/REST. Off unless the port is
+        // set, so existing deploys are unchanged. Same OrderSubmitter seam, same pipelined window.
+        final String binPortEnv = env("BINARY_ACCEPTOR_PORT", "");
+        if (!binPortEnv.isEmpty()) {
+            final BinaryGatewayAcceptor bin = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv));
+            bin.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(bin::stop));
+        }
         System.out.println("GATEWAY up: http=" + httpPort + " ingress=" + ingressEndpoints
-            + (fixPortEnv.isEmpty() ? "" : " fix=" + fixPortEnv));
+            + (fixPortEnv.isEmpty() ? "" : " fix=" + fixPortEnv)
+            + (binPortEnv.isEmpty() ? "" : " bin=" + binPortEnv));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             running = false;
@@ -464,6 +475,32 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             qty, limitPxTicks, clientOrderKey(clOrdId), orderRef));
     }
 
+    /**
+     * Binary fast-path NEW (lever 4). Identical to {@link #submitOrder(String, int, String, char,
+     * int, long)} downstream — it builds the same {@link PendingOrder} and rides the same pipelined
+     * window and consensus offer — but the caller supplies a pre-resolved numeric {@code securityId}
+     * and a numeric {@code clientKey}, so no ticker String is built and no key is hashed on the hot
+     * path. That is the whole allocation win of the lever: the decode-to-submit path is zero-alloc.
+     */
+    @Override
+    public ExecResult submitOrder(final long clientKey, final int accountId, final int securityId,
+                                  final char side, final int qty, final long limitPxTicks) {
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, null, side,
+            qty, limitPxTicks, clientKey, 0, securityId));
+    }
+
+    /** Binary fast-path atomic replace (lever 4): {@link #submitReplace(int, String, int, long)}
+     *  with the client's numeric idempotency key used directly rather than hashed from a String. */
+    @Override
+    public ExecResult submitReplace(final int orderRef, final long clientKey, final int qty,
+                                    final long limitPxTicks) {
+        if (orderRef <= 0) {
+            return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
+        }
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+            qty, limitPxTicks, clientKey, orderRef));
+    }
+
     // ----- pipelined order-lifecycle ingress -------------------------------------------------
 
     /**
@@ -498,7 +535,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private void offerPipelined(final PendingOrder p) {
         try {
             if (p.type == InputEvent.TYPE_ORDER_NEW) {
-                final int securityId = resolveSecurityId(p.ticker);
+                // Binary NEW carries a pre-resolved numeric securityId (ticker == null) so the owner
+                // thread never builds a String; FIX/REST NEW resolves its ticker exactly as before.
+                final int securityId = p.ticker != null ? resolveSecurityId(p.ticker) : p.securityId;
                 if (securityId < 0) {
                     p.future.complete(null); // unresolvable ticker: ambiguous, exactly as the old sync path
                     inflight.release();
@@ -886,6 +925,37 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         }
     }
 
+    /**
+     * Cold-path ticker → securityId lookup (lever 4). Clients that speak the numeric binary protocol
+     * need the id the sequenced registration assigned, and nothing else exposed it — real venues offer
+     * exactly this as a security-definition lookup. Registers on first ask, identically to how an
+     * order's ticker would, so it is consistent with {@code /seed} (same {@code resolveSecurityId}).
+     * POST {"ticker":"JPM"} → {"securityId":N}; 404 if the registration was rejected. ONE call per
+     * client at startup — never on the order hot path, so its allocation is irrelevant to the lever.
+     */
+    private void handleResolve(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            final String ticker = body.path("ticker").asText("").trim();
+            if (ticker.isEmpty()) {
+                respond(exchange, 400, "{\"error\":\"ticker required\"}");
+                return;
+            }
+            final Integer id = onOwner(() -> resolveSecurityId(ticker));
+            if (id == null || id < 0) {
+                respond(exchange, 404, "{\"error\":\"unresolvable ticker\"}");
+                return;
+            }
+            respond(exchange, 200, "{\"ticker\":\"" + ticker + "\",\"securityId\":" + id + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
     /** Offer the current {@code event} with backpressure retry (owner thread only). */
     private void offerBlocking() {
         codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
@@ -996,16 +1066,24 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     static final class PendingOrder {
         final byte type;         // TYPE_ORDER_NEW / TYPE_ORDER_CANCEL / TYPE_ORDER_REPLACE
         final int accountId;     // NEW only
-        final String ticker;     // NEW only (resolved on the owner thread); null for cancel/replace
+        final String ticker;     // NEW only, resolved on the owner thread; null for cancel/replace
+                                 // AND for a binary NEW, which instead carries a pre-resolved securityId
         final char side;         // NEW only
         final int qty;           // NEW / REPLACE
         final long limitPx;      // NEW / REPLACE
         final long clientKey;    // idempotency key (0 = none); NEW / REPLACE
         final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
+        final int securityId;    // binary NEW only: pre-resolved id (ticker == null); -1 = resolve via ticker
         final CompletableFuture<ExecResult> future = new CompletableFuture<>();
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {
+            this(type, accountId, ticker, side, qty, limitPx, clientKey, orderRef, -1);
+        }
+
+        PendingOrder(final byte type, final int accountId, final String ticker, final char side,
+                     final int qty, final long limitPx, final long clientKey, final int orderRef,
+                     final int securityId) {
             this.type = type;
             this.accountId = accountId;
             this.ticker = ticker;
@@ -1014,6 +1092,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             this.limitPx = limitPx;
             this.clientKey = clientKey;
             this.orderRef = orderRef;
+            this.securityId = securityId;
         }
     }
 
