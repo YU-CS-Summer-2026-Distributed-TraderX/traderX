@@ -268,7 +268,7 @@ async function main() {
   const refD = (Number.isNaN(ref0) || Number.isNaN(ref1)) ? NaN : ref1 - ref0;
   console.log(`MEMBER nextOrderRef delta (authoritative committed/s): +${refD} = ${(refD / srvWin).toFixed(0)}/s`);
   console.log(`latency (from intended send) p50 ${pct(stats.latencies, 50)?.toFixed(0)}ms  ` +
-    `p99 ${pct(stats.latencies, 99)?.toFixed(0)}ms  max ${Math.max(0, ...stats.latencies).toFixed(0)}ms`);
+    `p99 ${pct(stats.latencies, 99)?.toFixed(0)}ms  max ${stats.latencies.reduce((m,x)=>x>m?x:m,0).toFixed(0)}ms`);
   console.log(`(wall incl. drain ${wall.toFixed(1)}s)`);
 
   for (const s of up) s.close();
