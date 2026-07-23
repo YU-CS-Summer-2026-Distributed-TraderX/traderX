@@ -18,13 +18,16 @@ import org.agrona.concurrent.UnsafeBuffer;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -35,10 +38,32 @@ import java.util.concurrent.TimeUnit;
  *
  * The single-threaded Aeron Cluster client is owned by ONE loop thread; REST handler threads and
  * FIX session threads never touch it directly — they submit through {@link OrderSubmitter}, whose
- * work is serialized onto the owner thread (so ack correlation stays FIFO by construction, and
- * there is no data race on the client). Because every counterparty session lives on the front-end
- * side of that seam, a leader-change reconnect on the owner thread never disturbs a FIX session
- * (ADR-047 failover transparency; proven by {@code FixGatewaySurvivalTest}).
+ * work is serialized onto the owner thread (so there is no data race on the client). Because every
+ * counterparty session lives on the front-end side of that seam, a leader-change reconnect on the
+ * owner thread never disturbs a FIX session (ADR-047 failover transparency; proven by
+ * {@code FixGatewaySurvivalTest}).
+ *
+ * <p>PIPELINED per-order ingress (NFR-AC02, extended from the batch path to single orders): the
+ * owner thread OFFERS each order-lifecycle command (new/cancel/replace) into the log and returns
+ * immediately — it does NOT block on that order's commit. The waiting moves off the owner thread
+ * onto the submitting REST/FIX thread, which parks on a {@link CompletableFuture}. Acks stream back
+ * on the ONE cluster session in FIFO offer order — exactly one direct (non-resting) lifecycle/
+ * not-found ack per offer, the same invariant {@code handleBatch} counts on — so a FIFO of awaiting
+ * requests reconciles them by position ({@link Inflight}). One owner thread thus keeps MANY orders
+ * in flight instead of one commit-RTT at a time: the ~580/s/gateway synchronous ceiling was the
+ * commit wait, not compute. Per-session FIX ordering is preserved for free — a session thread
+ * offers its orders in order and blocks for each ack, so its acks return in that order; across
+ * sessions they interleave, which is the whole win. The in-flight window is bounded by a permit
+ * semaphore ({@code GATEWAY_MAX_INFLIGHT}) = client backpressure. Honesty: this raises throughput
+ * and cuts latency UNDER LOAD by removing queueing; it does NOT cut unloaded single-order latency
+ * — a client still waits one commit (~1.7ms) for its own order.
+ *
+ * <p>ponytail: FIFO correlation assumes reliable, ordered egress — true at the 1 MiB term geometry
+ * the campaign settled on (Aeron NAK-repairs gaps in order). A reconnect drains outstanding pendings
+ * to ambiguous, keeping the FIFO aligned with the fresh session. A mid-session dropped ack (only
+ * possible below the repair window at tiny term sizes) would misalign the FIFO; the durable fix is
+ * an echoed correlation id in the ack, which needs an ack-format field (a deterministic-core change,
+ * out of scope for a gateway-only lever).
  *
  * Split readiness (ADR-045): {@code /ready} is 200 only while the cluster session is live.
  */
@@ -46,6 +71,10 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long ACK_TIMEOUT_MS = 10_000;
     private static final long BATCH_FENCE_RETRY_MS = 5;
+    // Max order-lifecycle commands in flight per gateway before a submitter is backpressured. Set
+    // well above any tested session count so the binding constraint is the consensus commit rate,
+    // not the window; also caps how hard the ingress term / egress ring is filled.
+    private static final int MAX_INFLIGHT = Integer.parseInt(env("GATEWAY_MAX_INFLIGHT", "4096"));
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
@@ -54,6 +83,10 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private final Map<String, Integer> idByTicker = new HashMap<>();
     // Tasks that touch the cluster client; run ONLY on the owner thread.
     private final LinkedBlockingQueue<FutureTask<?>> tasks = new LinkedBlockingQueue<>();
+    // Pipelined order-lifecycle correlation (new/cancel/replace). FIFO + inputSeq boundary are
+    // owner-thread-confined (see Inflight); only the permit semaphore and each order's
+    // CompletableFuture cross the thread seam.
+    private final Inflight inflight = new Inflight(MAX_INFLIGHT);
 
     private String ingressEndpoints;
     private String aeronDir;
@@ -65,8 +98,8 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private volatile boolean connected;
     private volatile boolean running = true;
 
-    // Owner-thread-only ack scratch (set by the egress listener between poll calls).
-    private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq, riskReason}
+    // Owner-thread-only ack scratch (set by the egress listener between poll calls). Order-lifecycle
+    // acks no longer use a single slot — they complete the head of the pipelined FIFO (see onEgress).
     private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
@@ -174,11 +207,20 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         long lastReconnect = 0;
         while (running) {
             try {
-                final FutureTask<?> task = tasks.poll(50, TimeUnit.MILLISECONDS);
+                // While orders are in flight their acks arrive ONLY via pollEgress, so the owner must
+                // never block on the task queue then: a 50ms block with the queue drained (every
+                // session parked on its own future) gates the whole pipeline at ~depth/0.05 orders/s
+                // — measured as a hard 1.2k/s ceiling before this. So poll non-blocking and spin
+                // pollEgress whenever the window is non-empty; block briefly ONLY when truly idle
+                // (depth 0, nothing to drain) to avoid a busy-spin at rest.
+                final FutureTask<?> task = inflight.depth() == 0
+                    ? tasks.poll(50, TimeUnit.MILLISECONDS)
+                    : tasks.poll();
                 if (task != null) {
                     task.run(); // does its own offer + pollEgress; exceptions captured in the future
-                } else if (client != null) {
-                    client.pollEgress();
+                }
+                if (client != null) {
+                    client.pollEgress(); // drain committed acks -> complete pending futures each pass
                 }
                 if (client != null && client.isClosed()) {
                     final long now = System.currentTimeMillis();
@@ -211,6 +253,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
      * as the fallback, with a rotating start so a dead endpoint is not retried first every time.
      */
     private void connectCycling() {
+        // A fresh cluster session will not deliver the old session's outstanding egress, so complete
+        // every in-flight pending as ambiguous (post-publish ambiguity: the order may have committed,
+        // so the submitter must not claim rejection). Keeps the FIFO aligned with the new session.
+        // No-op at startup (empty). Owner thread only — safe, no pollEgress runs inside here. drain()
+        // also resets the inputSeq boundary in case a fresh epoch restarts appliedSeq.
+        inflight.drain();
         int attempt = 0;
         while (running) {
             final String entry = attempt == 0
@@ -256,20 +304,30 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 return;
             }
             // Resting-class byte (FR-LOB07): 1 = counterparty resting-order update from someone
-            // else's cross — never the direct response to an offer, so it must not complete
-            // lastOrderAck or decrement batch accounting.
+            // else's cross — never the direct response to an offer, so it must not complete a
+            // pending or decrement batch accounting.
             final boolean restingUpdate = buffer.getByte(offset + 21) != 0;
             if (!restingUpdate) {
-                if (lastOrderAck == null) { // first DIRECT order-kind ack after the offer wins
-                    lastOrderAck = new long[] {
-                        buffer.getLong(offset), buffer.getInt(offset + 8), kind, buffer.getLong(offset + 13),
-                        buffer.getByte(offset + 22) };
-                }
-                if (batchActive && batchOutstanding > 0) {
-                    batchOutstanding--;
-                    if (kind != OutputEvent.KIND_ORDER_REJECTED && kind != OutputEvent.KIND_ORDER_NOT_FOUND) {
-                        batchAccepted++;
-                        acceptedOrders++;
+                if (batchActive) {
+                    // Batch mode counts acks against outstanding offers (handleBatch holds the owner
+                    // thread for the whole batch, so no pipelined single order can be in flight).
+                    if (batchOutstanding > 0) {
+                        batchOutstanding--;
+                        if (kind != OutputEvent.KIND_ORDER_REJECTED && kind != OutputEvent.KIND_ORDER_NOT_FOUND) {
+                            batchAccepted++;
+                            acceptedOrders++;
+                        }
+                    }
+                } else {
+                    // Pipelined mode: the FIRST direct ack of each input (by inputSeq at offset 0)
+                    // is that order's entry ack and answers the FIFO head; later direct acks with the
+                    // same inputSeq are continuation fills of the SAME order (a crossing order emits
+                    // ACCEPTED, then per-match-step FILLs, all under one appliedSeq) and must not pop
+                    // again — that would shift every later order onto the wrong request. Mirrors the
+                    // old sync path's first-ack-wins, now with many orders in flight.
+                    final PendingOrder head = inflight.onDirectAck(buffer.getLong(offset));
+                    if (head != null) {
+                        completePipelinedHead(head, buffer, offset, kind);
                     }
                 }
             }
@@ -358,37 +416,8 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     @Override
     public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                   final char side, final int qty, final long limitPxTicks) {
-        try {
-            return onOwner(() -> {
-                final int securityId = resolveSecurityId(ticker);
-                if (securityId < 0) {
-                    return null;
-                }
-                event.type = InputEvent.TYPE_ORDER_NEW;
-                event.side = side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY;
-                event.orderRef = 0;
-                event.accountId = accountId;
-                event.securityId = securityId;
-                event.qty = qty;
-                event.limitPx = limitPxTicks;
-                event.priceTicks = clientOrderKey(clOrdId);
-                event.eventTimeMillis = 0;
-                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
-                lastOrderAck = null;
-                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastOrderAck != null)) {
-                    return null;
-                }
-                final long[] ack = lastOrderAck;
-                final boolean accepted = ack[2] != OutputEvent.KIND_ORDER_REJECTED
-                    && ack[2] != OutputEvent.KIND_ORDER_NOT_FOUND;
-                if (accepted) {
-                    acceptedOrders++;
-                }
-                return new ExecResult(accepted, (int) ack[1], (byte) ack[2], (byte) ack[4]);
-            });
-        } catch (final Exception e) {
-            return null; // ambiguous/timeout: caller must not claim rejection
-        }
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
+            qty, limitPxTicks, clientOrderKey(clOrdId), 0));
     }
 
     /**
@@ -400,44 +429,19 @@ public final class ClusterGatewayMain implements OrderSubmitter {
      * caller that supplies a real orderRef instead of the reserved 0.
      *
      * <p>Correlation safety: {@code emitOrderNotFound} hardcodes orderRef 0 in its ack, so a
-     * cancel-of-unknown is correlated by the owner thread's FIFO ordering, not by ref. That is
-     * sound here and load-bearing — {@code handleBatch} holds the owner thread for a whole batch,
-     * so a client cancel can never interleave with the fence's own orderRef-0 NOT_FOUND ack.
+     * cancel-of-unknown cannot be correlated by ref — but it does not need to be, because the
+     * pipelined FIFO correlates by POSITION: this cancel is registered at the FIFO tail when offered
+     * and its (possibly ref-0 NOT_FOUND) ack completes the head in that same order. The batch fence
+     * is untouched: {@code handleBatch} holds the owner thread for a whole batch, so no pipelined
+     * cancel can interleave with the fence's own orderRef-0 NOT_FOUND ack.
      */
     @Override
     public ExecResult submitCancel(final int orderRef) {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // 0 is the reserved fence ref
         }
-        try {
-            return onOwner(() -> {
-                event.type = InputEvent.TYPE_ORDER_CANCEL;
-                event.side = 0;
-                event.orderRef = orderRef;
-                event.accountId = 0;
-                event.securityId = 0;
-                event.qty = 0;
-                event.limitPx = 0;
-                event.priceTicks = 0L;
-                event.eventTimeMillis = 0;
-                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
-                lastOrderAck = null;
-                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastOrderAck != null)) {
-                    return null;
-                }
-                final byte kind = (byte) lastOrderAck[2];
-                // "Accepted" means the order is gone from the book. Cancel of an already-CANCELED
-                // order also reports CANCELED — the engine re-publishes a terminal order unchanged
-                // (009 parity), which makes a retried cancel idempotent rather than an error.
-                if (kind == OutputEvent.KIND_ORDER_CANCELED) {
-                    canceledOrders++;
-                }
-                return new ExecResult(kind == OutputEvent.KIND_ORDER_CANCELED, orderRef, kind,
-                    (byte) lastOrderAck[4]);
-            });
-        } catch (final Exception e) {
-            return null; // ambiguous/timeout: caller must not claim the order still rests
-        }
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_CANCEL, 0, null, (char) 0,
+            0, 0L, 0L, orderRef));
     }
 
     /**
@@ -456,37 +460,115 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
         }
+        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+            qty, limitPxTicks, clientOrderKey(clOrdId), orderRef));
+    }
+
+    // ----- pipelined order-lifecycle ingress -------------------------------------------------
+
+    /**
+     * Submit one order-lifecycle command and block (on THIS thread, not the owner) for its committed
+     * ack. The owner thread only offers and registers it on the FIFO; the ack completes it later.
+     * The permit semaphore bounds in-flight orders and IS the client backpressure — a full window
+     * parks the submitter here until a slot frees. Returns null on any ambiguity (window saturated
+     * for the whole timeout, no committed ack, or a reconnect drained it): post-publish, the caller
+     * must not claim rejection.
+     */
+    private ExecResult submitPipelined(final PendingOrder p) {
         try {
-            return onOwner(() -> {
-                event.type = InputEvent.TYPE_ORDER_REPLACE;
-                event.side = 0;
-                event.orderRef = orderRef;
-                event.accountId = 0;   // read off the original order: FIX forbids changing either
-                event.securityId = 0;
-                event.qty = qty;
-                event.limitPx = limitPxTicks;
-                event.priceTicks = clientOrderKey(clOrdId);
-                event.eventTimeMillis = 0;
-                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
-                lastOrderAck = null;
-                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES, () -> lastOrderAck != null)) {
-                    return null;
-                }
-                final byte kind = (byte) lastOrderAck[2];
-                // A replace never terminates its own target, so any non-reject lifecycle kind here
-                // means the order now stands at the new size/price (ACCEPTED, or FILLED if it
-                // crossed on the way in). "Already terminal" comes back as a reject, not as the
-                // order's old terminal kind — see MatchingEngine.onReplace.
-                final boolean accepted = kind != OutputEvent.KIND_ORDER_REJECTED
-                    && kind != OutputEvent.KIND_ORDER_NOT_FOUND;
-                if (accepted) {
-                    replacedOrders++;
-                }
-                return new ExecResult(accepted, orderRef, kind, (byte) lastOrderAck[4]);
-            });
+            if (!inflight.acquire(ACK_TIMEOUT_MS)) {
+                return null; // window saturated: treat as ambiguous backpressure, never a false reject
+            }
+            // Fire-and-forget on the owner thread: offer + register, no per-order wait.
+            tasks.add(new FutureTask<>(() -> offerPipelined(p), null));
+            return p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
         } catch (final Exception e) {
-            return null; // ambiguous/timeout: caller must not claim the order is unchanged
+            return null; // ambiguous/timeout: caller must not claim rejection
         }
+    }
+
+    /**
+     * Owner thread: encode {@code p} into the shared scratch, offer it (backpressure via pollEgress,
+     * which also drains earlier pendings), then register it at the FIFO tail so its ack — the next
+     * direct lifecycle ack in offer order — completes it. Registration happens AFTER the successful
+     * offer and before any further pollEgress, so this order's own ack can never be processed before
+     * it is registered. On an unresolvable ticker or an offer that never clears, complete ambiguous
+     * and release the permit without registering (keeps the FIFO exactly one entry per live offer).
+     */
+    private void offerPipelined(final PendingOrder p) {
+        try {
+            if (p.type == InputEvent.TYPE_ORDER_NEW) {
+                final int securityId = resolveSecurityId(p.ticker);
+                if (securityId < 0) {
+                    p.future.complete(null); // unresolvable ticker: ambiguous, exactly as the old sync path
+                    inflight.release();
+                    return;
+                }
+                event.type = InputEvent.TYPE_ORDER_NEW;
+                event.side = p.side == 'S' ? InputEvent.SIDE_SELL : InputEvent.SIDE_BUY;
+                event.orderRef = 0;
+                event.accountId = p.accountId;
+                event.securityId = securityId;
+            } else { // cancel / replace: engine reads account+security off the original order
+                event.type = p.type;
+                event.side = 0;
+                event.orderRef = p.orderRef;
+                event.accountId = 0;
+                event.securityId = 0;
+            }
+            event.qty = p.qty;
+            event.limitPx = p.limitPx;
+            event.priceTicks = p.clientKey;
+            event.eventTimeMillis = 0;
+            codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+            final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
+            while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
+                client.pollEgress(); // drains earlier acks (frees the ingress window) while backpressured
+                if (System.currentTimeMillis() > deadline) {
+                    p.future.complete(null); // never cleared the ingress: ambiguous, do not register
+                    inflight.release();
+                    return;
+                }
+            }
+            inflight.register(p); // offer order == ack order
+        } catch (final Exception e) {
+            p.future.complete(null);
+            inflight.release();
+        }
+    }
+
+    /**
+     * Owner thread (from onEgress): {@code p} is the FIFO head that {@link Inflight#onDirectAck}
+     * just popped for this entry ack. Build its committed outcome and release its permit.
+     */
+    private void completePipelinedHead(final PendingOrder p, final DirectBuffer buffer,
+                                       final int offset, final byte kind) {
+        final byte riskReason = buffer.getByte(offset + 22);
+        // NEW: orderRef is engine-assigned and carried in the ack. CANCEL/REPLACE: the ack echoes the
+        // target ref, but emitOrderNotFound hardcodes 0, so trust the request's ref for those.
+        final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) : p.orderRef;
+        final boolean accepted;
+        if (p.type == InputEvent.TYPE_ORDER_CANCEL) {
+            // Gone from the book. A retried cancel of an already-CANCELED order also reports CANCELED
+            // (the engine re-publishes a terminal order unchanged, 009 parity) — idempotent, not an error.
+            accepted = kind == OutputEvent.KIND_ORDER_CANCELED;
+            if (accepted) {
+                canceledOrders++;
+            }
+        } else {
+            // NEW / REPLACE: any non-reject, non-not-found lifecycle kind means it stands (ACCEPTED,
+            // or FILLED/PARTIALLY_FILLED if it crossed on the way in).
+            accepted = kind != OutputEvent.KIND_ORDER_REJECTED && kind != OutputEvent.KIND_ORDER_NOT_FOUND;
+            if (accepted) {
+                if (p.type == InputEvent.TYPE_ORDER_REPLACE) {
+                    replacedOrders++;
+                } else {
+                    acceptedOrders++;
+                }
+            }
+        }
+        p.future.complete(new ExecResult(accepted, ref, kind, riskReason));
+        inflight.release();
     }
 
     // ----- REST -------------------------------------------------------------------------------
@@ -614,6 +696,11 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             final long batchBudgetMs = ACK_TIMEOUT_MS + total * 5L;
             final Integer batchResult = onOwner(() -> {
                 final long deadline = System.currentTimeMillis() + batchBudgetMs;
+                // Batch and pipelined single-order ingress are mutually exclusive: onEgress routes
+                // direct acks to batch counting while batchActive, so any single order still in the
+                // FIFO would never be completed. The bench never mixes them; drain defensively so a
+                // mixed workload degrades to ambiguous singles rather than a stuck FIFO.
+                inflight.drain();
                 batchActive = true;
                 batchOutstanding = 0;
                 batchAccepted = 0;
@@ -825,7 +912,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             + "traderx_gateway_batch_high_water_total{outcome=\"completed\"} "
                 + batchHighWaterCompletions + "\n"
             + "traderx_gateway_batch_high_water_total{outcome=\"timeout\"} "
-                + batchHighWaterTimeouts + "\n";
+                + batchHighWaterTimeouts + "\n"
+            // Pipelined ingress: how full the in-flight window ran. If this pins at capacity the
+            // window is the bottleneck (raise GATEWAY_MAX_INFLIGHT); if it sits low the binding
+            // constraint is downstream (consensus commit rate / driver), not the gateway.
+            + "traderx_gateway_inflight_orders " + inflight.depth() + "\n"
+            + "traderx_gateway_inflight_capacity " + MAX_INFLIGHT + "\n";
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
@@ -897,5 +989,100 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private static String env(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    /** One in-flight order-lifecycle command awaiting its committed ack (pipelined ingress).
+     *  Package-private for {@code InflightCorrelationTest}. */
+    static final class PendingOrder {
+        final byte type;         // TYPE_ORDER_NEW / TYPE_ORDER_CANCEL / TYPE_ORDER_REPLACE
+        final int accountId;     // NEW only
+        final String ticker;     // NEW only (resolved on the owner thread); null for cancel/replace
+        final char side;         // NEW only
+        final int qty;           // NEW / REPLACE
+        final long limitPx;      // NEW / REPLACE
+        final long clientKey;    // idempotency key (0 = none); NEW / REPLACE
+        final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
+        final CompletableFuture<ExecResult> future = new CompletableFuture<>();
+
+        PendingOrder(final byte type, final int accountId, final String ticker, final char side,
+                     final int qty, final long limitPx, final long clientKey, final int orderRef) {
+            this.type = type;
+            this.accountId = accountId;
+            this.ticker = ticker;
+            this.side = side;
+            this.qty = qty;
+            this.limitPx = limitPx;
+            this.clientKey = clientKey;
+            this.orderRef = orderRef;
+        }
+    }
+
+    /**
+     * The pipelined in-flight window. The FIFO is touched ONLY by the owner thread (register on
+     * offer, onDirectAck in onEgress, drain on reconnect/batch), so it needs no synchronization. The
+     * permit semaphore is the sole cross-thread piece: submitters {@link #acquire} before enqueuing
+     * an offer and the owner {@link #release}s when the ack completes the order (or it is drained),
+     * bounding in-flight orders and backpressuring submitters when the window is full.
+     *
+     * <p>Package-private so {@code InflightCorrelationTest} can drive the correlation core (FIFO +
+     * inputSeq boundary + permit accounting) with no cluster.
+     */
+    static final class Inflight {
+        private final ArrayDeque<PendingOrder> fifo = new ArrayDeque<>();
+        private final Semaphore permits;
+        private final int max;
+        // inputSeq (member applied-sequence) whose entry ack last popped the head. -1 forces the
+        // first ack to pop. Owner-thread-only, alongside the FIFO.
+        private long lastInputSeq = -1;
+
+        Inflight(final int max) {
+            this.max = max;
+            this.permits = new Semaphore(max);
+        }
+
+        /** Submitter thread: reserve a slot, or false if none frees within {@code timeoutMs}. */
+        boolean acquire(final long timeoutMs) throws InterruptedException {
+            return permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
+        }
+
+        /** Owner thread: order was offered — register it in offer order. */
+        void register(final PendingOrder p) {
+            fifo.addLast(p);
+        }
+
+        /**
+         * Owner thread: a direct (non-resting) order-lifecycle ack arrived carrying {@code inputSeq}.
+         * If it OPENS a new input (its first direct ack), pop and return the FIFO head — the order to
+         * complete. If it CONTINUES the current input (a later fill under the same applied-sequence),
+         * return null: that fill belongs to the order already answered, and popping again would shift
+         * every later order onto the wrong request. Returns null too if the window is empty.
+         */
+        PendingOrder onDirectAck(final long inputSeq) {
+            if (inputSeq == lastInputSeq) {
+                return null; // continuation fill of the already-answered order
+            }
+            lastInputSeq = inputSeq;
+            return fifo.pollFirst();
+        }
+
+        /** Owner thread: an order completed — return its slot to the window. */
+        void release() {
+            permits.release();
+        }
+
+        /** Owner thread: complete every outstanding order as ambiguous, free its slot, and reset the
+         *  inputSeq boundary (a fresh session may restart appliedSeq). */
+        void drain() {
+            for (PendingOrder p; (p = fifo.pollFirst()) != null; ) {
+                p.future.complete(null);
+                permits.release();
+            }
+            lastInputSeq = -1;
+        }
+
+        /** Thread-safe (semaphore-based, never touches the FIFO) in-flight depth — for /metrics. */
+        int depth() {
+            return max - permits.availablePermits();
+        }
     }
 }
