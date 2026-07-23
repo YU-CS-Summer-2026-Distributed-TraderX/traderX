@@ -68,4 +68,25 @@ public interface OrderSubmitter {
     default ExecResult submitReplace(int orderRef, String clOrdId, int quantity, long limitPxTicks) {
         return null;
     }
+
+    /**
+     * Binary fast-path NEW (lever 4). Same committed contract as {@link #submitOrder}, but every
+     * field arrives numeric so the hot path allocates nothing: {@code securityId} is pre-resolved on
+     * the wire (no ticker String, no map lookup on the caller's thread) and {@code clientKey} is the
+     * client's own idempotency key used directly (0 = none), not hashed from a String. The order still
+     * rides the identical pipelined window and consensus path, so members apply it byte-for-byte as
+     * they would a FIX or REST order.
+     *
+     * <p>Default: unsupported at this tier, reported as ambiguity — same convention as the others.
+     */
+    default ExecResult submitOrder(long clientKey, int accountId, int securityId, char side, int qty,
+                                   long limitPxTicks) {
+        return null;
+    }
+
+    /** Binary fast-path atomic replace (lever 4): {@link #submitReplace} with a numeric idempotency
+     *  key instead of a String clOrdId. Default unsupported, reported as ambiguity. */
+    default ExecResult submitReplace(int orderRef, long clientKey, int qty, long limitPxTicks) {
+        return null;
+    }
 }
