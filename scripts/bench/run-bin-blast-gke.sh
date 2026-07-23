@@ -42,6 +42,11 @@ QTY="${QTY:-10}"
 # every order rejects at UNKNOWN_SECURITY, measures pure ingress). For a BOOKING run, /resolve the
 # ticker first and pass its real id (e.g. JPM=2) so orders actually cross and the trades counter moves.
 SECURITY="${SECURITY:-1}"
+# Two-account crossing pair. Each booked pair pushes ACCT_BUY long / ACCT_SELL short; at the default
+# 1M position cap that walls after ~1M fills/account, so rotate to a FRESH seeded pair per booking rung
+# (seeded: 42422 22214 44044 52355 10031 62654 11413). Ignored on the reject path.
+ACCT_BUY="${ACCT_BUY:-42422}"
+ACCT_SELL="${ACCT_SELL:-22214}"
 WARMUP_MS="${WARMUP_MS:-5000}"
 START_DELAY_SECS="${START_DELAY_SECS:-45}"
 RUN_ID="${RUN_ID:-$(( $(date +%s) % 65535 + 1 ))}"
@@ -154,6 +159,8 @@ spec:
             - { name: PRICE,      value: "${PRICE}" }
             - { name: QTY,        value: "${QTY}" }
             - { name: SECURITY,   value: "${SECURITY}" }
+            - { name: ACCT_BUY,   value: "${ACCT_BUY}" }
+            - { name: ACCT_SELL,  value: "${ACCT_SELL}" }
             - { name: WARMUP_MS,  value: "${WARMUP_MS}" }
             - { name: START_AT_MS, value: "${start_at_ms}" }
             - { name: RUN_ID,     value: "${RUN_ID}" }
