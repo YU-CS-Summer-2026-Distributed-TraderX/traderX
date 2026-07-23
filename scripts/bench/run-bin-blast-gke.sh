@@ -38,6 +38,10 @@ BATCH="${BATCH:-64}"
 PRICE="${PRICE:-150}"    # MUST equal the seeded price (seed-accounts-job seeds 150) so the two-account
                          # flow is marketable and crosses; a stale/off price rejects at the risk gate
 QTY="${QTY:-10}"
+# Numeric securityId the binary wire carries. Default 1 = the reject-path probe (no such security =>
+# every order rejects at UNKNOWN_SECURITY, measures pure ingress). For a BOOKING run, /resolve the
+# ticker first and pass its real id (e.g. JPM=2) so orders actually cross and the trades counter moves.
+SECURITY="${SECURITY:-1}"
 WARMUP_MS="${WARMUP_MS:-5000}"
 START_DELAY_SECS="${START_DELAY_SECS:-45}"
 RUN_ID="${RUN_ID:-$(( $(date +%s) % 65535 + 1 ))}"
@@ -93,15 +97,17 @@ if [[ -z "${leader_pod}" ]]; then echo "[fail] no member reports traderx_cluster
 
 # Always emit a number. A bare `kubectl exec curl` can return empty under heavy load (that empty read
 # is what killed a prior run's `set -e` and orphaned its Job); retry a few times, then default 0.
-next_ref() {
+leader_metric() { # $1 = metric name; retries, defaults 0
   local v="" i
   for i in 1 2 3 4 5; do
     v="$(kubectl -n "${NAMESPACE}" exec "${leader_pod}" -- curl -s --max-time 4 localhost:8080/metrics 2>/dev/null \
-      | awk '/^traderx_cluster_next_order_ref/ { print $2 }')"
+      | awk -v m="^$1" '$0 ~ m && $1 !~ /^#/ { print $2 }')"
     [[ -n "${v}" ]] && break
   done
   echo "${v:-0}"
 }
+next_ref()    { leader_metric traderx_cluster_next_order_ref; }
+next_trades() { leader_metric traderx_cluster_trades; }   # engine-authoritative MATCHED-trade count
 gw_stage() { # $1=pod $2=family $3=stage  — always prints a number
   kubectl -n "${NAMESPACE}" exec "$1" -- curl -s --max-time 4 localhost:18110/metrics 2>/dev/null \
     | awk -v re="$2{stage=\"$3\"}" '$0 ~ re { v=$2 } END { print (v==""?0:v) }'
@@ -147,6 +153,7 @@ spec:
             - { name: SECS,       value: "${SECS}" }
             - { name: PRICE,      value: "${PRICE}" }
             - { name: QTY,        value: "${QTY}" }
+            - { name: SECURITY,   value: "${SECURITY}" }
             - { name: WARMUP_MS,  value: "${WARMUP_MS}" }
             - { name: START_AT_MS, value: "${start_at_ms}" }
             - { name: RUN_ID,     value: "${RUN_ID}" }
@@ -171,14 +178,14 @@ echo "[load] synchronized epoch=${start_at_ms} (in ${START_DELAY_SECS}s) duratio
 # --- sample the authoritative funnel over EXACTLY the synchronized window ---
 sleep_until() { local target_ms=$1; local now_ms; now_ms=$(( $(date +%s) * 1000 )); local d=$(( target_ms - now_ms )); (( d > 0 )) && sleep "$(awk "BEGIN{print $d/1000}")"; }
 sleep_until "${start_at_ms}"
-ref0="$(next_ref)"; win_t0="$(date +%s)"
+ref0="$(next_ref)"; trades0="$(next_trades)"; win_t0="$(date +%s)"
 dec0=0; ofs0=0
 for gp in "${gateway_pods[@]}"; do
   dec0=$(( dec0 + $(gw_stage "${gp}" traderx_binary_frames_total decoded || echo 0) ))
   ofs0=$(( ofs0 + $(gw_stage "${gp}" traderx_gateway_pipeline_total offer_success || echo 0) ))
 done
 sleep "${SECS}"
-ref1="$(next_ref)"; win="$(( $(date +%s) - win_t0 ))"
+ref1="$(next_ref)"; trades1="$(next_trades)"; win="$(( $(date +%s) - win_t0 ))"
 dec1=0; ofs1=0
 for gp in "${gateway_pods[@]}"; do
   dec1=$(( dec1 + $(gw_stage "${gp}" traderx_binary_frames_total decoded || echo 0) ))
@@ -196,7 +203,7 @@ sum_field() { grep -hoE "$1"'[0-9]+' "${result}" | grep -oE '[0-9]+' | awk '{s+=
 offered="$(sum_field 'offered \(in window\): +')"
 acks="$(sum_field 'acks \(in window\): +')"
 stalls="$(sum_field 'write stalls \(>1ms\): +')"
-refD=$(( ref1 - ref0 )); decD=$(( dec1 - dec0 )); ofsD=$(( ofs1 - ofs0 ))
+refD=$(( ref1 - ref0 )); decD=$(( dec1 - dec0 )); ofsD=$(( ofs1 - ofs0 )); tradesD=$(( trades1 - trades0 ))
 
 echo
 echo "=== PER-HOP FUNNEL (over ${win}s synchronized window; fresh keys, two-account crossing) ==="
@@ -208,7 +215,8 @@ if (( decD > 0 || ofsD > 0 )); then
 else
   echo    'gateway decoded/offer:      n/a  (deployed gateway lacks diagnostic counters; deploy :yu13-binary-ceiling-r1 for the middle hops)'
 fi
-printf 'member nextOrderRef delta: %10d  = %8d/s   <-- GROUND TRUTH (committed/s)\n' "${refD}" "$(( refD / win ))"
+printf 'member nextOrderRef delta: %10d  = %8d/s   <-- SUBMIT/s (orders sequenced+applied)\n' "${refD}" "$(( refD / win ))"
+printf 'member trades delta:       %10d  = %8d/s   <-- MATCH/s (booked trades; 0 on the reject path)\n' "${tradesD}" "$(( tradesD / win ))"
 printf 'client backpressure:       write-stalls=%d  (climbing across the ladder = a real limit)\n' "${stalls}"
 echo "[ok] result=${result}"
 
