@@ -35,6 +35,9 @@ MODE="${MODE:-paced}"                 # paced = ladder step at TOTAL/s; blast = 
 TOTAL="${TOTAL:-40000}"               # aggregate offered/s (paced); ignored in blast
 SECS="${SECS:-30}"
 BATCH="${BATCH:-64}"
+PRICE="${PRICE:-150}"    # MUST equal the seeded price (seed-accounts-job seeds 150) so the two-account
+                         # flow is marketable and crosses; a stale/off price rejects at the risk gate
+QTY="${QTY:-10}"
 WARMUP_MS="${WARMUP_MS:-5000}"
 START_DELAY_SECS="${START_DELAY_SECS:-45}"
 RUN_ID="${RUN_ID:-$(( $(date +%s) % 65535 + 1 ))}"
@@ -129,6 +132,8 @@ spec:
             - { name: TOTAL,      value: "$([[ ${MODE} == paced ]] && echo "${total_per_pod}" || echo 0)" }
             - { name: BATCH,      value: "${BATCH}" }
             - { name: SECS,       value: "${SECS}" }
+            - { name: PRICE,      value: "${PRICE}" }
+            - { name: QTY,        value: "${QTY}" }
             - { name: WARMUP_MS,  value: "${WARMUP_MS}" }
             - { name: START_AT_MS, value: "${start_at_ms}" }
             - { name: RUN_ID,     value: "${RUN_ID}" }
