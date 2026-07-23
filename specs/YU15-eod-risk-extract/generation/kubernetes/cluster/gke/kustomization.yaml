@@ -1,0 +1,35 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+# YU15 GKE tier = the YU14 cluster set (emptyDir members, 4 gateways, C4D pool, all hardening)
+# plus the risk-extract chain: NATS (JetStream), the EOD price DB, trade-processor, the YU06 EOD
+# batch chain, and the risk-extract producer with a gs:// sink. Images: cluster-node:yu15-idempfix
+# (members/gateway/producer — one image, built from the YU15 branch, carries the idempotency
+# tombstone fix) and <service>:yu15-extract for the three Spring services, all built
+# --platform linux/amd64 and pushed to GAR at deploy time. `kubectl apply -k .` is the one-shot
+# deploy. Manifests do NOT inherit across states (render-state is a plain cp -R) — this dir is
+# YU15's own, not an overlay on YU14's.
+#
+# c4d-node-system-config.yaml is deliberately NOT in `resources`: it is a kubelet config passed to
+# `gcloud container node-pools create --system-config-from-file` when creating blp-c4d-tuned-pool,
+# not a Kubernetes object. Listing it here fails the whole build with "missing Resource metadata".
+#
+# statefulset.yaml (PVC variant) is kept for reference only; the emptyDir variant is what runs.
+#
+# Applied separately by the deploy, NOT part of this kustomization (kustomize cannot reference a
+# file outside its root; referencing it in place keeps exactly one copy of the schema):
+#   ../../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
+#
+# No NetworkPolicy on the GKE tier (matching YU12-YU14). If one is ever added, the risk-extract
+# pod label MUST be in the member ingress allowlist — a missing allow surfaces as a marker ack
+# timeout, not a connection error (T-LOB16).
+resources:
+  - statefulset-emptydir.yaml
+  - gateway.yaml
+  - backup-cronjob.yaml
+  - seed-accounts-job.yaml
+  - nats.yaml
+  - eod-price-db.yaml
+  - trade-processor.yaml
+  - eod-chain.yaml
+  - risk-extract.yaml

@@ -1,0 +1,204 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-cluster
+  labels:
+    app: order-matcher-cluster
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: order-matcher-cluster
+  ports:
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher-cluster
+spec:
+  serviceName: order-matcher-cluster
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: order-matcher-cluster
+  template:
+    metadata:
+      labels:
+        app: order-matcher-cluster
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: blp-c4d-tuned-pool
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: blp
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          # required now that the pool guarantees one node per member (3x c4d-standard-8,
+          # threadsPerCore=1, four visible physical cores):
+          # a node fault can take at most ONE member (true node-fault tolerance, joint plan Ph2)
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: order-matcher-cluster
+              topologyKey: kubernetes.io/hostname
+      initContainers:
+        # DR restore: when RESTORE_FROM_GCS=1, member-0 seeds its (emptyDir) /data from the
+        # latest GCS backup before the JVM starts; members 1 & 2 come up empty and rejoin member-0
+        # via the proven catch-up. No-op on normal boot. Uses the journal-archive HMAC creds.
+        - name: restore-from-gcs
+          image: google/cloud-sdk:latest
+          # Init containers participate in pod QoS classification. Equal CPU/memory request and
+          # limit keep the pod Guaranteed so static CPU Manager can pin the 3-CPU member container.
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 100m
+              memory: 256Mi
+          env:
+            - name: RESTORE_FROM_GCS
+              value: "0"
+            - name: GS_ID
+              valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: access-key-id } }
+            - name: GS_SECRET
+              valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: secret-access-key } }
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -uo pipefail
+              ORD="${HOSTNAME##*-}"
+              [ "${RESTORE_FROM_GCS:-0}" = "1" ] || { echo "restore disabled — normal boot"; exit 0; }
+              [ "$ORD" = "0" ] || { echo "member $ORD rejoins fresh (only member-0 restores)"; exit 0; }
+              [ -s /data/cluster/recording.log ] && { echo "/data already populated — skip restore"; exit 0; }
+              echo "restoring member-0 /data from GCS latest.tgz ..."
+              export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+              python3 -m pip install --break-system-packages --quiet boto3 >/dev/null 2>&1
+              python3 -c "import boto3; from botocore.config import Config; boto3.client('s3',endpoint_url='https://storage.googleapis.com',aws_access_key_id='$GS_ID',aws_secret_access_key='$GS_SECRET',config=Config(signature_version='s3v4',s3={'addressing_style':'path'})).download_file('traderx-501015-order-matcher-journal-archive','yu12-cluster-snapshots/latest.tgz','/tmp/latest.tgz')"
+              mkdir -p /data && tar -xzSf /tmp/latest.tgz -C /data
+              echo "restored member-0: $(ls /data)"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: cluster-node
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu15-idempfix
+          imagePullPolicy: Always
+          # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
+          # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true
+          # crash with a node-clock timestamp, no pod-delete API latency in the measurement.
+          command: ["/bin/sh", "-c", "java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!"]
+          env:
+            - name: CLUSTER_HOSTNAMES
+              value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
+            - name: CLUSTER_PORT_BASE
+              value: "21800"
+            - name: CLUSTER_HEARTBEAT_INTERVAL_MS
+              value: "50"
+            - name: CLUSTER_HEARTBEAT_TIMEOUT_MS
+              value: "200"
+            - name: CLUSTER_ELECTION_TIMEOUT_MS
+              value: "100"
+            - name: CLUSTER_ELECTION_STATUS_INTERVAL_MS
+              value: "25"
+            - name: CLUSTER_BASE_DIR
+              value: "/data"
+            - name: CLUSTER_AERON_DIR
+              value: "/dev/shm/aeron-cluster"
+            - name: CLUSTER_OUTPUT_RING_SIZE
+              value: "262144"
+            # Snapshot is a log-position barrier: under ~134k flood the apply loop stalls a few
+            # seconds while state is written, and in-flight gateway batches can exceed their ack
+            # budget → a throughput dip. 60s put a barrier inside most bench runs; 300s keeps
+            # typical runs (< 5 min) barrier-free while still snapshotting often enough to bound
+            # restart replay (tcpSocket liveness now tolerates the longer replay without a kill).
+            - name: CLUSTER_SNAPSHOT_INTERVAL_MS
+              value: "300000"
+            # Leader-side cluster-egress → NATS /trades bridge (YU12): every booked trade is
+            # published to trade-processor, which persists Trade + Position to the DB and republishes
+            # the /accounts/{id}/trades + /positions feeds the UI subscribes to. Only the leader
+            # publishes; the deterministic apply thread only does a non-blocking enqueue.
+            # YU15 is self-contained on GKE: it ships its own `nats` (JetStream) rather than
+            # assuming the YU09 stack's nats-broker is present in the namespace.
+            - name: TRADE_BRIDGE_NATS_URL
+              value: "nats://nats:4222"
+            # YU15: leader-side position-cut bridge. Unset leaves the marker inert (it still
+            # sequences and renders on every member, it just publishes nowhere).
+            - name: RISK_EXTRACT_NATS_URL
+              value: "nats://nats:4222"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms512m -Xmx1536m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 120
+          # Liveness must catch a DEAD member, not a BUSY one. An httpGet /health probe runs app
+          # logic and needs the JVM's HTTP thread scheduled — under ~100k+ orders/s flood the Aeron
+          # duty cycle saturates the node and starves it, so k8s SIGKILLs a perfectly-alive member
+          # (exit 137) → cascading leader loss → crash-loop → recovery-replay death-spiral. A
+          # tcpSocket probe is answered by the KERNEL (it completes the SYN for the listening socket
+          # from the accept backlog regardless of whether the JVM accept thread runs), so a busy or
+          # replaying member passes, while a dead/exited JVM (socket closed) still fails and restarts.
+          # A wedged-but-alive member is handled by Raft (voted out) and by readiness (traffic shed),
+          # not by liveness. Health server is also hardened (dedicated MAX_PRIORITY pool + off-path
+          # /ready sampler) so /ready/metrics stay responsive for readiness + the Grafana dashboard.
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            # 5s dial + 20 misses ≈ 5 min of continuous saturation tolerated before restart. Even a
+            # tcpSocket probe can i/o-timeout when a multi-minute flood starves the node's network
+            # softirq; a truly dead JVM (socket closed) still fails instantly and restarts. Raft +
+            # readiness handle a wedged-but-alive member, so erring long here is safe.
+            timeoutSeconds: 5
+            failureThreshold: 20
+          # Guaranteed QoS (joint plan Phase 2): request==limit so the consensus/driver duty
+          # cycle never rides CFS burst credit; CPU Manager static pins three exclusive CPUs and
+          # leaves ~0.9 allocatable CPU for kube/system work on each SMT-disabled C4D node.
+          resources:
+            requests:
+              cpu: "3"
+              # 4Gi: the member is alone on a 31GB C4D node. 2Gi died two ways in the 2026-07-21
+              # 148k/s soak: the orderRef index array OOM'd a 512m heap at ~33M cumulative
+              # orders (engine bug, see implementation-status "sweep postmortem"), and a 201MB
+              # replay publication could not fit in the 512Mi shm during the ensuing catch-up.
+              memory: 4Gi
+            limits:
+              cpu: "3"
+              memory: 4Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Gi
+        - name: data
+          emptyDir:
+            # The Aeron consensus log + archive live here. Under high-throughput bench load the
+            # archive grows fast (~10-20 MB/s at ~100k orders/s); a 2Gi cap fills in minutes and
+            # k8s EVICTS the pod (cascading eviction → lost leader → throughput collapse). The
+            # node's local NVMe backs this (95G, ~44GiB allocatable ephemeral) and there is one
+            # member per node, so give it generous headroom. ponytail: 20Gi buys ~15-30 min of
+            # sustained flood; the real bound is archive segment purge-after-snapshot if runs go
+            # longer than that.
+            sizeLimit: 20Gi
