@@ -73,8 +73,11 @@ gateway_lines="$(kubectl -n "${NAMESPACE}" get pods -l app=cluster-gateway \
   --field-selector=status.phase=Running \
   -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.podIP}{"\n"}{end}' | sort)"
 gateway_count="$(printf '%s\n' "${gateway_lines}" | awk 'NF { n++ } END { print n+0 }')"
-if [[ "${gateway_count}" != "3" ]]; then
-  echo "[fail] exactly 3 Running gateways required; found ${gateway_count}" >&2
+EXPECT_GW="${EXPECT_GW:-3}"   # gateway scale-out A/B: set 4 for the 4-gateway arm. Guard still trips on
+                              # a mid-rollout mismatch (blended builds/counts) — it just compares to the
+                              # arm's expected count instead of a hard-coded 3.
+if [[ "${gateway_count}" != "${EXPECT_GW}" ]]; then
+  echo "[fail] expected ${EXPECT_GW} Running gateways; found ${gateway_count}" >&2
   printf '%s\n' "${gateway_lines}" >&2; exit 1
 fi
 gateway_csv=""; gateway_pods=()
