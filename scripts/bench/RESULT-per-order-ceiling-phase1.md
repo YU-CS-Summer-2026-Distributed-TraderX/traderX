@@ -1,87 +1,82 @@
 # Phase 1 result — the real per-order ceiling, and the hop that binds
 
 > Campaign: "find the real per-order ceiling." Phase 0 retired the generator as a suspect (isolation
-> 2.19M offered/s, ~180× the 12k number). Phase 1 drove the live 3-member GKE cluster up a ladder until
-> a hop stopped keeping up **and backpressure appeared** — the signal of a real limit, not a harness one.
+> 2.19M offered/s, ~180× the 12k number). Phase 1 drove the live 3-member GKE cluster up a ladder —
+> first by rate at a fixed shallow window, then by **window depth** (connection count) — until a hop
+> stopped keeping up **with backpressure present**, then localized it with CPU + in-flight depth.
 
 ## Headline
 
-**~80–87k committed orders/s** on the distributed per-order path — **~7× the retired 12k "ceiling,"**
-and this one is real (backpressure present). But the binding hop is the **in-flight / pipelining
-window, not any system resource** — members and gateways sat idle at the plateau — so the *system*
-ceiling is above 80k and still unmeasured. The lever is cheap.
+**The per-order path sustains ~149k committed orders/s at 3 gateways — ~12–18× the retired 12k
+"ceiling"** — and it is **gateway-bound, not consensus-bound**: at the plateau the members sit at
+~⅓ CPU with the in-flight window backing up ahead of the gateways, not the engine. So the eventual
+multiplier (partitioning the engine) is **not** justified; the lever is gateway-side and cheap.
 
-## The ladder
+## Two regimes: shallow window vs deep window
 
-GKE, `:yu13-idempfix`, 3 gateways, 64 connections (`SESSIONS_PER_POD=16`), empty-cluster pure-ingress
-(orders traverse consensus + apply and reject at the risk/security gate — `nextOrderRef` advances
-regardless, so this isolates the per-order consensus+apply cost from matching). Ground truth = leader
-`nextOrderRef` delta.
+The binary acceptor is thread-per-connection and **synchronous** (each connection blocks on its
+committed ack before sending the next), so the in-flight window ≈ connection count. Committed/s
+(leader `nextOrderRef` delta, ground truth) vs window:
 
-| offered/s | committed/s (nextOrderRef) | acks | write-stalls | reading |
-|---:|---:|---|---:|---|
-| 20,000 | 16,000 | track | 9 | keeping up |
-| 40,000 | 31,000 | track | 42 | keeping up |
-| 80,000 | 66,000 | track | — | nearing the knee |
-| 160,000 | 79,000 | **collapse (83k of 160k)** | 523 | past the knee — backpressure |
-| blast | 82,000 (plateau) | — | — | hard plateau |
+| window (conns) | committed/s | max in-flight/conn | member CPU | reading |
+|---:|---:|---:|---:|---|
+| 64 | ~80,000 | shallow | idle (~28m/3000m) | **window-bound** — everything idle |
+| 256 | 132,000 | moderate | ~0.5c | window opening up |
+| 512 | 146,000 | rising | ~1.0c | nearing the knee |
+| 1000 | **~149,000** | **~18,000 (exploded)** | ~1000m/3000m | **saturated** — real backpressure |
 
-`nextOrderRef` climbs 16k → 31k → 66k → 79k → **82k and flat**; offer past ~80k just queues (acks fall
-to 83k of 160k offered, client write-stalls jump 9 → 42 → 523). That divergence **with** backpressure
-is a genuine limit.
+- At a **shallow** 64-connection window the ceiling is ~80k with *everything idle* — a pipelining-window
+  limit, exactly Brief 08's "offered ≫ committed, low CPU everywhere" row.
+- Deepening the window (more connections, now possible after the OOM fix `57da11cd`) lifts committed/s
+  to **~149k**, where it plateaus and the client-side in-flight **explodes from ~10 to ~18,000
+  orders/conn** — the generator offered ~352k/s and only ~149k came back. That explosion *at the
+  gateway while members stay idle* is the real limit.
 
-## The binding hop: the in-flight window (not consensus, not gateway CPU)
+## What binds: the gateway path, not consensus
 
-At the plateau, everything downstream is **idle**:
+At the ~149k plateau, the trustworthy signals agree:
+
+- **Member (consensus) CPU ~1000m of its 3000m pin = ~33%** — consistent across the whole window
+  sweep. Consensus has ~2/3 headroom; it is **not** the wall.
+- **In-flight backs up ahead of the gateways** (18k/conn) while the members drain what they receive —
+  the queue is on the gateway side of the path.
+- Gateways run hot toward their 2-core cgroup cap under load. *(Caveat: `kubectl top` overshoots and
+  lags — it read ~1995m even during the unsaturated 75k run where in-flight depth proves the gateway
+  kept up — so the gateway-CPU number is not talk-grade. The member-idle and in-flight-depth signals
+  are, and they are what carry the conclusion. A per-thread `/proc/<pid>/task` profile would be needed
+  to cleanly split gateway owner-thread work from Aeron-driver poll before quoting gateway CPU.)*
+
+## Latency (unsaturated, coordinated-omission-safe)
+
+Paced 75k/s, 256 connections, timed from each order's intended send (max in-flight 6–10/conn confirms
+the engine is unsaturated at this rate):
 
 ```
-leader member CPU     33m / 3000m   (~1% of its 3 pinned cores)
-gateway CPU           ~28m          (idle)
-offered >> committed, hard plateau, backpressure at the client
+p50 ~4.0 ms   p99 ~15 ms   max ~49 ms
 ```
 
-Idle members + idle gateways + offered ≫ committed = the classic **pipelining-depth / in-flight
-window** signature from Brief 08's table. The binary acceptor is **thread-per-connection and
-synchronous** — each connection reads one frame, blocks on its committed ack, then reads the next — so
-the effective in-flight window **equals the connection count**. 64 connections × ~800 µs commit-RTT ≈
-80k/s. The plateau is the window, not the engine.
+This is the per-order **commit** RTT (offer → consensus → apply → ack over raw TCP; not the HTTP path,
+so the 40 ms Nagle/delayed-ACK trap does not apply). Report the unsaturated row; latency past the
+~149k knee is queueing, not the system.
 
 ## Next lever — and what is NOT justified
 
-**Deepen the in-flight window** (cheap): more connections and/or an async binary acceptor that allows
-several orders in flight per connection. Because members and gateways are idle, committed/s should
-climb well past 80k until a real resource (consensus commit rate or gateway owner-thread CPU) finally
-binds — *that* number is the system's true per-order ceiling, and it is above 80k and unmeasured.
+**Deepen gateway capacity: more gateways / gateway owner-thread sharding.** Members have ~2/3 CPU
+headroom and the gateway is stateless-forward (it round-robins with no coordination), so adding
+gateways should scale committed/s further until consensus finally binds — *that* number is the true
+distributed-path ceiling and is still above ~149k, unmeasured. There is a free c2d node ready for a
+4th gateway to prove it.
 
-- **Partitioning is NOT justified.** It is the eventual multiplier only past a genuine consensus wall;
-  members at ~1% CPU are the opposite of that. Building it now scales past a limit that is not binding.
-- **Gateway owner-thread sharding is NOT justified** either — gateway CPU is idle.
-
-The rig OOM that forced this ladder down to 64 connections is now fixed (commit `57da11cd`:
-`RING_BITS`/`LAT_CAP_BITS`, `-Xmx1200m -Xss256k`), so a deep-window ladder can run:
-
-```
-# window-scaling ladder — hold rate deep, raise connections, watch where committed/s stops scaling
-# AND a real resource finally gets busy (kubectl top members/gateways during each rung):
-for S in 64 128 250; do PODS=4 SESSIONS_PER_POD=$S MODE=blast SECS=30 bash scripts/bench/run-bin-blast-gke.sh; done
-```
-
-## Caveats (before this feeds a talk)
-
-- **CPU/latency are not yet talk-grade.** `kubectl top` returned a single cached datapoint (4 identical
-  samples) — it corroborates "members idle" but a **60 s-window rerun** (metrics-server scrape interval)
-  is needed for a defensible CPU + latency figure.
-- **This is the pure-ingress / reject path**, not a booking run — it measures per-order consensus+apply,
-  which is the campaign's question (where the *distributed path* knees, independent of matching). A
-  booking+read-model number is a different, lower contract (engine ~150k booked/s; end-to-end persist
-  ~365/s) — never blend them.
-- Two topology gaps block any *booking* run on this kustomization (irrelevant to pure ingress):
-  `reference-data` + a fresh-boot reseed are omitted, and `/risk/control/*` 404s in this topology.
+- **Partitioning the engine is NOT justified** — members at ~33% CPU are the opposite of a consensus
+  wall. Building it now scales past a limit that is not binding (Brief 08's explicit warning).
 
 ## Honesty ledger
 
 - 12k is retired; report it only as "coasting, generator-limited, 0 backpressure."
-- The ~80–87k ceiling is **real** (backpressure at the binding hop) but is a **window** ceiling at 64
-  in-flight — the system ceiling is higher and unmeasured. Say both.
+- ~149k is a **real** ceiling (backpressure = in-flight explosion at the gateway) **at 3 gateways**;
+  it is gateway-bound, not the engine's ceiling, which is higher and unmeasured. Say both.
 - Ground truth is member `nextOrderRef` delta, never the gateway `accepted` counter.
-- Per-order (this) and batch (438k) are different contracts — never blended.
+- Gateway CPU is not talk-grade (metrics-server overshoot); the member-idle + in-flight-depth signals
+  carry the "not consensus-bound" claim.
+- This is the pure-ingress / reject path (per-order consensus+apply, the campaign's question) — never
+  blended with booking (engine ~150k booked/s; end-to-end persist ~365/s) or batch (438k).
