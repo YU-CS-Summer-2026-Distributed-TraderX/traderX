@@ -1,0 +1,19 @@
+# Brief 07 read-model proof overlay — the minimal read-model half the 08 throughput rig omits.
+# Applies alongside the running Aeron cluster in namespace traderx: MariaDB (with the orderbook
+# schema from the shared init SQL) + trade-processor on the tip image (my OrderFeedHandler consumer +
+# GET /accounts/{id}/orders). NATS (nats-broker) and the members are already up from the 08 bring-up.
+#
+#   kubectl apply -k handoff/7-22/readmodel-proof/
+#
+# Teardown: kubectl delete -k handoff/7-22/readmodel-proof/   (then the PVC: kubectl -n traderx delete pvc database-data)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+resources:
+  - secrets.yaml
+  - database-init-configmap.yaml
+  - database-data-pvc.yaml
+  - database-deployment.yaml
+  - database-service.yaml
+  - trade-processor-deployment.yaml
+  - trade-processor-service.yaml
