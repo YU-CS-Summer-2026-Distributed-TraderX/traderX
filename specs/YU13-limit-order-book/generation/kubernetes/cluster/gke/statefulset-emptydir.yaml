@@ -89,7 +89,7 @@ spec:
               mountPath: /data
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13-idempfix
           imagePullPolicy: Always
           # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
           # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true

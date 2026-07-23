@@ -13,7 +13,7 @@ spec:
   restartPolicy: Never
   containers:
     - name: proof-client
-      image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13
+      image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13-idempfix
       imagePullPolicy: Always
       command:
         - java
