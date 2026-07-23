@@ -18,14 +18,19 @@ kind load docker-image "${IMAGE}" --name "${CLUSTER}"
 kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
   || kubectl --context "${CTX}" create namespace traderx
 
+# Outside the kustomization — see the note in kustomization.yaml. The schema configmap goes FIRST:
+# mariadb runs init SQL once, at first boot on an empty datadir, against whatever configmap exists
+# at that moment. In a reused namespace carrying an older database-init-sql, applying it after the
+# kustomization lets eod-price-db initialize against the narrow pre-YU15 schema (the OCC blocker).
+echo "[apply] database schema configmap"
+kubectl --context "${CTX}" -n traderx apply \
+  -f "${ROOT}/specs/YU15-eod-risk-extract/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
+
 echo "[apply] cluster kustomization"
 kubectl --context "${CTX}" apply -k "${KDIR}"
 
-# Two files sit outside the kustomization — see the note in kustomization.yaml.
-echo "[apply] gateway + database schema"
+echo "[apply] gateway"
 kubectl --context "${CTX}" -n traderx apply -f "${KDIR}/gateway.yaml"
-kubectl --context "${CTX}" -n traderx apply \
-  -f "${ROOT}/specs/YU15-eod-risk-extract/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
 
 echo "[wait] 3/3 members ready"
 kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-cluster --timeout=300s

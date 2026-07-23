@@ -11,14 +11,19 @@ CTX="${YU15_GKE_CONTEXT:-gke_traderx-501015_us-east1-b_traderx-lmax}"
 kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
   || kubectl --context "${CTX}" create namespace traderx
 
-echo "[apply] gke kustomization"
-kubectl --context "${CTX}" apply -k "${KDIR}"
-
 # Outside the kustomization root — see the note in kustomization.yaml. Skipping this leaves the
 # database unschema'd and the whole EOD chain (and therefore the extract trigger) dead.
+# MUST be applied BEFORE the kustomization: mariadb runs init SQL once, at first boot on an empty
+# datadir, against whatever configmap exists at that moment. In a namespace that already carried
+# an older database-init-sql (the YU09 stack), applying it after let eod-price-db initialize
+# against the NARROW pre-YU15 schema — VARCHAR(15) security columns, the exact OCC blocker this
+# state fixed — and the option fill silently never reached SQL. Order is the fix.
 echo "[apply] database schema configmap"
 kubectl --context "${CTX}" -n traderx apply \
   -f "${ROOT}/specs/YU15-eod-risk-extract/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
+
+echo "[apply] gke kustomization"
+kubectl --context "${CTX}" apply -k "${KDIR}"
 
 echo "[wait] 3/3 members ready"
 kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-cluster --timeout=600s

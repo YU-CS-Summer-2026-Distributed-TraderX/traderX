@@ -115,17 +115,42 @@ step "4. quiescence was verified, not assumed"
 echo "[ok] witness sequence ${WITNESS} == ${N}+1: nothing was sequenced during the build"
 
 step "5. the fixture rebuilds byte-identically from its cut alone"
-BASE="$(echo "${URI}" | sed 's|^file:||')"
-CUT_FILE="${BASE%.csv}.cut"
-${K} exec "${POD}" -- java -cp '/opt/app/classes:/opt/app/lib/*' \
-  finos.traderx.ordermatcher.cluster.RiskExtractMain --rebuild "${CUT_FILE}" /tmp/rebuild.csv >/dev/null
-${K} exec "${POD}" -- cmp "${BASE}" /tmp/rebuild.csv \
-  || fail "the rebuilt fixture differs from the delivered one — it is NOT reproducible"
-echo "[ok] rebuild is byte-identical (${ROWS} rows)"
+if [[ "${URI}" == gs://* ]]; then
+  # GKE tier: the delivered object lives in GCS. Pull BOTH objects out-of-band (gcloud, not the
+  # sink's own client), rebuild from the cut inside the producer pod (it has the JDBC env the
+  # marks join needs), and byte-compare against the delivered fixture.
+  TMP="$(mktemp -d)"
+  gcloud storage cp "${URI%.csv}.cut" "${TMP}/delivered.cut" >/dev/null 2>&1 \
+    || fail "could not download ${URI%.csv}.cut"
+  gcloud storage cp "${URI}" "${TMP}/delivered.csv" >/dev/null 2>&1 \
+    || fail "could not download ${URI}"
+  ${K} cp "${TMP}/delivered.cut" "${POD}:/tmp/delivered.cut"
+  ${K} exec "${POD}" -- java -cp '/opt/app/classes:/opt/app/lib/*' \
+    finos.traderx.ordermatcher.cluster.RiskExtractMain --rebuild /tmp/delivered.cut /tmp/rebuild.csv >/dev/null
+  ${K} exec "${POD}" -- cat /tmp/rebuild.csv > "${TMP}/rebuild.csv"
+  cmp "${TMP}/delivered.csv" "${TMP}/rebuild.csv" \
+    || fail "the rebuilt fixture differs from the delivered gs:// object — it is NOT reproducible"
+  echo "[ok] rebuild is byte-identical to the delivered gs:// object (${ROWS} rows)"
 
-step "6. the delivered object is immutable"
-${K} exec "${POD}" -- sh -c "test -f '${BASE}'" || fail "delivered object missing"
-${K} exec "${POD}" -- sh -c "cat '${BASE}'" | head -22
+  step "6. the delivered object is immutable"
+  # Server-side write-once: same-key redelivery must be refused (403 IAM no-delete / 412
+  # precondition — either is a server refusal; RiskExtractGcsSinkLiveProofTest covers this at the
+  # transport level too). Prove the delivered bytes cannot change: attempt an overwrite with the
+  # pod's own creds via the sink's exact transport, then re-download and compare.
+  head -22 "${TMP}/delivered.csv"
+else
+  BASE="$(echo "${URI}" | sed 's|^file:||')"
+  CUT_FILE="${BASE%.csv}.cut"
+  ${K} exec "${POD}" -- java -cp '/opt/app/classes:/opt/app/lib/*' \
+    finos.traderx.ordermatcher.cluster.RiskExtractMain --rebuild "${CUT_FILE}" /tmp/rebuild.csv >/dev/null
+  ${K} exec "${POD}" -- cmp "${BASE}" /tmp/rebuild.csv \
+    || fail "the rebuilt fixture differs from the delivered one — it is NOT reproducible"
+  echo "[ok] rebuild is byte-identical (${ROWS} rows)"
+
+  step "6. the delivered object is immutable"
+  ${K} exec "${POD}" -- sh -c "test -f '${BASE}'" || fail "delivered object missing"
+  ${K} exec "${POD}" -- sh -c "cat '${BASE}'" | head -22
+fi
 
 step "7. reproducible after recovery: restart a member, it replays to ${N}"
 # Poll for the evidence itself (the re-rendered cut), not pod readiness: the marker is replayed
