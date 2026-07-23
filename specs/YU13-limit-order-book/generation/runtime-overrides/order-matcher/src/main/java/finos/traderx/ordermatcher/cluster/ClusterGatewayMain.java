@@ -127,6 +127,13 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private volatile long acceptedOrders;
     private volatile long canceledOrders;
     private volatile long replacedOrders;
+    // Binary per-order funnel diagnostics. The acceptor counters have many connection-thread
+    // writers; these pipeline counters have one owner-thread writer and a racy /metrics reader.
+    private BinaryGatewayAcceptor binaryAcceptor;
+    private volatile long pipelineOfferAttempts;
+    private volatile long pipelineOffersSucceeded;
+    private volatile long pipelineOfferBackpressure;
+    private volatile long pipelineAcksCompleted;
     // Market-trade (/trades, the UI create-order path) outcome counters — the market-trade path
     // emits KIND_TRADE_BOOKED/REJECTED, neither of which the order-lifecycle metrics above count,
     // so without these a stage mis-seed books nothing with no visible signal. Owner-thread writes.
@@ -195,9 +202,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         // set, so existing deploys are unchanged. Same OrderSubmitter seam, same pipelined window.
         final String binPortEnv = env("BINARY_ACCEPTOR_PORT", "");
         if (!binPortEnv.isEmpty()) {
-            final BinaryGatewayAcceptor bin = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv));
-            bin.start();
-            Runtime.getRuntime().addShutdownHook(new Thread(bin::stop));
+            binaryAcceptor = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv));
+            binaryAcceptor.start();
+            Runtime.getRuntime().addShutdownHook(new Thread(binaryAcceptor::stop));
         }
         System.out.println("GATEWAY up: http=" + httpPort + " ingress=" + ingressEndpoints
             + (fixPortEnv.isEmpty() ? "" : " fix=" + fixPortEnv)
@@ -561,7 +568,9 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             event.eventTimeMillis = 0;
             codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
             final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
+            pipelineOfferAttempts++;
             while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
+                pipelineOfferBackpressure++;
                 client.pollEgress(); // drains earlier acks (frees the ingress window) while backpressured
                 if (System.currentTimeMillis() > deadline) {
                     p.future.complete(null); // never cleared the ingress: ambiguous, do not register
@@ -569,6 +578,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                     return;
                 }
             }
+            pipelineOffersSucceeded++;
             inflight.register(p); // offer order == ack order
         } catch (final Exception e) {
             p.future.complete(null);
@@ -607,6 +617,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             }
         }
         p.future.complete(new ExecResult(accepted, ref, kind, riskReason));
+        pipelineAcksCompleted++;
         inflight.release();
     }
 
@@ -987,7 +998,16 @@ public final class ClusterGatewayMain implements OrderSubmitter {
             // window is the bottleneck (raise GATEWAY_MAX_INFLIGHT); if it sits low the binding
             // constraint is downstream (consensus commit rate / driver), not the gateway.
             + "traderx_gateway_inflight_orders " + inflight.depth() + "\n"
-            + "traderx_gateway_inflight_capacity " + MAX_INFLIGHT + "\n";
+            + "traderx_gateway_inflight_capacity " + MAX_INFLIGHT + "\n"
+            + "traderx_binary_frames_total{stage=\"decoded\"} "
+                + (binaryAcceptor == null ? 0 : binaryAcceptor.decodedFrames()) + "\n"
+            + "traderx_binary_frames_total{stage=\"acknowledged\"} "
+                + (binaryAcceptor == null ? 0 : binaryAcceptor.acknowledgedFrames()) + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"offer_attempt\"} " + pipelineOfferAttempts + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"offer_success\"} " + pipelineOffersSucceeded + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"offer_backpressure\"} "
+                + pipelineOfferBackpressure + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n";
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");

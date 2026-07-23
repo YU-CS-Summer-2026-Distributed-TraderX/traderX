@@ -15,6 +15,7 @@ import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.ByteOrder;
+import java.util.concurrent.atomic.LongAdder;
 
 /**
  * Binary order-entry acceptor (brief 03, lever 4): a fixed-layout, length-prefixed binary fast path
@@ -69,6 +70,8 @@ public final class BinaryGatewayAcceptor {
 
     private final OrderSubmitter submitter;
     private final int port;
+    private final LongAdder decodedFrames = new LongAdder();
+    private final LongAdder acknowledgedFrames = new LongAdder();
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
@@ -139,15 +142,25 @@ public final class BinaryGatewayAcceptor {
                     return;
                 }
                 in.readFully(reqBytes, 0, len);
+                decodedFrames.increment();
                 final int ackLen = dispatch(req, 0, len, ack);
                 out.write(ackBytes, 0, ackLen);
                 out.flush();
+                acknowledgedFrames.increment();
             }
         } catch (final EOFException eof) {
             // clean disconnect
         } catch (final IOException e) {
             log.debug("binary connection closed: {}", e.toString());
         }
+    }
+
+    long decodedFrames() {
+        return decodedFrames.sum();
+    }
+
+    long acknowledgedFrames() {
+        return acknowledgedFrames.sum();
     }
 
     /**
