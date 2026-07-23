@@ -17,9 +17,14 @@ import java.nio.charset.StandardCharsets;
  * storage.googleapis.com — including the two settings that are not optional there: chunked
  * encoding off and path-style addressing on, either of which surfaces as an opaque 403 if wrong.
  *
- * <p>Write-once is enforced by GCS itself: {@code x-goog-if-generation-match: 0} makes the upload
- * fail if the object already exists, so a redelivered EOD event can never quietly replace a
- * fixture the consumer has already scored against.
+ * <p>Write-once is enforced by GCS itself, two ways. The upload sends {@code If-None-Match: *}
+ * (the standard conditional-create; a {@code x-goog-if-generation-match} header is NOT usable
+ * here — GCS hard-rejects any request mixing x-goog and x-amz headers with 400
+ * ExcessHeaderValues, and SigV4 signing always adds x-amz headers). And the delivery bucket
+ * grants the HMAC's service account objectCreator+objectViewer only: replacing an existing
+ * object requires storage.objects.delete, so a redelivered EOD event is refused (403) even if a
+ * client ever omits the precondition. Either way, a fixture the consumer has already scored
+ * against can never be quietly replaced.
  */
 final class RiskExtractGcsSink {
 
@@ -65,7 +70,7 @@ final class RiskExtractGcsSink {
                 .bucket(bucket)
                 .key(key)
                 .contentType("text/csv")
-                .overrideConfiguration(o -> o.putHeader("x-goog-if-generation-match", "0"))
+                .overrideConfiguration(o -> o.putHeader("If-None-Match", "*"))
                 .build(),
             RequestBody.fromString(body, StandardCharsets.US_ASCII));
     }
