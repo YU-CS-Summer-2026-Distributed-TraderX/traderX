@@ -91,11 +91,21 @@ for member in order-matcher-cluster-0 order-matcher-cluster-1 order-matcher-clus
 done
 if [[ -z "${leader_pod}" ]]; then echo "[fail] no member reports traderx_cluster_role=1" >&2; exit 1; fi
 
-next_ref() { kubectl -n "${NAMESPACE}" exec "${leader_pod}" -- curl -s localhost:8080/metrics 2>/dev/null \
-  | awk '/^traderx_cluster_next_order_ref/ { print $2 }'; }
-gw_stage() { # $1=pod $2=family $3=stage
-  kubectl -n "${NAMESPACE}" exec "$1" -- curl -s localhost:18110/metrics 2>/dev/null \
-    | awk -v re="$2{stage=\"$3\"}" '$0 ~ re { print $2 }'; }
+# Always emit a number. A bare `kubectl exec curl` can return empty under heavy load (that empty read
+# is what killed a prior run's `set -e` and orphaned its Job); retry a few times, then default 0.
+next_ref() {
+  local v="" i
+  for i in 1 2 3 4 5; do
+    v="$(kubectl -n "${NAMESPACE}" exec "${leader_pod}" -- curl -s --max-time 4 localhost:8080/metrics 2>/dev/null \
+      | awk '/^traderx_cluster_next_order_ref/ { print $2 }')"
+    [[ -n "${v}" ]] && break
+  done
+  echo "${v:-0}"
+}
+gw_stage() { # $1=pod $2=family $3=stage  — always prints a number
+  kubectl -n "${NAMESPACE}" exec "$1" -- curl -s --max-time 4 localhost:18110/metrics 2>/dev/null \
+    | awk -v re="$2{stage=\"$3\"}" '$0 ~ re { v=$2 } END { print (v==""?0:v) }'
+}
 
 start_at_ms=$(( ( $(date +%s) + START_DELAY_SECS ) * 1000 ))
 mkdir -p "${RESULTS_DIR}"
