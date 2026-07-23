@@ -50,6 +50,9 @@ public final class BinGen {
     static final int QTY = envi("QTY", 10);
     static final long PX_TICKS = Math.round(envd("PRICE", 100.0) * 1_000_000);
     static final int WARMUP_MS = envi("WARMUP_MS", 1000);
+    // Wall-clock epoch (ms) all pods open their load window at, so a runner sampling the leader's
+    // nextOrderRef delta covers exactly the same window across every generator instance. 0 = start now.
+    static final long START_AT_MS = envl("START_AT_MS", 0);
 
     // Latency ring per connection is meaningful only while in-flight <= its capacity (true under paced
     // load); blast intentionally over-offers, so latency there is reported best-effort with a warning.
@@ -90,6 +93,14 @@ public final class BinGen {
         if (conns.isEmpty()) { System.out.println("[FAIL] no connections"); System.exit(1); }
 
         Thread.sleep(WARMUP_MS);
+
+        // Barrier: every pod opens its window at the same wall-clock epoch so an external sampler can
+        // read the leader nextOrderRef delta over exactly this window across all generator instances.
+        if (START_AT_MS > 0) {
+            long wait = START_AT_MS - System.currentTimeMillis();
+            if (wait < -1000) { System.out.println("[FAIL] synchronized start missed by " + (-wait) + "ms"); System.exit(1); }
+            if (wait > 0) { System.out.println("barrier: waiting " + wait + "ms for epoch " + START_AT_MS); Thread.sleep(wait); }
+        }
 
         // Synchronised load window shared by every thread; server/echo counters are read over exactly it.
         long now = System.nanoTime();
