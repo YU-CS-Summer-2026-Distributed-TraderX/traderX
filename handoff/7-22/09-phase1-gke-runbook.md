@@ -166,6 +166,48 @@ kubectl get nodes    # must be empty before claiming teardown complete
 kubectl -n traderx get cronjob   # confirm backup cronjob still suspended
 ```
 
+## Phase 1b — deep-window ladder for the TRUE ceiling + talk-grade CPU/latency
+
+The 64-connection ladder plateaued at ~80–87k committed/s with members ~1% CPU — that is the ceiling
+**at a 64-deep in-flight window**, not the system's. The binary acceptor is thread-per-conn synchronous
+(≤1 order in the engine per connection), so the window == connection count and committed/s ≈ connections
+÷ commit-RTT. Raise the window until committed/s stops scaling AND a real resource (leader apply thread
+or a gateway owner thread) finally pegs — *that* plateau, with CPU busy, is the system's per-order
+ceiling. The OOM that forced 64 conns is fixed (commit `57da11cd`).
+
+**Terminal A — throughput ladder (blast fills the window; SECS=60 so each rung spans a metrics window):**
+```bash
+export GEN_NODESELECTOR='cloud.google.com/gke-nodepool=<n2 pool>'   # your real n2 label
+for S in 64 128 250; do
+  echo "=== window $((S*4)) connections ==="
+  PODS=4 SESSIONS_PER_POD=$S MODE=blast SECS=60 bash scripts/bench/run-bin-blast-gke.sh
+done
+```
+
+**Terminal B — CPU sampler across each rung (talk-grade: take the steady-state max, not one datapoint):**
+```bash
+while true; do date +%T
+  kubectl -n traderx top pod -l app=order-matcher-cluster --no-headers
+  kubectl -n traderx top pod -l app=cluster-gateway     --no-headers
+  echo ---; sleep 10; done
+```
+
+**Read:** committed/s per window (does 256→512→1000 conns keep scaling, or plateau?), and which pod
+first climbs off idle — leader `cluster-node` toward its 3000m (consensus commit rate = the wall that
+would finally justify partitioning) vs a gateway toward its owner-thread core (gateway sharding). If
+committed/s plateaus while the **generator** pods peg their n2 cores instead, the generator ran out of
+offer — add generator pods (more n2), not a system change.
+
+**Talk-grade LATENCY is a separate, UNSATURATED, paced run** (blast latency is pure queueing). After
+the ceiling C is known, one paced run well below the knee:
+```bash
+PODS=4 SESSIONS_PER_POD=64 MODE=paced TOTAL=<~0.6*C> SECS=60 bash scripts/bench/run-bin-blast-gke.sh
+```
+BinGen times each order from its INTENDED send (coordinated-omission safe) and prints p50/p99/max. Prove
+transport isn't the measurement: sample a trivial endpoint at the same rate —
+`kubectl -n traderx exec order-matcher-cluster-0 -- sh -c 'time curl -s localhost:8080/ready >/dev/null'`
+should be far below the order RTT.
+
 ## Honesty rules (this may feed a talk)
 
 - A ceiling is real only with **backpressure at the binding hop** AND a generator proven to over-offer
