@@ -16,7 +16,6 @@ import java.util.List;
  */
 public final class BlpRiskState {
     private static final long EMPTY_KEY = Long.MIN_VALUE;
-    private static final long TOMBSTONE_KEY = Long.MIN_VALUE + 1L;
     private static final RiskReason[] REASONS = RiskReason.values();
 
     // account table (open addressing; -1 = empty slot)
@@ -452,7 +451,7 @@ public final class BlpRiskState {
 
     /** Re-insert a snapshotted idempotency entry; call in retention order to preserve eviction. */
     public void bootstrapIdempotency(long key, int orderRef, byte decisionOrdinal) {
-        if (key == 0L || key == EMPTY_KEY || key == TOMBSTONE_KEY) return;
+        if (key == 0L || key == EMPTY_KEY) return;
         if (!canRemember(key)) return;
         int slot = idempotencySlot(key, true);
         if (slot < 0) return;
@@ -540,12 +539,41 @@ public final class BlpRiskState {
         long key = idempotencyRetentionKeys[oldest];
         int slot = idempotencySlot(key, false);
         if (slot >= 0) {
-            idempotencyKeys[slot] = TOMBSTONE_KEY;
-            idempotencyOrderRefs[slot] = 0;
-            idempotencyDecisions[slot] = -1;
+            deleteIdempotencySlot(slot);
         }
         idempotencyRetentionKeys[oldest] = EMPTY_KEY;
         idempotencyRetentionSize--;
+    }
+
+    /**
+     * Backward-shift deletion (Knuth TAOCP 6.4 algorithm R). Removing the entry at {@code hole}
+     * pulls any following cluster member whose home slot is at or behind the hole back into it,
+     * until an EMPTY slot is reached — so no tombstone is ever written and the miss-path probe
+     * {@code idempotencySlot} runs stays bounded by the 0.5 load factor forever, instead of
+     * degrading toward a full-table scan as tombstones saturate. A pure function of the table
+     * contents and the deleted slot: deterministic, identical on every member and on replay, and
+     * zero-allocation (in-place array moves only).
+     */
+    private void deleteIdempotencySlot(int hole) {
+        int mask = idempotencyKeys.length - 1;
+        int j = hole;
+        while (true) {
+            j = (j + 1) & mask;
+            long candidate = idempotencyKeys[j];
+            if (candidate == EMPTY_KEY) break;                 // end of the cluster: done
+            int home = mix((int) (candidate ^ (candidate >>> 32))) & mask;
+            // If the candidate's home lies cyclically in (hole, j], pulling it back would place
+            // it before its home and make it unfindable — leave it and keep scanning.
+            boolean homeInGap = (hole <= j) ? (hole < home && home <= j) : (hole < home || home <= j);
+            if (homeInGap) continue;
+            idempotencyKeys[hole] = candidate;                 // pull the candidate back
+            idempotencyOrderRefs[hole] = idempotencyOrderRefs[j];
+            idempotencyDecisions[hole] = idempotencyDecisions[j];
+            hole = j;                                          // j is the new hole
+        }
+        idempotencyKeys[hole] = EMPTY_KEY;
+        idempotencyOrderRefs[hole] = 0;
+        idempotencyDecisions[hole] = -1;
     }
 
     private int accountSlot(int accountId, boolean create) {
@@ -563,15 +591,13 @@ public final class BlpRiskState {
     private int idempotencySlot(long key, boolean create) {
         int mask = idempotencyKeys.length - 1;
         int slot = mix((int) (key ^ (key >>> 32))) & mask;
-        int firstTombstone = -1;
         for (int i = 0; i < idempotencyKeys.length; i++) {
             long value = idempotencyKeys[slot];
             if (value == key) return slot;
-            if (value == TOMBSTONE_KEY && firstTombstone < 0) firstTombstone = slot;
-            if (value == EMPTY_KEY) return create ? (firstTombstone >= 0 ? firstTombstone : slot) : -1;
+            if (value == EMPTY_KEY) return create ? slot : -1;
             slot = (slot + 1) & mask;
         }
-        return create ? firstTombstone : -1;
+        return -1;
     }
 
     private boolean isEntitled(long principalKey, int accountId) {
