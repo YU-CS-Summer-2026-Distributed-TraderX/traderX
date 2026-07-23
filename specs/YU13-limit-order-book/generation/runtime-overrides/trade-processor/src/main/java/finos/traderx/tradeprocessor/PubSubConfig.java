@@ -5,8 +5,11 @@ import finos.traderx.messaging.Subscriber;
 import finos.traderx.messaging.nats.NatsJSONPublisher;
 import finos.traderx.tradeprocessor.model.OrderUpdate;
 import finos.traderx.tradeprocessor.model.Position;
+import finos.traderx.tradeprocessor.model.PriceTick;
 import finos.traderx.tradeprocessor.model.Trade;
 import finos.traderx.tradeprocessor.model.TradeOrder;
+import finos.traderx.tradeprocessor.service.PriceHistoryStore;
+import finos.traderx.tradeprocessor.service.PriceTickHandler;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -38,6 +41,20 @@ public class PubSubConfig {
     handler.setDefaultTopic("/trades");
     handler.setServerAddress(natsAddress);
     handler.setClientId("trade-processor-subscriber");
+    return handler;
+  }
+
+  // YU05 (post-trade-compliance, ADR-024): subscribes to price-publisher's existing pricing.*
+  // wildcard subject to build the price history TCA (and YU06's EOD close) reads. This bean is
+  // YU05's and MUST survive here: this file shadows YU05's copy in every descendant render
+  // (dead-layer trap — dropping it silently killed the whole EOD price universe on YU15's GKE
+  // tier: session close published instruments=0 because nothing subscribed to pricing.*).
+  @Bean
+  public Subscriber<PriceTick> priceTickHandler(PriceHistoryStore priceHistoryStore) {
+    PriceTickHandler handler = new PriceTickHandler(priceHistoryStore);
+    handler.setDefaultTopic("pricing.*");
+    handler.setServerAddress(natsAddress);
+    handler.setClientId("trade-processor-price-history-subscriber");
     return handler;
   }
 
