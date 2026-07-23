@@ -54,9 +54,14 @@ public final class BinGen {
     // nextOrderRef delta covers exactly the same window across every generator instance. 0 = start now.
     static final long START_AT_MS = envl("START_AT_MS", 0);
 
-    // Latency ring per connection is meaningful only while in-flight <= its capacity (true under paced
-    // load); blast intentionally over-offers, so latency there is reported best-effort with a warning.
-    static final int RING = 1 << 20;
+    // Per-connection latency arrays. Defaults are sized for the CLUSTER path (thread-per-conn acceptor
+    // is synchronous => ~1 order in-flight/conn), so many connections fit a modest heap:
+    //   RING (send-time ring) 1<<14 + LAT (RTT samples) 1<<16 = ~640 KiB/conn, so 250 conns ~= 160 MiB.
+    // The old flat 2x(1<<20)=16 MiB/conn OOM'd a 512 MiB heap at ~30 conns — which capped the ladder's
+    // in-flight window (the very hop we found binding). Bump RING_BITS for the isolation blast (few
+    // conns, huge in-flight); a wrapped ring only undercounts latency (warned), never the offer rate.
+    static final int RING = 1 << envi("RING_BITS", 14);
+    static final int LAT_CAP = 1 << envi("LAT_CAP_BITS", 16);
 
     static volatile long windowStartNanos;
     static volatile long windowEndNanos;
@@ -200,7 +205,7 @@ public final class BinGen {
         volatile long maxInflight = 0;
 
         final long[] sendNanos = new long[RING];  // seq%RING -> intended send time
-        final long[] lat = new long[1 << 20];      // per-conn RTT samples (ns)
+        final long[] lat = new long[LAT_CAP];      // per-conn RTT samples (ns)
         int latCount = 0;
 
         Conn(int i, String host, int port, int gw) {

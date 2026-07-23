@@ -43,6 +43,9 @@ START_DELAY_SECS="${START_DELAY_SECS:-45}"
 RUN_ID="${RUN_ID:-$(( $(date +%s) % 65535 + 1 ))}"
 JOB="${JOB:-binary-load}"
 IMAGE="${IMAGE:-eclipse-temurin:21}"  # JDK (has javac for source-launch), not a JRE image
+# Heap + trimmed stacks so a deep in-flight window fits: 250 conns/pod x 2 threads ~= 500 threads;
+# -Xss256k keeps that ~128 MiB off-heap, -Xmx1200m leaves headroom in the 2Gi limit for the arrays.
+JAVA_OPTS="${JAVA_OPTS:--Xmx1200m -Xss256k}"
 # n2 load-node placement — set to your n2 pool's node label so the generator never lands on a member.
 GEN_NODESELECTOR="${GEN_NODESELECTOR:-cloud.google.com/gke-nodepool=n2-load-pool}"
 RESULTS_DIR="${RESULTS_DIR:-${ROOT}/scripts/bench/results}"
@@ -137,6 +140,7 @@ spec:
             - { name: WARMUP_MS,  value: "${WARMUP_MS}" }
             - { name: START_AT_MS, value: "${start_at_ms}" }
             - { name: RUN_ID,     value: "${RUN_ID}" }
+            - { name: JAVA_TOOL_OPTIONS, value: "${JAVA_OPTS}" }
             - name: POD_INDEX
               valueFrom: { fieldRef: { fieldPath: "metadata.annotations['batch.kubernetes.io/job-completion-index']" } }
           resources:
