@@ -1,11 +1,14 @@
 # Messaging Subject Map: YU13-limit-order-book
 
 Every inherited NATS subject is carried forward with its existing contract. YU13 changes the
-matching policy inside the cluster service, not the messaging surface: no subject is added,
-removed, or re-shaped. The one observable difference is volume — a genuine crossing books a
-trade on BOTH sides of every match, so the leader's trade-egress bridge publishes two `/trades`
-messages per cross (each keyed by its own `tradeSeq`+side) where the price-triggered policy
-published one; `trade-processor` dedup and every downstream contract are unchanged.
+matching policy inside the cluster service, and adds ONE subject — `/orders` — the order-state
+sibling of `/trades`: the leader-side order-lifecycle bridge that finally gives order state a home
+outside the cluster (a read-model row, an enumerable blotter, and a SQL effect-end for order-level
+proofs). No inherited subject is removed or re-shaped. The one other observable difference is
+volume — a genuine crossing books a trade on BOTH sides of every match, so the leader's trade-egress
+bridge publishes two `/trades` messages per cross (each keyed by its own `tradeSeq`+side) where the
+price-triggered policy published one; `trade-processor` dedup and every downstream contract are
+unchanged.
 
 The Aeron Cluster channels and the gateway FIX endpoint are inherited from YU12 unchanged.
 
@@ -24,6 +27,35 @@ The Aeron Cluster channels and the gateway FIX endpoint are inherited from YU12 
   - scope: `global`
   - payload: `NatsEnvelope<TradeOrder>` (`type` must equal `TradeOrder`); `payload` = `{id, state,
     security, quantity, price, accountId, side}` with stamped execution price
+
+- `/orders`
+  - producer: **the Aeron Cluster leader's order-lifecycle bridge (`OrderNatsPublisher`)** — every
+    order-state transition the crossing book already emits (`KIND_ORDER_ACCEPTED`/`REJECTED`/
+    `PARTIALLY_FILLED`/`FILLED`/`CANCELED` on the deterministic apply stream, both the input's own
+    order and counterparty resting orders hit by an aggressor) is published here so order state
+    reaches `trade-processor` → the `orderbook` SQL projection → the `GET /accounts/{id}/orders`
+    enumeration. Same discipline as `/trades`: leader-only (no follower dupes), best-effort
+    off-consensus tap (never the gateway egress), non-blocking on the apply thread. Enabled by
+    `TRADE_BRIDGE_NATS_URL` (shared with `/trades`).
+  - consumer: `trade-processor` (`OrderFeedHandler`, upserts `orderbook` by primary key)
+  - delivery: `point-to-point`
+  - wildcard: `no`
+  - scope: `global`
+  - payload: `NatsEnvelope<OrderUpdate>` (`type` must equal `OrderUpdate`); `payload` = `{id,
+    accountId, security, side, quantity, remainingQuantity, limitPrice, status, lastExecutionPrice,
+    lastFillQuantity, createdAt, updatedAt}`. **`id` is epoch-qualified `<epoch>-<orderRef>`** — the
+    epoch (`CLUSTER_EPOCH`, default `1`, identical on every member) keeps the read-model key from
+    colliding across cluster incarnations the way the bare-`tradeSeq` trade id still can. At-least-
+    once; the read model upserts by `id`, so a replay is idempotent. A queue-full drop (flood only)
+    and a DB-refused write are both COUNTED and logged — this path is not allowed to drop silently.
+
+- `/accounts/<accountId>/orders` (REST, not NATS)
+  - producer -> consumer: any client (blotter UI, a restarted client recovering its open refs) ->
+    `trade-processor` `OrderController`
+  - payload: JSON array of `orderbook` rows; open orders (`NEW`+`PARTIALLY_FILLED`) by default,
+    `?status=all` for every terminal state too (so a cancel/replace proof can assert the row went
+    `CANCELED` rather than merely vanished). This is the enumeration that unblocks client-restart
+    recovery and the 107k-style drain.
 
 - `/accounts/<accountId>/trades`
   - producer: `trade-processor`

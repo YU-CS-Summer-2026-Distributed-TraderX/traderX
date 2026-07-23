@@ -174,6 +174,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
+    // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade
+    // bridge, gated on the same env so default behaviour is unchanged. Null on every member until then.
+    private OrderNatsPublisher orderBridge;
     // Leader-side position-cut → NATS bridge (YU15). Gated by RISK_EXTRACT_NATS_URL; null until set.
     private RiskExtractCutPublisher extractBridge;
 
@@ -190,6 +193,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
             tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", 1 << 16);
             tradeBridge.start();
+            // Epoch-qualified order ids so the read-model key never collides across incarnations
+            // (brief 05 item 0). Same value on every member via the manifest; bumped with a DB wipe.
+            final String epoch = System.getenv("CLUSTER_EPOCH");
+            orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
+                epoch == null || epoch.isBlank() ? "1" : epoch, 1 << 16);
+            orderBridge.start();
         }
         final String extractUrl = System.getenv("RISK_EXTRACT_NATS_URL");
         if (extractUrl != null && !extractUrl.isBlank()) {
@@ -391,6 +400,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public void onTerminate(final Cluster cluster) {
         if (tradeBridge != null) {
             tradeBridge.stop();
+        }
+        if (orderBridge != null) {
+            orderBridge.stop();
         }
         if (extractBridge != null) {
             extractBridge.stop();
@@ -628,6 +640,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
                     out.side, out.tradeQty, out.tradePx);
+            }
+            // Leader-side order bridge: every order-state transition → NATS /orders → read model →
+            // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
+            // the trade bridge. Covers both the input's own order and counterparty resting orders
+            // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
+            // order is observable to its owner via this feed (brief 07).
+            if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
+                && orderBridge != null) {
+                orderBridge.offer(out.orderRef, out.accountId, tickerById[out.securityId],
+                    out.side, out.quantity, out.remainingQty, out.limitPx, out.status,
+                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis);
             }
             ackBuffer.putLong(0, out.inputSeq);
             ackBuffer.putInt(8, out.orderRef);
