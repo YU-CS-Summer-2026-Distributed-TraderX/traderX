@@ -4,7 +4,6 @@ import io.aeron.archive.Archive;
 import io.aeron.archive.ArchiveThreadingMode;
 import io.aeron.archive.client.AeronArchive;
 import io.aeron.cluster.ConsensusModule;
-import io.aeron.cluster.NanosecondClusterClock;
 import io.aeron.cluster.service.ClusteredService;
 import io.aeron.cluster.service.ClusteredServiceContainer;
 import io.aeron.driver.MediaDriver;
@@ -224,7 +223,7 @@ public final class ClusterNodeConfig {
         // the Aeron default. Constraint: heartbeatTimeout > heartbeatInterval, election >= interval.
         applyTimeoutMs(consensusModuleContext);
         if (nanosClusterClock()) {
-            consensusModuleContext.clusterClock(new NanosecondClusterClock());
+            consensusModuleContext.clusterClock(new NanosClusterClock());
         }
         if (idleOverride != null) {
             consensusModuleContext.idleStrategySupplier(idleOverride);

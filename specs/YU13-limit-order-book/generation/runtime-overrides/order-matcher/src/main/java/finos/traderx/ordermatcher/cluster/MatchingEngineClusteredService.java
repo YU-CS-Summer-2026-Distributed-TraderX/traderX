@@ -21,7 +21,6 @@ import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.IntHashSet;
-import org.agrona.concurrent.HighResolutionClock;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 
@@ -136,7 +135,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
     private Cluster cluster;
-    private boolean nanosClusterClock; // CLUSTER_CLOCK=nanos: timestamps arrive as epoch-nanos
     private IdleStrategy idle;
     private BlpRiskState risk;
     private MatchingEngine engine;
@@ -176,9 +174,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.cluster = cluster;
         this.idle = cluster.idleStrategy();
         this.role = cluster.role();
-        // Read the unit off the cluster, not the env: the ConsensusModule owns the clock, and this
-        // container must agree with whatever it actually booted with (LATENCY-02).
-        this.nanosClusterClock = cluster.timeUnit() == TimeUnit.NANOSECONDS;
         initEngine();
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
@@ -251,6 +246,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
         }
         event.seq = ++appliedSeq;
+        // The unit must be read HERE, not cached in onStart: the container is told the cluster's time
+        // unit when it joins the log, which is after onStart runs, so onStart still sees the default.
+        // Caching it there silently left this on the millisecond branch under CLUSTER_CLOCK=nanos and
+        // every commit sample went negative and was dropped. It is a field read behind the interface.
+        // Null when a harness drives apply directly without a Cluster (the allocation gates do).
+        final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
         // cluster time, identical on every member and replay (FR-AC06). Under CLUSTER_CLOCK=nanos the
         // cluster clock hands us epoch-NANOS; the divide is deterministic, so state is unchanged.
         event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
@@ -265,7 +266,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final long applyStartNanos = timeThis ? System.nanoTime() : 0L;
         if (timeThis) {
             if (nanosClusterClock) {
-                latency.recordCommitNanos(HighResolutionClock.epochNanos() - timestamp);
+                latency.recordCommitNanos(NanosClusterClock.epochNanos() - timestamp);
             } else {
                 latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
             }

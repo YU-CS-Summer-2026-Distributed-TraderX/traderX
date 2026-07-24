@@ -83,7 +83,7 @@ public final class LeaderApplyLatency {
     }
 
     /** commit round-trip on the NANOSECOND cluster clock ({@code CLUSTER_CLOCK=nanos}): the real
-     *  distribution, no quantum. Both ends are {@code HighResolutionClock.epochNanos()} on the leader. */
+     *  distribution, no quantum. Both ends read {@link NanosClusterClock}, one shared instance. */
     void recordCommitNanos(final long ns) {
         if (ns >= 0 && ns <= HIGHEST_NS) {
             commit.recordValue(ns);
