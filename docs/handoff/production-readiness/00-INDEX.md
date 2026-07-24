@@ -24,9 +24,9 @@ credibility now. Testing and supportability do.
 | # | Brief | Priority | Gated on |
 |---|---|---|---|
 | [01](01-upstream-rebase-spike.md) → [FINDINGS](01-upstream-rebase-spike-FINDINGS.md) | **Upstream rebase spike — ✅ DONE 2026-07-24** | Sized: 2–3 days, low risk, **structural bucket empty**. **Brief 03 = GO now** | done |
-| [02](02-test-coverage-inventory.md) | Test-coverage inventory + coverage map | **DO NOW** (parallel, cheap, produces a slide) | nothing |
-| [03](03-baseline-unit-tests.md) | Unit tests for the plain-vanilla TraderX baseline | high | **01** (same code the rebase changes) |
-| [04](04-milestone-and-integration-tests.md) | Milestone unit tests across YU states + integration tests | high | 02 (map), partly 01 |
+| [02](02-test-coverage-inventory.md) → [MAP](02-RESULT-coverage-map.md) | Test-coverage inventory — **✅ DONE 2026-07-24** (`e3225c4f`) | **853 tests, all operator-driven, ZERO in CI** | done |
+| [03](03-baseline-unit-tests.md) | Unit tests for the plain-vanilla TraderX baseline | high — **GO now** (01 says the code is byte-identical to upstream) | ready |
+| [04](04-milestone-and-integration-tests.md) | Milestone unit tests across YU states + integration tests + **CI wiring FIRST** | high | ready (02 map done) |
 | [05](05-opentelemetry-observability.md) | OpenTelemetry + observability platform, **async** | high | nothing — **start in parallel** |
 | [06](06-kdb-journaling-playback.md) | kdb as the time-series / playback store (into YU07) | medium | **unblocked — scope settled 2026-07-24** |
 | [07](07-risk-integration-with-alex.md) | Risk-component integration with Alex | high (blocks another person) | a design session with Alex |
@@ -55,11 +55,36 @@ on the hot path) vs analytical (kdb: query, analytics, demo playback, off-consen
 
 ## Context the next chat needs (don't rediscover this)
 
-**We are further along on testing than the email assumes.** Existing green suites: **YU13 269 / YU14 283 /
-YU15 300**, plus 4 allocation gates, `noGcTest`, 2 Epsilon gates, and byte-identical determinism
-verification across all three members after millions of orders. That is a real *engine-layer* testing
-story that simply isn't visible. **The gaps are the vanilla baseline services and cross-service
-integration** — which is exactly what Dov pointed at.
+**Testing posture, now MEASURED (spike 02, `e3225c4f`; map `02-RESULT-coverage-map.md`):**
+**853 green tests — YU13 270 / YU14 283 / YU15 300** (note: 270, not 269), + 4 allocation gates + 2
+Epsilon-GC gates (**`noGcTest` IS one of the two Epsilon gates, not a third**), + determinism asserted at
+4 layers. Engine layer is genuinely strong and machine-verified — the "we're under-tested" premise is
+wrong there. **Three findings that drive the plan:**
+1. **NOTHING runs in CI** — not the JUnit suites, not the gates, not the proof scripts. The 5 GitHub
+   workflows are docs/spec-kit/OpenAPI/script-parity only (`run-all-conformance-packs.sh` runs WITHOUT
+   `--execute-runtime-checks`). Honest posture: *"853 machine-verified tests, all operator-driven, zero
+   in CI."* **This is the cheapest + highest-visibility fix (a reviewer's first click is the Actions
+   tab) — do it FIRST in brief 04, before writing anything new.**
+2. **Silently-disabled tests (intersection of spikes 01+02):** upstream's `src/main/test` convention
+   disables tests unless a component overrides `sourceSets`. `account-service` has the override;
+   **`trade-service` / `trade-processor` / `position-service` do NOT → `trade-service` has ZERO executable
+   tests, two inherited smoke tests are dead files.** It's an inherited baseline behaviour (so it's talk
+   content, and the fix is the known one-liner `account-service` already carries), not our omission.
+3. **17 falsifiable proof scripts** (cancel, ClOrdID suppression, STP+atomic replace, FIX session, recon,
+   reproducible reg export, EOD risk extract) are our strongest correctness evidence and have **zero
+   regression protection** — none in CI. The YU13 read-model effect-end proof isn't even a committed
+   script yet. Promoting these to CI-run integration tests is brief 04's core value.
+
+**Rebase, now SIZED (spike 01, `2ddc4c4f`; FINDINGS `01-upstream-rebase-spike-FINDINGS.md`):**
+62 commits behind `finos/main` over 7 weeks = **29 dep/CVE bumps + 29 generator/publish plumbing + 6
+website/docs; ZERO service source changes** (proven by rendering the baseline from both points and
+diffing the trees — 0 differing `.java`, 0 differing service `.ts`). **Structural bucket empty.** The
+real cost is the dead-layer trap: ~150 one-line config edits re-applied at the highest carrying layer per
+branch (shadow-copy count grows 8 at YU03 → 16 at YU15 — that curve IS the talk narrative). Recommendation:
+**do it as a 2–3 day dependency/CVE catch-up** (29 of 62 are CVE fixes; "7 weeks behind on the upstream
+security baseline" is a bad slide); allocation gates + `noGcTest` catch a regression; only
+`kotlin-stdlib 2.3.20→2.4.10` is a minor. **Runs in parallel with 03 as long as they're never on the same
+branch at once** (the rebase rewrites `build.gradle`).
 
 **Observability we already have:** Prometheus-format `/metrics` on members and gateways
 (`traderx_cluster_role` — 1=leader, `traderx_cluster_applied`, `traderx_cluster_next_order_ref` =
