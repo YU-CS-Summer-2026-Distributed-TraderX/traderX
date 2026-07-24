@@ -59,12 +59,34 @@ public final class LeaderApplyLatency {
         return new ConcurrentHistogram(LOWEST_NS, HIGHEST_NS, SIG_DIGITS);
     }
 
-    /** commit round-trip: leader epoch-millis at apply minus the sequencing cluster timestamp (ms).
-     *  Stored as microseconds so the dump is one unit; 1ms resolution. Negatives/zero dropped. */
+    /**
+     * commit round-trip on the MILLISECOND cluster clock: leader epoch-millis at apply minus the
+     * sequencing cluster timestamp. 1ms quantum.
+     *
+     * <p><b>LATENCY-02 fix — zero is a sample, not a miss.</b> This used to drop {@code ms == 0},
+     * i.e. every commit that finished inside the same millisecond it was sequenced in. Once
+     * {@code lowpark} pulled the true commit under 1ms, that filter censored the fast majority and
+     * left only the samples that happened to straddle a millisecond boundary — all of which read
+     * exactly 1. The result was a histogram that was "a flat 1000µs from p50 to p99.9", which looked
+     * like a timer quantum and was in fact the filter. Recording the zeros makes the mean an unbiased
+     * estimate of the true commit (ms-truncated differencing is unbiased under uniform phase) and
+     * makes the censorship self-evident: commit count now equals apply count.
+     *
+     * <p>Still only a 1ms quantum per sample — for the real distribution use {@code CLUSTER_CLOCK=nanos}
+     * and {@link #recordCommitNanos(long)}.
+     */
     void recordCommitMillis(final long applyMillis, final long sequencedMillis) {
         final long ms = applyMillis - sequencedMillis;
-        if (ms > 0 && ms < 60_000) {
+        if (ms >= 0 && ms < 60_000) {
             commit.recordValue(ms * 1_000_000L); // ms -> ns, so dump()'s ns/1000 yields µs
+        }
+    }
+
+    /** commit round-trip on the NANOSECOND cluster clock ({@code CLUSTER_CLOCK=nanos}): the real
+     *  distribution, no quantum. Both ends are {@code HighResolutionClock.epochNanos()} on the leader. */
+    void recordCommitNanos(final long ns) {
+        if (ns >= 0 && ns <= HIGHEST_NS) {
+            commit.recordValue(ns);
         }
     }
 
@@ -90,6 +112,10 @@ public final class LeaderApplyLatency {
 
     private static void appendSegment(final StringBuilder sb, final String seg, final ConcurrentHistogram h) {
         final Histogram snap = h.copy();
+        // The mean is load-bearing on the ms clock: individual samples are quantized to 0/1/2ms, but
+        // ms-truncated differencing is unbiased, so the mean recovers the true commit even when every
+        // percentile reads a whole millisecond (LATENCY-02).
+        line(sb, seg, "mean", (long) snap.getMean());
         line(sb, seg, "p50", snap.getValueAtPercentile(50.0));
         line(sb, seg, "p99", snap.getValueAtPercentile(99.0));
         line(sb, seg, "p999", snap.getValueAtPercentile(99.9));

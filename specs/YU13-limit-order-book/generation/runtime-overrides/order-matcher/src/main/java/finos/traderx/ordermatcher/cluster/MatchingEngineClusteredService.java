@@ -21,8 +21,11 @@ import io.aeron.logbuffer.Header;
 import org.agrona.DirectBuffer;
 import org.agrona.ExpandableArrayBuffer;
 import org.agrona.collections.IntHashSet;
+import org.agrona.concurrent.HighResolutionClock;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
+
+import java.util.concurrent.TimeUnit;
 
 /**
  * Hosts the deterministic {@link MatchingEngine} plus the authoritative {@link BlpRiskState}
@@ -133,6 +136,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
     private Cluster cluster;
+    private boolean nanosClusterClock; // CLUSTER_CLOCK=nanos: timestamps arrive as epoch-nanos
     private IdleStrategy idle;
     private BlpRiskState risk;
     private MatchingEngine engine;
@@ -172,6 +176,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.cluster = cluster;
         this.idle = cluster.idleStrategy();
         this.role = cluster.role();
+        // Read the unit off the cluster, not the env: the ConsensusModule owns the clock, and this
+        // container must agree with whatever it actually booted with (LATENCY-02).
+        this.nanosClusterClock = cluster.timeUnit() == TimeUnit.NANOSECONDS;
         initEngine();
         if (snapshotImage != null) {
             loadSnapshot(snapshotImage);
@@ -244,16 +251,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
         }
         event.seq = ++appliedSeq;
-        event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
+        // cluster time, identical on every member and replay (FR-AC06). Under CLUSTER_CLOCK=nanos the
+        // cluster clock hands us epoch-NANOS; the divide is deterministic, so state is unchanged.
+        event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
         // LATENCY-01 Phase B (leader only, side-channel — never touches replicated state): the
-        // consensus commit round-trip = now(epoch-ms) - the sequencing timestamp (both leader clock);
-        // the apply span is timed around onEvent+drainOutputs below. Only the LEADER's commit-to-apply
-        // equals the gateway's black box, so record there alone.
+        // consensus commit round-trip = now - the sequencing timestamp, both read on the leader from
+        // the SAME clock source as the cluster clock; the apply span is timed around onEvent+
+        // drainOutputs below. Only the LEADER's commit-to-apply equals the gateway's black box, so
+        // record there alone. LATENCY-02: on the ms clock this is a 1ms quantum per sample — prefer
+        // CLUSTER_CLOCK=nanos, which resolves the real distribution.
         final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
         final long applyStartNanos = timeThis ? System.nanoTime() : 0L;
         if (timeThis) {
-            latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+            if (nanosClusterClock) {
+                latency.recordCommitNanos(HighResolutionClock.epochNanos() - timestamp);
+            } else {
+                latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+            }
         }
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
