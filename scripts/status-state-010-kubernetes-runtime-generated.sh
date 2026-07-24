@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${REPO_ROOT}/generated}"
+source "${REPO_ROOT}/scripts/lib/kubernetes-smoke-readiness.sh"
 
 if [[ "${TRADERX_LOCAL_RUNTIME_SCRIPT:-0}" != "1" ]]; then
   LOCAL_RUNTIME_SCRIPT="${GENERATED_ROOT}/code/target-generated/scripts/$(basename "${BASH_SOURCE[0]}")"
@@ -16,10 +17,13 @@ RUN_DIR="${GENERATED_ROOT}/code/target-generated/kubernetes-runtime/.run/state-0
 K8S_PROVIDER="${K8S_PROVIDER:-kind}"
 KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME:-}"
 MINIKUBE_PROFILE=""
-HOST_LOOPBACK="${TRADERX_HOST_LOOPBACK:-127.0.0.1}"
+WAIT_READY=0
 
 while (( "$#" )); do
   case "$1" in
+    --wait-ready)
+      WAIT_READY=1
+      ;;
     --provider)
       K8S_PROVIDER="${2:-}"
       shift
@@ -34,7 +38,7 @@ while (( "$#" )); do
       ;;
     *)
       echo "[error] unknown argument: $1"
-      echo "[hint] supported: --provider <kind|minikube> --cluster-name <name> --minikube-profile <name>"
+      echo "[hint] supported: --wait-ready --provider <kind|minikube> --cluster-name <name> --minikube-profile <name>"
       exit 1
       ;;
   esac
@@ -123,17 +127,29 @@ echo
 printf "%-20s %-8s %s\n" "endpoint" "http" "url"
 printf "%-20s %-8s %s\n" "--------------------" "--------" "---"
 for target in \
-  "edge-health|http://${HOST_LOOPBACK}:${host_port}/health" \
-  "edge-ui|http://${HOST_LOOPBACK}:${host_port}/" \
-  "grafana|http://${HOST_LOOPBACK}:${host_port}/grafana/api/health" \
-  "prometheus|http://${HOST_LOOPBACK}:${host_port}/prometheus/-/ready" \
-  "account|http://${HOST_LOOPBACK}:${host_port}/account-service/account/22214" \
-  "reference-data|http://${HOST_LOOPBACK}:${host_port}/reference-data/stocks"; do
+  "edge-health|http://localhost:${host_port}/health" \
+  "edge-ui|http://localhost:${host_port}/" \
+  "grafana|http://localhost:${host_port}/grafana/api/health" \
+  "prometheus|http://localhost:${host_port}/prometheus/-/ready" \
+  "reference-data|http://localhost:${host_port}/reference-data/health" \
+  "account|http://localhost:${host_port}/account-service/account/22214" \
+  "position-ready|http://localhost:${host_port}/position-service/health/ready" \
+  "trade-service|http://localhost:${host_port}/trade-service/health" \
+  "trade-processor|http://localhost:${host_port}/trade-processor/health" \
+  "order-matcher|http://localhost:${host_port}/order-matcher/health" \
+  "vite-client|http://localhost:${host_port}/@vite/client"; do
   name="${target%%|*}"
   url="${target#*|}"
   code="$(http_code_for "${url}")"
   printf "%-20s %-8s %s\n" "${name}" "${code:-000}" "${url}"
 done
+
+if (( WAIT_READY == 1 )); then
+  echo
+  traderx_wait_for_traderx_ingress_readiness \
+    "http://localhost:${host_port}" \
+    "$(traderx_k8s_smoke_ready_timeout)"
+fi
 
 if [[ "${K8S_PROVIDER}" == "minikube" ]]; then
   pid="-"

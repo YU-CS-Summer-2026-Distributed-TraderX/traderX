@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/pipeline/dependency-targets.sh"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 TARGET_ROOT="${GENERATED_ROOT}/code/target-generated"
 STATE_DIR="${TARGET_ROOT}/pricing-awareness-market-data"
@@ -33,9 +34,14 @@ ensure_observability_ingress_routes() {
       print "    location /grafana/ {"
       print "        proxy_pass http://grafana:3000;"
       print "        proxy_http_version 1.1;"
-      print "        proxy_set_header Host $http_host;"
+      print "        proxy_set_header Host $host;"
+      print "        proxy_set_header X-Forwarded-Host $host;"
+      print "        proxy_set_header X-Forwarded-Server $host;"
+      print "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
       print "        proxy_set_header X-Forwarded-Proto $scheme;"
       print "        proxy_set_header X-Forwarded-Prefix /grafana;"
+      print "        proxy_set_header Upgrade $http_upgrade;"
+      print "        proxy_set_header Connection \"upgrade\";"
       print "    }"
       print ""
       print "    location = /prometheus {"
@@ -45,7 +51,10 @@ ensure_observability_ingress_routes() {
       print "    location /prometheus/ {"
       print "        proxy_pass http://prometheus:9090;"
       print "        proxy_http_version 1.1;"
-      print "        proxy_set_header Host $http_host;"
+      print "        proxy_set_header Host $host;"
+      print "        proxy_set_header X-Forwarded-Host $host;"
+      print "        proxy_set_header X-Forwarded-Server $host;"
+      print "        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
       print "        proxy_set_header X-Forwarded-Proto $scheme;"
       print "        proxy_set_header X-Forwarded-Prefix /prometheus;"
       print "    }"
@@ -57,10 +66,30 @@ ensure_observability_ingress_routes() {
   mv "${tmp_file}" "${ingress_file}"
 }
 
+install_pricing_ux_contract_check() {
+  local generated_scripts_dir="${TARGET_ROOT}/scripts"
+  local contract_script="${ROOT}/scripts/test-web-angular-pricing-ux-contract.sh"
+  local state_test_script="${generated_scripts_dir}/test-state-008-pricing-awareness-market-data.sh"
+
+  require_file "${contract_script}"
+  require_file "${state_test_script}"
+
+  cp "${contract_script}" "${generated_scripts_dir}/test-web-angular-pricing-ux-contract.sh"
+  chmod +x "${generated_scripts_dir}/test-web-angular-pricing-ux-contract.sh"
+
+  if rg -Fq "test-web-angular-pricing-ux-contract.sh" "${state_test_script}"; then
+    return 0
+  fi
+
+  perl -0pi -e 's#(TRADERX_LOCAL_RUNTIME_SCRIPT=1 "\$\{REPO_ROOT\}/scripts/test-web-angular-baseline-ux-contract\.sh" "\$\{GENERATED_ROOT\}/code/target-generated/web-front-end/angular"\n)#$1echo "[check] web-front-end pricing summary UX contract"\nTRADERX_LOCAL_RUNTIME_SCRIPT=1 "${REPO_ROOT}/scripts/test-web-angular-pricing-ux-contract.sh" "${GENERATED_ROOT}/code/target-generated/web-front-end/angular"\n#' "${state_test_script}"
+}
+
 require_file "${COMPOSE_FILE}"
 require_file "${INGRESS_FILE}"
 
 perl -0pi -e 's/^name:\s*traderx-state-\d+/name: traderx-state-008/m' "${COMPOSE_FILE}"
+traderx_normalize_yaml_image_tag "${ROOT}" "${COMPOSE_FILE}" "nats"
+bash "${ROOT}/pipeline/normalize-observability-runtime.sh" "008" "${COMPOSE_FILE}"
 
 GEN_DEPTH="${TRADERX_GENERATION_DEPTH:-1}"
 if [[ "${GEN_DEPTH}" == "1" ]]; then
@@ -68,5 +97,7 @@ if [[ "${GEN_DEPTH}" == "1" ]]; then
 else
   echo "[info] nested generation depth=${GEN_DEPTH}; skipping ingress observability route mutation"
 fi
+
+install_pricing_ux_contract_check
 
 echo "[done] rendered state 008 pricing ingress + metadata refinements into ${STATE_DIR}"
