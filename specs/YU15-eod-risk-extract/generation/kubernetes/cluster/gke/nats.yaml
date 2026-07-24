@@ -28,7 +28,7 @@ spec:
     spec:
       containers:
         - name: nats
-          image: nats:2.10-alpine
+          image: nats:2.14-alpine
           imagePullPolicy: IfNotPresent
           # JetStream is required, not optional: eod.pnl.done is a durable stream event, and the
           # producer's durable consumer is what makes a failed extract retry instead of vanish.

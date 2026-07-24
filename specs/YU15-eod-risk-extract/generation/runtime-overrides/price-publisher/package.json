@@ -15,6 +15,13 @@
     "yahoo-finance2": "2.13.3"
   },
   "overrides": {
-    "qs": "6.15.2"
+    "qs": "6.15.2",
+    "engine.io": "6.6.9",
+    "postcss": "^8.5.13",
+    "serialize-javascript": "^7.0.5",
+    "tar": "^7.5.13",
+    "multer": "2.2.0",
+    "uuid": "^14.0.0",
+    "ws": "8.21.0"
   }
 }
