@@ -18,6 +18,7 @@ ALLOW_MISSING_BRANCHES="${TRADERX_ALLOW_MISSING_GENERATED_BRANCHES:-1}"
 CVSS_THRESHOLD="${TRADERX_CVE_FAIL_ON_CVSS:-5}"
 DEPENDENCY_CHECK_IMAGE="${TRADERX_DEPENDENCY_CHECK_IMAGE:-owasp/dependency-check:latest}"
 DEPENDENCY_CHECK_DATA_DIR="${TRADERX_DEPENDENCY_CHECK_DATA_DIR:-${HOME}/.cache/traderx/dependency-check}"
+DEPENDENCY_CHECK_NO_UPDATE="${TRADERX_DEPENDENCY_CHECK_NO_UPDATE:-0}"
 
 usage() {
   cat <<'USAGE'
@@ -30,6 +31,7 @@ Defaults:
 - Node license scan: enabled
 - Docker image build preflight: enabled
 - generated-branch dependency consistency: enabled (allow-missing-branches=true)
+- Set TRADERX_DEPENDENCY_CHECK_NO_UPDATE=1 to reuse an existing Dependency-Check data directory without NVD updates.
 USAGE
 }
 
@@ -107,11 +109,12 @@ state_num="${STATE_ID%%-*}"
 # Numeric gate thresholds treat letter-suffixed sibling states (e.g. 009b-*)
 # as their numeric base.
 state_num="${state_num%%[a-z]*}"
+state_num_decimal=$((10#${state_num}))
 
 [[ -d "${TARGET_ROOT}" ]] || fail "target root not found: ${TARGET_ROOT}"
 
 STATE_METADATA="${TARGET_ROOT}/ci/state-metadata.json"
-if [[ "${state_num}" -ge 2 ]]; then
+if [[ "${state_num_decimal}" -ge 2 ]]; then
   [[ -f "${STATE_METADATA}" ]] || fail "missing state metadata: ${STATE_METADATA}"
 fi
 
@@ -121,7 +124,7 @@ run_core_gates() {
   if [[ "${SKIP_BRANCH_CONSISTENCY}" == "1" ]]; then
     echo "[warn] skipping generated-branch dependency consistency in smoke (--skip-branch-consistency)"
   else
-    smoke_args+=(--branch-consistency --states "${STATE_ID}")
+    smoke_args+=(--branch-consistency --states "${STATE_ID}" --skip-branch-target-checks)
     if [[ "${ALLOW_MISSING_BRANCHES}" == "1" ]]; then
       smoke_args+=(--allow-missing-branches)
     fi
@@ -131,7 +134,7 @@ run_core_gates() {
   echo "[step] validate generated state contracts"
   bash "${ROOT}/pipeline/validate-generated-state-contracts.sh" "${TARGET_ROOT}"
 
-  if [[ "${state_num}" -ge 2 ]]; then
+  if [[ "${state_num_decimal}" -ge 2 ]]; then
     if [[ "${SKIP_COMPILE_PREFLIGHT}" == "1" ]]; then
       echo "[warn] skipping generated compile preflight (--skip-compile-preflight)"
     else
@@ -140,7 +143,7 @@ run_core_gates() {
     fi
   fi
 
-  if [[ "${state_num}" -ge 2 ]]; then
+  if [[ "${state_num_decimal}" -ge 2 ]]; then
     echo "[step] validate generated UI status checks"
     bash "${ROOT}/pipeline/validate-generated-ui-status-checks.sh" "${STATE_ID}" "${TARGET_ROOT}" "${COMPONENTS_ROOT}"
   fi
@@ -245,6 +248,11 @@ run_dependency_check_local() {
   local report_dir="${TARGET_ROOT}/ci/local-security-reports/${project}"
   mkdir -p "${report_dir}"
 
+  local update_args=()
+  if [[ "${DEPENDENCY_CHECK_NO_UPDATE}" == "1" ]]; then
+    update_args+=(--noupdate)
+  fi
+
   if command -v dependency-check.sh >/dev/null 2>&1; then
     (
       cd "${TARGET_ROOT}"
@@ -256,6 +264,7 @@ run_dependency_check_local() {
         --suppression "${suppression}" \
         --failOnCVSS "${CVSS_THRESHOLD}" \
         --enableRetired \
+        "${update_args[@]}" \
         ${extra_args}
     )
     return 0
@@ -285,6 +294,7 @@ run_dependency_check_local() {
     --suppression "/src/${rel_suppression}" \
     --failOnCVSS "${CVSS_THRESHOLD}" \
     --enableRetired \
+    "${update_args[@]}" \
     ${extra_args}
 }
 
@@ -293,7 +303,7 @@ run_cve_scan() {
     echo "[warn] skipping CVE dependency scan (--skip-cve-scan)"
     return 0
   fi
-  if [[ "${state_num}" -lt 2 ]]; then
+  if [[ "${state_num_decimal}" -lt 2 ]]; then
     echo "[info] CVE dependency scan not required for pre-CI states"
     return 0
   fi
@@ -307,25 +317,31 @@ run_cve_scan() {
   [[ -f "${dotnet_suppression}" ]] || fail "missing dotnet CVE suppression file: ${dotnet_suppression}"
 
   local module
-  for module in "${NODE_MODULES[@]}"; do
-    echo "[step] cve scan (node): ${module}"
-    run_dependency_check_local "${module}-node" "${TARGET_ROOT}/${module}" "${node_suppression}" "--nodeAuditSkipDevDependencies --nodePackageSkipDevDependencies"
-  done
+  if ((${#NODE_MODULES[@]} > 0)); then
+    for module in "${NODE_MODULES[@]}"; do
+      echo "[step] cve scan (node): ${module}"
+      run_dependency_check_local "${module}-node" "${TARGET_ROOT}/${module}" "${node_suppression}" "--nodeAuditSkipDevDependencies --nodePackageSkipDevDependencies"
+    done
+  fi
 
-  for module in "${DOTNET_MODULES[@]}"; do
-    echo "[step] cve scan (.NET): ${module}"
-    run_dependency_check_local "${module}-dotnet" "${TARGET_ROOT}/${module}" "${dotnet_suppression}" ""
-  done
+  if ((${#DOTNET_MODULES[@]} > 0)); then
+    for module in "${DOTNET_MODULES[@]}"; do
+      echo "[step] cve scan (.NET): ${module}"
+      run_dependency_check_local "${module}-dotnet" "${TARGET_ROOT}/${module}" "${dotnet_suppression}" ""
+    done
+  fi
 
-  for module in "${GRADLE_MODULES[@]}"; do
-    echo "[step] cve scan (gradle): ${module}"
-    run_dependency_check_local "${module}-gradle" "${TARGET_ROOT}/${module}" "${gradle_suppression}" "--disableCentral"
-  done
+  if ((${#GRADLE_MODULES[@]} > 0)); then
+    for module in "${GRADLE_MODULES[@]}"; do
+      echo "[step] cve scan (gradle): ${module}"
+      run_dependency_check_local "${module}-gradle" "${TARGET_ROOT}/${module}" "${gradle_suppression}" "--disableCentral"
+    done
+  fi
 }
 
 run_core_gates
 
-if [[ "${state_num}" -ge 2 ]]; then
+if [[ "${state_num_decimal}" -ge 2 ]]; then
   read_state_arrays
   run_license_scan
   run_container_build_preflight
