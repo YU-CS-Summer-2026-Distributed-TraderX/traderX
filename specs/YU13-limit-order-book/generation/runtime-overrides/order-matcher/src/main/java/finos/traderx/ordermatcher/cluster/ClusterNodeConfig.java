@@ -143,6 +143,26 @@ public final class ClusterNodeConfig {
         }
     }
 
+    /**
+     * LATENCY-02 lever: run the cluster clock in NANOSECONDS instead of Aeron's default milliseconds,
+     * so the sequencing timestamp handed to {@code onSessionMessage} can resolve the consensus commit
+     * round-trip. On the default ms clock the commit is a 1ms quantum per sample — which is why the
+     * post-lowpark commit read as "a flat 1000µs to p99.9": at that point the true value had fallen
+     * under the measurement's own resolution.
+     *
+     * <p>Safe here because (a) the service converts the timestamp back to millis before it touches
+     * replicated state, a deterministic conversion identical on every member and on replay, and (b)
+     * this service schedules no cluster timers, so nothing else reads cluster time. Off by default,
+     * so every prior measurement stays reproducible.
+     *
+     * <p>Must be set identically on all members — it changes the unit of the timestamp written into
+     * the log, so a mixed-clock cluster is a mixed-version cluster.
+     */
+    static boolean nanosClusterClock() {
+        final String v = System.getenv("CLUSTER_CLOCK");
+        return v != null && v.trim().equalsIgnoreCase("nanos");
+    }
+
     public static Contexts contexts(final int memberId, final List<String> hostnames, final int portBase,
                                     final String aeronDir, final File baseDir,
                                     final ClusteredService service, final boolean cleanStart) {
@@ -202,6 +222,9 @@ public final class ClusterNodeConfig {
         // Env-tunable (ns = ms * 1e6) so the sweet spot can be found without a rebuild; 0 = keep
         // the Aeron default. Constraint: heartbeatTimeout > heartbeatInterval, election >= interval.
         applyTimeoutMs(consensusModuleContext);
+        if (nanosClusterClock()) {
+            consensusModuleContext.clusterClock(new NanosClusterClock());
+        }
         if (idleOverride != null) {
             consensusModuleContext.idleStrategySupplier(idleOverride);
         } else if (sleepingIdleMs() > 0) {
