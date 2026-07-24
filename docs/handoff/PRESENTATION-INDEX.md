@@ -32,7 +32,7 @@ extract is delivered immutably to cloud storage for an external risk engine.
 
 **1 — Architecture.** LMAX Disruptor matching engine as a replicated state machine over Aeron Raft
 consensus; event-sourced, journaled, snapshotted; MariaDB is an async read-model (CQRS). Built as a
-layered lineage of states YU02 → YU15.
+layered lineage of **15 states, YU01 (lmax-sequencer) → YU15** — each composing on all its ancestors.
 
 **2 — Throughput.** ~190k orders/sec per-order, scaling linearly with gateways; ~438k batched; 1.13M in
 the engine core. Gateway-bound, with consensus headroom to spare.
@@ -82,5 +82,6 @@ an inert layer never reaches the running code), and the lessons for anyone forki
 
 ## Numbering note
 
-The professor's email says "YU01–YU12"; the states are actually **YU02 → YU15** — confirm the numbering
-with him so the deck is consistent.
+The lineage is **YU01 (lmax-sequencer) → YU15 = 15 states.** This matches the professor's "YU01–…"
+framing (his email said "YU01–YU12"; we're now through YU15). All 15 branches are on origin and caught
+up on the upstream CVE baseline as of 2026-07-24.
