@@ -158,6 +158,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
     private volatile Cluster.Role role = Cluster.Role.FOLLOWER;
+    // LATENCY-01 Phase B: leader-clock commit/apply split; null unless LATENCY_DECOMP=1.
+    private final LeaderApplyLatency latency = LeaderApplyLatency.fromEnvOrNull();
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
@@ -244,12 +246,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         event.seq = ++appliedSeq;
         event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
+        // LATENCY-01 Phase B (leader only, side-channel — never touches replicated state): the
+        // consensus commit round-trip = now(epoch-ms) - the sequencing timestamp (both leader clock);
+        // the apply span is timed around onEvent+drainOutputs below. Only the LEADER's commit-to-apply
+        // equals the gateway's black box, so record there alone.
+        final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
+        final long applyStartNanos = timeThis ? System.nanoTime() : 0L;
+        if (timeThis) {
+            latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+        }
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
         engine.onEvent(event, appliedSeq, true);
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
+        if (timeThis) {
+            latency.recordApplyNanos(System.nanoTime() - applyStartNanos);
+        }
         if (stampFirstApplyAsLeader) {
             stampFirstApplyAsLeader = false;
             System.out.println("FIRST-APPLY atMs=" + System.currentTimeMillis() + " seq=" + appliedSeq);
@@ -612,6 +626,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     public Cluster.Role role() {
         return role;
+    }
+
+    /** LATENCY-01 Phase B side channel (leader commit/apply split); null unless LATENCY_DECOMP=1. */
+    public LeaderApplyLatency leaderLatency() {
+        return latency;
     }
 
     /** Plain read for quiesced cross-member equality checks; ordered by the engine's per-event
