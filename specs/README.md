@@ -36,6 +36,10 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU13-limit-order-book`
 - `YU14-listed-equity-options`
 
+## Portal Feature Packs
+
+- `015-docs-portal-homepage`
+
 ## References
 
 State lineage and generated-branch publish conventions are tracked in:
