@@ -156,3 +156,45 @@ sub-0.3ms transport-poll residual. Cheaper dials before any consensus-model chan
 with the throughput headroom. At 75k that's a clean win; a fleet pushing the members toward their
 consensus ceiling (~440k extrapolated) would have to weigh latency vs that headroom. The lever is a
 latency knob, not free.
+
+---
+
+# Addendum 2 — the `lowpark` dial: yielding's latency at ~9x less CPU (the pick)
+
+`yielding` proved the park hypothesis but pegs each member at ~99% of its 3-core pin (it spins its 4
+agent threads continuously, and 4-on-3 leaves a commit tail). The `lowpark` dial —
+`BackoffIdleStrategy` with a **1µs** max park instead of the Aeron default's 1ms — tests whether a tiny
+park recovers the win without the CPU. Same rig, same paced-75k reject path, member idle strategy the
+only variable.
+
+| metric | backoff (default, ≤1ms park) | yielding (no park) | **lowpark (1µs park)** |
+|---|---:|---:|---:|
+| client RTT p50 | 4.85 ms | 1.88 ms | ~2.0 ms |
+| client RTT p99 | 10.8 ms | 3.86 ms | ~3.7 ms |
+| leader commit p50 | 2000 µs | 1000 µs | 1000 µs |
+| leader commit **p99** | 5000 µs | 2001 µs | **1000 µs** |
+| leader commit **p99.9** | 6000 µs | 3000 µs | **1000 µs** |
+| gateway cluster black box p50 | 4040 µs | 1230 µs | 1160 µs |
+| gateway total (residence) p50 | 4248 µs | 1470 µs | 1397 µs |
+| apply / match p50 | 0.47 µs | 0.40 µs | 0.62 µs |
+| **member idle CPU (of 3-core pin)** | ~1.28 c | **~2.97 c** | **~0.34 c** |
+
+**`lowpark` is the pick.** It matches yielding's client-latency win (~2.4× vs backoff) and beats it on
+the tail — the consensus commit round-trip is a **flat 1000 µs from p50 all the way to p99.9** (yielding
+left 2–3 ms there; backoff 5–6 ms). And it does so at **~9× less idle CPU than yielding** (~0.34 c vs
+~2.97 c), so it does NOT sacrifice the throughput headroom the way yielding does. The reading: the 1 ms
+default park was the entire latency problem; replacing it with a 1 µs park removes it, while still
+yielding the core when genuinely idle — and it avoids the 4-agent-threads-on-3-exclusive-cores
+contention that gave pure spin a worse tail on this hardware.
+
+**Where the floor now is.** After lowpark, the ~1 ms consensus commit is a tight, flat 1 ms (p50=p99=
+p99.9) — that is the genuine quorum round-trip: log replication + per-member Archive disk record +
+quorum ack + delivery, with the park jitter gone. The next reductions are the real ones: **dedicated-core
+pinning** (the single-order max is still ~3 ms commit / tens of ms client — host jitter), **Archive
+tuning** (fileSyncLevel / recording placement — part of the flat 1 ms is the disk record on the quorum
+path), then RDMA/DPDK. The **consensus-model redesign remains unjustified**: the commit round-trip is now
+a clean 1 ms and the cheaper dials are untried.
+
+**Recommendation: ship `CLUSTER_IDLE_STRATEGY=lowpark` as the default for latency-sensitive deployments.**
+It is a one-env change, costs ~0.34 c idle, and turns the per-order p50 from ~4.85 ms into ~2.0 ms with a
+p99 of ~3.7 ms — no hardware, no architecture, no core touch.
