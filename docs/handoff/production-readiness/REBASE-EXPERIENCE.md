@@ -211,7 +211,21 @@ the only minor-not-patch bump). Push in **green batches**, in lineage order, nev
 | Batch | Branch(es) | Merge | Dead-layer edits | Suites | Notes |
 |---|---|---|---|---|---|
 | 1 | YU02 (template) | ✅ `89280f68` — 5 conflicts (2 true 3-way, 2 take-upstream, 004 **`--theirs`** after Surprise #6) | ✅ `1adfc2fd` — 8 build.gradle + NATS across YU02+009b layers | ✅ **no regression** — 37 tests / 12 fail, **identical to pre-merge baseline** | CVEs verified in rendered tree (boot 3.5.16 / log4j 2.26.1 / kotlin 2.4.10 / logback 1.5.34 / nats 2.14), **zero old-version leakage**. The 12 failures are pre-existing `@SpringBootTest` context tests needing DB/infra a bare `./gradlew test` doesn't provide — proven by rendering + testing the pre-merge tip (`e30ac2e3`): same 37/12, same two classes. |
-| … | YU03–YU15 | pending | pending | pending | replay of the proven recipe, in lineage order |
+| 2 | YU03 | ✅ merge (5 conflicts, recipe) | ✅ java push-down | ✅ **63 tests, 0 fail** (BUILD SUCCESSFUL) | Risk-gateway layer wires the `@SpringBootTest` context YU02 lacked → passes what YU02 couldn't. |
+| 3 | YU04 | ✅ merge | ✅ java + **npm** push-down | ✅ render-verified | Surfaced the **npm dead-layer**: `reference-data/package.json` shadowed the baseline and dropped upstream's new npm overrides. Extended push-down to merge catalog `npm.overrides` (multer 2.2.0 etc.). |
+| 4 | YU05, YU07, YU08 | ✅ merge (recipe) | ✅ java + npm | ✅ **135 / 134 / 134 tests, 0 fail** | Clean render, CVEs land, zero old-version leakage on all three. |
+| 4 | YU06 | ✅ merge | ✅ java + npm | ⚠️ pre-existing compile break (**baseline-confirmed NOT the rebase**) | `OrderMatcherRiskMismatchTest` calls the `OrderMatcherService` constructor with stale args — a version-independent arity mismatch. Neither file touched by the rebase; the **pre-merge tip fails to compile identically**. A dead/broken test the rebase *surfaced*, did not cause (brief-03/04 item). |
+| … | YU09–YU15 | pending | pending | pending | 7-conflict branches: add `install-generated-runtime-harness.sh` (per-branch 3-way) + docusaurus (`--ours`); YU13/14/15 carry the big suites (269/283/300). |
+
+**Recipe mechanization (what made the replay safe and fast).** The deterministic conflicts (prepublish-gate,
+render-009, start/status-010, 004) resolve identically on every branch, so they were captured once and
+replayed by script: canonical resolved blobs for the byte-identical files, a marker-region swap for
+render-009, `--theirs`/`--ours` for the take-a-side files. Only `install-generated-runtime-harness.sh`
+(YU09+) needs real per-branch reasoning — it's *ours*, extended differently per state. The push-down is
+catalog-driven and idempotent (Java build.gradle + npm package.json overrides). Net: the 5-conflict batch
+(YU02–YU08, seven branches) went green as a unit. **Two branches (YU02, YU06) surfaced pre-existing broken
+tests** — the rebase's regression-net method (baseline-diff) is what tells "the bump broke it" from "it was
+already broken," and both here are the latter.
 
 **Regression-net method (established on YU02, reused per branch):** a raw failure count is meaningless
 without a baseline. To tell *rebase regression* from *pre-existing environmental failure*, render **and test
