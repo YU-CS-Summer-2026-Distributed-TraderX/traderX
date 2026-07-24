@@ -135,10 +135,30 @@ to keep *our* features alive. The decided resolutions:
 > This is the transferable point: **a merge conflict is a lousy place to make a strategy decision, but it's
 > where they ambush you.** The right move is to *recognize* it as strategy, lift it out of the merge, and
 > decide it deliberately in the lane that owns it — not to let `git`'s conflict UI railroad you into a
-> keystroke. We paused the merge and escalated it to the testing lane rather than resolving it by reflex.
-> *(Resolution: pending; recommendation on file is `--ours` for now — keep the rebase a clean dependency/CVE
-> catch-up, and treat "re-inherit upstream's smoke harness" as an explicit testing-lane task. Will record the
-> outcome and rationale here when it lands.)*
+> keystroke. We paused the merge and escalated it to the testing lane, which decided `--ours` (keep
+> stripping): the 32 are *runtime* smokes that assume vanilla behavior we changed, and the wrong kind of test
+> for the unit-test brief.
+
+> **Surprise #6 — and then `--ours` turned out to be mechanically impossible.** We committed `--ours` and
+> tried to render. It failed: `[fail] unable to apply patch even with 3-way merge`. **An overlay patch is a
+> derived artifact welded to the baseline it patches** — its context lines *are* the upstream files (the very
+> test scripts, the `start-base` script, the dependency lines). Upstream refreshed those files, so our stale
+> `--ours` patch no longer applies, and the state does not generate *at all*. The "keep today's known-green
+> generation" rationale for `--ours` evaporated: the stale patch generates *nothing*.
+>
+> The lesson sharpens: **you cannot resolve a generated-artifact conflict by picking a side, because one
+> side is stale against a baseline that moved.** The mechanically-valid options collapse to (a) take
+> upstream's refreshed patch and accept the re-inherited scripts, or (b) re-author your intent on top of
+> upstream's new structure — which, for a *deletion*, means re-stripping files upstream now actively
+> maintains, i.e. buying the same conflict again on every future rebase. And the decision's own premise
+> shifted under it: we verified the CVE bumps land *regardless* of this choice (our dead-layer push-down
+> already carries them in the shadowing layer, §5), and the 32 scripts are not wired into any unit suite or
+> CI — so re-inheriting them cannot redden the green gate. The choice was re-escalated to the owning lane
+> with that ground truth. *(Outcome recording here when it lands.)*
+>
+> This is the single best story in the rebase: **the process caught its own bad decision — but only because
+> we verified the rendered output.** A fork that trusted the green merge would have shipped a branch that
+> doesn't build. Inputs lie; outputs don't (lesson 2, again, with teeth).
 
 ---
 
@@ -190,8 +210,18 @@ the only minor-not-patch bump). Push in **green batches**, in lineage order, nev
 
 | Batch | Branch(es) | Merge | Dead-layer edits | Suites | Notes |
 |---|---|---|---|---|---|
-| — | YU02 (template) | pending 004 decision | — | — | recipe proven on dry-run; awaiting §4 |
-| … | YU03–YU15 | — | — | — | replay after template lands |
+| 1 | YU02 (template) | ✅ `b1fdf23c` — 5 conflicts resolved (2 true 3-way, 2 take-upstream, 004 `--ours`) | ✅ 8 build.gradle bumped (YU02+009b layers) + NATS 2.10→2.14 in 2 files | ⚠️ render FAILED under 004 `--ours` (Surprise #6) — 004 re-decision in flight | Lane's uncommitted CLAUDE.md preserved (never staged). Dep push-down verified: CVE versions land in the rendered tree independent of the 004 choice. Merge commit to be amended once 004 settles. |
+| … | YU03–YU15 | — | — | — | replay after template verifies green — HELD pending 004 (patch is blob-identical across all 14, so it's decided once) |
+
+**004 decision (recorded):** `--ours` — keep stripping upstream's 32 baseline **runtime** smoke scripts.
+They curl live services and assume upstream behavior we deliberately changed (CORS, unknown-user 404,
+blotter-upsert contract), so re-inheriting wholesale reddens CI against our modified runtime; and they're
+the wrong *kind* of test for brief 03, which wants **unit** tests. Keeping `--ours` preserves today's
+known-green generation and keeps the rebase a clean dependency/CVE catch-up. **The link worth noting:**
+stripping these scripts is *why* the coverage inventory shows trade-service/position/etc. with zero
+executable tests + "dead smoke files" — so "re-inherit upstream's baseline smoke harness" is filed as an
+explicit brief-03/04 task (the deliberate fix-path for that gap), **not** smuggled in through a merge
+conflict. That is lesson 5 (§7) in the concrete.
 
 *(Rows filled as batches complete. Nothing here is projected — only logged after it's green.)*
 
