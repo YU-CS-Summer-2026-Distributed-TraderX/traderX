@@ -198,3 +198,41 @@ a clean 1 ms and the cheaper dials are untried.
 **Recommendation: ship `CLUSTER_IDLE_STRATEGY=lowpark` as the default for latency-sensitive deployments.**
 It is a one-env change, costs ~0.34 c idle, and turns the per-order p50 from ~4.85 ms into ~2.0 ms with a
 p99 of ~3.7 ms — no hardware, no architecture, no core touch.
+
+---
+
+# Addendum 3 — `busyspin` DISQUALIFIED, and the four-way verdict
+
+Completeness check: pure `busyspin` (NoOpIdleStrategy, spin with no yield). Prediction was that 4 agent
+threads spinning on a member's 3 exclusive cores would oversubscribe; the measurement is worse than that
+— it is worse than doing nothing.
+
+| metric | backoff (default) | yielding | **lowpark** | busyspin |
+|---|---:|---:|---:|---:|
+| client RTT p50 | 4.85 ms | 1.88 ms | ~2.0 ms | ~14–18 ms |
+| client RTT p99 | 10.8 ms | 3.86 ms | ~3.7 ms | **~363 ms** |
+| leader commit p50 | 2000 µs | 1000 µs | 1000 µs | **4002 µs** |
+| leader commit p99 | 5000 µs | 2001 µs | 1000 µs | 8004 µs |
+| gateway total p50 | 4248 µs | 1470 µs | 1397 µs | 6078 µs |
+| apply / match p50 | 0.47 µs | 0.40 µs | 0.62 µs | 0.43 µs |
+| member idle CPU | ~1.28 c | ~2.97 c | **~0.34 c** | ~2.97 c |
+
+**`busyspin` is worse than the Aeron default** — commit doubled (2 ms → 4 ms) and the client tail blew
+out to ~363 ms p99 / ~481 ms max (and ~700 ms p50 cold, before JIT). The cause is exactly the hardware
+constraint flagged up front: a member is pinned to **3 exclusive cores** but runs **4 Aeron agent
+threads** (MediaDriver, Archive, ConsensusModule, service container). Pure spin never yields, so the
+scheduler must preempt a spinning thread to run a peer — and when the preempted one is the ConsensusModule
+conductor or the MediaDriver receiver, the consensus path *starves*. Spinning harder than the cores allow
+is worse than parking.
+
+**Four-way verdict — `lowpark` is the pick, and it isn't close:**
+- `busyspin` — disqualified on this hardware (4 agents > 3 cores → starvation, worse than default).
+- `yielding` — full latency win, but pegs 3 cores at idle and leaves a 2–3 ms commit tail (spin
+  contention).
+- `lowpark` (1 µs park) — **the win**: client p50 ~2.0 ms, commit a flat 1 ms to p99.9, ~0.34 c idle.
+  The 1 µs park is short enough to kill the 1 ms latency and long enough to never starve a peer thread.
+- `backoff` (Aeron default) — the 1 ms park is the entire latency problem.
+
+**Ship `CLUSTER_IDLE_STRATEGY=lowpark`.** `busyspin` and `yielding` remain in the knob for hardware that
+can give one core per agent (≥4 dedicated cores/member), where pure spin would finally pay off — but not
+on the current 3-core member pin.
