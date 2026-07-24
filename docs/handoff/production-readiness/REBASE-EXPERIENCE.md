@@ -225,6 +225,24 @@ constructor) — both baseline-confirmed as *not* rebase-caused. All commits loc
 yaakov, in green batches). Only `kotlin-stdlib 2.3.20→2.4.10` was a minor-not-patch bump; it broke nothing
 (deprecation warnings on `RestTemplateBuilder`, no errors).
 
+**Surprise #7 — a config decision silently reverted by `--theirs`, invisible in the merge diff.** yaakov had
+scoped the three inherited governance workflows to **PR-only** (dropping their `on: push` trigger) so they'd
+stop failing on every working-branch push — a standing decision made *before* this rebase, on YU15 only.
+Taking `--theirs` on those workflows during the merge silently **re-armed the push trigger** on YU02–YU14.
+There was no conflict to see: on those branches our version *was* upstream's push-triggered version, so it
+flowed clean. The only way to catch it was to inspect the **trigger of the pushed file**, not the merge
+diff — the same "verify the output, not the merge" lesson (lesson 2) in a new costume: **a merge doesn't
+just fail to apply your intent to shadowed files (§5); it can silently *undo* a config decision you made on
+another branch, and report nothing.** Fix folded in as a third commit per branch (restore PR-only, keep
+upstream's job content). This is *not* the conform-vs-retire decision — that's still the brief-03/04 call;
+PR-only is the interim that keeps the push from re-flooding the inbox.
+
+**The multer catch, concretely.** The npm dead-layer (§ batch log, YU04) dropped upstream's
+`multer` override — pinning it back to **2.2.0** closes the file-upload DoS advisories
+(GHSA-fjgf-rc76-4x9p / GHSA-g5hg-p3ph-g8qg class) that upstream's baseline had already pinned and our
+shadowing `reference-data/package.json` was silently reverting. That is the "shadow layer swallows a CVE"
+lesson (§7, lesson 6) as a single, nameable fix.
+
 **One separable follow-up remains (not core rebase):** upstream's three spec-kit governance workflows
 (`spec-kit-root-gates`, `runtime-script-parity`, `docs-spec-sanity`) lint doc conventions our states don't
 follow — e.g. our READMEs read `# Feature Pack: YU02-lmax-kubernetes` but the gate wants `# Feature Pack
