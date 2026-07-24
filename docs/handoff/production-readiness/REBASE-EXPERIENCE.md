@@ -215,7 +215,15 @@ the only minor-not-patch bump). Push in **green batches**, in lineage order, nev
 | 3 | YU04 | ✅ merge | ✅ java + **npm** push-down | ✅ render-verified | Surfaced the **npm dead-layer**: `reference-data/package.json` shadowed the baseline and dropped upstream's new npm overrides. Extended push-down to merge catalog `npm.overrides` (multer 2.2.0 etc.). |
 | 4 | YU05, YU07, YU08 | ✅ merge (recipe) | ✅ java + npm | ✅ **135 / 134 / 134 tests, 0 fail** | Clean render, CVEs land, zero old-version leakage on all three. |
 | 4 | YU06 | ✅ merge | ✅ java + npm | ⚠️ pre-existing compile break (**baseline-confirmed NOT the rebase**) | `OrderMatcherRiskMismatchTest` calls the `OrderMatcherService` constructor with stale args — a version-independent arity mismatch. Neither file touched by the rebase; the **pre-merge tip fails to compile identically**. A dead/broken test the rebase *surfaced*, did not cause (brief-03/04 item). |
-| … | YU09–YU15 | pending | pending | pending | 7-conflict branches: add `install-generated-runtime-harness.sh` (per-branch 3-way) + docusaurus (`--ours`); YU13/14/15 carry the big suites (269/283/300). |
+| 5 | YU09–YU12 | ✅ merge (7-conflict) | ✅ java + npm | ✅ **144 / 151 / 195 / 211, 0 fail** | `install-generated-runtime-harness.sh` resolved by **union** (keep our `build-jvm-jar` lib + add upstream's new `observability-runtime` + `kubernetes-smoke-readiness` libs); docusaurus `--ours`. |
+| 6 | YU13 / YU14 / YU15 | ✅ merge (7-conflict) | ✅ java + npm | ✅ **269 / 283 / 300, 0 fail** | The deterministic-core suites — matched their known-good counts exactly. YU14 threw one *load-induced* flake (`SnapshotBarrierPerformanceTest`, 50.3ms vs a hard 50ms threshold under heavy parallel-build load); isolated re-run passed at 0.355s. Not a regression. |
+
+**✅ ALL 14 BRANCHES DONE (YU02→YU15).** Every branch: merged, dead-layer push-down (Java + npm + NATS),
+renders clean, CVEs land in the generated tree with **zero old-version leakage**, suites green or
+no-regression. Two pre-existing broken tests surfaced (YU02 `@SpringBootTest` infra set; YU06 stale
+constructor) — both baseline-confirmed as *not* rebase-caused. All commits local; **unpushed** (push goes to
+yaakov, in green batches). Only `kotlin-stdlib 2.3.20→2.4.10` was a minor-not-patch bump; it broke nothing
+(deprecation warnings on `RestTemplateBuilder`, no errors).
 
 **Recipe mechanization (what made the replay safe and fast).** The deterministic conflicts (prepublish-gate,
 render-009, start/status-010, 004) resolve identically on every branch, so they were captured once and
