@@ -1,0 +1,112 @@
+# LATENCY-01 — per-order latency decomposed (where the ~4ms goes)
+
+> First step of the latency/HFT thread. We had a byproduct per-order **p50 ~4ms / p99 ~15ms** number,
+> never decomposed. This splits it across every hop so the campaign optimizes the RIGHT layer.
+> **Measurement only — no optimization, no hardware, no consensus-model change in this brief.**
+> Rig: 3 c4d members + 3 gateways on GKE (us-east1-b), binary per-order reject path (pure ingress:
+> unknown-security orders sequence → consensus-commit → apply-reject, so the full distributed path runs
+> with a ~0.5µs apply and no booking). Paced **75k/s**, unsaturated (p99/p50 ≈ 1.8×, not a queue),
+> warm, JFR off, raw TCP, coordinated-omission-safe (intended-send schedule). Image `yu13-latencyb`.
+
+## The number, split (p50 chain sums to the wire-to-wire client RTT)
+
+All single-clock intervals. Gateway segments are one gateway-JVM `nanoTime` clock; leader segments are
+one leader-JVM clock (`nanoTime` for apply, epoch-ms delta for commit). The two **cross-host** segments
+(client↔gateway wire; Aeron transport) are derived by **subtracting single-clock intervals**, never by
+comparing two hosts' clocks.
+
+| segment | p50 | p99 | p99.9 | how obtained | lever if it dominates |
+|---|---:|---:|---:|---|---|
+| client ↔ gateway wire | ~0.6 ms | — | — | client RTT − gateway total (1 cross-host subtraction) | NIC / kernel-bypass / placement |
+| gateway decode+resolve | 0.06 µs | 0.34 µs | ~16 µs | gateway clock (flyweight; securityId pre-resolved) | code (it isn't — nanoseconds) |
+| gateway owner-queue | 0.8 µs | ~0.7 ms | ~1.6 ms | gateway clock (submit→owner offer) | in-flight window depth (only a tail contributor) |
+| **Aeron transport + ingress/egress poll** | **~2.0 ms** | — | — | gateway black box − leader commit − apply (residual) | **idle strategy / placement / RDMA** |
+| sequencing | (folded into commit) | | | leader clock | code |
+| **consensus commit round-trip** | **2.0 ms** | 5.0 ms | 6.0 ms | leader: `currentTimeMillis(apply) − sequencing timestamp` | **idle strategy / Archive tuning; architecture only if it's the floor** |
+| apply / match | 0.47 µs | 0.82 µs | 4.8 µs | leader `nanoTime` around `onEvent`+`drainOutputs` | engine (it isn't — ~470 ns, as the in-process bench predicted) |
+| gateway reply encode+write | 12 µs | ~0.65 ms | ~1.4 ms | gateway clock (egress→flush) | code |
+| — future-wakeup residual | ~0.13 ms | — | — | gateway total − Σ(gateway segments) | n/a (thread wakeup slack) |
+| **= client RTT (wire-to-wire)** | **~4.85 ms** | ~10.8 ms | — | generator, intended-send | |
+
+Anchors actually measured this run (median across the 3 symmetric gateways / the leader):
+
+- **gateway total (residence)** p50 **4.25 ms**, p99 8.5 ms, p99.9 11.8 ms — sum-check: decode+queue+cluster+reply = 4.11 ms vs 4.25 ms (0.13 ms wakeup slack) ✓
+- **gateway cluster black box** (t_offer→t_egress) p50 **4.04 ms**, p99 7.8 ms, p99.9 9.2 ms
+- **leader commit** p50 **2.00 ms** (1 ms resolution), p99 5.0 ms, p99.9 6.0 ms, max 7.0 ms · **leader apply** p50 **0.47 µs**
+- **client RTT** p50 4.85 ms, p99 10.8 ms (one generator pod)
+
+## Observer-effect check (mandated) — instrumentation is free
+
+Same paced-75k load, wire-to-wire client RTT only, toggling `LATENCY_DECOMP`:
+
+| arm | client p50 | client p99 |
+|---|---:|---:|
+| LATENCY off (baseline) | 5.17 ms | 9.56 ms |
+| LATENCY on, gateway only (mask=0) | 3.72 ms | 9.40 ms |
+| LATENCY on, gateway+leader (mask=0) | 4.85 ms | 10.76 ms |
+
+Instrumented is **not systematically higher** than off (arm 2 is lower); the spread is run-to-run
+variance, not observer effect. So `mask=0` (record every order) is safe and the tails are trustworthy.
+
+## The dominant hop, named
+
+**The cluster black box is 97% of the gateway's residence (4.04 ms of 4.25 ms p50) and ~83% of the
+client RTT.** Everything outside it is negligible: decode 0.06 µs, owner-queue 0.8 µs, apply **0.47 µs**,
+reply 12 µs — the entire non-cluster gateway path is **< 15 µs at p50**. The ~4 ms is the distributed
+round-trip, and it splits about evenly into two halves:
+
+- **consensus commit round-trip ≈ 2.0 ms** (sequenced → replicated to a 2/3 quorum → Archive-recorded on
+  each member → quorum ack → commit-position advances → delivered to the service).
+- **Aeron transport + ingress-pickup + egress-delivery ≈ 2.0 ms** (gateway offer → leader ConsensusModule
+  picks the message off ingress and sequences it; leader emits egress → gateway owner thread polls it back).
+
+## Why the ~4 ms is NOT the consensus-model floor (so that door stays shut)
+
+The real *work* on the critical path is tiny: **apply is 0.47 µs**, decode/queue/reply are sub-15 µs,
+and same-zone GKE network is sub-100 µs/leg. So the ~4 ms is overwhelmingly **waiting**, not computing
+or transmitting — and the waiting is **idle-strategy park latency**:
+
+- The members run **Aeron's default `BackoffIdleStrategy`, which parks up to ~1 ms per idle poll**
+  (`CLUSTER_IDLE_SLEEP_MS` is unset → `ClusterNodeConfig.sleepingIdleMs()==0` → Aeron defaults). The
+  commit round-trip crosses ~4 polling agents per member (MediaDriver, Archive, ConsensusModule, service
+  container) across 3 members, plus the gateway's own egress poll — each a place a message can sit up to
+  ~1 ms waiting for a parked agent to wake. Two ~1-ms halves (commit; transport+poll) is exactly the
+  shape of park latency stacked across the hop, not a quorum network/disk wall.
+- The members have **57% CPU headroom** at this load (ceiling campaign: leader 1.28 of its 3-core pin).
+  There is CPU to spend turning parks into spins.
+
+The quorum round-trip is fundamental to the replication model, but its *measured* 2 ms is dominated by
+park + Archive-record latency, not by an irreducible network/disk floor. **It is therefore NOT provably
+the floor**, and per the brief the consensus-model redesign door stays **shut**.
+
+## The lever this selects (cheapest-first; do NOT pre-commit past it)
+
+1. **Busy-spin / low-park idle strategies on the members' Aeron agents** (ConsensusModule, Archive,
+   MediaDriver, service container) and the gateway's egress poll — spend the 57% idle CPU headroom to
+   collapse the per-hop park latency. This is a **config/code** change (an env-selectable
+   `BusySpinIdleStrategy`/`NoOpIdleStrategy`, alongside the existing `SleepingMillisIdleStrategy` knob),
+   the cheapest rung, and it targets the exact thing the numbers indict.
+2. **Dedicated-core pinning of the member agent threads** (cheap-first placement) — the tail already
+   shows host jitter (single-order max 111 ms client, 7 ms commit); pinning collapsed the tail 7–13× in
+   the failover work. Pair with (1).
+3. Only if, after (1)+(2), the quorum round-trip is *still* the wall: RDMA/DPDK transport (medium), then
+   — and only then — the async / hot-hot replication-model question (heavy).
+
+**Recommended next step:** a single A/B — re-run this exact decomposition with a busy-spin idle strategy
+on the members (and the gateway egress poll) — and watch the commit + transport-poll halves move. That
+measures how much of the 4 ms is park latency vs the genuine quorum floor, and it is the cheapest thing
+that can. (That is optimization, so it belongs to the next brief, not this one.)
+
+## Honesty ledger
+
+- Reject path (pure ingress, ~0.47 µs apply, no booking). The consensus round-trip it exercises is the
+  same one a booked order pays; only the ~0.5 µs apply differs, so the decomposition transfers.
+- The **commit** segment is 1 ms-resolution (epoch-ms cluster clock); enough to place it at ~2 ms and
+  rank it, not to sub-divide it. Getting finer needs a nanosecond cluster clock (a config change).
+- The **client↔gateway wire** (~0.1–0.6 ms across runs) is the one cross-host subtraction and the
+  noisiest number; it is small either way and not on the critical path.
+- The **~2.0 ms Aeron-transport+poll** figure is a *residual* (black box − commit − apply), so it also
+  absorbs the leader's ingress-arrival→sequenced gap and any clock-quantization slop. It is a bound on
+  "everything on the wire/poll path outside the committed window," not a pure network number.
+- 75k is unsaturated here (p99/p50 ≈ 1.8×), so these are system latencies, not queue depth — the point
+  of decomposing away from the 190k knee.
