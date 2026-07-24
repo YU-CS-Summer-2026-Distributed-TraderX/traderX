@@ -1,9 +1,10 @@
 name: Spec Kit Root Gates
 
 on:
-  push:
-    branches:
-      - "**"
+  # Scoped to PR-only (yaakov, 2026-07-24): this is an UPSTREAM spec-kit governance gate,
+  # inherited with the fork. It lints upstream doc/spec conventions our YU states don't yet
+  # follow (e.g. README heading format), so it failed on every working-branch push and spammed
+  # alerts. Kept on PRs as a gate; conform-vs-retire decision belongs to the rebase lane.
   pull_request:
 
 jobs:

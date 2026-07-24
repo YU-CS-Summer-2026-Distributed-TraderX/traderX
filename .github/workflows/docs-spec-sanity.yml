@@ -1,10 +1,10 @@
 name: Docs and Spec Sanity
 
 on:
+  # Scoped to PR-only (yaakov, 2026-07-24): UPSTREAM governance gate inherited with the fork;
+  # lints upstream doc/spec conventions our YU states don't yet follow, so it failed on every
+  # working-branch push. Kept on PRs; conform-vs-retire decision belongs to the rebase lane.
   pull_request:
-  push:
-    branches:
-      - "**"
 
 jobs:
   docs-spec-sanity:
