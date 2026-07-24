@@ -296,6 +296,24 @@ public final class ClusterNodeMain {
                 out.write(bytes);
             }
         });
+        // LATENCY-01 Phase B: leader-clock commit/apply split of the gateway's cluster black box.
+        // GET /latency dumps p50/p99/p99.9/max per segment (µs); ?reset=1 zeros them (call after
+        // warmup). 503 unless LATENCY_DECOMP=1. Read the LEADER member — only its commit-to-apply is
+        // the gateway's round-trip.
+        server.createContext("/latency", exchange -> {
+            final LeaderApplyLatency lat = service.leaderLatency();
+            if (lat == null) {
+                respond(exchange, 503, "latency decomposition disabled (set LATENCY_DECOMP=1)\n");
+                return;
+            }
+            final String q = exchange.getRequestURI().getQuery();
+            if (q != null && q.contains("reset=1")) {
+                lat.reset();
+                respond(exchange, 200, "reset\n");
+                return;
+            }
+            respond(exchange, 200, lat.dump());
+        });
         server.start();
         return server;
     }
