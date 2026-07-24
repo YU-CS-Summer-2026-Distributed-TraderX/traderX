@@ -98,6 +98,7 @@ class ThreeMemberClusterTest {
         offerNewOrder(100 * PX);
         awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 3);
         assertEquals(List.of(1L, 2L, 3L), ackRefs(OutputEvent.KIND_ORDER_ACCEPTED));
+        assertCommitSegmentIsSane(leader1);
 
         // A snapshot is a log-ordered, cluster-wide action: every member takes it.
         takeSnapshot(leader1);
@@ -218,6 +219,29 @@ class ThreeMemberClusterTest {
             final MatchingEngineClusteredService recovered = nodes[id].service;
             return recovered.engine() != null && recovered.engine().blpSeq() == maxSeq && maxSeq > 0;
         });
+    }
+
+    /**
+     * LATENCY-02: when the decomposition is enabled, the leader's commit segment must be sane —
+     * which is really a check that its two ends read the SAME clock. The interval subtracts the
+     * cluster's sequencing timestamp from a clock read at apply; if those two ever came from
+     * different sources (epoch vs. JVM-uptime nanos), every sample would be wildly negative — and so
+     * silently dropped, leaving count 0 — or wildly large. Both bounds together catch that, on the
+     * ms clock and under {@code CLUSTER_CLOCK=nanos} alike. No-op when instrumentation is off.
+     */
+    private void assertCommitSegmentIsSane(final int leader) {
+        final LeaderApplyLatency m = nodes[leader].service.leaderLatency();
+        if (m == null) {
+            return; // LATENCY_DECOMP unset — instrumentation absent by design
+        }
+        final String d = m.dump();
+        assertTrue(d.contains("segment=\"commit\"} 0\n") == false,
+            () -> "leader recorded no commit samples — the interval's two clock ends disagree:\n" + d);
+        final int i = d.indexOf("segment=\"commit\",pct=\"p999\"} ");
+        final double p999us = Double.parseDouble(
+            d.substring(i + 28, d.indexOf('\n', i)).trim());
+        assertTrue(p999us < 1_000_000.0,
+            () -> "commit p99.9 of " + p999us + "us is not a latency — clock sources disagree:\n" + d);
     }
 
     /** Deterministic-state equality between two quiesced members (invariant 3's real test:

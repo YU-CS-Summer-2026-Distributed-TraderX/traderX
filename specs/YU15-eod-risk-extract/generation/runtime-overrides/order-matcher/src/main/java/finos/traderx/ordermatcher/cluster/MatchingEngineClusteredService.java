@@ -25,6 +25,8 @@ import org.agrona.collections.IntHashSet;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * Hosts the deterministic {@link MatchingEngine} plus the authoritative {@link BlpRiskState}
  * inside an Aeron Cluster service (ADR-044).
@@ -270,16 +272,30 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
         }
         event.seq = ++appliedSeq;
-        event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
+        // The unit must be read HERE, not cached in onStart: the container is told the cluster's time
+        // unit when it joins the log, which is after onStart runs, so onStart still sees the default.
+        // Caching it there silently left this on the millisecond branch under CLUSTER_CLOCK=nanos and
+        // every commit sample went negative and was dropped. It is a field read behind the interface.
+        // Null when a harness drives apply directly without a Cluster (the allocation gates do).
+        final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
+        // cluster time, identical on every member and replay (FR-AC06). Under CLUSTER_CLOCK=nanos the
+        // cluster clock hands us epoch-NANOS; the divide is deterministic, so state is unchanged.
+        event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
         // LATENCY-01 Phase B (leader only, side-channel — never touches replicated state): the
-        // consensus commit round-trip = now(epoch-ms) - the sequencing timestamp (both leader clock);
-        // the apply span is timed around onEvent+drainOutputs below. Only the LEADER's commit-to-apply
-        // equals the gateway's black box, so record there alone.
+        // consensus commit round-trip = now - the sequencing timestamp, both read on the leader from
+        // the SAME clock source as the cluster clock; the apply span is timed around onEvent+
+        // drainOutputs below. Only the LEADER's commit-to-apply equals the gateway's black box, so
+        // record there alone. LATENCY-02: on the ms clock this is a 1ms quantum per sample — prefer
+        // CLUSTER_CLOCK=nanos, which resolves the real distribution.
         final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
         final long applyStartNanos = timeThis ? System.nanoTime() : 0L;
         if (timeThis) {
-            latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+            if (nanosClusterClock) {
+                latency.recordCommitNanos(NanosClusterClock.epochNanos() - timestamp);
+            } else {
+                latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+            }
         }
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
