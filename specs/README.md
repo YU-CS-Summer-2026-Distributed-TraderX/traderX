@@ -37,6 +37,10 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU14-listed-equity-options`
 - `YU15-eod-risk-extract`
 
+## Portal Feature Packs
+
+- `015-docs-portal-homepage`
+
 ## References
 
 State lineage and generated-branch publish conventions are tracked in:

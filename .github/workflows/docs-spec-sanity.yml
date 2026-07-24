@@ -14,7 +14,7 @@ jobs:
       SPECIFY_FEATURE: 001-baseline-uncontainerized-parity
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Install shell dependencies
         run: |
@@ -22,7 +22,7 @@ jobs:
           sudo apt-get install -y jq ripgrep
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
