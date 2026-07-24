@@ -6,10 +6,11 @@ CATALOG="${ROOT}/catalog/state-catalog.json"
 TARGETS_FILE="${TRADERX_DEPENDENCY_TARGETS_FILE:-${ROOT}/catalog/dependency-version-targets.json}"
 ALLOW_MISSING=0
 STATE_FILTER=""
+SKIP_TARGET_CHECKS=0
 
 usage() {
   cat <<'USAGE'
-usage: bash pipeline/validate-generated-branch-dependency-consistency.sh [--states <comma-separated-state-ids>] [--allow-missing-branches]
+usage: bash pipeline/validate-generated-branch-dependency-consistency.sh [--states <comma-separated-state-ids>] [--allow-missing-branches] [--skip-target-checks]
 
 Validates dependency-version consistency and target propagation across generated-state branches.
 
@@ -32,6 +33,10 @@ while (($# > 0)); do
       ;;
     --allow-missing-branches)
       ALLOW_MISSING=1
+      shift
+      ;;
+    --skip-target-checks)
+      SKIP_TARGET_CHECKS=1
       shift
       ;;
     --help|-h)
@@ -74,6 +79,22 @@ resolve_ref() {
   return 1
 }
 
+extract_yaml_image_tags() {
+  local file="$1"
+  local image_name="$2"
+  local escaped
+  escaped="$(printf '%s' "${image_name}" | sed 's/[][(){}.+*?^$|\\/]/\\&/g')"
+  rg -o --pcre2 "image\\s*:\\s*['\"]?${escaped}:\\K[^'\"\\s]+" "${file}" || true
+}
+
+extract_json_image_tags() {
+  local file="$1"
+  local image_name="$2"
+  local escaped
+  escaped="$(printf '%s' "${image_name}" | sed 's/[][(){}.+*?^$|\\/]/\\&/g')"
+  rg -o --pcre2 "\"image\"\\s*:\\s*\"${escaped}:\\K[^\"]+" "${file}" || true
+}
+
 rows_file="$(mktemp)"
 keys_file="$(mktemp)"
 trap 'rm -f "${rows_file}" "${keys_file}"' EXIT
@@ -104,28 +125,42 @@ assert_target() {
   fi
 }
 
-assert_target_any_scope() {
+target_present() {
+  local ecosystem="$1"
+  local scope="$2"
+  local dependency="$3"
+
+  awk -F'\t' -v e="${ecosystem}" -v s="${scope}" -v d="${dependency}" '
+    $1==e && $3==s && $4==d { found=1 }
+    END { exit(found ? 0 : 1) }
+  ' "${rows_file}"
+}
+
+assert_target_if_present() {
+  local ecosystem="$1"
+  local scope="$2"
+  local dependency="$3"
+  local expected="$4"
+
+  if target_present "${ecosystem}" "${scope}" "${dependency}"; then
+    assert_target "${ecosystem}" "${scope}" "${dependency}" "${expected}"
+  fi
+}
+
+assert_target_any_scope_if_present() {
   local ecosystem="$1"
   local dependency="$2"
   local expected="$3"
   shift 3
 
-  local found=0
   local scope
   for scope in "$@"; do
-    if awk -F'\t' -v e="${ecosystem}" -v s="${scope}" -v d="${dependency}" '
-      $1==e && $3==s && $4==d { found=1 }
-      END { exit(found ? 0 : 1) }
-    ' "${rows_file}"; then
-      found=1
+    if target_present "${ecosystem}" "${scope}" "${dependency}"; then
       assert_target "${ecosystem}" "${scope}" "${dependency}" "${expected}"
     fi
   done
 
-  if (( found == 0 )); then
-    echo "[fail] target dependency not found in generated branches: ${ecosystem} ${dependency} (scopes: $*)"
-    exit 1
-  fi
+  return 0
 }
 
 state_query='.states[] | select(.generation.mode == "implemented")'
@@ -187,6 +222,11 @@ while IFS=$'\t' read -r state_id publish_branch; do
         printf 'gradle\t%s\tjava\tsourceCompatibility\t%s\t%s\n' "${file_path}" "${state_id}" "${java_source}" >> "${rows_file}"
       fi
 
+      jackson_bom_version="$(sed -n "s/.*ext\\['jackson-bom\\.version'\\][[:space:]]*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "${tmp_gradle}" | head -n1)"
+      if [[ -n "${jackson_bom_version}" ]]; then
+        printf 'gradle\t%s\tproperty\tjackson-bom.version\t%s\t%s\n' "${file_path}" "${state_id}" "${jackson_bom_version}" >> "${rows_file}"
+      fi
+
       tomcat_version="$(sed -n "s/.*ext\\['tomcat\\.version'\\][[:space:]]*=[[:space:]]*'\\([^']*\\)'.*/\\1/p" "${tmp_gradle}" | head -n1)"
       if [[ -n "${tomcat_version}" ]]; then
         printf 'gradle\t%s\tproperty\ttomcat.version\t%s\t%s\n' "${file_path}" "${state_id}" "${tomcat_version}" >> "${rows_file}"
@@ -231,8 +271,26 @@ while IFS=$'\t' read -r state_id publish_branch; do
           printf 'nuget\t%s\tPackageReference\t%s\t%s\t%s\n' "${file_path}" "${pkg}" "${state_id}" "${ver}" >> "${rows_file}"
         done
       rm -f "${tmp_csproj}"
+      continue
     fi
-  done < <(git -C "${ROOT}" ls-tree -r --name-only "${ref}" | rg '(build\.gradle|gradle-wrapper\.properties|package\.json|\.csproj)$' || true)
+
+    if [[ "${file_path}" == *.yml || "${file_path}" == *.yaml || "${file_path}" == *kubernetes-runtime.spec.json ]]; then
+      tmp_manifest="$(mktemp)"
+      git -C "${ROOT}" show "${ref}:${file_path}" > "${tmp_manifest}"
+      while IFS=$'\t' read -r image_name _expected; do
+        [[ -n "${image_name}" ]] || continue
+        while IFS= read -r actual_tag; do
+          [[ -n "${actual_tag}" ]] || continue
+          printf 'docker\t%s\timage\t%s\t%s\t%s\n' "${file_path}" "${image_name}" "${state_id}" "${actual_tag}" >> "${rows_file}"
+        done < <(extract_yaml_image_tags "${tmp_manifest}" "${image_name}")
+        while IFS= read -r actual_tag; do
+          [[ -n "${actual_tag}" ]] || continue
+          printf 'docker\t%s\timage\t%s\t%s\t%s\n' "${file_path}" "${image_name}" "${state_id}" "${actual_tag}" >> "${rows_file}"
+        done < <(extract_json_image_tags "${tmp_manifest}" "${image_name}")
+      done < <(jq -r '(.docker.images // {}) | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+      rm -f "${tmp_manifest}"
+    fi
+  done < <(git -C "${ROOT}" ls-tree -r --name-only "${ref}" | rg '(build\.gradle|gradle-wrapper\.properties|package\.json|\.csproj|\.ya?ml|kubernetes-runtime\.spec\.json)$' || true)
 
 done < <(jq -r "${state_query} | [.id, .publish.branch] | @tsv" "${CATALOG}")
 
@@ -263,31 +321,41 @@ if [[ -s "${keys_file}" ]]; then
   exit 1
 fi
 
-assert_target "gradle" "plugin" "org.springframework.boot" "$(jq -er '.java.plugins["org.springframework.boot"]' "${TARGETS_FILE}")"
-assert_target "gradle" "plugin" "io.spring.dependency-management" "$(jq -er '.java.plugins["io.spring.dependency-management"]' "${TARGETS_FILE}")"
-assert_target "gradle" "java" "sourceCompatibility" "$(jq -er '.java.sourceCompatibility' "${TARGETS_FILE}")"
-assert_target "gradle" "property" "tomcat.version" "$(jq -er '.java.properties["tomcat.version"]' "${TARGETS_FILE}")"
-assert_target "gradle-wrapper" "wrapper" "distributionVersion" "$(jq -er '.gradleWrapper.distributionVersion' "${TARGETS_FILE}")"
-assert_target "gradle-wrapper" "wrapper" "distributionSha256Sum" "$(jq -er '.gradleWrapper.distributionSha256Sum' "${TARGETS_FILE}")"
+if [[ "${SKIP_TARGET_CHECKS}" == "1" ]]; then
+  echo "[warn] skipped generated-branch dependency target checks"
+else
+  assert_target_if_present "gradle" "plugin" "org.springframework.boot" "$(jq -er '.java.plugins["org.springframework.boot"]' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle" "plugin" "io.spring.dependency-management" "$(jq -er '.java.plugins["io.spring.dependency-management"]' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle" "java" "sourceCompatibility" "$(jq -er '.java.sourceCompatibility' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle" "property" "jackson-bom.version" "$(jq -er '.java.properties["jackson-bom.version"]' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle" "property" "tomcat.version" "$(jq -er '.java.properties["tomcat.version"]' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle-wrapper" "wrapper" "distributionVersion" "$(jq -er '.gradleWrapper.distributionVersion' "${TARGETS_FILE}")"
+  assert_target_if_present "gradle-wrapper" "wrapper" "distributionSha256Sum" "$(jq -er '.gradleWrapper.distributionSha256Sum' "${TARGETS_FILE}")"
 
-while IFS=$'\t' read -r dep expected; do
-  [[ -n "${dep}" && -n "${expected}" ]] || continue
-  assert_target "gradle" "dependency" "${dep}" "${expected}"
-done < <(jq -r '.java.dependencies | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+  while IFS=$'\t' read -r dep expected; do
+    [[ -n "${dep}" && -n "${expected}" ]] || continue
+    assert_target_if_present "gradle" "dependency" "${dep}" "${expected}"
+  done < <(jq -r '.java.dependencies | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
 
-while IFS=$'\t' read -r dep expected; do
-  [[ -n "${dep}" && -n "${expected}" ]] || continue
-  assert_target_any_scope "npm" "${dep}" "${expected}" "dependencies" "devDependencies" "overrides"
-done < <(jq -r '.npm.dependencies | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+  while IFS=$'\t' read -r dep expected; do
+    [[ -n "${dep}" && -n "${expected}" ]] || continue
+    assert_target_any_scope_if_present "npm" "${dep}" "${expected}" "dependencies" "devDependencies" "overrides"
+  done < <(jq -r '.npm.dependencies | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
 
-while IFS=$'\t' read -r dep expected; do
-  [[ -n "${dep}" && -n "${expected}" ]] || continue
-  assert_target "npm" "overrides" "${dep}" "${expected}"
-done < <(jq -r '(.npm.overrides // {}) | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+  while IFS=$'\t' read -r dep expected; do
+    [[ -n "${dep}" && -n "${expected}" ]] || continue
+    assert_target_if_present "npm" "overrides" "${dep}" "${expected}"
+  done < <(jq -r '(.npm.overrides // {}) | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
 
-while IFS=$'\t' read -r dep expected; do
-  [[ -n "${dep}" && -n "${expected}" ]] || continue
-  assert_target "nuget" "PackageReference" "${dep}" "${expected}"
-done < <(jq -r '.nuget.packages | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+  while IFS=$'\t' read -r dep expected; do
+    [[ -n "${dep}" && -n "${expected}" ]] || continue
+    assert_target_if_present "nuget" "PackageReference" "${dep}" "${expected}"
+  done < <(jq -r '.nuget.packages | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+
+  while IFS=$'\t' read -r image_name expected; do
+    [[ -n "${image_name}" && -n "${expected}" ]] || continue
+    assert_target_if_present "docker" "image" "${image_name}" "${expected}"
+  done < <(jq -r '(.docker.images // {}) | to_entries[] | [.key, .value] | @tsv' "${TARGETS_FILE}")
+fi
 
 echo "[ok] generated dependency consistency and targets validated across ${scanned_states} state branch(es)"

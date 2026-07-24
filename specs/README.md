@@ -34,6 +34,10 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU11-aeron-replication`
 - `YU12-aeron-cluster`
 
+## Portal Feature Packs
+
+- `015-docs-portal-homepage`
+
 ## References
 
 State lineage and generated-branch publish conventions are tracked in:
