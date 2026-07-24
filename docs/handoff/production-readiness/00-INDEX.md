@@ -86,6 +86,17 @@ security baseline" is a bad slide); allocation gates + `noGcTest` catch a regres
 `kotlin-stdlib 2.3.20→2.4.10` is a minor. **Runs in parallel with 03 as long as they're never on the same
 branch at once** (the rebase rewrites `build.gradle`).
 
+**⚠️ REBASE-LANE TODO — three inherited upstream CI gates need a conform-vs-retire call.** The first push
+woke up upstream's own spec-kit governance workflows (`spec-kit-root-gates`, `runtime-script-parity`,
+`docs-spec-sanity`, last touched by upstream `9f8dda57`). They **fail** against our 14-state fork — they
+lint upstream doc/spec conventions our states don't follow (concrete first failure: `specs/YU02-*/README.md`
+heading must be `# Feature Pack YU02:` / `# YU02 ...`; more behind it). They are part of the "29
+generator/publish-gate plumbing" commits this spike counted. **Scoped to PR-only for now** (`1a90a2f6`) to
+stop per-push alert spam. **Decision for the rebase lane: CONFORM (lean) vs retire.** Lean conform — *"our
+fork passes upstream TraderX's own spec-kit governance gates"* is a strong FINOS slide, and it's mechanical
+doc-convention cleanup across the states. Retire only checks that validate upstream's *publishing registry*
+(which we don't use).
+
 **Observability we already have:** Prometheus-format `/metrics` on members and gateways
 (`traderx_cluster_role` — 1=leader, `traderx_cluster_applied`, `traderx_cluster_next_order_ref` =
 ground-truth committed counter, `traderx_cluster_trades`), `/ready`, an env-gated `/latency` endpoint
