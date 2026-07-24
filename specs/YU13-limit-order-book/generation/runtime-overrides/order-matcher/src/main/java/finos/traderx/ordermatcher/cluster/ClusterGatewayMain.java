@@ -17,8 +17,14 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
@@ -67,7 +73,7 @@ import java.util.concurrent.TimeUnit;
  *
  * Split readiness (ADR-045): {@code /ready} is 200 only while the cluster session is live.
  */
-public final class ClusterGatewayMain implements OrderSubmitter {
+public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSource {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final long ACK_TIMEOUT_MS = 10_000;
     private static final long BATCH_FENCE_RETRY_MS = 5;
@@ -75,6 +81,12 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     // well above any tested session count so the binding constraint is the consensus commit rate,
     // not the window; also caps how hard the ingress term / egress ring is filled.
     private static final int MAX_INFLIGHT = Integer.parseInt(env("GATEWAY_MAX_INFLIGHT", "4096"));
+
+    // Off-hot-path client for FIX order-status (H/AF) reads against the trade-processor read model.
+    // Status queries are low-volume and never touch the order-entry path, so a blocking JDK client is
+    // fine; created once, not per request.
+    private final HttpClient readModelClient = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(2)).build();
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
@@ -184,7 +196,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         final String fixPortEnv = env("FIX_ACCEPTOR_PORT", "");
         if (!fixPortEnv.isEmpty()) {
             final List<String> compIds = Arrays.asList(env("FIX_SESSION_COMPIDS", "CLIENT1").split(","));
-            final FixGatewayAcceptor fix = new FixGatewayAcceptor(this, Integer.parseInt(fixPortEnv),
+            final FixGatewayAcceptor fix = new FixGatewayAcceptor(this, this, Integer.parseInt(fixPortEnv),
                 env("FIX_TARGET_COMP_ID", "TRADERX"),
                 Integer.parseInt(env("FIX_DEFAULT_ACCOUNT", "11")), compIds);
             fix.start();
@@ -1059,6 +1071,62 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private static String env(final String name, final String fallback) {
         final String value = System.getenv(name);
         return value == null || value.isEmpty() ? fallback : value;
+    }
+
+    /**
+     * FIX order-status (H/AF) source: reads the SAME trade-processor {@code orderbook} read model the
+     * REST blotter serves ({@code GET /accounts/{id}/orders}), so a FIX status answer can never
+     * disagree with a REST one. Returns {@code null} when {@code ORDER_READMODEL_URL} is unset (the
+     * bench/no-read-model case) or the query fails — the acceptor then answers "status unavailable"
+     * rather than fabricating "no orders". Gated on its own env, so ingress-only deploys are untouched.
+     */
+    @Override
+    public List<OrderStatusSource.OrderView> orders(final int accountId, final boolean includeTerminal) {
+        final String base = env("ORDER_READMODEL_URL", "");
+        if (base.isEmpty()) {
+            return null;
+        }
+        final String url = base + "/accounts/" + accountId + "/orders"
+            + (includeTerminal ? "?status=all" : "");
+        try {
+            final HttpResponse<String> resp = readModelClient.send(
+                HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(2)).GET().build(),
+                HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                return null;
+            }
+            final JsonNode arr = JSON.readTree(resp.body());
+            final List<OrderStatusSource.OrderView> out = new ArrayList<>(arr.size());
+            for (final JsonNode n : arr) {
+                out.add(new OrderStatusSource.OrderView(
+                    refOf(n.path("id").asText("")),
+                    n.path("side").asText(""),
+                    n.path("quantity").asInt(),
+                    n.path("remainingQuantity").asInt(),
+                    n.path("status").asText(""),
+                    n.path("security").asText("")));
+            }
+            return out;
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (final Exception e) {
+            System.err.println("read-model status query failed for account " + accountId + ": " + e);
+            return null;
+        }
+    }
+
+    /** orderRef out of the read model's epoch-qualified id {@code <epoch>-<orderRef>}; -1 if malformed. */
+    private static int refOf(final String id) {
+        final int dash = id.lastIndexOf('-');
+        if (dash < 0) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(id.substring(dash + 1));
+        } catch (final NumberFormatException e) {
+            return -1;
+        }
     }
 
     /** One in-flight order-lifecycle command awaiting its committed ack (pipelined ingress).

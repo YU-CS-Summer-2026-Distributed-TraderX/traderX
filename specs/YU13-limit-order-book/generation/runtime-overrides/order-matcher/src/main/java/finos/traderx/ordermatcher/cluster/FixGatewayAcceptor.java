@@ -29,12 +29,16 @@ import quickfix.field.Symbol;
 import quickfix.field.Text;
 import quickfix.field.CxlRejReason;
 import quickfix.field.CxlRejResponseTo;
+import quickfix.field.LastRptRequested;
+import quickfix.field.MassStatusReqID;
 import quickfix.field.OrigClOrdID;
 import quickfix.fix44.ExecutionReport;
 import quickfix.fix44.NewOrderSingle;
 import quickfix.fix44.OrderCancelReject;
 import quickfix.fix44.OrderCancelReplaceRequest;
 import quickfix.fix44.OrderCancelRequest;
+import quickfix.fix44.OrderMassStatusRequest;
+import quickfix.fix44.OrderStatusRequest;
 
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -53,19 +57,26 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * Ephemeral by design (TD-AC01): a {@link MemoryStoreFactory} holds session state, so gateway
  * loss drops sessions to ordinary reconnect while cluster order state is unaffected. Deferred
- * (not needed to prove session survival): order status (H), the amortized submit-batch of the
- * parent state's in-process acceptor, and JWT entitlement (risk/entitlement is decided inside the
- * cluster, not at this tier).
+ * (not needed to prove session survival): the amortized submit-batch of the parent state's
+ * in-process acceptor, and JWT entitlement (risk/entitlement is decided inside the cluster, not at
+ * this tier).
  *
  * <p>YU13 adds OrderCancelRequest (F), answered with an ExecutionReport carrying
  * {@code OrdStatus=Canceled} or an OrderCancelReject (9). The cancel verdict itself is made inside
  * the replicated state machine, so every member reaches it identically; this tier only resolves
  * <em>which</em> orderRef the counterparty means.
+ *
+ * <p>YU13 also adds OrderStatusRequest (H) and OrderMassStatusRequest (AF), answered with
+ * ExecutionReport(s) carrying {@code ExecType=OrderStatus}. These read the {@link OrderStatusSource}
+ * — the same {@code orderbook} read model the REST blotter serves — so a FIX status answer and a
+ * {@code GET /accounts/{id}/orders} answer are the same data. No cluster round-trip: status is
+ * off-consensus.
  */
 public final class FixGatewayAcceptor {
     private static final Logger log = LoggerFactory.getLogger(FixGatewayAcceptor.class);
 
     private final OrderSubmitter submitter;
+    private final OrderStatusSource statusSource;
     private final int port;
     private final String serverCompId;
     private final int defaultAccountId;
@@ -94,9 +105,18 @@ public final class FixGatewayAcceptor {
 
     private ThreadedSocketAcceptor acceptor;
 
+    /** No status source: order status (H/AF) is answered "unavailable". Used by deploys that wire only
+     *  order entry, and by the failover-survival test whose concern is the submitter seam alone. */
     public FixGatewayAcceptor(final OrderSubmitter submitter, final int port, final String serverCompId,
                               final int defaultAccountId, final List<String> compIds) {
+        this(submitter, null, port, serverCompId, defaultAccountId, compIds);
+    }
+
+    public FixGatewayAcceptor(final OrderSubmitter submitter, final OrderStatusSource statusSource,
+                              final int port, final String serverCompId,
+                              final int defaultAccountId, final List<String> compIds) {
         this.submitter = submitter;
+        this.statusSource = statusSource;
         this.port = port;
         this.serverCompId = serverCompId;
         this.defaultAccountId = defaultAccountId;
@@ -173,6 +193,10 @@ public final class FixGatewayAcceptor {
                     onOrderCancelRequest((OrderCancelRequest) message, sessionId);
                 } else if ("G".equals(msgType)) {
                     onOrderCancelReplaceRequest((OrderCancelReplaceRequest) message, sessionId);
+                } else if ("H".equals(msgType)) {
+                    onOrderStatusRequest((OrderStatusRequest) message, sessionId);
+                } else if ("AF".equals(msgType)) {
+                    onOrderMassStatusRequest((OrderMassStatusRequest) message, sessionId);
                 }
             } catch (final FieldNotFound ignore) {
                 // malformed; QuickFIX/J session layer already validated structure
@@ -328,6 +352,129 @@ public final class FixGatewayAcceptor {
             }
             report.set(new OrderQty(qty));
             send(report, sessionId, clOrdId);
+        }
+
+        /**
+         * OrderStatusRequest (H). Answers the current state of ONE order — resolved by OrderID (37)
+         * or the request's ClOrdID (11) — with an ExecutionReport carrying {@code ExecType=OrderStatus}.
+         * State comes from the read model, not the cluster: the acceptor holds only orderRefs, while
+         * the live state (remaining qty, terminal status) lives in the orderbook projection.
+         */
+        private void onOrderStatusRequest(final OrderStatusRequest req, final SessionID sessionId)
+            throws FieldNotFound {
+            final String clOrdId = req.getString(ClOrdID.FIELD);
+            final char side = req.isSetField(Side.FIELD)
+                && req.getChar(Side.FIELD) == Side.SELL ? 'S' : 'B';
+            final int orderRef = resolveOrderRef(req, qualify(sessionId, clOrdId));
+
+            final List<OrderStatusSource.OrderView> orders =
+                statusSource == null ? null : statusSource.orders(accountOf(req), true);
+            if (orders == null) {
+                sendStatusReject(sessionId, clOrdId, null, side,
+                    "order status unavailable (no read model configured)");
+                return;
+            }
+            OrderStatusSource.OrderView match = null;
+            for (final OrderStatusSource.OrderView v : orders) {
+                if (v.orderRef() == orderRef) {
+                    match = v;
+                    break;
+                }
+            }
+            if (match == null) {
+                // FIX 4.4: an unknown order in an OrderStatusRequest is answered with an
+                // ExecutionReport, OrdStatus=Rejected — an OrderCancelReject is for F/G only.
+                sendStatusReject(sessionId, clOrdId, null, side,
+                    "unknown order; resend with OrderID (37)");
+                return;
+            }
+            final ExecutionReport report = statusReportFor(match);
+            report.set(new ClOrdID(clOrdId));
+            send(report, sessionId, clOrdId);
+        }
+
+        /**
+         * OrderMassStatusRequest (AF). Streams one ExecutionReport per OPEN order for the account —
+         * the same set {@code GET /accounts/{id}/orders} returns — each tagged with the request's
+         * MassStatusReqID (584), the last carrying LastRptRequested=Y (912) to close the batch. An
+         * account with no open orders still gets one report so the counterparty is never left waiting.
+         */
+        private void onOrderMassStatusRequest(final OrderMassStatusRequest req, final SessionID sessionId)
+            throws FieldNotFound {
+            final String reqId = req.getString(MassStatusReqID.FIELD);
+            final List<OrderStatusSource.OrderView> orders =
+                statusSource == null ? null : statusSource.orders(accountOf(req), false);
+            if (orders == null || orders.isEmpty()) {
+                final ExecutionReport report = statusReport(0, 'B', 0, 0, OrdStatus.REJECTED, "");
+                report.set(new MassStatusReqID(reqId));
+                report.set(new LastRptRequested(true));
+                report.set(new Text(orders == null
+                    ? "order status unavailable (no read model configured)" : "no open orders"));
+                send(report, sessionId, reqId);
+                return;
+            }
+            for (int i = 0; i < orders.size(); i++) {
+                final ExecutionReport report = statusReportFor(orders.get(i));
+                report.set(new MassStatusReqID(reqId));
+                report.set(new LastRptRequested(i == orders.size() - 1));
+                send(report, sessionId, reqId);
+            }
+        }
+
+        private int accountOf(final Message req) throws FieldNotFound {
+            return req.isSetField(quickfix.field.Account.FIELD)
+                ? Integer.parseInt(req.getString(quickfix.field.Account.FIELD)) : defaultAccountId;
+        }
+
+        private void sendStatusReject(final SessionID sessionId, final String clOrdId,
+                                      final String reqId, final char side, final String text) {
+            final ExecutionReport report = statusReport(0, side, 0, 0, OrdStatus.REJECTED, "");
+            if (clOrdId != null) {
+                report.set(new ClOrdID(clOrdId));
+            }
+            if (reqId != null) {
+                report.set(new MassStatusReqID(reqId));
+            }
+            report.set(new Text(text));
+            send(report, sessionId, clOrdId == null ? reqId : clOrdId);
+        }
+
+        private ExecutionReport statusReportFor(final OrderStatusSource.OrderView v) {
+            final char side = "Sell".equalsIgnoreCase(v.side()) ? 'S' : 'B';
+            return statusReport(v.orderRef(), side, v.quantity(), v.remaining(),
+                ordStatusOfName(v.status()), v.security());
+        }
+
+        /** ExecutionReport(150=OrderStatus) skeleton; caller adds ClOrdID and/or MassStatusReqID. */
+        private ExecutionReport statusReport(final int orderRef, final char side, final int qty,
+                                             final int remaining, final char ordStatus,
+                                             final String security) {
+            final ExecutionReport report = new ExecutionReport(
+                new OrderID(orderRef > 0 ? "ord-" + orderRef : "NONE"),
+                new ExecID(String.valueOf(execSeq.incrementAndGet())),
+                new ExecType(ExecType.ORDER_STATUS),
+                new OrdStatus(ordStatus),
+                new Side(side == 'S' ? Side.SELL : Side.BUY),
+                new LeavesQty(remaining),
+                new CumQty(qty - remaining),
+                new AvgPx(0));
+            if (qty > 0) {
+                report.set(new OrderQty(qty));
+            }
+            if (security != null && !security.isEmpty()) {
+                report.set(new Symbol(security));
+            }
+            return report;
+        }
+
+        private char ordStatusOfName(final String status) {
+            return switch (status) {
+                case "PARTIALLY_FILLED" -> OrdStatus.PARTIALLY_FILLED;
+                case "FILLED" -> OrdStatus.FILLED;
+                case "CANCELED" -> OrdStatus.CANCELED;
+                case "REJECTED" -> OrdStatus.REJECTED;
+                default -> OrdStatus.NEW;
+            };
         }
 
         private int resolveOrderRef(final quickfix.Message request, final String qualifiedOrigClOrdId)
