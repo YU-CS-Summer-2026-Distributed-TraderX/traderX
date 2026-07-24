@@ -91,7 +91,16 @@ Not reproducible locally: whether `ubuntu-latest`'s node 22 / Temurin 21 render 
 whether the real-MediaDriver Aeron round-trip tests are happy on a 2-core hosted runner. Those are the
 first-run unknowns to watch (see risks).
 
-## Risks to watch on the first remote run
+## First remote run — found and fixed
+
+The first `hosted` run (push `cdcf4874`) **failed in 9 s at the Render step** — before any gradle. Root
+cause, reproduced locally by stubbing out `rg`: **`ubuntu-latest` ships `jq` but not `ripgrep`**, and
+`generate-state.sh` needs `rg` from its very first step (`validate-template-version-consistency.sh`).
+Fix: an `Install shell dependencies` step (`sudo apt-get install -y jq ripgrep`) before Render in both
+jobs — identical to what the existing docs/spec-kit workflows already do. Re-pushed. (GitHub gates
+Actions logs behind sign-in even on public repos, so this was diagnosed by local repro, not the CI log.)
+
+## Risks to watch on the second remote run
 
 1. **Node/JDK on the runner.** Local render used node 25 / JDK 25; the workflow pins node 22 / Temurin
    21 (matches `sourceCompatibility`). If generation trips on node, bump `node-version`.

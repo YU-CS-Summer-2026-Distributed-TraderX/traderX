@@ -50,6 +50,11 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Install shell dependencies
+        # ubuntu-latest ships jq but NOT ripgrep; generate-state.sh needs rg from
+        # its very first step (validate-template-version-consistency.sh). Same
+        # install the docs/spec-kit workflows already do.
+        run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree (${{ matrix.branch }})
         run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh ${{ matrix.branch }}
       - name: Run functional suite + allocation gates
@@ -81,6 +86,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
+      - name: Install shell dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree (YU15)
         run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
       - name: Run cluster + timing + Epsilon gates
