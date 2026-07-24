@@ -1,6 +1,7 @@
 [![FINOS Hosted Platform - TraderX demo 004](https://img.shields.io/badge/FINOS%20Hosted%20Platform-TraderX%20Demo%20004-blue)](https://demo.traderx.finos.org/)
 [![FINOS Hosted Platform - TraderX demo 009](https://img.shields.io/badge/FINOS%20Hosted%20Platform-TraderX%20Demo%20009-teal)](https://demo-advanced.traderx.finos.org/)
 [![FINOS - Incubating](https://cdn.jsdelivr.net/gh/finos/contrib-toolbox@master/images/badge-incubating.svg)](https://finosfoundation.atlassian.net/wiki/display/FINOS/Incubating)
+[![Engine Tests](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/actions/workflows/engine-tests.yml/badge.svg?branch=YU15-eod-risk-extract)](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/actions/workflows/engine-tests.yml)
 
 # FINOS | TraderX (SpecKit-First Baseline)
 

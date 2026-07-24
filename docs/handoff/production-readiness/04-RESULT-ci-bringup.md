@@ -7,8 +7,13 @@
 
 ## Status
 
-**Authored and validated locally; awaiting the YU15 push to run on GitHub** (Actions only runs on the
-remote — this will be the first push since the idempotency fix). Ready-for-push flag is at the bottom.
+**✅ GREEN on GitHub — the badge is live.** First push failed fast on a missing runner dependency
+(diagnosed + fixed, see below); the fixed run
+([30124524085](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/actions/runs/30124524085))
+went fully green in **~3m49s**: render → ~298 functional tests + 4 allocation gates, all pass, JUnit
+artifact uploaded. Both flagged first-run unknowns resolved — node 22 / Temurin 21 rendered fine, and
+the ~6 real-MediaDriver Aeron round-trip tests survived the 2-core hosted runner (they stay on hosted).
+The `dedicated` job correctly skipped (it's `workflow_dispatch`-only). Badge added to `README.md`.
 
 ## What landed
 
