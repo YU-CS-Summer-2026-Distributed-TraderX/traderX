@@ -153,6 +153,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // counting those here would drown the market-trade signal in ordinary order flow.
     private volatile long marketTradesBooked;
     private volatile long marketTradesRejected;
+    // LATENCY-01 Phase A: side-channel per-hop latency decomposition; null unless LATENCY_DECOMP=1.
+    // Owner thread records the queue/cluster segments; the binary acceptor records decode/reply/total.
+    private final GatewayLatencyDecomposition latency = GatewayLatencyDecomposition.fromEnvOrNull();
 
     public static void main(final String[] args) throws Exception {
         new ClusterGatewayMain().run();
@@ -192,6 +195,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
+        server.createContext("/latency", this::handleLatency);
         server.createContext("/seed", this::handleSeed);
         server.createContext("/resolve", this::handleResolve);
         server.createContext("/ready", exchange ->
@@ -214,7 +218,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // set, so existing deploys are unchanged. Same OrderSubmitter seam, same pipelined window.
         final String binPortEnv = env("BINARY_ACCEPTOR_PORT", "");
         if (!binPortEnv.isEmpty()) {
-            binaryAcceptor = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv));
+            binaryAcceptor = new BinaryGatewayAcceptor(this, Integer.parseInt(binPortEnv), latency);
             binaryAcceptor.start();
             Runtime.getRuntime().addShutdownHook(new Thread(binaryAcceptor::stop));
         }
@@ -535,6 +539,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             if (!inflight.acquire(ACK_TIMEOUT_MS)) {
                 return null; // window saturated: treat as ambiguous backpressure, never a false reject
             }
+            // LATENCY-01 Phase A: t_decoded — owner-queue wait starts as this order is enqueued.
+            if (latency != null && latency.sample()) {
+                p.tSubmitNanos = System.nanoTime();
+            }
             // Fire-and-forget on the owner thread: offer + register, no per-order wait.
             tasks.add(new FutureTask<>(() -> offerPipelined(p), null));
             return p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
@@ -591,6 +599,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
             }
             pipelineOffersSucceeded++;
+            // LATENCY-01 Phase A: t_offer — offer cleared into the log. queue = owner-thread wait, and
+            // the cluster black box starts now. Single owner thread, single clock: valid subtraction.
+            if (p.tSubmitNanos != 0) {
+                p.tOfferNanos = System.nanoTime();
+                latency.recordQueue(p.tOfferNanos - p.tSubmitNanos);
+            }
             inflight.register(p); // offer order == ack order
         } catch (final Exception e) {
             p.future.complete(null);
@@ -627,6 +641,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     acceptedOrders++;
                 }
             }
+        }
+        // LATENCY-01 Phase A: t_egress — committed ack in hand. cluster black box = t_offer -> now
+        // (ingress-out + sequence + consensus commit + apply + egress-back), all one owner clock.
+        // Record BEFORE completing the future so the submit thread can't race the reset() between them.
+        if (p.tOfferNanos != 0) {
+            latency.recordCluster(System.nanoTime() - p.tOfferNanos);
         }
         p.future.complete(new ExecResult(accepted, ref, kind, riskReason));
         pipelineAcksCompleted++;
@@ -1032,6 +1052,33 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
     }
 
+    /** LATENCY-01 Phase A side channel: per-hop decomposition (µs) of the gateway's residence time.
+     *  {@code GET /latency} dumps p50/p99/p99.9/max per segment; {@code GET /latency?reset=1} zeros the
+     *  histograms (call after warmup so the reported window is warm-JIT only). 503 when LATENCY_DECOMP
+     *  is off. */
+    private void handleLatency(final HttpExchange exchange) {
+        if (latency == null) {
+            respond(exchange, 503, "latency decomposition disabled (set LATENCY_DECOMP=1)\n");
+            return;
+        }
+        final String query = exchange.getRequestURI().getQuery();
+        if (query != null && query.contains("reset=1")) {
+            latency.reset();
+            respond(exchange, 200, "reset\n");
+            return;
+        }
+        try {
+            final byte[] bytes = latency.dump().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream out = exchange.getResponseBody()) {
+                out.write(bytes);
+            }
+        } catch (final Exception ignore) {
+            // scrape client went away
+        }
+    }
+
     // ----- symbol resolution (owner thread only) ---------------------------------------------
 
     /** ticker -> securityId via the sequenced registration path (matrix F2); cached forever.
@@ -1163,6 +1210,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
         final int securityId;    // binary NEW only: pre-resolved id (ticker == null); -1 = resolve via ticker
         final CompletableFuture<ExecResult> future = new CompletableFuture<>();
+        // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
+        // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
+        // the owner's single-threaded run give the happens-before, so no volatile needed.
+        long tSubmitNanos; // t_decoded: submit thread enqueued this order (owner-queue wait starts)
+        long tOfferNanos;  // t_offer:   owner thread cleared the offer into the log (cluster black box starts)
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {

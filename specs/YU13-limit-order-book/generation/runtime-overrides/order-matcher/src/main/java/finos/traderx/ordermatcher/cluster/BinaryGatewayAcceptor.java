@@ -72,12 +72,19 @@ public final class BinaryGatewayAcceptor {
     private final int port;
     private final LongAdder decodedFrames = new LongAdder();
     private final LongAdder acknowledgedFrames = new LongAdder();
+    private final GatewayLatencyDecomposition metrics; // null unless LATENCY_DECOMP=1 (LATENCY-01 Phase A)
     private volatile boolean running = true;
     private ServerSocket serverSocket;
 
     public BinaryGatewayAcceptor(final OrderSubmitter submitter, final int port) {
+        this(submitter, port, null);
+    }
+
+    public BinaryGatewayAcceptor(final OrderSubmitter submitter, final int port,
+                                 final GatewayLatencyDecomposition metrics) {
         this.submitter = submitter;
         this.port = port;
+        this.metrics = metrics;
     }
 
     public void start() throws IOException {
@@ -143,9 +150,20 @@ public final class BinaryGatewayAcceptor {
                 }
                 in.readFully(reqBytes, 0, len);
                 decodedFrames.increment();
-                final int ackLen = dispatch(req, 0, len, ack);
+                // LATENCY-01 Phase A: one sample decision per frame, reused for this order's segments so
+                // a sampled order is coherent. t_recv = bytes now in / decode start (gateway clock).
+                final boolean sample = metrics != null && metrics.sample();
+                final long tRecv = sample ? System.nanoTime() : 0L;
+                final int ackLen = dispatch(req, 0, len, ack, tRecv);
+                // t_egress = dispatch returned = committed ack in hand, before the reply write.
+                final long tEgress = sample ? System.nanoTime() : 0L;
                 out.write(ackBytes, 0, ackLen);
                 out.flush();
+                if (sample) {
+                    final long tReply = System.nanoTime(); // reply encoded + socket write flushed
+                    metrics.recordReply(tReply - tEgress);
+                    metrics.recordTotal(tReply - tRecv);
+                }
                 acknowledgedFrames.increment();
             }
         } catch (final EOFException eof) {
@@ -170,6 +188,15 @@ public final class BinaryGatewayAcceptor {
      * fake submitter. Zero-alloc: fields read via flyweight getters, no String, no boxing.
      */
     int dispatch(final DirectBuffer in, final int offset, final int len, final MutableDirectBuffer ackOut) {
+        return dispatch(in, offset, len, ackOut, 0L);
+    }
+
+    /** As {@link #dispatch(DirectBuffer, int, int, MutableDirectBuffer)}, but {@code tRecvNanos != 0}
+     *  means this frame is sampled: record the decode segment (t_recv &rarr; just-before-submit) on the
+     *  gateway clock. The submit call itself carries no timestamp — the owner-thread and reply segments
+     *  are timed on their own side (see {@link GatewayLatencyDecomposition}). */
+    int dispatch(final DirectBuffer in, final int offset, final int len, final MutableDirectBuffer ackOut,
+                 final long tRecvNanos) {
         final int msgType = in.getByte(offset) & 0xff;
         final long clOrdId;
         final OrderSubmitter.ExecResult r;
@@ -184,6 +211,9 @@ public final class BinaryGatewayAcceptor {
                 final int qty = in.getInt(offset + 12, LE);
                 final long limitPx = in.getLong(offset + 16, LE);
                 clOrdId = in.getLong(offset + 24, LE);
+                if (tRecvNanos != 0) {
+                    metrics.recordDecode(System.nanoTime() - tRecvNanos);
+                }
                 r = submitter.submitOrder(clOrdId, account, security, side, qty, limitPx);
                 break;
             }
@@ -193,6 +223,9 @@ public final class BinaryGatewayAcceptor {
                 }
                 final int orderRef = in.getInt(offset + 4, LE);
                 clOrdId = in.getLong(offset + 8, LE);
+                if (tRecvNanos != 0) {
+                    metrics.recordDecode(System.nanoTime() - tRecvNanos);
+                }
                 r = submitter.submitCancel(orderRef);
                 break;
             }
@@ -204,6 +237,9 @@ public final class BinaryGatewayAcceptor {
                 final int qty = in.getInt(offset + 8, LE);
                 final long limitPx = in.getLong(offset + 16, LE);
                 clOrdId = in.getLong(offset + 24, LE);
+                if (tRecvNanos != 0) {
+                    metrics.recordDecode(System.nanoTime() - tRecvNanos);
+                }
                 r = submitter.submitReplace(orderRef, clOrdId, qty, limitPx);
                 break;
             }

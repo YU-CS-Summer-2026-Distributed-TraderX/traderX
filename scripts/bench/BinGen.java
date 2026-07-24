@@ -245,7 +245,12 @@ public final class BinGen {
                         }
                         long clOrdId = base + seq;
                         encodeNew(buf, n * 34, side, account, SECURITY, QTY, PX_TICKS, clOrdId);
-                        sendNanos[(int) (seq & (RING - 1))] = now;
+                        // Coordinated-omission-safe: record the INTENDED send time in paced mode (the
+                        // schedule slot), not the actual `now`. If the writer slips behind schedule the
+                        // slip is charged to latency instead of being silently omitted — exactly the tail
+                        // the decomposition must not hide. Blast has no schedule, so `now` is intended.
+                        sendNanos[(int) (seq & (RING - 1))] =
+                            paced ? windowStartNanos + (long) (seq * period) : now;
                         seq++; n++;
                     }
                     if (n > 0) {
