@@ -26,7 +26,7 @@ credibility now. Testing and supportability do.
 | [01](01-upstream-rebase-spike.md) → [FINDINGS](01-upstream-rebase-spike-FINDINGS.md) | **Upstream rebase spike — ✅ DONE 2026-07-24** | Sized: 2–3 days, low risk, **structural bucket empty**. **Brief 03 = GO now** | done |
 | [02](02-test-coverage-inventory.md) → [MAP](02-RESULT-coverage-map.md) | Test-coverage inventory — **✅ DONE 2026-07-24** (`e3225c4f`) | **853 tests, all operator-driven, ZERO in CI** | done |
 | [03](03-baseline-unit-tests.md) | Unit tests for the plain-vanilla TraderX baseline | high — **GO now** (01 says the code is byte-identical to upstream) | ready |
-| [04](04-milestone-and-integration-tests.md) | Milestone unit tests across YU states + integration tests + **CI wiring FIRST** | high | ready (02 map done) |
+| [04](04-milestone-and-integration-tests.md) → [CI RESULT](04-RESULT-ci-bringup.md) | **CI wiring ✅ DONE + GREEN** (`4abcfdf2`, badge live, YU15 hosted 298 tests + 4 gates, 3m49s). Remaining: milestone/integration tests, promote 17 proof scripts to CI, extend matrix to YU13/14 | high (rest) | 04-CI done |
 | [05](05-opentelemetry-observability.md) | OpenTelemetry + observability platform, **async** | high | nothing — **start in parallel** |
 | [06](06-kdb-journaling-playback.md) | kdb as the time-series / playback store (into YU07) | medium | **unblocked — scope settled 2026-07-24** |
 | [07](07-risk-integration-with-alex.md) | Risk-component integration with Alex | high (blocks another person) | a design session with Alex |
