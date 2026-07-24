@@ -41,10 +41,31 @@ None. Most recently closed:
   `lmax-kubernetes` branch (pre-YU02-rename, carries `specs/lmax-kubernetes`) was deliberately NOT
   updated — it predates the YUxx layout entirely; the YU02 blp-ha branch is the effective home.
 
+## Intentional divergences — DO NOT re-sync (they will look like drift and are not)
+
+A cross-worktree md5 diff will flag these as inconsistent. **Leave them.** Re-syncing to a single
+version re-breaks the diverging branch.
+
+- **YU01 `009b` overlay patch — `RUN_FROM_GENERATED.md` hunk deliberately dropped (2026-07-24, upstream
+  rebase).** `specs/009b-lmax-sequencer-architecture/generation/patches/0001-state-overlay.patch` on
+  `YU01-lmax-sequencer` is missing the one cosmetic hunk that modifies the *generated*
+  `RUN_FROM_GENERATED.md` (retitle "State 009"→"009b" + start-script names) that YU02–YU15 still carry.
+  **Why the divergence is correct, not drift:** that hunk applies with exact 28-line context against the
+  generated baseline doc. YU02–YU15 render `009b` **in-chain**, where the baseline still matches, so the
+  hunk applies. YU01 renders `009b` **standalone as its target state**, where the upstream-refreshed
+  baseline no longer matches, so the hunk fails and takes the *entire* overlay patch (57 file sections)
+  down with it — YU01 won't render at all. Dropping the cosmetic hunk is the fix; the generated YU01
+  `009b` keeps the baseline `RUN_FROM_GENERATED.md` (a doc titled "State 009" — harmless). **A future
+  propagator that copies YU02–15's 009b patch onto YU01 to "restore consistency" will re-break YU01's
+  standalone render.** If this ever needs re-unifying, the correct move is to regenerate the hunk against
+  upstream's current baseline (via `create-state-patchset`), not to copy another branch's version.
+  Full narrative: `docs/handoff/production-readiness/REBASE-EXPERIENCE.md` (Surprise #6).
+
 ## Convention going forward
 
 When a fix lands in an **ancestor state's** spec layer (`specs/YUxx-*/generation/...`) on its home
 branch, immediately copy it to that path on **every descendant branch** and commit — the
 `spec-pack-audit` skill's cross-worktree diff is the verification step. Rule of thumb: a spec-layer
 file's md5 should be identical across every branch that carries it (the home branch is
-authoritative when they differ).
+authoritative when they differ) — **except for the intentional divergences listed above, which are
+context-dependent and must not be re-synced.**
