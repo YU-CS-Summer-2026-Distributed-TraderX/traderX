@@ -210,8 +210,16 @@ the only minor-not-patch bump). Push in **green batches**, in lineage order, nev
 
 | Batch | Branch(es) | Merge | Dead-layer edits | Suites | Notes |
 |---|---|---|---|---|---|
-| 1 | YU02 (template) | ✅ `b1fdf23c` — 5 conflicts resolved (2 true 3-way, 2 take-upstream, 004 `--ours`) | ✅ 8 build.gradle bumped (YU02+009b layers) + NATS 2.10→2.14 in 2 files | ⚠️ render FAILED under 004 `--ours` (Surprise #6) — 004 re-decision in flight | Lane's uncommitted CLAUDE.md preserved (never staged). Dep push-down verified: CVE versions land in the rendered tree independent of the 004 choice. Merge commit to be amended once 004 settles. |
-| … | YU03–YU15 | — | — | — | replay after template verifies green — HELD pending 004 (patch is blob-identical across all 14, so it's decided once) |
+| 1 | YU02 (template) | ✅ `89280f68` — 5 conflicts (2 true 3-way, 2 take-upstream, 004 **`--theirs`** after Surprise #6) | ✅ `1adfc2fd` — 8 build.gradle + NATS across YU02+009b layers | ✅ **no regression** — 37 tests / 12 fail, **identical to pre-merge baseline** | CVEs verified in rendered tree (boot 3.5.16 / log4j 2.26.1 / kotlin 2.4.10 / logback 1.5.34 / nats 2.14), **zero old-version leakage**. The 12 failures are pre-existing `@SpringBootTest` context tests needing DB/infra a bare `./gradlew test` doesn't provide — proven by rendering + testing the pre-merge tip (`e30ac2e3`): same 37/12, same two classes. |
+| … | YU03–YU15 | pending | pending | pending | replay of the proven recipe, in lineage order |
+
+**Regression-net method (established on YU02, reused per branch):** a raw failure count is meaningless
+without a baseline. To tell *rebase regression* from *pre-existing environmental failure*, render **and test
+the pre-merge tip** of the branch and diff the failing set. YU02: pre-merge `e30ac2e3` and post-rebase both
+show 37 tests / 12 failed / same two classes → the dependency bump (incl. the one minor, kotlin
+2.3.20→2.4.10) breaks nothing; the 12 are `@SpringBootTest` context loads that need H2/DB the compose stack
+provides and a bare gradle run does not. *(That gap — engine `@SpringBootTest`s red under plain `./gradlew
+test` — is a real CI-setup item for brief 04, independent of this rebase.)*
 
 **004 decision (recorded):** `--ours` — keep stripping upstream's 32 baseline **runtime** smoke scripts.
 They curl live services and assume upstream behavior we deliberately changed (CORS, unknown-user 404,
