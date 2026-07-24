@@ -23,7 +23,7 @@ credibility now. Testing and supportability do.
 
 | # | Brief | Priority | Gated on |
 |---|---|---|---|
-| [01](01-upstream-rebase-spike.md) | **Upstream TraderX rebase — SPIKE first** | **DO FIRST** — it sequences everything else | nothing |
+| [01](01-upstream-rebase-spike.md) → [FINDINGS](01-upstream-rebase-spike-FINDINGS.md) | **Upstream rebase spike — ✅ DONE 2026-07-24** | Sized: 2–3 days, low risk, **structural bucket empty**. **Brief 03 = GO now** | done |
 | [02](02-test-coverage-inventory.md) | Test-coverage inventory + coverage map | **DO NOW** (parallel, cheap, produces a slide) | nothing |
 | [03](03-baseline-unit-tests.md) | Unit tests for the plain-vanilla TraderX baseline | high | **01** (same code the rebase changes) |
 | [04](04-milestone-and-integration-tests.md) | Milestone unit tests across YU states + integration tests | high | 02 (map), partly 01 |
@@ -34,11 +34,16 @@ credibility now. Testing and supportability do.
 
 ## TWO DECISIONS THAT GATE REAL WORK
 
-**1. Rebase vs. baseline tests — they collide.** Dov suggests unit-testing the *plain vanilla* TraderX
-we forked (brief 03). Brief 01 rebases *that exact code* onto a newer upstream. Writing those tests
-first means rewriting them after. **So: spike 01 first (1–2 days), then decide.** Small delta → rebase,
-then test once. Large delta → test our own YU-layer code (upstream can't touch it) while the rebase
-runs separately, and accept rework on the baseline tests.
+**1. ✅ RESOLVED (spike 01, 2026-07-24) — they do NOT collide. Start brief 03 now.** The spike rendered the
+shared baseline from our fork point and from `finos/main` today and diffed the trees: **upstream changed
+zero lines of service source** in seven weeks (0 differing `.java`, 0 differing service `.ts`; only dep
+versions and config moved). The "rebase changes the exact code brief 03 tests" premise is false — the code
+brief 03 tests is byte-identical to upstream's. Baseline tests cannot be invalidated by the rebase. Two
+cheap guards: brief 03 must not assert on dependency versions, and should start with the Java/NestJS
+services and defer front-end unit tests (the one area with additive upstream churn) until after the merge.
+The rebase itself is a **2–3 day dependency/CVE catch-up** (there is no code to rebase), runnable in
+parallel with 03 as long as they're not on the same branch at once. Full sizing + strategy in the
+[FINDINGS doc](01-upstream-rebase-spike-FINDINGS.md).
 
 **2. ✅ SETTLED (professor, 2026-07-24) — kdb is the TIME-SERIES STORE.** It becomes our market-data /
 trade time-series and replay-analytics store, slotting into **YU07 (historical tick store)**. **The Aeron

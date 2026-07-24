@@ -13,9 +13,9 @@
 |---|---|
 | How far behind are we? | **62 commits**, 2026-06-07 → 2026-07-22 (~7 weeks) |
 | Structural bucket (new/renamed/removed services, schema, message contracts) | **EMPTY.** Zero. |
-| Service source code changed upstream | **Zero lines.** Not one `.java` / `.ts` service file |
+| Service source code changed upstream | **Zero lines** — proven by rendered-tree diff, not commit messages |
 | Real content of the 62 commits | 29 dependency/CVE bumps, 29 generator-plumbing fixes, 6 website/docs |
-| Git-level conflicts merging upstream into our branches | **5–7 files**, and they are the *same* files on every branch |
+| Git-level conflicts merging upstream into our branches | **5–7 files**, the *same* files on every branch (strictly nested) |
 | Generation-level work (the part git will not tell you about) | **13 shadowed files × 14 branches** ≈ 150 one-line edits |
 | Effort | **2–3 days**, of which ~1 day is test wall-clock |
 | Risk | **Low** — the only semantic change is patch/minor dependency versions |
@@ -55,12 +55,26 @@ finos/traderX  main ────●───────────────
 | Generator + publish-gate plumbing (upstream's own CI for states 001–014) | 29 | Mostly no |
 | Website / Docusaurus / docs portal (incl. new `specs/015-docs-portal-homepage`) | 6 | No |
 
-**Not a single upstream commit touches a TraderX service's source code.** Verified two ways: the changed
-file list contains zero paths under `account-service/`, `position-service/`, `trade-processor/`,
-`trade-service/`, `reference-data/`, `people-service/`, `web-front-end/`, `price-publisher/`,
-`database/`, `ingress/` at the repo root; and inside the generated overlay patches, the only touched paths
-in those components are `build.gradle`, `package.json`, `application.properties`, `gradlew`/wrapper, and
-`SPEC.manifest.json`. **Build files and config. No logic.**
+**Not a single upstream commit touches a TraderX service's source code.** Verified *three* ways:
+
+1. The changed-file list contains zero paths under `account-service/`, `position-service/`,
+   `trade-processor/`, `trade-service/`, `reference-data/`, `people-service/`, `web-front-end/`,
+   `price-publisher/`, `database/`, `ingress/` at the repo root.
+2. Inside the generated overlay patches, the only touched paths in those components are `build.gradle`,
+   `package.json`, `application.properties`, `gradlew`/wrapper, and `SPEC.manifest.json`.
+3. **The decisive check — rendered output, not git names.** I rendered the shared baseline state (014) from
+   *our* fork point and from `finos/main` today, into two clean trees, and diffed them. Result:
+
+   ```
+   differing *.java in any service ............ 0
+   differing NestJS/front-end *.ts logic ...... 0   (excludes .spec, environment configs)
+   ```
+
+   Every file that differs is a `build.gradle` (dep versions), an `application.properties` (upstream
+   dropped one `springdoc.swagger-ui.disable-swagger-default-url` line), a Dockerfile, a `package.json`,
+   an Angular `environment.*.ts`, or the timestamped `state-ui.json`. Plus a handful of Angular *additions*
+   at the baseline (`tradingview-symbol-map.ts`, `serve-angular-dist.js`, an `environment.interface.ts`).
+   **Build files and config. No service logic, anywhere.** This is what makes the brief-03 go/no-go safe.
 
 ---
 
@@ -81,23 +95,23 @@ There are **two different, non-overlapping conflict sets**, and confusing them i
 
 | Branch | Conflicts |
 |---|---|
-| YU02-lmax-kubernetes-blp-ha | **0** |
-| YU03, YU05 | 5 |
-| YU09, YU12, YU13, YU14, YU15 (and YU04, YU06–YU08, YU10, YU11) | 7 |
+| YU01-lmax-sequencer | 3 |
+| YU02 … YU08 | 5 |
+| YU09 … YU15 | 7 |
 
-And they are **the same seven files on every branch**:
+And they are **the same files on every branch** — a strict nesting, not fifteen different problems:
 
 ```
-pipeline/install-generated-runtime-harness.sh
-pipeline/prepublish-generated-state-gate.sh
-pipeline/render-state-009-order-management-matcher.sh
-scripts/start-state-010-kubernetes-runtime-generated.sh
-scripts/status-state-010-kubernetes-runtime-generated.sh
-specs/004-containerized-compose-runtime/generation/patches/0001-state-overlay.patch
-website/docusaurus.config.js
+pipeline/prepublish-generated-state-gate.sh                                    ┐
+pipeline/render-state-009-order-management-matcher.sh                          │ the 5,
+scripts/start-state-010-kubernetes-runtime-generated.sh                        │ everywhere
+scripts/status-state-010-kubernetes-runtime-generated.sh                       │ from YU02
+specs/004-containerized-compose-runtime/generation/patches/0001-state-overlay.patch ┘
+pipeline/install-generated-runtime-harness.sh     ┐ added at YU09
+website/docusaurus.config.js                      ┘
 ```
 
-Resolve once, replay fourteen times. Half a day, most of it mechanical.
+Resolve once on YU02, replay fourteen times, add two more resolutions at YU09. Half a day, mechanical.
 
 Worth noting *why* the collision surface is that small: **we have edited almost nothing upstream owns.**
 Across the entire lineage (`de58b8fa..YU15`), our diff against upstream-owned paths is **7 files**:
@@ -193,13 +207,13 @@ Damage is concentrated exactly where the brief predicted — the inherited servi
 
 | State | Git conflicts | Shadowed files to re-apply | Notes |
 |---|---|---|---|
-| YU02-lmax-kubernetes-blp-ha | 0 | 8 | Carries the most baseline overrides (95 files); most bumps land here |
+| YU02-lmax-kubernetes-blp-ha | 5 | 8 | Carries the most baseline overrides (95 files); most bumps land here |
 | YU03-in-memory-risk-gateway | 5 | 8 + web-front-end (4) | Owns `trade.component.ts`, `order-ticket.*` → shadows upstream's pricing-UI fix |
-| YU04-durable-control-feeds | 7 | 10 | Sole carrier of `reference-data/package.json` |
+| YU04-durable-control-feeds | 5 | 10 | Sole carrier of `reference-data/package.json` |
 | YU05-post-trade-compliance | 5 | 10 | |
-| YU06-eod-price-production | 7 | 11 | |
-| YU07-historical-tick-store | 7 | 11 | |
-| YU08-execution-algo-engine | 7 | 11 | |
+| YU06-eod-price-production | 5 | 11 | |
+| YU07-historical-tick-store | 5 | 11 | |
+| YU08-execution-algo-engine | 5 | 11 | |
 | YU09-ops-hardening | 7 | 12 | |
 | YU10-fix-ingress | 7 | 13 | |
 | YU11-aeron-replication | 7 | 14 | First state with `generation/kubernetes` (9 files, no overlay → hand-carry) |
@@ -233,9 +247,13 @@ commons-lang3, springdoc, gradle wrapper, and now a `docker.images.nats` entry),
 So: **take the catalog file, then push its values down to the highest carrying layer on each branch.**
 That is a scripted find-and-replace over ~150 one-line edits, not a merge exercise.
 
-⚠️ Upstream's own refresh tool (`pipeline/refresh-generated-java-dependency-baseline.sh`) does **not** know
-about `generation/runtime-overrides/` — it was written for a fork that has no layers below it. It will
-report success having updated nothing that matters. We need our own ~30-line loop over the carrying layers.
+Upstream's own refresh tool, `pipeline/refresh-generated-java-dependency-baseline.sh`, takes directory roots
+as arguments and rewrites every `build.gradle` beneath them — so **we can point it straight at
+`specs/*/generation/runtime-overrides/`** and it will do the right thing. Two caveats: nothing in the
+pipeline points it there today (it is only ever invoked on generated output, which is why our layers have
+drifted seven weeks behind), and it only normalizes **Spring Boot, springdoc and tomcat**. The logback,
+log4j, kotlin-stdlib, PostgreSQL-JDBC and H2 pins — and every `package.json` — still need a small script of
+our own. Call it 30 lines, driven off the same catalog JSON.
 
 ### Proposed plan (RECOMMENDED)
 
@@ -282,10 +300,11 @@ run concurrently with brief 03's test-writing on the same branch**, because it r
 The whole reason this spike went first was: *"Brief 03 unit-tests the plain-vanilla TraderX we forked;
 brief 01 rebases that exact code; doing 03 first means rewriting those tests."*
 
-**That collision does not exist.** Upstream changed **zero lines of service source** in the seven weeks
-since our fork. The plain-vanilla `account-service`, `position-service`, `trade-processor`, `trade-service`,
-`reference-data`, `people-service`, and `web-front-end` **logic** that brief 03 would test is identical
-between our fork point and `finos/main` today. Tests written against it cannot be invalidated by this rebase.
+**That collision does not exist**, and this is not an inference from commit messages — it is a rendered-tree
+diff (§1, check 3). The plain-vanilla `account-service`, `position-service`, `trade-processor`,
+`trade-service`, `reference-data`, `people-service`, and `web-front-end` **logic** that brief 03 would test
+is byte-identical between our fork point and `finos/main` today: zero differing `.java`, zero differing
+service `.ts`. Tests written against it cannot be invalidated by this rebase.
 
 Two caveats, both cheap to design around:
 
@@ -342,15 +361,16 @@ is trustworthy.)
 **5. The most valuable thing upstream shipped was a *file format*, not a change.** Upstream spent much of
 these seven weeks centralizing every dependency pin into `catalog/dependency-version-targets.json` plus
 validation gates. That single file turns our catch-up from "read 62 commits" into "diff one JSON and push
-the values down." Upstream's tooling for it doesn't reach our layers — `refresh-generated-java-dependency-
-baseline.sh` doesn't know `runtime-overrides/` exists — but the *contract* is reusable and the 30-line
-adapter is ours to write. **Upstream did the hard part by accident: it gave the fork a machine-readable
-statement of intent.** That is the thing to ask an upstream for.
+the values down." Their refresh script even generalizes to our layers if you hand it the right roots —
+nobody upstream had a reason to, but the tool doesn't care. **Upstream did the most useful thing for its
+forks by accident: it published a machine-readable statement of intent.** A version manifest a downstream
+can diff is worth more than any number of merge commits, and it is the concrete thing to ask an upstream for.
 
 **6. Being a good fork citizen paid, measurably.** Our collision surface with upstream is **7 files across
 304 commits** — because we put essentially everything in our own layers instead of editing upstream's tree.
-That discipline is why YU02 merges with **zero** conflicts, and why a seven-week gap costs days instead of
-weeks. It is also the reason the structural bucket is empty: we never fought upstream for ownership of a
+That discipline is why the conflict set is five files and *the same* five files on every branch — a fork
+that had edited upstream's tree would face a different merge fifteen times. It is why a seven-week gap costs
+days instead of weeks. It is also the reason the structural bucket is empty: we never fought upstream for ownership of a
 file, so upstream never had to fight us back.
 
 **7. What we would tell the next fork.** (a) Never `cp -R` a file into your layer to change one line —
@@ -390,6 +410,16 @@ TRADERX_GENERATED_ROOT=$SCRATCH/gen bash pipeline/generate-state.sh YU02-lmax-ku
 md5 -q $SCRATCH/gen/code/target-generated/account-service/build.gradle
 md5 -q specs/YU02-lmax-kubernetes/generation/runtime-overrides/account-service/build.gradle   # identical
 grep "springframework.boot' version" $SCRATCH/gen/code/target-generated/*/build.gradle       # -> 3.5.14
+
+# the decisive brief-03 check: render the SAME baseline state from both revisions, diff rendered trees
+TRADERX_GENERATED_ROOT=$SCRATCH/genours bash pipeline/generate-state.sh 014-fdc3-intent-interoperability
+git worktree add --detach $SCRATCH/upstream-wt finos/main
+( cd $SCRATCH/upstream-wt && TRADERX_GENERATED_ROOT=$SCRATCH/genup \
+    bash pipeline/generate-state.sh 014-fdc3-intent-interoperability )
+for s in account-service position-service trade-processor trade-service; do
+  diff -rq $SCRATCH/genours/code/target-generated/$s/src \
+           $SCRATCH/genup/code/target-generated/$s/src | grep '\.java'   # -> (empty)
+done
 ```
 
 Scratch artifacts (this session only): `scratchpad/{ours.txt,upstream_real.txt,extract.py,diffsec.py}`,
