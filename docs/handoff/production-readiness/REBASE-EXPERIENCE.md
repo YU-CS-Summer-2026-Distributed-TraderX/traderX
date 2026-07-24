@@ -225,6 +225,13 @@ constructor) — both baseline-confirmed as *not* rebase-caused. All commits loc
 yaakov, in green batches). Only `kotlin-stdlib 2.3.20→2.4.10` was a minor-not-patch bump; it broke nothing
 (deprecation warnings on `RestTemplateBuilder`, no errors).
 
+**One separable follow-up remains (not core rebase):** upstream's three spec-kit governance workflows
+(`spec-kit-root-gates`, `runtime-script-parity`, `docs-spec-sanity`) lint doc conventions our states don't
+follow — e.g. our READMEs read `# Feature Pack: YU02-lmax-kubernetes` but the gate wants `# Feature Pack
+YU02:`. That's mechanical to conform, but the gates check more than headings, so it deserves its own focused
+pass (conform, then *run the gates to confirm green* — a blind heading swap isn't "conform"). Scoped and
+handed to the testing/CI lane; the gates are currently PR-scoped (non-blocking), so it isn't urgent.
+
 **Recipe mechanization (what made the replay safe and fast).** The deterministic conflicts (prepublish-gate,
 render-009, start/status-010, 004) resolve identically on every branch, so they were captured once and
 replayed by script: canonical resolved blobs for the byte-identical files, a marker-region swap for
