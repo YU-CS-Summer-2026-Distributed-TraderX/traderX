@@ -17,7 +17,7 @@
                     Create Trade Ticket
                 </button>
                 <button type="button" id="createOrderBtn" class="btn btn-sm btn-outline-primary" (click)="openOrderTicket(orderTicketTemplate)" [disabled]="isAllAccountsSelected">
-                    Create Order
+                    Create Order Ticket
                 </button>
             </div>
             <div *ngIf="isAllAccountsSelected" class="text-muted small mb-2">
@@ -52,7 +52,62 @@
         </div>
     </div>
 
-    <div class="trade-blotter">
+    <div class="row mb-3">
+        <div class="col-sm-4">
+            <div class="alert alert-secondary py-2 px-3 mb-0">
+                Total Cost Basis (All Accounts):
+                <strong>{{ allAccountsSummary.totalCostBasis | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+        <div class="col-sm-4">
+            <div class="alert alert-secondary py-2 px-3 mb-0">
+                Total Portfolio Value (All Accounts):
+                <strong>{{ allAccountsSummary.totalMarketValue | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+        <div class="col-sm-4">
+            <div class="alert py-2 px-3 mb-0" [ngClass]="allAccountsSummary.totalPnl >= 0 ? 'alert-success' : 'alert-danger'">
+                Total Net P&amp;L (All Accounts):
+                <strong>{{ allAccountsSummary.totalPnl | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+    </div>
+
+    <div class="row mb-3">
+        <div class="col-sm-4">
+            <div class="alert alert-info py-2 px-3 mb-0">
+                Account Cost Basis ({{ accountModel?.displayName || 'N/A' }}):
+                <strong>{{ accountSummary.totalCostBasis | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+        <div class="col-sm-4">
+            <div class="alert alert-info py-2 px-3 mb-0">
+                Account Portfolio Value ({{ accountModel?.displayName || 'N/A' }}):
+                <strong>{{ accountSummary.totalMarketValue | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+        <div class="col-sm-4">
+            <div class="alert py-2 px-3 mb-0" [ngClass]="accountSummary.totalPnl >= 0 ? 'alert-success' : 'alert-danger'">
+                Account Net P&amp;L ({{ accountModel?.displayName || 'N/A' }}):
+                <strong>{{ accountSummary.totalPnl | currency:'USD':'symbol':'1.2-2' }}</strong>
+            </div>
+        </div>
+    </div>
+
+    <ul class="nav nav-pills mb-3">
+        <li class="nav-item">
+            <button type="button" class="btn btn-sm me-2" [ngClass]="activeBlotter === 'trades' ? 'btn-primary' : 'btn-outline-primary'" (click)="setBlotterMode('trades')">
+                Trades / Positions
+            </button>
+        </li>
+        <li class="nav-item">
+            <button type="button" class="btn btn-sm" [ngClass]="activeBlotter === 'orders' ? 'btn-primary' : 'btn-outline-primary'" (click)="setBlotterMode('orders')">
+                Orders
+            </button>
+        </li>
+    </ul>
+
+    <div *ngIf="activeBlotter === 'trades'" class="trade-blotter">
         <app-trade-blotter
             [account]="accountModel"
             [allAccountsMode]="isAllAccountsSelected"
@@ -64,11 +119,12 @@
             [account]="accountModel"
             [allAccountsMode]="isAllAccountsSelected"
             [accountIds]="accountIds"
-            class="position-blotter-items">
+            class="position-blotter-items"
+            (summaryChange)="onSummaryChange($event)">
         </app-position-blotter>
     </div>
 
-    <div class="order-blotter mt-4">
+    <div *ngIf="activeBlotter === 'orders'" class="order-blotter mt-4">
         <app-order-blotter
             [account]="accountModel"
             [allAccountsMode]="isAllAccountsSelected"
