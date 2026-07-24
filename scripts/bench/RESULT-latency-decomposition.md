@@ -110,3 +110,49 @@ that can. (That is optimization, so it belongs to the next brief, not this one.)
   "everything on the wire/poll path outside the committed window," not a pure network number.
 - 75k is unsaturated here (p99/p50 ≈ 1.8×), so these are system latencies, not queue depth — the point
   of decomposing away from the 190k knee.
+
+---
+
+# Addendum — the busy-spin A/B (idle-strategy lever, PROVEN)
+
+The decomposition said the ~4ms is idle-strategy **park** latency, not the consensus model, and named
+the lever: non-parking idle on the members' Aeron agents, spending the 57% CPU headroom. This A/B runs
+it. One variable changed: the members' idle strategy, via a new `CLUSTER_IDLE_STRATEGY` env
+(`ClusterNodeConfig`), default backoff → **`yielding`** (spin + `Thread.yield()`, no park — the
+hardware-appropriate choice, since each member's 3-core pin can't give one exclusive core to each of its
+4 Aeron agent threads for a pure busy-spin). Same rig, same paced-75k reject path, warm, JFR off, mask=0.
+Gateway image unchanged (`CLUSTER_IDLE_STRATEGY` only affects `ClusterNodeMain`), so it's a clean
+single-variable A/B.
+
+| p50 | backoff (Aeron default, ≤1ms park) | **yielding** (no park) | speedup |
+|---|---:|---:|---:|
+| client RTT | 4852 µs | **1876 µs** | **2.6×** |
+| client RTT p99 | 10763 µs | **3858 µs** | 2.8× |
+| gateway total (residence) | 4248 µs | 1470 µs | 2.9× |
+| gateway cluster black box | 4040 µs | 1230 µs | 3.3× |
+| **leader commit (consensus round-trip)** | 2000 µs | **1000 µs** | 2.0× |
+| leader apply / match | 0.47 µs | 0.40 µs | ~1× (real work — unchanged) |
+| member idle CPU (of 3-core pin) | ~1.28 c (43%) | **~2.97 c (~99%)** | the cost |
+
+**Verdict — the park hypothesis is confirmed.** A pure config change (no architecture, no hardware, no
+core touch) cut client p50 **2.6×** and p99 **2.8×**. The consensus round-trip **halved** (one ~1ms park
+hop removed from the sequence→commit→deliver chain); the transport-poll residual fell further still (the
+member ingress-pickup and egress-emit park hops vanished). Apply stayed 0.4µs — it was never the issue.
+So **~60% of the original 4ms was Aeron's default idle-poll park latency**, redeemable for the idle CPU.
+
+**What's left, and the next dial (still not architecture).** After yielding, the floor is the ~1ms
+consensus commit (log replication + Archive disk record + quorum ack + residual yield/scheduling) plus a
+sub-0.3ms transport-poll residual. Cheaper dials before any consensus-model change:
+1. `CLUSTER_IDLE_STRATEGY=lowpark` (1µs max park) — likely most of the win for less than the ~99% CPU of
+   full yield; and `busyspin` (NoOp) if members are given >3 cores / dedicated pinning so 4 spinners fit.
+2. **Dedicated-core pinning** — the tail is still host-jittery (max 15–22ms gateway, 4ms commit); pinning
+   collapsed tails 7–13× in the failover work.
+3. Aeron **Archive** tuning (fileSyncLevel / recording placement) — the remaining ~1ms commit is partly
+   the per-member disk record on the quorum path.
+4. Only after those: RDMA/DPDK (medium), then the async / hot-hot replication model (heavy) — still
+   **not** justified: the commit round-trip is not the floor while cheaper dials remain untried.
+
+**Caveat (honest):** yielding pegs each member at ~99% of its 3-core pin *even at idle* — it buys latency
+with the throughput headroom. At 75k that's a clean win; a fleet pushing the members toward their
+consensus ceiling (~440k extrapolated) would have to weigh latency vs that headroom. The lever is a
+latency knob, not free.
