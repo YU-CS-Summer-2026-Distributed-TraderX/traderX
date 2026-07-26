@@ -22,8 +22,7 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 /**
  * Controller error-path mapping via standalone MockMvc — no Spring context, no DB. The point of
  * these is the @ExceptionHandler contract: a not-found must surface as HTTP 404 (not a 200 with an
- * empty body), and an unexpected failure as 500. Silent-200-on-failure is a bug class this project
- * has actually shipped, so these paths carry more weight than the happy path.
+ * empty body), and an unexpected failure as 500.
  */
 @ExtendWith(MockitoExtension.class)
 class AccountControllerTest {

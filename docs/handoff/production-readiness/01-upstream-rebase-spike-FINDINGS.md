@@ -19,8 +19,7 @@
 | Generation-level work (the part git will not tell you about) | **13 shadowed files × 14 branches** ≈ 150 one-line edits |
 | Effort | **2–3 days**, of which ~1 day is test wall-clock |
 | Risk | **Low** — the only semantic change is patch/minor dependency versions |
-| Recommendation | **Do it, reframed as a CVE/dependency catch-up.** Not a code rebase — there is no code to rebase |
-| **Go/no-go for brief 03 (baseline unit tests)** | ⭐ **GO. Start now. Do not wait for the rebase.** |
+
 
 ---
 

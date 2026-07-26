@@ -29,9 +29,7 @@ import org.springframework.web.client.RestTemplate;
  * ticker (reference-data) and account (account-service) over HTTP before publishing. We bind a
  * {@link MockRestServiceServer} to the controller's RestTemplate and mock the Publisher, so the
  * whole gate runs in-process. The load-bearing assertions are the REJECT paths: when a downstream
- * says 404, the order must be signalled as not-found AND must never reach the trade feed. A trade
- * that is rejected upstream but still published is precisely the silent-failure class this project
- * has shipped before.
+ * says 404, the order must be signalled as not-found AND must never reach the trade feed.
  */
 @ExtendWith(MockitoExtension.class)
 class TradeOrderControllerTest {
