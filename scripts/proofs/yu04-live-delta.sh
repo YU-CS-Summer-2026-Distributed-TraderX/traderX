@@ -33,15 +33,19 @@ printf "   %-30s %s\n" "inject $TK via reference-data" "POST /stocks (stocks + o
 printf "   %-30s %s\n" "source watermark (after)" "$(wm)"
 
 printf "   %-30s " "replica catches up"
+FAIL=1
 for i in $(seq 1 20); do
   v=$(replica_has)
-  if [ "$v" != "null" ] && [ -n "$v" ]; then echo "$TK present after ~$((i))×0.5s — no restart ✔"; break; fi
+  if [ "$v" != "null" ] && [ -n "$v" ]; then echo "$TK present after ~$((i))×0.5s — no restart ✔"; FAIL=0; break; fi
   [ "$i" = 20 ] && echo "TIMEOUT — $TK not seen in 10s ✘"
   sleep 0.5
 done
 
 echo
 echo "── feed health ──"
+# Informational only — the deployed image may predate these metric names; never the verdict.
 curl -s -m8 "$OM/actuator/prometheus" \
-  | grep -E "traderx_replica_source_watermark|traderx_replica_quarantine_total|traderx_control_update_rejected_total" \
+  | { grep -E "traderx_replica_source_watermark|traderx_replica_quarantine_total|traderx_control_update_rejected_total" || echo "   (feed metrics not exposed on this build)"; } \
   | sed 's/^/   /'
+# The exit code is the catch-up verdict — before this it was whatever the grep above returned.
+exit $FAIL
