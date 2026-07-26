@@ -31,6 +31,7 @@ credibility now. Testing and supportability do.
 | [06](06-kdb-journaling-playback.md) | kdb as the time-series / playback store (into YU07) | medium | **unblocked — scope settled 2026-07-24** |
 | [07](07-risk-integration-with-alex.md) | Risk-component integration with Alex | high (blocks another person) | a design session with Alex |
 | [08](08-github-io-branding.md) | YU-branded github.io site | low ("if you have time") — but Dov wants it | sync with Dov |
+| [PROOFS](HANDOFF-new-proof-scripts.md) | **New falsifiable proof scripts (OPEN, handed off 2026-07-25).** 7 missing e2e proofs: 3 kind-runnable (read-model effect-end, EOD quality-gate+consumer-halt, algo slicing) + 4 GKE resilience/DR (cluster recovery byte-identical rejoin, failover transparency zero-loss, cross-epoch no-id-reuse, restore-from-GCS). New scripts go in `scripts/proofs/` + catalog README. **Final phase: run the full test/proof/bench sweep (see handoff §Final phase).** | high (talk credibility) | GKE set needs a cluster + credits |
 
 ## TWO DECISIONS THAT GATE REAL WORK
 

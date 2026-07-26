@@ -94,6 +94,46 @@ GKE because kind can't credibly carry 3-member consensus timing, real failover, 
 - Whether #6 (cross-epoch id reuse) is its own script or folded into #4/#5 — author's call.
 - These are **YU15-tip only**; propagating to owner branches (YU06/YU08/YU12) is a later decision.
 
+## Final phase — full verification sweep (do this AFTER the proof scripts are written)
+
+Once the new proofs are written and green, run **everything** — every automated suite, every proof,
+and the benchmarks — and produce a single consolidated results doc
+(`docs/handoff/production-readiness/RESULT-full-verification-sweep.md`): a green/red table + the
+benchmark numbers, with each item marked PASS / FAIL / SKIPPED-needs-cluster and why.
+
+**A) Automated test suites (no live stack; this is the CI-equivalent set):**
+- Engine per branch — render then run, one at a time (concurrent gradle breaks `ThreeMemberClusterTest`):
+  `TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh <branch>` then
+  `bash scripts/ci/engine-tests.sh hosted` for **YU13, YU14, YU15**; and `… dedicated` on real/idle
+  hardware (3-node + timing + Epsilon gates).
+- Baseline Java: `bash scripts/ci/baseline-tests.sh` (account/trade/position/trade-processor).
+- reference-data: `cd templates/reference-data-specfirst && npm ci && npm test`.
+- people-service: `dotnet test templates/people-service-specfirst/PeopleService.Tests/PeopleService.Tests.csproj`.
+- Integration (needs Docker): `cd templates/trade-processor-specfirst && ./gradlew integrationTest`.
+
+**B) Proof scripts (need a live stack) — `scripts/proofs/`:**
+- **kind-runnable** (bring a state up on kind first; correctness only, set `CLUSTER_IDLE_SLEEP_MS=1`):
+  `yu03-risk-demo`, `yu04-{live-delta,offline-catchup}`, `yu05-{auth-entitlements,recon,regulatory-reproducible,settlement}`,
+  `yu10-fix-session`, `yu13-{cancel-ingress,clordid-suppression,stp-and-replace}`,
+  `yu15-{option-persistence,risk-extract}`, `seed-option-chain`, **plus the new kind proofs (#1–#3).**
+- **GKE-only** (needs a cluster + credits — coordinate with yaakov): `yu13-gke-replace-proof`,
+  `failover-nodeclock`, **plus the new GKE proofs (#4–#7).**
+
+**C) Benchmarks — `scripts/bench/` (produce numbers, not pass/fail; live stack):**
+- `bench/load/`: `run-all-tiers.sh` (the ladder), `avg-max-load.mjs`, `batch-experiment.mjs`,
+  `fix-multi.mjs`/`bin-multi.mjs`, `yu13-two-account-bench.sh`, `measure-trade-processor-db-rate.sh`,
+  the `run-gke-bench.sh`/`run-incluster-comparable.sh` in-cluster runners.
+- `bench/latency/`: `rest-latency-probe.mjs`, `failover-{client,bimodal}-probe.mjs`.
+- `bench/replay/`: `taq-replay.mjs` (curate first with `taq-curate.py`).
+
+**Interpretation discipline (non-negotiable):**
+- Ground truth is the member `traderx_cluster_next_order_ref` delta, never a gateway 200/booked counter.
+- **Never quote a timing/throughput number measured on kind** (idle-CPU starvation makes it a lie) —
+  kind results are correctness PASS/FAIL only; all latency/throughput numbers must come from GKE.
+- Quote ratios + the commit number, not a single run's absolute client RTT (run-to-run variance).
+- Run suites one at a time; expect the two documented flakes (72-byte allocation-gate artifact +
+  SnapshotBarrier timing) to need one isolated retry — that's built into `engine-tests.sh`.
+
 ## Suggested first steps for next chat
 
 1. Read this doc, then read `scripts/proofs/yu13-stp-and-replace.sh` + `yu13-cancel-ingress.sh` +
@@ -106,3 +146,7 @@ GKE because kind can't credibly carry 3-member consensus timing, real failover, 
    yaakov). #4 (recovery correctness) is the talk's money demo — prioritize it among the GKE set.
 5. Add each landed script to `scripts/proofs/README.md` and note it in `00-INDEX.md`. Commit per
    proof; never push.
+6. **Final phase — once the proofs are written, run the full verification sweep** (§ above): every
+   automated suite + every proof + the benchmarks, into
+   `RESULT-full-verification-sweep.md` (PASS/FAIL/SKIPPED-needs-cluster + benchmark numbers). The
+   GKE portion waits on a cluster; do the kind + automated portion first and mark the rest SKIPPED.
