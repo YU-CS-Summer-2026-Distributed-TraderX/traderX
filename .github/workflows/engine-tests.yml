@@ -33,11 +33,14 @@ jobs:
       fail-fast: false
       matrix:
         branch:
+          # Each renders its OWN effective tree (last-wins layering), so the same test name
+          # runs against different composed code per branch — this is where a dead-layer /
+          # propagation regression surfaces. All three validated green locally 2026-07-25
+          # (YU13 270 / YU14 284 / YU15 298, 0 fail). YU13/YU14 carry engine-tests.sh +
+          # exclude-heavy.gradle so the matrix leg's workspace checkout has them.
           - YU15-eod-risk-extract
-          # Enable after YU15 is green — one line each. Each renders its own
-          # effective tree; this is where dead-layer/propagation regressions surface.
-          # - YU14-listed-equity-options
-          # - YU13-limit-order-book
+          - YU14-listed-equity-options
+          - YU13-limit-order-book
     steps:
       - uses: actions/checkout@v5
         with:
