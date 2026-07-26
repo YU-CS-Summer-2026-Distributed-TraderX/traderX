@@ -14,6 +14,17 @@ java {
   sourceCompatibility = JavaVersion.VERSION_21
 }
 
+// This project's test sources live at src/main/test/java (a pre-existing convention across
+// several TraderX baseline services), which Gradle's Java plugin does not pick up by default
+// (its default test source dir is src/test/java) — without this, `./gradlew test` silently
+// reports NO-SOURCE and every test here never actually runs.
+sourceSets {
+  test {
+    java.srcDirs = ['src/main/test/java']
+    resources.srcDirs = ['src/main/test/resources']
+  }
+}
+
 repositories {
   mavenCentral()
 }
