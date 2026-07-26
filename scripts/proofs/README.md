@@ -44,6 +44,22 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 | [`yu05-regulatory-reproducible.sh`](yu05-regulatory-reproducible.sh) | The regulatory export is a **pure function of the journal** — the same query answered byte-reproducibly from the source of truth. | `RegulatoryReportDeterminismTest` |
 | [`yu05-settlement.sh`](yu05-settlement.sh) | The real settlement lifecycle: a booked trade walks Processing → Settled with a settlement date. | `SettlementServiceTest` |
 
+### EOD price production (YU06)
+
+_Both run against the state-014 kind rig (edge-proxy topology); recovered from the YU06 demo-prep
+scripts and hardened so every claim hard-fails. Each injects `EOD_UNIVERSE` and resets it on exit._
+
+| Script | What it proves | CI counterpart |
+|---|---|---|
+| [`yu06-quality-gate.sh`](yu06-quality-gate.sh) | The EOD publication quality gate is fail-safe: a MISSING price flags the session, **publish is refused (409, stays DRAFT) while flagged**, an operator override (with reason) resolves it as a new version, that version publishes, and the flagged version survives immutably. | `EodPriceServiceTest`, `EodQualityCheckerTest` |
+| [`yu06-consumer-halt.sh`](yu06-consumer-halt.sh) | The P&L consumer **halts fail-safe**: an account provably holding a security absent from the published universe gets **zero** P&L rows (never a partial mark), while control accounts are marked in the same version. | EOD consumer unit tests |
+
+### Execution algos (YU08)
+
+| Script | What it proves | CI counterpart |
+|---|---|---|
+| [`yu08-algo-slicing.sh`](yu08-algo-slicing.sh) | A TWAP parent order emits exactly N children **across** the schedule — count, quantity conservation, per-bucket timing window, and a mid-schedule not-front-loaded check — each **booked on the matcher's own blotter**, not the algo engine's word. | `AlgoEventStoreReplayTest`, `TwapScheduleBuilder` tests |
+
 ### FIX ingress (YU10)
 
 | Script | What it proves | CI counterpart |
@@ -74,6 +90,10 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 | Script | What it proves | CI counterpart |
 |---|---|---|
 | [`failover-nodeclock.sh`](failover-nodeclock.sh) | Node-clock-precise failover measurement for the Aeron Cluster: automatic promotion, sub-second, zero order loss. | `ThreeMemberClusterTest` (dedicated job) |
+| [`yu12-gke-recovery.sh`](yu12-gke-recovery.sh) | **GKE.** A member destroyed to an empty disk rejoins to **byte-identity** (order hash, position hash, trades, nextOrderRef agreed by all three) and **later becomes leader** and books a cross. The strongest correctness story, as a committed script. | `ThreeMemberClusterTest`, `SnapshotRoundTripTest` |
+| [`yu12-gke-failover-transparency.sh`](yu12-gke-failover-transparency.sh) | **GKE.** A leader kill under a live order stream loses **zero** and duplicates **zero** orders — client acks vs the member `next_order_ref` delta, exact equality on a quiet cluster. (The bench probes measure timing; this is the pass/fail correctness verdict.) | `ClOrdIdLedgerTest`, `InflightCorrelationTest` |
+| [`yu12-gke-cross-epoch-idreuse.sh`](yu12-gke-cross-epoch-idreuse.sh) | **GKE.** Across a failover, orderRefs continue **strictly above** the prior epoch's high-water mark — old/new ref sets disjoint, counter monotonic on all members, new refs proven live (they trade). Standing regression proof for the nextOrderRef-in-snapshot fix. | `SnapshotRoundTripTest` (nextOrderRef) |
+| [`yu12-gke-restore-from-gcs.sh`](yu12-gke-restore-from-gcs.sh) | **GKE.** Whole-cluster destruction → `RESTORE_FROM_GCS=1` → state intact at **exactly** the backup point (not the post-backup state, which is the honestly-stated RPO window) on all three members, and the restored book trades. | (no in-process counterpart — GCS + init-container path) |
 
 ## Notes
 

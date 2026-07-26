@@ -62,6 +62,13 @@ Almost every end-to-end proof has an in-process test asserting the same property
 | `yu04-live-delta.sh`, `yu04-offline-catchup.sh` | durable control feeds, bootstrap catch-up | `ControlFeedSubscriberTest`, `ControlFeedBootstrapStateTest` |
 | `yu15-risk-extract.sh`, `yu15-option-persistence.sh` | sequence-addressed, byte-identical EOD extract | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
 | `failover-nodeclock.sh` (HA) | sub-second failover, zero order loss | `ThreeMemberClusterTest` (Tier 3, dedicated) |
+| `yu13-readmodel-effect-end.sh` | order read model at the SQL effect end (place→NEW→cancel→CANCELED) | `ProjectorHandlerTest`, `OrderFeedHandler` rejection tests |
+| `yu06-quality-gate.sh`, `yu06-consumer-halt.sh` | EOD gate blocks flagged publish; P&L consumer halts fail-safe | EOD service/quality-checker unit tests |
+| `yu08-algo-slicing.sh` | TWAP parent slices N children across the schedule, all booked | `AlgoEventStoreReplayTest`, `AlgoOrderServiceTest` |
+| `yu12-gke-recovery.sh` (HA, GKE) | empty-disk rejoin to byte-identity; rebuilt node later leads | `ThreeMemberClusterTest`, `SnapshotRoundTripTest` (Tier 3) |
+| `yu12-gke-failover-transparency.sh` (HA, GKE) | leader kill under load: zero lost / zero duplicated | `ClOrdIdLedgerTest`, `InflightCorrelationTest` |
+| `yu12-gke-cross-epoch-idreuse.sh` (HA, GKE) | no orderRef reuse across epochs | `SnapshotRoundTripTest` (nextOrderRef in snapshot) |
+| `yu12-gke-restore-from-gcs.sh` (DR, GKE) | whole-cluster restore from gs:// to exactly the backup point | — (GCS + init-container path has no in-process seam) |
 
 **The reading:** the shell proofs are not our *only* evidence for these properties — they are the
 end-to-end confirmation of properties CI already gates in-process. That is the difference between "we
