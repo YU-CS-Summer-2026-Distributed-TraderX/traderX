@@ -13,7 +13,9 @@
 #                                             i.e. the system is actually serving again.
 # servingMs is the system-facing SLO. It is only meaningful with load in flight: FIRST-APPLY
 # cannot fire until a client message reaches the new leader, so on an idle cluster it measures
-# "time until someone happened to send something" (observed ~10s idle). ALWAYS run with load.
+# "time until someone happened to send something" (observed ~10s idle). ALWAYS run with load —
+# and DENSE load: a ~1/s probe pump inflates servingMs to the pump's retry cadence, not the
+# cluster's actual time-to-serving.
 #
 # Usage: CONTEXT=<kctx> NS=traderx ROUNDS=3 bash failover-nodeclock.sh
 set -uo pipefail
@@ -42,7 +44,15 @@ for r in $(seq 1 "$ROUNDS"); do
   if [ -z "$A1" ] || [ "$A2" = "$A1" ]; then
     echo "round $r: WARNING no traffic is being applied (applied stuck at ${A1:-?}) — start load first"; fi
 
-  T0=$(kc exec bench-runner -- date +%s%3N 2>/dev/null | tr -d '\r')
+  # busybox date has no %3N (prints the format literally), so ms-precision epoch isn't directly
+  # readable in the pod. Instead spin until the second rolls over and stamp that edge: accurate
+  # to the in-pod exec-loop latency (a few ms), portable to any image with `date +%s`.
+  T0S=$(kc exec bench-runner -- sh -c 's=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s' 2>/dev/null | tr -d '\r')
+  if ! [[ "$T0S" =~ ^[0-9]{10}$ ]]; then
+    echo "FATAL round $r: t0 capture failed (got '${T0S}') — cannot read a numeric epoch from bench-runner; refusing to print garbage deltas" >&2
+    exit 1
+  fi
+  T0=$((T0S * 1000))
   kc delete pod order-matcher-cluster-"$L" --grace-period=0 --force >/dev/null 2>&1
 
   RC=""; FA=""; NEW=""
