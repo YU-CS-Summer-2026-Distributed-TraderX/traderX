@@ -92,6 +92,42 @@ jobs:
           path: templates/*-specfirst/build/test-results/**/*.xml
           if-no-files-found: warn
 
+  baseline-reference-data:
+    # Baseline reference-data (NestJS). Tests run on Node's built-in test runner via ts-node
+    # (already a devDependency) — no jest/ts-jest added. See 03-RESULT-baseline-unit-tests.md.
+    name: baseline — reference-data (NestJS unit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/reference-data-specfirst
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: YU15-eod-risk-extract
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+      - name: Run unit tests
+        run: npm test
+
+  baseline-people-service:
+    # Baseline people-service (.NET / xUnit). Separate test project referencing the WebApi.
+    name: baseline — people-service (.NET unit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: YU15-eod-risk-extract
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+      - name: Run unit tests
+        run: dotnet test templates/people-service-specfirst/PeopleService.Tests/PeopleService.Tests.csproj
+
   dedicated:
     # Cluster + timing + Epsilon gates. On standard 2-core hosted runners the
     # 3-node cluster test and the 50 ms wall-clock budget are unreliable, so this

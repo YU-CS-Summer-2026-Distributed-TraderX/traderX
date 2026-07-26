@@ -6,7 +6,8 @@
   "scripts": {
     "build": "nest build",
     "start": "nest start",
-    "start:prod": "node dist/main.js"
+    "start:prod": "node dist/main.js",
+    "test": "node -r ts-node/register --test \"src/**/*.spec.ts\""
   },
   "dependencies": {
     "@nestjs/common": "^11.0.12",
