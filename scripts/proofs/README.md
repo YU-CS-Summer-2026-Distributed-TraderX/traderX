@@ -57,6 +57,7 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 |---|---|---|
 | [`yu13-cancel-ingress.sh`](yu13-cancel-ingress.sh) | A client can cancel a resting order on the cluster tier, and the cancel takes effect **identically on every member**. | `LimitOrderBookTest` (cancel*) |
 | [`yu13-clordid-suppression.sh`](yu13-clordid-suppression.sh) | A resent client order id **books once** — idempotency asserted in SQL. | `ClOrdIdLedgerTest`, `IdempotencyEvictionDeterminismTest` |
+| [`yu13-readmodel-effect-end.sh`](yu13-readmodel-effect-end.sh) | The order read model at the **SQL effect end**: place → member `next_order_ref` delta (ground truth) → `orderbook` row NEW → `GET /accounts/{id}/orders`; cancel → row CANCELED, out of the open set (a control order guards the disappearance check), projector rejection signal silent. | `ProjectorHandlerTest`, `OrderFeedHandler` rejection tests |
 | [`yu13-stp-and-replace.sh`](yu13-stp-and-replace.sh) | The member bundle: **self-trade prevention** (ADR-057, cancel-oldest) and **engine-native atomic replace** (ADR-058). | `LimitOrderBookTest` (selfMatch*, rejectedReplace*, replaceCrosses*, replayReproduces*) |
 | [`yu13-gke-replace-proof.sh`](yu13-gke-replace-proof.sh) | The three things atomic replace still needed proving on a **real cluster** — run on GKE because kind cannot carry them. | `LimitOrderBookTest` (replace*) + `ThreeMemberClusterTest` |
 
