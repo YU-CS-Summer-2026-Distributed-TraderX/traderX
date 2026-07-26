@@ -97,7 +97,14 @@ done
 order "${ACCT}"  Buy  6 "${PRICE}" >/dev/null                                  # rests
 order "${OTHER}" Sell 4 "${PRICE}" >/dev/null                                  # crosses
 order "${OTHER}" Sell 5 "$(python3 -c "print(${PRICE}+4)")" >/dev/null         # rests off-touch
-echo "[ok] state built on ${TICKER} (resting orders + positions + trades)"
+# Volume filler: the backup job refuses tars under 100KB (its anti-empty-backup floor), and a
+# fresh epoch's sparse log gzips to ~20KB. Rest FILLER non-crossing orders so the backup carries
+# real weight — measured: 5000 ≈ 2.2MB on member-0's disk, comfortably past the gate.
+FILLER="${FILLER:-5000}"
+seq 1 "${FILLER}" | xargs -P 8 -I{} curl -s -o /dev/null --max-time 10 -X POST "${MATCHER_URL}/orders" \
+  -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":$(python3 -c "print(${PRICE}-10)"),\"clientOrderId\":\"drfill-$$-{}\"}"
+echo "[ok] state built on ${TICKER} (resting orders + positions + trades + ${FILLER} filler orders)"
 
 step "1. QUIESCE, capture S, then take the backup (a one-off Job from the suspended CronJob)"
 S="$(identity_consensus)"
