@@ -3,8 +3,9 @@
 Everything runnable without a GKE cluster was run: every automated suite, every kind proof script
 (including the 4 new ones written today), on the live `kind-traderx-state-014` and
 `kind-traderx-yu12-cluster` rigs. **Final state: every suite and every kind proof PASS, except one
-proof marked PARTIAL with its claim verified by other means (detailed below).** The GKE proofs,
-all benchmarks, and the `dedicated` engine job are SKIPPED with reasons.
+proof marked PARTIAL with its claim verified by other means (detailed below).** Later the same
+day GKE was brought up and the GKE proof set was run live — **all 6 PASS** (§C); benchmarks are
+BANKED, and the `dedicated` engine job remains SKIPPED (needs idle hardware).
 
 Per the interpretation discipline: **no timing or throughput number in this document** — kind
 results are correctness PASS/FAIL only.
@@ -46,13 +47,29 @@ results are correctness PASS/FAIL only.
 | `yu15-risk-extract` | **PASS** | full acceptance: EOD chain with 24 options quality-OK → extract for sequence N, byte-identical, quiesced, write-once, and re-rendered identically by a restarted member |
 | `yu15-option-persistence` | **PARTIAL** | steps 1–3 (the migration mechanics: narrow a populated volume to the pre-YU15 schema, prove the shipped `900-migrations.sql` widens it in place) **PASS**. Step 4's before/after arm is **not reproducible on this rig**: the proof assumes its migration testbed (`eod-price-db`) is the same database the trade bridge writes (`database` here), so its "option trade lands intact" assertion reads the wrong DB. The claim itself was **verified directly**: an OCC-symbol option cross landed **2 rows in the bridge DB** post-migration (`yu15-option-cross-direct:ROWS=2`). Making the proof two-DB-aware is a small follow-up. |
 
-## C. GKE proofs & benchmarks — SKIPPED (needs a cluster)
+## C. GKE proofs — RUN 2026-07-26 (cluster brought up same day)
 
-`yu12-gke-{recovery,failover-transparency,cross-epoch-idreuse,restore-from-gcs}.sh`,
-`yu13-gke-replace-proof.sh`, `failover-nodeclock.sh`, and **all** of `scripts/bench/` (load ladder,
-latency probes, TAQ replay): **SKIPPED-needs-cluster** — GKE is at zero nodes. Run at the next
-bring-up (coordinate compute credits). Benchmarks additionally must never be run for numbers on
-kind.
+Pools scaled (3× c4d members + 5× std), the pinned YU15 tier deployed via
+`scripts/yu15/start-cluster-gke.sh` (`cluster-node:yu15-idempfix` digest-verified serving), one
+leader elected on a fresh epoch — then:
+
+| Proof | Result | The evidence |
+|---|---|---|
+| `yu12-gke-recovery.sh` | **PASS** (first run) | member destroyed to an empty disk → rejoined to **byte-identity** on order hash, position hash, trades, nextOrderRef (all three agreed) → forced elections until the rebuilt member **won leadership** → booked a cross as leader, refs strictly monotonic |
+| `yu12-gke-failover-transparency.sh` | **PASS** (first run) | leader killed under a live retrying stream: **588 client acks, ref delta exactly 588** on all three members — zero lost, zero duplicated; 1 in-flight send made whole by idempotent retry |
+| `yu12-gke-cross-epoch-idreuse.sh` | **PASS** (first run) | old epoch high-water 603; every new-epoch ref above it, sets disjoint, counter monotonic, new refs live (they trade) |
+| `yu12-gke-restore-from-gcs.sh` | **PASS** | whole-cluster destroy → restore from `gs://` **byte-equal to the quiesced backup point** (not the post-backup state — that 2-order gap is the honestly-stated RPO window) → restored book trades. One proof fix en route: the backup job's 100KB anti-empty floor needs real volume, so the proof now rests 5,000 filler orders first (`79d176b6`). |
+| `yu13-gke-replace-proof.sh` | **PASS** | ack correlation under cancel-plus-add, three-member identity, replace surviving snapshot + empty-disk rebuild — re-proven on today's image |
+| `failover-nodeclock.sh` | **MECHANICS PASS / measurement DEFECTIVE** | 3 kill→promote rounds completed, but its in-pod `date +%s%3N` t0 is empty on the busybox-based image, so it printed raw epoch stamps as "deltas" while exiting 0 — flagged as a follow-up (make t0 portable, fail loudly on empty). **No timing number is quoted from this run**; failover timing stands on the 2026-07-18 node-clock drills, and failover *correctness* stands on the transparency proof above. |
+
+## Benchmarks — BANKED, deliberately not rerun
+
+The performance thread is **done and banked** (2026-07-23/24, dedicated hardware): per-order
+ceiling ~190k/s at 4 gateways (gateway-bound, consensus ceiling ~440k), p50 < 1.5ms sustained to
+75k/s with consensus commit ~200µs load-invariant. Today's topology (no c2d load pool, e2 gateway
+nodes) cannot reproduce those conditions, and numbers from an under-provisioned rig would only
+muddy the banked ones. `run-all-tiers.sh`, the latency probes, and TAQ replay were therefore
+**not rerun by design**, not skipped for lack of a cluster.
 
 ## What the sweep itself caught (real faults, all fixed)
 
@@ -82,6 +99,9 @@ is exactly what a verification sweep is for:
 
 ## Rig state after the sweep
 
+- GKE `traderx-lmax`: **left UP** per the run — 8 nodes (3 c4d members + 5 std), the pinned
+  YU15 tier healthy on `cluster-node:yu15-idempfix`, backup CronJob still suspended (proof-created
+  Jobs only). Scaling down is yaakov's call.
 - `kind-traderx-yu12-cluster`: **torn down** (members + gateway scaled to 0) per request; the
   StatefulSet is parked on `traderx/cluster-node:yu15-sweep` (fresh YU15-tip build, includes
   readmodel + options + risk-extract) with wiped PVCs and a cleared read model — next bring-up is
