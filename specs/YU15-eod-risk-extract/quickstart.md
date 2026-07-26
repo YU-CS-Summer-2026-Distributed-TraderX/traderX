@@ -27,8 +27,8 @@ for body in \
 done
 
 # 5. run the acceptance proofs
-bash scripts/bench/yu15-risk-extract.sh        # the extract: cut, quiescence, reproducibility
-bash scripts/bench/yu15-option-persistence.sh  # options reach SQL, and the migration fixes an old DB
+bash scripts/proofs/yu15-risk-extract.sh        # the extract: cut, quiescence, reproducibility
+bash scripts/proofs/yu15-option-persistence.sh  # options reach SQL, and the migration fixes an old DB
 
 # teardown
 bash scripts/yu15/stop-cluster-kind.sh

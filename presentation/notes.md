@@ -126,13 +126,13 @@ then applies it to authoritative `BlpRiskState` in global order. So:
   is "every authoritative risk decision + control/reservation event," **not** a log of every 422.
   For 15c3-5 that's the right boundary. (Slide 8 says exactly this.)
 
-**Live demo cheat-sheet.** (`scripts/bench/yu03-risk-demo.sh`, one readable line per step)
+**Live demo cheat-sheet.** (`scripts/proofs/yu03-risk-demo.sh`, one readable line per step)
 ```bash
 # separate terminal:
 kubectl port-forward -n traderx deploy/order-matcher 18110:18110 --context kind-traderx-state-014
-bash scripts/bench/yu03-risk-demo.sh controls      # one order per reject control
-bash scripts/bench/yu03-risk-demo.sh restriction   # restrict BAC live → rejected → un-restrict → flows
-bash scripts/bench/yu03-risk-demo.sh killswitch    # engage → halted → disengage → flows
+bash scripts/proofs/yu03-risk-demo.sh controls      # one order per reject control
+bash scripts/proofs/yu03-risk-demo.sh restriction   # restrict BAC live → rejected → un-restrict → flows
+bash scripts/proofs/yu03-risk-demo.sh killswitch    # engage → halted → disengage → flows
 ```
 Show the journal too (rejects are journaled): the order-matcher journal at
 `/var/lib/traderx-lmax/journal`.
@@ -223,8 +223,8 @@ reject in parallel?"** (a likely mentor question — worth rehearsing.)
 ```bash
 # separate terminal:
 kubectl port-forward -n traderx svc/reference-data 18085:18085 --context kind-traderx-state-014
-bash scripts/bench/yu04-live-delta.sh       # inject a security → in the replica ~1s later, no restart
-bash scripts/bench/yu04-offline-catchup.sh  # scale order-matcher to 0 → inject → back up → present after bootstrap
+bash scripts/proofs/yu04-live-delta.sh       # inject a security → in the replica ~1s later, no restart
+bash scripts/proofs/yu04-offline-catchup.sh  # scale order-matcher to 0 → inject → back up → present after bootstrap
 ```
 Both take an optional ticker arg (default is `Z`+timestamp so reruns don't collide).
 **First-run-on-a-fresh-cluster note:** if `account-service`/`reference-data` crashloop, it's the
@@ -333,10 +333,10 @@ as a live value.
 ```bash
 # separate terminal — trade-processor port-forward (order-matcher is via edge-proxy :8080):
 kubectl port-forward -n traderx deploy/trade-processor 18091:18091 --context kind-traderx-state-014
-bash scripts/bench/yu05-auth-entitlements.sh        # JWT + entitlement matrix
-bash scripts/bench/yu05-regulatory-reproducible.sh  # two calls → identical SHA
-bash scripts/bench/yu05-recon.sh                    # matched + full-history orphan sweep
-bash scripts/bench/yu05-settlement.sh               # book pair → Processing(T+1) → force → Settled
+bash scripts/proofs/yu05-auth-entitlements.sh        # JWT + entitlement matrix
+bash scripts/proofs/yu05-regulatory-reproducible.sh  # two calls → identical SHA
+bash scripts/proofs/yu05-recon.sh                    # matched + full-history orphan sweep
+bash scripts/proofs/yu05-settlement.sh               # book pair → Processing(T+1) → force → Settled
 ```
 Live-shape notes (vs quickstart): dev-token returns a **raw JWT string**; `/regulatory/report` is a
 **top-level array**; **no `GET /trades/{id}`** (settlement state read from the MariaDB projection via
@@ -1127,12 +1127,12 @@ FIX_JWT=$(curl -s -X POST http://localhost:8080/order-matcher/auth/dev-token \
 ```
 **Demo/proof**
 ```bash
-FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh            # logon → D→ER → cancel → status →
+FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh            # logon → D→ER → cancel → status →
                                                                     #   duplicate-ClOrdID rejected; verifies DB row
-FIX_JWT=not-a-jwt bash scripts/bench/yu10-fix-session.sh            # fail-closed: logon rejected (bad token)
-FIX_COMP_ID=NOBODY FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh   # fail-closed: unmapped CompID
+FIX_JWT=not-a-jwt bash scripts/proofs/yu10-fix-session.sh            # fail-closed: logon rejected (bad token)
+FIX_COMP_ID=NOBODY FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh   # fail-closed: unmapped CompID
 kubectl delete pod -n traderx -l app=order-matcher                 # then --resume: resend window reconciles,
-FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh --resume  #   OrderStatusRequest recovers, dup not re-executed
+FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh --resume  #   OrderStatusRequest recovers, dup not re-executed
 FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/fix-load.mjs --secs 60   # throughput (alternate sides < risk caps)
 bash scripts/bench/fix-scaling-curve.sh                            # FIX-vs-REST scaling curve
 ```

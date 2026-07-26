@@ -19,7 +19,7 @@ Status: implemented and verified on kind.
 | Quality | Instrument-aware spike threshold, so an option's ordinary move does not block the session (T-RXT18) |
 | P&L | Multiplier-aware `eod_position_pnl.market_value`, so an option row agrees with the extract (T-RXT19) |
 | Runtime | NATS, a database running the state's own DDL, the full EOD chain (`price-publisher`, `trade-processor`, `position-service`), producer Deployment, NetworkPolicy allowlist entry |
-| Proof | `RiskExtractTest` (16 tests), `scripts/bench/yu15-risk-extract.sh` (7 steps), `scripts/bench/yu15-option-persistence.sh` (4 steps) |
+| Proof | `RiskExtractTest` (16 tests), `scripts/proofs/yu15-risk-extract.sh` (7 steps), `scripts/proofs/yu15-option-persistence.sh` (4 steps) |
 
 ## Verification
 
@@ -34,7 +34,7 @@ Status: implemented and verified on kind.
 | Clean generation | `bash pipeline/generate-state.sh YU15-eod-risk-extract` → **EXIT=0** |
 | Shared-override check | YU14 (`ticker32`, `multiplierFor`, format 3) and YU13 (`FLAG_RESTING_UPDATE`, `CLUSTER_READY_MAX_LAG`, election counters) markers all present in the generated tree alongside the YU15 delta |
 
-### Live kind proof (`scripts/bench/yu15-risk-extract.sh`, all 7 steps)
+### Live kind proof (`scripts/proofs/yu15-risk-extract.sh`, all 7 steps)
 
 Cluster `kind-traderx-yu12-cluster`: 3 members + gateway + NATS + database + the full EOD chain
 (price-publisher, trade-processor, position-service) + producer.
@@ -49,7 +49,7 @@ Cluster `kind-traderx-yu12-cluster`: 3 members + gateway + NATS + database + the
 | Recovery | `order-matcher-cluster-2` deleted → replayed to the stamped sequence → re-rendered the identical `sha256` |
 | Readiness | The restarted member rejoined the Service; a rolling restart of all three members completed, which it could not before T-RXT07 |
 
-### Live option-persistence proof (`scripts/bench/yu15-option-persistence.sh`, all 4 steps)
+### Live option-persistence proof (`scripts/proofs/yu15-option-persistence.sh`, all 4 steps)
 
 Runs the real chain — cluster books the fill, the ADR-048 leader-side bridge publishes to NATS
 `/trades`, `trade-processor` persists Trade + Position — and demonstrates the bug before fixing it.

@@ -53,7 +53,7 @@ trap 'kill "${PF}" 2>/dev/null' EXIT
 sleep 3
 
 OUT="$(FIX_JWT="${FIX_JWT}" FIX_COMP_ID="${COMP_ID}" FIX_PORT="${FIX_LOCAL_PORT}" \
-  SIDES=alternate QTY=1 PX=190 node "${here}/fix-load.mjs" --secs "${SECS}" 2>&1)"
+  SIDES=alternate QTY=1 PX=190 node "${here}/../bench/fix-load.mjs" --secs "${SECS}" 2>&1)"
 echo "${OUT}" | tail -1
 COMPLETED="$(echo "${OUT}" | sed -n 's/.*completed=\([0-9]*\).*/\1/p' | tail -1)"
 COMPLETED="${COMPLETED:-0}"

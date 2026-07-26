@@ -7,7 +7,7 @@
 
 ## What was proven (the acceptance, at the effect end)
 
-`scripts/bench/yu15-risk-extract.sh` (now gs://-aware), full PASS on GKE, 2026-07-23:
+`scripts/proofs/yu15-risk-extract.sh` (now gs://-aware), full PASS on GKE, 2026-07-23:
 
 - Real chain end to end: session close → 44 instruments published (24 option contracts, 0
   flagged) → P&L (4 accounts, 0 halted) → `eod.pnl.done` → extract fired.
