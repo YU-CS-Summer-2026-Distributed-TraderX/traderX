@@ -36,7 +36,10 @@ QTY=5
 # asserting in SQL a standing rule. Verify with: SELECT id FROM accounts;
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
-sql() { ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+# The trade bridge projects into the `database` deploy on the current rigs (eod-price-db carries
+# the same schema but only EOD pricing data). Override SQL_DB for a rig wired differently.
+SQL_DB="${SQL_DB:-database}"
+sql() { ${K} exec deploy/${SQL_DB} -c ${SQL_DB} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
@@ -116,7 +119,7 @@ echo "[ok] fresh key booked orderRef ${REF2} and added 2 rows (total ${AFTER_NEW
 echo "[ok] so step 3's suppression was the KEY, not an inert book"
 
 step "5. the SQL rows"
-${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -e "
+${K} exec deploy/${SQL_DB} -c ${SQL_DB} -- mariadb -utraderx -ptraderx traderx -e "
   SELECT id, accountid, security, side, quantity, price FROM trades WHERE security='${TICKER}' ORDER BY id;
 " 2>/dev/null | sed 's/^/  /'
 
