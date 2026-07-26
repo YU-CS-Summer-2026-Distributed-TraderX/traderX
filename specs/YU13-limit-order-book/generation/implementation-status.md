@@ -310,7 +310,7 @@ aggressor limit at the same price on the other side; the pair is order-insensiti
 lands first rests, the other crosses at the resting price), so a sequenced replay reproduces
 every historical print at its historical price, the book self-cleans to empty, and positions stay
 a near-flat random walk. Passive and aggressor accounts rotate over the 7 real SQL accounts and
-are always distinct. `scripts/bench/taq-replay.mjs`:
+are always distinct. `scripts/bench/replay/taq-replay.mjs`:
 
 - `--mode paced` — sim-clock at `--speed`× real time, ONE in-flight batch. **Must target a single
   gateway pod**: the `order-matcher-gw` Service round-robins across gateways, which interleaves

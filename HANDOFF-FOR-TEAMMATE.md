@@ -121,7 +121,7 @@ first before assuming it's new.
 
 All measured in-cluster (no `kubectl port-forward` — that tunnel is unreliable at high
 concurrency and gave misleading numbers earlier in the session; use
-`scripts/bench/run-gke-bench.sh`, which runs load from an in-cluster pod).
+`scripts/bench/load/run-gke-bench.sh`, which runs load from an in-cluster pod).
 
 | Config | booked/s | Notes |
 |---|---|---|

@@ -23,7 +23,7 @@ Wired into the existing TraderX monitoring stack on GKE (2026-07-19).
             - "order-matcher-cluster-2.order-matcher-cluster:8080"
 
 ## Driving live metrics (bench) — REQUIRED SEED STEP
-`scripts/bench/run-gke-bench.sh` runs from the in-cluster `bench-runner` pod. For YU12 it needs
+`scripts/bench/load/run-gke-bench.sh` runs from the in-cluster `bench-runner` pod. For YU12 it needs
 three overrides vs its pre-YU12 defaults, plus a one-time seed — otherwise every order is rejected
 (silent risk reject) and `booked/s` stays 0 while `submit/s` looks fine:
 
@@ -41,7 +41,7 @@ three overrides vs its pre-YU12 defaults, plus a one-time seed — otherwise eve
 
        LIMIT=150 SIDES=alternate ACCOUNT=42422 \
          MATCHER_SVC=http://order-matcher-gw.traderx.svc.cluster.local:18110 \
-         bash scripts/bench/run-gke-bench.sh live 3 30 500 16
+         bash scripts/bench/load/run-gke-bench.sh live 3 30 500 16
 
 **Failover viz:** during a bench run, crash the leader —
 `kubectl exec order-matcher-cluster-<leader> -c cluster-node -n traderx -- sh -c 'kill -9 $(pidof java)'`

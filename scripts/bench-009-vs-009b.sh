@@ -6,7 +6,7 @@ set -euo pipefail
 # full clean + teardown (containers AND volumes AND the generated tree) before and after
 # each run. Prints the per-phase timing difference at the end.
 #
-# Workload per state (see scripts/bench/order-matcher-bench.mjs):
+# Workload per state (see scripts/bench/load/order-matcher-bench.mjs):
 #   BENCH_ORDERS resting orders via REST, then BENCH_TICKS NATS price ticks on a
 #   descending price ramp that progressively crosses every order, then drain to all-filled.
 #

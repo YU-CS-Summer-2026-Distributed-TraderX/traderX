@@ -39,7 +39,7 @@ Core artifacts:
 - `generation/runtime-overrides/kubernetes-runtime/manifests/base/order-matcher-deployment.yaml`
   / `order-matcher-service.yaml` — FIX acceptor port (18130), FIX data directory on the existing
   `lmax-runtime-data` volume
-- `scripts/bench/fix-load.mjs`, `scripts/proofs/yu10-fix-session.sh` — throughput sender and
+- `scripts/bench/load/fix-load.mjs`, `scripts/proofs/yu10-fix-session.sh` — throughput sender and
   session-behavior proof script
 - `system/adr-034` … `adr-037` — engine/topology, correlation ledger, identity, and
   ambiguous-outcome decisions

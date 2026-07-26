@@ -163,7 +163,7 @@ Cost: c2-standard-4 ≈ **$0.21/hr (~$153/mo)** per node at 24/7; far less if sc
 
 ### Benchmark (in-cluster, no port-forward)
 ```bash
-bash scripts/bench/run-gke-bench.sh <label> <runs> <secs> <batch> <conc>
+bash scripts/bench/load/run-gke-bench.sh <label> <runs> <secs> <batch> <conc>
 # e.g. single-BLP sweet spot:  run-gke-bench.sh single 3 30 1000 48
 # HA (keep conc<=8 to avoid lease starvation): run-gke-bench.sh ha 3 30 1000 8
 ```

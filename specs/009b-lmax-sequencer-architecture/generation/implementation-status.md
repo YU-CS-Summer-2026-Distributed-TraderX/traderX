@@ -79,7 +79,7 @@ Measured (demo profile, single laptop; fill-counter delta = sustained, in-proces
 booking ~1,060/s → ~2,045/s → ~3,720/s across the three output-side fixes; the in-memory engine bursts to
 ~34k/s until the projector queue fills, then throttles to the DB drain. Remaining sustained ceiling is the
 order/position `merge` per-row SELECT (next step: `ON CONFLICT … DO UPDATE` + per-flush order-row dedup).
-Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch-experiment.mjs`,
+Bench tooling and findings: `scripts/bench/load/batch-load.mjs`, `scripts/bench/load/batch-experiment.mjs`,
 `scripts/bench/results/` (repo-root dev tooling, not generated runtime). Overlay files touched:
 `lmax/ProjectorHandler.java`, `lmax/LmaxEngine.java`, `service/OrderMatcherService.java`,
 `controller/OrderController.java` (new), `messaging/nats/NatsJSONPublisher.java` (new),

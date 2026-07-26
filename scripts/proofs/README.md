@@ -48,7 +48,7 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 
 | Script | What it proves | CI counterpart |
 |---|---|---|
-| [`yu10-fix-session.sh`](yu10-fix-session.sh) | FIX 4.4 ingress live on kind (SC-FIX01/06) and the **FIX↔REST equivalence** claim (a FIX order lands in state, journal, and DB like a REST order). Uses `../bench/fix-load.mjs` as the sender. | `FixSessionIntegrationTest`, `FixGatewayStatusTest`, `FixGatewaySurvivalTest` |
+| [`yu10-fix-session.sh`](yu10-fix-session.sh) | FIX 4.4 ingress live on kind (SC-FIX01/06) and the **FIX↔REST equivalence** claim (a FIX order lands in state, journal, and DB like a REST order). Uses `../bench/load/fix-load.mjs` as the sender. | `FixSessionIntegrationTest`, `FixGatewayStatusTest`, `FixGatewaySurvivalTest` |
 | [`yu13-fix-cancel.mjs`](yu13-fix-cancel.mjs) | FIX cancel/replace message driver — exercises the cancel path over a real FIX session. | `FixGatewayStatusTest` |
 
 ### Order book & lifecycle (YU13)
@@ -62,8 +62,9 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 
 ### Listed options & EOD risk extract (YU14–YU15)
 
-| Script | What it proves | CI counterpart |
+| Script | What it proves / does | CI counterpart |
 |---|---|---|
+| [`seed-option-chain.sh`](seed-option-chain.sh) | YU14 setup + smoke: seeds the packaged listed-equity-option chain into the running gateway and smoke-proves one option cross books. (Setup helper for the two proofs below.) | `SeedOptionChainTest` / gateway option-cross tests |
 | [`yu15-option-persistence.sh`](yu15-option-persistence.sh) | Listed options reach the SQL read model, and the shipped migration fixes a database created by an older state. | `RiskExtractTest`, `TradeProcessorPersistenceIT` (integration) |
 | [`yu15-risk-extract.sh`](yu15-risk-extract.sh) | The EOD risk-extract acceptance proof end-to-end: sequenced cut, byte-identical across members, quiescence, write-once (gs://-aware on GKE). | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
 

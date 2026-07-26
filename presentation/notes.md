@@ -1133,7 +1133,7 @@ FIX_JWT=not-a-jwt bash scripts/proofs/yu10-fix-session.sh            # fail-clos
 FIX_COMP_ID=NOBODY FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh   # fail-closed: unmapped CompID
 kubectl delete pod -n traderx -l app=order-matcher                 # then --resume: resend window reconciles,
 FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh --resume  #   OrderStatusRequest recovers, dup not re-executed
-FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/fix-load.mjs --secs 60   # throughput (alternate sides < risk caps)
+FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/load/fix-load.mjs --secs 60   # throughput (alternate sides < risk caps)
 bash scripts/bench/fix-scaling-curve.sh                            # FIX-vs-REST scaling curve
 ```
 **What to look for / explain**
@@ -1158,7 +1158,7 @@ number and the honest recovery story; keep the live HA cycle for when the host i
 flap under load is the epoch-churn driver — see the recap's environmental findings).
 ```bash
 # Transport A/B (the 49× headline) — matched line-for-line to the NATS Phase-0 harness:
-bash scripts/bench/run-aeron-replication-phase0.sh          # Aeron MDC ~520,520/s vs File-NATS ~10,561/s
+bash scripts/bench/load/run-aeron-replication-phase0.sh          # Aeron MDC ~520,520/s vs File-NATS ~10,561/s
 # Full raw record (params, provenance, confidence, unmeasured list):
 #   scripts/bench/results/yu11-transport-2026-07-17.md
 # Bring-up (two-pod MDC pair on the dedicated kind profile; flag selects the leg):

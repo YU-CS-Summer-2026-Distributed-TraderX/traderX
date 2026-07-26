@@ -4,7 +4,7 @@ GCP commands are yours to run (working convention). This is the exact, ordered c
 put the 3-member Aeron Cluster on GKE and benchmark it with label `aeron-cluster` against the
 stored YU11 Aeron HA baseline (25,149 booked/s cleanest run). Nothing here has run on GKE — it is
 derived from the working kind deployment (`scripts/yu12/*`, `specs/YU12-aeron-cluster/generation/
-kubernetes/cluster/`) plus the inherited GKE bench harness (`scripts/bench/run-gke-bench.sh`).
+kubernetes/cluster/`) plus the inherited GKE bench harness (`scripts/bench/load/run-gke-bench.sh`).
 
 Project `traderx-501015`, cluster `traderx-lmax`, zone `us-east1-b`, namespace `traderx`.
 Context: `gke_traderx-501015_us-east1-b_traderx-lmax`.
@@ -94,7 +94,7 @@ expected optimization axis, not a defect.
 
 ```bash
 kubectl -n traderx apply -f <bench-runner pod with /batch-load.mjs>   # inherited from YU09 bench assets
-bash scripts/bench/run-gke-bench.sh aeron-cluster 3 30 1000 48
+bash scripts/bench/load/run-gke-bench.sh aeron-cluster 3 30 1000 48
 # rows append to scripts/bench/results/gke-comparison.csv, label aeron-cluster
 ```
 

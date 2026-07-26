@@ -1,9 +1,23 @@
-# Order-matcher benchmark: state `009` vs state `009b`
+# Benchmarks & measurement scripts
+
+Everything here **produces a number** (throughput, latency, rows/sec) — as opposed to the
+falsifiable ✔/✘ correctness proofs, which now live in [`../proofs`](../proofs). Organised into:
+
+| Dir | What it holds |
+|---|---|
+| [`load/`](load) | Order-entry **load generators** (REST/binary/FIX) and the orchestrators that drive them: `max-load` / `avg-max-load` / `batch-load` / `batch-experiment` (REST + batch), `fix-load` / `fix-multi` (FIX), `bin-multi` (binary), `rest-completed-control`, `order-matcher-bench`, the `run-*` ladders, `yu13-two-account-bench`, `measure-trade-processor-db-rate`, `reset-order-matcher-k8s` (the `RESET_CMD` helper), `spike-demo`. Kept together because the orchestrators spawn the generators by relative path. |
+| [`latency/`](latency) | Latency & failover **probes**: `rest-latency-probe`, `failover-client-probe`, `failover-bimodal-probe`. |
+| [`replay/`](replay) | Market-data replay: `taq-replay` (NYSE TAQ prints → book) and its `taq-curate` data-prep. |
+
+`package.json` (the shared `nats` dep) stays at this root; `node` resolves `node_modules` by
+walking up, so the scripts in the subdirs still find it.
+
+## Order-matcher benchmark: state `009` vs state `009b`
 
 `../bench-009-vs-009b.sh` runs the identical order + price-tick workload through a fully
 started, fully torn-down stack of each state and prints the timing difference. The driver is
-`order-matcher-bench.mjs` (REST orders to `:18110`, NATS ticks to `:4222`, drain to
-all-terminal). Full experiment report and measured results:
+[`load/order-matcher-bench.mjs`](load/order-matcher-bench.mjs) (REST orders to `:18110`, NATS
+ticks to `:4222`, drain to all-terminal). Full experiment report and measured results:
 [`LMAX-BENCHMARK-009-VS-009B.md`](../../LMAX-BENCHMARK-009-VS-009B.md) at the repo root.
 
 ```bash
@@ -57,10 +71,10 @@ AVERAGE peak trades/sec (median / min / max / stddev) to the console and a text 
 
 ```bash
 # 10 cold-start runs (restarts the matcher between each to reset the peak gauge)
-node scripts/bench/avg-max-load.mjs --runs 10 --secs 25
+node scripts/bench/load/avg-max-load.mjs --runs 10 --secs 25
 
 # single WARM steady-state ceiling (no restart, one long run)
-node scripts/bench/avg-max-load.mjs --no-reset --runs 1 --secs 60
+node scripts/bench/load/avg-max-load.mjs --no-reset --runs 1 --secs 60
 ```
 
 **Measurement gotcha — why it does NOT just read Prometheus `irate`:** the matcher's REST
@@ -86,8 +100,8 @@ request) extracts more end-to-end throughput than the single-order path (`POST /
 order + one ack-block per request).
 
 ```bash
-node scripts/bench/batch-load.mjs --batch 100 --conc 8 --secs 20   # one batch loader
-node scripts/bench/batch-experiment.mjs --secs 15                   # single-vs-batch sweep
+node scripts/bench/load/batch-load.mjs --batch 100 --conc 8 --secs 20   # one batch loader
+node scripts/bench/load/batch-experiment.mjs --secs 15                   # single-vs-batch sweep
 ```
 
 **Finding (see `results/batch-experiment-findings.md`): batching works at the ingress but does

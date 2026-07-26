@@ -30,7 +30,7 @@
 5. Throughput (completed D→8 lifecycles; alternate sides to stay clear of risk caps):
 
    ```bash
-   FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/fix-load.mjs --secs 60
+   FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/load/fix-load.mjs --secs 60
    ```
 
 ## Demonstrating this state's behavior

@@ -17,7 +17,7 @@ bash scripts/yu15/start-cluster-kind.sh
 
 # 3. seed instruments and prove a cross books before anything else
 kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/order-matcher 18110:18110 &
-MATCHER_URL=http://localhost:18110 bash scripts/bench/seed-option-chain.sh
+MATCHER_URL=http://localhost:18110 bash scripts/proofs/seed-option-chain.sh
 
 # 4. take positions: cross both sides between two real accounts
 for body in \
