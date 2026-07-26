@@ -131,6 +131,34 @@ jobs:
       - name: Run unit tests
         run: dotnet test templates/people-service-specfirst/PeopleService.Tests/PeopleService.Tests.csproj
 
+  integration-trade-processor:
+    # Cross-service persistence integration test: the trade-processor booking path against a REAL
+    # MariaDB (Testcontainers) loaded with the deployed configmap schema (ddl-auto=none, FK +
+    # CHECK constraints). ubuntu-latest ships a Docker daemon, so Testcontainers runs out of the
+    # box. Separate from the fast unit `baseline` job (which excludes @Tag("integration")).
+    name: integration — trade-processor persistence (Testcontainers)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: templates/trade-processor-specfirst
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: YU15-eod-risk-extract
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Run integration tests (Testcontainers MariaDB)
+        run: ./gradlew integrationTest --console=plain
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: junit-integration-trade-processor
+          path: templates/trade-processor-specfirst/build/test-results/integrationTest/**/*.xml
+          if-no-files-found: warn
+
   dedicated:
     # Cluster + timing + Epsilon gates. On standard 2-core hosted runners the
     # 3-node cluster test and the 50 ms wall-clock budget are unreliable, so this

@@ -68,13 +68,31 @@ end-to-end confirmation of properties CI already gates in-process. That is the d
 have a script that shows it works" and "the invariant is enforced on every commit AND demonstrated on
 the running venue."
 
+## Tier 1.5 — one automated cross-service integration test (CI, Docker)
+
+Brief 04 Part B's first integration test is **live in CI**: `TradeProcessorPersistenceIT` (job
+`integration-trade-processor`). It drives the real `TradeService.processTrade` booking path against a
+**real MariaDB (Testcontainers)** initialized with the **actual deployed schema** (copied verbatim
+from `database-init-configmap.yaml`, run `ddl-auto=none` exactly like production — not the H2-only
+per-service `schema.sql`). It proves the persistence *contract* the mocked unit test cannot:
+
+- a Buy books a `positions` row and a `trades` row against the deployed DDL — including the
+  enum→`VARCHAR CHECK ('Buy','Sell')` / `('New'..'Settled')` mapping surviving a real round trip;
+- subsequent trades accumulate onto the same position row;
+- **the load-bearing one:** an order for an account that does not exist is **rejected by the
+  `accounts` foreign key and fails loudly** — not silently dropped. "Trades dropped by an FK" is a
+  documented failure class here; this test makes the drop an assertion.
+
+It is isolated by JUnit tag (`@Tag("integration")`) into its own `integrationTest` gradle task, so
+the fast `baseline` unit job stays Docker-free; only the `integration-trade-processor` job (on
+`ubuntu-latest`, which ships a Docker daemon) runs it.
+
 ## What is genuinely not yet automated (honest gaps)
 
-- **Cross-service seam integration in CI.** The order→match→egress→read-model→REST/FIX round trip and
-  the control-plane→in-memory-limits→reject path are proven only at Tier 2 (manual) and at Tier 1
-  in *isolated* units — not as an automated multi-service integration test. Standing up a
-  Testcontainers/compose integration job for one such seam is the next concrete step (brief 04 Part B,
-  tracked separately).
+- **More cross-service seams.** The order→match→egress→read-model→REST/FIX round trip and the
+  control-plane→in-memory-limits→reject path are still proven only at Tier 2 (manual) and at Tier 1
+  in *isolated* units. The trade-processor persistence seam is the first one automated; the same
+  Testcontainers pattern extends to the others.
 - **Per-state composed-tree baseline tests.** Brief 03's baseline suites run against the templates;
   running them against each YU branch's generated tree is the matrix-extension follow-up.
 
