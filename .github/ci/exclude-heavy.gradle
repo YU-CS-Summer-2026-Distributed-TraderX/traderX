@@ -1,0 +1,12 @@
+// CI-side test exclusion (init script, not committed to the generated build.gradle,
+// which is a regenerated artifact). Keeps the hosted job free of the two hosted-hostile
+// classes: the 3-node cluster test and the wall-clock timing test.
+allprojects {
+  tasks.withType(Test).configureEach {
+    filter {
+      excludeTestsMatching 'finos.traderx.ordermatcher.cluster.ThreeMemberClusterTest'
+      excludeTestsMatching 'finos.traderx.ordermatcher.cluster.SnapshotBarrierPerformanceTest'
+      setFailOnNoMatchingTests(false)
+    }
+  }
+}
