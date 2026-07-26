@@ -32,6 +32,8 @@ spec:
               containerPort: 18091
               protocol: TCP
           env:
+            - name: JAVA_TOOL_OPTIONS
+              value: "-XX:MaxRAMPercentage=75"
             - name: TRADE_PROCESSOR_SERVICE_PORT
               value: "18091"
             - name: DATABASE_PG_HOST
