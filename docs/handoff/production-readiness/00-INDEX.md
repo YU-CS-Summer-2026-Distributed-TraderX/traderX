@@ -137,6 +137,9 @@ line of clarification so the presentation numbering is consistent.
 - GKE bring-up traps: **pd-standard boot disks for load pools** (`SSD_TOTAL_GB`=500 is the binding quota,
   not CPU) and **bring an untainted pool up alongside the tainted member pool** or CoreDNS/konnectivity
   starve and members crash-loop on peer DNS. `c2d-load-pool` can't sit below 4 nodes.
-- Decks are achievement-focused (no caveats/limitations); **docs stay honest**.
+- **Achievement-focused framing in decks AND docs** (updated 2026-07-27, yaakov). Do **not** volunteer
+  caveat / limitation / "what's missing" sections nobody asked for. Still required: never assert
+  something known to be false, and keep real blockers/open items in **handoffs** (they exist to
+  transfer state and are useless if hollow).
 - Quote **ratios and the commit number**, never a single run's absolute client RTT (~1.5–2× run-to-run
   variance at fixed config).
