@@ -4,11 +4,12 @@ Everything runnable without a GKE cluster was run: every automated suite, every 
 (including the 4 new ones written today), on the live `kind-traderx-state-014` and
 `kind-traderx-yu12-cluster` rigs. **Final state: every suite and every kind proof PASS, except one
 proof marked PARTIAL with its claim verified by other means (detailed below).** Later the same
-day GKE was brought up and the GKE proof set was run live — **all 6 PASS** (§C); benchmarks are
-BANKED, and the `dedicated` engine job remains SKIPPED (needs idle hardware).
+day GKE was brought up and the GKE proof set was run live — **all 6 PASS** (§C); the benchmarks
+were then RERUN on an improved 6-gateway topology (§Benchmarks) and the `dedicated` engine job
+was rerun on the quieted host — **PASS**. Nothing on the original board remains open.
 
-Per the interpretation discipline: **no timing or throughput number in this document** — kind
-results are correctness PASS/FAIL only.
+Per the interpretation discipline: **kind results are correctness PASS/FAIL only** — every
+timing/throughput number below comes from the GKE runs.
 
 ## A. Automated test suites — 7/7 PASS
 
@@ -21,7 +22,7 @@ results are correctness PASS/FAIL only.
 | reference-data (`npm test`) | **PASS** | |
 | people-service (`dotnet test`) | **PASS** | |
 | `TradeProcessorPersistenceIT` (`./gradlew integrationTest`, Testcontainers MariaDB) | **PASS** | |
-| Engine `dedicated` job (3-node + timing + Epsilon gates) | **SKIPPED** | needs idle dedicated hardware; this host was running two kind rigs — a timing claim here would be a lie |
+| Engine `dedicated` job (3-node + timing + Epsilon gates) | **PASS** (2026-07-26, second pass) | initially SKIPPED while two kind rigs burned the host; rerun once the host was quiet — all 4 allocation gates + the 3-node suite + `noGcTest`, exit 0 |
 
 ## B. Proof scripts (kind) — final state
 
@@ -45,7 +46,7 @@ results are correctness PASS/FAIL only.
 | `yu13-stp-and-replace` | **PASS** | all 9 steps incl. pre-change falsification arms (wash trade books on the old engine, `/replace` 404s), run on a fresh epoch created on `yu15-pre` |
 | `seed-option-chain` | **PASS** | 24 contracts seeded, option cross smoke-booked |
 | `yu15-risk-extract` | **PASS** | full acceptance: EOD chain with 24 options quality-OK → extract for sequence N, byte-identical, quiesced, write-once, and re-rendered identically by a restarted member |
-| `yu15-option-persistence` | **PARTIAL** | steps 1–3 (the migration mechanics: narrow a populated volume to the pre-YU15 schema, prove the shipped `900-migrations.sql` widens it in place) **PASS**. Step 4's before/after arm is **not reproducible on this rig**: the proof assumes its migration testbed (`eod-price-db`) is the same database the trade bridge writes (`database` here), so its "option trade lands intact" assertion reads the wrong DB. The claim itself was **verified directly**: an OCC-symbol option cross landed **2 rows in the bridge DB** post-migration (`yu15-option-cross-direct:ROWS=2`). Making the proof two-DB-aware is a small follow-up. |
+| `yu15-option-persistence` | **PARTIAL on kind → PASS on GKE** | steps 1–3 (the migration mechanics: narrow a populated volume to the pre-YU15 schema, prove the shipped `900-migrations.sql` widens it in place) **PASS**. Step 4's before/after arm is **not reproducible on this rig**: the proof assumes its migration testbed (`eod-price-db`) is the same database the trade bridge writes (`database` here), so its "option trade lands intact" assertion reads the wrong DB. The claim itself was **verified directly**: an OCC-symbol option cross landed **2 rows in the bridge DB** post-migration (`yu15-option-cross-direct:ROWS=2`). Making the proof two-DB-aware is a small follow-up. **Superseded same day: the full proof PASSES unmodified on the GKE tier** (single-DB — both writers point at `eod-price-db`), including the step-4 arm: OCC option lost to the narrowed schema, shipped migration applied, 19-char option trade landing intact in `trades` + `positions`. The kind two-DB split was the anomaly, exactly as diagnosed. |
 
 ## C. GKE proofs — RUN 2026-07-26 (cluster brought up same day)
 
@@ -60,16 +61,71 @@ leader elected on a fresh epoch — then:
 | `yu12-gke-cross-epoch-idreuse.sh` | **PASS** (first run) | old epoch high-water 603; every new-epoch ref above it, sets disjoint, counter monotonic, new refs live (they trade) |
 | `yu12-gke-restore-from-gcs.sh` | **PASS** | whole-cluster destroy → restore from `gs://` **byte-equal to the quiesced backup point** (not the post-backup state — that 2-order gap is the honestly-stated RPO window) → restored book trades. One proof fix en route: the backup job's 100KB anti-empty floor needs real volume, so the proof now rests 5,000 filler orders first (`79d176b6`). |
 | `yu13-gke-replace-proof.sh` | **PASS** | ack correlation under cancel-plus-add, three-member identity, replace surviving snapshot + empty-disk rebuild — re-proven on today's image |
-| `failover-nodeclock.sh` | **MECHANICS PASS / measurement DEFECTIVE** | 3 kill→promote rounds completed, but its in-pod `date +%s%3N` t0 is empty on the busybox-based image, so it printed raw epoch stamps as "deltas" while exiting 0 — flagged as a follow-up (make t0 portable, fail loudly on empty). **No timing number is quoted from this run**; failover timing stands on the 2026-07-18 node-clock drills, and failover *correctness* stands on the transparency proof above. |
+| `failover-nodeclock.sh` | **PASS (fixed twice), measurement decomposed** | First run: the busybox `date +%s%3N` t0 came back empty and the script printed raw epoch stamps while exiting 0 — fixed (`af7d3736`: portable second-edge t0, hard-fail on garbage; then `42ce06b5`: configurable `BENCH_RUNNER_POD` + member fallback + the round-spacing trap documented). Clean measured round under a 5k/s pump: **raft election 133ms** (the promoted member's own CANVASS→ROLE-CHANGE stamps — pure node-clock), consistent with the 07-18 drills and the live rung-A timeouts (50/200/100/25 verified in the serving pods). The script's own `electionMs 2576 / servingMs 7711` additionally include ~2.4s of `kubectl delete --force` kill-delivery latency and **~5.1s of gateway session re-establishment** (ROLE-CHANGE→FIRST-APPLY) — the latter is a real client-visible gap worth its own follow-up, but it is gateway reconnect, not consensus. |
 
-## Benchmarks — BANKED, deliberately not rerun
+## Benchmarks — RERUN 2026-07-26 on GKE (6 gateways), banked numbers left untouched
 
-The performance thread is **done and banked** (2026-07-23/24, dedicated hardware): per-order
-ceiling ~190k/s at 4 gateways (gateway-bound, consensus ceiling ~440k), p50 < 1.5ms sustained to
-75k/s with consensus commit ~200µs load-invariant. Today's topology (no c2d load pool, e2 gateway
-nodes) cannot reproduce those conditions, and numbers from an under-provisioned rig would only
-muddy the banked ones. `run-all-tiers.sh`, the latency probes, and TAQ replay were therefore
-**not rerun by design**, not skipped for lack of a cluster.
+**Topology** (the "as many gateways as quota allows" run): 3× c4d-standard-8 members +
+**6× c2d-standard-4 PRIVATE gateway nodes** (one gateway per node, hard anti-affinity) +
+1× c2d-standard-8 dedicated load-generator node + 3× private e2-standard-2 for every support
+service — 62/64 `CPUS_ALL_REGIONS`, 4/8 `IN_USE_ADDRESSES`. The unlock: **private nodes consume
+zero external addresses**, so the 8-address quota (which capped last week's rig at 7 public nodes
+/ 4 gateways) stops binding entirely; the real ceiling is now the 64-vCPU project quota, and a
+quota bump is the only thing between this rig and 8+ gateways.
+
+### Per-order throughput (binary ingress, `bin-multi.mjs`, member `nextOrderRef` delta over a 20s steady window)
+
+| offered | load pods | committed/s | client p50 | verdict |
+|---|---|---|---|---|
+| 20k/s | 1 | 19,972 | 8ms | warmup, exact 4-way gateway split |
+| 200k/s | 4 | 195,347–195,748 | ~32ms | tracking offered, reproduced twice |
+| **250k/s** | **5** | **259,211** (lowpark: 257,919) | ~35ms | **the 6-gateway ceiling point** |
+| 300k/s | 6 | 49k | — | past the knee and/or loadgen-bound — **not quotable** |
+
+**Headline: 259k/s per-order committed at 6 gateways vs the banked 190.3k at 4** — the parked
+"more gateways" lever, now measured: still roughly the ~47k/s-per-gateway linearity, still
+gateway-bound, no member ceiling in sight.
+
+### Latency (CO-safe `rest-latency-probe.mjs`, in-cluster, seeded ticker, committed orders — `ok`=all)
+
+| offered (1 gateway) | p50 | p99 | p99.9 |
+|---|---|---|---|
+| 1k/s | 2.0ms | 6.3ms | 7.1ms |
+| 5k/s | 2.3ms | 6.1ms | 7.5ms |
+
+Consistent with the banked ~2ms story. A single gateway's REST per-order path saturates between
+5k and 15k/s — beyond that a single-probe run measures its own queue (client p50 seconds), which
+is load-spreading across gateways, not a cluster limit.
+
+### The lowpark A/B (and the manifest gap it exposed)
+
+`CLUSTER_IDLE_STRATEGY` was implemented (`ClusterNodeConfig`, YU13 layer, inherited into YU15's
+render) **but never set in any deployment manifest in the repo** — every cluster tier to date ran
+Aeron's default 1ms-park backoff while the LATENCY-01 "ship lowpark" verdict lived only in docs.
+Fixed for both YU15 GKE statefulsets (`6f37a834`; deliberately NOT kind, where
+`CLUSTER_IDLE_SLEEP_MS` must stay in charge). Measured A/B on this rig: **neutral** — latency
+1k/s p50 2036→2002µs, 5k/s 2285→2299µs; throughput 259,211→257,919/s (all within noise). That is
+*consistent* with the banked decomposition (transport ~70% of RTT, consensus ~24%): on this
+transport-bound path a 1ms→1µs park has nothing to bite on. **Decision: keep lowpark** — never
+worse, measured 2.4× better when consensus is on the critical path, 0.34 core cost — so the
+config is already right when the transport levers (compact placement) land. This build exposes no
+commit-time metric, so the banked ~200µs consensus commit was not re-measurable here.
+
+### Methodology findings (each one initially produced a wrong number)
+
+1. A single Node.js generator caps at **~76k/s** — beyond it, "latency" is the generator's own
+   send backlog (p50 6s at 120k scheduled). Multi-pod with per-pod rates under the cap.
+2. The `nextOrderRef` scrape (`kubectl exec` + wget) **times out under load** and an empty read
+   masquerades as a throughput collapse — retry-any-member until numeric (`/tmp/ref-probe.sh`).
+3. The latency probe against an **unseeded ticker measures reject latency**, `ok=0` — seed first.
+4. Multi-pod floods sharing one ticker/account pair hit position caps and book nothing —
+   distinct tickers per pod.
+5. `failover-nodeclock` needs a stamping pod and **spaced rounds**: back-to-back kills measure a
+   degraded cluster, and heavy backlog inflates `servingMs` with queue-drain time.
+
+**Not rerun**: TAQ replay (needs curated data prep), the FIX-ingress rate ladder, and the JSON
+batch ladder (`run-gke-bench.sh` reads the old order-matcher deployment's metrics, not this
+gateway tier — porting it is a follow-up). Their banked numbers stand unchanged.
 
 ## What the sweep itself caught (real faults, all fixed)
 
