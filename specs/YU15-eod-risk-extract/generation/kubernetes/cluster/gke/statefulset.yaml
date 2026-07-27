@@ -62,6 +62,18 @@ spec:
               value: "1000"
             - name: CLUSTER_ELECTION_TIMEOUT_MS
               value: "500"
+            # LATENCY-02 verdict, shipped: override Aeron's DEFAULT BackoffIdleStrategy (max park
+            # 1ms) with a 1us max park on every member agent (media driver, archive, consensus
+            # module, service container). Measured on the 2026-07-24 idle-strategy sweep: client
+            # RTT p50 4.85ms -> ~2.0ms (2.4x) for 0.34 core idle, ~9x less CPU than `yielding`;
+            # `busyspin` was DISQUALIFIED (4 spin agents on 3 pinned cores starved consensus,
+            # p99 363ms). The lever lives in ClusterNodeConfig.idleOverrideSupplier(); it had never
+            # been set in ANY deployment manifest, so every cluster tier ran the 1ms-park default
+            # while the recommendation existed only in the handoff docs. Do NOT set this on kind:
+            # it takes precedence over CLUSTER_IDLE_SLEEP_MS, which is the correct knob there
+            # (kind's idle CPU starvation needs MORE parking, not less).
+            - name: CLUSTER_IDLE_STRATEGY
+              value: "lowpark"
             - name: CLUSTER_BASE_DIR
               value: "/data"
             - name: CLUSTER_AERON_DIR
