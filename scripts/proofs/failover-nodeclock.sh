@@ -18,6 +18,12 @@
 # cluster's actual time-to-serving.
 #
 # Usage: CONTEXT=<kctx> NS=traderx ROUNDS=3 bash failover-nodeclock.sh
+# Prereq: a pod to stamp t0 from (BENCH_RUNNER_POD, default `bench-runner`); falls back to the
+# member being killed. ALSO: space the rounds — a kill fired before the previous member has
+# rejoined measures a degraded cluster, and a heavy load backlog inflates servingMs (FIRST-APPLY
+# waits on the queue, not on promotion). Observed 2026-07-26 under a 40k/s pump with back-to-back
+# rounds: rounds 1-2 found no leader at all and round 3 read election 2740ms / serving 7851ms —
+# an order of magnitude off the idle 2026-07-18 drills. Measure one clean round at moderate load.
 set -uo pipefail
 CTX="${CONTEXT:?set CONTEXT}"; NS="${NS:-traderx}"; ROUNDS="${ROUNDS:-3}"
 kc() { kubectl --context "$CTX" -n "$NS" --request-timeout=60s "$@"; }
@@ -47,7 +53,14 @@ for r in $(seq 1 "$ROUNDS"); do
   # busybox date has no %3N (prints the format literally), so ms-precision epoch isn't directly
   # readable in the pod. Instead spin until the second rolls over and stamp that edge: accurate
   # to the in-pod exec-loop latency (a few ms), portable to any image with `date +%s`.
-  T0S=$(kc exec bench-runner -- sh -c 's=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s' 2>/dev/null | tr -d '\r')
+  # The stamping pod: any Ready pod with `date` works. Override with BENCH_RUNNER_POD; default
+  # `bench-runner` must exist (create one with:
+  #   kubectl -n <ns> run bench-runner --image=busybox --restart=Never -- sh -c 'sleep 3600')
+  # and if it is absent we fall back to a cluster member, which always exists on a live cluster.
+  T0S=$(kc exec "${BENCH_RUNNER_POD:-bench-runner}" -- sh -c 's=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s' 2>/dev/null | tr -d '\r')
+  if ! [[ "$T0S" =~ ^[0-9]{10}$ ]]; then
+    T0S=$(kc exec order-matcher-cluster-"$L" -- sh -c 's=$(date +%s); while [ "$(date +%s)" = "$s" ]; do :; done; date +%s' 2>/dev/null | tr -d '\r')
+  fi
   if ! [[ "$T0S" =~ ^[0-9]{10}$ ]]; then
     echo "FATAL round $r: t0 capture failed (got '${T0S}') — cannot read a numeric epoch from bench-runner; refusing to print garbage deltas" >&2
     exit 1
