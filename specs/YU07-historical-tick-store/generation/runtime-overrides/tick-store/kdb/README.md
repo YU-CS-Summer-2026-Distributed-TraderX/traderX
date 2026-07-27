@@ -24,7 +24,7 @@ bash fetch-sample.sh                                  # ~310 MB, 2 days x 4 symb
 TICKSTORE_ROOT=~/dev/lmax/kdb-tickstore/sample q selfcheck.q
 ```
 
-`selfcheck.q` is the regression gate: 14 checks, every expected value computed independently with
+`selfcheck.q` is the regression gate: 17 checks, every expected value computed independently with
 DuckDB over the same files, so it is a cross-implementation check rather than kdb agreeing with
 itself. It fails loudly on a wrong row count, a lost duplicate collapse, a broken quote/trade
 split, a drifted VWAP, or an out-of-order replay.
@@ -37,7 +37,7 @@ tickstore: 16 files -> quote + trade over 2 date(s), 4 symbol(s).
 ok   per-partition row counts
 ok   deduped corpus total
 ...
-selfcheck: 14 checks passed.
+selfcheck: 17 checks passed.
 ```
 
 ## Query it
