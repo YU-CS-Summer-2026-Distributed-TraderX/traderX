@@ -63,6 +63,20 @@ leader elected on a fresh epoch — then:
 | `yu13-gke-replace-proof.sh` | **PASS** | ack correlation under cancel-plus-add, three-member identity, replace surviving snapshot + empty-disk rebuild — re-proven on today's image |
 | `failover-nodeclock.sh` | **PASS (fixed twice), measurement decomposed** | First run: the busybox `date +%s%3N` t0 came back empty and the script printed raw epoch stamps while exiting 0 — fixed (`af7d3736`: portable second-edge t0, hard-fail on garbage; then `42ce06b5`: configurable `BENCH_RUNNER_POD` + member fallback + the round-spacing trap documented). Clean measured round under a 5k/s pump: **raft election 133ms** (the promoted member's own CANVASS→ROLE-CHANGE stamps — pure node-clock), consistent with the 07-18 drills and the live rung-A timeouts (50/200/100/25 verified in the serving pods). The script's own `electionMs 2576 / servingMs 7711` additionally include ~2.4-2.6s of `kubectl delete --force` kill-delivery latency (kubelet — harness, not system). **The "~5s gateway re-establishment" was chased to a real gateway bug and fixed the same night** (`f92be1ab`): the gateway never sent a cluster-session keepalive, so every IDLE gateway's session was expired and rebuilt every ~5-10s — a one-clock observer caught all quiet gateways flapping `/ready` 503 continuously, and a failover sampled mid-flap (or with a 40k/s backlog to drain) read as seconds of outage the election never caused. After the fix (`sendKeepAlive` 1s idle + reconnect gate 100ms; gateway-only roll to `cluster-node:yu15-keepalive`, digest `a3b8dd28`): 90s quiet watch = **zero flaps**, and a live leader kill under the same observer = **zero flaps, zero failed orders at 100ms cadence, election 141ms, FIRST-APPLY +206ms**. The honest client-visible failover claim: a continuously trading client never saw a single failed order. |
 
+### Gateway keepalive fix — propagation state
+
+The fix lives in each branch's own gateway layer, so it needed a real sweep rather than one commit:
+YU15 `f92be1ab` (origin, GKE-verified) → YU13 `1e96e816` → YU14 `eceb6968` (both byte-identical,
+md5 `15e2c117…`, engine suites green) → **YU12 `10c49a72`**, which predates the pipelined-ingress
+rewrite of this file and so was **adapted to its own `ownerLoop()`** rather than copied — same bug,
+same fix shape (suite 211/0). An initial read of "YU12 doesn't carry this path" was wrong: it lacks
+the *YU13-layer* file but has its own copy, and that copy had the bug.
+
+Deliberately left alone: YU13/YU14/YU15 each still carry an unfixed **YU12-layer** copy of
+`ClusterGatewayMain.java`. It is a dead layer — shadowed at render time by their own YU13-layer
+copy — so it has no runtime effect. Noted here and in the YU12 commit so nobody "fixes" a file
+that never executes, and so nobody mistakes it for a missed propagation.
+
 ## Benchmarks — RERUN 2026-07-26 on GKE (6 gateways), banked numbers left untouched
 
 **Topology** (the "as many gateways as quota allows" run): 3× c4d-standard-8 members +
