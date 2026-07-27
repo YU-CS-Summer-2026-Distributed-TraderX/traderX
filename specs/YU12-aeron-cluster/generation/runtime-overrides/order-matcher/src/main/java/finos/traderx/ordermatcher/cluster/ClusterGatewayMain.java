@@ -148,6 +148,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private void ownerLoop() {
         connectCycling();
         long lastReconnect = 0;
+        long lastKeepAlive = 0;
         while (running) {
             try {
                 final FutureTask<?> task = tasks.poll(50, TimeUnit.MILLISECONDS);
@@ -156,9 +157,25 @@ public final class ClusterGatewayMain implements OrderSubmitter {
                 } else if (client != null) {
                     client.pollEgress();
                 }
+                // Session keepalive. Ingress traffic keeps a session alive on its own, but an IDLE
+                // gateway sends nothing and the consensus module expires its session — observed on
+                // GKE 2026-07-26 as every quiet gateway flapping /ready 503 for ~50ms every ~5-10s,
+                // forever (a one-clock observer caught gw1-gw5 cycling while the loaded gw0 never
+                // blipped). Each flap is a full close+reconnect, and a failover that lands mid-flap
+                // reads as seconds of client-visible outage that the 154ms election never caused.
+                if (client != null && !client.isClosed()) {
+                    final long now = System.currentTimeMillis();
+                    if (now - lastKeepAlive > 1000) {
+                        lastKeepAlive = now;
+                        client.sendKeepAlive();
+                    }
+                }
                 if (client != null && client.isClosed()) {
                     final long now = System.currentTimeMillis();
-                    if (now - lastReconnect > 1000) {
+                    // 100ms, not 1000: connectCycling() already blocks until a live endpoint accepts,
+                    // so this gate only bounds retry churn — at 1s it was the largest avoidable term
+                    // in post-election recovery for whichever gateway lost its session.
+                    if (now - lastReconnect > 100) {
                         lastReconnect = now;
                         connected = false;
                         connectCycling();
