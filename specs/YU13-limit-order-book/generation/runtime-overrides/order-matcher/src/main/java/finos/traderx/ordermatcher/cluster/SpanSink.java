@@ -218,26 +218,52 @@ public final class SpanSink implements AutoCloseable {
      * by configuration instead of by how fast the collector answers.
      */
     private void exportLoop(final long flushMillis, final long minIntervalMillis) {
+        boolean failing = false;
         while (running) {
+            boolean hadWork = false;
             try {
                 json.setLength(0);
                 batched = 0;
                 ring.read(this::onSpan, batchLimit);
-                if (batched > 0) {
+                hadWork = batched > 0;
+                if (hadWork) {
                     post(finishBody());
-                    // Unconditional: this is the duty-cycle cap, so it must apply on the busy path
-                    // — which is the ONLY path where it matters — not just when the ring is empty.
-                    Thread.sleep(minIntervalMillis);
-                } else {
-                    Thread.sleep(flushMillis);
                 }
+                failing = false;
+            } catch (final Exception e) {
+                exportFailures.incrementAndGet(); // collector down / malformed: never fatal
+                failing = true;
+            }
+            // PACING IS UNCONDITIONAL, and that is the whole point. It used to live inside the try,
+            // after post() — so a throwing post() jumped straight past it to the catch and the loop
+            // span with no delay at all. A refused connection fails fast, so an unreachable
+            // collector (a routine state: a restarting pod) put this thread into a tight
+            // read-build-fail-repeat spin on a core-pinned member node, for as long as the outage
+            // lasted. The cap bounded the happy path and left the failure path — the one that
+            // persists — unbounded.
+            try {
+                Thread.sleep(pauseMillis(hadWork, failing, flushMillis, minIntervalMillis));
             } catch (final InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
-            } catch (final Exception e) {
-                exportFailures.incrementAndGet(); // collector down / malformed: never fatal
             }
         }
+    }
+
+    /**
+     * How long to pause before the next export attempt. Pure and package-private so the pacing
+     * decision can be asserted directly rather than inferred from timing.
+     *
+     * <p>Three cases, and the failing one is the case this method exists for: while export keeps
+     * failing there is no useful work to rush back to, so back off to the idle interval — an outage
+     * then costs ~1 attempt/s per process instead of ~100, and nothing at all on the trade path.
+     */
+    static long pauseMillis(final boolean hadWork, final boolean failing,
+                            final long flushMillis, final long minIntervalMillis) {
+        if (failing) {
+            return flushMillis;      // collector unreachable: back off, do not hammer it
+        }
+        return hadWork ? minIntervalMillis : flushMillis;
     }
 
     /** Ring consumer: append one span's JSON. Runs only on the exporter thread. */
