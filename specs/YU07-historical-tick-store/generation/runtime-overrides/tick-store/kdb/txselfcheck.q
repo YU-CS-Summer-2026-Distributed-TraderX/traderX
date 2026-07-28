@@ -69,3 +69,5 @@ s:.tx.session[];
 // you add a check. It caught exactly that typo on the first run of this file.
 if[18<>.chk.n; -1"FAIL expected 18 checks, ran ",string .chk.n; exit 1];
 -1"txselfcheck: ",string[.chk.n]," checks passed.";
+// Explicit: without it q falls into its REPL and a CI gate hangs instead of passing.
+exit 0;

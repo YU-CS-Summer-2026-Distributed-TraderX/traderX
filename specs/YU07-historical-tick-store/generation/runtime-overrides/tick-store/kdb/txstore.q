@@ -59,7 +59,8 @@
 
 // .tx.fills[] -- what actually executed, per symbol. This is OUR fill VWAP: unlike the tape
 // VWAP in tickstore.q it is complete and unconditioned, because the engine emitted every one
-// of these itself. It IS subject to capture loss under flood -- check .tx.gaps[] first.
+// of these itself. It IS subject to capture loss under flood -- check the tap's drop
+// counter, and .tx.gaps[] for sequences that produced no row.
 .tx.fills:{[]
   0!select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty,
            first_px:first px, last_px:last px by sym from txTrade};
@@ -71,10 +72,18 @@
            account:last account, side:last side, filled:last[qty]-last remaining
     by epoch,ref from txOrder};
 
-// .tx.gaps[] -- capture integrity. The tap drops rather than blocking apply, so a session can
-// be a sample rather than a census. Consensus seq numbers are contiguous for consecutive
-// applies, so a hole in the captured seq range is a dropped (or non-order) event. This is the
-// honest counterpart to the tap's WARN: never present an aggregate over this store without it.
+// .tx.gaps[] -- consensus sequences that produced no captured row.
+//
+// READ THIS BEFORE READING IT AS DATA LOSS. Every applied input consumes a sequence number, but
+// only order-lifecycle and trade outputs are captured, so control events (account/security
+// enablement, price ticks, symbol registration) leave legitimate holes. On the kind run of
+// 2026-07-27 the seed alone accounted for a 3-wide hole at seq 6..10 with nothing dropped.
+//
+// So a gap is a QUESTION, not a verdict: expected around seeding and price feeds, suspicious in
+// the middle of a burst of order traffic. The authoritative drop signal is the tap's own counter
+// -- its WARN on the first drop and every 10,000th, and the totals it prints on stop. This is the
+// view from the other end, and it is here so that no aggregate over this store is quoted as a
+// census without someone having looked.
 .tx.gaps:{[]
   s:asc distinct txOrder[`seq],txTrade`seq;
   if[2>count s;:([]from:();to:();missing:())];

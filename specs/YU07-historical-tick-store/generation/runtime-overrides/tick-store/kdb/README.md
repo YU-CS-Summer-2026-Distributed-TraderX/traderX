@@ -102,7 +102,7 @@ Then:
 ```q
 .tx.fills[]                     / per symbol: executions, volume, our fill VWAP
 .tx.orders[]                    / final state per order, keyed (epoch;ref)
-.tx.gaps[]                      / holes in the captured consensus sequence — read this FIRST
+.tx.gaps[]                      / consensus sequences that produced no captured row
 .tx.replay[.tx.session[];1.0;{show x}]   / 1.0 = real time, 0w = as fast as possible
 ```
 
@@ -113,8 +113,11 @@ for once:
    non-blocking queue offer; a daemon thread does every file system call. A stalled disk fills the
    queue and drops — it cannot wedge apply.
 2. **Drops are the sampling policy, and they are loud.** The first drop and every 10,000th print a
-   WARN; `stop()` prints the totals. `.tx.gaps[]` is the same signal read from the other end, so an
-   aggregate over a thinned capture is never presented as a census.
+   WARN; `stop()` prints the totals — that counter is the authoritative loss signal. `.tx.gaps[]`
+   is the view from the other end and answers a narrower question: which consensus sequences
+   produced no captured row. Control events (seeding, price ticks, symbol registration) consume
+   sequence numbers without producing one, so gaps are **expected** around them — a gap is a
+   question, not a verdict, and it is here so nobody quotes an aggregate as a census unread.
 3. **Rows are epoch-qualified.** `orderRef` restarts at 1 on a fresh cluster incarnation, so
    `.tx.orders[]` keys on `(epoch;ref)`. A bare ref silently merges two different orders.
 4. **A security whose ticker was never registered is captured as `#<id>`, not dropped.** Skipping

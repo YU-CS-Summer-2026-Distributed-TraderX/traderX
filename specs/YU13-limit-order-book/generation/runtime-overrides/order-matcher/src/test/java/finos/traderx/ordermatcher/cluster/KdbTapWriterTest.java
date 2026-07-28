@@ -118,5 +118,10 @@ class KdbTapWriterTest {
     r.securityId = 7;
     assertTrue(writer(dir, 8).encode(new StringBuilder(), r).contains(",#7,"),
         "an unregistered security must appear as #<id>, not vanish");
+    // The gateway registers the EMPTY symbol for a malformed order (seen on kind), and an empty
+    // CSV column reads as corruption downstream.
+    r.security = "";
+    assertTrue(writer(dir, 8).encode(new StringBuilder(), r).contains(",#7,"),
+        "an empty ticker is unregistered too, not a blank column");
   }
 }
