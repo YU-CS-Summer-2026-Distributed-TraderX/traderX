@@ -53,6 +53,11 @@ spec:
               value: "/data"
             - name: CLUSTER_AERON_DIR
               value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). Leader-side, off-consensus,
+            # best-effort: this directory is NOT the Aeron Archive, holds nothing recovery needs,
+            # and can be wiped without touching correctness. Unset it and the tap never starts.
+            - name: KDB_TAP_DIR
+              value: "/data/kdb-capture"
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

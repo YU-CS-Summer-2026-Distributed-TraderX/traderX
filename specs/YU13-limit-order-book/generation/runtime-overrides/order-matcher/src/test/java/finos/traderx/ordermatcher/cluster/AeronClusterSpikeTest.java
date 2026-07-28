@@ -60,6 +60,8 @@ class AeronClusterSpikeTest {
     private ClusteredServiceContainer container;
     private MatchingEngineClusteredService service;
     private AeronCluster client;
+    private File tapDir;          // non-null only for the analytical-capture test (brief 06)
+    private KdbTapWriter tap;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent ingress = new InputEvent();
@@ -79,6 +81,68 @@ class AeronClusterSpikeTest {
     @AfterEach
     void tearDown() {
         CloseHelper.quietCloseAll(client, container, clusteredMediaDriver);
+        if (tap != null) {
+            tap.stop();
+        }
+    }
+
+    /**
+     * Brief 06: the leader-side analytical tap captures the session a real cluster applied —
+     * through consensus, not around it — and what lands on disk agrees with the deterministic
+     * engine's own trade counter. The capture is a CSV the kdb layer (txstore.q) loads directly.
+     *
+     * <p>What this is NOT: a durability or recovery claim. The Aeron Archive stays the
+     * authoritative journal; this file is off-consensus, best-effort and droppable, and nothing
+     * here is read back by the state machine.
+     */
+    @Test
+    void leaderTapCapturesTheAppliedSessionForKdb(@TempDir final File capture) throws Exception {
+        // KDB_CAPTURE_FIXTURE_DIR regenerates the committed txselfcheck fixture from this very
+        // run, so the q layer's regression gate is fed by a real cluster rather than by hand.
+        final String fixture = System.getenv("KDB_CAPTURE_FIXTURE_DIR");
+        tapDir = fixture == null || fixture.isBlank() ? capture : new File(fixture);
+        launchNode(true);
+        connectClient();
+
+        offerAccountControl(ACCOUNT, true);
+        offerAccountControl(COUNTER, true);
+        offerSecurityControl(SECURITY, true);
+        offerPriceTick(150 * PX);
+        offerNewOrder(100 * PX, 0L);            // ref 1: rests
+        offerSellOrder(COUNTER, 100 * PX, 10);  // ref 2: crosses it — a fill on each side
+        awaitEgress(() -> countKind(OutputEvent.KIND_ORDER_ACCEPTED) == 2
+            && countKind(OutputEvent.KIND_ORDER_FILLED) == 2);
+
+        // The tap is asynchronous BY DESIGN — apply never waits for it — so the test waits for
+        // the writer, which is the one place this asymmetry is allowed to cost anything.
+        await(() -> tap.captured() >= 6);
+        tap.stop();
+
+        final List<String> orders = java.nio.file.Files.readAllLines(
+            new File(tapDir, "txorder-9-spike.csv").toPath());
+        final List<String> trades = java.nio.file.Files.readAllLines(
+            new File(tapDir, "txtrade-9-spike.csv").toPath());
+        assertEquals(0, tap.dropped(), "nothing may be dropped at this volume");
+        assertEquals(0, tap.errors(), "no write may fail");
+
+        // Cross-check against the deterministic engine rather than against the tap itself: the
+        // analytical store must agree with consensus state or it is worse than not having it.
+        assertEquals(service.engine().tradeCounter(), trades.size() - 1,
+            "every trade the engine booked must appear exactly once in the capture");
+        assertEquals(4, orders.size() - 1, "two accepts and two fills");
+        assertTrue(orders.get(1).contains(",1,11,#1,B,10,"), orders.get(1));  // ref 1 accepted, buy
+        assertTrue(orders.get(4).contains(",FILLED,100.000000,10,"), orders.get(4));
+        assertTrue(trades.get(1).contains(",11,#1,B,10,100.000000,"), trades.get(1));
+        assertTrue(trades.get(2).contains(",12,#1,S,10,100.000000,"), trades.get(2));
+
+        // Consensus order is the capture's order: seq is non-decreasing down the file, which is
+        // what makes analytical playback a faithful replay of what the engine decided.
+        long previous = -1;
+        for (final String row : orders.subList(1, orders.size())) {
+            final long seq = Long.parseLong(row.substring(0, row.indexOf(',')));
+            assertTrue(seq >= previous, "capture must stay in consensus order: " + row);
+            previous = seq;
+        }
     }
 
     @Test
@@ -184,6 +248,13 @@ class AeronClusterSpikeTest {
         final File archiveDir = new File(tempDir.toFile(), "archive");
 
         service = new MatchingEngineClusteredService();
+        if (tapDir != null) {
+            // Analytical capture (brief 06). Enabled only for the capture test; every other test
+            // in this class runs with it null, which is also the production default.
+            tap = new KdbTapWriter(tapDir, "9", "spike", 1024);
+            tap.start();
+            service.kdbTap(tap);
+        }
         clusteredMediaDriver = ClusteredMediaDriver.launch(
             new MediaDriver.Context()
                 .aeronDirectoryName(aeronDir)

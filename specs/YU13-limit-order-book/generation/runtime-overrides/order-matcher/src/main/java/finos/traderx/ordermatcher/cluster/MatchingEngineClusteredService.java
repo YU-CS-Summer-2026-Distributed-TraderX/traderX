@@ -166,6 +166,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade
     // bridge, gated on the same env so default behaviour is unchanged. Null on every member until then.
     private OrderNatsPublisher orderBridge;
+    // Leader-side capture tap for the KDB-X analytical store (brief 06): third sibling of the two
+    // bridges, gated on KDB_TAP_DIR, null on every member until it is set. Off-consensus and
+    // best-effort — the Aeron Archive journal remains the authoritative replay source, untouched.
+    private KdbTapWriter kdbTap;
 
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
@@ -187,6 +191,30 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 epoch == null || epoch.isBlank() ? "1" : epoch, 1 << 16);
             orderBridge.start();
         }
+        // Analytical capture tap (brief 06), independent of the NATS bridges on purpose: kdb is a
+        // side observer, so a deployment can run the read-model bridges without it or it without
+        // them. Its own queue and thread too — sharing the order bridge's would let a slow disk
+        // back up the read model.
+        final String tapDir = System.getenv("KDB_TAP_DIR");
+        if (tapDir != null && !tapDir.isBlank()) {
+            final String tapEpoch = System.getenv("CLUSTER_EPOCH");
+            // Same identity ClusterNodeMain uses, and unique per pod either way: the capture files
+            // from all three members have to be loadable side by side in one directory.
+            String member = System.getenv("CLUSTER_MEMBER_ID");
+            if (member == null || member.isBlank()) {
+                member = System.getenv("HOSTNAME");
+            }
+            kdbTap = new KdbTapWriter(new java.io.File(tapDir),
+                tapEpoch == null || tapEpoch.isBlank() ? "1" : tapEpoch,
+                member == null || member.isBlank() ? "0" : member, 1 << 16);
+            kdbTap.start();
+        }
+    }
+
+    /** Test seam for the analytical capture tap; production wires it from KDB_TAP_DIR in
+     *  {@link #onStart}, which leaves an injected writer alone because the env is unset there. */
+    void kdbTap(final KdbTapWriter tap) {
+        this.kdbTap = tap;
     }
 
     /** Fresh deterministic core; package-private so unit tests can drive the record codec. */
@@ -347,6 +375,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         if (orderBridge != null) {
             orderBridge.stop();
+        }
+        if (kdbTap != null) {
+            kdbTap.stop();
         }
     }
 
@@ -568,6 +599,21 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
                     out.side, out.tradeQty, out.tradePx);
+            }
+            // Analytical capture (brief 06), same leader-only non-blocking discipline, separate
+            // queue. Deliberately in the same drain loop rather than a new emission point: the tap
+            // observes what the deterministic engine already produced and adds nothing to it.
+            if (kdbTap != null && role == Cluster.Role.LEADER) {
+                if (out.kind == OutputEvent.KIND_TRADE_BOOKED) {
+                    kdbTap.offerTrade(out.inputSeq, out.tradeSeq, out.accountId,
+                        tickerById[out.securityId], out.securityId, out.side, out.tradeQty,
+                        out.tradePx, out.updatedAtMillis);
+                } else if (OutputEvent.isOrderLifecycleKind(out.kind)) {
+                    kdbTap.offerOrder(out.inputSeq, out.orderRef, out.accountId,
+                        tickerById[out.securityId], out.securityId, out.side, out.quantity,
+                        out.remainingQty, out.limitPx, out.status, out.lastExecPx, out.lastFillQty,
+                        out.createdAtMillis, out.updatedAtMillis);
+                }
             }
             // Leader-side order bridge: every order-state transition → NATS /orders → read model →
             // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
