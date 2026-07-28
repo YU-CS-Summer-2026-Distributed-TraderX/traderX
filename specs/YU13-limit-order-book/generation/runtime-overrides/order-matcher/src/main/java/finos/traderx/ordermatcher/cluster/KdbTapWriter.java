@@ -41,6 +41,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * path taking down the authoritative one, the one thing this whole design exists to prevent. So the
  * tap stops capturing at {@code KDB_TAP_MAX_MB} (default 256) and says so; analytics lose a tail,
  * consensus loses nothing. Never remove this cap without moving the capture off the Archive volume.
+ *
+ * <p><b>And past the cap the tap costs nothing on either thread.</b> Bounding the buffer is not the
+ * same as bounding the consumer: the first version of this cap kept draining, so every event still
+ * allocated a record on the APPLY thread and a formatted line on the writer, forever, for rows it
+ * would never write. {@code atCap} short-circuits the producer before it allocates and lets the
+ * writer fall through to its idle sleep. (Same defect the OTEL span sink had in CPU — name the
+ * resource the CONSUMER competes for, not just the one the buffer occupies.)
  */
 final class KdbTapWriter {
 
@@ -91,6 +98,8 @@ final class KdbTapWriter {
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong errors = new AtomicLong();
     private final AtomicLong capped = new AtomicLong();
+    /** Set by the writer when the cap is reached; read by the apply thread on every offer. */
+    private volatile boolean atCap;
     private volatile boolean running = true;
     private Thread thread;
 
@@ -118,6 +127,9 @@ final class KdbTapWriter {
                     final int securityId, final byte side, final int quantity, final int remainingQty,
                     final long limitPx, final byte status, final long lastExecPx, final int lastFillQty,
                     final long createdAtMillis, final long updatedAtMillis) {
+        if (rejectedAtCap()) {
+            return;
+        }
         final Rec r = new Rec();
         r.securityId = securityId;
         r.kind = KIND_ORDER;
@@ -141,6 +153,9 @@ final class KdbTapWriter {
     void offerTrade(final long seq, final long tradeSeq, final int accountId, final String security,
                     final int securityId, final byte side, final int quantity, final long tradePx,
                     final long tsMillis) {
+        if (rejectedAtCap()) {
+            return;
+        }
         final Rec r = new Rec();
         r.securityId = securityId;
         r.kind = KIND_TRADE;
@@ -153,6 +168,15 @@ final class KdbTapWriter {
         r.limitPx = tradePx;
         r.updatedAtMillis = tsMillis;
         submit(r);
+    }
+
+    /** Apply thread: past the cap, count and return WITHOUT allocating. One volatile read. */
+    private boolean rejectedAtCap() {
+        if (!atCap) {
+            return false;
+        }
+        capped.incrementAndGet();
+        return true;
     }
 
     private void submit(final Rec r) {
@@ -187,22 +211,26 @@ final class KdbTapWriter {
                     }
                     continue;
                 }
-                final String line = encode(sb, r);
-                if (written + line.length() > maxBytes) {
-                    // Stop at the cap rather than compete with the Archive for the volume.
-                    if (capped.getAndIncrement() == 0) {
-                        System.out.println("WARN kdb-capture-tap reached its " + (maxBytes >> 20)
-                            + " MB cap after " + captured.get() + " rows; capture stops here so the"
-                            + " Aeron Archive keeps its disk. Raise KDB_TAP_MAX_MB or move the"
-                            + " capture off /data.");
-                    }
+                if (atCap) {
+                    // Records already in flight when the cap hit: count them, do NOT format them.
+                    capped.incrementAndGet();
                     continue;
                 }
+                final String line = encode(sb, r);
                 try {
                     (r.kind == KIND_ORDER ? orders : trades).write(line);
                     written += line.length();
                     captured.incrementAndGet();
                     dirty = true;
+                    if (written >= maxBytes) {
+                        // Overshoots by at most one line, and buys a far simpler loop: the check is
+                        // here rather than per-record before formatting.
+                        atCap = true;
+                        System.out.println("WARN kdb-capture-tap reached its " + (maxBytes >> 20)
+                            + " MB cap after " + captured.get() + " rows; capture stops here so the"
+                            + " Aeron Archive keeps its disk. Raise KDB_TAP_MAX_MB or move the"
+                            + " capture off /data.");
+                    }
                 } catch (final Exception e) {
                     final long n = errors.incrementAndGet();
                     if (n == 1 || n % 10_000 == 0) {
