@@ -161,8 +161,11 @@ final class OrderNatsPublisher {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    /** Six-digit fractional ticks, zero-padded, no allocation. Negative (Px.NONE) → 0. */
-    private static void appendPx(final StringBuilder sb, final long ticks) {
+    /** Six-digit fractional ticks, zero-padded, no allocation. Negative (Px.NONE) → 0.
+     *  Package-private so {@link KdbTapWriter} formats prices identically — two implementations of
+     *  tick formatting is one rounding difference away from the analytical store disagreeing with
+     *  the read model about the same fill. */
+    static void appendPx(final StringBuilder sb, final long ticks) {
         final long px = ticks < 0 ? 0 : ticks;
         sb.append(px / 1_000_000L).append('.');
         final long frac = px % 1_000_000L;
