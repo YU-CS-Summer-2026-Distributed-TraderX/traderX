@@ -68,6 +68,29 @@ and `.tx.gaps[]` is **not** a loss signal — control events consume consensus s
 without producing a captured row, so gaps are expected around seeding. The tap's counter is the
 verdict; the gaps view is a question.
 
+## The bug this shipped with, and the one it was one env var away from
+
+Both found after the "done" write-up, both worth reading before trusting a propagation.
+
+**The manifest dead layer.** The service-override dead layer was caught and checked by counting
+references in the generated tree. The *manifest* one was not: `KDB_TAP_DIR` went into the YU13-layer
+statefulset only, but a YU14 or YU15 deploy applies **that layer's** statefulset. So on the two
+branches that matter most for a demo, the tap was fully wired in Java and never told to start —
+which presents exactly as "the tap doesn't work". Fixed on all three branches (kind on, GKE
+commented off). Found only because the OTEL lane hit the identical gap on the gateway manifests and
+said so; the lesson is that "I checked for the dead-layer trap" meant *in the code*, and the trap
+does not care which file type it lives in.
+
+**The capture could have starved the Archive of disk.** The capture writes to `/data` — the same
+1Gi member volume as the consensus journal and the snapshots. At the measured per-order ceiling
+(~190k/s) the tap emits roughly **50 MB/s**, filling that volume in about twenty seconds, and a full
+volume stops the **Archive** writing. The analytical path taking down the authoritative one is the
+one outcome this whole design exists to prevent, and it was one `KDB_TAP_DIR` on a bench rig away
+from happening. The tap now stops at `KDB_TAP_MAX_MB` (default 256 MB), says so once, and counts
+what it skipped; the test asserts that every offered row is written, dropped, or capped, none
+unaccounted for. GKE overlays ship the env commented off for the same reason (and to keep the banked
+throughput numbers comparable).
+
 ## Cost to the hot path
 
 Structurally zero when disabled (one null check). Enabled, it adds one small allocation and one
