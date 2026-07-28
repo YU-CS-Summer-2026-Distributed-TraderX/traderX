@@ -228,9 +228,13 @@ final class KdbTapWriter {
 
     /** A security whose ticker was never registered is captured as {@code #<id>}, never dropped:
      *  omitting rows for it would thin the analytical store silently, which is the failure this
-     *  tap exists to avoid. Resolved off the apply thread, so the fallback costs it nothing. */
+     *  tap exists to avoid. Resolved off the apply thread, so the fallback costs it nothing.
+     *
+     *  <p>Empty counts as unregistered, not just null — a malformed order whose ticker field is
+     *  blank makes the gateway register the EMPTY symbol, and an empty CSV column reads as data
+     *  corruption to whoever loads it. Seen on kind 2026-07-27. */
     private static String symbolOf(final Rec r) {
-        return r.security != null ? r.security : "#" + r.securityId;
+        return r.security != null && !r.security.isEmpty() ? r.security : "#" + r.securityId;
     }
 
     /** Same ordinal → name mapping the order bridge publishes, so the two feeds agree. */
