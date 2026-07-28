@@ -153,6 +153,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // counting those here would drown the market-trade signal in ordinary order flow.
     private volatile long marketTradesBooked;
     private volatile long marketTradesRejected;
+    // OTEL-01: side-channel distributed tracing; null unless OTEL_TRACES=1, in which case spans are
+    // written to a bounded ring and shipped by a separate thread (see SpanSink — the trade path never
+    // waits for the collector). Head-sampled per order, and the sampling verdict + trace identity are
+    // DERIVED from the client idempotency key the log already carries, so nothing about tracing is
+    // added to the sequenced message (see OrderTrace).
+    private final SpanSink traces = SpanSink.fromEnvOrNull("traderx-cluster-gateway");
+    private final int traceMask = SpanSink.sampleMaskFromEnv();
+
     // LATENCY-01 Phase A: side-channel per-hop latency decomposition; null unless LATENCY_DECOMP=1.
     // Owner thread records the queue/cluster segments; the binary acceptor records decode/reply/total.
     private final GatewayLatencyDecomposition latency = GatewayLatencyDecomposition.fromEnvOrNull();
@@ -560,9 +568,30 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             if (latency != null && latency.sample()) {
                 p.tSubmitNanos = System.nanoTime();
             }
+            // OTEL-01: head-sample HERE, at ingress, before the order is offered — the verdict is a
+            // pure function of the idempotency key, so the members will independently reach the same
+            // one without us sending them anything. Unsampled orders leave traceKey 0 and every
+            // trace call site below short-circuits on it.
+            if (traces != null) {
+                final long key = OrderTrace.keyOf(p.clientKey, p.orderRef);
+                if (OrderTrace.sampled(key, traceMask)) {
+                    p.traceKey = key;
+                    p.traceStartNanos = System.nanoTime();
+                }
+            }
             // Fire-and-forget on the owner thread: offer + register, no per-order wait.
             tasks.add(new FutureTask<>(() -> offerPipelined(p), null));
-            return p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
+            final ExecResult result = p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
+            // OTEL-01: the root span closes on THIS thread, not the owner's — it covers the residence
+            // the client actually experiences, and keeps one of the three span writes off the owner.
+            if (p.traceKey != 0L) {
+                final long hi = OrderTrace.traceIdHi(p.traceKey);
+                final long lo = OrderTrace.traceIdLo(p.traceKey);
+                traces.span(hi, lo, OrderTrace.spanId(p.traceKey, 0), 0L,
+                    OrderTrace.epochNanos(p.traceStartNanos), OrderTrace.epochNanos(System.nanoTime()),
+                    SpanSink.NAME_ORDER, result == null ? 0L : result.orderRef());
+            }
+            return result;
         } catch (final Exception e) {
             return null; // ambiguous/timeout: caller must not claim rejection
         }
@@ -622,6 +651,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 p.tOfferNanos = System.nanoTime();
                 latency.recordQueue(p.tOfferNanos - p.tSubmitNanos);
             }
+            // OTEL-01: same instant, independent of LATENCY_DECOMP — the offer is where the gateway
+            // hands off to consensus, so it both ends the queue span and starts the black box.
+            if (p.traceKey != 0L) {
+                p.traceOfferNanos = System.nanoTime();
+            }
             inflight.register(p); // offer order == ack order
         } catch (final Exception e) {
             p.future.complete(null);
@@ -664,6 +698,20 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // Record BEFORE completing the future so the submit thread can't race the reset() between them.
         if (p.tOfferNanos != 0) {
             latency.recordCluster(System.nanoTime() - p.tOfferNanos);
+        }
+        // OTEL-01: the two owner-thread spans. cluster.consensus is the span the MEMBERS will parent
+        // their commit/apply spans to — they compute its id from the same idempotency key, which is
+        // how the trace crosses the consensus boundary with nothing added to the log. Both writes are
+        // a 64-byte copy into a bounded ring; a full ring drops and counts, it never blocks the owner.
+        if (p.traceKey != 0L && p.traceOfferNanos != 0L) {
+            final long hi = OrderTrace.traceIdHi(p.traceKey);
+            final long lo = OrderTrace.traceIdLo(p.traceKey);
+            final long root = OrderTrace.spanId(p.traceKey, 0);
+            final long offerEpoch = OrderTrace.epochNanos(p.traceOfferNanos);
+            traces.span(hi, lo, OrderTrace.spanId(p.traceKey, 1), root,
+                OrderTrace.epochNanos(p.traceStartNanos), offerEpoch, SpanSink.NAME_QUEUE, ref);
+            traces.span(hi, lo, OrderTrace.clusterSpanId(p.traceKey), root,
+                offerEpoch, OrderTrace.epochNanos(System.nanoTime()), SpanSink.NAME_CLUSTER, ref);
         }
         p.future.complete(new ExecResult(accepted, ref, kind, riskReason));
         pipelineAcksCompleted++;
@@ -1056,7 +1104,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             + "traderx_gateway_pipeline_total{stage=\"offer_success\"} " + pipelineOffersSucceeded + "\n"
             + "traderx_gateway_pipeline_total{stage=\"offer_backpressure\"} "
                 + pipelineOfferBackpressure + "\n"
-            + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n";
+            + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n"
+            // OTEL-01: the sink's own health. A rising drop count is the honest signal that telemetry
+            // is shedding load — which is the designed behaviour, and far better than the alternative
+            // of it showing up as latency on the trade path.
+            + (traces == null ? "" : traces.metrics());
         try {
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
@@ -1232,6 +1284,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // the owner's single-threaded run give the happens-before, so no volatile needed.
         long tSubmitNanos; // t_decoded: submit thread enqueued this order (owner-queue wait starts)
         long tOfferNanos;  // t_offer:   owner thread cleared the offer into the log (cluster black box starts)
+        // OTEL-01 trace state, same threading contract as the two fields above. traceKey 0 = this
+        // order is not sampled (the common case) and every trace call site short-circuits. The key
+        // is derived, never generated, so it needs no carriage to the members — and because it lives
+        // HERE, on the gateway's heap, the trace context crosses consensus in the FIFO that already
+        // correlates the committed ack back to this request. No trace id ever enters the log.
+        long traceKey;
+        long traceStartNanos; // ingress: root span + queue span start
+        long traceOfferNanos; // offer cleared: queue span ends, cluster.consensus span starts
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {

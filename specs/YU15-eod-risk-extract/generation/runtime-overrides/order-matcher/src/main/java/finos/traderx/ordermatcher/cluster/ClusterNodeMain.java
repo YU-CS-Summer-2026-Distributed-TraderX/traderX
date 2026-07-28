@@ -288,7 +288,11 @@ public final class ClusterNodeMain {
                 // at the gateway — egress acks are best-effort and drop under flood, so a
                 // gateway tally silently undercounts exactly when the number matters.
                 + "# TYPE traderx_stp_cancels counter\ntraderx_stp_cancels" + m
-                + (started ? service.engine().countSelfTradesPrevented() : 0L) + "\n";
+                + (started ? service.engine().countSelfTradesPrevented() : 0L) + "\n"
+                // OTEL-01: span-sink health. Dropped spans mean telemetry shed load to keep the apply
+                // path free — the designed outcome, and the number that tells a supporter their trace
+                // sample is thin rather than their system is broken.
+                + (service.spanSink() == null ? "" : service.spanSink().metrics());
             final byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "text/plain; version=0.0.4");
             exchange.sendResponseHeaders(200, bytes.length);
