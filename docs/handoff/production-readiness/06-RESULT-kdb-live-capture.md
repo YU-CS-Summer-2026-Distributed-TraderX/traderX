@@ -91,6 +91,16 @@ what it skipped; the test asserts that every offered row is written, dropped, or
 unaccounted for. GKE overlays ship the env commented off for the same reason (and to keep the banked
 throughput numbers comparable).
 
+**And the cap itself had the same defect one level down.** Bounding the buffer is not the same as
+bounding the consumer. The first cap kept draining past the limit, so every event still allocated a
+record on the *apply* thread and a formatted line on the writer — forever, for rows that would never
+be written (~570k pointless allocations/s at the ceiling, on a core-pinned member, competing with
+the Aeron agents the capture exists to observe). Past the cap an offer is now one volatile read and
+a counter increment, and nothing reaches the queue. The OTEL-01 lane found the identical defect in
+its span exporter's CPU after this disk finding, which is what prompted the recheck. **The
+generalisation, since two independent side channels made it in one night: name the resource the
+CONSUMER competes for, not just the one the buffer occupies.**
+
 ## Cost to the hot path
 
 Structurally zero when disabled (one null check). Enabled, it adds one small allocation and one
