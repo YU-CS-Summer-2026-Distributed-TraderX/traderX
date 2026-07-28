@@ -148,7 +148,10 @@ impossible.
   trace id — but it is not done.
 - **Tail sampling for errors.** Head sampling only, today.
 - **`SnapshotBarrierPerformanceTest` is marginal on the YU13 branch** — a 50 ms wall-clock budget
-  that fails in the full suite and passes in isolation. Confirmed **pre-existing**, not from this
-  work, by stashing the change out and re-rendering: it still failed, at 58.08 ms, worse than with
-  the change in. Worth a look from whoever owns the capture tap, since it is a snapshot-callback
-  benchmark and the tap adds per-event work.
+  that fails in the full suite and passes in isolation. **Ruled out as anyone's regression on two
+  independent grounds.** Statistical (this lane): stashing the change out and re-rendering still
+  failed, at 58.08 ms, *worse* than the 50.02/50.80 ms with it in. Structural (the kdb lane): the
+  measured region is `service.writeSnapshot(writer)`; the capture tap touches only `onStart` and the
+  `drainOutputs` loop, and `kdbTap` is null in any test that does not inject it — so neither change
+  adds a single instruction inside the measured window. It is a contention-sensitive pre-existing
+  benchmark; three forced `cleanTest` runs at a HEAD carrying both changes passed 3/3.
