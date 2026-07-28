@@ -126,6 +126,37 @@ class SpanSinkTest {
             "trace-everything at 190k orders/s must exceed the cap, so the overflow valve engages");
     }
 
+    /**
+     * The pacing must hold on the FAILURE path, which is the one that persists. The first version of
+     * the cap slept only after a successful post, so a throwing post() skipped the sleep entirely and
+     * the exporter tight-spun for the whole duration of a collector outage — on a core-pinned member
+     * node. "What does this cost when the bad state lasts forever?" is the question, and a bounded
+     * happy path is not an answer.
+     */
+    @Test
+    void pacingHoldsWhileExportIsFailing() {
+        final long flush = 1000L;
+        final long minInterval = 10L;
+
+        // The bug: work was done, the post threw. Must still pause — and back off, not just floor.
+        assertEquals(flush, SpanSink.pauseMillis(true, true, flush, minInterval),
+            "a failing export must back off, not spin");
+
+        // Healthy busy path: the duty-cycle floor, so throughput stays capped but useful.
+        assertEquals(minInterval, SpanSink.pauseMillis(true, false, flush, minInterval));
+
+        // Idle: nothing to do, wait the full flush interval.
+        assertEquals(flush, SpanSink.pauseMillis(false, false, flush, minInterval));
+
+        // Every case pauses. No combination of inputs may return zero — that is the tight spin.
+        for (final boolean hadWork : new boolean[] {true, false}) {
+            for (final boolean failing : new boolean[] {true, false}) {
+                assertTrue(SpanSink.pauseMillis(hadWork, failing, flush, minInterval) > 0,
+                    "pause must be positive for hadWork=" + hadWork + " failing=" + failing);
+            }
+        }
+    }
+
     /** Nothing is lost silently: every offered span is either recorded or counted as dropped. This
      *  is the arithmetic that makes the drop counter trustworthy as a support signal. */
     @Test
