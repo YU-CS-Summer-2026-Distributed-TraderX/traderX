@@ -163,6 +163,32 @@ now bounded by configuration rather than by how fast the collector answers.**
 The generalisation worth keeping: *bounding the queue is not the same as bounding the consumer.*
 Both lanes bounded the buffer and left the drain unbounded, in disk and in CPU respectively.
 
+### …and the cap had the same defect one level down
+
+The kdb lane took that generalisation back to its own freshly-shipped cap, found it there, and
+reported it. Checking this one the same way found it here too (`0790c66b`, `1a4bcbe2`, `3a209ae0`).
+
+The cap slept **after** `post()`. A throwing `post()` jumps straight to the catch, so the sleep was
+skipped entirely. An unreachable collector — a routine state, a restarting pod, and precisely the
+one this class advertises as *"costs a counter, not a millisecond"* — fails its connection fast, so
+the loop became a tight read-build-fail-repeat spin on a core-pinned member node for as long as the
+outage lasted. **The happy path was bounded and the failure path, the one that actually persists,
+was not** — the same mistake as the original bug, one level in.
+
+Pacing is now unconditional and outside the `try`, and backs off to the idle interval while failing
+(~1 attempt/s per process during an outage instead of ~100). The decision is extracted as a pure
+`pauseMillis(hadWork, failing, …)` so the test asserts it directly rather than inferring it from
+wall-clock timing — including that **no** combination of inputs returns zero, since zero is the spin.
+
+The producer side was checked for the same question and is already correct — but structurally, not
+by care. A saturated ring makes `tryClaim` fail, so the producer learns of saturation from the very
+object it writes to and cannot keep working past it. The kdb tap's cap was *separate* from its queue,
+which is exactly why its producer kept allocating past the limit and this one does not. **Where the
+limit lives decides whether the producer can honour it.**
+
+The review question this leaves behind, worth asking of any best-effort side channel:
+*what does this cost when the bad state lasts forever — including on the path that fails?*
+
 Collector placement needed no new config: members carry a nodeSelector plus tolerations for the
 tainted core-pinned pool and the observability workloads carry neither, so a taint that repels every
 pod without a toleration already makes scheduling a collector beside the pinned Aeron cores
