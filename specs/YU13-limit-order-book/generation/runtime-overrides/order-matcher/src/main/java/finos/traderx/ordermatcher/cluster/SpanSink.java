@@ -84,7 +84,8 @@ public final class SpanSink implements AutoCloseable {
     private volatile boolean running = true;
 
     private SpanSink(final String serviceName, final URI endpoint, final int capacityBytes,
-                     final int batchLimit, final long flushMillis, final boolean startExporter) {
+                     final int batchLimit, final long flushMillis, final long minIntervalMillis,
+                     final boolean startExporter) {
         this.serviceName = serviceName;
         this.endpoint = endpoint;
         this.batchLimit = batchLimit;
@@ -92,7 +93,8 @@ public final class SpanSink implements AutoCloseable {
             ByteBuffer.allocateDirect(capacityBytes + RingBufferDescriptor.TRAILER_LENGTH)));
         this.http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build();
         if (startExporter) {
-            this.exporter = new Thread(() -> exportLoop(flushMillis), "otel-span-exporter");
+            this.exporter = new Thread(() -> exportLoop(flushMillis, minIntervalMillis),
+                "otel-span-exporter");
             this.exporter.setDaemon(true); // never holds shutdown open; in-ring spans are expendable
             this.exporter.start();
         } else {
@@ -103,7 +105,7 @@ public final class SpanSink implements AutoCloseable {
     /** Test seam: no exporter thread, so a test can fill the ring on purpose and drain it by hand. */
     static SpanSink forTest(final int capacityBytes) {
         return new SpanSink("test", URI.create("http://localhost:1/v1/traces"), capacityBytes,
-            512, 1000L, false);
+            512, 1000L, 10L, false);
     }
 
     /** Test seam: render whatever is currently in the ring, or null if it was empty. */
@@ -139,7 +141,11 @@ public final class SpanSink implements AutoCloseable {
         final int capacity = Integer.parseInt(envOr("OTEL_RING_BYTES", String.valueOf(1 << 20)));
         final int batch = Integer.parseInt(envOr("OTEL_BATCH_SPANS", "512"));
         final long flush = Long.parseLong(envOr("OTEL_FLUSH_MS", "1000"));
-        return new SpanSink(serviceName, URI.create(base + "/v1/traces"), capacity, batch, flush, true);
+        // Duty-cycle cap for the exporter thread — see exportLoop. Bounds what telemetry can cost
+        // in CPU on a core-pinned member node, independently of how much of it there is.
+        final long minInterval = Long.parseLong(envOr("OTEL_MIN_INTERVAL_MS", "10"));
+        return new SpanSink(serviceName, URI.create(base + "/v1/traces"), capacity, batch, flush,
+            minInterval, true);
     }
 
     /** Head-sampling mask, shared by gateway and member so their verdicts agree (see
@@ -190,7 +196,28 @@ public final class SpanSink implements AutoCloseable {
 
     // ----- exporter thread ---------------------------------------------------------------------
 
-    private void exportLoop(final long flushMillis) {
+    /**
+     * The exporter's duty cycle is CAPPED, not just its memory.
+     *
+     * <p>The ring bounds how much telemetry can be buffered, and the drop-on-full rule bounds what
+     * the trade path pays. Neither bounds what this THREAD costs: with a permanently non-empty ring
+     * — trace-everything at a rate the collector cannot absorb — the loop would post back-to-back
+     * forever and burn a core. That is a real hazard rather than a tidy-up, because members run on
+     * tainted, core-pinned nodes where CPU is the scarce reserved resource: an exporter spinning
+     * flat out competes with the Aeron agents it is supposed to be observing, which is the
+     * analytical path degrading the authoritative one — the exact outcome this design exists to
+     * prevent. (The sibling kdb capture tap hit the same class of bug through disk rather than CPU:
+     * an uncapped writer sharing the Archive's volume. Same lesson, different bounded resource.)
+     *
+     * <p>So every batch is followed by at least {@code OTEL_MIN_INTERVAL_MS}. That caps the thread
+     * at ~{@code 1000/interval} wakeups per second and export at
+     * {@code batchLimit * 1000 / interval} spans/s — 51k/s at the defaults, far above the ~4.5k/s a
+     * 1-in-128 sample produces at the measured 190k orders/s ceiling, and far below anything that
+     * could contend for a pinned core. Whatever exceeds it is dropped at the ring and COUNTED, which
+     * is the overflow valve the design already has; the cap simply makes the exporter's cost bounded
+     * by configuration instead of by how fast the collector answers.
+     */
+    private void exportLoop(final long flushMillis, final long minIntervalMillis) {
         while (running) {
             try {
                 json.setLength(0);
@@ -198,6 +225,9 @@ public final class SpanSink implements AutoCloseable {
                 ring.read(this::onSpan, batchLimit);
                 if (batched > 0) {
                     post(finishBody());
+                    // Unconditional: this is the duty-cycle cap, so it must apply on the busy path
+                    // — which is the ONLY path where it matters — not just when the ring is empty.
+                    Thread.sleep(minIntervalMillis);
                 } else {
                     Thread.sleep(flushMillis);
                 }
