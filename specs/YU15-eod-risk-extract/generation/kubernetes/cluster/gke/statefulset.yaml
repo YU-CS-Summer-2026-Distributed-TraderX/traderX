@@ -78,6 +78,11 @@ spec:
               value: "/data"
             - name: CLUSTER_AERON_DIR
               value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). OFF on GKE by default: the
+            # capture shares this volume with the Aeron Archive, and the banked throughput numbers
+            # were taken without it. Set KDB_TAP_DIR (and size KDB_TAP_MAX_MB against the disk) for
+            # a capture run — the tap caps itself at 256 MB either way so a flood cannot starve the
+            # Archive of disk. Deliberately a one-value edit, mirroring the OTEL overlay's rule.
             # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
             # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
             # deployed default and the "on" arm must be reachable without a rebuild. Flip

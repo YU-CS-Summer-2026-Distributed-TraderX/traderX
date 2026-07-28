@@ -53,6 +53,13 @@ spec:
               value: "/data"
             - name: CLUSTER_AERON_DIR
               value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). Leader-side, off-consensus,
+            # best-effort: this directory is NOT the Aeron Archive, holds nothing recovery needs,
+            # and can be wiped without touching correctness. Unset it and the tap never starts.
+            # It shares the volume with the Archive, so the tap caps itself (KDB_TAP_MAX_MB, 256
+            # default) rather than ever competing for the disk the consensus journal needs.
+            - name: KDB_TAP_DIR
+              value: "/data/kdb-capture"
             # YU15: leader-side position-cut bridge. Unset leaves the marker inert (it still
             # sequences and renders on every member, it just publishes nowhere).
             - name: RISK_EXTRACT_NATS_URL
