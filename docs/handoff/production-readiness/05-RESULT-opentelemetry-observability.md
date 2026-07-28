@@ -132,6 +132,36 @@ gates and the Epsilon-GC proofs are unaffected.
 | `OTEL_ENDPOINT` | `http://otel-collector:4318` | same | OTLP/HTTP. |
 | `OTEL_SAMPLE_MASK` | `0` (all) | `127` (1 in 128) | **Must match between gateway and members** — both derive the verdict independently, so a mismatch yields member spans whose parent was never emitted. |
 | `OTEL_RING_BYTES` / `OTEL_BATCH_SPANS` / `OTEL_FLUSH_MS` | 1 MiB / 512 / 1000 | same | Sink shape. |
+| `OTEL_MIN_INTERVAL_MS` | `10` | same | Exporter duty-cycle cap — see below. |
+
+## The bug this shipped with, found by checking a sibling lane's finding against it
+
+The kdb lane reported that its capture tap could fill the volume the Aeron Archive writes to.
+Checking whether the span sink had the analogous defect showed that **it did, in a different
+bounded resource.**
+
+The sink bounded *memory* (a fixed pre-allocated ring) and bounded what the *trade path* pays (drop
+on full, never block). Neither bounded what the exporter **thread** costs. With a permanently
+non-empty ring — trace-everything at a rate the collector cannot absorb — `exportLoop` posted
+back-to-back forever and burned a core. Members run on tainted, core-pinned nodes where CPU is the
+scarce reserved resource, so an exporter spinning flat out competes with the Aeron agents it exists
+to observe: **the analytical path degrading the authoritative one, which is exactly what this design
+is supposed to make impossible.**
+
+Not hypothetical. kind ships `OTEL_SAMPLE_MASK=0` (trace everything, correct at demo rates) and GKE
+ships `127`. The cost benchmark still owed on GKE flips `OTEL_TRACES` to 1 — and "copy the kind
+config so we get more data" is exactly how the mask travels with it. At 190k orders/s, mask 0 asks
+for 570k spans/s.
+
+Fixed (`4435d16b`, `c7f85ea6`, `09629695`): every batch is followed by at least
+`OTEL_MIN_INTERVAL_MS`, capping the thread at ~100 wakeups/s and export at
+`batchLimit * 1000 / interval` = 51.2k spans/s. Sized so a correct sample fits comfortably under
+(~4.5k spans/s at 1-in-128 and 190k orders/s) and trace-everything comfortably exceeds it, so the
+overflow valve engages and drops are counted at the ring exactly as before. **The exporter's cost is
+now bounded by configuration rather than by how fast the collector answers.**
+
+The generalisation worth keeping: *bounding the queue is not the same as bounding the consumer.*
+Both lanes bounded the buffer and left the drain unbounded, in disk and in CPU respectively.
 
 Collector placement needed no new config: members carry a nodeSelector plus tolerations for the
 tainted core-pinned pool and the observability workloads carry neither, so a taint that repels every
