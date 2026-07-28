@@ -127,8 +127,38 @@ class KdbTapWriterTest {
     assertTrue(w.capped() > 0, "the cap must actually stop capture");
     assertEquals(40, w.captured() + w.dropped() + w.capped(),
         "every offered row is written, dropped, or capped — none unaccounted for");
-    assertTrue(new File(dir, "txorder-7-1.csv").length() <= 400 + KdbTapWriter.ORDER_HEADER.length() + 1,
-        "the file must not exceed the cap (header aside)");
+    // Overshoot is bounded by one line: the cap is checked after a write, not before formatting.
+    assertTrue(new File(dir, "txorder-7-1.csv").length()
+            <= 400 + 200 + KdbTapWriter.ORDER_HEADER.length() + 1,
+        "the file must not exceed the cap by more than one row");
+  }
+
+  @Test
+  void pastTheCapAnOfferCostsTheApplyThreadNothing(@TempDir File dir) throws Exception {
+    // Bounding the buffer is not the same as bounding the consumer. The first cap kept draining,
+    // so every event past it still allocated a Rec on the APPLY thread and formatted a line on the
+    // writer — forever, for rows that would never be written. Past the cap an offer must not even
+    // reach the queue.
+    KdbTapWriter w = new KdbTapWriter(dir, "7", "1", 64, 200);
+    w.start();
+    for (int i = 0; i < 8; i++) {
+      w.offerOrder(i, i, 22214, "AAPL", 3, (byte) 0, 100, 60, 150_500_000L, (byte) 1,
+          150_250_000L, 40, 1_700_000_000_000L, 1_700_000_000_500L);
+    }
+    for (int i = 0; i < 200 && w.capped() == 0; i++) {
+      Thread.sleep(10);
+    }
+    long cappedBefore = w.capped();
+    // The queue is capacity 64 and empty by now; if these were still being queued and formatted,
+    // dropped would stay 0 and the writer would keep doing work per record.
+    for (int i = 0; i < 1000; i++) {
+      w.offerOrder(i, i, 22214, "AAPL", 3, (byte) 0, 100, 60, 150_500_000L, (byte) 1,
+          150_250_000L, 40, 1_700_000_000_000L, 1_700_000_000_500L);
+    }
+    assertEquals(cappedBefore + 1000, w.capped(),
+        "every post-cap offer is counted at the producer, never queued");
+    assertEquals(0, w.dropped(), "post-cap offers must not reach the queue at all");
+    w.stop();
   }
 
   @Test
