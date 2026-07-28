@@ -85,6 +85,12 @@ scripts and hardened so every claim hard-fails. Each injects `EOD_UNIVERSE` and 
 | [`yu15-option-persistence.sh`](yu15-option-persistence.sh) | Listed options reach the SQL read model, and the shipped migration fixes a database created by an older state. | `RiskExtractTest`, `TradeProcessorPersistenceIT` (integration) |
 | [`yu15-risk-extract.sh`](yu15-risk-extract.sh) | The EOD risk-extract acceptance proof end-to-end: sequenced cut, byte-identical across members, quiescence, write-once (gs://-aware on GKE). | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
 
+### Observability (OTEL-01)
+
+| Script | What it proves | CI counterpart |
+|---|---|---|
+| [`yu15-otel-trace-join.sh`](yu15-otel-trace-join.sh) | One order produces **one distributed trace spanning the gateway and the cluster member**, with **no trace context in the replicated log**. Falsifiable rather than decorative: the script derives the expected trace id *and* the expected parent span id from the ClOrdID alone, with no input from either server, then demands Tempo return exactly that trace joined across both services. A build that smuggled a traceparent through the log would still show spans; only this pins the actual claim. Also asserts zero span drops and zero export failures. **Functional only — the "telemetry is free" claim is a timing claim and belongs on GKE.** | `OrderTraceTest`, `SpanSinkTest` |
+
 ### High availability
 
 | Script | What it proves | CI counterpart |
