@@ -186,6 +186,15 @@ object it writes to and cannot keep working past it. The kdb tap's cap was *sepa
 which is exactly why its producer kept allocating past the limit and this one does not. **Where the
 limit lives decides whether the producer can honour it.**
 
+That rule has a boundary, and the kdb lane supplied it: it only works when the limit is expressible
+in the queue's **own units**. A ring that counts records can refuse a record; it cannot enforce a
+*byte* cap, because the byte cost is only known after formatting — which happens on the consumer. So
+the honest general form is two rules, not one: put the cap in the structure the producer already
+touches **when you can**, and when you cannot, **publish the consumer's verdict as a flag the
+producer reads before it allocates**. Every derived limit — bytes, wall-clock, cost, quota — lands in
+the second case. Without that second half, a reader whose limit is derived bounces off the first rule
+and falls back to "be careful in the producer", which is not a property anything can enforce.
+
 The review question this leaves behind, worth asking of any best-effort side channel:
 *what does this cost when the bad state lasts forever — including on the path that fails?*
 
