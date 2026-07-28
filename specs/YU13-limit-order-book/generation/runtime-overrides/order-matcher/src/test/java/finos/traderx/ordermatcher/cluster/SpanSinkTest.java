@@ -94,6 +94,52 @@ class SpanSinkTest {
         }
     }
 
+    /**
+     * The exporter's cost is bounded by CONFIG, not by how much telemetry there is. The ring bounds
+     * memory and the drop rule bounds what the trade path pays, but neither bounds what the exporter
+     * THREAD costs — and members run on tainted core-pinned nodes where a thread spinning flat out
+     * competes with the Aeron agents it exists to observe. The duty-cycle cap is what makes that
+     * impossible, so the ceiling it implies is asserted rather than assumed.
+     */
+    @Test
+    void exportRateIsCappedByConfigurationNotByTelemetryVolume() {
+        final int batchLimit = 512;      // OTEL_BATCH_SPANS default
+        final long minIntervalMs = 10L;  // OTEL_MIN_INTERVAL_MS default
+        final long ceilingPerSecond = batchLimit * 1000L / minIntervalMs;
+
+        assertEquals(51_200L, ceilingPerSecond, "defaults must cap the exporter at ~51k spans/s");
+
+        // The ceiling has to sit above what a correctly-sampled production run actually produces,
+        // or the cap would be silently throwing away the sample it was configured to keep.
+        final long ordersPerSecond = 190_000L;              // measured per-order ceiling
+        final long sampled = ordersPerSecond / 128L;        // OTEL_SAMPLE_MASK=127 on GKE
+        final long spansPerSecond = sampled * 3L;           // gateway emits 3 spans per order
+        assertTrue(spansPerSecond < ceilingPerSecond,
+            "a 1-in-128 sample at 190k orders/s produces " + spansPerSecond
+                + " spans/s, which must fit under the " + ceilingPerSecond + "/s cap");
+
+        // And it must bite for trace-everything at that rate — that is the misconfiguration the cap
+        // exists for (kind ships mask 0; copying kind's config to a loaded cluster is how this
+        // happens). Excess drops at the ring and is counted, never queued and never blocking.
+        final long unsampledSpansPerSecond = ordersPerSecond * 3L;
+        assertTrue(unsampledSpansPerSecond > ceilingPerSecond,
+            "trace-everything at 190k orders/s must exceed the cap, so the overflow valve engages");
+    }
+
+    /** Nothing is lost silently: every offered span is either recorded or counted as dropped. This
+     *  is the arithmetic that makes the drop counter trustworthy as a support signal. */
+    @Test
+    void everySpanIsAccountedForUnderSaturation() {
+        try (SpanSink sink = SpanSink.forTest(TINY_RING)) {
+            final int offered = 25_000;
+            for (int i = 0; i < offered; i++) {
+                sink.span(1L, 2L, 3L, 0L, 100L, 200L, SpanSink.NAME_APPLY, i);
+            }
+            assertEquals(offered, sink.emittedCount() + sink.droppedCount(),
+                "offered must equal recorded + dropped — no span may vanish unaccounted");
+        }
+    }
+
     private static int countOccurrences(final String haystack, final String needle) {
         int count = 0;
         for (int i = haystack.indexOf(needle); i >= 0; i = haystack.indexOf(needle, i + 1)) {
