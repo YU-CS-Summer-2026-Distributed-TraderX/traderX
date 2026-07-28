@@ -33,6 +33,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>Rows are epoch-qualified for the same reason the order bridge's ids are ({@code orderRef}
  * restarts at 1 on a fresh cluster incarnation) and carry the member id, so the captures from all
  * three members can be dropped into one directory and loaded together without collision.
+ *
+ * <p><b>Hard byte cap, because this file shares a volume with the Aeron Archive.</b> The capture
+ * lives on {@code /data} next to the consensus journal and the snapshots. At the measured per-order
+ * ceiling (~190k/s) an uncapped tap emits roughly 50 MB/s, which fills the 1Gi member volume in
+ * about twenty seconds — and a full volume stops the ARCHIVE from writing. That is the analytical
+ * path taking down the authoritative one, the one thing this whole design exists to prevent. So the
+ * tap stops capturing at {@code KDB_TAP_MAX_MB} (default 256) and says so; analytics lose a tail,
+ * consensus loses nothing. Never remove this cap without moving the capture off the Archive volume.
  */
 final class KdbTapWriter {
 
@@ -65,21 +73,38 @@ final class KdbTapWriter {
         long updatedAtMillis;
     }
 
+    /** Default cap per file. Generous for a demo session, far below the member volume. */
+    static final long DEFAULT_MAX_BYTES = 256L * 1024 * 1024;
+
+    static long maxBytesFromEnv() {
+        final String v = System.getenv("KDB_TAP_MAX_MB");
+        return v == null || v.isBlank() ? DEFAULT_MAX_BYTES : Long.parseLong(v.trim()) * 1024 * 1024;
+    }
+
     private final File orderFile;
     private final File tradeFile;
     private final String epoch;
+    private final long maxBytes;
+    private long written;
     private final OneToOneConcurrentArrayQueue<Rec> queue;
     private final AtomicLong captured = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong errors = new AtomicLong();
+    private final AtomicLong capped = new AtomicLong();
     private volatile boolean running = true;
     private Thread thread;
 
     KdbTapWriter(final File dir, final String epoch, final String member, final int capacity) {
+        this(dir, epoch, member, capacity, maxBytesFromEnv());
+    }
+
+    KdbTapWriter(final File dir, final String epoch, final String member, final int capacity,
+                 final long maxBytes) {
         this.orderFile = new File(dir, "txorder-" + epoch + "-" + member + ".csv");
         this.tradeFile = new File(dir, "txtrade-" + epoch + "-" + member + ".csv");
         this.epoch = epoch;
         this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
+        this.maxBytes = maxBytes;
     }
 
     void start() {
@@ -162,8 +187,20 @@ final class KdbTapWriter {
                     }
                     continue;
                 }
+                final String line = encode(sb, r);
+                if (written + line.length() > maxBytes) {
+                    // Stop at the cap rather than compete with the Archive for the volume.
+                    if (capped.getAndIncrement() == 0) {
+                        System.out.println("WARN kdb-capture-tap reached its " + (maxBytes >> 20)
+                            + " MB cap after " + captured.get() + " rows; capture stops here so the"
+                            + " Aeron Archive keeps its disk. Raise KDB_TAP_MAX_MB or move the"
+                            + " capture off /data.");
+                    }
+                    continue;
+                }
                 try {
-                    (r.kind == KIND_ORDER ? orders : trades).write(encode(sb, r));
+                    (r.kind == KIND_ORDER ? orders : trades).write(line);
+                    written += line.length();
                     captured.incrementAndGet();
                     dirty = true;
                 } catch (final Exception e) {
@@ -260,6 +297,11 @@ final class KdbTapWriter {
         return errors.get();
     }
 
+    /** Rows not written because the cap was reached — analytics lost, consensus untouched. */
+    long capped() {
+        return capped.get();
+    }
+
     void stop() {
         running = false;
         if (thread != null) {
@@ -271,6 +313,7 @@ final class KdbTapWriter {
             }
         }
         System.out.println("kdb-capture-tap stopped: captured=" + captured.get()
-            + " dropped=" + dropped.get() + " errors=" + errors.get());
+            + " dropped=" + dropped.get() + " errors=" + errors.get()
+            + " capped=" + capped.get() + " bytes=" + written);
     }
 }

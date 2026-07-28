@@ -110,6 +110,28 @@ class KdbTapWriterTest {
   }
 
   @Test
+  void theCapStopsCaptureBeforeItCanFillTheArchiveVolume(@TempDir File dir) throws Exception {
+    // The capture shares /data with the Aeron Archive. At the measured order ceiling an uncapped
+    // tap fills a 1Gi member volume in ~20s, which stops the ARCHIVE writing — the analytical path
+    // killing the authoritative one. The cap must hold and must be audible.
+    KdbTapWriter w = new KdbTapWriter(dir, "7", "1", 64, 400); // 400 bytes ~ 4 rows
+    w.start();
+    for (int i = 0; i < 40; i++) {
+      w.offerOrder(i, i, 22214, "AAPL", 3, (byte) 0, 100, 60, 150_500_000L, (byte) 1,
+          150_250_000L, 40, 1_700_000_000_000L, 1_700_000_000_500L);
+    }
+    for (int i = 0; i < 200 && w.capped() == 0; i++) {
+      Thread.sleep(10);
+    }
+    w.stop();
+    assertTrue(w.capped() > 0, "the cap must actually stop capture");
+    assertEquals(40, w.captured() + w.dropped() + w.capped(),
+        "every offered row is written, dropped, or capped — none unaccounted for");
+    assertTrue(new File(dir, "txorder-7-1.csv").length() <= 400 + KdbTapWriter.ORDER_HEADER.length() + 1,
+        "the file must not exceed the cap (header aside)");
+  }
+
+  @Test
   void anUnresolvedTickerIsCapturedAsItsNumericIdNeverDropped(@TempDir File dir) {
     // Dropping the row would thin the store silently — the bug class this tap exists to avoid.
     KdbTapWriter.Rec r = new KdbTapWriter.Rec();
