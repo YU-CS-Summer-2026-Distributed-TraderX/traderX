@@ -164,6 +164,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private volatile Cluster.Role role = Cluster.Role.FOLLOWER;
     // LATENCY-01 Phase B: leader-clock commit/apply split; null unless LATENCY_DECOMP=1.
     private final LeaderApplyLatency latency = LeaderApplyLatency.fromEnvOrNull();
+
+    // OTEL-01: the member half of the distributed trace; null unless OTEL_TRACES=1, so the apply
+    // path's allocation gate and the Epsilon-GC proofs see exactly the code they saw before. Spans
+    // are emitted on the LEADER only: a follower applies the same log, but its commit-to-apply delay
+    // is not the round-trip the gateway is waiting on, and three members emitting the same span ids
+    // would triple-write one trace. The leader check also excludes replay, which never runs as leader.
+    private final SpanSink traces = SpanSink.fromEnvOrNull("traderx-cluster-member");
+    private final int traceMask = SpanSink.sampleMaskFromEnv();
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
@@ -240,6 +248,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
         }
+        // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
+        // orderRef below — at this instant the decoded event holds exactly the field values the
+        // gateway held when it made its own sampling decision, so the two derivations agree without
+        // a single byte of trace context having crossed the log. Read-only: nothing here is written
+        // back to the event, emitted, or branched on by the engine.
+        final long traceKey = traces != null && role == Cluster.Role.LEADER
+            ? OrderTrace.keyOf(event.priceTicks, event.orderRef) : 0L;
+        final boolean traceThis = OrderTrace.sampled(traceKey, traceMask);
         if (event.type == InputEvent.TYPE_ORDER_NEW) {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
@@ -265,7 +281,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // record there alone. LATENCY-02: on the ms clock this is a 1ms quantum per sample — prefer
         // CLUSTER_CLOCK=nanos, which resolves the real distribution.
         final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
-        final long applyStartNanos = timeThis ? System.nanoTime() : 0L;
+        final long applyStartNanos = timeThis || traceThis ? System.nanoTime() : 0L;
         if (timeThis) {
             if (nanosClusterClock) {
                 latency.recordCommitNanos(NanosClusterClock.epochNanos() - timestamp);
@@ -281,6 +297,26 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         applyingMarketTrade = false;
         if (timeThis) {
             latency.recordApplyNanos(System.nanoTime() - applyStartNanos);
+        }
+        // OTEL-01: the two member-side spans, both children of the gateway's cluster.consensus span
+        // — whose id this member reconstructs from the idempotency key rather than receiving. That
+        // reconstruction IS the consensus-boundary crossing. Emitted after apply so nothing here can
+        // sit between a decision and its egress; two 64-byte ring writes on the sampled fraction.
+        if (traceThis) {
+            final long hi = OrderTrace.traceIdHi(traceKey);
+            final long lo = OrderTrace.traceIdLo(traceKey);
+            final long parent = OrderTrace.clusterSpanId(traceKey);
+            // commit = sequenced -> apply-start. Both ends are the LEADER's own reading of the same
+            // clock the cluster timestamps with, so the subtraction obeys the single-clock rule; the
+            // ms branch carries a 1ms quantum exactly as LeaderApplyLatency documents.
+            final long sequencedEpochNanos = nanosClusterClock ? timestamp : timestamp * 1_000_000L;
+            final long applyStartEpochNanos = nanosClusterClock
+                ? NanosClusterClock.epochNanos() : System.currentTimeMillis() * 1_000_000L;
+            traces.span(hi, lo, OrderTrace.spanId(traceKey, 5), parent,
+                sequencedEpochNanos, applyStartEpochNanos, SpanSink.NAME_COMMIT, event.orderRef);
+            traces.span(hi, lo, OrderTrace.spanId(traceKey, 6), parent,
+                OrderTrace.epochNanos(applyStartNanos), OrderTrace.epochNanos(System.nanoTime()),
+                SpanSink.NAME_APPLY, event.orderRef);
         }
         if (stampFirstApplyAsLeader) {
             stampFirstApplyAsLeader = false;
@@ -656,6 +692,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     public long lastLoadedNextOrderRef() {
         return lastLoadedNextOrderRef;
+    }
+
+    /** OTEL-01 span sink, or null when tracing is off — read by the /metrics handler. */
+    public SpanSink spanSink() {
+        return traces;
     }
 
     public Cluster.Role role() {

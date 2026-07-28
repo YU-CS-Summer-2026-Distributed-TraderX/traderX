@@ -53,6 +53,18 @@ spec:
               value: "18130"
             - name: FIX_SESSION_COMPIDS
               value: "CLIENT1"
+            # OTEL-01. On by default on kind because this rig is the support/demo story; the GKE
+            # overlay ships the same knobs set to 0 so the banked benchmark numbers stay
+            # comparable and the before/after A/B is a one-value edit rather than a rebuild.
+            # Nothing here can reach the trade path: a full ring drops, a dead collector counts.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            # 0 = trace every order. Correct for a functional rig at demo rates; at 190k/s use the
+            # 127 default (1 in 128) — per-order spans at that rate are their own problem.
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
             - name: JAVA_TOOL_OPTIONS
               value: "-Dsun.net.httpserver.nodelay=true -Xms192m -Xmx384m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
