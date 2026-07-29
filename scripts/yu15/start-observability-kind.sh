@@ -9,8 +9,14 @@
 # observability subset into the cluster-tier context so the DNS name the manifests already use
 # actually resolves.
 #
-# Deliberately NOT the whole platform: loki/promtail/blackbox are log and probe plumbing that the
-# trace story does not need, and each is another image pull on a laptop.
+# Loki + promtail are included even though the trace story does not strictly need them: without
+# Loki, Grafana's "Logs for this span" button and every Explore->Loki query fail with
+# `dial tcp: lookup loki: no such host` in a red banner, which reads as a broken rig mid-demo.
+# blackbox-exporter stays out — it probes the baseline HTTP services, none of which run here.
+#
+# NOTE what logs do and do not give you: promtail ships pod stdout, and those lines are NOT stamped
+# with the trace id (an open item in the OTEL-01 result doc). So "Logs for this span" will not
+# correlate; use `{service="gateway"}` / `{service="cluster-node"}` to read the tier's logs directly.
 #
 # Usage:  bash scripts/yu15/start-observability-kind.sh
 set -euo pipefail
@@ -34,18 +40,24 @@ kubectl --context "${CTX}" get ns "${NS}" >/dev/null 2>&1 || {
 # Configmaps BEFORE the deployments that mount them, so nothing starts against a missing volume.
 echo "[apply] configmaps"
 for f in observability-otel-configmap observability-tempo-configmap \
-         observability-prometheus-configmap observability-grafana-datasources-configmap \
+         observability-prometheus-configmap observability-loki-configmap \
+         observability-promtail-configmap observability-grafana-datasources-configmap \
          observability-grafana-dashboard-providers-configmap observability-grafana-dashboards-configmap; do
   ${K} apply -f "${BASE}/${f}.yaml"
 done
 
 echo "[apply] deployments + services"
-for f in otel-collector tempo prometheus grafana; do
+for f in otel-collector tempo prometheus loki grafana; do
   ${K} apply -f "${BASE}/${f}-deployment.yaml"
   ${K} apply -f "${BASE}/${f}-service.yaml"
 done
 
-for d in otel-collector tempo prometheus grafana; do
+echo "[apply] promtail (log shipper — needs its own RBAC)"
+for f in promtail-serviceaccount promtail-clusterrole promtail-clusterrolebinding promtail-daemonset; do
+  ${K} apply -f "${BASE}/${f}.yaml"
+done
+
+for d in otel-collector tempo prometheus loki grafana; do
   echo "[wait] ${d}"
   ${K} rollout status "deployment/${d}" --timeout=300s
 done
