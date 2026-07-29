@@ -1,5 +1,7 @@
 package finos.traderx.ordermatcher.cluster;
 
+import finos.traderx.ordermatcher.lmax.OutputEvent;
+
 /**
  * OTEL-01: trace identity and the head-sampling decision, DERIVED from a field the log already
  * carries rather than propagated through it.
@@ -26,6 +28,13 @@ package finos.traderx.ordermatcher.cluster;
  * sampling verdict as the gateway did — with <b>zero bytes added to the log, zero schema change, and
  * nothing new for the state machine to read.</b> Sampling is decided at ingress in the sense that
  * matters (it is a property of the order, fixed before it is offered); it simply needs no carriage.
+ *
+ * <p>The same argument extends one step further, and it is what makes error sampling possible here
+ * at all: a REJECTED order is traced whatever the head verdict said ({@link #escalate}), because
+ * "was it rejected" is likewise a committed, deterministic fact both sides read off the same ack —
+ * so both sides escalate together and the trace stays whole. And because the trace id is derived
+ * rather than generated, a LOG LINE can join the trace by computing it ({@link #traceIdHex})
+ * instead of being handed it.
  *
  * <p><b>Why this is not "telemetry in replicated state".</b> The derivation is one-way and read-only:
  * it consumes a committed field and produces an id that is never written back, never encoded into an
@@ -87,6 +96,72 @@ public final class OrderTrace {
      *  0 traces every order. */
     static boolean sampled(final long key, final int mask) {
         return key != 0L && (mix(key ^ SAMPLE_SALT) & mask) == 0L;
+    }
+
+    /**
+     * OUTCOME ESCALATION — trace this order regardless of {@link #sampled}, because of how it
+     * turned out. The second half of the sampling story, and the reason there is no collector-side
+     * tail_sampling processor here.
+     *
+     * <h2>Why not a tail processor</h2>
+     * A tail sampler can only choose among spans it RECEIVED. The head verdict above is decided
+     * before the order is offered, and an unsampled order emits nothing at all — no span leaves
+     * either process, so there is nothing at the collector to keep. Pointing a
+     * {@code tail_sampling} processor at this pipeline would only re-filter the 1-in-128 that was
+     * already sampled: it would look like error-sampling and would never surface a single reject
+     * that head sampling had dropped. The only way to have the rejects is to decide at the head.
+     *
+     * <h2>Why this can be decided at the head without carriage</h2>
+     * "How it turned out" is the committed ack kind, and that is not a wall-clock or host-local
+     * fact — it is the deterministic output of the replicated state machine. The member produces
+     * it; the gateway reads the very same byte off the egress ack. So both sides evaluate this
+     * predicate on identical input and reach the same verdict, exactly as they do for
+     * {@link #sampled} — no traceparent, no new field, nothing added to the log. The emission
+     * points on both sides sit AFTER the decision is known (the gateway closes its spans on the
+     * committed ack; the member emits after apply and drain), so escalating costs no ordering
+     * change, only the timestamps that must now be recorded for every order rather than the
+     * sampled fraction.
+     *
+     * <h2>What deliberately cannot be escalated: "slow"</h2>
+     * A slow order is the other thing a supporter wants, and it is out of reach BY THE SAME RULE
+     * that makes rejects reachable. Latency is per-host and non-deterministic: the gateway's view
+     * of slow (client residence) and the leader's view (apply duration) are different numbers on
+     * different clocks, and members do not agree with each other either. Escalating on it would
+     * have one side emit and the other not — a half-trace, which is worse than no trace. The
+     * µs-accurate tail belongs to the {@code /latency} histograms, which is where this design has
+     * always said to look for timing.
+     *
+     * @param ackKind the committed order-lifecycle ack kind ({@code OutputEvent.KIND_*}); 0 when
+     *                no direct ack was produced, which never escalates.
+     */
+    static boolean escalate(final byte ackKind) {
+        return ackKind == OutputEvent.KIND_ORDER_REJECTED
+            || ackKind == OutputEvent.KIND_ORDER_NOT_FOUND;
+    }
+
+    /**
+     * The 32-char lower-case hex W3C trace id, for a LOG LINE to carry — the whole of the
+     * log/trace correlation story.
+     *
+     * <p>Because the id is DERIVED from the idempotency key, a log line does not need to be handed
+     * trace context by anything: any code holding the key can compute the identical id the spans
+     * were emitted under. There is no MDC to populate, no log pattern to extend and no extra field
+     * to thread through — which matters here because this tier has no logging framework at all, it
+     * writes to {@code System.out}.
+     *
+     * <p>Allocates a String, so it is for cold paths only — the reject line, not the order path.
+     */
+    static String traceIdHex(final long key) {
+        final char[] out = new char[32];
+        hex16(traceIdHi(key), out, 0);
+        hex16(traceIdLo(key), out, 16);
+        return new String(out);
+    }
+
+    private static void hex16(final long v, final char[] out, final int offset) {
+        for (int i = 0; i < 16; i++) {
+            out[offset + i] = Character.forDigit((int) ((v >>> (60 - (i * 4))) & 0xF), 16);
+        }
     }
 
     /** High 64 bits of the W3C trace id. */
