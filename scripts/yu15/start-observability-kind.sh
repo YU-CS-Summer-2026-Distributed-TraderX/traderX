@@ -14,9 +14,12 @@
 # `dial tcp: lookup loki: no such host` in a red banner, which reads as a broken rig mid-demo.
 # blackbox-exporter stays out — it probes the baseline HTTP services, none of which run here.
 #
-# NOTE what logs do and do not give you: promtail ships pod stdout, and those lines are NOT stamped
-# with the trace id (an open item in the OTEL-01 result doc). So "Logs for this span" will not
-# correlate; use `{service="gateway"}` / `{service="cluster-node"}` to read the tier's logs directly.
+# WHAT LOGS GIVE YOU: "Logs for this span" now works, on the line that matters. The gateway prints
+# one `ORDER-REJECT trace=<32 hex> clordid=... reason=...` line per rejected order, with the trace id
+# DERIVED from the same idempotency key the spans derive theirs from — so Tempo's tracesToLogsV2
+# line-filters straight onto it and Loki's derivedFields links back the other way. An ACCEPTED order
+# has no log line by design (a line per order is a cost with no reader); use
+# `{service="gateway"}` / `{service="cluster-node"}` for the tier's own lifecycle logs.
 #
 # Usage:  bash scripts/yu15/start-observability-kind.sh
 set -euo pipefail
@@ -61,6 +64,14 @@ for d in otel-collector tempo prometheus loki grafana; do
   echo "[wait] ${d}"
   ${K} rollout status "deployment/${d}" --timeout=300s
 done
+
+# Grafana reads provisioning ONCE at startup, and its datasources file is a subPath mount — which
+# kubelet never refreshes on a ConfigMap change. So on a re-run against an already-running Grafana
+# the applied datasources (derivedFields, tracesToLogsV2) would silently be the previous ones, and
+# "Logs for this span" would keep failing for a reason nothing on screen explains.
+echo "[restart] grafana so it re-reads provisioned datasources"
+${K} rollout restart deployment/grafana
+${K} rollout status deployment/grafana --timeout=300s
 
 # The members and gateway resolve otel-collector at STARTUP; if they booted before the collector
 # existed they are exporting into a black hole. Restarting them is cheap and idempotent — the

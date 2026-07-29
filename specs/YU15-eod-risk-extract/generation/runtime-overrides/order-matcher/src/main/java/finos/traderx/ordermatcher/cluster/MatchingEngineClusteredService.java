@@ -183,6 +183,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // would triple-write one trace. The leader check also excludes replay, which never runs as leader.
     private final SpanSink traces = SpanSink.fromEnvOrNull("traderx-cluster-member");
     private final int traceMask = SpanSink.sampleMaskFromEnv();
+    // OTEL-01 follow-up: the committed ack kind the CURRENT input produced, picked by the same rule
+    // the gateway uses to choose the ack that completes a pending order — first direct (non-resting)
+    // order-lifecycle output. Reset before every apply. It is what lets this member escalate a
+    // rejected order into the trace sample in step with the gateway, off the identical byte, with
+    // nothing exchanged. Telemetry-only: never read by the engine, never written to any output.
+    private byte directAckKind;
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
@@ -307,7 +313,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // back to the event, emitted, or branched on by the engine.
         final long traceKey = traces != null && role == Cluster.Role.LEADER
             ? OrderTrace.keyOf(event.priceTicks, event.orderRef) : 0L;
-        final boolean traceThis = OrderTrace.sampled(traceKey, traceMask);
+        // OTEL-01 follow-up: the head verdict is now a flag, not the gate — a rejected order is
+        // traced whatever it said (OrderTrace.escalate), and that is only knowable after apply. So
+        // the apply-start timestamp is taken for every keyed order rather than the sampled fraction:
+        // one extra nanoTime, alongside the ingressNanos read this path already does, and only while
+        // OTEL_TRACES=1. With tracing off traceKey is 0 and this path is byte-for-byte what the
+        // allocation gates and the Epsilon-GC proofs have always measured.
+        final boolean traceSampled = OrderTrace.sampled(traceKey, traceMask);
         if (event.type == InputEvent.TYPE_ORDER_NEW) {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
@@ -333,7 +345,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // record there alone. LATENCY-02: on the ms clock this is a 1ms quantum per sample — prefer
         // CLUSTER_CLOCK=nanos, which resolves the real distribution.
         final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
-        final long applyStartNanos = timeThis || traceThis ? System.nanoTime() : 0L;
+        final long applyStartNanos = timeThis || traceKey != 0L ? System.nanoTime() : 0L;
         if (timeThis) {
             if (nanosClusterClock) {
                 latency.recordCommitNanos(NanosClusterClock.epochNanos() - timestamp);
@@ -343,6 +355,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
+        directAckKind = 0; // OTEL-01 follow-up: set by drainOutputs below (incl. the backpressure drain)
         engine.onEvent(event, appliedSeq, true);
         activeSession = null;
         drainOutputs(session);
@@ -354,7 +367,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // — whose id this member reconstructs from the idempotency key rather than receiving. That
         // reconstruction IS the consensus-boundary crossing. Emitted after apply so nothing here can
         // sit between a decision and its egress; two 64-byte ring writes on the sampled fraction.
-        if (traceThis) {
+        //
+        // OTEL-01 follow-up: `directAckKind` is the byte this apply just produced and the gateway is
+        // about to read off the egress ack, so `escalate` is the SAME predicate on the SAME input on
+        // both sides of consensus. That is what keeps a reject's trace whole: neither tier tells the
+        // other it escalated, they both simply see the rejection.
+        if (traceKey != 0L && (traceSampled || OrderTrace.escalate(directAckKind))) {
             final long hi = OrderTrace.traceIdHi(traceKey);
             final long lo = OrderTrace.traceIdLo(traceKey);
             final long parent = OrderTrace.clusterSpanId(traceKey);
@@ -730,6 +748,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final long cursor = outputRing.getCursor();
         for (long seq = outputConsumed.get() + 1; seq <= cursor; seq++) {
             final OutputEvent out = outputRing.get(seq);
+            // OTEL-01 follow-up: remember the ack the GATEWAY will treat as this order's outcome, so
+            // both tiers escalate a reject off the same byte. The rule is copied from the gateway's
+            // egress filter deliberately — first direct (non-resting) order-lifecycle output wins,
+            // because that is the one that completes the pending; later fills under the same apply
+            // are continuations of the same order and must not overwrite the verdict.
+            if (directAckKind == 0 && (out.flags & OutputEvent.FLAG_RESTING_UPDATE) == 0
+                && (OutputEvent.isOrderLifecycleKind(out.kind)
+                    || out.kind == OutputEvent.KIND_ORDER_NOT_FOUND)) {
+                directAckKind = out.kind;
+            }
             // Leader-side trade bridge: every booked trade → NATS /trades → trade-processor → DB +
             // positions + UI. Leader-only so followers never duplicate; offer is non-blocking so the
             // deterministic apply thread is never held up by NATS.

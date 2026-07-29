@@ -35,6 +35,8 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Stateless-forward order gateway (ADR-047): terminates REST and (optionally) FIX, screens
@@ -160,6 +162,18 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // added to the sequenced message (see OrderTrace).
     private final SpanSink traces = SpanSink.fromEnvOrNull("traderx-cluster-gateway");
     private final int traceMask = SpanSink.sampleMaskFromEnv();
+
+    // OTEL-01 follow-up: the ONE per-order log line this tier emits, and it is the reject — see
+    // logReject. Capped per second because stdout is the only sink in this design with NO overflow
+    // valve: a span drops at a full ring and the exporter's duty cycle is capped, but a log line
+    // goes straight to the node's disk and on to promtail/Loki with nothing in between. A reject
+    // storm is not hypothetical here (a 30s bench once had the engine reject 296,000 orders on
+    // CREDIT_LIMIT while every request got a green 2xx), and 10k println/s on the submit threads
+    // would make the telemetry the outage.
+    private static final int REJECT_LOG_PER_SEC = Integer.parseInt(env("REJECT_LOG_PER_SEC", "20"));
+    private final AtomicLong rejectLogWindow = new AtomicLong();
+    private final AtomicInteger rejectLogCount = new AtomicInteger();
+    private final AtomicLong rejectLogsSuppressed = new AtomicLong();
 
     // LATENCY-01 Phase A: side-channel per-hop latency decomposition; null unless LATENCY_DECOMP=1.
     // Owner thread records the queue/cluster segments; the binary acceptor records decode/reply/total.
@@ -459,6 +473,101 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         return ",\"reason\":\"" + RiskReason.values()[r.riskReason()] + "\"";
     }
 
+    /**
+     * OTEL-01 follow-up: THE log/trace join. One line, on the reject — the line a supporter is
+     * actually looking for — carrying the trace id the spans for this same order were emitted
+     * under.
+     *
+     * <h2>Where the trace id is stamped, and why there</h2>
+     * <b>In the line.</b> Not as a Loki label: a label per trace id is one log STREAM per order,
+     * which is the textbook Loki cardinality bomb (at the measured 190k orders/s ceiling it asks
+     * for 190k streams a second, and Loki indexes by stream). Not as structured metadata either,
+     * which would be the modern home for it — the deployed Loki 2.9.8 ships
+     * {@code allow_structured_metadata: false}, so it would need a limits change plus a promtail
+     * stage, and it buys nothing over a substring filter on a stream already narrowed to one
+     * namespace. And not via the log pattern or an MDC, the two mechanisms the brief expected,
+     * because <b>this tier has no logging framework</b>: it writes to {@code System.out}, and
+     * adding slf4j/logback to reach an MDC would be a dependency and a hot-path allocation source
+     * to solve what a string concat solves.
+     *
+     * <p>In the line also happens to be the only form that works in BOTH directions, which is what
+     * a support workflow actually needs: Grafana's Loki {@code derivedFields} turns
+     * {@code trace=<32 hex>} into a clickable Tempo link (log &rarr; trace), and Tempo's
+     * {@code tracesToLogsV2} custom query line-filters on the same token (trace &rarr; log). The
+     * ClOrdID is on the line for the third direction — the supporter who starts from the client's
+     * own id and has no way to compute splitmix64 by hand.
+     *
+     * <p>Nothing is plumbed to get the id here: it is DERIVED from the idempotency key exactly as
+     * both span emitters derive it. That is the whole point of derive-don't-carry paying off a
+     * second time — and it is why this works even with {@code OTEL_TRACES=0}, where the line is
+     * still emitted (so the cost A/B compares tracing and nothing else) and simply names a trace
+     * that was never recorded.
+     *
+     * <p>Cold path by construction: a reject already builds a String for the REST response body,
+     * and this runs on the submitting thread, never on the owner thread or a member's apply thread.
+     */
+    private void logReject(final PendingOrder p, final ExecResult result) {
+        if (!allowRejectLog(System.currentTimeMillis(), REJECT_LOG_PER_SEC,
+                rejectLogWindow, rejectLogCount)) {
+            rejectLogsSuppressed.incrementAndGet();
+            return;
+        }
+        final byte reason = result.riskReason();
+        // A key of 0 means this order has no identity either tier could have agreed on, so it was
+        // never traced and never could be. Print a dash rather than the id the derivation WOULD
+        // have produced: a 32-hex token that resolves to nothing is a link into an empty trace, and
+        // "wiring that looks right and isn't" is the exact failure this deliverable keeps finding.
+        final long key = OrderTrace.keyOf(p.clientKey, p.orderRef);
+        System.out.println("ORDER-REJECT trace=" + (key == 0L ? "-" : OrderTrace.traceIdHex(key))
+            + " clordid=" + safeForLog(p.clOrdId)
+            + " account=" + p.accountId
+            + " ticker=" + safeForLog(p.ticker)
+            + " orderRef=" + result.orderRef()
+            + " kind=" + result.kind()
+            + " reason=" + (reason >= 0 && reason < RiskReason.values().length
+                ? RiskReason.values()[reason] : "NONE"));
+    }
+
+    /**
+     * The ClOrdID and ticker on this line are CLIENT-SUPPLIED and are being written to a log a
+     * supporter reads and Loki indexes. A value containing a newline would forge a second log line
+     * — a real reject that never happened, or a fake trace id — so anything outside printable
+     * non-space ASCII becomes a dot, and the field is length-bounded. Cold path; a reject already
+     * allocates for its REST response body.
+     */
+    static String safeForLog(final String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return "-";
+        }
+        final int len = Math.min(raw.length(), 64);
+        final StringBuilder out = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            final char c = raw.charAt(i);
+            out.append(c > 0x20 && c < 0x7F ? c : '.');
+        }
+        return out.toString();
+    }
+
+    /**
+     * True at most {@code perSecond} times in any one wall-clock second, process-wide.
+     *
+     * <p>Static and handed its own state so the cap can be asserted directly in a test rather than
+     * inferred from wall-clock timing — the same reason {@code SpanSink.pauseMillis} is pure. The
+     * window roll races benignly: two threads can both see a new second, one wins the CAS and
+     * resets, the loser simply counts into the window the winner opened.
+     */
+    // ponytail: a whole-second bucket, not a sliding window — a burst can be twice the rate across
+    // a second boundary. Swap in a token bucket if that ever matters; for a reject line it does not.
+    static boolean allowRejectLog(final long nowMillis, final int perSecond,
+                                  final AtomicLong window, final AtomicInteger count) {
+        final long second = nowMillis / 1000L;
+        final long open = window.get();
+        if (second != open && window.compareAndSet(open, second)) {
+            count.set(0);
+        }
+        return count.incrementAndGet() <= perSecond;
+    }
+
     private static long clientOrderKey(final String clOrdId) {
         if (clOrdId == null || clOrdId.isEmpty()) {
             return 0L;
@@ -475,8 +584,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     @Override
     public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                   final char side, final int qty, final long limitPxTicks) {
-        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
-            qty, limitPxTicks, clientOrderKey(clOrdId), 0));
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_NEW, accountId, ticker, side,
+            qty, limitPxTicks, clientOrderKey(clOrdId), 0);
+        // Reject log only. Assigned here rather than added to the constructor so the binary and
+        // cancel paths — which have no client order id — keep their signatures untouched.
+        p.clOrdId = clOrdId;
+        return submitPipelined(p);
     }
 
     /**
@@ -519,8 +632,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         if (orderRef <= 0) {
             return new ExecResult(false, orderRef, OutputEvent.KIND_ORDER_NOT_FOUND); // reserved fence ref
         }
-        return submitPipelined(new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
-            qty, limitPxTicks, clientOrderKey(clOrdId), orderRef));
+        final PendingOrder p = new PendingOrder(InputEvent.TYPE_ORDER_REPLACE, 0, null, (char) 0,
+            qty, limitPxTicks, clientOrderKey(clOrdId), orderRef);
+        p.clOrdId = clOrdId;
+        return submitPipelined(p);
     }
 
     /**
@@ -570,26 +685,35 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             // OTEL-01: head-sample HERE, at ingress, before the order is offered — the verdict is a
             // pure function of the idempotency key, so the members will independently reach the same
-            // one without us sending them anything. Unsampled orders leave traceKey 0 and every
-            // trace call site below short-circuits on it.
+            // one without us sending them anything.
+            //
+            // OTEL-01 follow-up: the head verdict is now a FLAG, not the gate. traceKey is set for
+            // every keyed order so the span TIMESTAMPS exist if the order turns out to be rejected
+            // and has to be traced after the fact (OrderTrace.escalate) — a decision that can only
+            // be taken once the committed ack is in hand, by which time an unrecorded start time is
+            // unrecoverable. That costs one nanoTime per order, and only while OTEL_TRACES=1: with
+            // tracing off `traces` is null and this whole block is the single null check it always
+            // was. Orders with no idempotency key still leave traceKey 0 and are never traced,
+            // rejected or not, because there is nothing for the member to agree with us about.
             if (traces != null) {
-                final long key = OrderTrace.keyOf(p.clientKey, p.orderRef);
-                if (OrderTrace.sampled(key, traceMask)) {
-                    p.traceKey = key;
-                    p.traceStartNanos = System.nanoTime();
-                }
+                p.traceKey = OrderTrace.keyOf(p.clientKey, p.orderRef);
+                p.traceSampled = OrderTrace.sampled(p.traceKey, traceMask);
+                p.traceStartNanos = System.nanoTime();
             }
             // Fire-and-forget on the owner thread: offer + register, no per-order wait.
             tasks.add(new FutureTask<>(() -> offerPipelined(p), null));
             final ExecResult result = p.future.get(ACK_TIMEOUT_MS + 2_000, TimeUnit.MILLISECONDS);
             // OTEL-01: the root span closes on THIS thread, not the owner's — it covers the residence
             // the client actually experiences, and keeps one of the three span writes off the owner.
-            if (p.traceKey != 0L) {
+            if (p.traceKey != 0L && (p.traceSampled || (result != null && OrderTrace.escalate(result.kind())))) {
                 final long hi = OrderTrace.traceIdHi(p.traceKey);
                 final long lo = OrderTrace.traceIdLo(p.traceKey);
                 traces.span(hi, lo, OrderTrace.spanId(p.traceKey, 0), 0L,
                     OrderTrace.epochNanos(p.traceStartNanos), OrderTrace.epochNanos(System.nanoTime()),
                     SpanSink.NAME_ORDER, result == null ? 0L : result.orderRef());
+            }
+            if (result != null && OrderTrace.escalate(result.kind())) {
+                logReject(p, result);
             }
             return result;
         } catch (final Exception e) {
@@ -703,7 +827,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // their commit/apply spans to — they compute its id from the same idempotency key, which is
         // how the trace crosses the consensus boundary with nothing added to the log. Both writes are
         // a 64-byte copy into a bounded ring; a full ring drops and counts, it never blocks the owner.
-        if (p.traceKey != 0L && p.traceOfferNanos != 0L) {
+        //
+        // OTEL-01 follow-up: `kind` is the committed ack byte and it is in hand HERE, before any span
+        // is written — which is what makes escalating a reject at the head possible at all. The
+        // member reads the identical byte off the output it just produced and escalates with us, so
+        // the trace stays whole across the boundary with, still, nothing carried.
+        if (p.traceKey != 0L && p.traceOfferNanos != 0L
+                && (p.traceSampled || OrderTrace.escalate(kind))) {
             final long hi = OrderTrace.traceIdHi(p.traceKey);
             final long lo = OrderTrace.traceIdLo(p.traceKey);
             final long root = OrderTrace.spanId(p.traceKey, 0);
@@ -1105,6 +1235,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             + "traderx_gateway_pipeline_total{stage=\"offer_backpressure\"} "
                 + pipelineOfferBackpressure + "\n"
             + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n"
+            // OTEL-01 follow-up: reject lines the per-second cap refused to print. Exported rather
+            // than silent for the same reason the span drop count is: a correlation gap an operator
+            // cannot see is worse than one they can. Non-zero here means read the reject COUNTERS,
+            // not the log — the log is a sample during a storm.
+            + "traderx_gateway_reject_logs_suppressed_total " + rejectLogsSuppressed.get() + "\n"
             // OTEL-01: the sink's own health. A rising drop count is the honest signal that telemetry
             // is shedding load — which is the designed behaviour, and far better than the alternative
             // of it showing up as latency on the trade path.
@@ -1292,6 +1427,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         long traceKey;
         long traceStartNanos; // ingress: root span + queue span start
         long traceOfferNanos; // offer cleared: queue span ends, cluster.consensus span starts
+        // OTEL-01 follow-up: the HEAD verdict, now separate from traceKey. traceKey says "this order
+        // has an identity both tiers can derive"; traceSampled says "the head chose it". A rejected
+        // order is traced with traceSampled false — see OrderTrace.escalate.
+        boolean traceSampled;
+        // The client's own order id, for the reject log line only (null on the binary fast path and
+        // on cancel, neither of which has one). A reference to a String the REST/FIX layer already
+        // built — no allocation, and never touched by the owner thread.
+        String clOrdId;
 
         PendingOrder(final byte type, final int accountId, final String ticker, final char side,
                      final int qty, final long limitPx, final long clientKey, final int orderRef) {

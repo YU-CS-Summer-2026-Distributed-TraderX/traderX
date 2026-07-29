@@ -54,6 +54,19 @@ done
 echo
 [ "${rejected}" -gt 0 ] && echo "   last rejection: ${last_reject:-}"
 
+# A few deliberate rejections, so the support board's "Rejected orders" panel has something in it
+# and the log<->trace join is demonstrable. These use an account that was never seeded, so the risk
+# gate answers UNKNOWN_ACCOUNT — the order still SEQUENCES, so it is a real committed outcome and
+# not a gateway-local error. Each one is force-sampled into Tempo whatever the head verdict said and
+# gets an ORDER-REJECT log line carrying the same derived trace id.
+echo "[reject] ${REJECTS:-3} deliberate rejections (unknown account) for the log/trace join demo"
+for i in $(seq 1 "${REJECTS:-3}"); do
+  curl -s --max-time 10 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":987654,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":150.0,\"clientOrderId\":\"${TAG}-reject-${i}\"}" \
+    >/dev/null
+done
+echo "       Grafana -> TraderX Cluster — Support -> 'Rejected orders': click TraceID on a line."
+
 # Ground truth from the member, not the gateway. NOTE next_order_ref counts SEQUENCED orders,
 # including ones the risk gate rejected — it proves consensus is committing, not that anything
 # traded. traderx_cluster_trades is the booking-side counter.

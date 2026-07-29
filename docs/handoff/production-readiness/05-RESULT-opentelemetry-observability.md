@@ -1,8 +1,8 @@
-# 05 — RESULT: OpenTelemetry traces across the consensus boundary
+# 05 — RESULT: OpenTelemetry across the consensus boundary — traces, log correlation, error sampling
 
 > Brief: [05-opentelemetry-observability.md](05-opentelemetry-observability.md). Board: [[00-INDEX]].
-> Status: **traces DONE and proven live on kind**; the before/after cost benchmark is deferred to
-> GKE by design (it is a timing claim, and kind numbers would not be worth quoting).
+> Status: **DONE.** Traces, log correlation and error sampling are all proven live on kind, and the
+> before/after cost benchmark ran on GKE — see [07-RESULT-gke-cost-benchmarks.md](07-RESULT-gke-cost-benchmarks.md).
 
 ## The headline
 
@@ -16,6 +16,11 @@ order                (traderx-cluster-gateway)   root — the residence the clie
     ├── cluster.commit (traderx-cluster-member)  sequenced → apply start, leader clock
     └── cluster.apply  (traderx-cluster-member)  match + emit
 ```
+
+The same derivation then buys two things it was not designed for, both for free and both without a
+byte entering the log: **a log line joins its own trace by computing the id**, and **a rejected order
+is force-sampled by both tiers independently**, so the orders a supporter needs are the ones head
+sampling can no longer lose.
 
 ## The genuinely hard part, and the answer
 
@@ -80,10 +85,12 @@ counter — is met, with one less hop between truth and the dashboard.
 
 ## The support dashboard
 
-`traderx-cluster-support` answers the four questions a supporter actually asks: where is the order
-(Tempo, searchable by `traderx.order_ref`), which member is leader, what is committed, and what is
-dropping. It states plainly that span *durations* are exact and cross-host *offsets* are not, and
-that a rising drop count is the design working rather than a fault.
+`traderx-cluster-support` answers the questions a supporter actually asks: where is the order
+(Tempo, searchable by `traderx.order_ref`), **why did it not go through** (the *Rejected orders*
+panel, joined to Tempo in both directions), which member is leader, what is committed, and what is
+dropping. It states plainly that span *durations* are exact and cross-host *offsets* are not, that a
+rising drop count is the design working rather than a fault, and that a *slow* order is deliberately
+not force-sampled while a rejected one always is.
 
 ## Proof
 
@@ -105,24 +112,50 @@ member  sink 6 emitted / 6 exported / 0 dropped
 member role=1 (leader), next_order_ref advanced by exactly the orders submitted
 ```
 
-Proven on a **single-member** cluster: only the leader emits member spans, so a three-member rig
-exercises no additional tracing code, and the machine was already carrying another lane's live
-three-member kind cluster which this run deliberately did not disturb.
+Originally proven on a **single-member** cluster: only the leader emits member spans, so a
+three-member rig exercises no additional tracing code, and the machine was already carrying another
+lane's live three-member kind cluster which that run deliberately did not disturb.
+
+**Re-run 2026-07-29 on a live three-member kind cluster** with the log-correlation and error-sampling
+follow-ups in, to confirm they did not disturb the original claim — 3/3 orders, each predicted parent
+span id confirmed, both sinks clean:
+
+```
+[ok] otel-...-1: trace 6c3817ceed915cbbfcc7e17d4056a402 joined across
+     ['traderx-cluster-gateway', 'traderx-cluster-member']; predicted parent c08f66c2699fe037 confirmed
+[ok] otel-...-2: predicted parent 0b46621efd9a13b6 confirmed
+[ok] otel-...-3: predicted parent 5dca6e12779b5e73 confirmed
+[ok] gateway sink clean (0 dropped, 0 export failures) · member sink clean
+[PASS] one order, one trace, across the consensus boundary
+```
 
 ## Suites
 
+Numbers below are the gradle `test` task, measured 2026-07-29 with the follow-ups in. +11 tests for
+this round (4 in `OrderTraceTest`, 7 in the new `RejectLogCapTest`).
+
 | Branch | Tests | Failures | Gates |
 |---|---|---|---|
-| YU15 | 318 | 0 | allocation gates + noGcTest green |
-| YU14 | 301 | 0 | allocation gates + noGcTest green |
-| YU13 | 294 | 0 | allocation gates + noGcTest green |
+| YU15 | 336 | 0 | allocation gates + noGcTest green |
+| YU14 | 320 | 0 | allocation gates + noGcTest green |
+| YU13 | 306 | 0 | allocation gates + noGcTest green |
 
-12 new tests: `OrderTraceTest` (7) pins the consensus-boundary agreement — including that an order
-with no key is never sampled, so a half-trace is impossible — and `SpanSinkTest` (5) pins
-drop-don't-block under a saturated ring plus the OTLP wire format.
+22 tests cover this deliverable. `OrderTraceTest` (11) pins the consensus-boundary agreement —
+including that an order with no key is never sampled, that a reject is escalated by both tiers or
+neither, that only rejections escalate, and that the id a log line prints is character-for-character
+the id the exporter writes. `SpanSinkTest` (5) pins drop-don't-block under a saturated ring plus the
+OTLP wire format. `RejectLogCapTest` (6) pins the reject line's per-second cap — including under
+concurrent submit threads, and that no input to it returns "unbounded".
 
 The apply path is byte-identical when tracing is off (`traces == null`), which is why the allocation
-gates and the Epsilon-GC proofs are unaffected.
+gates and the Epsilon-GC proofs are unaffected. Escalation does not change that: it adds one
+`nanoTime` per order to each tier *while tracing is on*, and nothing at all when it is off.
+
+One scope note worth stating so nobody looks for the wrong thing: the reject line and the trace
+escalation live on the per-order ingress path (`submitPipelined`), which is what REST, FIX and the
+binary fast path all route through. The `/batch` bench path holds the owner thread and does its own
+ack accounting, so a load-generation flood produces neither. That is the right split — `/batch` is a
+harness, not a client — but it means a bench is not the place to look for either signal.
 
 ## Configuration
 
@@ -133,6 +166,7 @@ gates and the Epsilon-GC proofs are unaffected.
 | `OTEL_SAMPLE_MASK` | `0` (all) | `127` (1 in 128) | **Must match between gateway and members** — both derive the verdict independently, so a mismatch yields member spans whose parent was never emitted. |
 | `OTEL_RING_BYTES` / `OTEL_BATCH_SPANS` / `OTEL_FLUSH_MS` | 1 MiB / 512 / 1000 | same | Sink shape. |
 | `OTEL_MIN_INTERVAL_MS` | `10` | same | Exporter duty-cycle cap — see below. |
+| `REJECT_LOG_PER_SEC` | `20` (default) | same | Cap on the gateway's `ORDER-REJECT` log line, process-wide. Set in no manifest — the built-in default is the intended value everywhere, and it is an env var only so an operator can turn it down mid-incident without a rebuild. Independent of `OTEL_TRACES`: the line is emitted either way, so the cost A/B keeps comparing tracing and nothing else. Refusals are counted in `traderx_gateway_reject_logs_suppressed_total`. |
 
 ## The bug this shipped with, found by checking a sibling lane's finding against it
 
@@ -203,15 +237,141 @@ tainted core-pinned pool and the observability workloads carry neither, so a tai
 pod without a toleration already makes scheduling a collector beside the pinned Aeron cores
 impossible.
 
+## Logs joined to traces — and the two answers that were not the expected ones
+
+The support workflow needs both directions: from a span to the order's log lines, and from a log
+line back to its trace. Both now work, and neither needed anything plumbed, because **the trace id
+is derived rather than generated**: any code holding the idempotency key can compute the exact id
+the spans were emitted under. That is the derive-don't-carry property paying off a second time, in a
+place it was not designed for.
+
+**The first surprise: there was nothing to stamp.** The open item said promtail ships logs but they
+are not stamped with the trace id. That undersold it — the cluster tier had **no per-order log lines
+at all**. Every line in the gateway and the member is startup, role change, election phase or
+snapshot; grep confirms it. So this was never a formatting change. The question was *which line is
+worth having*, and the answer is the **reject** — the line a supporter is actually looking for, and
+one that costs nothing per order in a system that is working.
+
+**The second surprise: the mechanism the brief expected does not exist here.** "Log pattern vs MDC
+vs a structured field" presumes a logging framework is in play. The cluster tier writes to
+`System.out` — every line in `ClusterGatewayMain`, `MatchingEngineClusteredService` and
+`ClusterNodeMain` is a `println` — and there is **no logback or log4j configuration anywhere in the
+tree**, so "extend the log pattern" has no pattern to extend. (slf4j is on the fat jar's classpath
+for the inherited Spring services, which do not run in this deployment; it is not used by a single
+cluster-tier class.) Reaching an MDC would mean introducing a logging configuration and rewriting
+these call sites to get the same characters onto the same line. So the id goes **in the line**, as
+`trace=<32 hex>`, and the choice of *in the line* over the two real alternatives was decided on the
+deployed platform, not on taste:
+
+| Where | Verdict |
+|---|---|
+| Loki **label** | Ruled out. One label value per trace id is one log *stream* per order, and Loki indexes per stream — at the 190k orders/s ceiling that is 190k new streams a second. It would take Loki down long before it helped anyone. |
+| **Structured metadata** | The right modern home, and unavailable. The deployed Loki is 2.9.8 and its config ships `allow_structured_metadata: false`; enabling it needs a limits change plus a promtail stage, and buys nothing over a substring filter on a stream already narrowed to one namespace. Named as the upgrade path, not done. |
+| **In the line** | Chosen. Zero Loki config change, zero cardinality, and the only form that works in *both* directions — `derivedFields` links a line to its trace, `tracesToLogsV2` line-filters a span back to its lines. |
+
+One thing had to be bounded that the span path already was. **`System.out` is the only sink in this
+design with no overflow valve.** A span meets a full ring and is dropped and counted; the exporter's
+duty cycle is capped so an outage costs about one attempt a second. A log line goes straight to the
+node's disk and on to promtail and Loki with nothing in between that can refuse it — and a reject
+storm is a demonstrated state of this system, not a hypothetical: a 30-second bench once had the
+engine reject 296,000 orders on `CREDIT_LIMIT` while every request came back 2xx (the finding that
+put `riskReason` on the ack in the first place). At ten thousand rejects a second an unbounded log
+line makes the telemetry the outage. The line is therefore capped at
+`REJECT_LOG_PER_SEC` (20) process-wide, with the suppressed count exported as
+`traderx_gateway_reject_logs_suppressed_total` so the gap is visible rather than silent. That is the
+same review question this document already asked twice, answered before it was asked a third time:
+*what does this cost when the bad state lasts forever?*
+
+**Also fixed here: "Logs for this span" was doubly broken.** The first reason is the one above —
+there were no per-order log lines, so there was nothing for it to find whatever it queried. The
+second is that the Tempo datasource carried the deprecated v1 `tracesToLogs` block naming the Loki
+datasource and *nothing else*: no `tags`, no query. v1 builds its stream selector from the span tags
+listed in `tags`, so with that list empty there is nothing to build a selector from. Same class as
+the trace panel that had shipped with the wrong panel type: wiring present in a file, absent from
+the running system, never exercised. It is now `tracesToLogsV2` with an explicit query, and the
+proof asserts the *running* Grafana has it — reading it back over the API rather than trusting the
+file, because trusting the file is how both of these survived.
+
+## Error sampling: the honest answer was not a tail sampler
+
+Head sampling is what makes the gateway and the member agree without carriage — and it is also what
+loses the interesting orders. The verdict is a pure function of the key, fixed before the order is
+offered, so a rejected order was sampled at the same 1-in-128 as any other: **127 of every 128
+rejects were missing**, which is precisely the set a supporter needs.
+
+**A collector-side `tail_sampling` processor cannot fix this, and adding one would have been
+theatre.** A tail sampler chooses among the spans it *received*. An unsampled order emits nothing at
+all — no span leaves either process — so there is nothing at the collector to keep. A
+`tail_sampling` policy on this pipeline would only re-filter the 1-in-128 that head sampling already
+kept: it would look exactly like error sampling on the collector config, and it would never surface a
+single reject that had been dropped. The only place the decision can be taken is the head.
+
+**So the answer is: always sample rejects at the head — which is possible here for the same reason
+the trace joins at all.** "How it turned out" is the committed ack kind. That is not a wall-clock or
+host-local fact; it is deterministic output of the replicated state machine. The member produces the
+byte and the gateway reads the identical byte off the egress ack, so both sides evaluate the same
+predicate on the same input and escalate *together*. Neither tells the other. Nothing is added to
+the log. The emission points already sit after the decision is known — the gateway closes its spans
+on the committed ack, the member emits after apply and drain — so the only cost is that the span
+timestamps must now be recorded for every order rather than the sampled fraction: **one extra
+`nanoTime` per order per tier, and only while `OTEL_TRACES=1`.** With tracing off, `traces` is null,
+the key is zero, and both paths are byte-for-byte what the allocation gates and the Epsilon-GC
+proofs have always measured.
+
+**What deliberately stays out of reach: "slow".** A slow order is the other thing a supporter wants,
+and it fails the exact test rejects pass. Latency is per-host and non-deterministic: the gateway's
+"slow" (client residence) and the leader's "slow" (apply duration) are different numbers on
+different clocks, and the members do not agree with each other either. Escalating on it would have
+one side emit and the other not — a half-trace, which is worse than no trace, and the one outcome
+this design must never produce. The microsecond-accurate tail belongs to the `/latency` histograms,
+which is where this deliverable has always pointed for timing. That is the boundary of the whole
+technique, stated plainly: **derive-don't-carry can escalate on anything the log decides, and on
+nothing the wall clock decides.**
+
+Cost when the bad state lasts forever: a reject storm turns the sample into 1-in-1, which the ring's
+drop-on-full and the exporter's duty-cycle cap already bound — the cost is bounded, only *which*
+spans survive degrades. A second key-derived mask for rejects would restore the baseline sample's
+share and is the upgrade path if that ever bites; it is not shipped, because it would redistribute
+drops rather than prevent any.
+
+## Proof for the follow-ups
+
+`scripts/proofs/yu15-otel-reject-trace-log-join.sh`. Falsifiable on the same principle as the
+original: every id is computed in Python from the ClOrdID alone, and Tempo and Loki are asked for
+exactly those. It runs with head sampling genuinely on (mask 127 on **both** tiers, restored on
+exit) and submits two orders that both *fail* the head verdict — one rejected, one accepted:
+
+- the **rejected** one must come back from Tempo as a whole 5-span, 2-service trace with the member's
+  spans parented to the **predicted** `cluster.consensus` id — so both tiers escalated
+  independently, and a one-sided escalation fails here rather than looking fine in a span list;
+- the **accepted** one must **404** — the negative case, without which a build that quietly started
+  tracing everything would pass;
+- Loki must return that order's own `ORDER-REJECT` line for the trace id predicted from its ClOrdID;
+- and Grafana must actually have the join provisioned **both** ways.
+
+Run live on the three-member kind rig, 2026-07-29:
+
+```
+[run] reject arm: {"orderRef":60413,"kind":2,"reason":"UNKNOWN_ACCOUNT"}
+[run] accept arm: {"orderRef":60414,"kind":1}
+[ok] REJECTED order ...-1: full 5-span trace c002d5d9d3c3fbc355db47d85743d80b across
+     ['traderx-cluster-gateway','traderx-cluster-member'], member spans parented to the
+     PREDICTED consensus span 2e0a272052728d1a
+[ok] accepted order ...-2 outside the head sample is NOT in Tempo
+[ok] Loki returns the order's own log line for the trace id PREDICTED from its ClOrdID:
+     ORDER-REJECT trace=c002d5d9d3c3fbc355db47d85743d80b clordid=...-1 account=987654
+     ticker=AAPL orderRef=60413 kind=2 reason=UNKNOWN_ACCOUNT
+[ok] Grafana has the join provisioned BOTH ways
+```
+
+One rig note the script now handles, because it cost a run: the script rolls the gateway (the mask is
+read once at startup), and a `kubectl port-forward` binds one pod for its lifetime — so the
+operator's forward dies the instant the roll begins and every probe after it reads as "the gateway
+never came back". It did; the tunnel went. The script brings up its own forward on a private port for
+the rolled half of the run and says so on exit.
+
 ## Open items
 
-- **The before/after cost benchmark on GKE.** The deliverable's "it costs nothing" claim is a timing
-  claim; both arms are one env value apart on the deployed manifests (`OTEL_TRACES` 0 → 1) with no
-  rebuild. Run it at the next cluster bring-up, alongside the other parked GKE work.
-- **Logs correlated to trace ids.** promtail ships logs today but they are not stamped with the
-  trace id. The derivation makes this cheap — any log line that knows the ClOrdID can compute the
-  trace id — but it is not done.
-- **Tail sampling for errors.** Head sampling only, today.
 - **`SnapshotBarrierPerformanceTest` is marginal on the YU13 branch** — a 50 ms wall-clock budget
   that fails in the full suite and passes in isolation. **Ruled out as anyone's regression on two
   independent grounds.** Statistical (this lane): stashing the change out and re-rendering still
