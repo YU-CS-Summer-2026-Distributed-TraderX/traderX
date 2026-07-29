@@ -2353,9 +2353,9 @@ data:
           ]
         },
         {
-          "type": "traces",
+          "type": "table",
           "title": "Find an order \u2014 search by traderx.order_ref",
-          "description": "Head-sampled per-order traces spanning gateway ingress, consensus commit and leader apply. Trace context is never carried in the replicated log: gateway and members derive the same trace id from the client idempotency key the log already holds.",
+          "description": "Head-sampled per-order traces spanning gateway ingress, consensus commit and leader apply. Trace context is never carried in the replicated log: gateway and members derive the same trace id from the client idempotency key the log already holds. Click a Trace ID to open the waterfall. NOTE: this is a table, not Grafana's 'traces' panel \u2014 that panel type renders ONE trace supplied by id, so a TraceQL SEARCH into it always renders 'No data found in response' no matter how many traces match.",
           "datasource": {
             "type": "tempo",
             "uid": "tempo"
