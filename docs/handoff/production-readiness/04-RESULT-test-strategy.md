@@ -16,8 +16,9 @@ hardware.** Nothing was weakened to fit CI.
 
 ### Tier 1 — in-process unit + characterisation tests → **CI, every push and PR**
 
-The engine, cluster, gateway, risk, and post-trade logic are covered by **~853 machine-verified
-JUnit tests** (YU13 270 / YU14 283 / YU15 300) plus the **48 baseline-service tests** added in brief
+The engine, cluster, gateway, risk, and post-trade logic are covered by **1,295 machine-verified
+JUnit tests across the three branches** — YU13 414 / YU14 428 / YU15 453, each rendered and run
+separately (re-measured 2026-07-29) — plus the **48 baseline-service tests** added in brief
 03. These run in the `hosted` / `baseline*` jobs of `engine-tests.yml` on `ubuntu-latest`. They need
 no cluster, no network, no DB server (in-memory H2 where a datasource is needed). They assert the
 correctness properties directly — self-trade prevention, atomic replace, ClOrdID idempotency,
@@ -28,7 +29,8 @@ This is the tier that makes "green" mean something: it gates merges.
 
 ### Tier 2 — end-to-end falsifiable proofs → **manual, documented, runnable**
 
-The **26 proof scripts in `scripts/bench/`** drive the *deployed* system end-to-end: REST/FIX/binary
+The **26 standalone proof scripts in `scripts/proofs/`** (27 catalogued, one of which is setup) drive
+the *deployed* system end-to-end: REST/FIX/binary
 ingress → gateway → 3-member Aeron cluster → async projection → SQL read model → REST/FIX egress, and
 the risk control plane. Several were **genuinely falsified before they passed** (a 200 that booked
 nothing; an order the risk gate rejected while HTTP still returned OK) — that history is why they are
@@ -41,9 +43,20 @@ flaky-in-CI, they are *infrastructure-in-CI*, which is a different and honest re
 Three-member failover, snapshot/replay, cold-follower rejoin, and wall-clock budgets
 (`ThreeMemberClusterTest`, `SnapshotBarrierPerformanceTest`, the Epsilon no-GC gates) live in the
 `dedicated` job — `workflow_dispatch`-only. They are **excluded from every-push CI on purpose**: a
-2-core shared hosted runner cannot make a credible timing or 3-node-consensus claim (measured:
-`ThreeMemberClusterTest`'s two-failover case times out under host load but passes in 33 s idle). The
-split is a one-line `runs-on` change to a self-hosted GKE runner when we want them gated.
+2-core shared hosted runner cannot make a credible timing or 3-node-consensus claim.
+
+**Run on all three branches 2026-07-29 — green:** `ThreeMemberClusterTest` 23.7s / 23.8s / 28s
+(YU13 / YU14 / YU15) against a 120s bar, `SnapshotBarrierPerformanceTest` inside budget on all three,
+both Epsilon gates green.
+
+**That run also quantified exactly why this tier cannot be gated on shared hardware, and the shape is
+worse than "slow".** With six kind containers on the box, `ThreeMemberClusterTest` **hit the 120s
+timeout**; the same commit on a quiet box finished in **24s**. It does not degrade gradually — it
+either completes in ~24s or starves out entirely, always as `condition not met within 120s` in
+`awaitEgress` after the second failover. Proven to be contention and not a code difference by A/B:
+YU13 passed, then failed, then passed again with nothing changed but the containers. **So a red
+result on this tier under load is inconclusive, not a regression** — re-run it quiet before drawing
+any conclusion. The split to real hardware is a one-line `runs-on` change to a self-hosted runner.
 
 ## Proof → in-process test map (the credibility table)
 
@@ -61,6 +74,8 @@ Almost every end-to-end proof has an in-process test asserting the same property
 | `yu03-risk-demo.sh` | two-tier risk gate, control plane, kill-switch | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
 | `yu04-live-delta.sh`, `yu04-offline-catchup.sh` | durable control feeds, bootstrap catch-up | `ControlFeedSubscriberTest`, `ControlFeedBootstrapStateTest` |
 | `yu15-risk-extract.sh`, `yu15-option-persistence.sh` | sequence-addressed, byte-identical EOD extract | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
+| `yu15-otel-trace-join.sh` | one order = one trace across consensus, trace id **derived** not carried | `OrderTraceTest`, `SpanSinkTest` |
+| `yu15-otel-reject-trace-log-join.sh` | a rejected order is traced even when head sampling dropped it; its log line and trace share the derived id | `OrderTraceTest`, `RejectLogCapTest` |
 | `failover-nodeclock.sh` (HA) | sub-second failover, zero order loss | `ThreeMemberClusterTest` (Tier 3, dedicated) |
 | `yu13-readmodel-effect-end.sh` | order read model at the SQL effect end (place→NEW→cancel→CANCELED) | `ProjectorHandlerTest`, `OrderFeedHandler` rejection tests |
 | `yu06-quality-gate.sh`, `yu06-consumer-halt.sh` | EOD gate blocks flagged publish; P&L consumer halts fail-safe | EOD service/quality-checker unit tests |
@@ -122,7 +137,8 @@ The `hosted` engine job runs as a **per-branch matrix** — each branch renders 
 so the same test name runs against different composed code per branch, which is how a dead-layer /
 propagation regression becomes visible. **Coverage: YU13, YU14, and YU15** — all three enabled
 2026-07-25 after each was validated green locally on the exact CI path (render + hosted suite +
-allocation gates: YU13 270 / YU14 284 / YU15 298 tests, 0 failures). YU13/YU14 carry the two engine CI
+allocation gates). Current, re-measured on the exact CI path 2026-07-29: **engine 304 / 318 / 335 plus
+service modules 110 / 110 / 118 = 414 / 428 / 453 per branch, 0 failures.** YU13/YU14 carry the two engine CI
 scripts (`engine-tests.sh`, `exclude-heavy.gradle`) so the matrix leg's workspace checkout has them.
 A push to YU15 or any PR now exercises all three legs. (Own-push triggers for YU13/YU14 — a trimmed
 per-branch `engine-tests.yml` without the YU15-only baseline jobs — are a deferred nice-to-have; the
