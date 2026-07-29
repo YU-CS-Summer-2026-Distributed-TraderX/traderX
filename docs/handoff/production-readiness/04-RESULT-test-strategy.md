@@ -96,12 +96,25 @@ the fast `baseline` unit job stays Docker-free; only the `integration-trade-proc
 
 ## What is genuinely not yet automated (honest gaps)
 
-- **More cross-service seams.** The order→match→egress→read-model→REST/FIX round trip and the
-  control-plane→in-memory-limits→reject path are still proven only at Tier 2 (manual) and at Tier 1
-  in *isolated* units. The trade-processor persistence seam is the first one automated; the same
-  Testcontainers pattern extends to the others.
-- **Per-state composed-tree baseline tests.** Brief 03's baseline suites run against the templates;
-  running them against each YU branch's generated tree is the matrix-extension follow-up.
+- ~~control-plane→in-memory-limits→reject~~ **CLOSED 2026-07-28** (`c0e3f92f`):
+  `ControlPlaneLimitRejectSeamTest` spans control event → `MatchingEngine.onPolicyControl` →
+  `BlpRiskState.putLimits` → `decideAndReserve` → reject. In-process (no cluster, broker or Docker),
+  so it runs in **Tier 1 on every push**. It closed a real hole: `RiskControlControllerTest` drove the
+  REST endpoint against a **mocked** engine and `BlpRiskStateTest` called `putLimits` **directly** —
+  the wire between them was covered nowhere. **Proven falsifiable**: severing `putLimits` in a
+  disposable rendered tree fails the limit test while the kill-switch test survives (it travels
+  `putPolicy`), so the two pin different wires. Asserted at the effect end (`tradeCounter`), never on
+  an acknowledgement.
+- **The order→match→egress→read-model→REST/FIX round trip stays Tier 2, deliberately.** Automating it
+  means running the Aeron cluster tier in CI, and a 2-core shared runner is the rig we have
+  repeatedly measured as unreliable for consensus (CPU starvation, the `applied: -1` wedge). Trading
+  a trustworthy manual proof for a flaky automated one is a bad exchange. `yu13-readmodel-effect-end.sh`
+  covers it, and its properties are gated in-process by `ProjectorHandlerTest` + `LimitOrderBookTest`.
+- ~~Per-state composed-tree baseline tests~~ **OVERTAKEN, not outstanding.** The point of running the
+  template suites per-branch was to catch a higher layer shadowing them. `service-tests.sh` now runs
+  the **composed** service modules directly on all three branches, which covers that risk more
+  directly; re-running the template suites against each generated tree would mostly execute identical
+  code three times.
 
 ## CI matrix coverage
 
