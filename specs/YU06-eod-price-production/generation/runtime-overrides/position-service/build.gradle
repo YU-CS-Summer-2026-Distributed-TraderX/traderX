@@ -14,6 +14,17 @@ java {
   sourceCompatibility = JavaVersion.VERSION_21
 }
 
+// Test sources for this project live at src/main/test/java (a pre-existing TraderX convention),
+// which Gradle does not pick up by default — without this the inherited @SpringBootTest smoke
+// test reports NO-SOURCE and silently never runs. Same fix brief 03 applied to the templates;
+// this is the COMPOSED layer, which brief 03 deferred.
+sourceSets {
+  test {
+    java.srcDirs = ["src/test/java", "src/main/test/java"]
+    resources.srcDirs = ["src/test/resources", "src/main/test/resources"]
+  }
+}
+
 repositories {
   mavenCentral()
 }
