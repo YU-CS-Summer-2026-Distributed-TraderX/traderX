@@ -31,7 +31,15 @@ MODULES=(
   trade-processor
   position-service
   account-service
+  aeron-replication-sidecar
 )
+
+# NOT LISTED, deliberately: trade-service. Its only test is TradeServiceApplicationTests, a
+# @SpringBootTest whose context cannot start without a live NATS broker (the tradePublisher bean
+# dials nats.address during bean creation) -- verified by experiment 2026-07-28, same root cause
+# as TradeProcessorApplicationTests. It therefore has ZERO runnable unit tests, and adding it here
+# would either fail the job or -- worse -- contribute a module that executes nothing. Its test
+# belongs in the Testcontainers tier. Recorded rather than silently omitted.
 
 [[ -d "${GEN}" ]] || { echo "[fail] no rendered tree at ${GEN} — run pipeline/generate-state.sh first" >&2; exit 3; }
 
