@@ -155,11 +155,19 @@ gateway keepalive, the kdb tap).
 
 - ~~Four Java modules no pipeline runs~~ **CLOSED 2026-07-28** (`8fc0bafa`): all four now run in the `hosted` job on every branch — **108 tests on YU13/YU14, 116 on YU15**, 0 failures. The `~12 @SpringBootTest` warning was overstated: only **6 classes** needed Spring, and only **one** turned out to be a genuine blocker.
 - **One test is deliberately excluded, and it is worth knowing why.** `TradeProcessorApplicationTests` was inert (no `sourceSets` override in the composed tree). Waking it showed the context **cannot start without a live NATS broker** — `tradePublisher` dials `nats.address` during bean creation with no disable flag. It is an integration test that had been sitting in the unit tier passing by never running. It is now excluded from the unit task **visibly, with the reason in the build file**, and belongs in the Testcontainers tier beside `TradeProcessorPersistenceIT`.
-- **`trade-service` has no runnable unit test.** Its single `TradeServiceApplicationTests` is a
-  `@SpringBootTest` whose context cannot start without a live NATS broker (`tradePublisher` dials
-  `nats.address` during bean creation) — verified by experiment, same root cause as
-  `TradeProcessorApplicationTests`. Both belong in the Testcontainers tier; a NATS container
-  alongside the existing MariaDB one would recover 2 context-load tests.
+- ~~trade-processor context-load unverified~~ **CLOSED 2026-07-28** (`d4b9460d`):
+  `TradeProcessorContextIT` starts the composed context against a **real MariaDB + real NATS**
+  (Testcontainers) and asserts the Publisher bean is wired. Tagged `integration` with its own task,
+  so the unit job stays Docker-free (verified green with the Docker daemon down). New
+  `integration-trade-processor-context` CI job.
+- **`trade-service` still has no runnable unit test, and I deliberately did not fix it.** Same root
+  cause (`tradePublisher` dials `nats.address` at bean creation), but its `build.gradle` is produced
+  by `specs/006-messaging-nats-replacement/generation/patches/0001-state-overlay.patch` — a
+  `git apply` artifact whose context lines are the baseline files, i.e. the same class of artifact
+  that broke YU02 rendering during the rebase. There is no layer `build.gradle` to add test
+  dependencies to. Editing the patch would risk generation for **every state from 006 onward** to
+  recover **one** context-load test. If that patch is ever restructured for another reason, add the
+  container test then.
 - **The Angular front-end has never been executed here at all.**
 - **No proof script runs in CI** — deliberate (they need a live cluster) and documented in the [test strategy](04-RESULT-test-strategy.md), but it means they can rot.
 - **q gates aren't wired to anything automated.**
