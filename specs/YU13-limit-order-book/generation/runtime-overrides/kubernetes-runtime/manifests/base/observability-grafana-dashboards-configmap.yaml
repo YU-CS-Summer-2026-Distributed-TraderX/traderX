@@ -2203,7 +2203,7 @@ data:
           },
           "options": {
             "mode": "markdown",
-            "content": "**Where is my order?** Use the *Find an order* panel below and search the `traderx.order_ref` attribute. One order renders as a single trace: `order` (gateway residence) > `gateway.queue` > `cluster.consensus`, with the leader's `cluster.commit` and `cluster.apply` nested inside the consensus span.\n\n**Trust the durations, not the cross-host offsets.** Every span is measured start-to-end on one host's monotonic clock, so its duration is exact. Gateway and member wall clocks differ by a few ms, so a child may render slightly offset from its parent. For microsecond-accurate percentiles use the `/latency` endpoint on the leader.\n\n**Tracing is head-sampled and lossy by design.** If *Spans dropped* is climbing, telemetry is shedding load to keep the apply path free \u2014 that is the system working, not failing."
+            "content": "**Where is my order?** Use the *Find an order* panel below and search the `traderx.order_ref` attribute. One order renders as a single trace: `order` (gateway residence) > `gateway.queue` > `cluster.consensus`, with the leader's `cluster.commit` and `cluster.apply` nested inside the consensus span.\n\n**Why did it not go through?** Start at *Rejected orders* at the bottom instead. Every rejected order gets a log line and is force-sampled into Tempo whatever the head verdict said, so a reject is always in both places: click **TraceID** on a line for its waterfall, or **Logs for this span** from a span to come back. Both directions work because the trace id is *derived* from the client idempotency key, not carried \u2014 the log line and the spans compute the same id independently.\n\n**Trust the durations, not the cross-host offsets.** Every span is measured start-to-end on one host's monotonic clock, so its duration is exact. Gateway and member wall clocks differ by a few ms, so a child may render slightly offset from its parent. For microsecond-accurate percentiles use the `/latency` endpoint on the leader.\n\n**Tracing is head-sampled and lossy by design** \u2014 for everything except rejections. If *Spans dropped* is climbing, telemetry is shedding load to keep the apply path free \u2014 that is the system working, not failing. A *slow* order is deliberately NOT force-sampled: slowness is a per-host, non-deterministic fact, so gateway and member could not agree on it and you would get half a trace. The tail belongs to `/latency`."
           }
         },
         {
@@ -2378,6 +2378,38 @@ data:
               "limit": 20
             }
           ]
+        },
+        {
+          "type": "logs",
+          "title": "Rejected orders — the log/trace join",
+          "description": "One line per rejected order, carrying the trace id of that order's own trace. Nothing plumbs it there: the gateway DERIVES the id from the client idempotency key with the same function the span emitters use, so a log line and a span agree without either being told about the other. Click the TraceID link on a line to open its waterfall; from a span, 'Logs for this span' line-filters back to here. A rejected order is ALSO force-sampled into Tempo whatever the head verdict said — head sampling alone would drop 127 of every 128 rejects, which are the orders anyone is actually looking for. Accepted orders have no log line on purpose. If traderx_gateway_reject_logs_suppressed_total is climbing, this panel is a SAMPLE of a reject storm and the counters are the truth.",
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "gridPos": {
+            "h": 9,
+            "w": 24,
+            "x": 0,
+            "y": 48
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "loki",
+                "uid": "loki"
+              },
+              "expr": "{namespace=\"traderx\", service=\"gateway\"} |= \"ORDER-REJECT\""
+            }
+          ],
+          "options": {
+            "showTime": true,
+            "showLabels": false,
+            "wrapLogMessage": true,
+            "enableLogDetails": true,
+            "sortOrder": "Descending"
+          }
         },
         {
           "type": "timeseries",

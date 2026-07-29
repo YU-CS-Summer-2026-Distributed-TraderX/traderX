@@ -1,5 +1,6 @@
 package finos.traderx.ordermatcher.cluster;
 
+import finos.traderx.ordermatcher.lmax.OutputEvent;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -97,5 +98,77 @@ class OrderTraceTest {
         final long a = OrderTrace.traceIdLo(OrderTrace.keyOf(1L, 0));
         final long b = OrderTrace.traceIdLo(OrderTrace.keyOf(2L, 0));
         assertNotEquals(a, b);
+    }
+
+    // ----- OTEL-01 follow-up: outcome escalation and the log join ---------------------------------
+
+    /**
+     * THE escalation claim, and the reason there is no collector-side tail sampler: an order the
+     * head threw away is recovered by BOTH tiers, or by neither. The predicate is a pure function of
+     * the committed ack kind — no key, no mask, no per-side state — so there is nothing for gateway
+     * and member to disagree about, and a reject can never become a half-trace.
+     */
+    @Test
+    void aRejectedOrderIsEscalatedByBothSidesOrNeither() {
+        int escalatedOutsideTheSample = 0;
+        for (long clOrdIdHash = 1; clOrdIdHash < 5000; clOrdIdHash++) {
+            final long key = OrderTrace.keyOf(clOrdIdHash, 0);
+            // Both sides run the same two predicates over the same two inputs.
+            final boolean gatewaySampled = OrderTrace.sampled(key, 127);
+            final boolean memberSampled = OrderTrace.sampled(key, 127);
+            final boolean gatewayEscalates = OrderTrace.escalate(OutputEvent.KIND_ORDER_REJECTED);
+            final boolean memberEscalates = OrderTrace.escalate(OutputEvent.KIND_ORDER_REJECTED);
+            assertEquals(gatewaySampled || gatewayEscalates, memberSampled || memberEscalates,
+                "one tier would emit spans for this reject and the other would not — half-trace");
+            if (!gatewaySampled) {
+                escalatedOutsideTheSample++;
+            }
+        }
+        // The point of the feature: the overwhelming majority of rejects are NOT in the head sample,
+        // which is exactly why the head verdict alone loses them.
+        assertTrue(escalatedOutsideTheSample > 4000,
+            "expected most rejects to fall outside a 1-in-128 head sample, got "
+                + escalatedOutsideTheSample);
+    }
+
+    /** Only genuine rejections escalate. A fill or a cancel is a normal outcome and stays on the
+     *  head verdict — otherwise "error sampling" quietly becomes "sample everything". */
+    @Test
+    void onlyRejectionsEscalate() {
+        assertTrue(OrderTrace.escalate(OutputEvent.KIND_ORDER_REJECTED));
+        assertTrue(OrderTrace.escalate(OutputEvent.KIND_ORDER_NOT_FOUND));
+        assertTrue(!OrderTrace.escalate(OutputEvent.KIND_ORDER_ACCEPTED));
+        assertTrue(!OrderTrace.escalate(OutputEvent.KIND_ORDER_FILLED));
+        assertTrue(!OrderTrace.escalate(OutputEvent.KIND_ORDER_PARTIALLY_FILLED));
+        assertTrue(!OrderTrace.escalate(OutputEvent.KIND_ORDER_CANCELED));
+        assertTrue(!OrderTrace.escalate((byte) 0), "no direct ack must never escalate");
+    }
+
+    /**
+     * THE log-join claim: the id a log line prints is character-for-character the id the spans were
+     * emitted under. The exporter writes the trace id as two 16-char hex halves
+     * ({@code SpanSink.appendHex16} over traceIdHi then traceIdLo); a log line that disagreed with
+     * that by so much as a leading zero would query Loki and Tempo for two different traces while
+     * looking perfectly correct on screen.
+     */
+    @Test
+    void logLineTraceIdMatchesTheIdTheSpansAreEmittedUnder() {
+        for (long clOrdIdHash = 1; clOrdIdHash < 5000; clOrdIdHash++) {
+            final long key = OrderTrace.keyOf(clOrdIdHash, 0);
+            final String onTheWire = String.format("%016x%016x",
+                OrderTrace.traceIdHi(key), OrderTrace.traceIdLo(key));
+            assertEquals(onTheWire, OrderTrace.traceIdHex(key), "log line and span id diverged");
+        }
+    }
+
+    /** W3C/Tempo want exactly 32 lower-case hex characters, zero-padded — a short id is not a
+     *  cosmetic problem, Tempo simply will not find the trace. */
+    @Test
+    void logLineTraceIdIsAlways32LowerCaseHexCharacters() {
+        for (long clOrdIdHash = 1; clOrdIdHash < 2000; clOrdIdHash++) {
+            final String hex = OrderTrace.traceIdHex(OrderTrace.keyOf(clOrdIdHash, 0));
+            assertEquals(32, hex.length(), "trace id must be 32 chars, got " + hex);
+            assertTrue(hex.matches("[0-9a-f]{32}"), "not lower-case hex: " + hex);
+        }
     }
 }
