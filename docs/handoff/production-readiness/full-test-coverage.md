@@ -47,8 +47,9 @@ annotations; the executed total is higher (330) because parameterized cases expa
 | **Total** | **105** | **433** | |
 
 **The single most important line:** `order-matcher` is 73% of the classes and holds every
-correctness property the system is sold on — and it is the module CI runs, on **three branches**.
-The four service modules below it are real coverage that no pipeline executes.
+correctness property the system is sold on. As of 2026-07-28 **all five substantial modules run in
+CI on all three branches** — order-matcher via `engine-tests.sh`, the other four via
+`service-tests.sh`, both steps of the same `hosted` job so the render is paid once.
 
 ### Inside order-matcher, by package
 
@@ -138,7 +139,7 @@ Workflow `engine-tests.yml`, green on run #9 (`f6cf4255`), 8 jobs:
 
 | Job | Scope | Trigger |
 |---|---|---|
-| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite + 4 allocation gates | push + PR |
+| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite + 4 allocation gates, **then the 4 service modules** (108 tests YU13/YU14, 116 YU15) | push + PR |
 | `baseline` | 4 Java baseline services | push + PR |
 | `baseline-reference-data` | NestJS baseline | push + PR |
 | `baseline-people-service` | .NET baseline | push + PR |
