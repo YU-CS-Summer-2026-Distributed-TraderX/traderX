@@ -57,6 +57,12 @@ dependencies {
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
   // in-memory DB so the inherited @SpringBootTest context can load without a MariaDB
   testRuntimeOnly 'com.h2database:h2:2.3.232'
+  // Integration tier only: real MariaDB + real NATS so the Spring context can be started the way
+  // it actually runs. The inherited contextLoads smoke cannot do this -- tradePublisher dials
+  // nats.address during bean creation -- so TradeProcessorContextIT covers it against real infra.
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+  testImplementation 'org.testcontainers:mariadb:1.20.4'
 }
 
 // TradeProcessorApplicationTests is a @SpringBootTest whose context REQUIRES a live NATS broker:
@@ -66,9 +72,22 @@ dependencies {
 // visibly (it still compiles) rather than left silently inert as it was before 2026-07-28; the
 // right home for it is the Testcontainers tier alongside TradeProcessorPersistenceIT.
 test {
+  useJUnitPlatform { excludeTags 'integration' }
   filter {
     excludeTestsMatching 'finos.traderx.tradeprocessor.TradeProcessorApplicationTests'
   }
+}
+
+// Needs a Docker daemon (Testcontainers). Kept OUT of the infrastructure-free unit task so the
+// hosted CI job stays fast and Docker-free; run by its own CI job, same split as the template's
+// TradeProcessorPersistenceIT.
+tasks.register('integrationTest', Test) {
+  description = 'Context load against real MariaDB + NATS containers.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  useJUnitPlatform { includeTags 'integration' }
+  shouldRunAfter test
 }
 
 tasks.withType(Test).configureEach {
