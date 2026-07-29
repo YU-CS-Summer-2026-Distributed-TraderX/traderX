@@ -62,11 +62,20 @@ jobs:
         run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh ${{ matrix.branch }}
       - name: Run functional suite + allocation gates
         run: bash scripts/ci/engine-tests.sh hosted
+      - name: Run composed service suites (non-order-matcher modules)
+        # Deliberately a step in THIS job rather than its own: it reuses the ~117s render above
+        # and inherits the branch matrix for free. Covers trade-processor, execution-algo-engine,
+        # position-service and account-service — 107 tests on YU13/YU14, 115 on YU15, none of
+        # which any pipeline executed before 2026-07-28. Validated green on all three branches
+        # locally before being enabled.
+        run: bash scripts/ci/service-tests.sh
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: junit-hosted-${{ matrix.branch }}
-          path: generated/code/target-generated/order-matcher/build/test-results/**/*.xml
+          path: |
+            generated/code/target-generated/order-matcher/build/test-results/**/*.xml
+            generated/code/target-generated/*/build/test-results/test/*.xml
           if-no-files-found: warn
 
   baseline:
