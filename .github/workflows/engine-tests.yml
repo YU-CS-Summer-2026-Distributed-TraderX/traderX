@@ -168,6 +168,38 @@ jobs:
           path: templates/trade-processor-specfirst/build/test-results/integrationTest/**/*.xml
           if-no-files-found: warn
 
+  integration-trade-processor-context:
+    # Context-load integration for the COMPOSED trade-processor against a real MariaDB AND a real
+    # NATS broker (Testcontainers). This covers the wiring the inherited contextLoads smoke never
+    # could: tradePublisher dials nats.address during bean creation, so that test sat in the unit
+    # tier passing by never running. Needs the rendered tree, hence the render step.
+    name: integration — trade-processor context (MariaDB + NATS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: YU15-eod-risk-extract
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install shell dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq ripgrep
+      - name: Render effective tree
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+      - name: Context load against real MariaDB + NATS
+        run: cd generated/code/target-generated/trade-processor && ./gradlew --no-daemon --console=plain integrationTest
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: junit-integration-context
+          path: generated/code/target-generated/trade-processor/build/test-results/integrationTest/**/*.xml
+          if-no-files-found: warn
+
   dedicated:
     # Cluster + timing + Epsilon gates. On standard 2-core hosted runners the
     # 3-node cluster test and the 50 ms wall-clock budget are unreliable, so this
