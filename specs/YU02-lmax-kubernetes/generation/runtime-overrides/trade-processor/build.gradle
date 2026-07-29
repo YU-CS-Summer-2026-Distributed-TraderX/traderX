@@ -14,6 +14,17 @@ java {
   sourceCompatibility = JavaVersion.VERSION_21
 }
 
+// Test sources for this project live at src/main/test/java (a pre-existing TraderX convention),
+// which Gradle does not pick up by default — without this the inherited @SpringBootTest smoke
+// test reports NO-SOURCE and silently never runs. Same fix brief 03 applied to the templates;
+// this is the COMPOSED layer, which brief 03 deferred.
+sourceSets {
+  test {
+    java.srcDirs = ["src/test/java", "src/main/test/java"]
+    resources.srcDirs = ["src/test/resources", "src/main/test/resources"]
+  }
+}
+
 repositories {
   mavenCentral()
 }
@@ -44,6 +55,20 @@ dependencies {
   implementation 'org.apache.commons:commons-lang3:3.20.0'
 
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  // in-memory DB so the inherited @SpringBootTest context can load without a MariaDB
+  testRuntimeOnly 'com.h2database:h2:2.3.232'
+}
+
+// TradeProcessorApplicationTests is a @SpringBootTest whose context REQUIRES a live NATS broker:
+// the tradePublisher bean dials nats.address during bean creation and there is no disable flag.
+// That makes it an INTEGRATION test mislabeled as a unit test -- it needs a broker and a DB, so it
+// does not belong in the infrastructure-free unit job. It is excluded here DELIBERATELY and
+// visibly (it still compiles) rather than left silently inert as it was before 2026-07-28; the
+// right home for it is the Testcontainers tier alongside TradeProcessorPersistenceIT.
+test {
+  filter {
+    excludeTestsMatching 'finos.traderx.tradeprocessor.TradeProcessorApplicationTests'
+  }
 }
 
 tasks.withType(Test).configureEach {
