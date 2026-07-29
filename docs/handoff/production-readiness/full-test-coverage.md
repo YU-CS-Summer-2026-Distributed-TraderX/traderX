@@ -42,8 +42,8 @@ annotations; the executed total is higher (330) because parameterized cases expa
 | execution-algo-engine (YU08) | 8 | 29 | ✅ **all 3 branches** |
 | account-service (YU04 outbox + inherited) | 4 | 12 | ✅ **all 3 branches** |
 | position-service (YU06 EOD) | 2 | 11 | ✅ **all 3 branches** |
-| trade-service | 1 | 1 | ✗ |
-| aeron-replication-sidecar | 1 | 2 | ✗ |
+| trade-service | 1 | 1 | ✗ — **no runnable unit test** (see below) |
+| aeron-replication-sidecar | 1 | 2 | ✅ **all 3 branches** |
 | **Total** | **105** | **433** | |
 
 **The single most important line:** `order-matcher` is 73% of the classes and holds every
@@ -155,6 +155,11 @@ gateway keepalive, the kdb tap).
 
 - ~~Four Java modules no pipeline runs~~ **CLOSED 2026-07-28** (`8fc0bafa`): all four now run in the `hosted` job on every branch — **108 tests on YU13/YU14, 116 on YU15**, 0 failures. The `~12 @SpringBootTest` warning was overstated: only **6 classes** needed Spring, and only **one** turned out to be a genuine blocker.
 - **One test is deliberately excluded, and it is worth knowing why.** `TradeProcessorApplicationTests` was inert (no `sourceSets` override in the composed tree). Waking it showed the context **cannot start without a live NATS broker** — `tradePublisher` dials `nats.address` during bean creation with no disable flag. It is an integration test that had been sitting in the unit tier passing by never running. It is now excluded from the unit task **visibly, with the reason in the build file**, and belongs in the Testcontainers tier beside `TradeProcessorPersistenceIT`.
+- **`trade-service` has no runnable unit test.** Its single `TradeServiceApplicationTests` is a
+  `@SpringBootTest` whose context cannot start without a live NATS broker (`tradePublisher` dials
+  `nats.address` during bean creation) — verified by experiment, same root cause as
+  `TradeProcessorApplicationTests`. Both belong in the Testcontainers tier; a NATS container
+  alongside the existing MariaDB one would recover 2 context-load tests.
 - **The Angular front-end has never been executed here at all.**
 - **No proof script runs in CI** — deliberate (they need a live cluster) and documented in the [test strategy](04-RESULT-test-strategy.md), but it means they can rot.
 - **q gates aren't wired to anything automated.**
