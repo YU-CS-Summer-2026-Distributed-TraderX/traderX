@@ -2355,7 +2355,7 @@ data:
         {
           "type": "table",
           "title": "Find an order \u2014 search by traderx.order_ref",
-          "description": "Head-sampled per-order traces spanning gateway ingress, consensus commit and leader apply. Trace context is never carried in the replicated log: gateway and members derive the same trace id from the client idempotency key the log already holds. Click a Trace ID to open the waterfall. NOTE: this is a table, not Grafana's 'traces' panel \u2014 that panel type renders ONE trace supplied by id, so a TraceQL SEARCH into it always renders 'No data found in response' no matter how many traces match.",
+          "description": "Head-sampled per-order traces spanning gateway ingress, consensus commit and leader apply. Trace context is never carried in the replicated log: gateway and members derive the same trace id from the client idempotency key the log already holds. Click a Trace ID to open the waterfall \u2014 do NOT use the row expander on the left. NOTE 1: this is a table, not Grafana's 'traces' panel \u2014 that panel type renders ONE trace supplied by id, so a TraceQL SEARCH into it always renders 'No data found in response' no matter how many traces match. NOTE 2: expanding a row draws the parent row's text on top of the first nested span row. That is a Grafana 11.1 nested-table rendering bug, not bad data \u2014 the expander adds nothing the waterfall does not show better, so click the Trace ID instead. It clears if Grafana is upgraded.",
           "datasource": {
             "type": "tempo",
             "uid": "tempo"
