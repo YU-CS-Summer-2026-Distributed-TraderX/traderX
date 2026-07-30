@@ -20,16 +20,23 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU08-execution-algo-engine](https://github.com/finos/traderX/tree/code/generated-state-YU08-execution-algo-engine)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU07-historical-tick-store`: [code/generated-state-YU07-historical-tick-store...code/generated-state-YU08-execution-algo-engine](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU07-historical-tick-store...code%2Fgenerated-state-YU08-execution-algo-engine)
+- Compare against `YU07-historical-tick-store`: [YU07-historical-tick-store...YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU07-historical-tick-store...YU08-execution-algo-engine)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** An `execution-algo-engine` service that accepts a parent order — account, security, side,
+- **Added:** TWAP scheduling, which splits the parent quantity into equally sized time buckets and puts any
+- **Added:** VWAP scheduling, which sizes each bucket by weights supplied by a pluggable volume-profile source
+- **Added:** Two volume-profile sources: a synthetic U-shaped intraday curve that needs no market data, and a
+- **Added:** Automatic fallback to the synthetic weights when the DuckDB source finds no matching history for a
+- **Added:** Child-order submission through the matching engine's existing `POST /orders` endpoint with a
+- **Added:** Fill tracking that subscribes to the existing `/accounts/*/orders` broadcast and correlates
+- **Added:** Progress queries over `GET /algo/orders/{parentOrderId}` and `GET /algo/orders`, showing buckets
 
 ## Run This State
 

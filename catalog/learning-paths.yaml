@@ -27,31 +27,36 @@ tracks:
     states:
       - 005-postgres-database-replacement
       - 006-messaging-nats-replacement
-      - 009b-lmax-sequencer-architecture
+      - YU01-lmax-sequencer
       - YU02-lmax-kubernetes
-      - YU03-in-memory-risk-gateway
-      - YU04-durable-control-feeds
-      - YU05-post-trade-compliance
-      - YU06-eod-price-production
-      - YU07-historical-tick-store
-      - YU08-execution-algo-engine
-      - YU09-ops-hardening
-      - YU10-fix-ingress
+      - YU11-aeron-replication
+      - YU12-aeron-cluster
   functional:
     description: "Functional capability expansion states."
     states:
       - 008-pricing-awareness-market-data
       - 009-order-management-matcher
       - 014-fdc3-intent-interoperability
+      - YU03-in-memory-risk-gateway
+      - YU05-post-trade-compliance
+      - YU06-eod-price-production
+      - YU07-historical-tick-store
+      - YU08-execution-algo-engine
+      - YU10-fix-ingress
+      - YU13-limit-order-book
+      - YU14-listed-equity-options
+      - YU15-eod-risk-extract
   nonfunctional:
     description: "Non-functional overlays (observability, resilience, operations)."
     states:
       - 007-observability-lgtm-compose
+      - YU04-durable-control-feeds
+      - YU09-ops-hardening
   optional:
     description: "Optional side branches not in primary publish lineage."
     states:
-      - 009b-lmax-sequencer-architecture
       - 013-radius-kubernetes-platform
+      - YU01-lmax-sequencer
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
@@ -61,6 +66,11 @@ tracks:
       - YU08-execution-algo-engine
       - YU09-ops-hardening
       - YU10-fix-ingress
+      - YU11-aeron-replication
+      - YU12-aeron-cluster
+      - YU13-limit-order-book
+      - YU14-listed-equity-options
+      - YU15-eod-risk-extract
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -132,13 +142,6 @@ stateCatalog:
     isConvergence: true
     lineageRole: canonical
     spec: specs/009-order-management-matcher/spec.md
-  - id: 009b-lmax-sequencer-architecture
-    previous:
-      - 009-order-management-matcher
-    convergenceLevel: none
-    isConvergence: false
-    lineageRole: optional
-    spec: specs/009b-lmax-sequencer-architecture/spec.md
   - id: 010-kubernetes-runtime
     previous:
       - 009-order-management-matcher
@@ -174,6 +177,13 @@ stateCatalog:
     isConvergence: false
     lineageRole: canonical
     spec: specs/014-fdc3-intent-interoperability/spec.md
+  - id: YU01-lmax-sequencer
+    previous:
+      - 009-order-management-matcher
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU01-lmax-sequencer/spec.md
   - id: YU02-lmax-kubernetes
     previous:
       - 014-fdc3-intent-interoperability
@@ -237,3 +247,38 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU10-fix-ingress/spec.md
+  - id: YU11-aeron-replication
+    previous:
+      - YU10-fix-ingress
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU11-aeron-replication/spec.md
+  - id: YU12-aeron-cluster
+    previous:
+      - YU11-aeron-replication
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU12-aeron-cluster/spec.md
+  - id: YU13-limit-order-book
+    previous:
+      - YU12-aeron-cluster
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU13-limit-order-book/spec.md
+  - id: YU14-listed-equity-options
+    previous:
+      - YU13-limit-order-book
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU14-listed-equity-options/spec.md
+  - id: YU15-eod-risk-extract
+    previous:
+      - YU14-listed-equity-options
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU15-eod-risk-extract/spec.md

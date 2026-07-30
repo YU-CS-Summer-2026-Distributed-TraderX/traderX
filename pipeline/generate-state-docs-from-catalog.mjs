@@ -43,8 +43,16 @@ const emitFile = (filePath, content) => {
   fs.writeFileSync(filePath, normalized, 'utf8')
 }
 
-const repoWebBase = 'https://github.com/finos/traderX'
-const sourceAuthoringBranch = process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'main'
+// This deployment's repository, not upstream's. Every "Rendered Code" link in every learning guide
+// was built against finos/traderX, where none of our state branches exist — so all 29 guides linked
+// to a 404. Overridable for a fork of a fork.
+const repoWebBase =
+  process.env.TRADERX_REPO_WEB_BASE ||
+  'https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX'
+// The branch the specs are authored on. `main` here is the upstream sync and carries none of the YU
+// spec packs, so an "authoring branch" link to it 404s the same way.
+const sourceAuthoringBranch =
+  process.env.TRADERX_SOURCE_AUTHORING_BRANCH || 'YU15-eod-risk-extract'
 const stripNumericPrefix = (stateId) => stateId.replace(/^[0-9]{3}[a-z]?-/, '')
 const parsedStateNumber = (stateId) => stateId.match(/^([0-9]{3}[a-z]?)-/)?.[1] ?? ''
 const stateDisplayToken = (stateId) => parsedStateNumber(stateId) || stateId
@@ -201,8 +209,17 @@ const parseFunctionalDelta = (featurePack) => {
     }
 
     const bulletMatch = line.trim().match(/^-\s+(.*)$/)
-    if (!bulletMatch || !currentSection) {
+    if (!bulletMatch) {
       continue
+    }
+    // Bullets before any `##` heading used to be dropped on the floor, which silently emptied the
+    // delta for packs that simply list their changes under the title. Collect them under a neutral
+    // section instead of discarding them.
+    if (!currentSection) {
+      currentSection = 'Delta'
+      if (!sections.has(currentSection)) {
+        sections.set(currentSection, [])
+      }
     }
 
     const value = bulletMatch[1].trim()
@@ -223,7 +240,61 @@ const parseFunctionalDelta = (featurePack) => {
       }
     }
   }
-  return result
+  if (result.length > 0) {
+    return result
+  }
+
+  // Fallback 1 — bullets under ANY heading.
+  // The ordered list above only recognises Added/Changed/Removed/Flow Impact. Packs that organise
+  // their delta under their own headings (YU15 uses Trigger / The cut / Marks and valuation / …)
+  // matched nothing and rendered as having no delta at all.
+  const anySection = []
+  for (const [sectionName, bullets] of sections) {
+    for (const bullet of bullets) {
+      anySection.push(`**${sectionName}:** ${bullet}`)
+      if (anySection.length >= 8) {
+        return anySection
+      }
+    }
+  }
+  if (anySection.length > 0) {
+    return anySection
+  }
+
+  // Fallback 2 — table form, in the two shapes actually used in this repo:
+  //   | FD-LOB01 | Replace the price-triggered auto-fill … |          2 columns, bare ID
+  //   | FR-IMRG01 no sync lookup on admission | **Done** | Notes… |   3 columns, ID + title in one
+  // Ten packs write their delta as a table, and the bullet reader returned nothing for every one of
+  // them, so their learning guides claimed no delta existed while the pack held a fully written one
+  // — 147 rows across those ten states. The content was never missing, just unreadable here.
+  const tableRows = []
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('|')) {
+      continue
+    }
+    const cells = trimmed.split('|').map((cell) => cell.trim())
+    if (cells.length < 4) {
+      continue
+    }
+    // The ID cell is either the bare requirement id or the id followed by its short title.
+    const idMatch = cells[1].match(/^((?:FD|FR)-[A-Z0-9]+)\b\s*(.*)$/i)
+    if (!idMatch) {
+      continue // header row and the |---|---| separator land here
+    }
+    const [, id, inlineTitle] = idMatch
+    const remainder = cells.slice(2, -1).map((cell) => cell.trim()).filter(Boolean)
+    // Prefer the title that sits beside the id; fall back to the remaining cells for 2-column tables.
+    const delta = (inlineTitle || remainder.join(' — ')).trim()
+    if (!delta || normalizeNone(delta)) {
+      continue
+    }
+    tableRows.push(`**${id}:** ${delta}`)
+    if (tableRows.length >= 8) {
+      break
+    }
+  }
+  return tableRows
 }
 
 const parseFunctionalRequirements = (featurePack) => {

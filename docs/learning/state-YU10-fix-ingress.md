@@ -8,7 +8,7 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 - Previous state(s): [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication)
 
 ## Convergence Metadata
 
@@ -20,12 +20,12 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU10-fix-ingress](https://github.com/finos/traderX/tree/code/generated-state-YU10-fix-ingress)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU09-ops-hardening`: [code/generated-state-YU09-ops-hardening...code/generated-state-YU10-fix-ingress](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU09-ops-hardening...code%2Fgenerated-state-YU10-fix-ingress)
+- Compare against `YU09-ops-hardening`: [YU09-ops-hardening...YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU09-ops-hardening...YU10-fix-ingress)
 
 ## Plain-English Code Delta
 

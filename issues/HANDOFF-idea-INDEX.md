@@ -1,5 +1,11 @@
 # Consolidated ideas backlog (single source of truth as of 2026-07-07)
 
+> **2026-07-20 — OSFF NY direction series lives in the YU12 worktree.**
+> Near-term work is aimed at a 30-min OSFF NY talk (Nov 4–5) + the risk engine attaching in ~a month.
+> The four `HANDOFF-OSFF-{1..4}-*.md` direction docs live in
+> `traderX-YU12-aeron-cluster/docs/handoff/` (alongside the YU12 recaps), not here. OSFF-2 (real
+> limit-order book, YU13) relates to but is distinct from idea #7's venue work below.
+
 This doc merges ALL open idea sources into one deduplicated backlog:
 - `HANDOFF-production-realism.md` (original 6-item roadmap)
 - `HANDOFF-market-data-realism.md` (6 data-driven candidates for the professor's 3TB TAQ dataset)
@@ -36,7 +42,7 @@ GCP/CI-CD context, two-tier gateway design rationale) remain valid reference.
 | 4 | **Execution algo engine (TWAP/VWAP/POV)** | `HANDOFF-idea-execution-algo-engine.md` | YU05 TCA consumes its parent-tagged fills | **Recommended YU08** — with #1 built, v1 can ship real VWAP, not just TWAP |
 | 5 | **Advanced order types + time-in-force (BLP)** | `HANDOFF-idea-advanced-order-types.md` | Pegged orders excluded (need NBBO from #7) | Nothing (tick feed exists from YU03). Hot-path work — bench-compare mandatory |
 | 6 | **FIX protocol gateway** | `HANDOFF-idea-fix-protocol-gateway.md` | **Merges** `possible_improvements.md` §4–5 (ingress transport overhead) | Nothing |
-| 7 | **Multi-venue + SOR + NBBO** | `HANDOFF-idea-multi-venue-sor-nbbo.md` | **Absorbs the L1 slice** of table #5 (market data dissemination); unblocks #8 and pegged orders | Feasibility call first (stub venue vs full second BLP) |
+| 7 | **Multi-venue + SOR + NBBO** — *a.k.a. outbound routing, the missing internalizer leg* | `HANDOFF-idea-multi-venue-sor-nbbo.md` (see **addendum 2026-07-20**) | **Absorbs the L1 slice** of table #5 (market data dissemination); unblocks #8 and pegged orders | Feasibility call first (stub venue vs full second BLP vs **FIX-out to a mock venue** — the addendum favours the third). Materially easier since YU08 (parent/child orders) and YU10 (QuickFIX/J — egress needs an *initiator*, same library) |
 | 8 | **L2 dissemination + market surveillance** (pair) | Table #4 + #5 remainder / market-data-realism #3 | Explicitly deferred from YU05; surveillance needs L2, L2 needs a consumer | #7 |
 | 9 | **Market data quality engine** (gaps/spikes/staleness) | `HANDOFF-idea-market-data-quality-engine.md` | Feeds YU03 price-reasonability fail-safe | Nothing — small; good gap-filler state |
 | 10 | Reference-data / corporate-actions backfill | Table #8 / market-data-realism #6 | — | Low priority; mechanical |

@@ -20,12 +20,12 @@ title: "State 007: Observability with LGTM on Compose"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-007-observability-lgtm-compose](https://github.com/finos/traderX/tree/code/generated-state-007-observability-lgtm-compose)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-007-observability-lgtm-compose](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-007-observability-lgtm-compose)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `006-messaging-nats-replacement`: [code/generated-state-006-messaging-nats-replacement...code/generated-state-007-observability-lgtm-compose](https://github.com/finos/traderX/compare/code%2Fgenerated-state-006-messaging-nats-replacement...code%2Fgenerated-state-007-observability-lgtm-compose)
+- Compare against `006-messaging-nats-replacement`: [code/generated-state-006-messaging-nats-replacement...code/generated-state-007-observability-lgtm-compose](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-006-messaging-nats-replacement...code%2Fgenerated-state-007-observability-lgtm-compose)
 
 ## Plain-English Code Delta
 
