@@ -5,57 +5,74 @@
  * work well for content-centric websites.
  */ 
 
+/**
+ * YU palette. Every --yu-* value below is a real colour lifted from the PLTE chunk of the two
+ * institutional logos in static/img/yu/ — not an approximation of them:
+ *   --yu-blue-600  #015697  the darkest blue in the Yeshiva University crest
+ *   --yu-navy-700  #23437c  the darkest navy in the YU CS shield
+ * Sampling the artwork rather than eyeballing it is why the site and the logos sitting on it do not
+ * read as two slightly different blues.
+ */
 :root {
-  --tx-navy-950: #081523;
-  --tx-navy-900: #0b2138;
-  --tx-navy-800: #12395c;
-  --tx-cyan-500: #00b5e2;
-  --tx-cyan-600: #0086bf;
+  --yu-blue-700: #013f6f;
+  --yu-blue-600: #015697;
+  --yu-blue-500: #0a5c9b;
+  --yu-blue-400: #1c68a2;
+  --yu-navy-800: #1a3560;
+  --yu-navy-700: #23437c;
+  --yu-blue-100: #e7eff7;
+  --tx-navy-950: #0b1c33;
+  --tx-navy-900: #12294a;
+  --tx-navy-800: var(--yu-navy-700);
+  --tx-cyan-500: var(--yu-blue-600);
+  --tx-cyan-600: var(--yu-blue-700);
   --tx-text: #172033;
   --tx-muted: #5c6b7d;
-  --tx-border: #dce6ef;
-  --tx-surface: #f6f9fc;
-  --ifm-color-primary: #00b5e2;
-  --ifm-color-primary-dark: #0079ac;
-  --ifm-color-primary-darker: #0072a2;
-  --ifm-color-primary-darkest: #005e86;
-  --ifm-color-primary-light: #0093d2;
-  --ifm-color-primary-lighter: #009adc;
-  --ifm-color-primary-lightest: #00aef8;
+  --tx-border: #dce3ec;
+  --tx-surface: #f6f8fc;
+  --ifm-color-primary: var(--yu-blue-600);
+  --ifm-color-primary-dark: #014e88;
+  --ifm-color-primary-darker: #01497f;
+  --ifm-color-primary-darkest: var(--yu-blue-700);
+  --ifm-color-primary-light: #0160a6;
+  --ifm-color-primary-lighter: var(--yu-blue-500);
+  --ifm-color-primary-lightest: var(--yu-blue-400);
   --ifm-background-surface-color: #ffffff;
   --ifm-code-font-size: 95%;
   --ifm-font-color-base: var(--tx-text);
   --ifm-heading-color: var(--tx-navy-900);
-  --ifm-link-color: #006fa3;
-  --ifm-link-hover-color: #004f77;
-  --ifm-menu-color-active: #006fa3;
-  --ifm-navbar-background-color: var(--tx-navy-950);
-  --ifm-navbar-link-color: #eef7ff;
-  --ifm-navbar-link-hover-color: #7ee3fa;
+  --ifm-link-color: var(--yu-blue-600);
+  --ifm-link-hover-color: var(--yu-blue-700);
+  --ifm-menu-color-active: var(--yu-blue-600);
+  --ifm-navbar-background-color: var(--yu-navy-700);
+  --ifm-navbar-link-color: #eef4fb;
+  --ifm-navbar-link-hover-color: #a8c8e6;
   --ifm-navbar-shadow: none;
   --ifm-footer-background-color: var(--tx-navy-950);
   --ifm-footer-title-color: #ffffff;
-  --ifm-footer-color: #d8e4ee;
-  --ifm-footer-link-color: #eef7ff;
+  --ifm-footer-color: #d8e1ee;
+  --ifm-footer-link-color: #eef4fb;
   --ifm-toc-border-color: var(--tx-border);
 }
 
 [data-theme='dark'] {
-  --tx-text: #eef5fb;
-  --tx-muted: #aebdcc;
-  --tx-border: #20394f;
-  --tx-surface: #0f2133;
-  --ifm-background-color: #081523;
-  --ifm-background-surface-color: #0d1d2e;
+  --tx-text: #eef4fb;
+  --tx-muted: #aeb9cc;
+  --tx-border: #22344f;
+  --tx-surface: #101f33;
+  --ifm-background-color: #0b1420;
+  --ifm-background-surface-color: #101d2e;
   --ifm-font-color-base: var(--tx-text);
-  --ifm-heading-color: #f4fbff;
-  --ifm-link-color: #5fd6f4;
-  --ifm-link-hover-color: #94e7fb;
-  --ifm-navbar-background-color: #081523;
-  --ifm-navbar-link-color: #eef7ff;
-  --ifm-navbar-link-hover-color: #7ee3fa;
-  --ifm-menu-color-active: #7ee3fa;
-  --ifm-footer-background-color: #050d16;
+  --ifm-heading-color: #f4f8ff;
+  /* Link colours are lightened here on purpose: #015697 on a dark background fails WCAG AA, and a
+     brand colour that cannot be read is not on brand. */
+  --ifm-link-color: #7db2e0;
+  --ifm-link-hover-color: #a8cced;
+  --ifm-navbar-background-color: #0b1420;
+  --ifm-navbar-link-color: #eef4fb;
+  --ifm-navbar-link-hover-color: #a8cced;
+  --ifm-menu-color-active: #7db2e0;
+  --ifm-footer-background-color: #070f19;
   --ifm-toc-border-color: var(--tx-border);
 }
 
@@ -181,10 +198,16 @@ body {
   padding: 2rem 0 1.5rem;
 }
 
+/* The crest supplied for the footer is a JPEG on its own navy ground (#0b3d70), which is lighter
+   than the footer itself (#0b1c33) — so it lands as a visible square patch rather than blending.
+   Rounding it and adding a hairline ring makes that a deliberate badge instead of looking like a
+   rectangular image that failed to knock out its background. */
 .footer__logo {
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
   height: auto;
   max-height: 120px;
-  max-width: 96px;
+  max-width: 88px;
 }
 
 .footer__bottom {
@@ -313,4 +336,53 @@ body {
 
 body.tx-mermaid-modal-open {
   overflow: hidden;
+}
+
+/* ---------------------------------------------------------------------------
+   Mermaid diagram sizing
+   The architecture flowcharts are extremely wide — the YU13 one is 4099 x 520, about 8:1. Mermaid
+   ships them with `width="100%"`, so the browser fits that width into the ~690px prose column and
+   the whole diagram scales down with it: 692 x 88, every label about a sixth of its intended size.
+   Zooming the page does not recover it, and it is below the zoom helper's small-diagram threshold,
+   so the helper skips it too — the diagram ends up both unreadable and un-zoomable.
+   Fix: size these by HEIGHT and let the width follow the aspect ratio, then scroll horizontally.
+   Text renders at its natural size and the SVG stays sharp because it is vector.
+   Note the selector: Docusaurus renders `.docusaurus-mermaid-container`, not `.mermaid`.
+   --------------------------------------------------------------------------- */
+
+.docusaurus-mermaid-container {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+}
+
+.docusaurus-mermaid-container > svg {
+  max-width: none !important;
+  width: auto !important;
+  height: auto;
+  max-height: 70vh;
+  min-height: 18rem;
+}
+
+/* Inside the zoom shell the viewport owns scrolling and the canvas owns the size, so let the SVG
+   fill it rather than imposing a second set of constraints. */
+.tx-mermaid-zoom-viewport .docusaurus-mermaid-container > svg {
+  max-height: none;
+}
+
+.tx-mermaid-zoom-viewport {
+  max-height: 78vh;
+}
+
+/* Table headers default to centred in Infima while body cells are left-aligned, so a text column
+   reads as misaligned against its own heading. Left-align headers to match; columns that opt into
+   right alignment in markdown (`---:`) carry an inline style, which still wins. */
+.theme-doc-markdown th {
+  text-align: left;
+}
+
+/* Numeric columns scan better with tabular figures — digits line up in columns regardless of glyph. */
+.theme-doc-markdown td,
+.theme-doc-markdown th {
+  font-variant-numeric: tabular-nums;
 }

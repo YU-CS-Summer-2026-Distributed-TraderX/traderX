@@ -3,7 +3,7 @@
 **Feature Branch**: `YU12-aeron-cluster`
 **Created**: 2026-07-17
 **Status**: In implementation
-**Input**: Aeron Cluster migration brief (`docs/handoff/HANDOFF-aeron-cluster-migration.md`),
+**Input**: Aeron Cluster migration brief,
 YU11 recovery proof invariants, parented on `YU11-aeron-replication`
 
 ## User Stories

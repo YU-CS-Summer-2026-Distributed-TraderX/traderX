@@ -20,16 +20,23 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU09-ops-hardening](https://github.com/finos/traderX/tree/code/generated-state-YU09-ops-hardening)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU08-execution-algo-engine`: [code/generated-state-YU08-execution-algo-engine...code/generated-state-YU09-ops-hardening](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU08-execution-algo-engine...code%2Fgenerated-state-YU09-ops-hardening)
+- Compare against `YU08-execution-algo-engine`: [YU08-execution-algo-engine...YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU08-execution-algo-engine...YU09-ops-hardening)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** `mariadb-credentials` and `auth-secrets` Kubernetes Secrets, created out-of-band and never committed, so a repo checkout never exposes a working credential.
+- **Added:** Journal rotation at every snapshot boundary when `journal.archive.enabled` is true (`Journaler.rotate()`), closing the active file off as an immutable, timestamped segment.
+- **Added:** A `JournalArchiver` that uploads each closed segment to the GCS bucket named by `journal.archive.bucket`, so journal history survives loss of the pod's own volume.
+- **Added:** HMAC-authenticated uploads over GCS's S3-compatible XML API — the same interoperability mode the tick-store capture already uses.
+- **Added:** A dedicated background upload thread, so the journaler thread servicing the input Disruptor ring never waits on network I/O.
+- **Added:** A closed segment that fails to upload, kept on local disk — deletion follows only a confirmed upload, so archival never loses journal data.
+- **Added:** A `journal.archive.enabled` flag defaulting to `false`, so the shipped default reproduces the parent state's single growing journal file exactly.
+- **Added:** An optional `order-matcher-journal-gcs-hmac` Secret whose absence disables only the upload leg — pod startup and journal rotation are unaffected.
 
 ## Run This State
 
