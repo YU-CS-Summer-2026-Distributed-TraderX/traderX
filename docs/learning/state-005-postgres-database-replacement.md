@@ -20,12 +20,12 @@ title: "State 005: PostgreSQL Database Replacement"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-005-postgres-database-replacement](https://github.com/finos/traderX/tree/code/generated-state-005-postgres-database-replacement)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-005-postgres-database-replacement](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-005-postgres-database-replacement)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `004-containerized-compose-runtime`: [code/generated-state-004-containerized-compose-runtime...code/generated-state-005-postgres-database-replacement](https://github.com/finos/traderX/compare/code%2Fgenerated-state-004-containerized-compose-runtime...code%2Fgenerated-state-005-postgres-database-replacement)
+- Compare against `004-containerized-compose-runtime`: [code/generated-state-004-containerized-compose-runtime...code/generated-state-005-postgres-database-replacement](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-004-containerized-compose-runtime...code%2Fgenerated-state-005-postgres-database-replacement)
 
 ## Plain-English Code Delta
 

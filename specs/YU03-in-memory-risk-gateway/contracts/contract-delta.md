@@ -1,6 +1,6 @@
 # Contract Delta: YU03 over YU02-lmax-kubernetes
 
-The external `009b`/`YU02` order/trade/position REST + NATS + UI contracts are retained
+The external `YU01`/`YU02` order/trade/position REST + NATS + UI contracts are retained
 (FR-IMRG42). The intentional admission deltas are below; everything else is unchanged.
 
 ## 1. Optional `clientOrderId` (idempotency, FR-IMRG14)
