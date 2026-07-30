@@ -3,8 +3,7 @@
 **Feature Branch**: `YU13-limit-order-book`
 **Created**: 2026-07-20
 **Status**: In implementation
-**Input**: Real limit-order-book direction brief
-(`docs/handoff/HANDOFF-OSFF-2-real-limit-order-book.md`), parented on `YU12-aeron-cluster`
+**Input**: Real limit-order-book direction brief, parented on `YU12-aeron-cluster`
 
 ## User Stories
 

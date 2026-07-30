@@ -9,7 +9,7 @@
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
 > **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
-> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> (`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
@@ -137,7 +137,7 @@ is enough:
 
 The BLP is a Disruptor `EventHandler`. Its entire surface is one method that switches on the event type and
 returns quickly. No blocking, no allocation, no locks — this is the real `MatchingEngine.onEvent` from
-state `009b` (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/MatchingEngine.java`):
+state `009b` (`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/.../lmax/MatchingEngine.java`):
 
 ```java
 public final class MatchingEngine implements EventHandler<InputEvent> {
@@ -282,7 +282,7 @@ model* changes.
 ## A12. The code as implemented in state `009b`
 
 Verbatim from `MatchingEngine.java`
-(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/`). The book
+(`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/.../lmax/`). The book
 structures are primitive arrays + a pooled free-list; the matching policy is `009`'s, in integer math:
 
 ```java

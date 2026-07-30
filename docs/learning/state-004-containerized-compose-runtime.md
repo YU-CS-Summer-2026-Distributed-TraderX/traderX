@@ -20,12 +20,12 @@ title: "State 004: Containerized Compose Runtime (NGINX Ingress)"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-004-containerized-compose-runtime](https://github.com/finos/traderX/tree/code/generated-state-004-containerized-compose-runtime)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-004-containerized-compose-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-004-containerized-compose-runtime)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `003-agentic-harness-foundation`: [code/generated-state-003-agentic-harness-foundation...code/generated-state-004-containerized-compose-runtime](https://github.com/finos/traderX/compare/code%2Fgenerated-state-003-agentic-harness-foundation...code%2Fgenerated-state-004-containerized-compose-runtime)
+- Compare against `003-agentic-harness-foundation`: [code/generated-state-003-agentic-harness-foundation...code/generated-state-004-containerized-compose-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-003-agentic-harness-foundation...code%2Fgenerated-state-004-containerized-compose-runtime)
 
 ## Plain-English Code Delta
 

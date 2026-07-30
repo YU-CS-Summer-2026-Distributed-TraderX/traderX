@@ -42,7 +42,7 @@
 - [x] T-LOB14 Re-bench booked throughput on a live kind cluster with two-sided marketable flow
   and run the kind HA recovery proof on the crossing engine. 10,533 booked trades/s on kind (not
   like-for-like with the GKE-measured 25,149 bar — see `generation/implementation-status.md`); HA
-  proof in `docs/handoff/PROOF-yu13-kind-ha-crossing-book.md` (format-2 snapshot round-trips the
+  proof (format-2 snapshot round-trips the
   full resting book across a failover, price-time priority preserved, book identical on all
   members, zero ID reuse across two crashes).
 

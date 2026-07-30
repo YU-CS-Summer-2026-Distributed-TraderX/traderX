@@ -9,7 +9,7 @@
 | NFR-IMRG05 recovery target | **Done (mechanism)** | Risk state restores from snapshot v3 + tail; adds one pass over snapshot rows. |
 | NFR-IMRG06 admission readiness gating | **Done** | Replica not-ready → 503 CONTROL_STATE_STALE; BLP readiness inherited. |
 | NFR-IMRG07 staleness detection bounds | **Partial** | Price staleness enforced; control-feed staleness arrives with durable feeds. |
-| NFR-IMRG08 observability retained + extended | **Partial** | All inherited metrics kept; new bounded metric set exported; Grafana dashboard/alerts deferred. |
+| NFR-IMRG08 observability retained + extended | **Partial** | All inherited metrics kept; new bounded metric set exported; Grafana dashboard (`traderx-risk-gateway.json`) provisioned, alert thresholds deferred. |
 | NFR-IMRG09 authenticated control transport | **Partial** | Shared token + operator header; TLS/OIDC deferred to auth roadmap item. |
 | NFR-IMRG10 bounded metric cardinality | **Done** | Reasons/replica labels only; no account/security/principal labels. |
 | NFR-IMRG11 inherited build/publish/deploy intact | **Done** | State is order-matcher overrides only; YU02-lmax-kubernetes harness unchanged. |

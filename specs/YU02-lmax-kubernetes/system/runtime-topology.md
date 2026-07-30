@@ -16,7 +16,7 @@ Describe runtime topology and network/data flow changes introduced by this state
 ## Components
 
 - Inherits the Kubernetes/C3/FDC3 runtime components already present in `014`.
-- Replaces inherited trading-path internals with the LMAX matcher, Gateway, replay, and output-ring semantics from `009b`.
+- Replaces inherited trading-path internals with the LMAX matcher, Gateway, replay, and output-ring semantics from `YU01`.
 - Introduces stateful runtime concerns for journal, snapshot, replay, and readiness management.
 - Keeps Postgres as the durable database baseline inherited from `014`.
 - Mounts a dedicated `order-matcher-lmax-data` PVC for journal and snapshot files under `/var/lib/traderx-lmax`.
@@ -24,7 +24,7 @@ Describe runtime topology and network/data flow changes introduced by this state
 ## Networking
 
 - Existing `014` frontend/FDC3 traffic remains inherited.
-- Trading-path network changes are expected to mirror `009b`: sequenced input, output-bridge egress, and projector-only persistence writes.
+- Trading-path network changes are expected to mirror `YU01`: sequenced input, output-bridge egress, and projector-only persistence writes.
 - Persistence writes continue to flow only from the projector into Postgres.
 - Failover and multi-node replication remain to be specified in follow-up implementation.
 
