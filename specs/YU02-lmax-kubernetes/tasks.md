@@ -9,8 +9,8 @@
 
 ## Phase 2: Port Matrix
 
-- [x] Inventory all durable `009b` runtime overrides by service and responsibility
-- [x] Map each `009b` delta to its `014` target location
+- [x] Inventory all durable `YU01` runtime overrides by service and responsibility
+- [x] Map each `YU01` delta to its `014` target location
 - [x] Identify compose-only assumptions that need Kubernetes redesign
 - [x] Record frontend/FDC3 invariants inherited from `014`
 - [x] Resolve initial database/runtime compatibility direction for the first port slice

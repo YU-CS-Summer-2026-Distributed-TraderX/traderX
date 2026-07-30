@@ -1,25 +1,59 @@
-# Functional Delta: YU05-post-trade-compliance over YU03-in-memory-risk-gateway
+# Functional Delta: YU05-post-trade-compliance (vs YU04-durable-control-feeds)
 
-New requirement namespace `PTC`.
+The parent's BLP decision path and risk-screening logic carry forward unchanged, as do the journal
+and replication wire format, the snapshot format, and the inherited build, deploy and observability
+harness. The one admission-path change is the entitlement gate below; everything else this state
+adds is a back-office compliance layer downstream of the trading path — settlement, reconciliation,
+regulatory reporting and transaction-cost analysis, all reading the journal's executed-fill stream,
+plus a real token-based access-control layer over the endpoints that expose them. Only order-matcher
+and trade-processor change; new requirements use the `PTC` namespace.
 
-| Req | Status | Notes |
-|---|---|---|
-| FR-PTC01 deterministic trade identity | **Done** | Live path: `ProjectorHandler.toTrade()` already used `OrderSnapshot.tradeIdFor(tradeSeq)` correctly. Legacy path: `TradeOrder.fromEvent()` fixed to match (was using `orderIdFor`); trade-processor's `TradeService` no longer mints `UUID.randomUUID()`. See research.md for which path is actually live. |
-| FR-PTC02 settlement state machine | **Done** | Fixed in `ProjectorHandler.toTrade()` (the live writer): `Processing` (at booking, real settlementDate computed) `→ Settled` (T+N sweep or forced); `Cancelled` reserved, not yet produced. |
-| FR-PTC03 replay-safe trade blotter | **Done** | `TradeBlotterHandler` on the output ring, rebuilt during recovery replay (no snapshot format change needed — see research.md). |
-| FR-PTC04 reconciliation classification | **Done** | `MATCHED` / `MISSING_IN_PROJECTION` / `FIELD_MISMATCH` (forward sweep) + `ORPHAN_IN_PROJECTION` (full-history sweep, FR-PTC10). |
-| FR-PTC05 recon observability | **Done** | `GET /recon/status` + bounded Prometheus counters; no per-trade labels. |
-| FR-PTC06 settlement date default + override | **Done** | Default T+1 business day (`settlement.t-plus-days`, set in both order-matcher and trade-processor); `POST /trades/{id}/settlement/force` operator override. |
-| FR-PTC07 recon/settlement never mutate journal/BLP | **Done** | Settlement/recon-sweep writes are MariaDB-side only; full-history reindex and regulatory reports are read-only shadow replays, never touch the live BLP/journal. |
-| FR-PTC08 idempotent trade booking | **Done** | Duplicate `TradeOrder.id` delivery is a no-op in trade-processor's legacy path (checked before insert); live path already idempotent via `INSERT IGNORE`. |
-| FR-PTC09 recon read API authenticated | **Done** | `/recon/*` requires an `admin` JWT (ADR-025) — superseded the initial token+operator header draft. |
-| FR-PTC10 full-history orphan detection | **Done** | `POST /recon/full-history/reindex` (order-matcher, on-demand full journal replay via shadow engine) + `POST /recon/orphan-sweep` (trade-processor, cross-checks every local trade id). |
-| FR-PTC20 regulatory audit export | **Done** | `GET /regulatory/report?fromSeq=&toSeq=` — CAT/TRACE-style flat-record export sourced from journal replay (`AuditLogHandler`), not the MariaDB projection. |
-| FR-PTC21 audit export reproducibility | **Done** | Pure function of (journal range, seed) — no wall-clock, no external query; same inputs always produce the same records. |
-| FR-PTC22 audit export authenticated, off hot path | **Done** | Requires an `admin` JWT (FR-PTC40/41); never on the BLP's admission path. |
-| FR-PTC30 TCA execution-quality computation | **Done** | Arrival price + TWAP benchmark + signed slippage-bps per trade, via `GET /tca/report/{tradeId}`. |
-| FR-PTC31 TCA is read-side only | **Done** | Entirely in trade-processor; never calls into order-matcher's admission path. |
-| FR-PTC32 pluggable historical benchmark source | **Partial** | TWAP implemented against `PriceHistoryStore` (fed by price-publisher's `pricing.*` feed); VWAP deferred — synthetic feed carries no per-tick volume to weight by. Real TAQ data would supply both without changing `TcaService`'s contract. |
-| FR-PTC40 principal resolution | **Done (JWT, not OIDC)** | `JwtAuthenticator` — real HS256 signature verification, no live IdP in this environment. Replaces hardcoded `accountId` params on settlement/recon/reporting/TCA APIs. See ADR-025 "Implementation note." |
-| FR-PTC41 principal-to-account entitlement gating | **Done** | `JwtPrincipal.isEntitledTo(accountId)` gates settlement-force/TCA (account-scoped) and blotter/full-history/orphan-sweep/regulatory-report (`admin`-only, cross-account). |
-| FR-PTC42 feeds risk-gateway entitlement resolution into admission | **Done (flag-gated)** | `EntitlementGate` runs on every command entry point (`OrderMatcherService.createOrder`/`createOrderBatch`/`bookMarketTrade`, via `OrderController`/`MarketTradeController`): the resolved JWT principal must be entitled to the order's account (or hold the `admin` claim). Memory-only check against the token claim, no sync lookup on admission (FR-IMRG01). Gated by `risk.entitlement.enforced` (default false) so the token-less UI keeps working until enforcement is turned on — closes FR-IMRG02/FR-IMRG30 for real. |
+## Added
+
+- Deterministic trade identity: every MariaDB trade row carries the id derived from the journal fill
+  that produced it, which makes booking idempotent — a duplicate delivery of the same trade is a
+  no-op instead of a second row.
+- A replay-safe in-memory trade blotter in order-matcher, rebuilt from journal replay on recovery,
+  giving reconciliation a journal-side view of every fill with no snapshot-format change.
+- Reconciliation that classifies each trade as `MATCHED`, `MISSING_IN_PROJECTION` or
+  `FIELD_MISMATCH`, so divergence between the authoritative journal and the read model is caught.
+- Reconciliation reporting through a `GET /recon/status` summary and Prometheus counters labelled
+  only by classification, keeping metric cardinality bounded no matter how many trades run through.
+- An on-demand full-history sweep (`POST /recon/full-history/reindex`, then `POST
+  /recon/orphan-sweep`) that cross-checks every projected row against a full journal replay, flagging
+  `ORPHAN_IN_PROJECTION` where no journal fill exists.
+- Settlement and reconciliation writes that land in MariaDB only, never mutating journal or BLP
+  state, so the compliance layer cannot corrupt the record it audits.
+- The full-history reindex and the regulatory export as read-only shadow replays that never touch the
+  live BLP or journal, which is what keeps an expensive full replay safe.
+- A journal-sourced regulatory audit export (`GET /regulatory/report?fromSeq=&toSeq=`) covering every
+  order and trade lifecycle event in a sequence range, and reproducible byte-for-byte because it is a
+  pure function of the journal range and seed rather than of the projection or the wall clock.
+- The audit export restricted to an `admin` caller and never run on the BLP admission path, so
+  answering a regulator query costs the trading path nothing.
+- Per-trade transaction-cost analysis (`GET /tca/report/{tradeId}`) reporting arrival price, a TWAP
+  benchmark and signed slippage in basis points, computed read-side entirely inside trade-processor
+  so execution quality can be measured without touching the trading hot path. The benchmark source is
+  pluggable and currently fed by the existing price feed; VWAP is not implemented, as that feed
+  carries no per-tick volume (FR-PTC32, partial).
+- Real HS256-verified JWT authentication on every endpoint this state adds, replacing the
+  shared-token stopgap: account-scoped endpoints check the caller against the trade's own account,
+  and cross-account endpoints require an `admin` claim.
+- An entitlement gate on order admission that rejects a caller not entitled to the order's account
+  before the command is screened or sequenced.
+- The gate as a memory-only check against the token claim, adding no synchronous lookup to admission
+  and closing the parent's entitlement-resolution and command-path authentication gaps.
+- Enforcement of that gate kept behind `risk.entitlement.enforced` (default off) so the token-less UI
+  keeps working, with the admission-path wiring still listed as open in this state's implementation
+  status.
+- Settlement and reconciliation that never mutate journal or BLP state: their writes are MariaDB-side
+  only, and full-history reindex and regulatory reports run as read-only shadow replays, so the
+  post-trade layer can never perturb the trading path it reports on.
+
+## Changed
+
+- A booked trade no longer lands as `Settled` the instant it books: the projector writes `Processing`
+  with a real settlement date, defaulting to T+1 business day, and a scheduled T+N sweep or the
+  `POST /trades/{id}/settlement/force` override advances it to `Settled`.
+- The legacy NATS booking path derives its trade id from the fill that produced it instead of minting
+  a fresh random one, so both write paths agree on the same identity.

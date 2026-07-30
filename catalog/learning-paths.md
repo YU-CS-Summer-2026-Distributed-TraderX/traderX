@@ -25,29 +25,36 @@ This file is generated from `catalog/state-catalog.json`.
 
 - `005-postgres-database-replacement`
 - `006-messaging-nats-replacement`
-- `009b-lmax-sequencer-architecture`
+- `YU01-lmax-sequencer`
 - `YU02-lmax-kubernetes`
-- `YU03-in-memory-risk-gateway`
-- `YU04-durable-control-feeds`
-- `YU05-post-trade-compliance`
-- `YU06-eod-price-production`
-- `YU07-historical-tick-store`
-- `YU08-execution-algo-engine`
+- `YU11-aeron-replication`
+- `YU12-aeron-cluster`
 
 ### Functional
 
 - `008-pricing-awareness-market-data`
 - `009-order-management-matcher`
 - `014-fdc3-intent-interoperability`
+- `YU03-in-memory-risk-gateway`
+- `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
+- `YU07-historical-tick-store`
+- `YU08-execution-algo-engine`
+- `YU10-fix-ingress`
+- `YU13-limit-order-book`
+- `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ### Non-Functional
 
 - `007-observability-lgtm-compose`
+- `YU04-durable-control-feeds`
+- `YU09-ops-hardening`
 
 ### Optional
 
-- `009b-lmax-sequencer-architecture`
 - `013-radius-kubernetes-platform`
+- `YU01-lmax-sequencer`
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
@@ -55,6 +62,13 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU06-eod-price-production`
 - `YU07-historical-tick-store`
 - `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
+- `YU10-fix-ingress`
+- `YU11-aeron-replication`
+- `YU12-aeron-cluster`
+- `YU13-limit-order-book`
+- `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ### Convergence
 
@@ -76,12 +90,12 @@ This file is generated from `catalog/state-catalog.json`.
 | `007-observability-lgtm-compose` | 006-messaging-nats-replacement | `C1` | `true` | `canonical` | `specs/007-observability-lgtm-compose/spec.md` |
 | `008-pricing-awareness-market-data` | 007-observability-lgtm-compose | `none` | `false` | `canonical` | `specs/008-pricing-awareness-market-data/spec.md` |
 | `009-order-management-matcher` | 008-pricing-awareness-market-data | `C2` | `true` | `canonical` | `specs/009-order-management-matcher/spec.md` |
-| `009b-lmax-sequencer-architecture` | 009-order-management-matcher | `none` | `false` | `optional` | `specs/009b-lmax-sequencer-architecture/spec.md` |
 | `010-kubernetes-runtime` | 009-order-management-matcher | `none` | `false` | `canonical` | `specs/010-kubernetes-runtime/spec.md` |
 | `011-tilt-kubernetes-dev-loop` | 010-kubernetes-runtime | `none` | `false` | `canonical` | `specs/011-tilt-kubernetes-dev-loop/spec.md` |
 | `012-platform-convergence-c3` | 011-tilt-kubernetes-dev-loop | `C3` | `true` | `canonical` | `specs/012-platform-convergence-c3/spec.md` |
 | `013-radius-kubernetes-platform` | 012-platform-convergence-c3 | `none` | `false` | `optional` | `specs/013-radius-kubernetes-platform/spec.md` |
 | `014-fdc3-intent-interoperability` | 012-platform-convergence-c3 | `none` | `false` | `canonical` | `specs/014-fdc3-intent-interoperability/spec.md` |
+| `YU01-lmax-sequencer` | 009-order-management-matcher | `none` | `false` | `optional` | `specs/YU01-lmax-sequencer/spec.md` |
 | `YU02-lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/YU02-lmax-kubernetes/spec.md` |
 | `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |
 | `YU04-durable-control-feeds` | YU03-in-memory-risk-gateway | `none` | `false` | `optional` | `specs/YU04-durable-control-feeds/spec.md` |
@@ -89,3 +103,10 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU06-eod-price-production` | YU05-post-trade-compliance | `none` | `false` | `optional` | `specs/YU06-eod-price-production/spec.md` |
 | `YU07-historical-tick-store` | YU06-eod-price-production | `none` | `false` | `optional` | `specs/YU07-historical-tick-store/spec.md` |
 | `YU08-execution-algo-engine` | YU07-historical-tick-store | `none` | `false` | `optional` | `specs/YU08-execution-algo-engine/spec.md` |
+| `YU09-ops-hardening` | YU08-execution-algo-engine | `none` | `false` | `optional` | `specs/YU09-ops-hardening/spec.md` |
+| `YU10-fix-ingress` | YU09-ops-hardening | `none` | `false` | `optional` | `specs/YU10-fix-ingress/spec.md` |
+| `YU11-aeron-replication` | YU10-fix-ingress | `none` | `false` | `optional` | `specs/YU11-aeron-replication/spec.md` |
+| `YU12-aeron-cluster` | YU11-aeron-replication | `none` | `false` | `optional` | `specs/YU12-aeron-cluster/spec.md` |
+| `YU13-limit-order-book` | YU12-aeron-cluster | `none` | `false` | `optional` | `specs/YU13-limit-order-book/spec.md` |
+| `YU14-listed-equity-options` | YU13-limit-order-book | `none` | `false` | `optional` | `specs/YU14-listed-equity-options/spec.md` |
+| `YU15-eod-risk-extract` | YU14-listed-equity-options | `none` | `false` | `optional` | `specs/YU15-eod-risk-extract/spec.md` |

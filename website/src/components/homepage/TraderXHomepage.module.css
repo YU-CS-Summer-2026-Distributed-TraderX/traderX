@@ -1,8 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 .page {
-  --home-blue: #008cc1;
-  --home-cyan: #00b0d2;
+  --home-blue: #0a5c9b;
+  --home-cyan: #1c68a2;
   --home-slate: #0f172a;
   --home-text: #334155;
   --home-border: #e2e8f0;
@@ -62,7 +62,7 @@
 .brand:hover,
 .navLink:hover,
 .footerLinks a:hover {
-  color: #e0f2fe;
+  color: #e7eff7;
   text-decoration: none;
 }
 
@@ -72,10 +72,18 @@
   width: 2rem;
 }
 
+/* The YU crest, on a white disc because the supplied PNG is opaque-on-white (see .heroMark).
+   The crest is a round seal, so the disc is round — and the padding is not decorative: a circular
+   clip on a square box cuts the corners, which sliced through the "YESHIVA UNIVERSITY" ring text.
+   Padding of ~15% of the box inscribes the artwork inside the circle so nothing is cut. */
 .brandLogo {
+  background: #ffffff;
+  border-radius: 50%;
   display: block;
-  height: 2.15rem;
-  width: 2.15rem;
+  height: 2.4rem;
+  object-fit: contain;
+  padding: 0.34rem;
+  width: 2.4rem;
 }
 
 .logoLarge {
@@ -162,11 +170,37 @@
   margin-bottom: 2.25rem;
 }
 
+/* Sized in rem, NOT vw. `max-width: min(34rem, 72vw)` collapsed the wordmark to 0x0 in any renderer
+   that reports a viewport width of 0 — an embedded preview pane did exactly that, and the logo
+   simply vanished while the image itself had loaded fine (naturalWidth 300x96). A brand mark whose
+   presence depends on the viewport being measurable is a mark that sometimes is not there. rem has
+   no such dependency; the mobile media query below still handles narrow screens. */
 .heroLogo {
   display: block;
   height: auto;
-  max-width: min(42rem, 88vw);
-  width: 100%;
+  max-width: 100%;
+  min-width: 14rem;
+  width: 34rem;
+}
+
+/* The crest sits beside the TraderX wordmark so the pairing itself carries the message: this is
+   YU's build of TraderX. Sized in vw rather than fixed px so the two do not drift apart as the hero
+   scales, and flex-shrink:0 keeps it round when the row gets tight.
+   The white disc is deliberate. Both institutional logos are supplied as opaque PNGs on white — no
+   alpha — so dropped straight onto the blue hero they render as stray white rectangles. Knocking the
+   white out to transparency is not an option either: the crest's Torah and lettering ARE white, so
+   keying on white would punch holes through the artwork itself. A padded white disc is the standard
+   treatment for a mark that only exists on white, and it reads as an intentional badge. */
+/* The YU CS mark, paired with the TraderX wordmark so the lockup itself says whose build this is.
+   Now a true-alpha PNG, so the white plate it used to need is gone — the shield sits directly on the
+   hero blue. Sized in rem, never vw (see the note on .heroLogo), and larger than the plated version
+   was, since without the plate and its padding the artwork itself reads smaller at the same box. */
+.heroMark {
+  aspect-ratio: 1;
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  width: 9rem;
 }
 
 .heroTitleGroup h1 {
@@ -195,7 +229,7 @@
 }
 
 .heroCopy a:hover {
-  color: #e0f2fe;
+  color: #e7eff7;
 }
 
 .heroActions {
@@ -402,8 +436,8 @@
 }
 
 .tone-blue {
-  border-color: #0284c7;
-  color: #0284c7;
+  border-color: #015697;
+  color: #015697;
 }
 
 .tone-cyan {
@@ -428,12 +462,12 @@
 
 .tone-blue .cardIcon,
 .tone-blue.demoIconLink {
-  background: #e0f2fe;
+  background: #e7eff7;
 }
 
 .tone-cyan .cardIcon,
 .tone-cyan.demoIconLink {
-  background: #cffafe;
+  background: #dde8f2;
 }
 
 .tone-slate .cardIcon {
@@ -492,7 +526,7 @@
 }
 
 .demoSource a:hover {
-  background: #e0f2fe;
+  background: #e7eff7;
   color: var(--home-blue);
   text-decoration: none;
 }
@@ -546,8 +580,8 @@
 
 .demoLinks a:hover,
 .demoLinks a:focus-visible {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
+  background: #e7eff7;
+  border-color: #8fb8d8;
   color: var(--home-blue);
   text-decoration: none;
   transform: translateY(-1px);
@@ -570,15 +604,15 @@
 }
 
 .tone-blue.demoIconLink {
-  --demo-icon-bg: #e0f2fe;
-  --demo-icon-color: #0284c7;
-  --demo-icon-hover-bg: #0284c7;
+  --demo-icon-bg: #e7eff7;
+  --demo-icon-color: #015697;
+  --demo-icon-hover-bg: #015697;
 }
 
 .tone-cyan.demoIconLink {
-  --demo-icon-bg: #cffafe;
-  --demo-icon-color: #0891b2;
-  --demo-icon-hover-bg: #0891b2;
+  --demo-icon-bg: #dde8f2;
+  --demo-icon-color: #23437c;
+  --demo-icon-hover-bg: #23437c;
 }
 
 .tone-violet.demoIconLink {
@@ -637,13 +671,13 @@
 }
 
 .catalogCallout a {
-  background: #e0f2fe;
+  background: #e7eff7;
   padding: 0.35rem 0.75rem;
 }
 
 .catalogCallout a:hover,
 .stateTitleLink:hover {
-  color: #0369a1;
+  color: #013f6f;
   text-decoration: underline;
 }
 
@@ -772,8 +806,8 @@
 
 .stateIconLink:hover,
 .stateIconLink:focus-visible {
-  background: #e0f2fe;
-  border-color: #bae6fd;
+  background: #e7eff7;
+  border-color: #c2d7e8;
   color: var(--home-blue);
   text-decoration: none;
 }
@@ -828,7 +862,7 @@
 }
 
 .phase-blue {
-  color: #0284c7;
+  color: #015697;
 }
 
 .phase-violet {
@@ -836,7 +870,7 @@
 }
 
 .phase-cyan {
-  color: #0891b2;
+  color: #23437c;
 }
 
 .phase-green {
@@ -1016,7 +1050,9 @@
   gap: 1rem;
 }
 
-.footerFinosLogo {
+/* Renamed from .footerFinosLogo — it is the YU crest now, and a class name that lies about its
+   contents is how the next person reintroduces the wrong logo. */
+.footerYuLogo {
   display: block;
   height: 3.5rem;
   width: auto;
@@ -1130,4 +1166,105 @@
   .demoPanel {
     padding: 1.5rem;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Measured-results band (Results.jsx)
+   Sits between the hero and the tab nav. Uses the existing --home-* tokens so it
+   inherits the YU palette rather than introducing a fourth blue.
+   --------------------------------------------------------------------------- */
+
+.resultsBand {
+  background: var(--home-slate);
+  color: #e8eef6;
+  padding: clamp(2.5rem, 6vw, 4rem) 1.5rem;
+}
+
+.resultsInner {
+  margin: 0 auto;
+  max-width: 72rem;
+}
+
+.resultsHeading h2 {
+  color: #ffffff;
+  font-size: clamp(1.5rem, 3.5vw, 2.125rem);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
+
+.resultsHeading p {
+  color: #b9c8da;
+  font-size: 1rem;
+  line-height: 1.65;
+  margin: 0 0 2.25rem;
+  max-width: 54rem;
+}
+
+/* Lightened against the dark band: --home-blue (#0a5c9b) on #0f172a is about 1.8:1 and effectively
+   unreadable. Brand fidelity does not outrank being legible. */
+.resultsHeading a {
+  color: #8fb8d8;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.resultsHeading a:hover {
+  color: #c2d7e8;
+}
+
+.resultsGrid {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  margin: 0;
+}
+
+.resultCard {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+}
+
+.resultCard dt {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.resultFigure {
+  color: #ffffff;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.resultUnit {
+  color: #8fb8d8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.resultCard dd {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.resultCard dd strong {
+  color: #ffffff;
+  font-size: 0.975rem;
+  font-weight: 700;
+}
+
+.resultCard dd span {
+  color: #aebcce;
+  font-size: 0.875rem;
+  line-height: 1.6;
 }

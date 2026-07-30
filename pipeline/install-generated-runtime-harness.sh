@@ -42,6 +42,7 @@ fi
 # Local helper lib used by some runtime tests.
 cp "${SCRIPTS_SRC}/lib/resolve-socketio-client-path.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/generated-state-detection.sh" "${SCRIPTS_DST}/lib/"
+cp "${SCRIPTS_SRC}/lib/build-jvm-jar.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/observability-runtime.sh" "${SCRIPTS_DST}/lib/"
 cp "${SCRIPTS_SRC}/lib/kubernetes-smoke-readiness.sh" "${SCRIPTS_DST}/lib/"
 if [[ -f "${SCRIPTS_SRC}/lib/runtime-common.ps1" ]]; then
@@ -198,17 +199,17 @@ case "${STATE_ID}" in
     copy_script_if_exists "test-state-009-order-management-matcher.sh"
     copy_script_if_exists "test-messaging-009-order-management-matcher.sh"
     ;;
-  009b-lmax-sequencer-architecture)
+  YU01-lmax-sequencer)
     copy_script_if_exists "start-state-009-order-management-matcher-generated.sh"
     copy_script_if_exists "stop-state-009-order-management-matcher-generated.sh"
     copy_script_if_exists "status-state-009-order-management-matcher-generated.sh"
     copy_script_if_exists "test-state-009-order-management-matcher.sh"
     copy_script_if_exists "test-messaging-009-order-management-matcher.sh"
-    copy_script_if_exists "start-state-009b-lmax-sequencer-architecture-generated.sh"
-    copy_script_if_exists "stop-state-009b-lmax-sequencer-architecture-generated.sh"
-    copy_script_if_exists "status-state-009b-lmax-sequencer-architecture-generated.sh"
-    copy_script_if_exists "test-state-009b-lmax-sequencer-architecture.sh"
-    copy_script_if_exists "test-messaging-009b-lmax-sequencer-architecture.sh"
+    copy_script_if_exists "start-state-YU01-lmax-sequencer-generated.sh"
+    copy_script_if_exists "stop-state-YU01-lmax-sequencer-generated.sh"
+    copy_script_if_exists "status-state-YU01-lmax-sequencer-generated.sh"
+    copy_script_if_exists "test-state-YU01-lmax-sequencer.sh"
+    copy_script_if_exists "test-messaging-YU01-lmax-sequencer.sh"
     ;;
   010-kubernetes-runtime)
     copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
@@ -474,10 +475,142 @@ case "${STATE_ID}" in
     copy_script_if_exists "status-state-YU08-execution-algo-engine-generated.sh"
     copy_script_if_exists "test-state-YU08-execution-algo-engine.sh"
     ;;
+  YU09-ops-hardening)
+    # Inherits the YU08 (=> YU07 => YU06 => YU05 => YU04 => YU03 => YU02 => 014) runtime harness;
+    # no new component — Secret-sourced credentials on existing manifests, journal rotation +
+    # GCS archival in order-matcher, and the publish-generated-state-branch.sh pipeline fix.
+    copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "status-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "start-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "stop-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "status-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "start-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "stop-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "status-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "start-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "stop-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "status-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "start-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "stop-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "status-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "start-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "stop-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "status-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "start-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "stop-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "status-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "start-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "stop-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "status-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "start-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "stop-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "status-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "test-state-012-platform-convergence-c3.sh"
+    copy_script_if_exists "test-state-014-fdc3-intent-interoperability.sh"
+    copy_script_if_exists "test-state-YU02-lmax-kubernetes.sh"
+    copy_script_if_exists "test-state-YU03-in-memory-risk-gateway.sh"
+    copy_script_if_exists "test-state-YU04-durable-control-feeds.sh"
+    copy_script_if_exists "test-state-YU05-post-trade-compliance.sh"
+    copy_script_if_exists "test-state-YU06-eod-price-production.sh"
+    copy_script_if_exists "test-state-YU07-historical-tick-store.sh"
+    copy_script_if_exists "start-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "stop-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "status-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "test-state-YU08-execution-algo-engine.sh"
+    copy_script_if_exists "start-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "stop-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "status-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "test-state-YU09-ops-hardening.sh"
+    ;;
+  YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options|YU15-eod-risk-extract)
+    # YU10 inherits the YU09 runtime; YU11 inherits that complete chain and overlays Aeron
+    # replication plus its sidecar/runtime assets. YU12 adds cluster hosting; YU13 overlays the
+    # crossing book without changing the run harness; YU14 overlays the option instrument
+    # model/risk multiplier without changing the run harness; YU15 adds the EOD risk-extract
+    # producer alongside it, again without changing the run harness.
+    copy_script_if_exists "start-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "stop-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "status-state-010-kubernetes-runtime-generated.sh"
+    copy_script_if_exists "start-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "stop-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "status-state-012-platform-convergence-c3-generated.sh"
+    copy_script_if_exists "start-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "stop-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "status-state-014-fdc3-intent-interoperability-generated.sh"
+    copy_script_if_exists "start-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "stop-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "status-state-YU02-lmax-kubernetes-generated.sh"
+    copy_script_if_exists "start-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "stop-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "status-state-YU03-in-memory-risk-gateway-generated.sh"
+    copy_script_if_exists "start-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "stop-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "status-state-YU04-durable-control-feeds-generated.sh"
+    copy_script_if_exists "start-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "stop-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "status-state-YU05-post-trade-compliance-generated.sh"
+    copy_script_if_exists "start-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "stop-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "status-state-YU06-eod-price-production-generated.sh"
+    copy_script_if_exists "start-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "stop-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "status-state-YU07-historical-tick-store-generated.sh"
+    copy_script_if_exists "test-state-012-platform-convergence-c3.sh"
+    copy_script_if_exists "test-state-014-fdc3-intent-interoperability.sh"
+    copy_script_if_exists "test-state-YU02-lmax-kubernetes.sh"
+    copy_script_if_exists "test-state-YU03-in-memory-risk-gateway.sh"
+    copy_script_if_exists "test-state-YU04-durable-control-feeds.sh"
+    copy_script_if_exists "test-state-YU05-post-trade-compliance.sh"
+    copy_script_if_exists "test-state-YU06-eod-price-production.sh"
+    copy_script_if_exists "test-state-YU07-historical-tick-store.sh"
+    copy_script_if_exists "start-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "stop-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "status-state-YU08-execution-algo-engine-generated.sh"
+    copy_script_if_exists "test-state-YU08-execution-algo-engine.sh"
+    copy_script_if_exists "start-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "stop-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "status-state-YU09-ops-hardening-generated.sh"
+    copy_script_if_exists "test-state-YU09-ops-hardening.sh"
+    copy_script_if_exists "start-state-YU10-fix-ingress-generated.sh"
+    copy_script_if_exists "stop-state-YU10-fix-ingress-generated.sh"
+    copy_script_if_exists "status-state-YU10-fix-ingress-generated.sh"
+    copy_script_if_exists "test-state-YU10-fix-ingress.sh"
+    if [[ "${STATE_ID}" != "YU10-fix-ingress" ]]; then
+      copy_script_if_exists "start-state-YU11-aeron-replication-generated.sh"
+      copy_script_if_exists "stop-state-YU11-aeron-replication-generated.sh"
+      copy_script_if_exists "status-state-YU11-aeron-replication-generated.sh"
+      copy_script_if_exists "test-state-YU11-aeron-replication.sh"
+    fi
+    if [[ "${STATE_ID}" == "YU12-aeron-cluster" || "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
+      copy_script_if_exists "start-state-YU12-aeron-cluster-generated.sh"
+      copy_script_if_exists "stop-state-YU12-aeron-cluster-generated.sh"
+      copy_script_if_exists "status-state-YU12-aeron-cluster-generated.sh"
+      copy_script_if_exists "test-state-YU12-aeron-cluster.sh"
+    fi
+    if [[ "${STATE_ID}" == "YU13-limit-order-book" || "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
+      copy_script_if_exists "start-state-YU13-limit-order-book-generated.sh"
+      copy_script_if_exists "stop-state-YU13-limit-order-book-generated.sh"
+      copy_script_if_exists "status-state-YU13-limit-order-book-generated.sh"
+      copy_script_if_exists "test-state-YU13-limit-order-book.sh"
+    fi
+    if [[ "${STATE_ID}" == "YU14-listed-equity-options" || "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
+      copy_script_if_exists "start-state-YU14-listed-equity-options-generated.sh"
+      copy_script_if_exists "stop-state-YU14-listed-equity-options-generated.sh"
+      copy_script_if_exists "status-state-YU14-listed-equity-options-generated.sh"
+      copy_script_if_exists "test-state-YU14-listed-equity-options.sh"
+    fi
+    if [[ "${STATE_ID}" == "YU15-eod-risk-extract" ]]; then
+      copy_script_if_exists "start-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "stop-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "status-state-YU15-eod-risk-extract-generated.sh"
+      copy_script_if_exists "test-state-YU15-eod-risk-extract.sh"
+    fi
+    ;;
 esac
 
 case "${STATE_ID}" in
-  004-*|005-*|006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds|YU05-post-trade-compliance|YU06-eod-price-production|YU07-historical-tick-store|YU08-execution-algo-engine)
+  004-*|005-*|006-*|007-*|008-*|009-*|YU01-lmax-sequencer|010-*|011-*|012-*|013-*|014-*|YU02-lmax-kubernetes|YU03-in-memory-risk-gateway|YU04-durable-control-feeds|YU05-post-trade-compliance|YU06-eod-price-production|YU07-historical-tick-store|YU08-execution-algo-engine|YU09-ops-hardening|YU10-fix-ingress|YU11-aeron-replication|YU12-aeron-cluster|YU13-limit-order-book|YU14-listed-equity-options|YU15-eod-risk-extract)
     gen_depth="${TRADERX_GENERATION_DEPTH:-0}"
     if (( gen_depth <= 2 )) || [[ "${TRADERX_RUNTIME_NORMALIZE_IN_NESTED_GENERATION:-0}" == "1" ]]; then
       normalize_containerized_compose_cors_origins
@@ -498,6 +631,7 @@ for script in "${SCRIPTS_DST}"/*.sh; do
 done
 chmod +x "${SCRIPTS_DST}/lib/resolve-socketio-client-path.sh"
 chmod +x "${SCRIPTS_DST}/lib/generated-state-detection.sh"
+chmod +x "${SCRIPTS_DST}/lib/build-jvm-jar.sh"
 chmod +x "${SCRIPTS_DST}/lib/kubernetes-smoke-readiness.sh"
 chmod +x "${SCRIPTS_DST}/lib/observability-runtime.sh"
 
@@ -993,7 +1127,7 @@ Grafana access:
 - Default convention: user from `TRADERX_GRAFANA_ADMIN_USER` or `traderx-admin`; password from `TRADERX_GRAFANA_ADMIN_PASSWORD` or `traderx-state-009`.
 EOF
       ;;
-    009b-lmax-sequencer-architecture)
+    YU01-lmax-sequencer)
       cat > "${TARGET_ROOT}/RUN_FROM_GENERATED.md" <<'EOF'
 # Run From Generated (State 009b)
 
@@ -1001,25 +1135,25 @@ Start (choose one):
 
 ```bash
 # Full start (build + start)
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
+./scripts/start-state-YU01-lmax-sequencer-generated.sh
 
 # Fast restart (reuse existing artifacts; skips build)
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
+./scripts/start-state-YU01-lmax-sequencer-generated.sh --skip-build
 ```
 
 Status / stop:
 
 ```bash
-./scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
-./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
+./scripts/status-state-YU01-lmax-sequencer-generated.sh
+./scripts/stop-state-YU01-lmax-sequencer-generated.sh
 ```
 
 Smoke test:
 
 ```bash
-./scripts/test-state-009b-lmax-sequencer-architecture.sh
-./scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
-./scripts/test-messaging-009b-lmax-sequencer-architecture.sh
+./scripts/test-state-YU01-lmax-sequencer.sh
+./scripts/test-state-YU01-lmax-sequencer.sh --skip-messaging
+./scripts/test-messaging-YU01-lmax-sequencer.sh
 ```
 EOF
       ;;
@@ -1227,7 +1361,7 @@ EOF
 - Tempo: `http://localhost:3200`
 EOF
       ;;
-    009-order-management-matcher|009b-lmax-sequencer-architecture)
+    009-order-management-matcher|YU01-lmax-sequencer)
       cat <<'EOF'
 - UI (ingress): `http://localhost:8080`
 - API explorer (ingress): `http://localhost:8080/api/docs`

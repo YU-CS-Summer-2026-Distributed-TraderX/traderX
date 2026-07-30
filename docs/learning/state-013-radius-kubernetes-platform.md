@@ -20,12 +20,12 @@ title: "State 013: Radius Platform on Kubernetes (Optional)"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `012-platform-convergence-c3`: [code/generated-state-012-platform-convergence-c3...code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-013-radius-kubernetes-platform)
+- Compare against `012-platform-convergence-c3`: [code/generated-state-012-platform-convergence-c3...code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-013-radius-kubernetes-platform)
 
 ## Plain-English Code Delta
 
