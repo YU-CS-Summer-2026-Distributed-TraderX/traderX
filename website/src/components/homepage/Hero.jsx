@@ -27,7 +27,7 @@ function HeroNav() {
           alt=""
           className={styles.brandLogo}
         />
-        <span>YU · Distributed TraderX</span>
+        <span>YU · TraderX</span>
       </Link>
 
       <div className={styles.navLinks}>
