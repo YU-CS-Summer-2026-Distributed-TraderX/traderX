@@ -20,12 +20,12 @@ title: "State 006: Messaging Layer Replacement with NATS"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-006-messaging-nats-replacement](https://github.com/finos/traderX/tree/code/generated-state-006-messaging-nats-replacement)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-006-messaging-nats-replacement](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-006-messaging-nats-replacement)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `005-postgres-database-replacement`: [code/generated-state-005-postgres-database-replacement...code/generated-state-006-messaging-nats-replacement](https://github.com/finos/traderX/compare/code%2Fgenerated-state-005-postgres-database-replacement...code%2Fgenerated-state-006-messaging-nats-replacement)
+- Compare against `005-postgres-database-replacement`: [code/generated-state-005-postgres-database-replacement...code/generated-state-006-messaging-nats-replacement](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-005-postgres-database-replacement...code%2Fgenerated-state-006-messaging-nats-replacement)
 
 ## Plain-English Code Delta
 

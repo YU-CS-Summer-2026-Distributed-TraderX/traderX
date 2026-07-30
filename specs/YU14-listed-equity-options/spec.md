@@ -3,8 +3,7 @@
 **Feature Branch**: `YU14-listed-equity-options`
 **Created**: 2026-07-21
 **Status**: In implementation
-**Input**: Listed-equity-options direction brief
-(`docs/handoff/HANDOFF-YU14-listed-equity-options.md`), parented on `YU13-limit-order-book`
+**Input**: Listed-equity-options direction brief, parented on `YU13-limit-order-book`
 
 ## User Stories
 

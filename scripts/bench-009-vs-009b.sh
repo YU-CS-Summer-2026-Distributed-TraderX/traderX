@@ -26,7 +26,7 @@ TARGET_ROOT="${GENERATED_ROOT}/code/target-generated"
 COMPOSE_PROJECT="traderx-state-009"
 RESULTS_DIR="${BENCH_RESULTS_DIR:-${ROOT}/bench-results/$(date +%Y%m%d-%H%M%S)}"
 BENCH_DIR="${ROOT}/scripts/bench"
-STATES=(009-order-management-matcher 009b-lmax-sequencer-architecture)
+STATES=(009-order-management-matcher YU01-lmax-sequencer)
 
 # --- toolchain -------------------------------------------------------------------------
 

@@ -47,7 +47,7 @@ A cross-worktree md5 diff will flag these as inconsistent. **Leave them.** Re-sy
 version re-breaks the diverging branch.
 
 - **YU01 `009b` overlay patch — `RUN_FROM_GENERATED.md` hunk deliberately dropped (2026-07-24, upstream
-  rebase).** `specs/009b-lmax-sequencer-architecture/generation/patches/0001-state-overlay.patch` on
+  rebase).** `specs/YU01-lmax-sequencer/generation/patches/0001-state-overlay.patch` on
   `YU01-lmax-sequencer` is missing the one cosmetic hunk that modifies the *generated*
   `RUN_FROM_GENERATED.md` (retitle "State 009"→"009b" + start-script names) that YU02–YU15 still carry.
   **Why the divergence is correct, not drift:** that hunk applies with exact 28-line context against the

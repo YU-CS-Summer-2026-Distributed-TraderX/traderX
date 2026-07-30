@@ -20,16 +20,23 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU11-aeron-replication](https://github.com/finos/traderX/tree/code/generated-state-YU11-aeron-replication)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU10-fix-ingress`: [code/generated-state-YU10-fix-ingress...code/generated-state-YU11-aeron-replication](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU10-fix-ingress...code%2Fgenerated-state-YU11-aeron-replication)
+- Compare against `YU10-fix-ingress`: [YU10-fix-ingress...YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU10-fix-ingress...YU11-aeron-replication)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** A second replication transport chosen at startup with `BLP_REPLICATION_TRANSPORT=nats|aeron`, so a
+- **Added:** Aeron reliable unicast UDP replication through an Archiving Media Driver sidecar in each
+- **Added:** A NetworkPolicy permitting the Aeron data, ACK, control, and replay UDP ports only between
+- **Added:** Archive storage on the order-matcher persistent volume, with a documented capacity-expansion and
+- **Added:** A fixed 64-byte SBE input record encoded directly into an Aeron `tryClaim` buffer, so the primary's
+- **Added:** Follower validation that rejects an unknown schema, a required unknown flag, a stale leader epoch,
+- **Added:** Decoding of each accepted record straight into a claimed input-ring slot, published exactly once,
+- **Added:** A fixed-capacity SPSC map from the follower's local ring sequence to the primary
 
 ## Run This State
 

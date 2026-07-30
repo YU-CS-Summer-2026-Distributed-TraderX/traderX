@@ -20,12 +20,12 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU14-listed-equity-options](https://github.com/finos/traderX/tree/code/generated-state-YU14-listed-equity-options)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU14-listed-equity-options)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU13-limit-order-book`: [code/generated-state-YU13-limit-order-book...code/generated-state-YU14-listed-equity-options](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU13-limit-order-book...code%2Fgenerated-state-YU14-listed-equity-options)
+- Compare against `YU13-limit-order-book`: [YU13-limit-order-book...YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU13-limit-order-book...YU14-listed-equity-options)
 
 ## Plain-English Code Delta
 

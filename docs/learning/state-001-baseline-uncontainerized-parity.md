@@ -20,8 +20,8 @@ title: "State 001: Simple App - Base Uncontainerized App"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-001-baseline-uncontainerized-parity](https://github.com/finos/traderX/tree/code/generated-state-001-baseline-uncontainerized-parity)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-001-baseline-uncontainerized-parity](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-001-baseline-uncontainerized-parity)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 

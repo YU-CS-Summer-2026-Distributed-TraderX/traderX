@@ -104,7 +104,7 @@ not silently clobber ancestor changes to any shared file:
 - **`trade-processor/src/main/java/.../TradeProcessorApplication.java`** and **`PubSubConfig.java`**
   — YU05 overrides both. If YU06 touches them (e.g. to register the EOD scheduler/publisher bean),
   YU06's copy must include YU05's content.
-- **`position-service/.../application.properties`** and **`build.gradle`** — overridden by 009b/YU02.
+- **`position-service/.../application.properties`** and **`build.gradle`** — overridden by YU01/YU02.
   YU06 adds the NATS client dep + `eod.*` consumer config, so it must start from the latest ancestor
   copy.
 - **`kubernetes-runtime/manifests/base/database-init-configmap.yaml`** — the **real runtime schema**

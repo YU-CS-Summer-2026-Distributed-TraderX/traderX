@@ -196,7 +196,7 @@ async function preflight() {
   try { ok = (await fetch(`${matcherUrl}/health`, { signal: AbortSignal.timeout(5000) })).ok; } catch {}
   if (!ok) {
     console.error(`[avg] preflight failed — order-matcher not reachable at ${matcherUrl}/health (is the stack up?).`);
-    console.error('      Start it (scripts/start-state-009b-lmax-sequencer-architecture-generated.sh) or pass --no-preflight.');
+    console.error('      Start it (scripts/start-state-YU01-lmax-sequencer-generated.sh) or pass --no-preflight.');
     process.exit(1);
   }
   if (!noReset && (await sh('docker compose version')) !== 0) {

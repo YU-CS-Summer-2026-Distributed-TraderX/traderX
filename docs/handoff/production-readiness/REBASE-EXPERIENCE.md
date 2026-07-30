@@ -1,15 +1,23 @@
 # Tracking an upstream: what it costs a layered downstream fork
 
 > **A live narrative — written as it happens, not reconstructed after.** This is the story of rebasing our
-> 14-state TraderX lineage onto seven weeks of upstream FINOS changes. It is a companion to the sizing doc
-> ([01-upstream-rebase-spike-FINDINGS.md](01-upstream-rebase-spike-FINDINGS.md)): that one is *the decision*,
-> this one is *the journey* — the surprises, the traps, the judgment calls, kept honest as they land.
+> 15-branch TraderX lineage (YU01→YU15) onto seven weeks of upstream FINOS changes. It is a companion to the
+> sizing doc ([01-upstream-rebase-spike-FINDINGS.md](01-upstream-rebase-spike-FINDINGS.md)): that one is
+> *the decision*, this one is *the journey* — the surprises, the traps, the judgment calls, kept honest as
+> they land.
 >
 > Audience: FINOS / open-source practitioners who maintain, or depend on, a public baseline. The lesson
 > generalizes past TraderX: this is what it actually costs to be a downstream.
 >
-> **Status: IN PROGRESS.** Spike done. Merges pending one cross-lane decision (§4). Batches logged in §6 as
-> they complete.
+> **Status: COMPLETE.** All fifteen branches merged with `finos/main`, CVEs landed, suites green
+> (269/283/300 intact), pushed 2026-07-24. Re-verified 2026-07-29 by ancestry rather than by memory: every
+> one of the fifteen contains upstream's then-tip `f60def6e` (2026-07-22).
+>
+> **And already behind again — which is the point, not a caveat.** The same check shows upstream moved on
+> (`a8c9b46c`, 2026-07-29) and no branch carries it yet. Seven weeks of drift took ~150 hand edits to
+> absorb; the next commit started accumulating the day the campaign closed. **Tracking an upstream is a
+> standing cost, not a task that completes** — which is the whole thesis of this document, restated by its
+> own status line.
 
 ---
 
@@ -119,7 +127,7 @@ to keep *our* features alive. The decided resolutions:
 | `pipeline/prepublish-generated-state-gate.sh` | **3-way** — keep our `009b` letter-suffix handling **and** take upstream's leading-zero decimal fix | Pick-one loses either our `009b` state's gate *or* their fix. We need both. |
 | `pipeline/render-state-009…sh` | **3-way** — adopt upstream's new `normalize-observability-runtime.sh` **and** re-append our `GF_DASHBOARDS_MIN_REFRESH_INTERVAL: 1s` | Upstream refactored our Grafana hardening into a shared script — but dropped the sub-5s refresh our trades/sec benchmark dashboard depends on. |
 | `scripts/start-` / `status-state-010-*.sh` | **take upstream** | Baseline demo scripts using upstream's new shared readiness lib; our real k8s lives in our own layer, so their version is self-consistent and low-stakes. |
-| `website/docusaurus.config.js` | **`--ours`** | We don't ship the site. |
+| `website/docusaurus.config.js` | **`--ours`** | We don't ship the site. ⚠️ **This rationale expired on 2026-07-29.** Brief [08](08-github-io-branding.md) rebranded and now publishes the site, so this file carries our own identity, palette, repo URLs and `editUrl`s. A future rebase must resolve it **3-way** — blind `--ours` silently drops upstream's site fixes, and blind `--theirs` reverts the branding to FINOS's. |
 | `pipeline/install-generated-runtime-harness.sh` | **per-branch 3-way** | The one genuinely branch-specific conflict — it's *ours*, extended differently at every state. |
 
 > **Surprise #3 — the biggest decision surfaced through a merge conflict, disguised as a small one.** The
@@ -200,7 +208,7 @@ at the **highest carrying layer** on each branch, driven off upstream's `catalog
 
 ---
 
-## 6. Validation — and the per-batch log (LIVE)
+## 6. Validation — and the per-batch log (COMPLETE)
 
 **Approach.** After each branch's merge + dead-layer edits: re-run that branch's suites **one at a time**
 (concurrent gradle breaks `ThreeMemberClusterTest`). Local-green is the gate; engine-tests CI is the
@@ -222,9 +230,14 @@ the only minor-not-patch bump). Push in **green batches**, in lineage order, nev
 **✅ ALL 15 BRANCHES DONE (YU01→YU15).** Every branch: merged, dead-layer push-down (Java + npm + NATS),
 renders clean, CVEs land in the generated tree with **zero old-version leakage**, suites green or
 no-regression. Two pre-existing broken tests surfaced (YU02 `@SpringBootTest` infra set; YU06 stale
-constructor) — both baseline-confirmed as *not* rebase-caused. All commits local; **unpushed** (push goes to
-yaakov, in green batches). Only `kotlin-stdlib 2.3.20→2.4.10` was a minor-not-patch bump; it broke nothing
-(deprecation warnings on `RestTemplateBuilder`, no errors).
+constructor) — both baseline-confirmed as *not* rebase-caused. Only `kotlin-stdlib 2.3.20→2.4.10` was a
+minor-not-patch bump; it broke nothing (deprecation warnings on `RestTemplateBuilder`, no errors).
+
+**Pushed 2026-07-24**, in green batches in lineage order. Confirmed 2026-07-29 by ancestry against the
+remote, not from notes: every one of `origin/YU01`…`origin/YU15` contains upstream's `f60def6e`. (This line
+previously read "All commits local; unpushed" — accurate when it was written, stale by three days after the
+push landed. The failure mode is worth naming in a doc about staleness: **a status written in the present
+tense decays silently**, and a reader has no way to tell how old it is.)
 
 **Surprise #7 — a config decision silently reverted by `--theirs`, invisible in the merge diff.** yaakov had
 scoped the three inherited governance workflows to **PR-only** (dropping their `on: push` trigger) so they'd

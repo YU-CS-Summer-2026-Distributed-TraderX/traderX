@@ -20,16 +20,23 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU12-aeron-cluster](https://github.com/finos/traderX/tree/code/generated-state-YU12-aeron-cluster)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU11-aeron-replication`: [code/generated-state-YU11-aeron-replication...code/generated-state-YU12-aeron-cluster](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU11-aeron-replication...code%2Fgenerated-state-YU12-aeron-cluster)
+- Compare against `YU11-aeron-replication`: [YU11-aeron-replication...YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU11-aeron-replication...YU12-aeron-cluster)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** The inherited matching and risk core runs inside an Aeron Cluster `ClusteredService`, so a Raft
+- **Added:** Three cluster members form an odd quorum, each running its Media Driver, Archive, Consensus
+- **Added:** A partition minority is structurally unable to elect a leader, extend the committed log, or admit
+- **Added:** Snapshots capture the complete deterministic state bound to the exact applied log position: book,
+- **Added:** Recovery loads the newest valid snapshot and resumes strictly after its position, asserting every
+- **Added:** A replacement member with an empty volume rejoins on its own through snapshot retrieval plus
+- **Added:** A stateless-forward gateway tier terminates FIX and REST order entry and follows the cluster
+- **Added:** Health and metrics expose cluster role, member ID, leadership term, commit, service and snapshot
 
 ## Run This State
 

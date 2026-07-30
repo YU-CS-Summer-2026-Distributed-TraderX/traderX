@@ -192,7 +192,7 @@ case "${STATE_ID}" in
   009-order-management-matcher)
     state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
     ;;
-  009b-lmax-sequencer-architecture)
+  YU01-lmax-sequencer)
     state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
     ;;
   010-kubernetes-runtime)
