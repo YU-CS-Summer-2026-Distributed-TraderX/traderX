@@ -1,0 +1,774 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-traderspec-root-specs docs-version-current docs-doc-page docs-doc-id-YU13-limit-order-book/generation/implementation-status" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.1">
+<title data-rh="true">Implementation Status: YU13-limit-order-book | Distributed TraderX · Yeshiva University</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/generation/implementation-status"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" property="og:title" content="Implementation Status: YU13-limit-order-book | Distributed TraderX · Yeshiva University"><meta data-rh="true" name="description" content="Status as of 2026-07-20. Verified on the JVM (kind-free); the live-cluster bench and HA proof"><meta data-rh="true" property="og:description" content="Status as of 2026-07-20. Verified on the JVM (kind-free); the live-cluster bench and HA proof"><link data-rh="true" rel="icon" href="/traderX/img/yu/yu-cs-shield.png"><link data-rh="true" rel="canonical" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/generation/implementation-status"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/generation/implementation-status" hreflang="en"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/generation/implementation-status" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"📦 Feature Pack: YU13-limit-order-book","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/"},{"@type":"ListItem","position":2,"name":"Implementation Status: YU13-limit-order-book","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU13-limit-order-book/generation/implementation-status"}]}</script><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Overpass:400,400i,700">
+<script src="https://buttons.github.io/buttons.js"></script><link rel="stylesheet" href="/traderX/assets/css/styles.26ff7014.css">
+<script src="/traderX/assets/js/runtime~main.c92a5321.js" defer="defer"></script>
+<script src="/traderX/assets/js/main.ceb2c410.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||"light"),document.documentElement.setAttribute("data-theme-choice",t||"light")}(),function(){try{const a=new URLSearchParams(window.location.search).entries();for(var[t,e]of a)if(t.startsWith("docusaurus-data-")){var n=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(n,e)}}catch(t){}}(),document.documentElement.setAttribute("data-announcement-bar-initially-dismissed",function(){try{return"true"===localStorage.getItem("docusaurus.announcement.dismiss")}catch(t){}return!1}())</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><div class="theme-announcement-bar announcementBar_mb4j" style="background-color:#23437c;color:#ffffff" role="banner"><div class="content_knG7 announcementBarContent_xLdY"><strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. Read the <a href="/docs/blog/2026-03-29-traderx-speckit-migration"><strong>engineering story</strong></a>.</div></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/traderX/"><div class="navbar__logo"><img src="/traderX/img/yu/yu-cs-shield-transparent.png" alt="Yeshiva University Computer Science" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/yu/yu-cs-shield-transparent.png" alt="Yeshiva University Computer Science" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">TraderX</b></a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a class="navbar__item navbar__link" href="/traderX/docs/home">Overview</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a><a aria-current="page" class="navbar__item navbar__link navbar__link--active" href="/traderX/specs">Specs</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/state-docs">State Docs</a><a class="navbar__item navbar__link" href="/traderX/docs/adr">ADRs</a><a class="navbar__item navbar__link" href="/traderX/docs/learning">Learning</a><div class="navbarSearchContainer_Bca1"><div class="navbar__search"><span aria-label="expand searchbar" role="button" class="search-icon" tabindex="0"></span><input id="search_input_react" type="search" placeholder="Loading..." aria-label="Search" class="navbar__search-input search-bar" disabled=""></div></div><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG menuWithAnnouncementBar_GW3s"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/traderX/specs"><span title="📘 Overview" class="linkLabel_WmDU">📘 Overview</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/docs-portal-homepage"><span title="Docs Portal Homepage" class="categoryLinkLabel_W154">Docs Portal Homepage</span></a><button aria-label="Expand sidebar category &#x27;Docs Portal Homepage&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/baseline-uncontainerized-parity"><span title="📦 001 Simple App - Base Uncontainerized App" class="categoryLinkLabel_W154">📦 001 Simple App - Base Uncontainerized App</span></a><button aria-label="Expand sidebar category &#x27;📦 001 Simple App - Base Uncontainerized App&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/edge-proxy-uncontainerized"><span title="📦 Feature Pack 002: Edge Proxy Uncontainerized" class="categoryLinkLabel_W154">📦 Feature Pack 002: Edge Proxy Uncontainerized</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 002: Edge Proxy Uncontainerized&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/agentic-harness-foundation"><span title="📦 Feature Pack 003: Agentic Harness Foundation" class="categoryLinkLabel_W154">📦 Feature Pack 003: Agentic Harness Foundation</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 003: Agentic Harness Foundation&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/containerized-compose-runtime"><span title="📦 Feature Pack 004: Containerized Compose Runtime" class="categoryLinkLabel_W154">📦 Feature Pack 004: Containerized Compose Runtime</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 004: Containerized Compose Runtime&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/postgres-database-replacement"><span title="📦 Feature Pack 005: PostgreSQL Database Replacement" class="categoryLinkLabel_W154">📦 Feature Pack 005: PostgreSQL Database Replacement</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 005: PostgreSQL Database Replacement&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/messaging-nats-replacement"><span title="📦 Feature Pack 006: Messaging Layer Replacement with NATS" class="categoryLinkLabel_W154">📦 Feature Pack 006: Messaging Layer Replacement with NATS</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 006: Messaging Layer Replacement with NATS&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/observability-lgtm-compose"><span title="📦 Feature Pack 007: Observability with LGTM on Compose" class="categoryLinkLabel_W154">📦 Feature Pack 007: Observability with LGTM on Compose</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 007: Observability with LGTM on Compose&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/pricing-awareness-market-data"><span title="📦 Feature Pack 008: Pricing Awareness and Market Data Streaming" class="categoryLinkLabel_W154">📦 Feature Pack 008: Pricing Awareness and Market Data Streaming</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 008: Pricing Awareness and Market Data Streaming&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/order-management-matcher"><span title="📦 Feature Pack 009: Order Management and Matcher" class="categoryLinkLabel_W154">📦 Feature Pack 009: Order Management and Matcher</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 009: Order Management and Matcher&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/kubernetes-runtime"><span title="📦 Feature Pack 010: Kubernetes Runtime Baseline" class="categoryLinkLabel_W154">📦 Feature Pack 010: Kubernetes Runtime Baseline</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 010: Kubernetes Runtime Baseline&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/tilt-kubernetes-dev-loop"><span title="📦 Feature Pack 011: Tilt Local Dev on Kubernetes" class="categoryLinkLabel_W154">📦 Feature Pack 011: Tilt Local Dev on Kubernetes</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 011: Tilt Local Dev on Kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/platform-convergence-c3"><span title="📦 Feature Pack 012: Platform Convergence C3" class="categoryLinkLabel_W154">📦 Feature Pack 012: Platform Convergence C3</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 012: Platform Convergence C3&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/radius-kubernetes-platform"><span title="📦 Feature Pack 013: Radius Platform on Kubernetes" class="categoryLinkLabel_W154">📦 Feature Pack 013: Radius Platform on Kubernetes</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 013: Radius Platform on Kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/fdc3-intent-interoperability"><span title="📦 Feature Pack 014: FDC3 Intent Interoperability on C3" class="categoryLinkLabel_W154">📦 Feature Pack 014: FDC3 Intent Interoperability on C3</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack 014: FDC3 Intent Interoperability on C3&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU01-lmax-sequencer"><span title="📦 Feature Pack YU01: LMAX Sequencer Architecture (Trading Hot Path)" class="categoryLinkLabel_W154">📦 Feature Pack YU01: LMAX Sequencer Architecture (Trading Hot Path)</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack YU01: LMAX Sequencer Architecture (Trading Hot Path)&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU02-lmax-kubernetes"><span title="📦 Feature Pack: YU02-lmax-kubernetes" class="categoryLinkLabel_W154">📦 Feature Pack: YU02-lmax-kubernetes</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU02-lmax-kubernetes&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU03-in-memory-risk-gateway"><span title="📦 Feature Pack: YU03-in-memory-risk-gateway" class="categoryLinkLabel_W154">📦 Feature Pack: YU03-in-memory-risk-gateway</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU03-in-memory-risk-gateway&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU04-durable-control-feeds"><span title="📦 Feature Pack: YU04-durable-control-feeds" class="categoryLinkLabel_W154">📦 Feature Pack: YU04-durable-control-feeds</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU04-durable-control-feeds&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU05-post-trade-compliance"><span title="📦 Feature Pack: YU05-post-trade-compliance" class="categoryLinkLabel_W154">📦 Feature Pack: YU05-post-trade-compliance</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU05-post-trade-compliance&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU06-eod-price-production"><span title="📦 Feature Pack: YU06-eod-price-production" class="categoryLinkLabel_W154">📦 Feature Pack: YU06-eod-price-production</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU06-eod-price-production&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU07-historical-tick-store"><span title="📦 Feature Pack: YU07-historical-tick-store" class="categoryLinkLabel_W154">📦 Feature Pack: YU07-historical-tick-store</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU07-historical-tick-store&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU08-execution-algo-engine"><span title="📦 Feature Pack: YU08-execution-algo-engine" class="categoryLinkLabel_W154">📦 Feature Pack: YU08-execution-algo-engine</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU08-execution-algo-engine&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU09-ops-hardening"><span title="📦 Feature Pack: YU09-ops-hardening" class="categoryLinkLabel_W154">📦 Feature Pack: YU09-ops-hardening</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU09-ops-hardening&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU10-fix-ingress"><span title="📦 Feature Pack: YU10-fix-ingress" class="categoryLinkLabel_W154">📦 Feature Pack: YU10-fix-ingress</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU10-fix-ingress&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU11-aeron-replication"><span title="📦 Feature Pack: YU11-aeron-replication" class="categoryLinkLabel_W154">📦 Feature Pack: YU11-aeron-replication</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU11-aeron-replication&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU12-aeron-cluster"><span title="📦 Feature Pack: YU12-aeron-cluster" class="categoryLinkLabel_W154">📦 Feature Pack: YU12-aeron-cluster</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU12-aeron-cluster&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--active" href="/traderX/specs/YU13-limit-order-book"><span title="📦 Feature Pack: YU13-limit-order-book" class="categoryLinkLabel_W154">📦 Feature Pack: YU13-limit-order-book</span></a><button aria-label="Collapse sidebar category &#x27;📦 Feature Pack: YU13-limit-order-book&#x27;" aria-expanded="true" type="button" class="clean-btn menu__caret"></button></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/spec"><span title="📜 Specification" class="linkLabel_WmDU">📜 Specification</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/plan"><span title="🗺️ Implementation Plan" class="linkLabel_WmDU">🗺️ Implementation Plan</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/tasks"><span title="✅ Tasks" class="linkLabel_WmDU">✅ Tasks</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/research"><span title="🔎 Research" class="linkLabel_WmDU">🔎 Research</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/data-model"><span title="🧱 Data Model" class="linkLabel_WmDU">🧱 Data Model</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-2 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/quickstart"><span title="🚀 Quickstart" class="linkLabel_WmDU">🚀 Quickstart</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/YU13-limit-order-book/system/adr-049-crossing-limit-order-book"><span title="💻 System" class="categoryLinkLabel_W154">💻 System</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/YU13-limit-order-book/contracts/contract-delta"><span title="📜 Contracts" class="categoryLinkLabel_W154">📜 Contracts</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" tabindex="0" href="/traderX/specs/YU13-limit-order-book/requirements/functional-delta"><span title="🧾 Requirements" class="categoryLinkLabel_W154">🧾 Requirements</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-2 menu__list-item"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret menu__link--active" role="button" aria-expanded="true" tabindex="0" href="/traderX/specs/YU13-limit-order-book/generation/generation-hook"><span title="⚙️ Generation" class="categoryLinkLabel_W154">⚙️ Generation</span></a></div><ul class="menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-3 menu__list-item"><a class="menu__link" tabindex="0" href="/traderX/specs/YU13-limit-order-book/generation/generation-hook"><span title="Generation Hook: YU13-limit-order-book" class="linkLabel_WmDU">Generation Hook: YU13-limit-order-book</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-3 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" tabindex="0" href="/traderX/specs/YU13-limit-order-book/generation/implementation-status"><span title="Implementation Status: YU13-limit-order-book" class="linkLabel_WmDU">Implementation Status: YU13-limit-order-book</span></a></li></ul></li></ul></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU14-listed-equity-options"><span title="📦 Feature Pack: YU14-listed-equity-options" class="categoryLinkLabel_W154">📦 Feature Pack: YU14-listed-equity-options</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU14-listed-equity-options&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/specs/YU15-eod-risk-extract"><span title="📦 Feature Pack: YU15-eod-risk-extract" class="categoryLinkLabel_W154">📦 Feature Pack: YU15-eod-risk-extract</span></a><button aria-label="Expand sidebar category &#x27;📦 Feature Pack: YU15-eod-risk-extract&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/traderX/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item"><a class="breadcrumbs__link" href="/traderX/specs/YU13-limit-order-book"><span>📦 Feature Pack: YU13-limit-order-book</span></a></li><li class="breadcrumbs__item"><span class="breadcrumbs__link">⚙️ Generation</span></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Implementation Status: YU13-limit-order-book</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Implementation Status: YU13-limit-order-book</h1></header>
+<p>Status as of 2026-07-20. Verified on the JVM (kind-free); the live-cluster bench and HA proof
+(T-LOB14) are the remaining work.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="generation">Generation<a href="#generation" class="hash-link" aria-label="Direct link to Generation" title="Direct link to Generation" translate="no">​</a></h2>
+<ul>
+<li class=""><code>bash pipeline/generate-state.sh YU13-limit-order-book</code> exits 0, recursively generating the
+full YU12→…→YU02→014 ancestry and overlaying the YU13 crossing-book assets last-wins.</li>
+<li class="">Shared-override markers verified in the generated <code>order-matcher</code> tree — every ancestor&#x27;s
+behavior survives the overlay alongside YU13&#x27;s:
+<ul>
+<li class="">YU13: <code>LimitBook</code> class, <code>FLAG_RESTING_UPDATE</code>, <code>SNAPSHOT_FORMAT = 2</code>.</li>
+<li class="">YU12: <code>aeron-cluster</code> dependency, <code>ClusteredService</code> hosting, <code>TradeNatsPublisher</code> bridge.</li>
+<li class="">YU11: SBE generation. YU10: QuickFIX/J. YU09: no-GC/allocation gate tasks. YU03: risk
+gateway (<code>BlpRiskState</code>, <code>decideAndReserve</code>).</li>
+</ul>
+</li>
+<li class="">Runtime wrapper scripts (<code>{start,stop,status}-state-YU13-limit-order-book-generated.sh</code>,
+<code>test-state-YU13-limit-order-book.sh</code>) delegate to the inherited YU10 harness; YU13 changes
+the matching policy, not the run/deploy surface.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="engine-crossing-limit-order-book">Engine (crossing limit-order book)<a href="#engine-crossing-limit-order-book" class="hash-link" aria-label="Direct link to Engine (crossing limit-order book)" title="Direct link to Engine (crossing limit-order book)" translate="no">​</a></h2>
+<ul>
+<li class=""><code>LimitBook</code>: array-indexed price levels on a 0.001 grid (<code>BOOK_TICK_PX = 1000</code>) inside a
+banded window (<code>BOOK_LEVELS = 1&lt;&lt;17</code> = $131.07, anchored mid-band on the security&#x27;s first
+limit); intrusive doubly-linked FIFO queues of pooled orders; per-side occupancy bitmaps for
+O(1) best-price maintenance; O(1) append/reduce/unlink.</li>
+<li class=""><code>MatchingEngine</code>: grid/band admission before reservation, create-ack first, best-price-first
+FIFO crossing with both-side paired emission (order update + trade + position per side,
+resting side flagged), limit-rest or market-cancel of the remainder, cancel/force-fill unlink,
+ticks reduced to risk-freshness + mark seeding (the mark is the last trade price, ADR-051).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="behavioral-proof-all-green-on-the-jvm">Behavioral proof (all green on the JVM)<a href="#behavioral-proof-all-green-on-the-jvm" class="hash-link" aria-label="Direct link to Behavioral proof (all green on the JVM)" title="Direct link to Behavioral proof (all green on the JVM)" translate="no">​</a></h2>
+<ul>
+<li class=""><code>LimitOrderBookTest</code> — price-time priority, best-price-first across levels, partial fills
+keeping queue position, market fill-then-cancel-remainder, market PRICE_MISSING on empty
+unpriced book, off-grid INVALID, out-of-band PRICE_COLLAR, cancel mid-level unlink, ticks
+never fill, last-price-is-last-trade, and replay-determinism (identical recovery digests).</li>
+<li class=""><code>ClusterSnapshotCodecTest</code> — format-2 header geometry + band-anchor round-trip; a post-restore
+crossing sweep reproduces the source&#x27;s exact fills (per-level FIFO preserved); fail-closed on
+off-grid/out-of-band restored rows, legacy format-1, and every inherited corruption case.</li>
+<li class=""><code>AeronClusterSpikeTest</code> — single-member snapshot+tail AND zero-tail recovery on the crossing
+engine: refs 1..9 never reused, trade counter continues (2 pre-snapshot → 14 after the
+crossing sweep), reservations/executed exposure exact across two recoveries, idempotent retry
+answered with the original ref after both recoveries.</li>
+<li class=""><code>ThreeMemberClusterTest</code> — leader kill, wiped-member empty-disk rejoin, second failover: no ID
+reuse across two failovers, cross-member state equality, trade lineage unbroken (maxTradeSeq 14).</li>
+<li class=""><code>OutputDisruptorHandlersTest</code> — a cross emits per side (order update + TradeBooked +
+PositionUpdated), both positions move, the resting side carries FLAG_RESTING_UPDATE.</li>
+<li class=""><code>LmaxHotPathParityTest</code> (12/12) — REST create/cancel/force-fill/market-trade lifecycle parity
+retained; every fill driven by a genuine resting-opposite + crossing order.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="zero-allocation-and-banned-api">Zero-allocation and banned-API<a href="#zero-allocation-and-banned-api" class="hash-link" aria-label="Direct link to Zero-allocation and banned-API" title="Direct link to Zero-allocation and banned-API" translate="no">​</a></h2>
+<ul>
+<li class="">Allocation gates (base <code>allocationGateTest</code>, risk-gated <code>riskAllocationGateTest</code>, Aeron
+transport, cluster apply-path) pass against the crossing engine, exercising crossing, partial
+fills, market-order remainder cancel, and terminal-retention eviction with exactly zero bytes
+on the producer, journaler, and BLP threads. The base gate needed the same C2-only pinning
+(<code>-XX:-TieredCompilation -XX:CompileThreshold=10000</code>) the Aeron/cluster gates already use — the
+crossing engine reshaped inlining enough that a tier transition rematerialized a constant 160
+bytes mid-window (a compiler artifact; an on-thread branch-by-branch probe measures exact zero
+for every steady branch once warm).</li>
+<li class=""><code>HotPathBannedApiTest</code> — <code>LimitBook</code> added to the hot-path scan set; no runtime string
+concatenation or other banned APIs on the crossing path.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="engine-latency-artifact-nfr-lob01">Engine latency artifact (NFR-LOB01)<a href="#engine-latency-artifact-nfr-lob01" class="hash-link" aria-label="Direct link to Engine latency artifact (NFR-LOB01)" title="Direct link to Engine latency artifact (NFR-LOB01)" translate="no">​</a></h2>
+<p><code>MatchLatencyBenchmarkTest</code>, per-order match op measured on the BLP thread under closed-loop
+load (no coordinated omission), nanoseconds — the engine&#x27;s own number, not wire-to-wire:</p>
+<p>Captured on a quiescent machine (kind workload scaled to zero), 250k–500k measured ops per class:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Op</th><th>p50</th><th>p99</th><th>p99.9</th><th>p99.99</th><th>max</th></tr></thead><tbody><tr><td>resting insert</td><td>167 ns</td><td>583 ns</td><td>2.04 µs</td><td>32.1 µs</td><td>136.6 µs</td></tr><tr><td>limit cross</td><td>542 ns</td><td>1.88 µs</td><td>15.4 µs</td><td>83.6 µs</td><td>272.4 µs</td></tr><tr><td>market order</td><td>584 ns</td><td>2.04 µs</td><td>15.7 µs</td><td>74.8 µs</td><td>1.20 ms</td></tr></tbody></table>
+<p>The median match is sub-microsecond and p99 is under 2 µs. The tail beyond p99.9 is JIT
+compilation, safepoints, and OS scheduling on a shared dev machine — not the book operation; a
+tuned host (AOT/GraalVM or Zing ReadyNow, isolated cores, Epsilon) is where the p99.99 goes. Do
+not quote p50 alone: the tail is the number that matters. Honest talk line: the match is
+nanoseconds, wire-to-wire is microseconds in software, nanoseconds only in silicon.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="reconciliation-with-the-yu12-lane-2026-07-21">Reconciliation with the YU12 lane (2026-07-21)<a href="#reconciliation-with-the-yu12-lane-2026-07-21" class="hash-link" aria-label="Direct link to Reconciliation with the YU12 lane (2026-07-21)" title="Direct link to Reconciliation with the YU12 lane (2026-07-21)" translate="no">​</a></h2>
+<p>YU12&#x27;s <code>3394186</code> (synchronous <code>/trades</code>) and <code>2f5a813</code> (seed-job hardening,
+<code>RECON_POLL_INTERVAL_MS</code>, gateway replicas=3) were merged in. <code>2f5a813</code> cherry-picked cleanly
+(none of its manifests are shadowed by a YU13 layer). <code>3394186</code> could NOT be cherry-picked: it
+patches <code>ClusterGatewayMain</code>/<code>MatchingEngineClusteredService</code> in the YU12 layer, and YU13 carries
+its own copies which win at generation — so it was hand-merged into the YU13 copies.</p>
+<p>Two collisions resolved in the merge:</p>
+<ul>
+<li class=""><strong>Egress ack byte 21.</strong> <code>3394186</code> writes the RiskReason ordinal at byte 21; YU13 already uses
+byte 21 for the resting-update class. The two live in different spec layers, so git could not
+flag it. RiskReason moved to byte 22; ack length unchanged (24).</li>
+<li class=""><strong><code>KIND_TRADE_BOOKED</code> is no longer unique to <code>/trades</code>.</strong> The crossing book emits it for BOTH
+sides of every ORDER match, so the ack kind alone would let a foreign fill answer a <code>/trades</code>
+request (a 200 for someone else&#x27;s trade) and would inflate the new market-trade metric with all
+crossing fills. Byte 23 now carries a market-trade class, stamped for the duration of a
+<code>TYPE_TRADE_NEW</code> apply (covering mid-apply backpressure drains); the gateway gates both the
+correlation and the counters on it. Verified live: three <code>/trades</code> calls against a cluster that
+had just booked two crossing fills reported exactly <code>booked=1, rejected=2</code> — un-inflated.</li>
+</ul>
+<p><code>422</code> vs <code>504</code> preserved exactly: 422 is a committed business rejection carrying its RiskReason;
+504 means no committed decision arrived (failover/timeout — ambiguous, the trade may still
+commit). Live-verified: valid trade → 200 <code>{&quot;booked&quot;:true}</code>; unseeded security → 422
+<code>UNKNOWN_SECURITY</code>; unknown account → 422 <code>UNKNOWN_ACCOUNT</code>.</p>
+<p>Re-run as a hot-path change after the ack-layout edit: <code>test</code> 227/0, <code>noGcTest</code> + <code>riskNoGcTest</code>,
+and all four allocation gates green.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="live-kind-measurements-t-lob14-2026-07-21">Live kind measurements (T-LOB14, 2026-07-21)<a href="#live-kind-measurements-t-lob14-2026-07-21" class="hash-link" aria-label="Direct link to Live kind measurements (T-LOB14, 2026-07-21)" title="Direct link to Live kind measurements (T-LOB14, 2026-07-21)" translate="no">​</a></h2>
+<p>3-member cluster + 3 gateways on kind (one member per worker, 1 CPU / 1536Mi each), image pinned
+<code>traderx/cluster-node:yu13</code>, 7 real accounts + a 20-ticker reference universe seeded FIRST (the
+OSFF-1 silent-reject gate — verified by a smoke cross that booked 2 fills before any bench ran).</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Measurement</th><th>Value</th></tr></thead><tbody><tr><td>Submit rate (in-cluster, 3 gateways, conc 48 × batch 200)</td><td>~10,267 orders/s</td></tr><tr><td>Booked trades/s (leader engine trade counter, 2 per cross)</td><td><strong>10,533/s</strong></td></tr><tr><td>Crossing ratio</td><td>0.92 fills per submitted order — genuinely two-sided</td></tr><tr><td>Failed</td><td>1.2% under maximum concurrency</td></tr></tbody></table>
+<p>This does NOT clear the 25,149 booked/s NFR-AC02 bar, and it is not a like-for-like comparison —
+that baseline was established on GKE (<code>c3-standard-4</code> dedicated nodes), whereas this is kind on a
+laptop with 1-CPU-limited members inside a Docker VM. The GKE run below settles it.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="live-gke-measurements-t-lob15-2026-07-21--the-like-for-like-number">Live GKE measurements (T-LOB15, 2026-07-21) — the like-for-like number<a href="#live-gke-measurements-t-lob15-2026-07-21--the-like-for-like-number" class="hash-link" aria-label="Direct link to Live GKE measurements (T-LOB15, 2026-07-21) — the like-for-like number" title="Direct link to Live GKE measurements (T-LOB15, 2026-07-21) — the like-for-like number" translate="no">​</a></h2>
+<p>3-member cluster on <code>blp-c3-pool</code> (3 CPU / 2Gi per member, one per node) + 3 gateways, image
+<code>us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13</code> built <code>--platform linux/amd64</code>
+(the recurring arm64/amd64 trap), same bench script and parameters as the kind run.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Run</th><th>Config</th><th>Submitted</th><th>Failed</th><th>Booked trades/s</th></tr></thead><tbody><tr><td>1 (cold JIT)</td><td>conc 48 × batch 200</td><td>1,860,400</td><td>0</td><td><strong>62,333</strong></td></tr><tr><td>2 (warm)</td><td>conc 48 × batch 200</td><td>2,253,600</td><td>0</td><td><strong>75,440</strong></td></tr><tr><td>3 (over-saturated)</td><td>conc 96 × batch 250</td><td>348,000</td><td>27,000</td><td>11,866 — past the knee</td></tr></tbody></table>
+<p><strong>The crossing engine clears the NFR-AC02 bar decisively: 62–75k booked trades/s vs 25,149,
+roughly 2.5–3×, with zero failures at the sustainable concurrency.</strong> Peak observed submit rate
+71,606 orders/s.</p>
+<p>Two properties worth noting from the run:</p>
+<ul>
+<li class=""><strong>The book stays bounded.</strong> With genuinely two-sided flow every order crosses, and
+<code>traderx_book_open_orders</code> returned to 0 on all three members after each run — the unbounded
+growth of the parent state&#x27;s <code>FILL_FULL_THRESHOLD</code> half-fill policy is structurally gone.</li>
+<li class=""><strong>No divergence under sustained load.</strong> After ~4.5M booked trades all three members reported an
+identical trade counter and identical book digest.</li>
+</ul>
+<p>kind vs GKE is ~7× (10,533 → 75,440) on identical code and bench parameters, confirming the kind
+figure was environment-bound (1 CPU vs 3 CPU members, Docker VM vs dedicated nodes) and never
+engine-bound — consistent with the 542 ns p50 in-JVM cross.</p>
+<p>Two measurement traps worth recording: benching through <code>kubectl port-forward</code> understates
+throughput badly (a single-threaded proxy — 2,396 vs 9,383 submit/s in-cluster), and the batch
+harness rotates tickers per order while alternating sides by index, so with an EVEN ticker count
+each symbol receives only one side and nothing ever crosses on a real book. Use an odd ticker
+count.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="wire-to-wire-rest-latency-on-gke-2026-07-21">Wire-to-wire REST latency on GKE (2026-07-21)<a href="#wire-to-wire-rest-latency-on-gke-2026-07-21" class="hash-link" aria-label="Direct link to Wire-to-wire REST latency on GKE (2026-07-21)" title="Direct link to Wire-to-wire REST latency on GKE (2026-07-21)" translate="no">​</a></h2>
+<p>Client-observed round trip for ONE order through the synchronous REST path — HTTP in, gateway
+forwards over Aeron ingress, Raft commits, the service applies, committed egress ack, HTTP out.
+Measured in-cluster at CONSTANT ARRIVAL RATE with latency taken from the INTENDED send time, so
+a stalled system cannot hide its own stalls (coordinated omission). Self-crossing single account
+so the flow keeps booking rather than drifting into POSITION_LIMIT rejects.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Offered rate</th><th>p50</th><th>p90</th><th>p99</th><th>p99.9</th><th>max</th><th>failed</th></tr></thead><tbody><tr><td>100/s</td><td><strong>1.42 ms</strong></td><td>2.33 ms</td><td><strong>8.55 ms</strong></td><td><strong>13.97 ms</strong></td><td>18.5 ms</td><td>0</td></tr><tr><td>250/s</td><td>5.78 ms</td><td>9.31 ms</td><td>13.74 ms</td><td>19.94 ms</td><td>32.3 ms</td><td>0</td></tr><tr><td>500/s</td><td>6.48 ms</td><td>14.81 ms</td><td>33.05 ms</td><td>53.80 ms</td><td>108 ms</td><td>0</td></tr><tr><td>1000/s</td><td>collapse (multi-second queueing)</td><td></td><td></td><td></td><td></td><td>7,444</td></tr></tbody></table>
+<p>Quote the 100/s row: it is the unsaturated latency. The synchronous per-order path saturates
+between 500/s and 1000/s because each gateway serializes offer→commit→ack on its owner thread —
+which is exactly why the throughput path is a pipelined batch endpoint (75k booked/s) and the
+per-order path is not. Same cluster, two different contracts; do not mix the numbers.</p>
+<p><strong>A 40 ms measurement trap found and fixed here.</strong> The first readings showed p50 ≈ 43 ms flat
+regardless of rate. <code>/ready</code> — which never touches the cluster — measured the same 42.6 ms, so it
+was not the matching path at all: the JDK <code>com.sun.net.httpserver</code> writes response headers and
+body as two small segments with Nagle enabled, and the client&#x27;s delayed-ACK timer then adds its
+~40 ms. Fresh sockets (no reuse) dropped it to 2.8 ms, confirming it. Setting
+<code>-Dsun.net.httpserver.nodelay=true</code> on the gateway took <code>/ready</code> from 42.6 ms to <strong>2.50 ms</strong> with
+keep-alive. This was taxing every keep-alive REST client — including the UI — and any latency
+number taken before this fix was ~97% HTTP artifact. The flag belongs in the gateway manifest.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="failover-on-the-crossing-engine-node-clock-precise-2026-07-21">Failover on the crossing engine, node-clock precise (2026-07-21)<a href="#failover-on-the-crossing-engine-node-clock-precise-2026-07-21" class="hash-link" aria-label="Direct link to Failover on the crossing engine, node-clock precise (2026-07-21)" title="Direct link to Failover on the crossing engine, node-clock precise (2026-07-21)" translate="no">​</a></h2>
+<p>This closes the YU12 open issue <code>HANDOFF-issue-yu12-failover-measurement.md</code>, which recorded that
+a clean pod-kill number had never actually been taken (the planned kill did not execute that
+session). Measured its way: a timestamped probe at one order / 200 ms, reporting FAILED REQUEST
+COUNT and the gap between last-success-before and first-success-after — not &quot;first-fail to
+last-fail&quot;, which overstates an outage that is really a few scattered failures.</p>
+<p>Five clean leader kills (<code>--grace-period=0 --force</code>, leader confirmed by role first), probe at
+20 ms cadence. <strong>Probe cadence is the measurement floor</strong> — a first pass at 200 ms produced
+602/602/802 ms and looked like a regression; it was quantization plus under-sampling, and the
+sub-200 ms failovers were invisible to it. Do not measure this with a coarse probe.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Killed</th><th>Failed reqs</th><th>Success rate</th><th>Client gap</th></tr></thead><tbody><tr><td>m1</td><td>3</td><td>99.85%</td><td><strong>83 ms</strong></td></tr><tr><td>m2</td><td>3</td><td>99.86%</td><td><strong>141 ms</strong></td></tr><tr><td>m2</td><td>3</td><td>99.85%</td><td><strong>182 ms</strong></td></tr><tr><td>m0</td><td>32</td><td>98.37%</td><td>673 ms</td></tr><tr><td>m0</td><td>32</td><td>98.55%</td><td>848 ms</td></tr></tbody></table>
+<p><strong>Median 182 ms, best 83 ms</strong>, against the parent state&#x27;s 653–716 ms system-facing and its
+best-ever client-observed 192 ms — the crossing book did not regress failover; the median is
+better than the parent&#x27;s best case.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-bimodality--root-caused-and-fixed">The bimodality — root-caused and fixed<a href="#the-bimodality--root-caused-and-fixed" class="hash-link" aria-label="Direct link to The bimodality — root-caused and fixed" title="Direct link to The bimodality — root-caused and fixed" translate="no">​</a></h3>
+<p>The two modes were not noise and not cluster-side. Running <code>/orders</code> and <code>/ready</code> as independent
+probes at the same cadence separated them: <code>/ready</code> is gateway-local (200 only while the gateway&#x27;s
+cluster session is up, never touches the leader), so if it fails alongside <code>/orders</code> the outage is
+the GATEWAY re-establishing, not the cluster electing.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Killed member</th><th><code>/ready</code> fail window</th><th><code>/orders</code> gap</th></tr></thead><tbody><tr><td>m2</td><td>41 ms</td><td>201 ms</td></tr><tr><td><strong>m0</strong></td><td><strong>1270 ms</strong></td><td><strong>1316 ms</strong></td></tr></tbody></table>
+<p><code>/ready</code> and <code>/orders</code> failed for the same window, and the only variable was WHICH member died —
+a 31x penalty. Cause: <code>connectCycling()</code> declared <code>int attempt = 0</code> as a LOCAL, so every reconnect
+tried ingress endpoint 0 first. <code>GATEWAY_INGRESS_ENDPOINTS</code> is ordered <code>0=…,1=…,2=…</code>, so whenever
+member 0 was the member that died, the gateway blocked on the dead endpoint&#x27;s connect timeout
+before trying a live one. Killing m1/m2 hit a live endpoint immediately — the fast mode.</p>
+<p>Fixed: the first reconnect attempt now hands Aeron the COMPLETE member list so the cluster client
+resolves the leader itself; single-endpoint cycling remains as a fallback with a rotating start
+(<code>connectRotation</code> persists across reconnects) so a dead endpoint is never retried first twice.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>before</th><th>after</th></tr></thead><tbody><tr><td>killing m1/m2</td><td>83, 141, 182, 201 ms</td><td>162, 204 ms</td></tr><tr><td><strong>killing m0</strong></td><td><strong>673, 848, 1316 ms</strong></td><td><strong>222, 445 ms</strong></td></tr><tr><td>worst observed</td><td><strong>1316 ms</strong></td><td><strong>445 ms</strong></td></tr></tbody></table>
+<p>The bimodality is gone — member 0 is no longer an outlier and the &gt;600 ms tail is eliminated.
+Quote <strong>median ~200 ms, worst ~450 ms</strong>. This mattered beyond the number: member 0 is the first
+pod of the StatefulSet, so the slow path was the one most likely to be hit in practice.</p>
+<p>Measurement notes that cost real time here:</p>
+<ul>
+<li class=""><strong><code>kubectl delete</code> return is not the kill instant.</strong> The pod keeps serving for up to ~2.5 s
+after the command returns (observed: last client success at +2240 ms, new leader&#x27;s ROLE-CHANGE
+at +2577 ms). Any metric anchored on &quot;when I issued the delete&quot; inherits that variance. The
+client gap — last success before, first success after — is immune to it and is the number to
+quote.</li>
+</ul>
+<p>Two things this measurement taught, both worth keeping:</p>
+<ul>
+<li class=""><strong>Failover under saturation is a different number.</strong> Repeating the kill under a 30–60k orders/s
+batch flood gives ~8–12 s of zero/degraded throughput, because all three gateways lose their
+cluster session at once and must reconnect while a large backlog drains. Both numbers are real;
+they answer different questions. Quote ~600 ms for &quot;what does a trader see when a node dies&quot;,
+and the flood figure only with its context.</li>
+<li class=""><strong><code>FIRST-APPLY</code> is not a client-facing metric.</strong> Measuring kill → the new leader&#x27;s first applied
+message gave ~12.5 s under flood and ~10 s on an idle cluster — because it cannot fire until
+some client message actually reaches the new leader. It measures cluster liveness, not service
+restoration. Likewise, kill → <code>ROLE-CHANGE(LEADER)</code> measured ~2.6 s, but ~2 s of that is the pod
+actually terminating after <code>kubectl delete</code> returns, not Raft election.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="ha-recovery-proof-on-the-crossing-engine-t-lob14">HA recovery proof on the crossing engine (T-LOB14)<a href="#ha-recovery-proof-on-the-crossing-engine-t-lob14" class="hash-link" aria-label="Direct link to HA recovery proof on the crossing engine (T-LOB14)" title="Direct link to HA recovery proof on the crossing engine (T-LOB14)" translate="no">​</a></h2>
+<p>Fixture: ten asks @150.050
+arriving FIRST, ten @150.000 arriving SECOND — arrival order and price order deliberately
+disagree, so the fill pattern is a falsifiable test of price priority.</p>
+<p>Proven across two crashes and two promotions, asserted from the members&#x27; own book digests:</p>
+<ul>
+<li class="">Snapshot format 2 <strong>round-trips the full two-level resting book across a failover</strong>: the killed
+leader reloaded its own snapshot and reconstructed a book hash byte-identical to the members
+that never restarted.</li>
+<li class=""><strong>Price-time priority survives the failover</strong> — the post-failover sweep consumed exactly the ten
+better-priced asks (the ones that arrived second) and left the worse level untouched.</li>
+<li class=""><strong>Book identical on all three members</strong> at every checkpoint; a snapshot-recovered member later
+won an election and led successfully.</li>
+<li class=""><strong>Zero ID reuse</strong>: <code>nextOrderRef</code> strictly monotonic 1 → 21 → 22 → 23 → 24 across both crashes.</li>
+<li class=""><strong>Determinism across epochs</strong>: the same input sequence replayed in a different epoch after a
+full wipe produced the identical book hash.</li>
+</ul>
+<p>NOT proven — <strong>empty-disk rejoin into an already-advanced cluster</strong>. The joiner wedges in consensus
+log replication (<code>applied=-1</code>). This is the inherited Aeron 1.51 defect documented in the YU12 lane
+(<code>ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md</code>), not a YU13 regression: it reproduced on a
+cluster whose book was EMPTY with no format-2 snapshot content, and no snapshot/format/band error
+appears in the joiner&#x27;s logs — the failure is entirely inside log replication, before the service
+loads any state. Three members starting together from empty always converge (done four times).</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="real-taq-order-flow-on-the-crossing-engine-osff-3-2026-07-21">Real TAQ order flow on the crossing engine (OSFF-3, 2026-07-21)<a href="#real-taq-order-flow-on-the-crossing-engine-osff-3-2026-07-21" class="hash-link" aria-label="Direct link to Real TAQ order flow on the crossing engine (OSFF-3, 2026-07-21)" title="Direct link to Real TAQ order flow on the crossing engine (OSFF-3, 2026-07-21)" translate="no">​</a></h2>
+<p>The demo realism beat: real historical NYSE flow crossing on the Raft-consensus book.</p>
+<p><strong>Curation.</strong> DuckDB on the tick-store pod (data-local, GCS HMAC already in env) over the YU07
+store (<code>gs://traderx-501015-tick-store/ticks/source=taq/</code>): 7 symbols (odd count, per the harness
+side-alternation trap) — AAPL, MSFT, NVDA, TSLA, AMZN, META, JPM, all inside the seeded 20-ticker
+universe — 2025-03-03 09:30–10:00 ET, <code>event_type=&#x27;trade&#x27;</code> prints only. <strong>1,138,793 real prints,
+$18.2B notional</strong>, tick-rule aggressor side (47.3% buy — a down-open day), prices rounded to the
+0.001 grid. 38.6 MB CSV in <code>scripts/bench/results/taq/</code>. (<code>kubectl cp</code> silently truncated the file
+at ~35 MB — transfer big files with gzip + <code>exec cat</code> and md5-check both ends.)</p>
+<p><strong>Method — trade-print replay.</strong> Each print becomes a passive limit at the print price plus an
+aggressor limit at the same price on the other side; the pair is order-insensitive (whichever
+lands first rests, the other crosses at the resting price), so a sequenced replay reproduces
+every historical print at its historical price, the book self-cleans to empty, and positions stay
+a near-flat random walk. Passive and aggressor accounts rotate over the 7 real SQL accounts and
+are always distinct. <code>scripts/bench/replay/taq-replay.mjs</code>:</p>
+<ul>
+<li class=""><code>--mode paced</code> — sim-clock at <code>--speed</code>× real time, ONE in-flight batch. <strong>Must target a single
+gateway pod</strong>: the <code>order-matcher-gw</code> Service round-robins across gateways, which interleaves
+batches and lets fills slip off the historical price. Sequential batches through one gateway =
+exact global ordering.</li>
+<li class=""><code>--mode max</code> — <code>--conc</code> workers race sequential chunks through the Service. Real flow at max
+ingest; cross-pair interleaving can fill at a better resting price than the print (stated, not
+hidden).</li>
+<li class="">Orders do NOT refresh risk price-freshness (only <code>TYPE_PRICE_TICK</code> does; 30 s max age), so the
+harness seeds each symbol at its first-print price upfront and re-<code>/seed</code>s per symbol every 8 s
+at the latest replayed price — pointed at a DIFFERENT gateway than the replay stream, or the
+refresher queues behind a stalled batch on the same owner thread.</li>
+</ul>
+<p><strong>Results (GKE, 3× c3 members, fixed image, fresh epoch, seeded first):</strong></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Run</th><th>Result</th></tr></thead><tbody><tr><td>Paced 5× (the flagship)</td><td>1,138,793 prints in 360.2 s — pacing held exactly. 2,277,155/2,277,586 orders accepted (<strong>431 policy rejects, 0.019%</strong>, including both sides of the two 2,111,072-share NVDA opening blocks vs the 1M-share order-size cap — the 15c3-5 gate working). 0 HTTP failures. 2,276,892 trade records booked.</td></tr><tr><td>Post-run state</td><td><strong>Book returned to exactly empty on all 3 members</strong> (open=0, order-hash=0); position hash, nextOrderRef, applied position <strong>byte-identical across members</strong> after ~2.4M trades.</td></tr><tr><td>Booked-rate timeline</td><td>Tracks real market intensity: ~20k booked/s at the compressed 09:30 burst decaying to ~4k/s by 10:00 — the shape of the open, on a consensus-replicated book.</td></tr><tr><td>Max-rate (conc 8, via Service)</td><td>1,138,793 prints in 78.1 s — <strong>14,589 prints/s, 29,172 accepted orders/s</strong>. Client-bound (one bench pod, conc 8), NOT the cluster ceiling — the 75k booked/s pipelined figure stands.</td></tr><tr><td>Single ordered stream ceiling</td><td>~7,700 prints/s (15.3k orders/s) through one gateway at batch=100.</td></tr></tbody></table>
+<p><strong>Two new traps recorded:</strong></p>
+<ul>
+<li class=""><strong>Band-anchor vs real prices.</strong> The book&#x27;s price band (±$65.5) anchors on each security&#x27;s FIRST
+limit price of the epoch and never re-anchors. An epoch that has traded bench flow at 150
+collars real prices (AAPL 241.81 and MSFT 388.49 rejected PRICE_COLLAR while NVDA 114 passed).
+Replay real prices on a fresh epoch, or ensure the first limit per symbol is at the real level.</li>
+<li class=""><strong>Batch size vs the ack window.</strong> At 200 prints (400 orders) per POST, the gateway&#x27;s pipelined
+ack wait loses egress acks under crossing load (2 booked events per print) and every lossy
+batch burns its full ~7 s ack budget — a single-stream run stalls hard. batch=100 is
+stall-free; the default in taq-replay.mjs.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="t-lob16-resolved-the-empty-disk-rejoin-defect-was-our-networkpolicy-not-aeron-2026-07-21">T-LOB16 RESOLVED: the &quot;empty-disk rejoin defect&quot; was our NetworkPolicy, not Aeron (2026-07-21)<a href="#t-lob16-resolved-the-empty-disk-rejoin-defect-was-our-networkpolicy-not-aeron-2026-07-21" class="hash-link" aria-label="Direct link to T-LOB16 RESOLVED: the &quot;empty-disk rejoin defect&quot; was our NetworkPolicy, not Aeron (2026-07-21)" title="Direct link to T-LOB16 RESOLVED: the &quot;empty-disk rejoin defect&quot; was our NetworkPolicy, not Aeron (2026-07-21)" translate="no">​</a></h2>
+<p>The OSFF-3 retest disproved BOTH prior theories (inherited Aeron 1.51 defect; stale-PVC
+hypothesis). The wedge reproduced on kind with a genuinely fresh, empty PVC — and the leader
+showed zero replication activity during the joiner&#x27;s attempts, which localized it to
+connectivity:</p>
+<ul>
+<li class=""><strong>Root cause:</strong> <code>ClusterNodeConfig</code> (mirroring the Aeron 1.51 sample) left three channels on
+ephemeral ports (<code>endpoint=host:0</code>): the archive client&#x27;s controlResponseChannel, the Archive&#x27;s
+replicationChannel, and the ConsensusModule&#x27;s replicationChannel. The kind NetworkPolicy admits
+UDP 21800–22200 only, so FOLLOWER_LOG_REPLICATION traffic lands on an ephemeral port and is
+<strong>silently dropped</strong> — the joiner loops INIT→CANVASS→FOLLOWER_LOG_REPLICATION at <code>applied=-1</code>
+forever, with no error on either side (UDP).</li>
+<li class=""><strong>Why it masqueraded as an Aeron defect:</strong> PVC-preserving restarts use FOLLOWER_CATCHUP on the
+in-block transfer port (allowed) — so &quot;members with state rejoin, wiped members wedge&quot; looked
+exactly like an empty-disk-rejoin bug. And GKE never applies that policy to the cluster pods
+(the gke kustomization omits it), hence &quot;works on GKE, wedges on kind&quot;.</li>
+<li class=""><strong>Smoking-gun experiment:</strong> deleting the policy un-wedged a 10-minute-stuck joiner within 10 s
+(applied −1 → fully caught up).</li>
+<li class=""><strong>Fix:</strong> pin the three channels to fixed offsets 6/7/8 in each member&#x27;s 100-port block (inside
+the policy range). <code>ClusterNodeConfig.java</code> in the YU12 layer; propagated to the YU12 lane.</li>
+<li class=""><strong>Acceptance (kind, policy ENFORCED, fixed image):</strong> empty-disk rejoin into an aged cluster
+(3 leadership terms, snapshots, 1000 trades) caught up in &lt;30 s; a PVC-preserving restart
+caught up too; all three members byte-identical after; full suite 227/0;
+ThreeMemberClusterTest passes solo in 26 s (its documented parallel-load flakiness stands).</li>
+<li class=""><strong>Distinguish the two wedges.</strong> The 2026-07-19 GKE issue
+(<code>ISSUES-yu12-rejoin-term-poisoning-2026-07-19.md</code>) is a DIFFERENT mechanism with a different
+signature: an explicit <code>ArchiveException: requested replay start position=0 …</code> storm after ~46
+leadership terms accumulated degenerate RecordingLog entries — real Aeron 1.51 behavior at
+heavy term churn, unaffected by today&#x27;s finding, remediation (clean reset) stands. The kind
+wedge (T-LOB14/T-LOB16) is SILENT — no exception anywhere — and was the policy bug. Triage by
+signature: exception storm → term poisoning; silence → check replication-port reachability
+first. The kind empty-disk-rejoin acceptance line is <strong>unblocked</strong>: a config rule (pin
+replication ports / scope policies to cover them), not an engine limitation.</li>
+<li class="">GKE redeployed on the fixed image (<code>cluster-node@sha256:242ddd30…</code>), fresh epoch, re-seeded.
+Failover spot-check on the fixed build: <strong>124 / 348 / 223 ms</strong> client gap across rotated
+leader kills (20 ms probe) — consistent with the recorded ~200 ms median / ~450 ms worst, no
+regression from the port pinning.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="failover-presentation-framing-decision-for-the-talk">Failover presentation framing (decision for the talk)<a href="#failover-presentation-framing-decision-for-the-talk" class="hash-link" aria-label="Direct link to Failover presentation framing (decision for the talk)" title="Direct link to Failover presentation framing (decision for the talk)" translate="no">​</a></h2>
+<ul>
+<li class=""><strong>The headline number is the idle client-observed one: median ~200 ms, worst ~450 ms</strong> — &quot;what
+a trader sees when a node dies&quot;, measured node-clock-free as the client gap (last success
+before → first success after) with a ≤20 ms probe and rotated member kills.</li>
+<li class=""><strong>The ~8–12 s figure under a 30–60k orders/s flood answers a different question</strong> — &quot;how long
+until a saturated pipeline is back to full throughput when all gateways lose their sessions at
+once and a backlog must drain&quot;. It goes in a backup slide / spoken caveat WITH that context,
+never on the same slide as the 200 ms number, never averaged with it.</li>
+<li class="">Never present FIRST-APPLY or ROLE-CHANGE-derived times as client-facing (they measure cluster
+liveness and pod teardown, not service restoration).</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="engine-tail-on-a-dedicated-pinned-host-osff-3-2-2026-07-21">Engine tail on a dedicated pinned host (OSFF-3 #2, 2026-07-21)<a href="#engine-tail-on-a-dedicated-pinned-host-osff-3-2-2026-07-21" class="hash-link" aria-label="Direct link to Engine tail on a dedicated pinned host (OSFF-3 #2, 2026-07-21)" title="Direct link to Engine tail on a dedicated pinned host (OSFF-3 #2, 2026-07-21)" translate="no">​</a></h2>
+<p><code>MatchLatencyBenchmarkTest</code> rerun on a dedicated, otherwise-idle GCE <code>c3-standard-8</code>
+(Temurin 21, <code>taskset -c 2-7</code>, no other load), two runs, reproducible:</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Op</th><th>p50</th><th>p99</th><th>p99.9</th><th>p99.99</th><th>max</th></tr></thead><tbody><tr><td>resting insert</td><td>352 ns</td><td>~500 ns</td><td><strong>~665 ns</strong></td><td>~8–10 µs</td><td>24–107 µs</td></tr><tr><td>limit cross</td><td>870 ns</td><td>~1.35 µs</td><td><strong>~4.4 µs</strong></td><td><strong>~12 µs</strong></td><td>20–55 µs</td></tr><tr><td>market order</td><td>946 ns</td><td>~1.5 µs</td><td>~4.5 µs</td><td>~12.6 µs</td><td>~2.6 ms (one op — see note)</td></tr></tbody></table>
+<p>Read against the shared-laptop numbers above: <strong>the tail collapses ~7–13×</strong> (cross p99.9
+15.4 µs → 4.4 µs, p99.99 83.6 µs → 12 µs, max 272 µs → 20–55 µs) while p50 roughly doubles —
+the laptop&#x27;s M-series core is simply faster per-op than the c3 Xeon vCPU, but the shared-host
+scheduling/JIT noise WAS the tail, exactly as claimed. Honest slide line: the p99.9+ tail is
+the host, not the book; a quiet pinned core buys an order of magnitude in the tail before any
+exotic tuning. One ~2.6 ms outlier op on the market path reproduces in both runs (1 in 250k, a
+JVM safepoint/GC event; p99.99 stays ~12.6 µs) — quote percentiles, not max. Next rungs if ever
+needed, in ROI order: Epsilon on the bench JVM, <code>isolcpus</code>/<code>nohz_full</code> (kernel cmdline on a
+dedicated VM), then AOT. Kernel-bypass wire-to-wire stays literature-cited: no ef_vi on GCP,
+and Aeron&#x27;s ef_vi/DPDK media driver is the commercial premium tier.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="throughput-sweep--in-process-benchmark-osff-3-follow-up-2026-07-21-eod">Throughput sweep + in-process benchmark (OSFF-3 follow-up, 2026-07-21 EOD)<a href="#throughput-sweep--in-process-benchmark-osff-3-follow-up-2026-07-21-eod" class="hash-link" aria-label="Direct link to Throughput sweep + in-process benchmark (OSFF-3 follow-up, 2026-07-21 EOD)" title="Direct link to Throughput sweep + in-process benchmark (OSFF-3 follow-up, 2026-07-21 EOD)" translate="no">​</a></h2>
+<p><strong>New headline: 146–165k booked/s</strong> (leader trade-counter, 60 s runs, conc 48 × batch 200,
+fresh epoch, gateways spread one-per-node) — reproduced four times: 146,500 / 148,031 /
+164,949 / 163,755. <strong>This roughly doubles T-LOB15&#x27;s 75k and reaches the never-reproduced
+&quot;135k burst&quot; territory as a measured sustained-for-a-minute figure.</strong> The enabling change is
+topology, not code: the gateway Deployment had no anti-affinity, and when the scheduler packs
+all three gateways onto one 2-vCPU node (observed directly today) the tier tops out near the
+old ~75k. <code>podAntiAffinity</code> added to the gke gateway manifest — note <code>preferred</code> does NOT
+guarantee spread through a rolling update (all three re-packed onto one node; had to recycle
+pods sequentially to spread them). Batch size is a cliff, not a dial: batch 200 is the knee,
+and batch ≥ 500 collapses outright (owner-thread queueing pushes whole batches past the 30 s
+client timeout — this also finally explains the unexplained 2026-07-20 &quot;batch=1000 gave ~2k/s&quot;).</p>
+<p><strong>In-process journaled benchmark re-run on the crossing engine</strong> (harness updated in the YU13
+layer: the auto-fill-era all-BUY generator rests forever on a real book — sides now alternate
+so every pair crosses; driver test <code>JournaledBlpBenchmarkDriverTest</code>, env-gated
+<code>RUN_BLP_BENCH=1</code>): <strong>1,134,658 orders/s sustained on a GKE-class c3 VM</strong> (1,561,764 on the
+laptop — faster core), output ring ~3.8–5.3M events/s. Two implications: the engine tier has
+~7× headroom over even the new 165k REST figure, and <strong>a remembered &quot;~6M/s&quot; almost certainly
+refers to output EVENTS/s</strong> (each order fans out to ~3–6 output events), not orders/s.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="sweep-postmortem--the-leak-that-caps-sustained-throughput-fixed--see-next-section">Sweep postmortem — the leak that caps sustained throughput (FIXED — see next section)<a href="#sweep-postmortem--the-leak-that-caps-sustained-throughput-fixed--see-next-section" class="hash-link" aria-label="Direct link to Sweep postmortem — the leak that caps sustained throughput (FIXED — see next section)" title="Direct link to Sweep postmortem — the leak that caps sustained throughput (FIXED — see next section)" translate="no">​</a></h3>
+<p>The first soak (~33M cumulative orders) killed the cluster, and the failure chain is worth
+recording precisely:</p>
+<ol>
+<li class=""><strong><code>MatchingEngine.ordersByRef</code> grows with cumulative order count, not live orders.</strong> It is
+a flat array indexed by orderRef, doubled to cover the highest ref ever issued and never
+shrunk; terminal eviction nulls entries but the array itself is ~4 B/slot × total orders.
+At ~33M orders (~130 MB + a doubling copy) it OOM&#x27;d the members&#x27; then-512m heap on the
+LEADER mid-apply. Inherited from the YU01 bounded-retention design (the RETENTION is
+bounded; the INDEX never was) — it affects the whole lineage, not just YU13. It also costs
+throughput before it kills: run 3 of the confirmation set decayed to 109k booked/s as the
+array (and GC pressure) grew. <strong>Fix identified:</strong> replace with an <code>Int2ObjectHashMap</code>
+bounded by open+retained orders (snapshot iteration must sort refs for determinism); needs
+the full gate suite + HA re-proof — a session of its own, filed as follow-up.</li>
+<li class=""><strong>The OOM cascaded into a wedge via undersized /dev/shm</strong>: the recovering member&#x27;s replay
+publication needed a 201 MB log buffer against 178 MB usable shm (512Mi limit).</li>
+<li class="">Mitigations applied + deployed: member heap 512m → 1536m, shm 512Mi → 1Gi, pod memory
+2Gi → 4Gi (each member is alone on a 16 GB node). This moves the wall ~4× out
+(~100M+ orders/epoch); it does not remove it — the index fix does.</li>
+<li class="">~5.6M orders in these runs were risk-rejected with no booked record. CORRECTED attribution
+(2026-07-21, after the soak session found the credit wall below): originally read as
+PRICE_STALE under apply backlog, but the confirmation runs all used ONE account (62654,
+~30.5M cumulative orders) and the counter froze at trades=30,744,570 — within 4 of the
+soak&#x27;s measured <code>CREDIT_LIMIT</code> wall at ~30.7M orders of 500 × $150. These were credit-wall
+rejections; run 3&#x27;s &quot;decay to 109k&quot; was substantially the wall cutting in, on top of index
+growth. Still the 15c3-5 gate fail-closing correctly — but the right slide line is the
+credit gate, not staleness.</li>
+</ol>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="ordersbyref-index-fix--136m-order-soak-2026-07-21--the-leak-is-gone">ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone<a href="#ordersbyref-index-fix--136m-order-soak-2026-07-21--the-leak-is-gone" class="hash-link" aria-label="Direct link to ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone" title="Direct link to ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone" translate="no">​</a></h3>
+<p><strong>Fix (commit a6776e8).</strong> <code>ordersByRef</code> is now an Agrona <code>Int2ObjectHashMap&lt;RestingOrder&gt;</code>
+bounded by open + retained-terminal orders, presized at construction (2× the steady population
+of terminalCap + pool over a 0.55 load factor) so it never rehashes after warmup — Epsilon
+<code>noGcTest</code>/<code>riskNoGcTest</code> double as proof of zero steady-state map allocation. Snapshot
+serialization takes <code>snapshotOrderRefsAscending()</code> (sorted copy, cold path) to preserve the
+established ascending-ref byte order; retained terminal rows still follow in exact
+eviction-FIFO order (ADR-046). <code>openOrderTuples</code>/<code>allOrderTuples</code> sort by ref so the
+executable byte-order contract test is unchanged. Gates: full suite 228/0, all four
+allocation gates, both Epsilon gates green.</p>
+<p><strong>Soak (GKE, fresh epoch, same 3×c3 members + 3 gateways, image <code>cluster-node:yu13</code>
+@sha256:9c77663).</strong> conc 48 × batch 200, SIDES=alternate QTY=500 LIMIT=150 TICKERS=JPM,GS,COF,
+8 s <code>/seed</code> refresher, account rotated per 120 s chunk (see trap below):</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Measure</th><th>Result</th></tr></thead><tbody><tr><td>Cumulative booked trades</td><td><strong>136,400,990 in ~14.6 min</strong> (leader trade counter)</td></tr><tr><td>Booked rate, 30 s windows</td><td>130 –170k/s throughout; <strong>no downward trend 18M → 136M</strong></td></tr><tr><td>First vs last fresh-account chunk</td><td>143.6k/s (chunk 1) vs <strong>150.7k/s (chunk 7)</strong> — the old code was at 109k/s by 30M</td></tr><tr><td>Member parity</td><td>applied=136,402,195 and trades identical on all 3 members; 3 snapshots taken mid-soak, no divergence — the sorted-ref snapshot path proven live</td></tr><tr><td>Heap / stability</td><td>working set plateaus ~0.9–1.0 Gi on 4 Gi pods, flat vs order count; <strong>0 restarts</strong></td></tr><tr><td>Book</td><td>returns to ~0 open orders after load stops</td></tr></tbody></table>
+<p>Bonus stress from the aborted first attempt (same image, prior epoch): ~159M orderRefs issued /
+126M applied — ~96M of them risk-rejected — with all members healthy. Under the old flat array
+that epoch alone is a ~640 MB index per member plus a doubling copy: certain OOM.</p>
+<p><strong>New trap — the per-account credit wall.</strong> <code>executedNotional</code> accumulates GROSS per fill and is
+never released; against <code>CREDIT_LIMIT_TICKS = Long.MAX_VALUE/4</code> an account walls after exactly
+~30.7M booked orders of 500 × $150 (first soak attempt stalled at trades=30,744,566 with orders
+still applying — every one CREDIT_LIMIT-rejected). HTTP-level counters show <code>failed=0</code> because
+the batch endpoint 2xxes; the tell is the trades counter freezing while <code>applied</code> keeps rising.
+Long benches must rotate accounts (7 seeded accounts ≈ 215M-order budget per epoch).</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="where-the-next-throughput-lives-gateway-tier-analysis-ranked">Where the next throughput lives (gateway tier analysis, ranked)<a href="#where-the-next-throughput-lives-gateway-tier-analysis-ranked" class="hash-link" aria-label="Direct link to Where the next throughput lives (gateway tier analysis, ranked)" title="Direct link to Where the next throughput lives (gateway tier analysis, ranked)" translate="no">​</a></h3>
+<p>The engine does 1.13M orders/s in-process on this hardware; REST books 165k. The gap is the
+gateway tier, whose structure is: 64 HTTP threads (JSON parse) feeding ONE owner thread per
+gateway that does resolve→encode→offer→pollEgress for every order, with committed acks
+returning on a 64k-term egress channel that DROPS under load (a lossy batch then burns its
+full ~10 s ack budget — the batch-500 cliff and the single-stream batch-200 stalls are both
+this).</p>
+<ol>
+<li class=""><strong>More gateways × guaranteed spread</strong> (done for 3; scale replicas with nodes) — measured
+2× today; scales roughly linearly until members/consensus saturate.</li>
+<li class=""><strong>Fix the lossy-batch full-budget wait</strong>: complete a batch on the ack high-water mark
+(appliedSeq ≥ last offered) instead of requiring every individual ack — removes the batch
+cliff, unlocks batch 500–1000 (fewer HTTP round-trips per order).</li>
+<li class=""><strong>Raise the egress/ingress term buffers</strong> (64k → 1–4M) — directly cuts ack drops, the root
+of both stall modes.</li>
+<li class=""><strong>Binary/SBE ingress or leaner JSON</strong> (Jackson tree-parse per order on HTTP threads) —
+secondary; CPU is currently gateway-node-bound before parse cost dominates.</li>
+<li class=""><strong>Bypass HTTP for machine flow</strong> (Aeron ingress client / the FIX gateway) — the REST hop
+is a convenience contract, not the product&#x27;s fast path.</li>
+</ol>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="open">Open<a href="#open" class="hash-link" aria-label="Direct link to Open" title="Direct link to Open" translate="no">​</a></h2>
+<ul>
+<li class=""><del>The <code>ordersByRef</code> unbounded-index bug</del> — <strong>fixed and soak-proven 2026-07-21</strong> (136M booked
+orders, no decay, stable heap; section above). 165k booked/s is now &quot;sustained&quot; unqualified.</li>
+<li class="">Deferred: async snapshot off the hot thread (still nothing points at it),
+Epsilon/isolcpus/AOT tail rungs, GKE cluster NetworkPolicy (safe now ports are pinned).</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/edit/YU15-eod-risk-extract/specs/../specs/YU13-limit-order-book/generation/implementation-status.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/traderX/specs/YU13-limit-order-book/generation/generation-hook"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Generation Hook: YU13-limit-order-book</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/traderX/specs/YU14-listed-equity-options"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Feature Pack: YU14-listed-equity-options</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#generation" class="table-of-contents__link toc-highlight">Generation</a></li><li><a href="#engine-crossing-limit-order-book" class="table-of-contents__link toc-highlight">Engine (crossing limit-order book)</a></li><li><a href="#behavioral-proof-all-green-on-the-jvm" class="table-of-contents__link toc-highlight">Behavioral proof (all green on the JVM)</a></li><li><a href="#zero-allocation-and-banned-api" class="table-of-contents__link toc-highlight">Zero-allocation and banned-API</a></li><li><a href="#engine-latency-artifact-nfr-lob01" class="table-of-contents__link toc-highlight">Engine latency artifact (NFR-LOB01)</a></li><li><a href="#reconciliation-with-the-yu12-lane-2026-07-21" class="table-of-contents__link toc-highlight">Reconciliation with the YU12 lane (2026-07-21)</a></li><li><a href="#live-kind-measurements-t-lob14-2026-07-21" class="table-of-contents__link toc-highlight">Live kind measurements (T-LOB14, 2026-07-21)</a></li><li><a href="#live-gke-measurements-t-lob15-2026-07-21--the-like-for-like-number" class="table-of-contents__link toc-highlight">Live GKE measurements (T-LOB15, 2026-07-21) — the like-for-like number</a></li><li><a href="#wire-to-wire-rest-latency-on-gke-2026-07-21" class="table-of-contents__link toc-highlight">Wire-to-wire REST latency on GKE (2026-07-21)</a></li><li><a href="#failover-on-the-crossing-engine-node-clock-precise-2026-07-21" class="table-of-contents__link toc-highlight">Failover on the crossing engine, node-clock precise (2026-07-21)</a><ul><li><a href="#the-bimodality--root-caused-and-fixed" class="table-of-contents__link toc-highlight">The bimodality — root-caused and fixed</a></li></ul></li><li><a href="#ha-recovery-proof-on-the-crossing-engine-t-lob14" class="table-of-contents__link toc-highlight">HA recovery proof on the crossing engine (T-LOB14)</a></li><li><a href="#real-taq-order-flow-on-the-crossing-engine-osff-3-2026-07-21" class="table-of-contents__link toc-highlight">Real TAQ order flow on the crossing engine (OSFF-3, 2026-07-21)</a></li><li><a href="#t-lob16-resolved-the-empty-disk-rejoin-defect-was-our-networkpolicy-not-aeron-2026-07-21" class="table-of-contents__link toc-highlight">T-LOB16 RESOLVED: the &quot;empty-disk rejoin defect&quot; was our NetworkPolicy, not Aeron (2026-07-21)</a></li><li><a href="#failover-presentation-framing-decision-for-the-talk" class="table-of-contents__link toc-highlight">Failover presentation framing (decision for the talk)</a></li><li><a href="#engine-tail-on-a-dedicated-pinned-host-osff-3-2-2026-07-21" class="table-of-contents__link toc-highlight">Engine tail on a dedicated pinned host (OSFF-3 #2, 2026-07-21)</a></li><li><a href="#throughput-sweep--in-process-benchmark-osff-3-follow-up-2026-07-21-eod" class="table-of-contents__link toc-highlight">Throughput sweep + in-process benchmark (OSFF-3 follow-up, 2026-07-21 EOD)</a><ul><li><a href="#sweep-postmortem--the-leak-that-caps-sustained-throughput-fixed--see-next-section" class="table-of-contents__link toc-highlight">Sweep postmortem — the leak that caps sustained throughput (FIXED — see next section)</a></li><li><a href="#ordersbyref-index-fix--136m-order-soak-2026-07-21--the-leak-is-gone" class="table-of-contents__link toc-highlight">ordersByRef index fix + 136M-order soak (2026-07-21) — the leak is gone</a></li><li><a href="#where-the-next-throughput-lives-gateway-tier-analysis-ranked" class="table-of-contents__link toc-highlight">Where the next throughput lives (gateway tier analysis, ranked)</a></li></ul></li><li><a href="#open" class="table-of-contents__link toc-highlight">Open</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/home">Home</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/blog">Blog</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning-paths">Learning Paths</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning">Learning Guides</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/specs">Specs</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Yeshiva University</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://www.yu.edu" target="_blank" rel="noopener noreferrer" class="footer__link-item">Yeshiva University</a></li><li class="footer__item"><a href="https://www.yu.edu/yeshiva-college/ug/computer-science" target="_blank" rel="noopener noreferrer" class="footer__link-item">YU Computer Science</a></li><li class="footer__item"><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX" target="_blank" rel="noopener noreferrer" class="footer__link-item">This deployment on GitHub</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Upstream — FINOS</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/finos/traderX" target="_blank" rel="noopener noreferrer" class="footer__link-item">TraderX (upstream)</a></li><li class="footer__item"><a href="https://www.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Website</a></li><li class="footer__item"><a href="https://landscape.finos.org" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Projects</a></li><li class="footer__item"><a href="https://community.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">Community Handbook</a></li></ul></div></div><div class="footer__bottom text--center"><div class="margin-bottom--sm"><a href="https://www.yu.edu" rel="noopener noreferrer" class="footerLogoLink_BH7S"><img src="/traderX/img/yu/yu-crest-navy.jpg" alt="Yeshiva University" class="footer__logo themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/yu/yu-crest-navy.jpg" alt="Yeshiva University" class="footer__logo themedComponent_mlkZ themedComponent--dark_xIcU"></a></div><div class="footer__copyright">Copyright © 2026 Yeshiva University CS · built on TraderX, a FINOS project</div></div></div></footer></div>
+</body>
+</html>
