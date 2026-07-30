@@ -6,7 +6,7 @@
 
 ## Context
 
-`YU02-lmax-kubernetes` (via `009b`) removes blocking work from the BLP but leaves producer
+`YU02-lmax-kubernetes` (via `YU01`) removes blocking work from the BLP but leaves producer
 validation incomplete: market trades performed remote account/reference calls, while order
 submission performed only structural checks — no credit, buying-power, exposure, entitlement,
 restriction, or kill-switch control existed anywhere (an order with a valid ticker just matched

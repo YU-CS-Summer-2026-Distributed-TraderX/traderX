@@ -35,8 +35,13 @@ jobs:
 
       - name: Build Docusaurus site
         env:
-          DOCUSAURUS_URL: https://traderx.finos.org
-          DOCUSAURUS_BASE_URL: /
+          # Was https://traderx.finos.org with base /, i.e. UPSTREAM's canonical domain. On this fork
+          # that produces a build whose absolute URLs, sitemap and Open Graph tags all point at
+          # finos.org while the site is served from our GitHub Pages path — so every canonical link
+          # and social preview credits upstream for our pages. These match the defaults in
+          # website/docusaurus.config.js; change both together, or set them from a repo variable.
+          DOCUSAURUS_URL: https://YU-CS-Summer-2026-Distributed-TraderX.github.io
+          DOCUSAURUS_BASE_URL: /traderX/
         run: |
           TRADERX_SITE_ROOT="${DOCUSAURUS_BASE_URL%/}" bash pipeline/refresh-state-docs.sh
           npm --prefix website run clear

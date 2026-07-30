@@ -8,7 +8,7 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 
 - Previous state(s): [YU04-durable-control-feeds](/docs/learning/state-YU04-durable-control-feeds)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU06-eod-price-production](/docs/learning/state-YU06-eod-price-production)
 
 ## Convergence Metadata
 
@@ -20,12 +20,12 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU05-post-trade-compliance](https://github.com/finos/traderX/tree/code/generated-state-YU05-post-trade-compliance)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU04-durable-control-feeds`: [code/generated-state-YU04-durable-control-feeds...code/generated-state-YU05-post-trade-compliance](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU04-durable-control-feeds...code%2Fgenerated-state-YU05-post-trade-compliance)
+- Compare against `YU04-durable-control-feeds`: [YU04-durable-control-feeds...YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU04-durable-control-feeds...YU05-post-trade-compliance)
 
 ## Plain-English Code Delta
 
@@ -41,8 +41,8 @@ inherits YU04-durable-control-feeds runtime harness
 
 - State spec pack: [/specs/YU05-post-trade-compliance](/specs/YU05-post-trade-compliance)
 - Architecture: [/specs/YU05-post-trade-compliance/system/architecture](/specs/YU05-post-trade-compliance/system/architecture)
-- Flows / topology: [/specs/YU05-post-trade-compliance/system/runtime-topology](/specs/YU05-post-trade-compliance/system/runtime-topology)
-- Research: [link](/specs/YU05-post-trade-compliance/research)
-- Data model: [link](/specs/YU05-post-trade-compliance/data-model)
+- Flows / topology: [/specs/YU05-post-trade-compliance/system/system-context](/specs/YU05-post-trade-compliance/system/system-context)
+- Research: `n/a`
+- Data model: `n/a`
 - Quickstart: `n/a`
 

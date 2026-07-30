@@ -37,9 +37,9 @@ The handoff into this state assumed `account-service` uses JPA. It does not:
 - **The live MariaDB schema is NOT part of the generated-tree overlay chain at all for k8s-era
   states**, and this was confirmed empirically (marker-comment test, not assumed) exactly the way
   the YU03→YU04 handoff's gotcha warning insists on: the schema's original text lives at
-  `specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/postgres-database-replacement/mariadb-init/initialSchema.sql`,
+  `specs/YU01-lmax-sequencer/generation/runtime-overrides/postgres-database-replacement/mariadb-init/initialSchema.sql`,
   but `pipeline/install-generated-ci-assets.sh`'s per-state `state_allowed_roots` allow-list only
-  includes `postgres-database-replacement` for states 005–009b — **not** 010-kubernetes-runtime or
+  includes `postgres-database-replacement` for states 005–YU01 — **not** 010-kubernetes-runtime or
   any descendant (011 through YU04). Generating YU04 leaves
   `generated/code/target-generated/postgres-database-replacement/mariadb-init/` **empty** (verified:
   a marker comment placed in a YU04-owned override of that same relative path never reached the
@@ -52,7 +52,7 @@ The handoff into this state assumed `account-service` uses JPA. It does not:
   - The **actual live schema** for any k8s environment (production or a staging namespace) is a
     hand-written, verbatim SQL blob embedded directly in that environment's own
     `cluster-addons/<env>/database.yaml` `ConfigMap` (confirmed: `cluster-addons/yu03-staging/database.yaml`'s
-    embedded SQL is a byte-for-byte copy of the 009b file's content, hand-copied once, not
+    embedded SQL is a byte-for-byte copy of the YU01 file's content, hand-copied once, not
     regenerated). So this state's new tables (`account_control_outbox`, `account_source_epoch`,
     `stocks`, `stocks_control_outbox`, `stocks_source_epoch`) only need to be added to the **new**
     `cluster-addons/yu04-staging/database.yaml` this state's own isolated CI/CD pipeline creates

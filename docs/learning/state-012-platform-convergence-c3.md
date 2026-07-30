@@ -20,12 +20,12 @@ title: "State 012: Platform Convergence C3"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/tree/code/generated-state-012-platform-convergence-c3)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-012-platform-convergence-c3](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-012-platform-convergence-c3)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `011-tilt-kubernetes-dev-loop`: [code/generated-state-011-tilt-kubernetes-dev-loop...code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/compare/code%2Fgenerated-state-011-tilt-kubernetes-dev-loop...code%2Fgenerated-state-012-platform-convergence-c3)
+- Compare against `011-tilt-kubernetes-dev-loop`: [code/generated-state-011-tilt-kubernetes-dev-loop...code/generated-state-012-platform-convergence-c3](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-011-tilt-kubernetes-dev-loop...code%2Fgenerated-state-012-platform-convergence-c3)
 
 ## Plain-English Code Delta
 

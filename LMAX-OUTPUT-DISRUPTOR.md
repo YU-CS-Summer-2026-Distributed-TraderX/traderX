@@ -1,6 +1,6 @@
 # TraderX - The Output Disruptor: How It Works & What the State Defines
 
-> **Status:** Implemented in state `009b-lmax-sequencer-architecture`.
+> **Status:** Implemented in state `YU01-lmax-sequencer`.
 > **Base branch:** `lmax-sequencer-no-gc`.
 > **Scope of this doc:** the output disruptor only: the ring the BLP publishes into, typed output events,
 > direct account-trade and position fan-out, order NATS bridging, optional `/trades` compatibility,
@@ -328,7 +328,7 @@ if (projector != null) {
 The implemented source files live under:
 
 ```text
-specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher
+specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher
 ```
 
 ---
@@ -337,7 +337,7 @@ specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matche
 
 ## B13. Implemented state & scope
 
-The implemented state is `009b-lmax-sequencer-architecture` on top of `lmax-sequencer-no-gc`. This branch
+The implemented state is `YU01-lmax-sequencer` on top of `lmax-sequencer-no-gc`. This branch
 defines the output-side behavior that consumes the BLP's typed output events and fans them out directly to
 the UI subjects.
 
@@ -359,8 +359,8 @@ In scope:
 The durable source of truth is:
 
 ```text
-specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher
-specs/009b-lmax-sequencer-architecture/generation/patches/0001-state-overlay.patch
+specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher
+specs/YU01-lmax-sequencer/generation/patches/0001-state-overlay.patch
 ```
 
 Primary output-disruptor files:
@@ -475,7 +475,7 @@ stalls or publish failures are visible without reading logs.
 Regenerate the state:
 
 ```bash
-bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
+bash pipeline/generate-state.sh YU01-lmax-sequencer
 ```
 
 Run generated order-matcher checks:
@@ -488,8 +488,8 @@ cd generated/code/target-generated/order-matcher
 Run runtime smoke:
 
 ```bash
-bash generated/code/target-generated/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-bash generated/code/target-generated/scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
+bash generated/code/target-generated/scripts/start-state-YU01-lmax-sequencer-generated.sh
+bash generated/code/target-generated/scripts/test-state-YU01-lmax-sequencer.sh --skip-messaging
 ```
 
 ## B22. What the base branch provides vs. what this branch adds
