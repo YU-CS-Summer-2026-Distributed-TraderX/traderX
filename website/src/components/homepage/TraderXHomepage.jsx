@@ -1,6 +1,7 @@
 import React, {useState} from 'react';
 import Head from '@docusaurus/Head';
 import Hero from './Hero';
+import Results from './Results';
 import TabNav from './Tabs';
 import ActivePanel from './Sections';
 import Footer from './Footer';
@@ -12,14 +13,15 @@ export default function TraderXHomepage() {
   return (
     <>
       <Head>
-        <title>TraderX | The FINOS Innovation Sandbox</title>
+        <title>Distributed TraderX | Yeshiva University CS</title>
         <meta
           name="description"
-          content="TraderX is the FINOS innovation sandbox for spec-driven learning states, live demos, and integration experiments."
+          content="Yeshiva University's build of FINOS TraderX: a sell-side OMS with an LMAX Disruptor matching engine replicated over a three-member Aeron Raft cluster, across fifteen runnable architectural states."
         />
       </Head>
       <div className={styles.page}>
         <Hero />
+        <Results />
         <TabNav activeTab={activeTab} onTabChange={setActiveTab} />
         <main className={styles.main}>
           <ActivePanel activeTab={activeTab} />
