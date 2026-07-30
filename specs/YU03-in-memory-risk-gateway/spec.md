@@ -6,8 +6,8 @@
 **Input**: Forward-port of the pre-k8s `in-memory-risk-gateway` design, re-based as a delta over the
 `YU02-lmax-kubernetes` runtime (HA replication, k8s Lease leader election, MariaDB projection,
 snapshot + journal-tail recovery). The `FR-IMRG*`/`NFR-IMRG*` requirement namespace is inherited
-verbatim; per-requirement status is tracked in `requirements/functional-delta.md` and
-`requirements/nonfunctional-delta.md`.
+verbatim; per-requirement status is tracked in `requirements/nonfunctional-delta.md`, and
+`requirements/functional-delta.md` describes the functional delta in prose.
 
 This state adds the pre-trade admission tier the system was missing: before it, an order with a
 valid ticker simply matched and filled — no credit, buying-power, exposure, restriction, or

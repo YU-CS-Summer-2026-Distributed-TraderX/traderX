@@ -1,6 +1,6 @@
 # No-GC Conformance Delta: YU03
 
-Extends the inherited `009b`/`YU02` no-GC contract (NGC-01/NGC-02) across the new validation and
+Extends the inherited `YU01`/`YU02` no-GC contract (NGC-01/NGC-02) across the new validation and
 risk-decision code (NFR-IMRG02). The rule is unchanged: after warm-up, the hot path allocates zero
 bytes per event and touches no banned API on the BLP, journaler, or producer threads.
 

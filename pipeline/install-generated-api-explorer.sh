@@ -23,7 +23,7 @@ fi
 mkdir -p "${CONTRACTS_ROOT}"
 
 case "${STATE_ID}" in
-  006-*|007-*|008-*|009-*|009b-*|010-*|011-*|012-*|013-*|014-*)
+  006-*|007-*|008-*|009-*|YU01-lmax-sequencer|010-*|011-*|012-*|013-*|014-*)
     PUBSUB_INSPECTOR_ENABLED=1
     ;;
 esac

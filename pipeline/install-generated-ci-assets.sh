@@ -192,7 +192,7 @@ case "${STATE_ID}" in
   009-order-management-matcher)
     state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
     ;;
-  009b-lmax-sequencer-architecture)
+  YU01-lmax-sequencer)
     state_allowed_roots=("${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement")
     ;;
   010-kubernetes-runtime)
@@ -224,6 +224,30 @@ case "${STATE_ID}" in
     ;;
   YU07-historical-tick-store)
     state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store")
+    ;;
+  YU08-execution-algo-engine)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine")
+    ;;
+  YU09-ops-hardening)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening")
+    ;;
+  YU10-fix-ingress)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress")
+    ;;
+  YU11-aeron-replication)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar")
+    ;;
+  YU12-aeron-cluster)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster")
+    ;;
+  YU13-limit-order-book)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster" "YU13-limit-order-book")
+    ;;
+  YU14-listed-equity-options)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster" "YU13-limit-order-book" "YU14-listed-equity-options")
+    ;;
+  YU15-eod-risk-extract)
+    state_allowed_roots=("${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" "YU02-lmax-kubernetes" "YU03-in-memory-risk-gateway" "YU04-durable-control-feeds" "YU05-post-trade-compliance" "YU06-eod-price-production" "YU07-historical-tick-store" "tick-store" "YU08-execution-algo-engine" "execution-algo-engine" "YU09-ops-hardening" "YU10-fix-ingress" "YU11-aeron-replication" "aeron-replication-sidecar" "YU12-aeron-cluster" "YU13-limit-order-book" "YU14-listed-equity-options" "YU15-eod-risk-extract")
     ;;
 esac
 

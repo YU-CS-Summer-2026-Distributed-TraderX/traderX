@@ -20,12 +20,12 @@ title: "State 003: Agentic Harness Foundation"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-003-agentic-harness-foundation](https://github.com/finos/traderX/tree/code/generated-state-003-agentic-harness-foundation)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-003-agentic-harness-foundation](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-003-agentic-harness-foundation)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `002-edge-proxy-uncontainerized`: [code/generated-state-002-edge-proxy-uncontainerized...code/generated-state-003-agentic-harness-foundation](https://github.com/finos/traderX/compare/code%2Fgenerated-state-002-edge-proxy-uncontainerized...code%2Fgenerated-state-003-agentic-harness-foundation)
+- Compare against `002-edge-proxy-uncontainerized`: [code/generated-state-002-edge-proxy-uncontainerized...code/generated-state-003-agentic-harness-foundation](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-002-edge-proxy-uncontainerized...code%2Fgenerated-state-003-agentic-harness-foundation)
 
 ## Plain-English Code Delta
 

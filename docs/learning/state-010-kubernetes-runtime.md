@@ -20,12 +20,12 @@ title: "State 010: Kubernetes Runtime on C2"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-010-kubernetes-runtime](https://github.com/finos/traderX/tree/code/generated-state-010-kubernetes-runtime)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-010-kubernetes-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-010-kubernetes-runtime)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...code/generated-state-010-kubernetes-runtime](https://github.com/finos/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-010-kubernetes-runtime)
+- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...code/generated-state-010-kubernetes-runtime](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-010-kubernetes-runtime)
 
 ## Plain-English Code Delta
 

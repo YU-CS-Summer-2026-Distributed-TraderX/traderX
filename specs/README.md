@@ -5,6 +5,10 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `.specify/` for templates, scripts, and constitution
 - `specs/NNN-feature-name/` for feature-scoped spec artifacts
 
+## Portal Feature Pack
+
+- `015-docs-portal-homepage`
+
 ## Active Feature Packs
 
 - `001-baseline-uncontainerized-parity`
@@ -16,22 +20,26 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `007-observability-lgtm-compose`
 - `008-pricing-awareness-market-data`
 - `009-order-management-matcher`
-- `009b-lmax-sequencer-architecture`
 - `010-kubernetes-runtime`
 - `011-tilt-kubernetes-dev-loop`
 - `012-platform-convergence-c3`
 - `013-radius-kubernetes-platform`
 - `014-fdc3-intent-interoperability`
+- `YU01-lmax-sequencer` (directory: `YU01-lmax-sequencer`)
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
 - `YU05-post-trade-compliance`
 - `YU06-eod-price-production`
 - `YU07-historical-tick-store`
-
-## Portal Feature Packs
-
-- `015-docs-portal-homepage`
+- `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
+- `YU10-fix-ingress`
+- `YU11-aeron-replication`
+- `YU12-aeron-cluster`
+- `YU13-limit-order-book`
+- `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ## References
 
