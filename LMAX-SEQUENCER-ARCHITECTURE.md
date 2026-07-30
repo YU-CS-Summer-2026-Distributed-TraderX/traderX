@@ -5,7 +5,7 @@
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-04
 > **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
-> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> (`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document proposes re-architecting the **trading hot path** of TraderX around the
@@ -454,7 +454,7 @@ exactly why those handlers run in parallel on the input disruptor. The compute i
 ## 12. The code as implemented in state `009b`
 
 > Verbatim from the `009b` overlay:
-> `specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
+> `specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
 > (rendered into the generated `order-matcher` module by the pipeline).
 
 **Fixed-point prices (replaces `BigDecimal`) — `Px.java`:**

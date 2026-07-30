@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
-STATE_ID="009b-lmax-sequencer-architecture"
+STATE_ID="YU01-lmax-sequencer"
 
 # No-GC conformance gate (state 009b, NGC-02 / SC-NGC-01 / SC-09B05, task T09B18).
 #
@@ -19,7 +19,7 @@ STATE_ID="009b-lmax-sequencer-architecture"
 # Usage:
 #   pipeline/validate-no-gc-conformance.sh [order-matcher-module-dir]
 # Default module: ${TRADERX_GENERATED_ROOT:-generated}/code/target-generated/order-matcher
-# (produce it with: bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture)
+# (produce it with: bash pipeline/generate-state.sh YU01-lmax-sequencer)
 
 MODULE_DIR="${GENERATED_ROOT}/code/target-generated/order-matcher"
 if [[ $# -gt 0 ]]; then

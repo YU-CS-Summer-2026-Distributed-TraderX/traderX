@@ -8,11 +8,11 @@ Completed:
 - spec pack scaffold created from the `014` state shape
 - generation and runtime harness entrypoints added
 - learning guide placeholder added
-- `009b -> YU02-lmax-kubernetes` port matrix created in `generation/port-matrix.md`
+- `YU01 -> YU02-lmax-kubernetes` port matrix created in `generation/port-matrix.md`
 - durable donor surfaces inventoried across `order-matcher`, `trade-service`, `trade-processor`, supporting services, and Kubernetes manifest targets
 - initial `014` target mapping recorded for code, Kubernetes base manifests, Tilt manifests, and inherited FDC3/Sail assets
 - initial runtime overlay path enabled in `pipeline/render-state-YU02-lmax-kubernetes.sh`
-- first `009b` runtime overrides seeded into `YU02-lmax-kubernetes` for `order-matcher`, `trade-service`, `trade-processor`, `account-service`, and `position-service`
+- first `YU01` runtime overrides seeded into `YU02-lmax-kubernetes` for `order-matcher`, `trade-service`, `trade-processor`, `account-service`, and `position-service`
 - Postgres confirmed as the durable database baseline for this state
 - first Kubernetes/Tilt deployment overrides added for `order-matcher` and `trade-service`
 - actuator-based LMAX recovery readiness added to `order-matcher`
@@ -22,8 +22,8 @@ Completed:
 
 Not yet implemented:
 
-- full `009b` backend/runtime override validation on the `014` baseline
+- full `YU01` backend/runtime override validation on the `014` baseline
 - live cluster validation of replay-gated readiness and Postgres projector writes
 - JIT warm-up replay gating
 - dedicated `YU02-lmax-kubernetes` lifecycle harness beyond the inherited `014` wrapper
-- runtime parity with either `009b` or `014`
+- runtime parity with either `YU01` or `014`

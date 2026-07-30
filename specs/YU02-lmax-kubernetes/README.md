@@ -13,7 +13,7 @@ Kubernetes/C3/FDC3 runtime line.
 Primary intent:
 
 - preserve the `014-fdc3-intent-interoperability` Kubernetes/C3/FDC3 platform baseline,
-- forward-port the `009b-lmax-sequencer-architecture` hot-path and service-role changes onto that baseline,
+- forward-port the `YU01-lmax-sequencer` hot-path and service-role changes onto that baseline,
 - create a durable state home for cloud deployment work,
 - keep inherited frontend/FDC3 behavior unless the LMAX port requires an explicit contract change.
 
@@ -37,6 +37,6 @@ Core artifacts:
 Target runtime behavior:
 
 - Kubernetes/C3 runtime inherited from `014-fdc3-intent-interoperability`.
-- LMAX matcher/Gateway/runtime semantics inherited from `009b-lmax-sequencer-architecture`.
+- LMAX matcher/Gateway/runtime semantics inherited from `YU01-lmax-sequencer`.
 - Stateful Kubernetes treatment for journal, snapshot, replay, and warm-up readiness.
 - Honest scaffold-first generation until the real forward port lands.
