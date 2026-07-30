@@ -6,6 +6,16 @@
   --home-slate: #0f172a;
   --home-text: #334155;
   --home-border: #e2e8f0;
+  /* Hero background, separate from --home-blue so the accent colour used for the kicker text and
+     the primary button label is unaffected.
+     The YU CS shield is 80% #23437c (luminance 0.058). Against the old #0a5c9b hero that was a
+     1.39:1 contrast ratio — the shield's body was all but invisible and only its white linework
+     held the shape. Measured against the alternatives, this is the best separation available:
+     1.76:1 on the shield body and 17:1 for white text. It cannot go much higher, because a
+     background light enough to make a mid-navy shield pop would fail white body text; darkening is
+     the only direction that helps, and what it really buys is the white circuit lines going from
+     7:1 to 17:1, which is what makes the mark read crisply. */
+  --home-hero: #0b1c33;
   background: #ffffff;
   color: var(--home-text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -27,7 +37,7 @@
 }
 
 .hero {
-  background: var(--home-blue);
+  background: var(--home-hero);
   color: #ffffff;
   padding-bottom: 5rem;
 }
@@ -177,6 +187,11 @@
    no such dependency; the mobile media query below still handles narrow screens. */
 .heroLogo {
   display: block;
+  /* The supplied wordmarks are both dark — one solid black, one near-black plus cyan — and neither
+     is legible on the dark hero. brightness(0) crushes the artwork to solid black and invert(1)
+     flips it to solid white, which renders it in the same white as the hero copy and the shield's
+     linework without needing a light variant of the asset. */
+  filter: brightness(0) invert(1);
   height: auto;
   max-width: 100%;
   min-width: 14rem;
