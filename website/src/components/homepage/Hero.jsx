@@ -88,9 +88,13 @@ export default function Hero() {
           </p>
 
           <p className={styles.heroCopy}>
-            Every claim on this site is machine-checked or measured on a deployed cluster —{' '}
-            <Link to="/docs/engineering/test-coverage">see how it is verified</Link>
-            .
+            Every claim on this site is machine-checked or measured on a deployed cluster.
+          </p>
+
+          {/* Its own sentence on its own line. Joined to the line above with an em dash, the link
+              wrapped onto a new line by itself and read as a fragment. */}
+          <p className={styles.heroCopyLink}>
+            <Link to="/docs/engineering/test-coverage">See how it is verified.</Link>
           </p>
 
           <div className={styles.heroActions}>
