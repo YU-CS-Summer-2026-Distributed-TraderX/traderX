@@ -97,7 +97,7 @@ Phase: overlay-in-progress
 
 The generated state exists to anchor forward-port work from:
 
-- `009b-lmax-sequencer-architecture`
+- `YU01-lmax-sequencer`
 - onto `014-fdc3-intent-interoperability`
 
 Runtime overlays are now applied onto `generated/code/target-generated`, but the state is not yet

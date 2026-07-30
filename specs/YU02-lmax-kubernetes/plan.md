@@ -3,7 +3,7 @@
 ## Goal
 
 Create a new non-numeric state named `YU02-lmax-kubernetes` whose single lineage parent is
-`014-fdc3-intent-interoperability`, while forward-porting the `009b` LMAX trading architecture onto the
+`014-fdc3-intent-interoperability`, while forward-porting the `YU01` LMAX trading architecture onto the
 latest Kubernetes/C3 runtime.
 
 ## Workstreams
@@ -13,7 +13,7 @@ latest Kubernetes/C3 runtime.
    - learning doc entry
    - generation hooks and runtime harness registration
 2. Port matrix
-   - identify `009b` service/runtime deltas
+   - identify `YU01` service/runtime deltas
    - classify each delta as backend, manifest, startup, storage, observability, or frontend contract
 3. Runtime implementation
    - port matcher/Gateway internals

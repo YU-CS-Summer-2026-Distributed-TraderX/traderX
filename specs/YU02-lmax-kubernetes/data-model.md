@@ -4,7 +4,7 @@
 
 - `YU02-lmax-kubernetes` state pack
 - inherited `014` Kubernetes/C3/FDC3 runtime artifacts
-- ported `009b` LMAX matcher/Gateway/runtime override set
+- ported `YU01` LMAX matcher/Gateway/runtime override set
 - Kubernetes storage artifacts for journal, snapshot, and checkpoint data
 - implementation-status and port-matrix records
 

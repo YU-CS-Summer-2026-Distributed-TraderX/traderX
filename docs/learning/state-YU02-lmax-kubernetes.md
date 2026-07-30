@@ -20,16 +20,23 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU02-lmax-kubernetes](https://github.com/finos/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...code/generated-state-YU02-lmax-kubernetes](https://github.com/finos/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...code%2Fgenerated-state-YU02-lmax-kubernetes)
+- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** FR-LK06 — startup performs snapshot load, journal replay and warm-up replay, and readiness is
+- **Added:** FR-LK07 — durable Kubernetes storage and lifecycle rules for journal, snapshot and checkpoint
+- **Added:** FR-LK09 — a port matrix and implementation-status document are produced before any claim of
+- **Changed:** FR-LK03 — inherited matcher-path internals are replaced by the sequencer and single-writer hot
+- **Changed:** FR-LK04 — `order-matcher` becomes the LMAX hot-path node under Kubernetes while keeping its
+- **Changed:** FR-LK05 — `trade-service` takes the gateway/receptionist role in front of the hot path.
+- **Changed:** FR-LK02 — the Kubernetes, C3 and FDC3 runtime contracts inherited from `014` are preserved; a
+- **Removed:** The synchronous per-order database round trip on the admission path, which was the throughput and
 
 ## Run This State
 

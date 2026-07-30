@@ -33,7 +33,7 @@ latest ancestor version and add on top, never replace:
 
 - `trade-processor/src/main/resources/application.properties` (YU02 driver + YU05 auth/tca/recon → + `eod.*`)
 - `trade-processor/.../service/PriceHistoryStore.java` (YU05 `record`/`twap`/`priceAtOrBefore` → + `tickers()`)
-- `position-service/.../application.properties`, `build.gradle` (009b/YU02 → + NATS dep + `eod.*`)
+- `position-service/.../application.properties`, `build.gradle` (YU01/YU02 → + NATS dep + `eod.*`)
 - `kubernetes-runtime/manifests/base/database-init-configmap.yaml` (YU05 `settlementdate` → + EOD tables)
 
 Verify empirically after generating: regenerate, then grep the generated output for an ancestor

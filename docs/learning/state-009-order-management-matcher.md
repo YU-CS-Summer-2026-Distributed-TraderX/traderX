@@ -8,7 +8,7 @@ title: "State 009: Order Management and Matcher"
 
 - Previous state(s): [008-pricing-awareness-market-data](/docs/learning/state-008-pricing-awareness-market-data)
 - Dotted-line parent(s): none
-- Next state(s): [009b-lmax-sequencer-architecture](/docs/learning/state-009b-lmax-sequencer-architecture), [010-kubernetes-runtime](/docs/learning/state-010-kubernetes-runtime)
+- Next state(s): [010-kubernetes-runtime](/docs/learning/state-010-kubernetes-runtime), [YU01-lmax-sequencer](/docs/learning/state-YU01-lmax-sequencer)
 
 ## Convergence Metadata
 
@@ -20,12 +20,12 @@ title: "State 009: Order Management and Matcher"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-009-order-management-matcher](https://github.com/finos/traderX/tree/code/generated-state-009-order-management-matcher)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [code/generated-state-009-order-management-matcher](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-009-order-management-matcher)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `008-pricing-awareness-market-data`: [code/generated-state-008-pricing-awareness-market-data...code/generated-state-009-order-management-matcher](https://github.com/finos/traderX/compare/code%2Fgenerated-state-008-pricing-awareness-market-data...code%2Fgenerated-state-009-order-management-matcher)
+- Compare against `008-pricing-awareness-market-data`: [code/generated-state-008-pricing-awareness-market-data...code/generated-state-009-order-management-matcher](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-008-pricing-awareness-market-data...code%2Fgenerated-state-009-order-management-matcher)
 
 ## Plain-English Code Delta
 
