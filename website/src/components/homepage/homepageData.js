@@ -151,9 +151,9 @@ export const overviewCards = [
     icon: 'handshake',
   },
   {
-    title: 'Verified, Not Asserted',
+    title: 'Tested Continuously',
     description:
-      'Every architectural claim is pinned by tests that run on each push, and the end-to-end proofs are built to fail — several caught real bugs before they passed.',
+      'Every architectural claim is pinned by tests that run on each push, backed by end-to-end proofs against a live cluster.',
     tone: 'slate',
     icon: 'users',
   },
