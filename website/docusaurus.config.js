@@ -8,6 +8,9 @@ const projectSlug = 'traderX'
 // were unaffiliated would be both wrong and useless to Dov, who wants to point at it AS a FINOS
 // showcase of an outside organisation running with TraderX.
 const siteTitle = 'Distributed TraderX'
+// The wordmark shown beside the logo in the top-left of every page. Deliberately shorter than
+// siteTitle: next to the YU mark it only needs to say which application this is.
+const navbarTitle = 'TraderX'
 const siteOrg = 'Yeshiva University'
 const siteTagline = 'A sell-side OMS on the LMAX architecture — Yeshiva University CS'
 const copyrightOwner = 'Yeshiva University CS · built on TraderX, a FINOS project'
@@ -75,7 +78,7 @@ module.exports = {
         '<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. Read the <a href="/docs/blog/2026-03-29-traderx-speckit-migration"><strong>engineering story</strong></a>.',
     },
     navbar: {
-      title: siteTitle,
+      title: navbarTitle,
       logo: {
         alt: 'Yeshiva University Computer Science',
         // Transparent PNG. The original is opaque-on-white, which rendered as a white card around

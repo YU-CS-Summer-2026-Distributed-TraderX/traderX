@@ -183,14 +183,6 @@
   width: 34rem;
 }
 
-/* The crest sits beside the TraderX wordmark so the pairing itself carries the message: this is
-   YU's build of TraderX. Sized in vw rather than fixed px so the two do not drift apart as the hero
-   scales, and flex-shrink:0 keeps it round when the row gets tight.
-   The white disc is deliberate. Both institutional logos are supplied as opaque PNGs on white — no
-   alpha — so dropped straight onto the blue hero they render as stray white rectangles. Knocking the
-   white out to transparency is not an option either: the crest's Torah and lettering ARE white, so
-   keying on white would punch holes through the artwork itself. A padded white disc is the standard
-   treatment for a mark that only exists on white, and it reads as an intentional badge. */
 /* The YU CS mark, paired with the TraderX wordmark so the lockup itself says whose build this is.
    Now a true-alpha PNG, so the white plate it used to need is gone — the shield sits directly on the
    hero blue. Sized in rem, never vw (see the note on .heroLogo), and larger than the plated version
@@ -229,6 +221,28 @@
 }
 
 .heroCopy a:hover {
+  color: #e7eff7;
+}
+
+/* The verification link is its own sentence, so it sits on its own line with tighter spacing than a
+   full paragraph would give it. */
+.heroCopyLink {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.7;
+  margin: -1.25rem auto 2.5rem;
+  max-width: 44rem;
+}
+
+.heroCopyLink a {
+  color: #ffffff;
+  font-weight: 850;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.heroCopyLink a:hover {
   color: #e7eff7;
 }
 
@@ -1052,9 +1066,22 @@
 
 /* Renamed from .footerFinosLogo — it is the YU crest now, and a class name that lies about its
    contents is how the next person reintroduces the wrong logo. */
+.footerYuLogoLink {
+  display: inline-block;
+  line-height: 0;
+}
+
+/* The crest PNG is opaque on pure #ffffff, but this footer is #f8fafc — a seven-unit difference,
+   which is just enough to read as a white square sitting on the page. `multiply` maps white onto
+   whatever is beneath it (white × anything = that thing), so the ground disappears exactly rather
+   than being approximated with a hardcoded colour that would drift if the footer is ever retoned.
+   The crest's own blue linework is unaffected on a near-white backdrop.
+   This footer is light-only — the homepage sets its own palette and does not follow the theme
+   toggle — so there is no dark-mode case where multiply would swallow the artwork. */
 .footerYuLogo {
   display: block;
   height: 3.5rem;
+  mix-blend-mode: multiply;
   width: auto;
 }
 
