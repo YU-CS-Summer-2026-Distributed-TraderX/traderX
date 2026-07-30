@@ -10,11 +10,13 @@ export default function Footer() {
     <footer className={styles.footer}>
       <div className={styles.footerInner}>
         <div className={styles.footerBrand}>
-          <img
-            src={useBaseUrl('/img/yu/yu-crest.png')}
-            alt="Yeshiva University"
-            className={styles.footerYuLogo}
-          />
+          <ExternalLink href="https://www.yu.edu" className={styles.footerYuLogoLink}>
+            <img
+              src={useBaseUrl('/img/yu/yu-crest.png')}
+              alt="Yeshiva University"
+              className={styles.footerYuLogo}
+            />
+          </ExternalLink>
           <span />
           <div>
             {/*
