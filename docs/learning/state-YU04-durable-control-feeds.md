@@ -20,16 +20,23 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU04-durable-control-feeds](https://github.com/finos/traderX/tree/code/generated-state-YU04-durable-control-feeds)
-- Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
+- Generated branch: [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds)
+- Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU03-in-memory-risk-gateway`: [code/generated-state-YU03-in-memory-risk-gateway...code/generated-state-YU04-durable-control-feeds](https://github.com/finos/traderX/compare/code%2Fgenerated-state-YU03-in-memory-risk-gateway...code%2Fgenerated-state-YU04-durable-control-feeds)
+- Compare against `YU03-in-memory-risk-gateway`: [YU03-in-memory-risk-gateway...YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU03-in-memory-risk-gateway...YU04-durable-control-feeds)
 
 ## Plain-English Code Delta
 
-- No functional delta summary is currently available in this state pack.
+- **Added:** Transactional outbox in `account-service` and `reference-data`: each control change is written in the
+- **Added:** Two durable NATS JetStream streams of versioned control deltas, `TRADERX_CONTROL_ACCOUNT` and
+- **Added:** Retention and replay on those streams, so a control change made while a replica is briefly offline is
+- **Added:** Watermarked snapshot endpoints `GET /account/control-snapshot` and `GET /stocks/control-snapshot`,
+- **Added:** A five-step bootstrap per source in `order-matcher`: subscribe and buffer, fetch the snapshot, verify
+- **Added:** Real per-source epoch and monotonic version on every control record, so the replica can tell a gap, a
+- **Added:** Quarantine and automatic re-bootstrap: a gap, regression, epoch change or failed checksum stops
+- **Added:** Per-source observability — `traderx_replica_source_watermark` and `traderx_replica_quarantine_total`,
 
 ## Run This State
 
@@ -44,5 +51,5 @@ inherits YU03-in-memory-risk-gateway runtime harness
 - Flows / topology: [/specs/YU04-durable-control-feeds/system/runtime-topology](/specs/YU04-durable-control-feeds/system/runtime-topology)
 - Research: [link](/specs/YU04-durable-control-feeds/research)
 - Data model: [link](/specs/YU04-durable-control-feeds/data-model)
-- Quickstart: `n/a`
+- Quickstart: [link](/specs/YU04-durable-control-feeds/quickstart)
 
