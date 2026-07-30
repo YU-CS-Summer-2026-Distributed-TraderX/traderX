@@ -1,13 +1,36 @@
 # Functional Delta: YU07-historical-tick-store over YU06-eod-price-production
 
-New requirement namespace `TS`.
+The deployment harness, observability stack and existing services carry over from
+`YU06-eod-price-production` — no existing publisher, consumer, or the order-matching hot path is
+touched; the one existing-service edit is an `order-matcher` forward-port of `YU05`'s
+`EntitlementGate`, restoring parity with YU05/YU06 rather than changing matching behavior. This
+state adds one new component, `tick-store`, which listens to market data TraderX already broadcasts
+and keeps it, alongside normalized third-party NYSE TAQ data, in a single columnar store that can be
+queried by symbol and date range.
 
-| Req | Status | Notes |
-|---|---|---|
-| FR-TS01 capture pricing.* and account trades | **Done** | `capture.py` subscribes both subjects on the shared NATS broker connection. |
-| FR-TS02 no change to existing publishers/consumers | **Done** | Both subjects are pre-existing broadcast subjects with multiple subscribers already; `tick-store` adds a subscriber, nothing more. |
-| FR-TS03 partitioned Parquet output | **Done** | `source=<live|taq>/dt=<date>/symbol=<SYM>/*.parquet`, written via DuckDB `COPY ... (FORMAT PARQUET, COMPRESSION ZSTD)`. |
-| FR-TS04 TAQ CQ normalizer | **Done** | `ingest_taq_quotes.py` implements the confirmed `DATE,TIME_M,EX,BID,BIDSIZ,ASK,ASKSIZ,QU_COND,QU_SEQNUM,NATBBO_IND,QU_CANCEL,QU_SOURCE,SYM_ROOT,SYM_SUFFIX` layout. |
-| FR-TS05 stream from zip, no extraction | **Done** | `unzip -p <zip> <entry> \| python3 ingest_taq_quotes.py` — DuckDB reads `/dev/stdin` directly. |
-| FR-TS06 uniform DuckDB query recipe | **Done** | `duckdb_query_examples.sql` — VWAP-style and return-series queries filter by `symbol`/`dt` and read across both `source` values in one `FROM read_parquet(..., hive_partitioning=true)`. |
-| FR-TS07 source/event_type/symbol on every row | **Done** | Every write path sets all three; see `data-model.md`. |
+## Added
+
+- A `tick-store` component that subscribes to the existing `pricing.*` and `/accounts/*/trades` NATS
+  subjects and records every message published on them (`capture.py`).
+- Capture is an extra subscriber on broadcast subjects that carry no ack back to a publisher, so a
+  capture outage applies no backpressure and cannot slow order matching.
+- A Parquet store partitioned as `source=<live|taq>/dt=<date>/symbol=<SYM>/`, ZSTD-compressed and
+  written through DuckDB, so queries prune to just the symbols and dates they ask for.
+- A unified row schema carrying `source`, `event_type` and `symbol` on every row, so live-captured
+  ticks and TAQ-ingested rows stay distinguishable in any query.
+- `ingest_taq_quotes.py`, a normalizer that turns a NYSE Daily TAQ Consolidated Quotes (CQ) CSV into
+  exactly the same schema and partition layout as live capture.
+- `ingest_taq_trades.py`, the equivalent normalizer for TAQ Consolidated Trades (CT) files, verified
+  against real CT sample rows before shipping.
+- Ingestion that streams a source CSV straight out of its zip archive, `unzip -p` piped into
+  DuckDB's `/dev/stdin` read, so nothing decompressed lands on disk.
+- Peak ingestion disk is one output Parquet partition rather than a day's ~76 GiB decompressed CSV,
+  or terabytes of scratch across a whole batch.
+- A container-bundled `stage2_ingest.sh` driver that dispatches any batch of `_raw-taq` zips to the
+  matching normalizer, streamed from GCS without touching a pod's local disk.
+- Bulk runs as a Kubernetes Indexed Job (`tick-store-stage2`), one file per pod for
+  coordination-free parallelism; end-to-end verification at full production scale stays open.
+- A DuckDB query recipe (`duckdb_query_examples.sql`) covering VWAP, daily-return, spread and
+  inventory queries that read live and TAQ rows together in one `read_parquet(..., hive_partitioning=true)`.
+- Optional Google Cloud Storage output: a `gs://` destination path configures DuckDB's native `gcs`
+  secret from HMAC environment variables, letting the store run with no attached volume.

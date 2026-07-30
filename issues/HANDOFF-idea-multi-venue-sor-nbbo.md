@@ -102,3 +102,64 @@ design a new YUxx state:
 3. Confirm state id/name (e.g. `YUxx-multi-venue-sor`).
 4. If go: NBBO service first (needs only quote publication from venue 1 + a stub), SOR second,
    real second venue last.
+
+---
+
+## Addendum 2026-07-20 — outbound routing is the missing arrow in the internalizer story
+
+Reframing added after mapping TraderX against a published HFT-firm reference architecture. The
+routing gap is the same feature described above, but the *justification* and the *available
+building blocks* have both changed since this doc was written (it predates YU08 and YU10).
+
+### The framing
+
+TraderX is best described as a **broker-dealer operating an internalizing venue** — the LMAX
+model (LMAX Exchange = MTF, LMAX Global = broker), or equivalently an ATS operator / systematic
+internaliser. That resolves the apparent contradiction between the venue-side states (YU02 BLP,
+YU06 official closing prices, YU11/YU12 consensus) and the broker-side states (YU05 settlement
+and TCA, YU08 algos).
+
+The flow that framing implies is: client FIX order (YU10) → 15c3-5 pre-trade risk (YU03) →
+parent order sliced into children (YU08) → children hit **our own book first** (YU02) → whatever
+crosses internally is ours to settle (YU05). Every state has a coherent seat.
+
+**But the last leg is missing.** A real internalizer routes the *unfilled residual* out to a lit
+venue. Today a child order either crosses against other client flow or rests on our book forever
+— there is no egress. That is the single arrow this state adds, and it is what turns the system
+from a pure receiver of order flow into a sender of it.
+
+### What changed since this doc was written
+
+| Then (YU04) | Now (YU12) | Effect on this state |
+|---|---|---|
+| No FIX anywhere | **YU10** ships a QuickFIX/J **acceptor** with session mgmt, durable ClOrdID ledger, fail-closed auth | Egress needs a QuickFIX/J **initiator** — same library, opposite role. Session/ledger machinery is largely reusable |
+| No parent/child order concept | **YU08** execution algo engine slices parent orders into children | The SOR's natural input already exists — YU08 emits exactly what a router consumes |
+| Single BLP, hand-built HA | **YU11/YU12** Aeron + Raft consensus | Routing decisions are state that must survive failover — see below |
+
+The stub-vs-full-second-venue question above is now *less* important, because there is a third
+option that did not exist before: **route out over FIX to an external simulated venue** rather
+than standing up a second BLP at all. A FIX initiator pointed at a small external mock venue is
+cheaper than a second BLP and tells a more honest story (real markets route over the wire, not
+in-process).
+
+### New design constraints from YU11/YU12
+
+- **A routing decision is durable state.** If a child order is sent out to venue B and the leader
+  dies, the promoted node must not re-send it. This is the same class of bug as the
+  `nextOrderRef` ID-reuse issue — an outbound side effect keyed off state that must be captured
+  in the snapshot. Check `traderx-snapshot-completeness-audit` before designing the egress path.
+- **Egress must sit off the replicated hot path**, like the SOR itself. The consensus log records
+  the *decision*; the FIX initiator performs the *side effect* on the leader only. Do not put
+  socket I/O inside the ClusteredService.
+- Best-execution evidence (already flagged above as a YU05 tie-in) is now more valuable: with
+  YU05 TCA live, a routing decision log makes TCA cross-venue rather than single-book.
+
+### Open questions this addendum adds
+
+- Does the external venue mock live in-repo (a small QuickFIX/J acceptor, mirroring YU10's) or is
+  it a second BLP after all? Lean mock — cheaper, and it exercises the wire.
+- Does the residual route out, or does the parent order get *split* up front by the SOR? Real
+  internalizers do both (ping internal, sweep external). Pick one for v1; pinging internal first
+  is simpler and matches the internalizer narrative.
+- Fills now arrive from two sources (internal match, external ExecutionReport). The venue-id
+  schema gap noted above becomes mandatory rather than optional.

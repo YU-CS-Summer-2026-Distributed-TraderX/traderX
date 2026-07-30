@@ -8,7 +8,7 @@
 
 An order decision depends on external account/security/risk values. Replaying a historical order
 while querying today's external state can produce a different result, breaking the inherited
-`009b`/`YU02` determinism. Gateway replicas alone also do not establish one total order between
+`YU01`/`YU02` determinism. Gateway replicas alone also do not establish one total order between
 control changes, price ticks, and commands.
 
 ## Decision

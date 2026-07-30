@@ -279,29 +279,6 @@
       }
     },
     {
-      "id": "009b-lmax-sequencer-architecture",
-      "title": "LMAX Sequencer Architecture (Trading Hot Path)",
-      "status": "draft",
-      "track": "architecture",
-      "convergenceLevel": "none",
-      "isConvergence": false,
-      "dottedParents": [],
-      "primaryLineageRole": "optional",
-      "featurePack": "specs/009b-lmax-sequencer-architecture",
-      "previous": [
-        "009-order-management-matcher"
-      ],
-      "generation": {
-        "mode": "specified",
-        "entrypoint": "bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture",
-        "runtime": "./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh"
-      },
-      "publish": {
-        "branch": "code/generated-state-009b-lmax-sequencer-architecture",
-        "tag": "generated/009b-lmax-sequencer-architecture/v1"
-      }
-    },
-    {
       "id": "010-kubernetes-runtime",
       "title": "Kubernetes Runtime on C2",
       "status": "implemented",
@@ -420,9 +397,32 @@
       }
     },
     {
+      "id": "YU01-lmax-sequencer",
+      "title": "LMAX Sequencer (Trading Hot Path)",
+      "status": "implemented",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU01-lmax-sequencer",
+      "previous": [
+        "009-order-management-matcher"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU01-lmax-sequencer",
+        "runtime": "./scripts/start-state-YU01-lmax-sequencer-generated.sh"
+      },
+      "publish": {
+        "branch": "YU01-lmax-sequencer",
+        "tag": "generated/YU01-lmax-sequencer/v1"
+      }
+    },
+    {
       "id": "YU02-lmax-kubernetes",
       "title": "LMAX Kubernetes",
-      "status": "draft",
+      "status": "implemented",
       "track": "architecture",
       "convergenceLevel": "none",
       "isConvergence": false,
@@ -438,15 +438,15 @@
         "runtime": "./scripts/start-state-YU02-lmax-kubernetes-generated.sh"
       },
       "publish": {
-        "branch": "code/generated-state-YU02-lmax-kubernetes",
+        "branch": "YU02-lmax-kubernetes-blp-ha",
         "tag": "generated/YU02-lmax-kubernetes/v1"
       }
     },
     {
       "id": "YU03-in-memory-risk-gateway",
       "title": "In-Memory Risk Gateway",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -461,15 +461,15 @@
         "runtime": "inherits YU02-lmax-kubernetes runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU03-in-memory-risk-gateway",
+        "branch": "YU03-in-memory-risk-gateway",
         "tag": "generated/YU03-in-memory-risk-gateway/v1"
       }
     },
     {
       "id": "YU04-durable-control-feeds",
       "title": "Durable Control Feeds",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "nonfunctional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -484,15 +484,15 @@
         "runtime": "inherits YU03-in-memory-risk-gateway runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU04-durable-control-feeds",
+        "branch": "YU04-durable-control-feeds",
         "tag": "generated/YU04-durable-control-feeds/v1"
       }
     },
     {
       "id": "YU05-post-trade-compliance",
       "title": "Post-Trade Compliance Bundle",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -507,15 +507,15 @@
         "runtime": "inherits YU04-durable-control-feeds runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU05-post-trade-compliance",
+        "branch": "YU05-post-trade-compliance",
         "tag": "generated/YU05-post-trade-compliance/v1"
       }
     },
     {
       "id": "YU06-eod-price-production",
       "title": "EOD Price Production + Overnight Batch Chain",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -530,15 +530,15 @@
         "runtime": "inherits YU05-post-trade-compliance runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU06-eod-price-production",
+        "branch": "YU06-eod-price-production",
         "tag": "generated/YU06-eod-price-production/v1"
       }
     },
     {
       "id": "YU07-historical-tick-store",
       "title": "Historical Tick Store",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -553,15 +553,15 @@
         "runtime": "inherits YU06-eod-price-production runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU07-historical-tick-store",
+        "branch": "YU07-historical-tick-store",
         "tag": "generated/YU07-historical-tick-store/v1"
       }
     },
     {
       "id": "YU08-execution-algo-engine",
       "title": "Execution Algo Engine",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -576,15 +576,15 @@
         "runtime": "inherits YU07-historical-tick-store runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU08-execution-algo-engine",
+        "branch": "YU08-execution-algo-engine",
         "tag": "generated/YU08-execution-algo-engine/v1"
       }
     },
     {
       "id": "YU09-ops-hardening",
       "title": "Ops Hardening",
-      "status": "draft",
-      "track": "architecture",
+      "status": "implemented",
+      "track": "nonfunctional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
@@ -599,8 +599,146 @@
         "runtime": "inherits YU08-execution-algo-engine runtime harness"
       },
       "publish": {
-        "branch": "code/generated-state-YU09-ops-hardening",
+        "branch": "YU09-ops-hardening",
         "tag": "generated/YU09-ops-hardening/v1"
+      }
+    },
+    {
+      "id": "YU10-fix-ingress",
+      "title": "FIX Order-Entry Ingress",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU10-fix-ingress",
+      "previous": [
+        "YU09-ops-hardening"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU10-fix-ingress",
+        "runtime": "inherits YU09-ops-hardening runtime harness"
+      },
+      "publish": {
+        "branch": "YU10-fix-ingress",
+        "tag": "generated/YU10-fix-ingress/v1"
+      }
+    },
+    {
+      "id": "YU11-aeron-replication",
+      "title": "Aeron SBE BLP Replication",
+      "status": "implemented",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU11-aeron-replication",
+      "previous": [
+        "YU10-fix-ingress"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU11-aeron-replication",
+        "runtime": "inherits YU10-fix-ingress runtime harness"
+      },
+      "publish": {
+        "branch": "YU11-aeron-replication",
+        "tag": "generated/YU11-aeron-replication/v1"
+      }
+    },
+    {
+      "id": "YU12-aeron-cluster",
+      "title": "Aeron Cluster BLP Consensus",
+      "status": "implemented",
+      "track": "architecture",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU12-aeron-cluster",
+      "previous": [
+        "YU11-aeron-replication"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU12-aeron-cluster",
+        "runtime": "inherits YU11-aeron-replication runtime harness"
+      },
+      "publish": {
+        "branch": "YU12-aeron-cluster",
+        "tag": "generated/YU12-aeron-cluster/v1"
+      }
+    },
+    {
+      "id": "YU13-limit-order-book",
+      "title": "Crossing Limit-Order Book",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU13-limit-order-book",
+      "previous": [
+        "YU12-aeron-cluster"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU13-limit-order-book",
+        "runtime": "inherits YU12-aeron-cluster runtime harness"
+      },
+      "publish": {
+        "branch": "YU13-limit-order-book",
+        "tag": "generated/YU13-limit-order-book/v1"
+      }
+    },
+    {
+      "id": "YU14-listed-equity-options",
+      "title": "Listed Equity Options",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU14-listed-equity-options",
+      "previous": [
+        "YU13-limit-order-book"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU14-listed-equity-options",
+        "runtime": "inherits YU13-limit-order-book runtime harness"
+      },
+      "publish": {
+        "branch": "YU14-listed-equity-options",
+        "tag": "generated/YU14-listed-equity-options/v1"
+      }
+    },
+    {
+      "id": "YU15-eod-risk-extract",
+      "title": "EOD Risk Extract",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU15-eod-risk-extract",
+      "previous": [
+        "YU14-listed-equity-options"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU15-eod-risk-extract",
+        "runtime": "inherits YU14-listed-equity-options runtime harness"
+      },
+      "publish": {
+        "branch": "YU15-eod-risk-extract",
+        "tag": "generated/YU15-eod-risk-extract/v1"
       }
     }
   ]

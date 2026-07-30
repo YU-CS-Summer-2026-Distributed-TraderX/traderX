@@ -25,7 +25,7 @@ snapshot-only, out-of-band cache feed, policy-id-only) were rejected — see ADR
 
 ## Forward-port constraints that shaped the design
 
-The stale `in-memory-risk-gateway` branch was based on `009b` (pre-k8s). The `YU02` base diverged:
+The stale `in-memory-risk-gateway` branch was based on `YU01` (pre-k8s). The `YU02` base diverged:
 
 - **Journal + replication share a fixed 64-byte record**, and snapshot recovery is keyed to journal
   *byte offsets*. The stale branch's 96-byte CRC'd record + legacy upcasters would orphan existing
