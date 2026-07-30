@@ -14,9 +14,7 @@ custom MDC publication management, fast-witness CAS fencing, cross-epoch snapsho
 recovery — is hand-built, and its E2E campaign shows what that costs: eight compensating fixes on
 the replication path, a cross-epoch recovery design that took five committed slices to prove, a
 demonstrated ID-reuse defect (`ord-013-0008` reissued after promotion), and a fencing story that
-must hold under adversarial timing rather than by construction
-(`docs/handoff/PROOF-yu11-cross-epoch-recovery-2026-07-17.md`,
-`docs/handoff/ISSUES-yu11-e2e-2026-07-17.md`).
+must hold under adversarial timing rather than by construction.
 
 ## Why Aeron Cluster
 
@@ -26,7 +24,7 @@ to log position, and automatic member catch-up. The mapping onto this codebase i
 list: the k8s Lease election, the NATS KV witness, the MDC publication machinery, the journal
 reader/recovery orchestration, and the entire bundle-transfer path are replaced by consensus
 primitives, while the crown-jewel logic — `MatchingEngine`, two-tier risk, the SBE codecs, the
-CQRS/projector side — is reused as-is (`docs/handoff/HANDOFF-aeron-cluster-migration.md`).
+CQRS/projector side — is reused as-is.
 
 Three properties decide it:
 

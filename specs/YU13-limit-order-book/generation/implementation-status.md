@@ -269,7 +269,7 @@ Two things this measurement taught, both worth keeping:
 
 ## HA recovery proof on the crossing engine (T-LOB14)
 
-Full evidence in `docs/handoff/PROOF-yu13-kind-ha-crossing-book.md`. Fixture: ten asks @150.050
+Fixture: ten asks @150.050
 arriving FIRST, ten @150.000 arriving SECOND — arrival order and price order deliberately
 disagree, so the fill pattern is a falsifiable test of price priority.
 
@@ -310,7 +310,7 @@ aggressor limit at the same price on the other side; the pair is order-insensiti
 lands first rests, the other crosses at the resting price), so a sequenced replay reproduces
 every historical print at its historical price, the book self-cleans to empty, and positions stay
 a near-flat random walk. Passive and aggressor accounts rotate over the 7 real SQL accounts and
-are always distinct. `scripts/bench/taq-replay.mjs`:
+are always distinct. `scripts/bench/replay/taq-replay.mjs`:
 
 - `--mode paced` — sim-clock at `--speed`× real time, ONE in-flight batch. **Must target a single
   gateway pod**: the `order-matcher-gw` Service round-robins across gateways, which interleaves
@@ -449,7 +449,7 @@ recording precisely:
    a flat array indexed by orderRef, doubled to cover the highest ref ever issued and never
    shrunk; terminal eviction nulls entries but the array itself is ~4 B/slot × total orders.
    At ~33M orders (~130 MB + a doubling copy) it OOM'd the members' then-512m heap on the
-   LEADER mid-apply. Inherited from the 009b bounded-retention design (the RETENTION is
+   LEADER mid-apply. Inherited from the YU01 bounded-retention design (the RETENTION is
    bounded; the INDEX never was) — it affects the whole lineage, not just YU13. It also costs
    throughput before it kills: run 3 of the confirmation set decayed to 109k booked/s as the
    array (and GC pressure) grew. **Fix identified:** replace with an `Int2ObjectHashMap`

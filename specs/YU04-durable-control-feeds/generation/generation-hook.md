@@ -21,7 +21,7 @@
      `POST /stocks` + snapshot endpoints, `package.json` NATS client dependency, tests.
    - **Not** a generation-pipeline overlay: the new outbox/`stocks`/`*_source_epoch` tables. Confirmed
      empirically (marker-comment test) that `postgres-database-replacement` — the directory an
-     ancestor state (`009b-lmax-sequencer-architecture`) owns the MariaDB init SQL under — is pruned
+     ancestor state (`YU01-lmax-sequencer`) owns the MariaDB init SQL under — is pruned
      from the generated tree for every k8s-era state (010 onward); a YU04 override of that path is
      silently dropped. The schema addition instead lives directly in the new
      `cluster-addons/yu04-staging/database.yaml` this state's own CI/CD pipeline creates. See

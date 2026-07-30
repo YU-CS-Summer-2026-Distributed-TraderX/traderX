@@ -3,6 +3,11 @@ module.exports = {
     'home',
     {
       type: 'category',
+      label: 'Engineering',
+      items: ['engineering/testing-strategy', 'engineering/test-coverage'],
+    },
+    {
+      type: 'category',
       label: 'Engineering Blog',
       link: {
         type: 'doc',

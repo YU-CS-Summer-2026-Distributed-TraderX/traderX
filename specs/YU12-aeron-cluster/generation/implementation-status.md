@@ -36,7 +36,7 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | Containerized cluster on kind | 3/3 members Ready and a leader elected on `kind-traderx-yu12-cluster` (member-DNS await + halt-on-termination fixed the live `UnknownHostException` wedge). |
 | kind destructive proof | RESOLVED 2026-07-18 (was blocked on a cross-pod egress leg — root cause: egress channel term-length overflowed the default `/dev/shm`; see the E2E proof row below). |
 | Feed adapter (ADR-045) | `FeedAdapterMain`: NATS `pricing.>` conflated into PRICE_TICK ingress with sequenced symbol registration. Compiles; live NATS verification open. |
-| GKE | Not touched (fable-owned YU11 image still deployed). The bench (label `aeron-cluster`) requires the gateway tier serving REST first; deploy/bench commands are user-run per working convention. |
+| GKE | Not touched (the previous state's image still deployed). The bench (label `aeron-cluster`) requires the gateway tier serving REST first; deploy/bench commands are user-run per working convention. |
 
 | kind HA proof (E2E, live) | `PROOF-yu12-kind-ha-2026-07-18.md`: 3-member cluster on kind, cross-pod proof client trading through the log; **0 ID reuse** across 2 failovers + an empty-disk member rejoin, strictly-increasing refs 1005..7457; client-observed failover 813 ms (fast) to ~17 s (slow Docker-Desktop election); final state 3/3 converged. Cross-pod egress unblocked by the term-length/`/dev/shm` fix (ISSUES-yu12-kind-egress). |
 | FIX gateway + survival | `FixGatewayAcceptor` + one-client `ClusterGatewayMain` (REST+FIX through the `OrderSubmitter` seam, endpoint-cycling leader-follow, /orders/batch + /metrics for the bench). `FixGatewaySurvivalTest` GREEN: FIX session survives a modelled leader blip (0 logouts, orders resume same session). |
@@ -56,9 +56,6 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | GKE proofs | Packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); run by yaakov |
 
 ## GKE campaign evidence (2026-07-18/19 — user-authorized GKE session)
-
-Full narrative + numbers: `docs/handoff/PROOF-yu12-gke-failover-2026-07-18.md` and
-`docs/handoff/RECAP-yu12-full-2026-07-19.md`.
 
 | Contract | Evidence |
 |---|---|
