@@ -21,8 +21,13 @@ This is the tier that makes a green build mean something, because it gates merge
 
 ## Tier 1.5 — cross-service integration, in CI with containers
 
-Two tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
+Three tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
 their own task so the fast unit job needs no container runtime.
+
+This tier exists for properties that are enforced by infrastructure rather than by application
+code. A mock can be made to return whatever the code under test expects, so a test built on one can
+only confirm that the code asked for the right thing — never that the database agreed. Constraints,
+foreign keys, transaction boundaries and startup wiring all live on the other side of that line.
 
 `TradeProcessorPersistenceIT` drives the real booking path against a **real MariaDB** initialised
 with the **deployed schema**, run the same way production runs it. It proves the persistence
@@ -35,9 +40,31 @@ contract a mocked unit test cannot:
   Trades disappearing into a foreign-key rejection is a documented failure class here, so this test
   turns that silence into an assertion.
 
+`AccountOutboxAtomicityIT` asserts the guarantee the **transactional outbox** exists to provide:
+the business write and the outbox row commit as one unit, or neither does. That guarantee is
+enforced by the database, so it is only observable against one — the unit-tier test in the same
+package mocks the outbox repository, which makes it pass whether or not the two writes share a
+transaction at all. Every assertion here reads back through an **independent connection**, outside
+the application's pool and its transaction, because reading through the connection that did the
+writing says nothing about what was committed. It covers:
+
+- both rows present after the call, with the outbox row carrying its generated version;
+- **neither row visible to an outside reader while the transaction is still open**, which is what
+  rules out the two writes landing on separate connections;
+- a **database-rejected** outbox insert — a real constraint violation, not a stubbed failure —
+  leaving no account row behind.
+
+It also runs MariaDB with the **same server flags the deployed database uses**, which turned out to
+matter: the account path depends on one of them, and nothing else checks that it is still set.
+
 `TradeProcessorContextIT` starts the composed application context against a **real MariaDB and a
 real message broker**, covering startup wiring that dials the broker during bean creation and so
 cannot be exercised without one.
+
+Each case in this tier was **falsified before it was trusted** — the code was deliberately broken
+to confirm the test fails, and fails for the stated reason. A test that has never failed is a test
+whose failure mode is unknown, and on this tier that risk is real: infrastructure tests can pass by
+never reaching the assertion they claim to make.
 
 ## Tier 2 — end-to-end proofs, operator-run
 
