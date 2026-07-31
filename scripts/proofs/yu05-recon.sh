@@ -35,6 +35,16 @@ if [ "$RI_CODE" = "000" ]; then
 fi
 if [ "$RI_CODE" = "404" ]; then
   echo "   ✘ $OM/recon/full-history/reindex -> 404"
+  echo "   CONTRACT (from ReconciliationService, YU05 layer) — the cluster tier must serve BOTH:"
+  echo "     POST /recon/full-history/reindex            -> 200"
+  echo "     GET  /recon/full-history/trades?sinceSeq=N  -> 200, a page of BlotterEntry"
+  echo "   trade-processor calls the first and then pages the second; POST /recon/orphan-sweep"
+  echo "   500s on this tier for exactly this reason (IOException: reindex trigger failed HTTP 404),"
+  echo "   so that endpoint is not independently broken."
+  echo "   ⚠ THE SOURCE MATTERS MORE THAN THE ROUTES. This reconciles the source of truth against"
+  echo "   the projection, so serving those trades FROM the SQL projection would compare SQL to"
+  echo "   itself and pass vacuously — matched=0 with nothing wrong reported. On this tier the"
+  echo "   authority is the replicated log, so the trades must come from the MEMBERS."
   echo "   This tier has no journal reindex: that endpoint belongs to the Spring order-matcher and"
   echo "   its BLP journal. On the cluster tier the journal is the Raft log and no equivalent is"
   echo "   exposed, so journal-vs-projection reconciliation cannot be asserted here."
