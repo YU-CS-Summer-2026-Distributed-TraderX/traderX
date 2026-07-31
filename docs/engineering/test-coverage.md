@@ -38,10 +38,11 @@ reason the suite is run against three trees.
 | Coverage | Count | Made up of |
 |---|---:|---|
 | Baseline inherited services | 48 | Java 25 · NestJS 7 · .NET 16 |
+| Cross-service integration | 3 | real MariaDB, and a real broker where one is needed |
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
-| Java test classes in the effective tree | 100 | counted on YU15 |
+| Java test classes in the unit tier | 100 | counted on YU15 |
 
 ## Java — the composed tree
 
@@ -59,6 +60,9 @@ Counted on the YU15 effective tree.
 | **Total (YU15)** | **100** | **453** | |
 
 YU14 renders 98 classes and 428 tests; YU13 renders 97 and 414.
+
+These are the classes the unit task runs. The container-backed tests are tagged out of it and
+counted separately under [Cross-service integration](#cross-service-integration).
 
 `order-matcher` is 74% of the test classes and holds the correctness properties the system is built
 on: self-trade prevention, atomic replace, client-order-ID idempotency, byte-identical consensus
@@ -88,17 +92,28 @@ path and the build skipped them silently while still reporting success.
 | people-service | .NET / xUnit | 16 | ✅ |
 | **Total** | | **48** | all in CI |
 
-Two integration tests run alongside them against real infrastructure in containers rather than
-in-memory substitutes:
+## Cross-service integration
 
-- **`TradeProcessorPersistenceIT`** drives the booking path against a real MariaDB loaded with the
-  deployed schema, so the enum-to-constraint mapping and the foreign keys are exercised as deployed.
-  Its load-bearing case is that an order for a non-existent account is rejected by the foreign key
-  and fails loudly rather than being silently dropped.
-- **`TradeProcessorContextIT`** starts the composed application context against a real MariaDB and a
-  real message broker, covering wiring that a mocked test cannot reach.
+Three tests run against real infrastructure in containers rather than in-memory substitutes. They
+cover properties that live in the infrastructure rather than in application code, which is exactly
+the set a mock cannot reach: a mock returns what the caller expects, so a test built on one shows
+that the code asked for the right thing, never that the database agreed.
 
-Both are isolated by tag into their own task, so the fast unit job needs no container runtime.
+| Test | Runs against | Load-bearing case |
+|---|---|---|
+| `TradeProcessorPersistenceIT` | MariaDB, deployed schema | an order for a non-existent account is rejected by the foreign key and **fails loudly** rather than being silently dropped |
+| `AccountOutboxAtomicityIT` | MariaDB, deployed schema and deployed server flags | the account write and its outbox row **commit as one unit or not at all** — asserted from a connection outside the application's transaction |
+| `TradeProcessorContextIT` | MariaDB + message broker | the composed context starts with wiring that dials the broker during bean creation |
+
+`AccountOutboxAtomicityIT` is the counterpart to a unit test that mocks the outbox repository. With
+the repository mocked, the assertion is that it was *called* — which holds whether or not the two
+writes share a transaction, so the one property the outbox exists to provide is the one that test
+cannot see.
+
+Every case here was falsified before it was trusted: the code was deliberately broken to confirm
+the test fails, and fails for the stated reason.
+
+All three are isolated by tag into their own task, so the fast unit job needs no container runtime.
 
 ## Gates
 
@@ -166,7 +181,7 @@ cluster, so they are operator-run.
 
 ## What CI runs
 
-The workflow has 7 job definitions and 9 legs on a push, because the main engine job is a
+The workflow has 8 job definitions and 10 legs on a push, because the main engine job is a
 three-branch matrix.
 
 | Job | Scope | Trigger |
@@ -176,6 +191,7 @@ three-branch matrix.
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
 | integration (persistence) | real MariaDB in a container | push and pull request |
+| integration (outbox atomicity) | real MariaDB, deployed schema and server flags | push and pull request |
 | integration (context) | real MariaDB and message broker | push and pull request |
 | cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
 
@@ -190,7 +206,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 | Layer | What | Where |
 |---|---|---|
 | In-process tests | 453 / 428 / 414 per branch, plus 48 baseline | CI, every push |
-| Cross-service integration | 2 tests against real MariaDB and a real broker | CI, every push |
+| Cross-service integration | 3 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
 | Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
