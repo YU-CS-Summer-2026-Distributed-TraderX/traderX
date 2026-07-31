@@ -39,6 +39,12 @@
 #     [53 ...] [53 ...] [54 ...]  applied: m0=seq=18707 m1=seq=18707 m2=seq=18707
 # which is permanent -- a mixed-version window during a member roll, exactly the hazard
 # yu13-stp-and-replace warns about. The only recovery is a wipe to a fresh epoch.
+#
+# THE OTel PROOFS NEED THE OBSERVABILITY STACK, which start-cluster-kind.sh does not deploy:
+#     bash scripts/yu15/start-observability-kind.sh
+# plus port-forwards for tempo 3200, loki 3100 and grafana 3000 alongside order-matcher 18110.
+# Tempo answers 503 on /ready for a while after it starts -- wait for 200 before running them, or
+# the proof fails with a bare connection error that says nothing about Tempo still booting.
 set -uo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
