@@ -80,9 +80,16 @@ stp_count() {
 # All three members must agree. Retried, because they apply the committed tail at slightly
 # different times and an immediate sample can catch one mid-apply — which looks exactly like a
 # determinism failure and is not one. Persistent disagreement IS the failure.
+# 30s was not enough. This is called immediately after roll_to has restarted all three members,
+# and a follower replaying a log tens of thousands of sequences deep legitimately trails for a
+# while -- observed as member 2 one order ahead of 0 and 1, which converged on its own moments
+# later (all three at seq 18254). Failing at 30s reported that transient lag as "members never
+# agreed on the book", i.e. as a book divergence, which on a deterministic core is the most
+# serious thing this proof could say. It is worth waiting to be sure before saying it.
+DIGEST_TIMEOUT_S="${DIGEST_TIMEOUT_S:-180}"
 digest_consensus() {
   local b0 b1 b2 i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "${DIGEST_TIMEOUT_S}"); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
     if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
       echo "${b0}"
@@ -90,7 +97,15 @@ digest_consensus() {
     fi
     sleep 1
   done
-  fail "members never agreed on the book: [${b0}] [${b1}] [${b2}]"
+  # Print each member's applied sequence alongside the digests. Lagging members show DIFFERENT
+  # sequences and are still moving; genuinely diverged members sit at the SAME sequence with
+  # different books. Without that the two are indistinguishable in the failure message.
+  local seqs=""
+  for m in 0 1 2; do
+    seqs+="m${m}=$(${K} logs "order-matcher-cluster-${m}" --tail=40 2>/dev/null \
+      | grep -oE 'seq=[0-9]+' | tail -1) "
+  done
+  fail "members never agreed on the book after ${DIGEST_TIMEOUT_S}s: [${b0}] [${b1}] [${b2}] (applied: ${seqs})"
 }
 
 # The script owns its port-forward: every gateway rollout tears one down, and a dead tunnel would
@@ -108,7 +123,21 @@ start_pf() {
     sleep 2
   done
 }
-trap stop_pf EXIT
+# Whatever image the cluster was on before this proof touched it. Restored on EXIT, because a
+# failure part-way used to LEAVE the members on this proof's own image -- and that image predates
+# the gateway's instrumentOf alias, so every later proof silently broke (children rejected with a
+# bare {"kind":2} and no reason). A proof that changes the cluster owes it back.
+ORIGINAL_IMAGE="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
+restore_image() {
+  stop_pf
+  [[ -n "${ORIGINAL_IMAGE}" ]] || return 0
+  local now
+  now="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
+  [[ "${now}" == "${ORIGINAL_IMAGE}" ]] && return 0
+  echo "[restore] returning the cluster to ${ORIGINAL_IMAGE}"
+  roll_to "${ORIGINAL_IMAGE}" || echo "[warn] could not restore ${ORIGINAL_IMAGE} -- do it before running other proofs"
+}
+trap restore_image EXIT
 
 roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is unchanged
   local image="$1"
@@ -200,14 +229,29 @@ T0_0="$(trade_count 0)"; T0_1="$(trade_count 1)"; T0_2="$(trade_count 2)"
 ROWS0="$(rows)"
 SELF_SELL="$(order "${SELF}" Sell)"; echo "  ${SELF} sell -> ${SELF_SELL}"
 SELF_BUY="$(order "${SELF}" Buy)";   echo "  ${SELF} buy  -> ${SELF_BUY}"
-sleep 5
+# Poll for the effect rather than sleeping a fixed 5s and asserting once. These members were
+# restarted moments ago by roll_to and a follower still catching up on the log legitimately reports
+# a stale trade count for a beat -- observed as [140 140 140] -> [140 142 142], which is member 0
+# lagging, NOT the three disagreeing. A fixed sleep turns that into a false divergence report, the
+# most alarming possible way to fail. Wait for the fact, with an explicit timeout.
+await_trades() { # await_trades <want-delta>
+  local want tries=0 m b ok
+  want="$1"
+  while [[ ${tries} -lt 60 ]]; do
+    ok=1
+    for m in 0 1 2; do
+      b="T0_${m}"
+      [[ "$(trade_count "${m}")" -eq "$(( ${!b} + want ))" ]] || ok=0
+    done
+    [[ ${ok} -eq 1 ]] && return 0
+    tries=$((tries + 1)); sleep 1
+  done
+  return 1
+}
+await_trades 2 \
+  || fail "members did not all book the 2-sided wash trade within 60s: [$(trades_all)] (want +2 on each of [${T0_0} ${T0_1} ${T0_2}])"
 echo "  engine trades: [${T0_0} ${T0_1} ${T0_2}] -> [$(trades_all)]  (a self-trade books BOTH sides)"
 echo "  book: ${BEFORE} -> $(digest_consensus)"
-for m in 0 1 2; do
-  b="T0_${m}"
-  [[ "$(trade_count "${m}")" -eq "$(( ${!b} + 2 ))" ]] \
-    || fail "member ${m} did not book the 2-sided wash trade on the pre-change engine"
-done
 # Secondary, and explicitly secondary: the bridged read model. Reported, not asserted, because the
 # bridge is best-effort by design and its state is not evidence about the engine.
 PRE_ROWS="$(rows)"
