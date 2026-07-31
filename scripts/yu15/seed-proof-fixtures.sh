@@ -15,6 +15,15 @@
 #
 #   bash scripts/yu15/seed-proof-fixtures.sh            # via a port-forward on 18110
 #   MATCHER_URL=http://localhost:18110 bash scripts/yu15/seed-proof-fixtures.sh
+#
+# RUN THE RIG QUIET. Several proofs assert EXACT ground-truth deltas -- yu13-readmodel-effect-end
+# checks next_order_ref moves by precisely 2 and not at all on a cancel. Any other traffic breaks
+# them, and the execution-algo-engine is a continuous source of it: it was observed moving the
+# counter by 24 mid-proof, failing a proof about a system that was behaving correctly. Before the
+# counter-exact proofs:
+#     kubectl -n traderx scale deploy/execution-algo-engine --replicas=0
+# and scale it back to 1 for yu08. Same reason a proof that leaves the members on its own image
+# (yu13-stp-and-replace) is a hazard to everything that runs after it.
 set -uo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
