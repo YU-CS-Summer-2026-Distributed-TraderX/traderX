@@ -58,12 +58,26 @@ book() { # book <member-ordinal> -> "<openOrders> <orderHash>"
 
 book_all() { for m in 0 1 2; do echo "  member $m: $(book "$m")"; done; }
 
+# Sampled ONCE, with no retry -- so a follower still catching up after a member roll read as the
+# three disagreeing on the book, which on a deterministic core is the most serious thing this proof
+# can say. Seen as [55 ...] [56 ...] [56 ...]: member 0 one order behind, converging moments later.
+# Wait for agreement, and when reporting a real disagreement print the applied sequences, because
+# lagging members show DIFFERENT sequences while genuinely diverged ones share one.
+DIGEST_TIMEOUT_S="${DIGEST_TIMEOUT_S:-180}"
 digest_consensus() { # all three members must agree; echoes the agreed "<depth> <hash>"
-  local b0 b1 b2
-  b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
-  [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]] \
-    || fail "members disagree on the book: [${b0}] [${b1}] [${b2}]"
-  echo "${b0}"
+  local b0 b1 b2 i seqs="" m
+  for i in $(seq 1 "${DIGEST_TIMEOUT_S}"); do
+    b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
+    if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
+      echo "${b0}"
+      return 0
+    fi
+    sleep 1
+  done
+  for m in 0 1 2; do
+    seqs+="m${m}=$(${K} logs "order-matcher-cluster-${m}" --tail=40 2>/dev/null | grep -oE 'seq=[0-9]+' | tail -1) "
+  done
+  fail "members disagree on the book after ${DIGEST_TIMEOUT_S}s: [${b0}] [${b1}] [${b2}] (applied: ${seqs})"
 }
 
 # The script owns its own port-forward. `kubectl port-forward svc/...` pins to ONE backing pod, so

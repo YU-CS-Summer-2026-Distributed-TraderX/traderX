@@ -42,6 +42,9 @@ step() { echo; echo "=== $* ==="; }
 # step 2 with no message. Both overridable.
 SQL_DB="${SQL_DB:-eod-price-db}"
 SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
+# 30s was not enough for a follower catching up after a member roll; the proof reported the three
+# disagreeing on a book they agreed on moments later.
+AGREE_TIMEOUT_S="${AGREE_TIMEOUT_S:-180}"
 sql() { ${K} exec "deploy/${SQL_DB}" -c "${SQL_CONTAINER}" -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
@@ -61,7 +64,7 @@ book() {
 # disagreement is the failure.
 digest_consensus() {
   local b0 b1 b2 i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "${AGREE_TIMEOUT_S:-180}"); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
     if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then echo "${b0}"; return 0; fi
     sleep 1
@@ -71,7 +74,7 @@ digest_consensus() {
 # refs_agreed -> the single agreed next_order_ref, retried for the same mid-apply reason.
 refs_agreed() {
   local r i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 "${AGREE_TIMEOUT_S:-180}"); do
     r="$(refs_all)"
     [[ "$(echo "${r}" | uniq_one)" == "1" ]] && { echo "${r%% *}"; return 0; }
     sleep 1
