@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # YU03 risk gateway — clean live demo. One readable line per step.
 # Prereq (separate terminal):
-#   kubectl port-forward -n traderx deploy/order-matcher 18110:18110 --context kind-traderx-state-014
+#   kubectl port-forward -n traderx deploy/order-matcher 18110:18110 --context "${CTX:-kind-traderx-yu12-cluster}"
 # Usage:
 #   bash yu03-risk-demo.sh restriction   # just the restricted-security toggle
 #   bash yu03-risk-demo.sh killswitch    # just the kill switch

@@ -12,8 +12,38 @@ if ! kind get clusters | grep -qx "${CLUSTER}"; then
   kind create cluster --config "${KDIR}/kind-cluster.yaml" --wait 120s
 fi
 
-echo "[kind] loading ${IMAGE}"
-kind load docker-image "${IMAGE}" --name "${CLUSTER}"
+# Every locally-built image the kustomization references, not just the cluster node.
+#
+# This used to load ${IMAGE} alone, which worked only by accident: on a REUSED cluster the four
+# service images were already in the node's containerd from some earlier manual `kind load`, so
+# nothing looked wrong. Create the cluster fresh -- which is the normal thing to do after a
+# teardown, and what the quickstart tells you to do -- and trade-processor, position-service and
+# price-publisher all ImagePullBackOff, because `traderx/...:yu15` exists nowhere but this laptop's
+# Docker daemon and imagePullPolicy is IfNotPresent.
+#
+# Missing images are named and fatal here rather than surfacing ten minutes later as a rollout
+# timeout on a pod whose events you have to go read.
+IMAGES=(
+  "${IMAGE}"
+  "${YU15_TRADE_PROCESSOR_IMAGE:-traderx/trade-processor:yu15}"
+  "${YU15_POSITION_SERVICE_IMAGE:-traderx/position-service:yu15}"
+  "${YU15_PRICE_PUBLISHER_IMAGE:-traderx/price-publisher:yu15}"
+  "${YU15_ALGO_ENGINE_IMAGE:-traderx/execution-algo-engine:yu15}"
+)
+missing=()
+for img in "${IMAGES[@]}"; do
+  docker image inspect "${img}" >/dev/null 2>&1 || missing+=("${img}")
+done
+if [[ ${#missing[@]} -gt 0 ]]; then
+  echo "[fail] not in the local Docker daemon: ${missing[*]}"
+  echo "[hint] cluster-node: bash scripts/yu15/build-cluster-image.sh"
+  echo "[hint] the Spring services: build from generated/code/target-generated/<svc> with its Dockerfile"
+  exit 1
+fi
+for img in "${IMAGES[@]}"; do
+  echo "[kind] loading ${img}"
+  kind load docker-image "${img}" --name "${CLUSTER}"
+done
 
 kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
   || kubectl --context "${CTX}" create namespace traderx
@@ -34,7 +64,11 @@ kubectl --context "${CTX}" -n traderx apply -f "${KDIR}/gateway.yaml"
 
 echo "[wait] 3/3 members ready"
 kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-cluster --timeout=300s
-for d in nats eod-price-db trade-processor cluster-gateway risk-extract; do
+# price-publisher and position-service were missing from this list even though eod-chain.yaml
+# deploys them, so the script could report the tier "up" while the EOD chain was still coming
+# round -- and the extract's only trigger is that chain.
+for d in nats eod-price-db trade-processor cluster-gateway risk-extract \
+         price-publisher position-service execution-algo-engine; do
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s
 done

@@ -20,7 +20,7 @@
 # latency claim, so kind's idle-CPU distortion cannot flip it. Usage: ./yu08-algo-slicing.sh
 set -uo pipefail
 
-CTX="${CTX:-kind-traderx-state-014}"
+CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 # A quiet account on purpose: the preflight probe lists its open orders, and 22214's open set is
 # ~14MB on a long-lived rig — a kubectl-exec pull that size times out and indicts nothing.

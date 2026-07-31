@@ -4,7 +4,7 @@
 # Gateway replica over the JetStream control feed within a poll interval — the BLP never restarts.
 #
 # Prereq (separate terminal): reference-data port-forward; order-matcher via the edge-proxy.
-#   kubectl port-forward -n traderx svc/reference-data 18085:18085 --context kind-traderx-state-014
+#   kubectl port-forward -n traderx svc/reference-data 18085:18085 --context "${CTX:-kind-traderx-yu12-cluster}"
 #   (edge-proxy already serves 127.0.0.1:8080)
 # Usage:
 #   bash yu04-live-delta.sh            # auto ticker (Z + time)

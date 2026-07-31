@@ -19,8 +19,16 @@
 # kind-runnable: pure correctness, no timing claim. Usage: ./yu06-consumer-halt.sh
 set -uo pipefail
 
-CTX="${CTX:-kind-traderx-state-014}"
+CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
+# Rig-dependent addresses. Defaults are the YU15 cluster rig; for the state-014 rig set
+# DB_DEPLOY=database EXEC_POD=edge-proxy.
+DB_DEPLOY="${DB_DEPLOY:-eod-price-db}"
+EXEC_POD="${EXEC_POD:-trade-processor}"
+# Read from the cluster rather than hardcoded: the two rigs hold different values, and a wrong
+# one fails as an opaque 401 from /auth/dev-token with nothing naming the secret as the cause.
+MASTER="${AUTH_MASTER_SECRET:-$(kubectl --context "${CTX}" -n "${NS}" get secret auth-secrets -o "jsonpath={.data.dev-token-master-secret}" 2>/dev/null | base64 -d 2>/dev/null)}"
+MASTER="${MASTER:-dev-token-master-secret}"
 DATE="$(date +%F)"
 HELD_ACCT="${HELD_ACCT:-10031}"
 HELD_SEC="${HELD_SEC:-NVDA}"
@@ -29,9 +37,9 @@ UNIVERSE="AAPL,MSFT,AMZN,GOOGL,META,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 kx() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
-db() { kx exec deploy/database -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
-TOK='T=$(curl -s -m8 -X POST http://trade-processor:18091/auth/dev-token -H "X-Auth-Master-Secret: dev-token-master-secret" -H "Content-Type: application/json" -d "{\"subject\":\"proof\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}")'
-api() { kx exec deploy/edge-proxy -- sh -c "${TOK}; $1" 2>/dev/null; }
+db() { kx exec "deploy/${DB_DEPLOY}" -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
+TOK='T=$(curl -s -m8 -X POST http://trade-processor:18091/auth/dev-token -H "X-Auth-Master-Secret: '"${MASTER}"'" -H "Content-Type: application/json" -d "{\"subject\":\"proof\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}")'
+api() { kx exec "deploy/${EXEC_POD}" -- sh -c "${TOK}; $1" 2>/dev/null; }
 
 cleanup() {
   kx set env deploy/trade-processor EOD_UNIVERSE- >/dev/null 2>&1

@@ -7,12 +7,12 @@
 #
 # Prereq (separate terminal): reference-data port-forward. order-matcher is reached via the
 # edge-proxy (127.0.0.1:8080) so the view survives the pod going away.
-#   kubectl port-forward -n traderx svc/reference-data 18085:18085 --context kind-traderx-state-014
+#   kubectl port-forward -n traderx svc/reference-data 18085:18085 --context "${CTX:-kind-traderx-yu12-cluster}"
 # Usage:
 #   bash yu04-offline-catchup.sh          # auto ticker (Z + time)
 #   bash yu04-offline-catchup.sh ZOFF     # explicit ticker
 set -uo pipefail
-CTX=${CTX:-kind-traderx-state-014}
+CTX=${CTX:-kind-traderx-yu12-cluster}
 NS=${NS:-traderx}
 REF=${REF:-http://localhost:18085}
 OM=${OM:-http://127.0.0.1:8080/order-matcher}

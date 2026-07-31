@@ -3,18 +3,31 @@
 # Every YU05 endpoint requires a real JWT; mint one with the dev-token endpoint.
 #
 # Prereqs (separate terminals):
-#   kubectl port-forward -n traderx deploy/trade-processor 18091:18091 --context kind-traderx-state-014
+#   kubectl port-forward -n traderx deploy/trade-processor 18091:18091 --context "${CTX:-kind-traderx-yu12-cluster}"
 #   (order-matcher is reached via the edge-proxy at localhost:8080/order-matcher)
 set -uo pipefail
 TP=${TRADE_PROCESSOR_URL:-http://localhost:18091}
-OM=${ORDER_MATCHER_URL:-http://localhost:8080/order-matcher}
-MASTER=${AUTH_MASTER_SECRET:-dev-token-master-secret}
-CTX=${CTX:-kind-traderx-state-014}
+# No edge-proxy on the cluster rig, so the matcher is reached directly. svc/order-matcher there
+# fronts the cluster gateway; on the state-014 rig, set ORDER_MATCHER_URL to the edge-proxy path.
+OM=${ORDER_MATCHER_URL:-http://localhost:18110}
+CTX=${CTX:-kind-traderx-yu12-cluster}
 K="kubectl -n traderx --context $CTX"
+
+# The dev-token master secret is a Kubernetes Secret, and the two rigs hold different values, so
+# neither literal is safe to hardcode -- a wrong one fails as an opaque 401 from /auth/dev-token
+# with nothing saying the secret was the problem. Read it from whichever rig CTX points at, and
+# fall back to the historical literal only if the lookup finds nothing.
+MASTER=${AUTH_MASTER_SECRET:-$($K get secret auth-secrets \
+  -o "jsonpath={.data.dev-token-master-secret}" 2>/dev/null | base64 -d 2>/dev/null)}
+MASTER=${MASTER:-dev-token-master-secret}
+
+# The MariaDB carrying the trade-processor projection: "eod-price-db" on the cluster rig,
+# "database" on the state-014 rig.
+DB_DEPLOY=${DB_DEPLOY:-eod-price-db}
 
 # dbq <sql>  -> tab-separated rows, no header (for reading the MariaDB projection; settlement state
 # has no HTTP read endpoint, it lives only in the trade-processor projection — FR-PTC07).
-dbq(){ $K exec deploy/database -- sh -c "mariadb -utraderx -ptraderx traderx -N -B -e \"$1\"" 2>/dev/null; }
+dbq(){ $K exec "deploy/${DB_DEPLOY}" -- sh -c "mariadb -utraderx -ptraderx traderx -N -B -e \"$1\"" 2>/dev/null; }
 
 # mint <admin:true|false> <accounts-json e.g. [] or [22214]>  -> prints the raw JWT
 mint(){
