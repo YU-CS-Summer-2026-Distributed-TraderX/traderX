@@ -27,6 +27,12 @@ echo "   ── full-history sweep (admin): reindex whole journal, then flag orp
 # instead of a capability that is absent. A recon proof that silently reconciles zero rows is worse
 # than one that refuses.
 RI_CODE=$(curl -s -m30 -o /dev/null -w '%{http_code}' -X POST "$OM/recon/full-history/reindex" -H "Authorization: Bearer $ADMIN")
+if [ "$RI_CODE" = "000" ]; then
+  # Unreachable is an error, not a green light: treating it as "capability present" let this script
+  # run on to report matched=0 against a matcher it never contacted.
+  echo "   ✘ $OM unreachable (curl 000) — port-forward svc/order-matcher 18110:18110?"
+  exit 1
+fi
 if [ "$RI_CODE" = "404" ]; then
   echo "   ✘ $OM/recon/full-history/reindex -> 404"
   echo "   This tier has no journal reindex: that endpoint belongs to the Spring order-matcher and"

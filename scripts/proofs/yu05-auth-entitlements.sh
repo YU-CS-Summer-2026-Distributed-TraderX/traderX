@@ -15,7 +15,16 @@ here="$(cd "$(dirname "$0")" && pwd)"; . "$here/yu05-common.sh"
 # whose routes are the order path plus health/metrics. Without this check the requests 404 and the
 # script reports a MISMATCH or an unexpected status code, which reads as a broken feature rather
 # than an absent one. Detected and stated, so the proof gives an honest verdict either way.
-if [ "$(curl -s -o /dev/null -w '%{http_code}' -m10 "$OM/regulatory/report")" = "404" ]; then
+_OM_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m10 "$OM/regulatory/report")"
+# 000 means the request never reached anything -- a dead port-forward, usually. Treating that as
+# "capability present" let the script sail past this check and produce a pass against a matcher it
+# never contacted, which is precisely the vacuous result this guard exists to prevent. Unreachable
+# is an error, not a green light.
+if [ "$_OM_CODE" = "000" ]; then
+  echo "   ✘ $OM unreachable (curl 000) — port-forward svc/order-matcher 18110:18110?"
+  exit 1
+fi
+if [ "$_OM_CODE" = "404" ]; then
   echo "   ✘ $OM/regulatory/report -> 404"
   echo "   This tier has no Spring order-matcher, so the journal-sourced regulatory surface is"
   echo "   not served here. Run against the state-014 rig:"
