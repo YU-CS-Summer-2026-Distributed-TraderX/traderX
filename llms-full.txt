@@ -1570,7 +1570,7 @@ Two different counts appear below and they are not interchangeable.
 
 Where the two disagree, the executed number is the real one, and it is the one used here.
 
-## Headline
+## Coverage summary
 
 ### Tests that run on every push, per branch
 
@@ -1655,7 +1655,14 @@ Both are isolated by tag into their own task, so the fast unit job needs no cont
 
 ## Gates
 
-These run as separately forked JVMs and are counted apart from the totals above.
+A gate asks what the code *cost*, not whether it was correct — a method can return the right answer
+while allocating on every call, and no assertion about its return value would notice. That matters on
+a single-threaded matching engine, where garbage collection stops the thread that processes orders,
+so allocation on the hot path turns into latency spikes under load rather than into wrong results.
+The rationale is in [Testing strategy](testing-strategy.md).
+
+These run as separately forked JVMs, because they need their own JVM configuration, and are counted
+apart from the totals above.
 
 | Gate | Asserts |
 |---|---|
@@ -1696,9 +1703,10 @@ control plane. Each prints an explicit pass or fail line per step.
 | Observability | trace join, reject trace and log join | Kubernetes |
 | High availability and recovery | cluster recovery, failover transparency, cross-epoch ID reuse, restore from object storage, replace proof, node-clock failover | Kubernetes |
 
-Several of these were falsified before they passed — an HTTP 200 that booked nothing, an order the
-risk gate rejected while the response still looked successful. That history is why they are trusted.
-They require a live cluster, so they are operator-run.
+Each script asserts against the system's own record — the committed sequence on a cluster member, the
+row in the read model, the message on the egress stream — rather than against the response it got
+back, because a request can succeed while the effect it asked for does not. They require a live
+cluster, so they are operator-run.
 
 ## Front-end and other components
 
@@ -1732,11 +1740,13 @@ that is live on one branch and shadowed on another shows up as one red leg besid
 
 The full rationale for what runs where is in [Testing strategy](testing-strategy.md).
 
-| Tier | What | Where |
+| Layer | What | Where |
 |---|---|---|
-| In-process | 453 / 428 / 414 per branch, plus 48 baseline and 4 allocation gates | CI, every push |
+| In-process tests | 453 / 428 / 414 per branch, plus 48 baseline | CI, every push |
+| Cross-service integration | 2 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
-| Cluster and timing | three-node failover, wall-clock budgets, Epsilon GC | on demand, idle hardware |
+| Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
+| Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
 
 Nearly every end-to-end proof has an in-process test asserting the same property in CI, so the
 proofs confirm invariants that are already gated on every commit.
@@ -1791,9 +1801,17 @@ The **26 proof scripts** drive the deployed system end to end: REST, FIX and bin
 gateway → three-member Aeron cluster → asynchronous projection → SQL read model → egress, plus the
 risk control plane.
 
-Several were **genuinely falsified before they passed** — an HTTP 200 that booked nothing; an order
-the risk gate rejected while the response still reported success. That history is why they are
-trusted.
+What separates this tier from the one above is where it looks for its answer. A unit test can call a
+method and inspect what it returns. These scripts cannot, and deliberately do not: they submit real
+input to a running system and then read the outcome from the far end of the pipeline — the committed
+sequence on a cluster member, the row in the read model, the message on the egress stream. An
+acknowledgement is never accepted as evidence that something happened, because in a system that
+sequences, replicates and projects asynchronously, a successful response and a completed effect are
+different events that can disagree.
+
+Each script is written so that it can fail. It states the outcome it expects before it acts, then
+asserts against the system's own record rather than against its own assumptions, and prints an
+explicit pass or fail line per step so a run reads as a verdict rather than a log.
 
 They stay operator-run because they need a live cluster. That is an infrastructure constraint rather
 than a reliability one, which is a meaningful difference: these scripts are dependable, they simply
@@ -1802,22 +1820,60 @@ require a deployed system to run against.
 ## Tier 3 — full-cluster and timing, on demand
 
 Three-member failover, snapshot and replay, cold-follower rejoin, and wall-clock budgets run on
-demand on idle hardware, and they are kept out of every-push CI deliberately: a shared two-core
-runner cannot support a credible timing or three-node consensus claim.
+demand on idle hardware, and they are kept out of every-push CI deliberately.
 
-Recent run on all three branches: the three-member cluster test completed in **23.7, 23.8 and 28
-seconds** against a 120-second bar, the snapshot-barrier budget passed on all three, and both
-Epsilon-GC gates were green.
+The reason is that these tests assert on *time* and on *scheduling*, not only on values. A consensus
+test runs three real cluster members with their own transport threads in one JVM; a wall-clock budget
+asserts that an operation completes within a fixed number of milliseconds. Both depend on the
+machine actually granting CPU when the code asks for it. On a shared runner that assumption does not
+hold, and the failure is not a graceful slowdown — a starved member simply stops making progress, and
+the test reports a timeout that looks exactly like a broken algorithm.
 
-That run also quantified why this tier needs quiet hardware, and the shape matters more than the
-pass. On a contended machine the cluster test **hits the 120-second timeout**; the same commit on an
-idle machine finishes in 24 seconds. It does not degrade gradually — it either completes in about 24
-seconds or starves out entirely, always at the same point after the second failover. This was
-established by running the same branch red, then green, with nothing changed but the load on the
-box. **A red result on this tier under load is inconclusive and needs a quiet re-run before it means
-anything.**
+That gives this tier a different reading rule from the others. **A green result is trustworthy
+wherever it runs**, because clearing a timing bar under contention is harder than clearing it on an
+idle box. **A red result is only meaningful on quiet hardware**, and needs re-running there before it
+is treated as a regression. Keeping these tests out of the push pipeline is what protects that rule:
+a suite that cries wolf on a busy runner teaches people to ignore it, which costs more than the
+coverage is worth.
 
-Moving this tier onto dedicated hardware is a one-line runner change.
+Moving this tier onto dedicated hardware is a one-line runner change, at which point it can gate
+merges like the others.
+
+## Gates — the properties a test cannot see
+
+Cutting across all three tiers are six **gates**: four allocation gates and two no-GC gates. They sit
+outside the tiers, and are counted separately, because they are a different kind of check. A test
+asks whether the code produced the right answer. A gate asks what the code *cost* to produce it — and
+those are independent. A method can return a perfectly correct result while allocating on every call,
+and no assertion about its return value will ever notice.
+
+That distinction matters here because of how the matching engine runs: a single thread, processing
+one order at a time, on the path every order takes. Garbage collection stops that thread. The damage
+is not a wrong answer, it is an unpredictable pause — and pauses arrive under load, which is exactly
+when the system is least able to absorb them. Allocation on the hot path therefore converts, quietly
+and later, into latency spikes that no correctness test would have flagged.
+
+So the gates run the hot path in steady state and assert that it allocates **exactly zero bytes**.
+Zero rather than a budget, because a threshold is negotiable — each change that adds "just a little"
+stays under the bar until one day it doesn't, and there is no principled place to draw the line. Zero
+is the only number that cannot be argued down.
+
+The two no-GC gates then run the same paths under a JVM configured with **no garbage collector at
+all**. With nothing to reclaim memory, any allocation is no longer absorbed and forgotten — it
+accumulates until the process dies. That converts a slow, invisible degradation into an immediate,
+unmissable failure, which is the whole point: it removes the possibility of a small regression
+sitting undetected because the collector was quietly cleaning up after it.
+
+Together the gates cover the engine's own hot path, the same path with risk checks engaged, the
+transport encode path, and the cluster apply path — the four places where an allocation would sit
+inside the per-order critical section. Because they need their own JVM configuration, they run as
+separately forked JVMs rather than inside the main suite, which is why their count is kept apart from
+the test totals.
+
+They are best understood as a ratchet rather than a performance claim. They do not assert that the
+system is fast. They assert that a property the system already has cannot be lost by accident, which
+is the kind of guarantee that is very cheap to keep and very expensive to recover once it has drifted.
+The four allocation gates run on every push; the two no-GC gates run on demand with the cluster tier.
 
 ## Proof-to-test map
 
