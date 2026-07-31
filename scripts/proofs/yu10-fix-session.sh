@@ -12,7 +12,13 @@ NS="${NS:-traderx}"
 EDGE="${EDGE:-http://localhost:8080}"
 FIX_LOCAL_PORT="${FIX_LOCAL_PORT:-18130}"
 ACCOUNT="${ACCOUNT:-11413}"          # BENCH01 -> 11413 in the kind manifest FIX_SESSION_ACCOUNTS
-COMP_ID="${FIX_COMP_ID:-BENCH01}"
+# Read the CompID the deployed acceptor is actually configured for rather than assuming BENCH01.
+# A logon from an unconfigured CompID is refused by quickfix, the sender completes no lifecycles,
+# and the proof reports "0 completed" -- which reads as FIX ingress being broken when the ingress
+# is fine and the two ends simply disagree about who is allowed to connect. The cluster gateway
+# ships FIX_SESSION_COMPIDS=CLIENT1; the state-014 rig used BENCH01.
+COMP_ID="${FIX_COMP_ID:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" get deploy cluster-gateway -o "jsonpath={.spec.template.spec.containers[0].env[?(@.name=='FIX_SESSION_COMPIDS')].value}" 2>/dev/null | cut -d, -f1)}"
+COMP_ID="${COMP_ID:-CLIENT1}"
 SECS="${SECS:-10}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -45,8 +51,14 @@ else bad "mint session JWT" "no token from ${TP}/auth/dev-token"; exit 1; fi
 
 # 2. DB projection baseline for this account (proves FIX orders reach the same read model)
 db_orders() {
-  kubectl exec -n "${NS}" deploy/database -- sh -c \
-    'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" traderx -N -B -e '"\"SELECT COUNT(*) FROM orderbook WHERE accountid=${ACCOUNT}\"" 2>/dev/null | tail -1
+  # Was: kubectl exec (no --context) into deploy/database as root. On the cluster rig the
+  # deployment is eod-price-db, its container is "mariadb", and there is no MARIADB_ROOT_PASSWORD
+  # in scope -- so this returned empty every time and BEFORE/AFTER were both 0, which the script
+  # then reported as "no projection growth" no matter what FIX actually did.
+  kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS}" \
+    exec "deploy/${DB_DEPLOY:-eod-price-db}" -c "${DB_CONTAINER:-mariadb}" -- \
+    mariadb -utraderx -ptraderx traderx -N -B \
+    -e "SELECT COUNT(*) FROM orderbook WHERE accountid=${ACCOUNT}" 2>/dev/null | tail -1
 }
 BEFORE="$(db_orders)"; BEFORE="${BEFORE:-0}"
 step "orderbook rows before" "${BEFORE}"
