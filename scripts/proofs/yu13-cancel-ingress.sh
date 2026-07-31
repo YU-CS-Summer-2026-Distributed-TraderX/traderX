@@ -31,6 +31,14 @@ ACCOUNT="${ACCOUNT:-99001}"
 TICKER="${TICKER:-IBM}"
 # The book carries a price collar anchored on the security's first limit; an order far off the
 # seeded price is rejected as PRICE_COLLAR before it can ever rest. Seed and rest at the same price.
+# Track the live feed rather than pinning a number. price-publisher streams real prices for its
+# universe, so ANY fixed price eventually drifts far enough from the reference to be rejected
+# PRICE_COLLAR -- which fails the proof for a reason that has nothing to do with cancel ingress.
+# This was hit directly: PRICE=100 against a live IBM of ~187, a 46% deviation. Falls back to the
+# old constant when the feed cannot be read, so the behaviour is unchanged off a live rig.
+PRICE="${PRICE:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" exec deploy/price-publisher -- \
+  wget -qO- "http://localhost:18100/prices/${TICKER:-IBM}" 2>/dev/null \
+  | python3 -c "import sys,json;print(round(json.load(sys.stdin)['price'],2))" 2>/dev/null)}"
 PRICE="${PRICE:-100.00}"
 QTY=7
 
@@ -132,6 +140,15 @@ step "0. preflight"
 start_pf
 docker image inspect "${IMAGE_PRE}" >/dev/null 2>&1 || fail "pre-fix image ${IMAGE_PRE} not present locally"
 docker image inspect "${IMAGE_FIX}" >/dev/null 2>&1 || fail "fixed image ${IMAGE_FIX} not present locally"
+
+# Present in the local Docker daemon is not the same as present in the cluster. start-cluster-kind.sh
+# loads the images the kustomization names; these two are proof-only tags it has never heard of, so
+# on a freshly created cluster the roll-forward just sits in ImagePullBackOff and the rollout times
+# out with "did not complete" -- saying nothing about the missing image. Load them here.
+for _img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
+  kind load docker-image "${_img}" --name "${CLUSTER:-traderx-yu12-cluster}" >/dev/null 2>&1 \
+    || echo "[warn] could not kind-load ${_img}; assuming it is already on the nodes"
+done
 START_LEADER="$(for m in 0 1 2; do
   ${K} exec "order-matcher-cluster-${m}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
     | awk -v m="${m}" '/^traderx_cluster_role/ && $2 == 1 {print m}'
@@ -145,6 +162,24 @@ echo "[ok] 3 members, leader is member ${START_LEADER}, account ${ACCOUNT} seede
 echo "[ok] member restart counts at start: ${START_RESTARTS}"
 echo "[ok] starting book:"; book_all
 
+# Is the before/after story reproducible at all? It needs IMAGE_PRE to genuinely predate the cancel
+# route. IMAGE_PRE defaults to a MUTABLE tag that build-cluster-image.sh rewrites, and IMAGE_FIX can
+# easily be OLDER than the image now running -- in which case "rolling forward" rolls backwards. Ask
+# the running gateway first, and if it already cancels, leave the deployment alone entirely and prove
+# the forward claim against what is actually deployed. Rolling the gateway to make a narrative work
+# is worse than not telling the narrative.
+SKIP_REGRESSION=0
+if [[ "$(cancel 0 2>/dev/null)" != 404* ]]; then
+  SKIP_REGRESSION=1
+fi
+
+if [[ "${SKIP_REGRESSION}" == "1" ]]; then
+  echo
+  echo "=== 1-3. SKIPPED: the deployed gateway already serves /cancel ==="
+  echo "[skip] the pre-fix half needs IMAGE_PRE to predate the cancel route; ${IMAGE_PRE} does not"
+  echo "[skip] (that tag is rebuilt by build-cluster-image.sh)"
+  echo "[skip] not rolling the gateway; the forward proof below runs against what is deployed"
+else
 step "1. roll the gateway BACK to the pre-fix image ${IMAGE_PRE}"
 roll_gateway "${IMAGE_PRE}"
 echo "[ok] gateway now serving ${IMAGE_PRE}"
@@ -186,6 +221,14 @@ book_all
 step "3. roll the gateway FORWARD to ${IMAGE_FIX}"
 roll_gateway "${IMAGE_FIX}"
 echo "[ok] gateway now serving ${IMAGE_FIX}"
+fi
+
+# The forward proof needs a resting order to cancel. In the skipped path nothing has placed one yet.
+if [[ "${SKIP_REGRESSION}" == "1" ]]; then
+  PRE_REF="$(place)"
+  sleep 2
+  echo "[ok] placed order ${PRE_REF} to cancel"
+fi
 
 step "4. the same cancel now takes effect"
 BEFORE_FIX="$(digest_consensus)"
