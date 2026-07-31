@@ -187,11 +187,17 @@ that is live on one branch and shadowed on another shows up as one red leg besid
 
 The full rationale for what runs where is in [Testing strategy](testing-strategy.md).
 
-| Tier | What | Where |
+| Layer | What | Where |
 |---|---|---|
-| In-process | 453 / 428 / 414 per branch, plus 48 baseline and 4 allocation gates | CI, every push |
+| In-process tests | 453 / 428 / 414 per branch, plus 48 baseline | CI, every push |
+| Cross-service integration | 2 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
-| Cluster and timing | three-node failover, wall-clock budgets, Epsilon GC | on demand, idle hardware |
+| Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
+| **Gates** (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
+
+Gates are listed separately rather than folded into a tier because they check a different thing: not
+whether the code is correct, but what it cost to run — a property no assertion about a return value
+can see.
 
 Nearly every end-to-end proof has an in-process test asserting the same property in CI, so the
 proofs confirm invariants that are already gated on every commit.
