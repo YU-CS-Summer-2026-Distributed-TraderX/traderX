@@ -10,7 +10,7 @@
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
 > **Last code-sync:** 2026-06-19 — verbatim snippets verified against the `009b` overlay
-> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> (`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
@@ -143,7 +143,7 @@ Prices and quantities are carried as **scaled `long`s** — value × 1,000,000 (
 becomes `187_250_000L`. Arithmetic is plain integer math: allocation-free, branch-light, cache-friendly, and
 deterministic. Conversions to/from `BigDecimal`/`String` happen **only at the edges**. This is the actual
 `Px` class from state `009b`
-(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/Px.java`):
+(`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/.../lmax/Px.java`):
 
 ```java
 /**
@@ -282,7 +282,7 @@ measured end-to-end consequence of the discipline, see `LMAX-BENCHMARK-009-VS-00
 ## A12. The code as implemented in state `009b`
 
 Everything below is **verbatim from the codebase** — the LMAX hot path that ships with state `009b`, under
-`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
+`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/lmax/`
 (rendered into `order-matcher` by the generation pipeline). Where a class is long, elided sections are
 marked with `// …`.
 

@@ -1,7 +1,7 @@
-# Generation Hook: 009b-lmax-sequencer-architecture
+# Generation Hook: YU01-lmax-sequencer
 
-- Hook script: `pipeline/generate-state-009b-lmax-sequencer-architecture.sh`
-- Feature pack: `specs/009b-lmax-sequencer-architecture`
+- Hook script: `pipeline/generate-state-YU01-lmax-sequencer.sh`
+- Feature pack: `specs/YU01-lmax-sequencer`
 
 This state follows the patch-set overlay model and branches off `009` (sibling to the canonical `010+`
 lineage).
@@ -9,7 +9,7 @@ lineage).
 ## Patch-Set Inputs
 
 - Parent state id: `009-order-management-matcher`
-- Patch directory: `specs/009b-lmax-sequencer-architecture/generation/patches/`
+- Patch directory: `specs/YU01-lmax-sequencer/generation/patches/`
 - Canonical patch file: `0001-state-overlay.patch`
 
 ## Hook Responsibilities
@@ -26,7 +26,7 @@ lineage).
 7. Materialize run-profile launchers (`demo` default; `perf` and `noGcTest` documented) and the
    journal/snapshot/checkpoint data directories.
 8. Update the inherited state-ui-metadata frontend overlay so the UI title, About page, and status
-   view render this state's id (`009b-lmax-sequencer-architecture`) per FR-09B42, while leaving every
+   view render this state's id (`YU01-lmax-sequencer`) per FR-09B42, while leaving every
    other inherited frontend override (`009` Admin tab, blotters, header structure) untouched.
 9. Preserve all lineage contracts: external OpenAPI/NATS/UI surfaces, `OrderBook` schema in
    `database/initialSchema.sql` (publish gate from `009` still applies), `C2` build/publish workflow,
@@ -35,15 +35,15 @@ lineage).
 
 Runtime scripts:
 
-- `scripts/start-state-009b-lmax-sequencer-architecture-generated.sh`
-- `scripts/status-state-009b-lmax-sequencer-architecture-generated.sh`
-- `scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh`
-- `scripts/test-state-009b-lmax-sequencer-architecture.sh`
+- `scripts/start-state-YU01-lmax-sequencer-generated.sh`
+- `scripts/status-state-YU01-lmax-sequencer-generated.sh`
+- `scripts/stop-state-YU01-lmax-sequencer-generated.sh`
+- `scripts/test-state-YU01-lmax-sequencer.sh`
 
 ## Capture / Refresh Patch
 
 Use the patch capture workflow after implementing deltas in this state:
 
 ```bash
-bash pipeline/create-state-patchset.sh 009b-lmax-sequencer-architecture 009-order-management-matcher
+bash pipeline/create-state-patchset.sh YU01-lmax-sequencer 009-order-management-matcher
 ```

@@ -1,6 +1,6 @@
 # Feature Specification: LMAX Sequencer Architecture (Trading Hot Path)
 
-**Feature Branch**: `009b-lmax-sequencer-architecture`  
+**Feature Branch**: `YU01-lmax-sequencer`  
 **Created**: 2026-06-09  
 **Status**: Draft  
 **Input**: Transition delta from `009-order-management-matcher`, derived from the design proposals `LMAX-SEQUENCER-ARCHITECTURE.md`, `LMAX-INPUT-DISRUPTOR.md`, `LMAX-BLP.md`, `LMAX-OUTPUT-DISRUPTOR.md`, and `LMAX-NO-GC-JAVA.md` (repo root)
@@ -167,7 +167,7 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
   `traderx_order_match_latency_seconds` becomes a real measurement (no zero-filled placeholder).
 - FR-09B42: The inherited state-aware header contract (`009` FR-01317) SHALL render this state's
   identity: generated snapshots update the state-ui-metadata overlay so the UI title, About page, and
-  status view identify `009b-lmax-sequencer-architecture` (not the parent state id). This is the only
+  status view identify `YU01-lmax-sequencer` (not the parent state id). This is the only
   permitted UI-visible change in this state.
 
 ## Non-Functional Requirements
@@ -212,9 +212,9 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
 ## Success Criteria
 
 - SC-09B01: Generation hook exists and is runnable
-  (`pipeline/generate-state-009b-lmax-sequencer-architecture.sh`).
+  (`pipeline/generate-state-YU01-lmax-sequencer.sh`).
 - SC-09B02: State smoke test path is defined
-  (`scripts/test-state-009b-lmax-sequencer-architecture.sh`).
+  (`scripts/test-state-YU01-lmax-sequencer.sh`).
 - SC-09B03: Functional parity with `009`: order create, account-filtered listing, user cancel, admin
   force-fill, auto-fill policy, and resulting trade/position updates produce identical REST/WS
   responses and NATS events to `009` for the same scenarios.

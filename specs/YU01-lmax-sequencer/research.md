@@ -26,7 +26,7 @@ contracts and observability obligations.
    (Kubernetes/Tilt/C3/FDC3) is unaffected. The state is registered in `catalog/state-catalog.json`
    (`status: draft`, `primaryLineageRole: optional`) because the generation pipeline's post-install
    steps resolve state metadata from the catalog; pipeline scaffolding (generation hook, render stub,
-   lifecycle delegates to `009`) keeps `pipeline/generate-state.sh 009b-lmax-sequencer-architecture`
+   lifecycle delegates to `009`) keeps `pipeline/generate-state.sh YU01-lmax-sequencer`
    runnable end-to-end, producing `009`-parity output until the overlay patchset lands. Letter-suffixed
    state ids are supported by the pipeline by treating `009b` as numeric base `009` for lineage
    thresholds while using the full prefix for script-name resolution.

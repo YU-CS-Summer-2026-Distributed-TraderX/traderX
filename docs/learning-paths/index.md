@@ -44,7 +44,7 @@ flowchart TB
   S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
   S008_pricing_awareness_market_data["008: Pricing Awareness and Market Data Streaming"]
   S009_order_management_matcher["009: Order Management and Matcher [C2]"]
-  S009b_lmax_sequencer_architecture["009b: LMAX Sequencer Architecture (Trading Hot Path)"]
+  SYU01_lmax_sequencer["YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"]
   S010_kubernetes_runtime["010: Kubernetes Runtime on C2"]
   S011_tilt_kubernetes_dev_loop["011: Tilt Local Dev on Kubernetes"]
   S012_platform_convergence_c3["012: Platform Convergence C3 [C3]"]
@@ -58,7 +58,7 @@ flowchart TB
   S006_messaging_nats_replacement --> S007_observability_lgtm_compose
   S007_observability_lgtm_compose --> S008_pricing_awareness_market_data
   S008_pricing_awareness_market_data --> S009_order_management_matcher
-  S009_order_management_matcher -.-> S009b_lmax_sequencer_architecture
+  S009_order_management_matcher --> SYU01_lmax_sequencer
   S009_order_management_matcher --> S010_kubernetes_runtime
   S010_kubernetes_runtime --> S011_tilt_kubernetes_dev_loop
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
@@ -74,7 +74,7 @@ flowchart TB
   click S007_observability_lgtm_compose href "/specs/observability-lgtm-compose" "Open State 007 Spec Pack"
   click S008_pricing_awareness_market_data href "/specs/pricing-awareness-market-data" "Open State 008 Spec Pack"
   click S009_order_management_matcher href "/specs/order-management-matcher" "Open State 009 Spec Pack"
-  click S009b_lmax_sequencer_architecture href "/specs/lmax-sequencer-architecture" "Open State 009b Spec Pack"
+  click SYU01_lmax_sequencer href "/specs/YU01-lmax-sequencer" "Open State YU01-lmax-sequencer Spec Pack"
   click S010_kubernetes_runtime href "/specs/kubernetes-runtime" "Open State 010 Spec Pack"
   click S011_tilt_kubernetes_dev_loop href "/specs/tilt-kubernetes-dev-loop" "Open State 011 Spec Pack"
   click S012_platform_convergence_c3 href "/specs/platform-convergence-c3" "Open State 012 Spec Pack"
@@ -100,7 +100,7 @@ flowchart TB
 | **[`007-observability-lgtm-compose`](pathname:///specs/observability-lgtm-compose)** [(C1)](pathname:///docs/spec-kit/convergence-states#c1) | [link](pathname:///specs/observability-lgtm-compose) | [link](pathname:///specs/observability-lgtm-compose/system/architecture) | [link](pathname:///specs/observability-lgtm-compose/system/runtime-topology) | [link](pathname:///docs/learning/state-007-observability-lgtm-compose) | [code/generated-state-007-observability-lgtm-compose](https://github.com/finos/traderX/tree/code/generated-state-007-observability-lgtm-compose) |
 | [`008-pricing-awareness-market-data`](pathname:///specs/pricing-awareness-market-data) | [link](pathname:///specs/pricing-awareness-market-data) | [link](pathname:///specs/pricing-awareness-market-data/system/architecture) | [link](pathname:///specs/pricing-awareness-market-data/system/runtime-topology) | [link](pathname:///docs/learning/state-008-pricing-awareness-market-data) | [code/generated-state-008-pricing-awareness-market-data](https://github.com/finos/traderX/tree/code/generated-state-008-pricing-awareness-market-data) |
 | **[`009-order-management-matcher`](pathname:///specs/order-management-matcher)** [(C2)](pathname:///docs/spec-kit/convergence-states#c2) | [link](pathname:///specs/order-management-matcher) | [link](pathname:///specs/order-management-matcher/system/architecture) | [link](pathname:///specs/order-management-matcher/system/runtime-topology) | [link](pathname:///docs/learning/state-009-order-management-matcher) | [code/generated-state-009-order-management-matcher](https://github.com/finos/traderX/tree/code/generated-state-009-order-management-matcher) |
-| [`009b-lmax-sequencer-architecture`](pathname:///specs/lmax-sequencer-architecture) | [link](pathname:///specs/lmax-sequencer-architecture) | [link](pathname:///specs/lmax-sequencer-architecture/system/architecture) | [link](pathname:///specs/lmax-sequencer-architecture/system/runtime-topology) | [link](pathname:///docs/learning/state-009b-lmax-sequencer-architecture) | [code/generated-state-009b-lmax-sequencer-architecture](https://github.com/finos/traderX/tree/code/generated-state-009b-lmax-sequencer-architecture) |
+| [`YU01-lmax-sequencer`](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer/system/architecture) | [link](pathname:///specs/YU01-lmax-sequencer/system/runtime-topology) | [link](pathname:///docs/learning/state-YU01-lmax-sequencer) | [YU01-lmax-sequencer](https://github.com/finos/traderX/tree/YU01-lmax-sequencer) |
 | [`010-kubernetes-runtime`](pathname:///specs/kubernetes-runtime) | [link](pathname:///specs/kubernetes-runtime) | [link](pathname:///specs/kubernetes-runtime/system/architecture) | [link](pathname:///specs/kubernetes-runtime/system/runtime-topology) | [link](pathname:///docs/learning/state-010-kubernetes-runtime) | [code/generated-state-010-kubernetes-runtime](https://github.com/finos/traderX/tree/code/generated-state-010-kubernetes-runtime) |
 | [`011-tilt-kubernetes-dev-loop`](pathname:///specs/tilt-kubernetes-dev-loop) | [link](pathname:///specs/tilt-kubernetes-dev-loop) | [link](pathname:///specs/tilt-kubernetes-dev-loop/system/architecture) | [link](pathname:///specs/tilt-kubernetes-dev-loop/system/runtime-topology) | [link](pathname:///docs/learning/state-011-tilt-kubernetes-dev-loop) | [code/generated-state-011-tilt-kubernetes-dev-loop](https://github.com/finos/traderX/tree/code/generated-state-011-tilt-kubernetes-dev-loop) |
 | **[`012-platform-convergence-c3`](pathname:///specs/platform-convergence-c3)** [(C3)](pathname:///docs/spec-kit/convergence-states#c3) | [link](pathname:///specs/platform-convergence-c3) | [link](pathname:///specs/platform-convergence-c3/system/architecture) | [link](pathname:///specs/platform-convergence-c3/system/runtime-topology) | [link](pathname:///docs/learning/state-012-platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/tree/code/generated-state-012-platform-convergence-c3) |
@@ -122,7 +122,7 @@ flowchart TB
   subgraph ARCHITECTURE["Architecture Track"]
     S005_postgres_database_replacement["005: PostgreSQL Database Replacement"]
     S006_messaging_nats_replacement["006: Messaging Layer Replacement with NATS"]
-    S009b_lmax_sequencer_architecture["009b: LMAX Sequencer Architecture (Trading Hot Path)"]
+    SYU01_lmax_sequencer["YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
@@ -146,7 +146,7 @@ flowchart TB
   S006_messaging_nats_replacement --> S007_observability_lgtm_compose
   S007_observability_lgtm_compose --> S008_pricing_awareness_market_data
   S008_pricing_awareness_market_data --> S009_order_management_matcher
-  S009_order_management_matcher -.-> S009b_lmax_sequencer_architecture
+  S009_order_management_matcher --> SYU01_lmax_sequencer
   S009_order_management_matcher --> S010_kubernetes_runtime
   S010_kubernetes_runtime --> S011_tilt_kubernetes_dev_loop
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3

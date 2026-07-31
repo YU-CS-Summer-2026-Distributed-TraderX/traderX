@@ -1,7 +1,7 @@
-# Smoke Tests: 009b-lmax-sequencer-architecture
+# Smoke Tests: YU01-lmax-sequencer
 
-- Primary smoke script: `scripts/test-state-009b-lmax-sequencer-architecture.sh`
-- Focused messaging smoke: `scripts/test-messaging-009b-lmax-sequencer-architecture.sh`
+- Primary smoke script: `scripts/test-state-YU01-lmax-sequencer.sh`
+- Focused messaging smoke: `scripts/test-messaging-YU01-lmax-sequencer.sh`
 - No-GC gate: `pipeline/validate-no-gc-conformance.sh` (CI; runnable locally)
 
 Planned smoke checks:
@@ -20,7 +20,7 @@ Planned smoke checks:
     force-fill with `009`-identical payload shapes
   - trade/position streams update on fills; no polling loops in Angular views
   - API explorer / pub-sub inspector surface from `009` still resolves (re-validates SC-01312/SC-01313)
-  - UI header/About/status render the `009b-lmax-sequencer-architecture` state id (FR-09B42), with the
+  - UI header/About/status render the `YU01-lmax-sequencer` state id (FR-09B42), with the
     inherited header/System-menu contract otherwise unchanged
 - Hot-path metrics present and sane in `/metrics`:
   - `traderx_disruptor_input_remaining_capacity`, `traderx_input_seq_lag`,

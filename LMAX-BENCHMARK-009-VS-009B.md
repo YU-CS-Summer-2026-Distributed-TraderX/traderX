@@ -77,7 +77,7 @@ survives between runs.
 ## 2. Final A/B result (run `20260611-222221`)
 
 ```
-                        009-order-management-matcher  009b-lmax-sequencer-architecture
+                        009-order-management-matcher  YU01-lmax-sequencer
 workload                500 orders + 6,000 ticks      500 orders + 6,000 ticks
 order submit (REST)     2.7s                          0.9s
 ack latency p50 / p99   78.9ms / 164.2ms              25.4ms / 71.4ms
@@ -230,4 +230,4 @@ images, runs, and removes containers **and volumes**.
 
 *Companions: `LMAX-SEQUENCER-ARCHITECTURE.md` (the design this validates),
 `LMAX-NO-GC-JAVA.md` §A12.10 (the allocation gate whose contract the 4,776-byte runtime
-number corroborates), `specs/009b-lmax-sequencer-architecture/` (the state under test).*
+number corroborates), `specs/YU01-lmax-sequencer/` (the state under test).*

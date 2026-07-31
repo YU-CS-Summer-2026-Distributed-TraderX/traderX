@@ -1,6 +1,6 @@
 {
   "title": "LMAX Sequencer Architecture (Trading Hot Path)",
-  "stateId": "009b-lmax-sequencer-architecture",
+  "stateId": "YU01-lmax-sequencer",
   "parentState": "009-order-management-matcher",
   "description": "State 009 runtime with the trading hot path rebuilt as a sequenced, journaled, single-threaded in-memory BLP wired with disruptor rings; external contracts unchanged.",
   "mermaidDirection": "LR",

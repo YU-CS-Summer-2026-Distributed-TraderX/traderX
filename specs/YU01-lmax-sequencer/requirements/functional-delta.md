@@ -1,4 +1,4 @@
-# Functional Delta: 009b-lmax-sequencer-architecture
+# Functional Delta: YU01-lmax-sequencer
 
 Parent state: `009-order-management-matcher`
 
@@ -75,7 +75,7 @@ parity-locked to `009`; the delta is in how that behavior is produced.
 - Order ID and timestamp derivation: from the global sequence and event-carried time rather than
   `String.format` counters and `Instant.now()` (FR-09B14); externally rendered shapes are unchanged.
 - State-identity branding: the state-ui-metadata overlay inherited from `009` (FR-01317 header/About/
-  status state-id rendering) is updated to identify `009b-lmax-sequencer-architecture` (FR-09B42).
+  status state-id rendering) is updated to identify `YU01-lmax-sequencer` (FR-09B42).
   This is a generation-time metadata change only; no component, route, or interaction changes.
 
 ## Removed

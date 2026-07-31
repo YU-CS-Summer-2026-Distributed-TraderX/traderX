@@ -1,4 +1,4 @@
-# No-GC Conformance Profile: 009b-lmax-sequencer-architecture
+# No-GC Conformance Profile: YU01-lmax-sequencer
 
 Cross-cutting allocation discipline for every hot-path stage in this state (Gateway encode, input ring,
 BLP, output ring emit), per `LMAX-NO-GC-JAVA.md`. Referenced from `spec.md` NFR-09B02 and enforced by

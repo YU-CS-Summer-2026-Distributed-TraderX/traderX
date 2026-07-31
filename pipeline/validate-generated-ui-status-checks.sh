@@ -23,6 +23,12 @@ const path = require('node:path');
 const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
+const root = process.env.ROOT;
+
+const stateCatalogPath = path.join(root, 'catalog', 'state-catalog.json');
+const stateCatalog = JSON.parse(fs.readFileSync(stateCatalogPath, 'utf8'));
+const states = Array.isArray(stateCatalog.states) ? stateCatalog.states : [];
+const stateById = new Map(states.map((entry) => [entry.id, entry]));
 
 function stateNumber(value) {
   // Letter-suffixed sibling states (e.g. 009b-*) share their base number.
@@ -30,12 +36,30 @@ function stateNumber(value) {
   return match ? Number.parseInt(match[1], 10) : 0;
 }
 
+function effectiveStateNumber(value) {
+  const visited = new Set();
+  let cursor = value;
+
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const direct = stateNumber(cursor);
+    if (direct > 0) {
+      return direct;
+    }
+    const state = stateById.get(cursor);
+    const previous = Array.isArray(state?.previous) ? state.previous : [];
+    cursor = previous[0] || '';
+  }
+
+  return 0;
+}
+
 function fail(message) {
   console.error(`[fail] ${message}`);
   process.exit(1);
 }
 
-const stateNo = stateNumber(stateId);
+const stateNo = effectiveStateNumber(stateId);
 if (stateNo === 0) {
   fail(`unable to parse state number from id: ${stateId}`);
 }

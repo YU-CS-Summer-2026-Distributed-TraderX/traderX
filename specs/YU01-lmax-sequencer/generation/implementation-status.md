@@ -88,9 +88,9 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
 ## Patchset + pipeline integration (2026-06-10)
 
 - `generation/patches/0001-state-overlay.patch` is captured via
-  `pipeline/create-state-patchset.sh 009b-lmax-sequencer-architecture 009-order-management-matcher`
+  `pipeline/create-state-patchset.sh YU01-lmax-sequencer 009-order-management-matcher`
   (38 entries: the 25-file order-matcher overlay + state-identity files). A from-scratch
-  `pipeline/generate-state.sh 009b-lmax-sequencer-architecture` applies it cleanly (direct apply,
+  `pipeline/generate-state.sh YU01-lmax-sequencer` applies it cleanly (direct apply,
   no 3-way fallback) and the overrides render is byte-idempotent on top.
 - 2026-06-11: the 8 order-matcher entries touched by the conformance fixes (backpressure metric,
   output-ring headroom, projector batch histogram, `blp.book.pool-size`, doc-truth edits, metrics
@@ -105,7 +105,7 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
 - 009b-aware pipeline gates added: pubsub-inspector enablement in
   `install-generated-api-explorer.sh`, a `009b` case (scripts/runbook/URLs/compose normalization)
   in `install-generated-runtime-harness.sh`, and `/grafana` + `/prometheus` ingress route
-  injection in `render-state-009b-lmax-sequencer-architecture.sh` (the 009 render only injects
+  injection in `render-state-YU01-lmax-sequencer.sh` (the 009 render only injects
   them at generation depth 1, which a nested parent run skips).
 - IDE support: `order-matcher/.parent-src/` (git-ignored) snapshots the 21 parent-009 classes the
   overlay does not replace, registered as an optional Gradle source dir so the overlay compiles

@@ -8,7 +8,7 @@
 > **Primary reference:** Martin Fowler, *The LMAX Architecture* — https://martinfowler.com/articles/lmax.html
 > **Date:** 2026-06-09
 > **Last code-sync:** 2026-06-12 — verbatim snippets verified against the `009b` overlay
-> (`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/`); measured
+> (`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/`); measured
 > results in `LMAX-BENCHMARK-009-VS-009B.md`.
 
 This document does two things:
@@ -115,7 +115,7 @@ A Disruptor ring is a **fixed-size circular array of mutable "event holder" obje
   consumer that still needs it has moved past — that is what makes the buffer safe to wrap.
 
 This is the real slot holder from state `009b`
-(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/InputEvent.java`):
+(`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/.../lmax/InputEvent.java`):
 
 ```java
 /**
@@ -369,7 +369,7 @@ direct:
 ## A13. The wiring as implemented in state `009b`
 
 Verbatim from `LmaxEngine.java` and `MatchingEngine.java`
-(`specs/009b-lmax-sequencer-architecture/generation/runtime-overrides/order-matcher/.../lmax/`):
+(`specs/YU01-lmax-sequencer/generation/runtime-overrides/order-matcher/.../lmax/`):
 
 ```java
 // 1) Construct the input ring (LmaxEngine.afterPropertiesSet): pre-allocate every slot,

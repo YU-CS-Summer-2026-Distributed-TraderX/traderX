@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-STATE_ID="009b-lmax-sequencer-architecture"
+STATE_ID="YU01-lmax-sequencer"
 PARENT_STATE_ID="009-order-management-matcher"
 PATCH_DIR="${ROOT}/specs/${STATE_ID}/generation/patches"
 
@@ -29,14 +29,14 @@ else
   echo "[hint] capture the overlay with: bash pipeline/create-state-patchset.sh ${STATE_ID} ${PARENT_STATE_ID}"
 fi
 
-bash "${ROOT}/pipeline/render-state-009b-lmax-sequencer-architecture.sh"
+bash "${ROOT}/pipeline/render-state-YU01-lmax-sequencer.sh"
 bash "${ROOT}/pipeline/generate-state-architecture-doc.sh" "${STATE_ID}"
 
 cat <<'EOT'
-[summary] state=009b-lmax-sequencer-architecture
+[summary] state=YU01-lmax-sequencer
 [summary] parent-state=009-order-management-matcher
 [summary] track=architecture
 [summary] impacted-assets=order-matcher-lmax-hot-path,input-disruptor,blp,output-disruptor,journal,read-model-projector,no-gc-gate,hot-path-observability
 [summary] generated-path=generated/code/target-generated/order-management-matcher
-[summary] runtime-entrypoint=./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
+[summary] runtime-entrypoint=./scripts/start-state-YU01-lmax-sequencer-generated.sh
 EOT

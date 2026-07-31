@@ -1,4 +1,4 @@
-# Non-Functional Delta: 009b-lmax-sequencer-architecture
+# Non-Functional Delta: YU01-lmax-sequencer
 
 Parent state: `009-order-management-matcher`
 

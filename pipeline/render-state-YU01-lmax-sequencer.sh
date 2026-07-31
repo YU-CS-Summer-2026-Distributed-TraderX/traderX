@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 TARGET_ROOT="${GENERATED_ROOT}/code/target-generated"
-STATE_ID="009b-lmax-sequencer-architecture"
+STATE_ID="YU01-lmax-sequencer"
 RUNTIME_OVERRIDES_DIR="${ROOT}/specs/${STATE_ID}/generation/runtime-overrides"
 FRONTEND_OVERRIDE_SOURCE_DIR="${ROOT}/specs/${STATE_ID}/generation/frontend-overrides/web-front-end/angular"
 TARGET_FRONTEND_DIR="${TARGET_ROOT}/web-front-end/angular"

@@ -32,7 +32,36 @@ const parseStateNum = (value) => {
   return Number.parseInt(match[1], 10);
 };
 
-const currentNum = parseStateNum(stateId);
+// A YU-prefixed id has no leading number of its own, so its position in the numeric ancestor
+// chain has to come from the catalog: walk `previous` until a numbered ancestor appears. Without
+// this, parseStateNum returns null and the whole prune step exits 0 -- reporting "no prune
+// manifests apply", which reads like a legitimate outcome rather than a parse failure, so nothing
+// looks wrong while every removal an ancestor declared is quietly retained in the generated tree.
+// (No apostrophes in this block: it sits inside a command substitution, where a lone quote breaks
+// the shell parse even though the heredoc is quoted.)
+const effectiveStateNum = (value) => {
+  const direct = parseStateNum(value);
+  if (direct !== null) return direct;
+
+  const catalogPath = path.join(root, 'catalog', 'state-catalog.json');
+  if (!fs.existsSync(catalogPath)) return null;
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  const states = Array.isArray(catalog.states) ? catalog.states : [];
+  const stateById = new Map(states.map((entry) => [entry.id, entry]));
+
+  const visited = new Set();
+  let cursor = value;
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    const num = parseStateNum(cursor);
+    if (num !== null) return num;
+    const previous = stateById.get(cursor)?.previous;
+    cursor = (Array.isArray(previous) ? previous[0] : '') || '';
+  }
+  return null;
+};
+
+const currentNum = effectiveStateNum(stateId);
 if (currentNum === null) {
   process.exit(0);
 }

@@ -1,8 +1,8 @@
-# Implementation Plan: 009b-lmax-sequencer-architecture
+# Implementation Plan: YU01-lmax-sequencer
 
 ## Scope
 
-- Sibling branch transition from `009-order-management-matcher` to `009b-lmax-sequencer-architecture`.
+- Sibling branch transition from `009-order-management-matcher` to `YU01-lmax-sequencer`.
 - Track focus: `architecture` (behavior-preserving execution-model replacement, like `005`/`006`).
 - Rebuild the trading hot path only: Gateway encode, sequencer, input disruptor, BLP, output disruptor,
   journal/replication, async read-model. `account-service`, `position-service`, `people-service`,
@@ -33,9 +33,9 @@
 3. Supporting artifacts: `research.md`, `data-model.md`, `quickstart.md`.
 4. Architecture and topology deltas in `system/`, including ADRs 014–017.
 5. Observability contract for ring/BLP/egress/no-GC metrics and Grafana panel set.
-6. Generation hook implementation in `pipeline/generate-state-009b-lmax-sequencer-architecture.sh`.
+6. Generation hook implementation in `pipeline/generate-state-YU01-lmax-sequencer.sh`.
 7. No-GC conformance gate in `pipeline/validate-no-gc-conformance.sh` plus a Gradle `noGcTest` profile.
-8. Smoke test implementation in `scripts/test-state-009b-lmax-sequencer-architecture.sh`.
+8. Smoke test implementation in `scripts/test-state-YU01-lmax-sequencer.sh`.
 9. Parity fixtures: penny-parity (fixed-point vs `BigDecimal`), determinism replay, subject/payload
    byte-parity against `009`.
 
@@ -46,4 +46,4 @@
 - Smoke tests pass for this state, including parity, determinism, recovery, and decoupling checks.
 - Allocation gate (Epsilon GC) and banned-API static check pass in CI on the demo/`C2` profile.
 - Latency report meets NFR-09B01 budgets on the `perf` profile (documented bare-metal run).
-- State can be published to `code/generated-state-009b-lmax-sequencer-architecture`.
+- State can be published to `code/generated-state-YU01-lmax-sequencer`.

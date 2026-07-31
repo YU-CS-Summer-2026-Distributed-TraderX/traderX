@@ -279,26 +279,26 @@
       }
     },
     {
-      "id": "009b-lmax-sequencer-architecture",
-      "title": "LMAX Sequencer Architecture (Trading Hot Path)",
-      "status": "draft",
+      "id": "YU01-lmax-sequencer",
+      "title": "LMAX Sequencer (Trading Hot Path)",
+      "status": "implemented",
       "track": "architecture",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
       "primaryLineageRole": "optional",
-      "featurePack": "specs/009b-lmax-sequencer-architecture",
+      "featurePack": "specs/YU01-lmax-sequencer",
       "previous": [
         "009-order-management-matcher"
       ],
       "generation": {
         "mode": "specified",
-        "entrypoint": "bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture",
-        "runtime": "./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh"
+        "entrypoint": "bash pipeline/generate-state.sh YU01-lmax-sequencer",
+        "runtime": "./scripts/start-state-YU01-lmax-sequencer-generated.sh"
       },
       "publish": {
-        "branch": "code/generated-state-009b-lmax-sequencer-architecture",
-        "tag": "generated/009b-lmax-sequencer-architecture/v1"
+        "branch": "YU01-lmax-sequencer",
+        "tag": "generated/YU01-lmax-sequencer/v1"
       }
     },
     {

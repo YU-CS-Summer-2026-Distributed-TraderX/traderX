@@ -1,4 +1,4 @@
-# Contract Delta: 009b-lmax-sequencer-architecture
+# Contract Delta: YU01-lmax-sequencer
 
 Parent state: `009-order-management-matcher`
 

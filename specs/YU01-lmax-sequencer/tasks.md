@@ -1,4 +1,4 @@
-# Tasks: 009b-lmax-sequencer-architecture
+# Tasks: YU01-lmax-sequencer
 
 - [x] T09B01 Define functional deltas in `requirements/functional-delta.md`.
 - [x] T09B02 Define non-functional deltas in `requirements/nonfunctional-delta.md`.
@@ -51,7 +51,7 @@
       byte-parity smoke deferred.
 - [ ] T09B20 Add ring/BLP/egress/no-GC observability (metrics wiring, Prometheus targets, Grafana
       dashboards incl. allocation alert and GC-pause panel).
-- [ ] T09B21 Implement smoke tests: `scripts/test-state-009b-lmax-sequencer-architecture.sh`.
+- [ ] T09B21 Implement smoke tests: `scripts/test-state-YU01-lmax-sequencer.sh`.
 - [ ] T09B22 Validate docs/spec gates, flip the catalog entry from `draft` to `implemented`, replace
       the `009`-delegating lifecycle scripts with state-native ones, and publish the generated
       snapshot branch.

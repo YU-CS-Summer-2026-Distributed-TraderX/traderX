@@ -1,8 +1,8 @@
 ---
-title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
+title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 ---
 
-# State 009b Learning Guide
+# State YU01-lmax-sequencer Learning Guide
 
 ## Position In Learning Graph
 
@@ -20,12 +20,12 @@ title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-009b-lmax-sequencer-architecture](https://github.com/finos/traderX/tree/code/generated-state-009b-lmax-sequencer-architecture)
+- Generated branch: [YU01-lmax-sequencer](https://github.com/finos/traderX/tree/YU01-lmax-sequencer)
 - Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
 
 ## Code Comparison With Previous State
 
-- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...code/generated-state-009b-lmax-sequencer-architecture](https://github.com/finos/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-009b-lmax-sequencer-architecture)
+- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...YU01-lmax-sequencer](https://github.com/finos/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...YU01-lmax-sequencer)
 
 ## Plain-English Code Delta
 
@@ -41,15 +41,15 @@ title: "State 009b: LMAX Sequencer Architecture (Trading Hot Path)"
 ## Run This State
 
 ```bash
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
+./scripts/start-state-YU01-lmax-sequencer-generated.sh
 ```
 
 ## Canonical Spec Links
 
-- State spec pack: [/specs/lmax-sequencer-architecture](/specs/lmax-sequencer-architecture)
-- Architecture: [/specs/lmax-sequencer-architecture/system/architecture](/specs/lmax-sequencer-architecture/system/architecture)
-- Flows / topology: [/specs/lmax-sequencer-architecture/system/runtime-topology](/specs/lmax-sequencer-architecture/system/runtime-topology)
-- Research: [link](/specs/lmax-sequencer-architecture/research)
-- Data model: [link](/specs/lmax-sequencer-architecture/data-model)
-- Quickstart: [link](/specs/lmax-sequencer-architecture/quickstart)
+- State spec pack: [/specs/YU01-lmax-sequencer](/specs/YU01-lmax-sequencer)
+- Architecture: [/specs/YU01-lmax-sequencer/system/architecture](/specs/YU01-lmax-sequencer/system/architecture)
+- Flows / topology: [/specs/YU01-lmax-sequencer/system/runtime-topology](/specs/YU01-lmax-sequencer/system/runtime-topology)
+- Research: [link](/specs/YU01-lmax-sequencer/research)
+- Data model: [link](/specs/YU01-lmax-sequencer/data-model)
+- Quickstart: [link](/specs/YU01-lmax-sequencer/quickstart)
 

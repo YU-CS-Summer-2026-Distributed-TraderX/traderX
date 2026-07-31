@@ -86,7 +86,7 @@ index 491b34e..fc9b77a 100644
  # AGENTS.md
 
 -This generated codebase is a reproducible runtime snapshot for state `009-order-management-matcher`.
-+This generated codebase is a reproducible runtime snapshot for state `009b-lmax-sequencer-architecture`.
++This generated codebase is a reproducible runtime snapshot for state `YU01-lmax-sequencer`.
 
  - Treat this snapshot as generated output; expect it to be replaced on regeneration.
  - Prototype and experiment locally here when needed.
@@ -98,7 +98,7 @@ index 7b5ea7f..b47ef54 100644
  # ARCHITECTURE.md
 
 -This snapshot was generated from TraderX state `009-order-management-matcher`.
-+This snapshot was generated from TraderX state `009b-lmax-sequencer-architecture`.
++This snapshot was generated from TraderX state `YU01-lmax-sequencer`.
 
  - Service/runtime topology is defined by the source state pack in the upstream repository.
  - This generated directory contains runnable artifacts, not the authoritative architecture source.
@@ -112,7 +112,7 @@ index 4098234..39abe00 100644
 -  "isConvergence": true,
 -  "convergenceLevel": "C2",
 -  "convergenceNamespace": "traderx-c2",
-+  "stateId": "009b-lmax-sequencer-architecture",
++  "stateId": "YU01-lmax-sequencer",
 +  "isConvergence": false,
 +  "convergenceLevel": "none",
 +  "convergenceNamespace": "",
@@ -5704,15 +5704,15 @@ index 22e0cdb..565542a 100644
  # Generated Runtime Harness
 
 -This directory is generated for state: 009-order-management-matcher
-+This directory is generated for state: 009b-lmax-sequencer-architecture
++This directory is generated for state: YU01-lmax-sequencer
 
  - Scripts in this folder are local-runtime wrappers for the generated codebase.
  - They are designed to run without invoking root pipeline generation.
-diff --git a/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
+diff --git a/scripts/start-state-YU01-lmax-sequencer-generated.sh b/scripts/start-state-YU01-lmax-sequencer-generated.sh
 new file mode 100755
 index 0000000..eb131d7
 --- /dev/null
-+++ b/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
++++ b/scripts/start-state-YU01-lmax-sequencer-generated.sh
 @@ -0,0 +1,17 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
@@ -5731,11 +5731,11 @@ index 0000000..eb131d7
 +# these delegates with T09B22.
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/start-state-009-order-management-matcher-generated.sh" "$@"
-diff --git a/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
+diff --git a/scripts/status-state-YU01-lmax-sequencer-generated.sh b/scripts/status-state-YU01-lmax-sequencer-generated.sh
 new file mode 100755
 index 0000000..49e1c90
 --- /dev/null
-+++ b/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
++++ b/scripts/status-state-YU01-lmax-sequencer-generated.sh
 @@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
@@ -5752,11 +5752,11 @@ index 0000000..49e1c90
 +# script; state-native scripts replace these delegates with T09B22.
 +ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 +exec bash "${ROOT}/status-state-009-order-management-matcher-generated.sh" "$@"
-diff --git a/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
+diff --git a/scripts/stop-state-YU01-lmax-sequencer-generated.sh b/scripts/stop-state-YU01-lmax-sequencer-generated.sh
 new file mode 100755
 index 0000000..8ab8834
 --- /dev/null
-+++ b/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
++++ b/scripts/stop-state-YU01-lmax-sequencer-generated.sh
 @@ -0,0 +1,15 @@
 +#!/usr/bin/env bash
 +set -euo pipefail
@@ -5782,10 +5782,10 @@ index a1cde6d..62ee5a2 100755
  # Wrapper purpose: stable, state-local start entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/start-state-009-order-management-matcher-generated.sh
-+# Execution flow: scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
++# Execution flow: scripts/start-state-YU01-lmax-sequencer-generated.sh
 
 -exec "${ROOT}/scripts/start-state-009-order-management-matcher-generated.sh" "$@"
-+exec "${ROOT}/scripts/start-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
++exec "${ROOT}/scripts/start-state-YU01-lmax-sequencer-generated.sh" "$@"
 diff --git a/status-env.sh b/status-env.sh
 index 2d112e0..8fc992e 100755
 --- a/status-env.sh
@@ -5795,10 +5795,10 @@ index 2d112e0..8fc992e 100755
  # Wrapper purpose: stable, state-local status entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/status-state-009-order-management-matcher-generated.sh
-+# Execution flow: scripts/status-state-009b-lmax-sequencer-architecture-generated.sh
++# Execution flow: scripts/status-state-YU01-lmax-sequencer-generated.sh
 
 -exec "${ROOT}/scripts/status-state-009-order-management-matcher-generated.sh" "$@"
-+exec "${ROOT}/scripts/status-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
++exec "${ROOT}/scripts/status-state-YU01-lmax-sequencer-generated.sh" "$@"
 diff --git a/stop-env.sh b/stop-env.sh
 index a712c43..67ab977 100755
 --- a/stop-env.sh
@@ -5808,10 +5808,10 @@ index a712c43..67ab977 100755
  # Wrapper purpose: stable, state-local stop entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/stop-state-009-order-management-matcher-generated.sh
-+# Execution flow: scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
++# Execution flow: scripts/stop-state-YU01-lmax-sequencer-generated.sh
 
 -exec "${ROOT}/scripts/stop-state-009-order-management-matcher-generated.sh" "$@"
-+exec "${ROOT}/scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh" "$@"
++exec "${ROOT}/scripts/stop-state-YU01-lmax-sequencer-generated.sh" "$@"
 diff --git a/test-env.sh b/test-env.sh
 index e05cf9b..520329b 100755
 --- a/test-env.sh
@@ -5821,10 +5821,10 @@ index e05cf9b..520329b 100755
  # Wrapper purpose: stable, state-local test entrypoint.
  # This may delegate across multiple numbered state scripts to maximize reuse.
 -# Execution flow: scripts/test-state-009-order-management-matcher.sh
-+# Execution flow: scripts/test-state-009b-lmax-sequencer-architecture.sh
++# Execution flow: scripts/test-state-YU01-lmax-sequencer.sh
 
 -exec "${ROOT}/scripts/test-state-009-order-management-matcher.sh" "$@"
-+exec "${ROOT}/scripts/test-state-009b-lmax-sequencer-architecture.sh" "$@"
++exec "${ROOT}/scripts/test-state-YU01-lmax-sequencer.sh" "$@"
 diff --git a/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java b/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java
 index be6ee41..bbb88a5 100644
 --- a/trade-service/src/main/java/finos/traderx/tradeservice/controller/TradeOrderController.java

@@ -16,7 +16,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `007-observability-lgtm-compose`
 - `008-pricing-awareness-market-data`
 - `009-order-management-matcher`
-- `009b-lmax-sequencer-architecture`
+- `YU01-lmax-sequencer`
 - `010-kubernetes-runtime`
 - `011-tilt-kubernetes-dev-loop`
 - `012-platform-convergence-c3`

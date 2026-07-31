@@ -3,14 +3,14 @@
 ## 1) Generate This State
 
 ```bash
-bash pipeline/generate-state.sh 009b-lmax-sequencer-architecture
+bash pipeline/generate-state.sh YU01-lmax-sequencer
 ```
 
 ## 2) Start Runtime (demo profile)
 
 ```bash
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --skip-build
+./scripts/start-state-YU01-lmax-sequencer-generated.sh
+./scripts/start-state-YU01-lmax-sequencer-generated.sh --skip-build
 ```
 
 The hot-path node warm-starts from the persisted read-model (orders re-indexed into the BLP at
@@ -19,9 +19,9 @@ boot); snapshot files, journal replay, and JIT warm-up land with T09B14.
 ## 3) Run Smoke Tests
 
 ```bash
-./scripts/test-state-009b-lmax-sequencer-architecture.sh
-./scripts/test-state-009b-lmax-sequencer-architecture.sh --skip-messaging
-./scripts/test-messaging-009b-lmax-sequencer-architecture.sh
+./scripts/test-state-YU01-lmax-sequencer.sh
+./scripts/test-state-YU01-lmax-sequencer.sh --skip-messaging
+./scripts/test-messaging-YU01-lmax-sequencer.sh
 ```
 
 ## 4) Run the No-GC and Parity Gates
@@ -42,7 +42,7 @@ Determinism-replay and NATS payload byte-parity smoke checks are deferred (T09B1
 ## 5) Stop Runtime
 
 ```bash
-./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh
+./scripts/stop-state-YU01-lmax-sequencer-generated.sh
 ```
 
 ## 6) Inspect Hot-Path Observability
@@ -67,8 +67,8 @@ open http://localhost:3001
 
 ```bash
 # snapshot + replay recovery: restart the node and watch traderx_blp_replay_seconds
-./scripts/stop-state-009b-lmax-sequencer-architecture-generated.sh --only order-matcher
-./scripts/start-state-009b-lmax-sequencer-architecture-generated.sh --only order-matcher --skip-build
+./scripts/stop-state-YU01-lmax-sequencer-generated.sh --only order-matcher
+./scripts/start-state-YU01-lmax-sequencer-generated.sh --only order-matcher --skip-build
 
 # decoupling: stop the database, keep trading, restart it, watch traderx_projector_lag_seq drain
 ```
