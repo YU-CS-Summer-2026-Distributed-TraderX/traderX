@@ -96,6 +96,29 @@ start_forwards() {
   done
 }
 
+# Pin the cluster to the baseline image BEFORE anything runs.
+#
+# The rolling proofs each restore what they found, but "what they found" is only correct if the rig
+# started correct. A previous suite run that was interrupted mid-roll leaves the members on a proof's
+# own image, and the next run then restores THAT as if it were the baseline -- the leftover becomes
+# sticky. Observed: a whole suite executed against traderx/cluster-node:yu15-stp, where
+# yu13-clordid-suppression reported a DOUBLE BOOK and yu08 reported the scheduler dead. Both were
+# reporting a different engine's behaviour truthfully; neither was a bug in what it tested.
+#
+# An engine build is the one variable no proof should inherit from the run before it.
+BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] cluster is on $(current_image); pinning to ${BASELINE_IMAGE}"
+  ${K} set image statefulset/order-matcher-cluster \
+    "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} set image deployment/cluster-gateway \
+    "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
+  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+  echo "[baseline] cluster now on ${BASELINE_IMAGE}"
+fi
+
 pass=0; skip=0; fail=0; results=()
 for p in "${PROOFS[@]}"; do
   script="${ROOT}/scripts/proofs/${p}.sh"
