@@ -193,11 +193,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 | Cross-service integration | 2 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
-| **Gates** (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
-
-Gates are listed separately rather than folded into a tier because they check a different thing: not
-whether the code is correct, but what it cost to run — a property no assertion about a return value
-can see.
+| Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
 
 Nearly every end-to-end proof has an in-process test asserting the same property in CI, so the
 proofs confirm invariants that are already gated on every commit.
