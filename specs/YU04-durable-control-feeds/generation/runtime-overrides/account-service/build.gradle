@@ -48,8 +48,36 @@ dependencies {
 
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
   testRuntimeOnly 'com.h2database:h2:2.3.232'
+  // Integration tier only: a real MariaDB running the deployed DDL and the deployed server flags,
+  // so the outbox's atomicity guarantee is asserted where it is actually enforced -- in the
+  // database -- rather than around a mocked repository. See AccountOutboxAtomicityIT.
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+  testImplementation 'org.testcontainers:mariadb:1.20.4'
 }
 
+// Declared BEFORE the two task configurations below, deliberately: configureEach actions fire when
+// a task is realized, so keeping the blanket default first leaves the per-task tag filters as the
+// last word. The reverse order happens to work too (verified on the trade-processor), but it makes
+// the "unit job needs no Docker" split depend on Gradle's realization order rather than on reading
+// order, and if that ever changed nothing would fail -- the ITs would just quietly join the unit job.
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+}
+
+// Unit tier: no container runtime. @Tag("integration") runs in integrationTest instead.
+test {
+  useJUnitPlatform { excludeTags 'integration' }
+}
+
+// Needs a Docker daemon (Testcontainers). Kept OUT of the infrastructure-free unit task so the
+// hosted CI job stays fast and Docker-free; run by its own CI job, the same split the
+// trade-processor already uses.
+tasks.register('integrationTest', Test) {
+  description = 'Outbox atomicity against a real MariaDB running the deployed schema.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  useJUnitPlatform { includeTags 'integration' }
+  shouldRunAfter test
 }
