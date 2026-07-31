@@ -225,7 +225,25 @@ roll_to "${IMAGE_PRE}"
 
 step "2. on the pre-change engine a self-cross BOOKS A WASH TRADE"
 BEFORE="$(digest_consensus)"
-T0_0="$(trade_count 0)"; T0_1="$(trade_count 1)"; T0_2="$(trade_count 2)"
+# Take the baseline only once the three members AGREE on it. These reads happen moments after
+# roll_to restarted every member, and sampling each in turn while they are still catching up
+# captured [6 12 12] -- a baseline the members never simultaneously held. want = baseline + 2 is
+# then a different target per member and cannot all be satisfied, so the proof failed reporting
+# [14 14 14] against "want +2 on each of [6 12 12]" -- i.e. it failed at the exact moment all
+# three DID agree. The baseline has to be a consistent cut, not three separate snapshots.
+await_trades_agree() {
+  local t0 t1 t2 tries=0
+  while [[ ${tries} -lt 120 ]]; do
+    t0="$(trade_count 0)"; t1="$(trade_count 1)"; t2="$(trade_count 2)"
+    if [[ "${t0}" == "${t1}" && "${t1}" == "${t2}" ]]; then
+      T0_0="${t0}"; T0_1="${t1}"; T0_2="${t2}"
+      return 0
+    fi
+    tries=$((tries + 1)); sleep 1
+  done
+  fail "members never agreed on a trade-count baseline: [${t0} ${t1} ${t2}]"
+}
+await_trades_agree
 ROWS0="$(rows)"
 SELF_SELL="$(order "${SELF}" Sell)"; echo "  ${SELF} sell -> ${SELF_SELL}"
 SELF_BUY="$(order "${SELF}" Buy)";   echo "  ${SELF} buy  -> ${SELF_BUY}"
