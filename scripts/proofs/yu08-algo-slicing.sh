@@ -137,7 +137,14 @@ for b in parent['buckets']:
     if row['quantity'] != b['targetQuantity']:
         problems.append('bucket %d: booked qty %s != target %s' % (b['index'], row['quantity'], b['targetQuantity']))
     created = datetime.datetime.fromisoformat(row['createdAt'].replace('Z','+00:00')).timestamp()*1000
-    lo, hi = b['startEpochMs'], b['startEpochMs'] + bucket_ms + slack_ms
+    # The lower bound needs the timestamp's own resolution allowed for. createdAt comes from a
+    # MySQL DATETIME and arrives truncated to the second (…T18:56:14.000+00:00), so a child booked
+    # at .350 past its bucket start is STORED as .000 and reads as 350ms EARLY. That is the
+    # recording granularity, not the scheduler: it can only ever shift a timestamp backwards, and
+    # never by a full second. Without this the proof fails buckets whose children were on time.
+    # Lateness keeps the real slack; earliness is allowed exactly one truncation quantum.
+    truncation_ms = 1000
+    lo, hi = b['startEpochMs'] - truncation_ms, b['startEpochMs'] + bucket_ms + slack_ms
     if not (lo <= created <= hi):
         problems.append('bucket %d: booked at %+dms relative to its bucket window' % (b['index'], created - lo))
     else:
