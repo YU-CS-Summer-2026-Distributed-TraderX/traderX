@@ -22,6 +22,19 @@ set -uo pipefail
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
+# Rig-dependent workload names. On the cluster rig "order-matcher" is a SERVICE fronting the
+# cluster gateway -- the Deployment behind it is cluster-gateway, and there is no Deployment of
+# that name at all, so a readiness check on it fails while the matcher is perfectly healthy.
+# edge-proxy does not exist on this rig either; execution-algo-engine can curl the same in-cluster
+# addresses itself. For the state-014 rig: MATCHER_DEPLOY=order-matcher EXEC_POD=edge-proxy.
+MATCHER_DEPLOY="${MATCHER_DEPLOY:-cluster-gateway}"
+EXEC_POD="${EXEC_POD:-execution-algo-engine}"
+# Where the children are read back from. The single-BLP matcher answers a blotter on
+# /orders?accountId=..&status=open; the cluster gateway's /orders is POST-only and it serves no
+# blotter at all -- the read model lives in trade-processor on this tier. That is the better read
+# anyway: the status=open list drops marketable children the instant they fill, which is exactly
+# the hazard this script's own header warns about, whereas the read model keeps them with a status.
+BLOTTER="${BLOTTER:-http://trade-processor:18091/accounts}"
 # A quiet account on purpose: the preflight probe lists its open orders, and 22214's open set is
 # ~14MB on a long-lived rig — a kubectl-exec pull that size times out and indicts nothing.
 ACCT="${ACCT:-62654}"
@@ -36,18 +49,23 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 kx() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 # In-cluster curl via the edge-proxy pod: no port-forward to die mid-schedule.
-api() { kx exec deploy/edge-proxy -- sh -c "curl -s -m30 $1" 2>/dev/null; }
+api() { kx exec "deploy/${EXEC_POD}" -- sh -c "curl -s -m30 $1" 2>/dev/null; }
 
 py() { python3 -c "$1"; }
 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight"
-for d in execution-algo-engine order-matcher; do
+for d in execution-algo-engine "${MATCHER_DEPLOY}"; do
   [[ "$(kx get deploy "${d}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" == "1" ]] \
     || fail "${d} is not READY"
 done
+# An account and a security exist on the cluster tier only once sequenced, so without this the
+# engine slices correctly and every child is rejected UNKNOWN_ACCOUNT -- which reads as "the
+# scheduler is not running" when the scheduler is in fact working perfectly. Idempotent.
+api "-X POST -H 'Content-Type: application/json' -d '{\"accountId\":${ACCT},\"tickers\":\"${SEC}\",\"price\":200}' 'http://order-matcher:18110/seed'" >/dev/null 2>&1 || true
+
 [[ $(( N * BUCKET )) -eq "${DURATION}" ]] || fail "duration must be a whole number of buckets"
-PROBE="$(api "'http://order-matcher:18110/orders?accountId=${ACCT}&status=open'")"
+PROBE="$(api "'${BLOTTER}/${ACCT}/orders'")"
 [[ "${PROBE}" == \[* ]] || fail "matcher order endpoint did not answer: ${PROBE:-nothing}"
 echo "[ok] engine + matcher ready; TWAP ${QTY} ${SEC} over ${DURATION}s in ${N} buckets of ${BUCKET}s"
 
