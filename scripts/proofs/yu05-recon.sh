@@ -17,6 +17,25 @@ printf "   %-30s %s\n" "field_mismatch"        "$(printf '%s' "$S" | jfield "d['
 printf "   %-30s %s\n" "journal cursor"        "$(printf '%s' "$S" | jfield "d['cursor']")"
 
 echo "   ── full-history sweep (admin): reindex whole journal, then flag orphans ──"
+# The journal side of reconciliation. /recon/full-history/reindex is served by the SPRING
+# order-matcher, which walks its own BLP journal. The cluster tier has no such endpoint and no such
+# journal -- its log is the Raft log, held by the members, and nothing on the gateway exposes a
+# reindex over it. So this proof cannot compare journal against projection here.
+#
+# Detected and stated rather than left to produce blanks: without the reindex every field below
+# reads empty and the sweep reports matched=0, which looks like a clean reconciliation of nothing
+# instead of a capability that is absent. A recon proof that silently reconciles zero rows is worse
+# than one that refuses.
+RI_CODE=$(curl -s -m30 -o /dev/null -w '%{http_code}' -X POST "$OM/recon/full-history/reindex" -H "Authorization: Bearer $ADMIN")
+if [ "$RI_CODE" = "404" ]; then
+  echo "   ✘ $OM/recon/full-history/reindex -> 404"
+  echo "   This tier has no journal reindex: that endpoint belongs to the Spring order-matcher and"
+  echo "   its BLP journal. On the cluster tier the journal is the Raft log and no equivalent is"
+  echo "   exposed, so journal-vs-projection reconciliation cannot be asserted here."
+  echo "   Run against the state-014 rig (ORDER_MATCHER_URL=http://localhost:8080/order-matcher),"
+  echo "   or add a reindex over the committed log to the gateway."
+  exit 2
+fi
 RI=$(curl -s -m30 -X POST "$OM/recon/full-history/reindex" -H "Authorization: Bearer $ADMIN")
 printf "   %-30s %s\n" "indexed journal trades" "$(printf '%s' "$RI" | jfield "d['indexedTrades']")"
 OS=$(curl -s -m30 -X POST "$TP/recon/orphan-sweep" -H "Authorization: Bearer $ADMIN")

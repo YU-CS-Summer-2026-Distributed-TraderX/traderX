@@ -7,6 +7,20 @@
 # Prereq: source terminals in yu05-common.sh.
 # Usage: bash yu05-regulatory-reproducible.sh [fromSeq] [toSeq]
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/yu05-common.sh"
+
+# The journal-sourced surfaces this proof drives are served by the SPRING order-matcher. The
+# cluster tier does not run one -- svc/order-matcher here fronts the bare-JVM cluster gateway,
+# whose routes are the order path plus health/metrics. Without this check the requests 404 and the
+# script reports a MISMATCH or an unexpected status code, which reads as a broken feature rather
+# than an absent one. Detected and stated, so the proof gives an honest verdict either way.
+if [ "$(curl -s -o /dev/null -w '%{http_code}' -m10 "$OM/regulatory/report")" = "404" ]; then
+  echo "   ✘ $OM/regulatory/report -> 404"
+  echo "   This tier has no Spring order-matcher, so the journal-sourced regulatory surface is"
+  echo "   not served here. Run against the state-014 rig:"
+  echo "     ORDER_MATCHER_URL=http://localhost:8080/order-matcher bash $0"
+  exit 2
+fi
+
 FROM=${1:-0}; TO=${2:-1000000}
 ADMIN=$(mint true '[]')
 URL="$OM/regulatory/report?fromSeq=$FROM&toSeq=$TO"
