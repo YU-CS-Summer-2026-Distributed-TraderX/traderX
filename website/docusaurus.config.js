@@ -75,7 +75,11 @@ module.exports = {
       textColor: '#ffffff',
       isCloseable: false,
       content:
-        '<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. Read the <a href="/docs/blog/2026-03-29-traderx-speckit-migration"><strong>engineering story</strong></a>.',
+        // The href is built from docsBaseUrl on purpose. announcementBar.content is raw HTML that
+        // Docusaurus does not run through its link resolver, so a root-absolute "/docs/..." here
+        // resolves to https://host/docs/... and 404s on every page — the homepage only worked
+        // because its own banner is a <Link>, which does apply baseUrl.
+        `<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. Read the <a href="${docsBaseUrl}docs/engineering/testing-strategy"><strong>testing strategy</strong></a>.`,
     },
     navbar: {
       title: navbarTitle,
