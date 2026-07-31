@@ -5,8 +5,8 @@
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Testing strategy | Distributed TraderX · Yeshiva University</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/testing-strategy"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Testing strategy | Distributed TraderX · Yeshiva University"><meta data-rh="true" name="description" content="Which checks are automated, which are operator-run, and why each one sits where it does."><meta data-rh="true" property="og:description" content="Which checks are automated, which are operator-run, and why each one sits where it does."><link data-rh="true" rel="icon" href="/traderX/img/yu/yu-cs-shield.png"><link data-rh="true" rel="canonical" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/testing-strategy"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/testing-strategy" hreflang="en"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/testing-strategy" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Testing strategy","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/testing-strategy"}]}</script><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Overpass:400,400i,700">
 <script src="https://buttons.github.io/buttons.js"></script><link rel="stylesheet" href="/traderX/assets/css/styles.26ff7014.css">
-<script src="/traderX/assets/js/runtime~main.7069f5f5.js" defer="defer"></script>
-<script src="/traderX/assets/js/main.02bd56d9.js" defer="defer"></script>
+<script src="/traderX/assets/js/runtime~main.8d52b955.js" defer="defer"></script>
+<script src="/traderX/assets/js/main.3bcd687f.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -27,8 +27,12 @@ idempotency, byte-identical consensus allocation, deterministic replay, and repr
 and risk-extract exports.</p>
 <p>This is the tier that makes a green build mean something, because it gates merges.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="tier-15--cross-service-integration-in-ci-with-containers">Tier 1.5 — cross-service integration, in CI with containers<a href="#tier-15--cross-service-integration-in-ci-with-containers" class="hash-link" aria-label="Direct link to Tier 1.5 — cross-service integration, in CI with containers" title="Direct link to Tier 1.5 — cross-service integration, in CI with containers" translate="no">​</a></h2>
-<p>Two tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
+<p>Three tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
 their own task so the fast unit job needs no container runtime.</p>
+<p>This tier exists for properties that are enforced by infrastructure rather than by application
+code. A mock can be made to return whatever the code under test expects, so a test built on one can
+only confirm that the code asked for the right thing — never that the database agreed. Constraints,
+foreign keys, transaction boundaries and startup wiring all live on the other side of that line.</p>
 <p><code>TradeProcessorPersistenceIT</code> drives the real booking path against a <strong>real MariaDB</strong> initialised
 with the <strong>deployed schema</strong>, run the same way production runs it. It proves the persistence
 contract a mocked unit test cannot:</p>
@@ -40,9 +44,29 @@ enum-to-constraint mapping surviving a real round trip;</li>
 Trades disappearing into a foreign-key rejection is a documented failure class here, so this test
 turns that silence into an assertion.</li>
 </ul>
+<p><code>AccountOutboxAtomicityIT</code> asserts the guarantee the <strong>transactional outbox</strong> exists to provide:
+the business write and the outbox row commit as one unit, or neither does. That guarantee is
+enforced by the database, so it is only observable against one — the unit-tier test in the same
+package mocks the outbox repository, which makes it pass whether or not the two writes share a
+transaction at all. Every assertion here reads back through an <strong>independent connection</strong>, outside
+the application&#x27;s pool and its transaction, because reading through the connection that did the
+writing says nothing about what was committed. It covers:</p>
+<ul>
+<li class="">both rows present after the call, with the outbox row carrying its generated version;</li>
+<li class=""><strong>neither row visible to an outside reader while the transaction is still open</strong>, which is what
+rules out the two writes landing on separate connections;</li>
+<li class="">a <strong>database-rejected</strong> outbox insert — a real constraint violation, not a stubbed failure —
+leaving no account row behind.</li>
+</ul>
+<p>It also runs MariaDB with the <strong>same server flags the deployed database uses</strong>, which turned out to
+matter: the account path depends on one of them, and nothing else checks that it is still set.</p>
 <p><code>TradeProcessorContextIT</code> starts the composed application context against a <strong>real MariaDB and a
 real message broker</strong>, covering startup wiring that dials the broker during bean creation and so
 cannot be exercised without one.</p>
+<p>Each case in this tier was <strong>falsified before it was trusted</strong> — the code was deliberately broken
+to confirm the test fails, and fails for the stated reason. A test that has never failed is a test
+whose failure mode is unknown, and on this tier that risk is real: infrastructure tests can pass by
+never reaching the assertion they claim to make.</p>
 <h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="tier-2--end-to-end-proofs-operator-run">Tier 2 — end-to-end proofs, operator-run<a href="#tier-2--end-to-end-proofs-operator-run" class="hash-link" aria-label="Direct link to Tier 2 — end-to-end proofs, operator-run" title="Direct link to Tier 2 — end-to-end proofs, operator-run" translate="no">​</a></h2>
 <p>The <strong>26 proof scripts</strong> drive the deployed system end to end: REST, FIX and binary ingress →
 gateway → three-member Aeron cluster → asynchronous projection → SQL read model → egress, plus the
