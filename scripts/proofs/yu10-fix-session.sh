@@ -25,8 +25,13 @@ echo "YU10 FIX ingress — live session proof (account ${ACCOUNT}, CompID ${COMP
 
 # 1. mint a JWT for the session — the dev-token endpoint lives on trade-processor and requires the
 #    master secret header (same infra the YU05 auth demos use); scoped to this account.
-TP="${TRADE_PROCESSOR_URL:-${EDGE}/trade-processor}"
-MASTER="${AUTH_MASTER_SECRET:-dev-token-master-secret}"
+# The cluster rig has no edge-proxy, so trade-processor is addressed directly (port-forward
+# 18091). On the state-014 rig it sits behind the edge-proxy: TRADE_PROCESSOR_URL=$EDGE/trade-processor.
+TP="${TRADE_PROCESSOR_URL:-http://localhost:18091}"
+# Read from the cluster: the two rigs hold different values in the auth-secrets Secret, and a
+# wrong one fails as an opaque "no token" with nothing naming the secret as the cause.
+MASTER="${AUTH_MASTER_SECRET:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" get secret auth-secrets -o "jsonpath={.data.dev-token-master-secret}" 2>/dev/null | base64 -d 2>/dev/null)}"
+MASTER="${MASTER:-dev-token-master-secret}"
 FIX_JWT="$(curl -s -m8 -X POST "${TP}/auth/dev-token" \
   -H "X-Auth-Master-Secret: ${MASTER}" -H "Content-Type: application/json" \
   -d "{\"subject\":\"fix-${COMP_ID}\",\"accounts\":[${ACCOUNT}],\"admin\":false,\"ttlSeconds\":600}" \
