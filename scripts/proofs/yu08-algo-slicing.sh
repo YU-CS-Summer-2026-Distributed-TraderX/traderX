@@ -112,21 +112,20 @@ FINAL="$(parent_json)"
 echo "  all ${N} buckets carry a childOrderId ✔"
 
 step "4. every child BOOKED on the matcher, at its bucket's time (the effect end's own clock)"
-# Fetch each child from the matcher BY ID — terminal states included, unlike the open-orders list.
-ROWS="["
-FIRST=1
-for cid in $(py "
-import json
-print(' '.join(b['childOrderId'] for b in json.loads('''${FINAL}''')['buckets']))"); do
-  row="$(api "http://order-matcher:18110/orders/${cid}")"
-  [[ ${FIRST} -eq 1 ]] || ROWS+=","
-  ROWS+="${row:-null}"; FIRST=0
-done
-ROWS+="]"
+# One blotter read rather than a fetch per child. The matcher served GET /orders/{id}; the cluster
+# gateway's /orders is POST-only, so each of those came back {"error":"POST only"} and the verdict
+# blew up on a missing key instead of reporting a booking problem. The read model carries every
+# child including terminal states, which is what this step needs.
+ROWS="$(api "'${BLOTTER}/${ACCT}/orders'")"
+ROWS="${ROWS:-[]}"
 VERDICT="$(py "
 import json, datetime
 parent = json.loads('''${FINAL}''')
-rows = {r['orderId']: r for r in json.loads('''${ROWS}''') if r}
+# Key on whatever names the order: 'orderId' from the Spring matcher, and from the read model
+# the numeric ref carried as the suffix of its epoch-qualified id ('1-718' -> '718'), which is
+# exactly what the gateway returned as orderRef and the engine recorded as the child id.
+rows = {str(r.get('orderId') or str(r.get('id', '')).rsplit('-', 1)[-1]): r
+        for r in json.loads('''${ROWS}''') if r}
 slack_ms = ${SLACK_S} * 1000
 bucket_ms = ${BUCKET} * 1000
 problems = []
