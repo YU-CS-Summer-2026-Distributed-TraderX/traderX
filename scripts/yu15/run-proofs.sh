@@ -109,14 +109,31 @@ start_forwards() {
 BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
-  echo "[baseline] cluster is on $(current_image); pinning to ${BASELINE_IMAGE}"
+  # A ROLLING image swap is exactly the wrong way to do this. Changing the engine build on a live
+  # cluster is a deterministic-core change rolled gradually: during the window some members apply
+  # under the old engine and some under the new, and the state machines diverge PERMANENTLY. That
+  # is not theoretical here -- pinning by `set image` produced [61 ...] [62 ...] [62 ...], member 0
+  # a full order behind and STILL behind after 180s, plus a risk-extract cut the members could not
+  # agree on. The pin caused the divergence it exists to prevent.
+  #
+  # So swap the build the only safe way: take the cluster down, wipe the members' PVCs, and bring it
+  # up on a FRESH EPOCH. The read model has to go with it -- its rows belong to a log that no longer
+  # exists, and the engine's counters restart below the ids already in SQL (yu13-stp-and-replace
+  # correctly refuses to run into that).
+  echo "[baseline] cluster is on $(current_image); rebuilding on ${BASELINE_IMAGE} at a fresh epoch"
+  ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
+  ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
+  ${K} delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1
   ${K} set image statefulset/order-matcher-cluster \
     "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
   ${K} set image deployment/cluster-gateway \
     "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
   ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
+  ${K} rollout restart deployment/cluster-gateway >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
-  echo "[baseline] cluster now on ${BASELINE_IMAGE}"
+  FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
+  echo "[baseline] cluster now on ${BASELINE_IMAGE}, fresh epoch, projection cleared"
 fi
 
 pass=0; skip=0; fail=0; results=()
