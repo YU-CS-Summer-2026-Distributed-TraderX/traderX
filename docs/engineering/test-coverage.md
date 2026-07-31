@@ -102,7 +102,14 @@ Both are isolated by tag into their own task, so the fast unit job needs no cont
 
 ## Gates
 
-These run as separately forked JVMs and are counted apart from the totals above.
+A gate asks what the code *cost*, not whether it was correct — a method can return the right answer
+while allocating on every call, and no assertion about its return value would notice. That matters on
+a single-threaded matching engine, where garbage collection stops the thread that processes orders,
+so allocation on the hot path turns into latency spikes under load rather than into wrong results.
+The rationale is in [Testing strategy](testing-strategy.md).
+
+These run as separately forked JVMs, because they need their own JVM configuration, and are counted
+apart from the totals above.
 
 | Gate | Asserts |
 |---|---|
