@@ -41,8 +41,15 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 # The trade bridge projects into the `database` deploy on the current rigs (eod-price-db carries
 # the same schema but only EOD pricing data). Override SQL_DB for a rig wired differently.
-SQL_DB="${SQL_DB:-database}"
-sql() { ${K} exec deploy/${SQL_DB} -c ${SQL_DB} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+# Deployment name and CONTAINER name are not the same thing on every rig: the cluster rig runs
+# deploy/eod-price-db whose container is plainly "mariadb", while the state-014 rig ran
+# deploy/database with a container of the same name. Assuming they match made `sql` fail with
+# "container ... is not valid for pod", which rows() then returned as empty -- and an empty rows()
+# is reported by the preflight as "already has trade rows", i.e. the single most misleading
+# possible message for a container-name mismatch.
+SQL_DB="${SQL_DB:-eod-price-db}"
+SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
+sql() { ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
 
