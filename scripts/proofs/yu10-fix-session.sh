@@ -11,6 +11,11 @@ set -uo pipefail
 NS="${NS:-traderx}"
 EDGE="${EDGE:-http://localhost:8080}"
 FIX_LOCAL_PORT="${FIX_LOCAL_PORT:-18130}"
+# fix-load.mjs defaults to JPM at a hardcoded 190. On this rig JPM's price reference drifts into
+# rejecting every order PRICE_COLLAR whatever the limit, so the sender completed nothing and the
+# proof blamed FIX ingress. IBM at 200 is what seed-proof-fixtures.sh crosses and books reliably.
+FIX_TICKERS="${FIX_TICKERS:-IBM}"
+FIX_PX="${FIX_PX:-200}"
 ACCOUNT="${ACCOUNT:-11413}"          # BENCH01 -> 11413 in the kind manifest FIX_SESSION_ACCOUNTS
 # Read the CompID the deployed acceptor is actually configured for rather than assuming BENCH01.
 # A logon from an unconfigured CompID is refused by quickfix, the sender completes no lifecycles,
@@ -70,7 +75,7 @@ trap 'kill "${PF}" 2>/dev/null' EXIT
 sleep 3
 
 OUT="$(FIX_JWT="${FIX_JWT}" FIX_COMP_ID="${COMP_ID}" FIX_PORT="${FIX_LOCAL_PORT}" \
-  SIDES=alternate QTY=1 PX=190 node "${here}/../bench/load/fix-load.mjs" --secs "${SECS}" 2>&1)"
+  SIDES=alternate QTY=1 PX="${FIX_PX:-200}" TICKERS="${FIX_TICKERS:-IBM}" ACCOUNT="${ACCOUNT}" node "${here}/../bench/load/fix-load.mjs" --secs "${SECS}" 2>&1)"
 echo "${OUT}" | tail -1
 COMPLETED="$(echo "${OUT}" | sed -n 's/.*completed=\([0-9]*\).*/\1/p' | tail -1)"
 COMPLETED="${COMPLETED:-0}"

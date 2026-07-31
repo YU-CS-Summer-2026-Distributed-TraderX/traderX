@@ -27,6 +27,7 @@ const cfg = {
   qty: Number(process.env.QTY || 1),
   px: process.env.PX || '190',
   tickers: (process.env.TICKERS || 'JPM').split(',').map((t) => t.trim().toUpperCase()),
+  account: process.env.ACCOUNT || '',
 };
 if (!cfg.jwt) { console.error('FIX_JWT is required'); process.exit(2); }
 
@@ -103,10 +104,14 @@ function sendOne() {
   const ticker = cfg.tickers[clSeq % cfg.tickers.length];
   pending.add(clId);
   submitted++;
-  sock.write(frame('D', [
-    [11, clId], [55, ticker], [54, side], [38, cfg.qty], [40, 2], [44, cfg.px],
-    [60, stamp()],
-  ]));
+  // Tag 1 (Account) was missing entirely. Without it the acceptor has no account on the order and
+  // every one comes back UNKNOWN_ACCOUNT -- with the gateway logging account=11, which is the
+  // ClOrdID TAG NUMBER rather than any account, so the symptom points nowhere near the cause.
+  // Harmless when ACCOUNT is unset: the field is simply omitted, exactly as before.
+  const fields = [[11, clId], [55, ticker], [54, side], [38, cfg.qty], [40, 2], [44, cfg.px],
+    [60, stamp()]];
+  if (cfg.account) fields.unshift([1, cfg.account]);
+  sock.write(frame('D', fields));
 }
 
 function startSending() {
