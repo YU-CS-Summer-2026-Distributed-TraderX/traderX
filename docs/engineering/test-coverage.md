@@ -17,7 +17,7 @@ Two different counts appear below and they are not interchangeable.
 
 Where the two disagree, the executed number is the real one, and it is the one used here.
 
-## Headline
+## Coverage summary
 
 ### Tests that run on every push, per branch
 
