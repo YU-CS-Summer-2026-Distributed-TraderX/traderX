@@ -36,7 +36,13 @@ step() { echo; echo "=== $* ==="; }
 
 # trade-processor projects into the `database` deploy (NOT eod-price-db, which carries the same
 # schema but only the EOD pricing tables' data — orderbook there is empty forever).
-sql() { ${K} exec deploy/database -c database -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+# Deployment name and CONTAINER name differ on this rig: deploy/eod-price-db, container "mariadb".
+# The old form failed with "container database is not valid for pod", sql() returned the error text,
+# and the await loop then just spun to its timeout printing nothing at all -- the proof stopped mid
+# step 2 with no message. Both overridable.
+SQL_DB="${SQL_DB:-eod-price-db}"
+SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
+sql() { ${K} exec "deploy/${SQL_DB}" -c "${SQL_CONTAINER}" -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 member_metric() { # member_metric <ordinal> <metric-prefix>
