@@ -76,12 +76,22 @@ start_forwards() {
     # shellcheck disable=SC2086
     ${K} port-forward ${pf} >/dev/null 2>&1 &
   done
-  # Wait for the one every proof needs. Tempo answers 503 for a while after IT starts, so it is
-  # waited on separately and only when the OTel proofs are in the list.
-  local tries=0
-  until [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]]; do
+  # Verify EVERY forward, not just the gateway. Waiting only on 18110 is what made a suite run
+  # fail four proofs that pass individually: the OTel pair needs Tempo on 3200 (which answers 503
+  # for a while after its forward is re-made) and yu10 needs trade-processor on 18091. They came up
+  # a beat later than the gateway and the proofs started without them, failing on connection
+  # errors that named nothing. A forward that is not verified is not established.
+  local tries=0 ready
+  while :; do
+    ready=1
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || ready=0
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || ready=0
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3200/ready 2>/dev/null)" == "200" ]] || ready=0
+    # Loki and Grafana answer non-2xx on / by design; a connection at all is enough.
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3100/ 2>/dev/null)" != "000" ]] || ready=0
+    [[ ${ready} -eq 1 ]] && break
     tries=$((tries + 1))
-    [[ ${tries} -lt 60 ]] || { echo "[fail] gateway never became reachable on 18110"; return 1; }
+    [[ ${tries} -lt 90 ]] || { echo "[fail] forwards never all became reachable"; return 1; }
     sleep 2
   done
 }
