@@ -17,6 +17,25 @@ NS=${NS:-traderx}
 REF=${REF:-http://localhost:18085}
 OM=${OM:-http://127.0.0.1:8080/order-matcher}
 TK=${1:-Z$(date +%s | tail -c 5)}
+
+# CAPABILITY CHECK. This proof needs two things the YU15 cluster rig does not have:
+#   1. reference-data deployed (it injects a security via POST /stocks and reads its outbox
+#      watermark from GET /stocks/control-snapshot) -- not in the cluster kustomization; and
+#   2. a consumer of that JetStream control feed ON THIS TIER. ControlFeedSubscriber is referenced
+#      only by ReplicaBootstrap, the Spring app path -- it is NOT wired into ClusterNodeMain or
+#      MatchingEngineClusteredService. So even with reference-data running, its deltas would reach
+#      no member here.
+# GET /risk/control/snapshot does now exist on the cluster gateway, but nothing populates it from a
+# feed, so this proof would report a control that never arrived -- which reads as a broken durable
+# feed rather than an absent consumer. Say which, and stop.
+if ! curl -sf -m8 -o /dev/null "${REF}/stocks/control-snapshot" 2>/dev/null; then
+  echo "   ✘ ${REF}/stocks/control-snapshot unreachable"
+  echo "   reference-data is not deployed on this rig, and the cluster tier has no consumer for its"
+  echo "   control feed (ControlFeedSubscriber is wired into the Spring app only, not the clustered"
+  echo "   service). Both are needed before this proof can mean anything here."
+  echo "   Run against the state-014 rig:  CTX=kind-traderx-state-014 bash $0"
+  exit 2
+fi
 K="kubectl -n $NS --context $CTX"
 
 # Works whether order-matcher is a Deployment (kind) or StatefulSet (GKE).
