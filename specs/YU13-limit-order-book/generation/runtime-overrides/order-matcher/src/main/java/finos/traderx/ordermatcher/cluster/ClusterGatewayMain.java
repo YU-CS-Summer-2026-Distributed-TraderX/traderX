@@ -92,6 +92,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final InputEvent event = new InputEvent();
+    // Same default as the Spring controller's risk.control.token, so a proof written against one
+    // tier authenticates against the other without being told which it is talking to.
+    private final String riskControlToken = env("RISK_CONTROL_TOKEN", "dev-risk-control");
+    // Stamped once per process: a restarted gateway is a new epoch, which is exactly what a
+    // consumer comparing epochs needs in order to know its watermark is no longer comparable.
+    private final long controlEpoch = System.currentTimeMillis();
+    private volatile long controlWatermark;
     private final UnsafeBuffer orderBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
     private final UnsafeBuffer symbolBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
     private final Map<String, Integer> idByTicker = new HashMap<>();
@@ -220,6 +227,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/latency", this::handleLatency);
         server.createContext("/seed", this::handleSeed);
         server.createContext("/resolve", this::handleResolve);
+        // Prefix context: /risk/control/{policy,restriction,security,account} all land here.
+        server.createContext("/risk/control", this::handleRiskControl);
         server.createContext("/ready", exchange ->
             respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
         server.createContext("/health", exchange ->
@@ -915,6 +924,23 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
     }
 
+    /**
+     * The instrument field, under either of the two names clients in this system actually send.
+     *
+     * <p>The cluster gateway has always read {@code ticker}; the single-BLP Spring matcher has
+     * always read {@code security}, and so every client written against it sends that —
+     * {@code OrderMatcherClient} in execution-algo-engine and the yu03 proof among them. Against
+     * this gateway that silently produced an empty instrument, which resolves to no security and
+     * surfaces as a bare rejection with nothing naming the cause. Accepting both here is what lets
+     * one rig serve both sets of clients, and it removes a trap that has cost real debugging time.
+     *
+     * <p>{@code ticker} wins when both are present, so nothing that already worked changes.
+     */
+    private static String instrumentOf(final JsonNode body) {
+        final String ticker = body.path("ticker").asText("");
+        return ticker.isEmpty() ? body.path("security").asText("") : ticker;
+    }
+
     private void handleOrder(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -923,7 +949,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
             final String ticker = body.hasNonNull("securityId")
-                ? "#" + body.get("securityId").asInt() : body.path("ticker").asText("");
+                ? "#" + body.get("securityId").asInt() : instrumentOf(body);
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
             final int qty = body.path("quantity").asInt();
             final long px = Math.round(body.path("limitPrice").asDouble() * 1_000_000d);
@@ -963,7 +989,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             int i = 0;
             for (final JsonNode body : arr) {
                 tickers[i] = body.hasNonNull("securityId")
-                    ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
+                    ? "#" + body.get("securityId").asInt() : instrumentOf(body);
                 sides[i] = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
                 accounts[i] = body.path("accountId").asInt();
                 qtys[i] = body.path("quantity").asInt();
@@ -1082,7 +1108,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
             final int accountId = body.path("accountId").asInt();
             final String ticker = body.hasNonNull("securityId")
-                ? "#" + body.get("securityId").asInt() : body.path("security").asText("");
+                ? "#" + body.get("securityId").asInt() : instrumentOf(body);
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
             final int qty = body.path("quantity").asInt();
             final long[] ack = onOwner(() -> {
@@ -1118,6 +1144,183 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         } catch (final Exception e) {
             respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
         }
+    }
+
+    /**
+     * Risk control plane on the cluster tier (FR-IMRG30/31), the counterpart to the single-BLP
+     * {@code RiskControlController}.
+     *
+     * <p><b>Nothing new happens to the replicated state machine here.</b> Every one of these
+     * mutations is an {@code InputEvent} control command that the engine has always applied —
+     * {@code TYPE_ACCOUNT_CONTROL}, {@code TYPE_SECURITY_CONTROL}, {@code TYPE_POLICY_CONTROL},
+     * {@code TYPE_RESTRICTION_CONTROL} are dispatched by {@code MatchingEngine.onEvent} to
+     * {@code risk.putAccount/putSecurity/putPolicy/putLimits/putRestriction}, and the resulting
+     * state is already carried in the snapshot as {@code T_POLICY}/{@code T_ACCOUNT}/{@code
+     * T_SECURITY}. {@code /seed} has been sequencing two of these four through consensus since
+     * YU12. All that was missing on this tier was an operator-facing way to send them, so this
+     * adds routes and nothing else: no schema change, no new template, no snapshot format bump.
+     *
+     * <p>Because they are ordinary sequenced commands, a control change lands at a definite
+     * consensus position and every member applies it in the same order relative to the orders
+     * around it — which is the property the single-BLP version got from journaling and this tier
+     * gets from the log. Replay and a rebuilt member reach the identical risk state.
+     *
+     * <p>Auth mirrors the Spring controller exactly: a shared token plus a non-blank operator
+     * header, both required, with the operator logged for attribution.
+     */
+    private void handleRiskControl(final HttpExchange exchange) {
+        try {
+            final String requestPath = exchange.getRequestURI().getPath();
+            if (requestPath.endsWith("/snapshot")) {
+                if (!"GET".equals(exchange.getRequestMethod())) {
+                    respond(exchange, 405, "{\"error\":\"GET only\"}");
+                    return;
+                }
+                respond(exchange, 200, controlReplicaJson());
+                return;
+            }
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final String token = exchange.getRequestHeaders().getFirst("X-Risk-Control-Token");
+            final String operator = exchange.getRequestHeaders().getFirst("X-Risk-Operator");
+            if (!riskControlToken.equals(token) || operator == null || operator.isBlank()) {
+                respond(exchange, 401, "{\"error\":\"invalid risk-control credentials\"}");
+                return;
+            }
+            final String path = exchange.getRequestURI().getPath();
+            final String action = path.substring(path.lastIndexOf('/') + 1);
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            // Wall-clock version, matching GatewayReplicaStore: monotonic across restarts, and only
+            // ever compared for ordering. It is read on the gateway and then carried IN the command,
+            // so every member applies the same number -- never read per-member, which would diverge.
+            final long version = System.currentTimeMillis();
+            final String instrument = instrumentOf(body).trim();
+
+            final Boolean ok = onOwner(() -> {
+                // `event` is the shared owner-thread flyweight, so whatever the last order left in
+                // the limit/qty slots would otherwise be encoded into the log. The control handlers
+                // ignore those fields, so it is deterministic either way -- but a sequenced command
+                // carrying a stale price is a genuinely confusing thing to find in a journal dump.
+                event.qty = 0;
+                event.limitPx = 0L;
+                switch (action) {
+                    case "policy" -> {
+                        event.type = InputEvent.TYPE_POLICY_CONTROL;
+                        event.accountId = 0;
+                        event.securityId = 0;
+                        event.setControlEnabled(body.path("killSwitch").asBoolean(false));
+                        event.setControlVersion(body.path("policyVersion").asLong(version));
+                        // 0 means "leave unchanged" to onPolicyControl, which is exactly what a
+                        // null in the JSON should mean -- the proof sends nulls for both.
+                        event.qty = body.path("maxPositionQuantity").asInt(0);
+                        event.limitPx = body.path("maxConcentrationNotionalTicks").asLong(0L);
+                    }
+                    case "restriction", "security", "account" -> {
+                        final boolean enabled = switch (action) {
+                            // A restriction is expressed to the engine as the restricted flag, and
+                            // a security control as tradable = enabled && !halted -- the same two
+                            // mappings RiskControlController makes.
+                            case "restriction" -> body.path("restricted").asBoolean(false);
+                            case "security" -> body.path("enabled").asBoolean(true)
+                                && !body.path("halted").asBoolean(false);
+                            default -> body.path("enabled").asBoolean(true);
+                        };
+                        if ("account".equals(action)) {
+                            event.type = InputEvent.TYPE_ACCOUNT_CONTROL;
+                            event.accountId = body.path("accountId").asInt();
+                            event.securityId = 0;
+                        } else {
+                            final int id = resolveSecurityId(instrument);
+                            if (id < 0) {
+                                return false;
+                            }
+                            event.type = "restriction".equals(action)
+                                ? InputEvent.TYPE_RESTRICTION_CONTROL
+                                : InputEvent.TYPE_SECURITY_CONTROL;
+                            event.accountId = 0;
+                            event.securityId = id;
+                        }
+                        event.setControlEnabled(enabled);
+                        event.setControlVersion(version);
+                    }
+                    default -> {
+                        return null;
+                    }
+                }
+                offerBlocking();
+                return true;
+            });
+
+            if (ok == null) {
+                respond(exchange, 404, "{\"error\":\"unknown control: " + action + "\"}");
+                return;
+            }
+            if (!ok) {
+                respond(exchange, 422, "{\"error\":\"unknown instrument\"}");
+                return;
+            }
+            // Replica update happens only AFTER the offer returned, so the operator-visible view can
+            // never claim a control that consensus did not accept. The ordering is the point: the
+            // log is the record, this map is a reflection of it.
+            if (!instrument.isEmpty() && !"policy".equals(action) && !"account".equals(action)) {
+                controlReplica.compute(instrument, (k, prev) -> new long[] {
+                    "security".equals(action)
+                        ? (body.path("enabled").asBoolean(true)
+                            && !body.path("halted").asBoolean(false) ? 1 : 0)
+                        : (prev == null ? 1 : prev[0]),
+                    "restriction".equals(action)
+                        ? (body.path("restricted").asBoolean(false) ? 1 : 0)
+                        : (prev == null ? 0 : prev[1]),
+                    version,
+                });
+                controlWatermark = version;
+            }
+            System.out.println("risk_control operator=" + operator + " type=" + action
+                + " version=" + version);
+            // 200-with-body rather than the Spring side's 204: respond() sends an explicit
+            // content length, and a 204 must carry none -- passing 0 there means chunked, not
+            // empty. Every other route on this gateway answers JSON, so this matches them.
+            respond(exchange, 200, "{\"applied\":true,\"version\":" + version + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
+    /**
+     * The gateway-side replica of control state, and the reason it exists rather than the snapshot
+     * being answered from a member: this is the same split the single-BLP tier has, where
+     * {@code GatewayReplicaStore} holds the operator-visible view and the engine holds the
+     * authoritative one. Every mutation below is also sequenced through consensus, so the two
+     * cannot drift on anything this gateway sent.
+     *
+     * <p>It is deliberately NOT presented as the authoritative risk state -- a member rebuilt from
+     * a snapshot has the real thing, and this map only knows what passed through this process.
+     * Naming it "replica" in the response keeps that honest.
+     */
+    private final java.util.Map<String, long[]> controlReplica =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    private String controlReplicaJson() {
+        final StringBuilder sb = new StringBuilder(256);
+        sb.append("{\"sourceEpoch\":").append(controlEpoch)
+          .append(",\"watermark\":").append(controlWatermark)
+          .append(",\"count\":").append(controlReplica.size())
+          .append(",\"securities\":[");
+        boolean first = true;
+        for (final java.util.Map.Entry<String, long[]> e : controlReplica.entrySet()) {
+            if (!first) {
+                sb.append(',');
+            }
+            first = false;
+            final long[] v = e.getValue();
+            sb.append("{\"ticker\":\"").append(e.getKey())
+              .append("\",\"enabled\":").append(v[0] != 0)
+              .append(",\"restricted\":").append(v[1] != 0)
+              .append(",\"version\":").append(v[2]).append('}');
+        }
+        return sb.append("]}").toString();
     }
 
     private void handleSeed(final HttpExchange exchange) {
@@ -1178,7 +1381,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
-            final String ticker = body.path("ticker").asText("").trim();
+            final String ticker = instrumentOf(body).trim();
             if (ticker.isEmpty()) {
                 respond(exchange, 400, "{\"error\":\"ticker required\"}");
                 return;
