@@ -167,10 +167,20 @@ roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is
 }
 
 seed() {
+  # Retried: this runs moments after roll_to replaced the gateway, and the OLDER builds this proof
+  # deliberately rolls to answer /ready 200 before their cluster session is actually usable -- the
+  # first /seed can then time out. That is fixture setup racing an old build's shallow readiness,
+  # not the behaviour under proof; run 1 of the suite died exactly here ("seed failed for 42422")
+  # and the failure-path restore then diverged the members. Seeding is idempotent, so retrying is
+  # safe.
+  local acct try
   for acct in "${SELF}" "${OTHER}"; do
-    curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-      -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null \
-      || fail "seed failed for ${acct}"
+    for try in 1 2 3 4 5; do
+      curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+        -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null && break
+      [[ ${try} -lt 5 ]] || fail "seed failed for ${acct} after 5 attempts"
+      sleep 5
+    done
   done
 }
 

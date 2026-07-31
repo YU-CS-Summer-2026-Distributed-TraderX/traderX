@@ -51,6 +51,30 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 
+# Fresh-epoch mode: the read model belongs to a log that no longer exists. This runs FIRST -- before
+# the matcher gate and the seeding below -- for two reasons learned the hard way:
+#   * it must not depend on a port-forward: it is kubectl-only, and run-proofs.sh's baseline pin
+#     used to invoke it before any forward existed, so the script bailed at the matcher gate and
+#     the clear silently never ran -- a whole suite pass then deduped this epoch's trades against
+#     the dead epoch's rows and three proofs failed on trades the engine definitely booked;
+#   * clearing AFTER seeding wiped the very positions the hold() crossings below had just built.
+# And it is VERIFIED: a clear that did not happen is exit 1, not a log line. A fresh epoch with a
+# stale projection silently drops every trade (ids <tradeSeq>-<side> restart and collide, and
+# trade-processor's idempotency dedup does exactly what it is told).
+if [[ "${FRESH_EPOCH:-0}" == "1" ]]; then
+  echo "[fresh-epoch] clearing the SQL projection"
+  left="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
+    mariadb -utraderx -ptraderx traderx -N -B -e \
+    "DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;
+     SELECT (SELECT COUNT(*) FROM trades)+(SELECT COUNT(*) FROM positions)+(SELECT COUNT(*) FROM orderbook);" \
+    2>/dev/null | tail -1)"
+  if [[ "${left}" != "0" ]]; then
+    echo "[fail] fresh-epoch clear left '${left:-kubectl exec failed}' rows in the projection"
+    exit 1
+  fi
+  echo "   trades, positions and orderbook cleared"
+fi
+
 # Every account the committed proofs name, with the tickers they trade in them.
 #   22214 52355  yu03 (risk controls, IBM/BAC)
 #   42422 22214  yu13 / quickstart crossing pair, yu15 extract positions
@@ -110,16 +134,5 @@ kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
      WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';" 2>/dev/null
-
-# Fresh-epoch mode: the read model belongs to a log that no longer exists.
-if [[ "${FRESH_EPOCH:-0}" == "1" ]]; then
-  echo "[fresh-epoch] clearing the SQL projection"
-  kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
-    mariadb -utraderx -ptraderx traderx -N -B -e \
-    "DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;
-     SELECT CONCAT('   trades=',(SELECT COUNT(*) FROM trades),
-                   ' positions=',(SELECT COUNT(*) FROM positions),
-                   ' orderbook=',(SELECT COUNT(*) FROM orderbook));" 2>/dev/null
-fi
 
 echo "[ok] fixtures seeded"

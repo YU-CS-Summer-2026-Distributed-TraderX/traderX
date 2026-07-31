@@ -108,34 +108,132 @@ start_forwards() {
 # An engine build is the one variable no proof should inherit from the run before it.
 BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
-if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
-  # A ROLLING image swap is exactly the wrong way to do this. Changing the engine build on a live
-  # cluster is a deterministic-core change rolled gradually: during the window some members apply
-  # under the old engine and some under the new, and the state machines diverge PERMANENTLY. That
-  # is not theoretical here -- pinning by `set image` produced [61 ...] [62 ...] [62 ...], member 0
-  # a full order behind and STILL behind after 180s, plus a risk-extract cut the members could not
-  # agree on. The pin caused the divergence it exists to prevent.
-  #
-  # So swap the build the only safe way: take the cluster down, wipe the members' PVCs, and bring it
-  # up on a FRESH EPOCH. The read model has to go with it -- its rows belong to a log that no longer
-  # exists, and the engine's counters restart below the ids already in SQL (yu13-stp-and-replace
-  # correctly refuses to run into that).
-  echo "[baseline] cluster is on $(current_image); rebuilding on ${BASELINE_IMAGE} at a fresh epoch"
+
+# The only safe way to swap the engine build OR to recover a wedged rig: take the cluster down,
+# wipe the members' PVCs, and bring it up on a FRESH EPOCH. A ROLLING image swap is exactly the
+# wrong way -- a deterministic-core change rolled gradually leaves some members applying under the
+# old engine and some under the new, and the state machines diverge PERMANENTLY. Not theoretical:
+# pinning by bare `set image` produced [61 ...] [62 ...] [62 ...], member 0 a full order behind and
+# STILL behind after 180s, plus a risk-extract cut the members could not agree on.
+rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin, up
+  local image="${1:-}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
   ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
   ${K} delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1
-  ${K} set image statefulset/order-matcher-cluster \
-    "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
-  ${K} set image deployment/cluster-gateway \
-    "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  if [[ -n "${image}" ]]; then
+    ${K} set image statefulset/order-matcher-cluster \
+      "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
+    ${K} set image deployment/cluster-gateway \
+      "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
+  fi
   ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
   ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
   ${K} rollout restart deployment/cluster-gateway >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
-  FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
-  echo "[baseline] cluster now on ${BASELINE_IMAGE}, fresh epoch, projection cleared"
+}
+
+NEED_FRESH=0
+if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] cluster is on $(current_image); rebuilding on ${BASELINE_IMAGE} at a fresh epoch"
+  rebuild_fresh_epoch "${BASELINE_IMAGE}"
+  echo "[baseline] cluster now on ${BASELINE_IMAGE}, fresh epoch"
 fi
 
+# The GATEWAY image is pinned separately, because checking only the StatefulSet let a whole run
+# fail four proofs: yu13-cancel-ingress rolls the gateway to its own build, its restore did not
+# happen (the run before it died part-way), and the STS-only check above never noticed. Against
+# that 9-day-old gateway clordid double-booked on resend (no clientOrderKey plumbing), both OTel
+# proofs found no trace in Tempo (no gateway spans), and yu08's children were silently rejected
+# (predates the instrumentOf alias) -- every one reporting a different build's behaviour
+# truthfully. The gateway is stateless, so a mismatch here needs a repin and nothing else: no PVC
+# wipe, no epoch reset, no projection clear.
+gateway_image() { ${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] gateway is on $(gateway_image); repinning to ${BASELINE_IMAGE}"
+  ${K} set image deployment/cluster-gateway \
+    "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+fi
+
+# Members that share an applied sequence but DISAGREE on the book have diverged -- permanently, on
+# a deterministic core -- and every digest-agreement proof after this point would fail while
+# reporting the divergence as its own bug. Different sequences are mere lag and converge on their
+# own; identical sequence + different books is the documented discriminator. Seen live when run 1's
+# stp restore rolled the members while the log tail replayed under mixed engine builds: m0/m1
+# open=6 trades=136 vs m2 open=7 trades=134, all three at applied=7365. The only recovery is a
+# wipe to a fresh epoch.
+member_state() { # member_state <ordinal> -> "<applied> <bookHash>"
+  ${K} exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null \
+    | awk '/^traderx_cluster_applied/ {a=$2} /^traderx_book_order_hash/ {h=$2} END {print a, h}'
+}
+if [[ "${NEED_FRESH}" == "0" ]]; then
+  # Quiet the rig first: sampling three members sequentially under live algo traffic would never
+  # catch them at one sequence, and the loop would misreport a busy healthy rig as unverifiable.
+  ${K} scale deploy/execution-algo-engine --replicas=0 >/dev/null 2>&1
+  tries=0
+  while :; do
+    read -r A0 H0 <<<"$(member_state 0)"
+    read -r A1 H1 <<<"$(member_state 1)"
+    read -r A2 H2 <<<"$(member_state 2)"
+    if [[ -n "${A0}" && "${A0}" == "${A1}" && "${A1}" == "${A2}" ]]; then
+      if [[ "${H0}" == "${H1}" && "${H1}" == "${H2}" ]]; then
+        break
+      fi
+      echo "[epoch] members share applied=${A0} but disagree on the book (${H0} ${H1} ${H2}): diverged; rebuilding"
+      rebuild_fresh_epoch
+      NEED_FRESH=1
+      break
+    fi
+    tries=$((tries + 1))
+    if [[ ${tries} -ge 30 ]]; then
+      echo "[fail] members never reached one applied sequence (applied: ${A0:-?} ${A1:-?} ${A2:-?}) -- a lagging or wedged member; refusing to run blind"
+      exit 1
+    fi
+    sleep 2
+  done
+fi
+
+# A fresh epoch needs a fresh projection -- DETECTED, not assumed. This runner used to do the
+# FRESH_EPOCH clear inline in the pin block, silenced with >/dev/null, and it silently did
+# nothing: seed-proof-fixtures.sh refused to act before it could reach the matcher, and at that
+# point in the run no port-forward existed yet. A whole suite pass then ran against the DEAD
+# epoch's rows -- trade ids are <tradeSeq>-<side>, the wiped engine's counter restarted at 1, so
+# every id it minted already existed and trade-processor dropped this epoch's trades as
+# "Duplicate trade delivery ignored". Three proofs failed on trades the engine definitely booked
+# (yu13-clordid-suppression 0/2 rows, yu15-option-persistence 0/2 rows, yu13-stp-and-replace's
+# preflight tradeCounter 150 < SQL max 546).
+#
+# So check for the wedge itself, independent of which path created it: if member 0's trade counter
+# is BEHIND the highest trade id in SQL, those rows cannot be this epoch's -- every new trade is
+# doomed to dedup against them. (SQL behind the engine is mere bridge lag and is fine.) The heal is
+# a full fresh-epoch rebuild, not a bare SQL clear: on a wedged rig the projection already MISSED
+# trades this epoch booked, so the engine holds positions no surviving row explains -- only
+# restarting both sides makes "SQL is a projection of the log" true again.
+if [[ "${NEED_FRESH}" == "0" ]]; then
+  ENGINE_TRADES="$(${K} exec order-matcher-cluster-0 -- \
+    sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')"
+  SQL_MAX_TRADE="$(${K} exec deploy/eod-price-db -c mariadb -- \
+    mariadb -utraderx -ptraderx traderx -sN -e \
+    "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;" 2>/dev/null)"
+  if [[ ! "${ENGINE_TRADES}" =~ ^[0-9]+$ || ! "${SQL_MAX_TRADE}" =~ ^[0-9]+$ ]]; then
+    echo "[fail] could not read engine tradeCounter ('${ENGINE_TRADES}') or SQL max trade id ('${SQL_MAX_TRADE}') -- refusing to run blind"
+    exit 1
+  fi
+  if [[ "${ENGINE_TRADES}" -lt "${SQL_MAX_TRADE}" ]]; then
+    echo "[epoch] engine tradeCounter ${ENGINE_TRADES} < highest trade id in SQL ${SQL_MAX_TRADE}: projection is from a dead epoch; rebuilding"
+    rebuild_fresh_epoch
+    NEED_FRESH=1
+  fi
+fi
+
+if [[ "${NEED_FRESH}" == "1" ]]; then
+  start_forwards || { echo "[fail] could not establish forwards for the fresh-epoch clear"; exit 1; }
+  FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" \
+    || { echo "[fail] fresh-epoch clear+seed failed -- the suite would assert against a projection this epoch cannot write"; exit 1; }
+  echo "[epoch] projection cleared and reseeded for this epoch"
+fi
+
+mkdir -p /tmp/proofrun
 pass=0; skip=0; fail=0; results=()
 for p in "${PROOFS[@]}"; do
   script="${ROOT}/scripts/proofs/${p}.sh"
