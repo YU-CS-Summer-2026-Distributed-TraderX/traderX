@@ -13,7 +13,7 @@ function TopBanner() {
     <div className={styles.topBanner}>
       <strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron
       Raft cluster. Read the{' '}
-      <Link to="/docs/blog/2026-03-29-traderx-speckit-migration">engineering story</Link>.
+      <Link to="/docs/engineering/testing-strategy">testing strategy</Link>.
     </div>
   );
 }
