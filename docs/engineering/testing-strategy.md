@@ -19,42 +19,6 @@ and risk-extract exports.
 
 This is the tier that makes a green build mean something, because it gates merges.
 
-## Gates — the properties a test cannot see
-
-Alongside those tests sit six **gates**: four allocation gates and two no-GC gates. They are counted
-separately because they are a different kind of check. A test asks whether the code produced the
-right answer. A gate asks what the code *cost* to produce it — and those are independent. A method
-can return a perfectly correct result while allocating on every call, and no assertion about its
-return value will ever notice.
-
-That distinction matters here because of how the matching engine runs: a single thread, processing
-one order at a time, on the path every order takes. Garbage collection stops that thread. The damage
-is not a wrong answer, it is an unpredictable pause — and pauses arrive under load, which is exactly
-when the system is least able to absorb them. Allocation on the hot path therefore converts, quietly
-and later, into latency spikes that no correctness test would have flagged.
-
-So the gates run the hot path in steady state and assert that it allocates **exactly zero bytes**.
-Zero rather than a budget, because a threshold is negotiable — each change that adds "just a little"
-stays under the bar until one day it doesn't, and there is no principled place to draw the line. Zero
-is the only number that cannot be argued down.
-
-The two no-GC gates then run the same paths under a JVM configured with **no garbage collector at
-all**. With nothing to reclaim memory, any allocation is no longer absorbed and forgotten — it
-accumulates until the process dies. That converts a slow, invisible degradation into an immediate,
-unmissable failure, which is the whole point: it removes the possibility of a small regression
-sitting undetected because the collector was quietly cleaning up after it.
-
-Together the gates cover the engine's own hot path, the same path with risk checks engaged, the
-transport encode path, and the cluster apply path — the four places where an allocation would sit
-inside the per-order critical section. Because they need their own JVM configuration, they run as
-separately forked JVMs rather than inside the main suite, which is why their count is kept apart from
-the test totals.
-
-They are best understood as a ratchet rather than a performance claim. They do not assert that the
-system is fast. They assert that a property the system already has cannot be lost by accident, which
-is the kind of guarantee that is very cheap to keep and very expensive to recover once it has drifted.
-The four allocation gates run on every push; the two no-GC gates run on demand with the cluster tier.
-
 ## Tier 1.5 — cross-service integration, in CI with containers
 
 Two tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
@@ -118,6 +82,42 @@ coverage is worth.
 
 Moving this tier onto dedicated hardware is a one-line runner change, at which point it can gate
 merges like the others.
+
+## Gates — the properties a test cannot see
+
+Cutting across all three tiers are six **gates**: four allocation gates and two no-GC gates. They sit
+outside the tiers, and are counted separately, because they are a different kind of check. A test
+asks whether the code produced the right answer. A gate asks what the code *cost* to produce it — and
+those are independent. A method can return a perfectly correct result while allocating on every call,
+and no assertion about its return value will ever notice.
+
+That distinction matters here because of how the matching engine runs: a single thread, processing
+one order at a time, on the path every order takes. Garbage collection stops that thread. The damage
+is not a wrong answer, it is an unpredictable pause — and pauses arrive under load, which is exactly
+when the system is least able to absorb them. Allocation on the hot path therefore converts, quietly
+and later, into latency spikes that no correctness test would have flagged.
+
+So the gates run the hot path in steady state and assert that it allocates **exactly zero bytes**.
+Zero rather than a budget, because a threshold is negotiable — each change that adds "just a little"
+stays under the bar until one day it doesn't, and there is no principled place to draw the line. Zero
+is the only number that cannot be argued down.
+
+The two no-GC gates then run the same paths under a JVM configured with **no garbage collector at
+all**. With nothing to reclaim memory, any allocation is no longer absorbed and forgotten — it
+accumulates until the process dies. That converts a slow, invisible degradation into an immediate,
+unmissable failure, which is the whole point: it removes the possibility of a small regression
+sitting undetected because the collector was quietly cleaning up after it.
+
+Together the gates cover the engine's own hot path, the same path with risk checks engaged, the
+transport encode path, and the cluster apply path — the four places where an allocation would sit
+inside the per-order critical section. Because they need their own JVM configuration, they run as
+separately forked JVMs rather than inside the main suite, which is why their count is kept apart from
+the test totals.
+
+They are best understood as a ratchet rather than a performance claim. They do not assert that the
+system is fast. They assert that a property the system already has cannot be lost by accident, which
+is the kind of guarantee that is very cheap to keep and very expensive to recover once it has drifted.
+The four allocation gates run on every push; the two no-GC gates run on demand with the cluster tier.
 
 ## Proof-to-test map
 
