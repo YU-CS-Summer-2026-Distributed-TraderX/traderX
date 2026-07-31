@@ -24,6 +24,21 @@
 #     kubectl -n traderx scale deploy/execution-algo-engine --replicas=0
 # and scale it back to 1 for yu08. Same reason a proof that leaves the members on its own image
 # (yu13-stp-and-replace) is a hazard to everything that runs after it.
+#
+# AFTER A PVC WIPE, CLEAR THE PROJECTION TOO. Wiping the members' PVCs gives a fresh epoch whose
+# counters restart near zero, but the SQL read model still holds the OLD epoch's rows -- and
+# yu13-stp-and-replace correctly refuses to run when the engine's tradeCounter is below the highest
+# trade id already in SQL, because this epoch's trades would be silently dropped as duplicates.
+# A fresh epoch needs a fresh projection; the read model is a projection of a log that no longer
+# exists. Run FRESH_EPOCH=1 to clear it here:
+#     FRESH_EPOCH=1 bash scripts/yu15/seed-proof-fixtures.sh
+#
+# When is a wipe needed at all? When the members diverge for real. Distinguish it from lag by the
+# applied sequence: lagging members show DIFFERENT sequences and are still moving; diverged members
+# sit at the SAME sequence with different books. Seen here as
+#     [53 ...] [53 ...] [54 ...]  applied: m0=seq=18707 m1=seq=18707 m2=seq=18707
+# which is permanent -- a mixed-version window during a member roll, exactly the hazard
+# yu13-stp-and-replace warns about. The only recovery is a wipe to a fresh epoch.
 set -uo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
@@ -89,5 +104,16 @@ kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
      WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';" 2>/dev/null
+
+# Fresh-epoch mode: the read model belongs to a log that no longer exists.
+if [[ "${FRESH_EPOCH:-0}" == "1" ]]; then
+  echo "[fresh-epoch] clearing the SQL projection"
+  kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
+    mariadb -utraderx -ptraderx traderx -N -B -e \
+    "DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;
+     SELECT CONCAT('   trades=',(SELECT COUNT(*) FROM trades),
+                   ' positions=',(SELECT COUNT(*) FROM positions),
+                   ' orderbook=',(SELECT COUNT(*) FROM orderbook));" 2>/dev/null
+fi
 
 echo "[ok] fixtures seeded"
