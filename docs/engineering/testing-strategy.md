@@ -45,9 +45,17 @@ The **26 proof scripts** drive the deployed system end to end: REST, FIX and bin
 gateway → three-member Aeron cluster → asynchronous projection → SQL read model → egress, plus the
 risk control plane.
 
-Several were **genuinely falsified before they passed** — an HTTP 200 that booked nothing; an order
-the risk gate rejected while the response still reported success. That history is why they are
-trusted.
+What separates this tier from the one above is where it looks for its answer. A unit test can call a
+method and inspect what it returns. These scripts cannot, and deliberately do not: they submit real
+input to a running system and then read the outcome from the far end of the pipeline — the committed
+sequence on a cluster member, the row in the read model, the message on the egress stream. An
+acknowledgement is never accepted as evidence that something happened, because in a system that
+sequences, replicates and projects asynchronously, a successful response and a completed effect are
+different events that can disagree.
+
+Each script is written so that it can fail. It states the outcome it expects before it acts, then
+asserts against the system's own record rather than against its own assumptions, and prints an
+explicit pass or fail line per step so a run reads as a verdict rather than a log.
 
 They stay operator-run because they need a live cluster. That is an infrastructure constraint rather
 than a reliability one, which is a meaningful difference: these scripts are dependable, they simply
@@ -56,22 +64,24 @@ require a deployed system to run against.
 ## Tier 3 — full-cluster and timing, on demand
 
 Three-member failover, snapshot and replay, cold-follower rejoin, and wall-clock budgets run on
-demand on idle hardware, and they are kept out of every-push CI deliberately: a shared two-core
-runner cannot support a credible timing or three-node consensus claim.
+demand on idle hardware, and they are kept out of every-push CI deliberately.
 
-Recent run on all three branches: the three-member cluster test completed in **23.7, 23.8 and 28
-seconds** against a 120-second bar, the snapshot-barrier budget passed on all three, and both
-Epsilon-GC gates were green.
+The reason is that these tests assert on *time* and on *scheduling*, not only on values. A consensus
+test runs three real cluster members with their own transport threads in one JVM; a wall-clock budget
+asserts that an operation completes within a fixed number of milliseconds. Both depend on the
+machine actually granting CPU when the code asks for it. On a shared runner that assumption does not
+hold, and the failure is not a graceful slowdown — a starved member simply stops making progress, and
+the test reports a timeout that looks exactly like a broken algorithm.
 
-That run also quantified why this tier needs quiet hardware, and the shape matters more than the
-pass. On a contended machine the cluster test **hits the 120-second timeout**; the same commit on an
-idle machine finishes in 24 seconds. It does not degrade gradually — it either completes in about 24
-seconds or starves out entirely, always at the same point after the second failover. This was
-established by running the same branch red, then green, with nothing changed but the load on the
-box. **A red result on this tier under load is inconclusive and needs a quiet re-run before it means
-anything.**
+That gives this tier a different reading rule from the others. **A green result is trustworthy
+wherever it runs**, because clearing a timing bar under contention is harder than clearing it on an
+idle box. **A red result is only meaningful on quiet hardware**, and needs re-running there before it
+is treated as a regression. Keeping these tests out of the push pipeline is what protects that rule:
+a suite that cries wolf on a busy runner teaches people to ignore it, which costs more than the
+coverage is worth.
 
-Moving this tier onto dedicated hardware is a one-line runner change.
+Moving this tier onto dedicated hardware is a one-line runner change, at which point it can gate
+merges like the others.
 
 ## Proof-to-test map
 

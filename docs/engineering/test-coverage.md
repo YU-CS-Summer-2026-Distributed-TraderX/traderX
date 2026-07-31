@@ -143,9 +143,10 @@ control plane. Each prints an explicit pass or fail line per step.
 | Observability | trace join, reject trace and log join | Kubernetes |
 | High availability and recovery | cluster recovery, failover transparency, cross-epoch ID reuse, restore from object storage, replace proof, node-clock failover | Kubernetes |
 
-Several of these were falsified before they passed — an HTTP 200 that booked nothing, an order the
-risk gate rejected while the response still looked successful. That history is why they are trusted.
-They require a live cluster, so they are operator-run.
+Each script asserts against the system's own record — the committed sequence on a cluster member, the
+row in the read model, the message on the egress stream — rather than against the response it got
+back, because a request can succeed while the effect it asked for does not. They require a live
+cluster, so they are operator-run.
 
 ## Front-end and other components
 
