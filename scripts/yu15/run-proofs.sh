@@ -273,6 +273,12 @@ for p in "${PROOFS[@]}"; do
     echo "[stp-prep] control feed off + fresh epoch (historical 64-capacity builds cannot replay a 510-security log)"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
     rebuild_fresh_epoch
+    # A fresh epoch needs a fresh projection — the engine's counters restart below the trade ids
+    # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
+    # path clears after its rebuilds; this wrap forgot to, and stp failed in-suite on exactly the
+    # guard that exists to catch it.
+    start_forwards || { echo "[fail] no forwards for the stp fresh-epoch clear"; break; }
+    FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
     STP_RESTORE_FEED=1
   fi
 

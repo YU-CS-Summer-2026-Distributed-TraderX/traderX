@@ -29,7 +29,12 @@ EXEC_POD="${EXEC_POD:-trade-processor}"
 # one fails as an opaque 401 from /auth/dev-token with nothing naming the secret as the cause.
 MASTER="${AUTH_MASTER_SECRET:-$(kubectl --context "${CTX}" -n "${NS}" get secret auth-secrets -o "jsonpath={.data.dev-token-master-secret}" 2>/dev/null | base64 -d 2>/dev/null)}"
 MASTER="${MASTER:-dev-token-master-secret}"
-DATE="$(date +%F)"
+# UTC, not local: trade-processor runs in a UTC container and keys EOD sessions by UTC date, so a
+# host-local date here diverges from the service every evening (20:00 EDT = midnight UTC). Under a
+# local date this proof polls the PREVIOUS session's frozen record while closes mint versions under
+# the new date — observed as "close -> v48 flagged=0" eight times while the service was actually on
+# v82 of the next day. A latent bug this suite only surfaced by running at night.
+DATE="$(date -u +%F)"
 HELD_ACCT="${HELD_ACCT:-10031}"
 HELD_SEC="${HELD_SEC:-NVDA}"
 UNIVERSE="AAPL,MSFT,AMZN,GOOGL,META,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF"  # no NVDA

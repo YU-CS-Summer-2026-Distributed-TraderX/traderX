@@ -57,7 +57,12 @@ SCOPED=$(mint false "[${OWN_ACCT}]")
 printf "   %-38s %s\n" "mint admin + account-scoped tokens" "ok"
 
 echo "── cross-account endpoint: admin claim required ──"
-XACCT="$TP/eod/prices/$(date +%F)"
+# UTC, not local: trade-processor runs in a UTC container and keys EOD sessions by UTC date, so a
+# host-local date here diverges from the service every evening (20:00 EDT = midnight UTC). Under a
+# local date this proof polls the PREVIOUS session's frozen record while closes mint versions under
+# the new date — observed as "close -> v48 flagged=0" eight times while the service was actually on
+# v82 of the next day. A latent bug this suite only surfaced by running at night.
+XACCT="$TP/eod/prices/$(date -u +%F)"
 check "admin token"          "$(hs GET "$XACCT" "$ADMIN")"  200 "admin sees cross-account data"
 check "account-scoped token" "$(hs GET "$XACCT" "$SCOPED")" 403 "authenticated, but no admin claim"
 check "no token"             "$(hs GET "$XACCT" "")"        401 "no bearer at all"
