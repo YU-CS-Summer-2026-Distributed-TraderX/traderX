@@ -1,0 +1,78 @@
+# reference-data on the CLUSTER tier — the producer half of the YU04 durable control feed.
+#
+# It writes a security's existence into its outbox in the SAME transaction as the stocks row
+# (ADR-021) and publishes each row, in strict version order, onto the JetStream subject
+# traderx.control.security.deltas. The gateway's control-feed subscriber consumes that and turns
+# each delta into a sequenced SECURITY_CONTROL command, so a security registered here exists on
+# every member at a definite consensus position.
+#
+# Ported from the YU04 manifest with the address changes this rig needs and nothing else:
+#   DATABASE_PG_HOST  database -> eod-price-db   (this rig's MariaDB)
+#   NATS_BROKER_HOST  nats-broker -> nats        (this rig's broker Service)
+apiVersion: v1
+kind: Service
+metadata:
+  name: reference-data
+  namespace: traderx
+  labels:
+    app: reference-data
+spec:
+  type: ClusterIP
+  selector:
+    app: reference-data
+  ports:
+    - name: http
+      protocol: TCP
+      port: 18085
+      targetPort: 18085
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reference-data
+  namespace: traderx
+  labels:
+    app: reference-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reference-data
+  template:
+    metadata:
+      labels:
+        app: reference-data
+    spec:
+      containers:
+        - name: reference-data
+          image: traderx/reference-data:yu15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18085
+              protocol: TCP
+          env:
+            - name: REFERENCE_DATA_SERVICE_PORT
+              value: "18085"
+            - name: DATABASE_PG_HOST
+              value: "eod-price-db"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              value: "traderx"
+            - name: DATABASE_DBPASS
+              value: "traderx"
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            # The outbox poller. Off would leave the stocks row written and nothing published,
+            # which is the exact silent-divergence ADR-021 exists to prevent.
+            - name: SECURITY_OUTBOX_ENABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: 128Mi
+            limits:
+              memory: 512Mi

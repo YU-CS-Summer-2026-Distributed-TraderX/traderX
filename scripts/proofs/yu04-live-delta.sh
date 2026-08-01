@@ -14,22 +14,25 @@ REF=${REF:-http://localhost:18085}
 OM=${OM:-http://127.0.0.1:8080/order-matcher}
 TK=${1:-Z$(date +%s | tail -c 5)}
 
-# CAPABILITY CHECK. This proof needs two things the YU15 cluster rig does not have:
-#   1. reference-data deployed (it injects a security via POST /stocks and reads its outbox
-#      watermark from GET /stocks/control-snapshot) -- not in the cluster kustomization; and
-#   2. a consumer of that JetStream control feed ON THIS TIER. ControlFeedSubscriber is referenced
-#      only by ReplicaBootstrap, the Spring app path -- it is NOT wired into ClusterNodeMain or
-#      MatchingEngineClusteredService. So even with reference-data running, its deltas would reach
-#      no member here.
-# GET /risk/control/snapshot does now exist on the cluster gateway, but nothing populates it from a
-# feed, so this proof would report a control that never arrived -- which reads as a broken durable
-# feed rather than an absent consumer. Say which, and stop.
+# CAPABILITY CHECK, round two — and the state of it is now precise. The machinery EXISTS on this
+# tier: reference-data runs here, and the gateway carries a control-feed subscriber (see
+# startControlFeedSubscriber in ClusterGatewayMain) that was OBSERVED consuming this stream and
+# sequencing SECURITY_CONTROL commands through consensus. It is disabled by default because the
+# feed carries the whole 510-security universe while the clustered service's symbol table is
+# MAX_SECURITIES = 64 -- replaying the stream fills the table, and a consumer that refuses to
+# silently drop securities (ADR-021) then cannot make progress past the 64th ticker. The blocker
+# is a replicated-state CAPACITY decision, not missing plumbing.
 if ! curl -sf -m8 -o /dev/null "${REF}/stocks/control-snapshot" 2>/dev/null; then
-  echo "   ✘ ${REF}/stocks/control-snapshot unreachable"
-  echo "   reference-data is not deployed on this rig, and the cluster tier has no consumer for its"
-  echo "   control feed (ControlFeedSubscriber is wired into the Spring app only, not the clustered"
-  echo "   service). Both are needed before this proof can mean anything here."
-  echo "   Run against the state-014 rig:  CTX=kind-traderx-state-014 bash $0"
+  echo "   ✘ ${REF}/stocks/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
+  exit 2
+fi
+if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/null     | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('count',0) > 64 else 1)" 2>/dev/null; then
+  echo "   ✘ the gateway's control-feed subscriber is not consuming (CONTROL_FEED_SUBSCRIBER=0 by default)."
+  echo "   The subscriber works — it was observed applying this stream through consensus — but the"
+  echo "   feed's 510-security universe does not fit the engine's MAX_SECURITIES=64 symbol table,"
+  echo "   and a consumer that will not silently drop securities cannot get past the 64th."
+  echo "   Unblocking is a capacity decision on replicated state (raise MAX_SECURITIES / narrow the"
+  echo "   feed / bound the table), then: CONTROL_FEED_SUBSCRIBER=1 on the cluster-gateway."
   exit 2
 fi
 

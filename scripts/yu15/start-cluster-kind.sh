@@ -29,6 +29,7 @@ IMAGES=(
   "${YU15_POSITION_SERVICE_IMAGE:-traderx/position-service:yu15}"
   "${YU15_PRICE_PUBLISHER_IMAGE:-traderx/price-publisher:yu15}"
   "${YU15_ALGO_ENGINE_IMAGE:-traderx/execution-algo-engine:yu15}"
+  "${YU15_REFERENCE_DATA_IMAGE:-traderx/reference-data:yu15}"
 )
 missing=()
 for img in "${IMAGES[@]}"; do
@@ -68,7 +69,7 @@ kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-c
 # deploys them, so the script could report the tier "up" while the EOD chain was still coming
 # round -- and the extract's only trigger is that chain.
 for d in nats eod-price-db trade-processor cluster-gateway risk-extract \
-         price-publisher position-service execution-algo-engine; do
+         price-publisher position-service execution-algo-engine reference-data; do
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s
 done

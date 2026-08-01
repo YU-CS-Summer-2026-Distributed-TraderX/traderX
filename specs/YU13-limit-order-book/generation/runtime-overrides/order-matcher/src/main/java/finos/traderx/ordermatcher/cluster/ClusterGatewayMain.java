@@ -99,6 +99,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // consumer comparing epochs needs in order to know its watermark is no longer comparable.
     private final long controlEpoch = System.currentTimeMillis();
     private volatile long controlWatermark;
+    // Must match reference-data's jetstream-control-feed-publisher.ts (STREAM TRADERX_CONTROL_SECURITY).
+    private static final String CONTROL_FEED_SUBJECT =
+        env("CONTROL_FEED_SUBJECT", "traderx.control.security.deltas");
     private final UnsafeBuffer orderBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
     private final UnsafeBuffer symbolBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
     private final Map<String, Integer> idByTicker = new HashMap<>();
@@ -234,6 +237,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/health", exchange ->
             respond(exchange, 200, "{\"connected\":" + connected + "}"));
         server.start();
+        startControlFeedSubscriber();
 
         final String fixPortEnv = env("FIX_ACCEPTOR_PORT", "");
         if (!fixPortEnv.isEmpty()) {
@@ -1168,6 +1172,139 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * <p>Auth mirrors the Spring controller exactly: a shared token plus a non-blank operator
      * header, both required, with the operator logged for attribution.
      */
+    /**
+     * Durable control feed consumer for the cluster tier (ADR-021, FR-IMRG32/33) — the piece YU04
+     * specified and this tier never had.
+     *
+     * <p>reference-data writes security existence/identity into its outbox in the same transaction
+     * as the {@code stocks} row and publishes each row, in strict version order, onto the
+     * JetStream subject below. On the single-BLP tier {@code ControlFeedSubscriber} consumed that;
+     * here nothing did, so a security only existed once someone POSTed {@code /seed} by hand. That
+     * is why scripts/yu15/seed-proof-fixtures.sh had to exist.
+     *
+     * <p>Each delta becomes an ordinary SEQUENCED control command, offered through the same owner
+     * thread and the same path {@code handleRiskControl} uses — so every member applies it at a
+     * definite consensus position and a rebuilt member replays to the identical risk state. No new
+     * replicated state, no schema change, no snapshot format bump: {@code TYPE_SECURITY_CONTROL} is
+     * already dispatched by MatchingEngine and already carried in the snapshot as {@code
+     * T_SECURITY}.
+     *
+     * <p>Runs on its own daemon thread and NEVER touches the cluster session directly — the session
+     * and the {@code event} flyweight are owner-thread-only, so it hands work over via onOwner
+     * exactly as an HTTP handler does. Failure is non-fatal and retried: a broker that is not up
+     * yet must not stop the gateway from serving orders.
+     */
+    private void startControlFeedSubscriber() {
+        // OFF by default, and that default is a finding rather than caution.
+        //
+        // The feed carries the whole stock universe -- 510 securities on this rig -- while the
+        // clustered service's symbol table is MAX_SECURITIES = 64. Replaying the stream fills the
+        // table and then resolveSecurityId fails for every subsequent ticker. Worse, this consumer
+        // deliberately does NOT ack a failed delta (strict version order is the point of an
+        // outbox), so the first un-registerable ticker wedges the control plane permanently: the
+        // feed stops making progress and no later delta is ever applied.
+        //
+        // Both halves of the machinery are correct and proven -- with the subscriber on, the
+        // gateway consumed the stream and sequenced SECURITY_CONTROL commands through consensus
+        // ("CONTROL-FEED applied ticker=A version=14"). What is unresolved is a CAPACITY decision
+        // that is not mine to take: raise MAX_SECURITIES (replicated state sizing, with snapshot
+        // implications), or narrow what the feed carries, or bound the symbol table with an
+        // eviction policy. Silently dropping securities is the one option ADR-021 forbids.
+        //
+        // Set CONTROL_FEED_SUBSCRIBER=1 to turn it on once that is decided.
+        if (!"1".equals(env("CONTROL_FEED_SUBSCRIBER", "0"))) {
+            return;
+        }
+        final String natsUrl = env("NATS_ADDRESS",
+            "nats://" + env("NATS_BROKER_HOST", "nats") + ":4222");
+        final Thread t = new Thread(() -> runControlFeed(natsUrl), "control-feed-subscriber");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    private void runControlFeed(final String natsUrl) {
+        while (true) {
+            try (io.nats.client.Connection nats = io.nats.client.Nats.connect(natsUrl)) {
+                final io.nats.client.JetStream js = nats.jetStream();
+                // Ephemeral push subscription from the START of the stream: replaying the whole
+                // durable log on connect IS the offline catch-up path (FR-IMRG33). A security the
+                // feed published while this gateway was down is applied when it comes back, which
+                // is the property yu04-offline-catchup asserts and the reason the stream is
+                // file-backed rather than a fire-and-forget subject.
+                final io.nats.client.PushSubscribeOptions opts =
+                    io.nats.client.PushSubscribeOptions.builder()
+                        .configuration(io.nats.client.api.ConsumerConfiguration.builder()
+                            .deliverPolicy(io.nats.client.api.DeliverPolicy.All)
+                            .ackPolicy(io.nats.client.api.AckPolicy.Explicit)
+                            .build())
+                        .build();
+                final io.nats.client.JetStreamSubscription sub =
+                    js.subscribe(CONTROL_FEED_SUBJECT, opts);
+                System.out.println("CONTROL-FEED subscribed subject=" + CONTROL_FEED_SUBJECT);
+                while (true) {
+                    final io.nats.client.Message msg =
+                        sub.nextMessage(java.time.Duration.ofSeconds(5));
+                    if (msg == null) {
+                        continue;
+                    }
+                    try {
+                        applyControlDelta(new String(msg.getData(), StandardCharsets.UTF_8));
+                        msg.ack();
+                    } catch (final Exception apply) {
+                        // Do NOT ack: leave it redeliverable rather than silently dropping a
+                        // control change. Strict version order is the whole point of the outbox.
+                        System.out.println("CONTROL-FEED apply failed, will redeliver: " + apply);
+                        Thread.sleep(1000);
+                    }
+                }
+            } catch (final InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (final Exception e) {
+                System.out.println("CONTROL-FEED connect/subscribe failed, retrying: " + e);
+                try {
+                    Thread.sleep(2000);
+                } catch (final InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    /** One outbox delta -> one sequenced SECURITY_CONTROL, plus the operator-visible replica. */
+    private void applyControlDelta(final String payload) throws Exception {
+        final JsonNode body = JSON.readTree(payload);
+        final String ticker = body.path("ticker").asText("").trim();
+        if (ticker.isEmpty()) {
+            return; // nothing to register; ack it rather than redelivering forever
+        }
+        final long version = body.path("version").asLong(System.currentTimeMillis());
+        final Boolean ok = onOwner(() -> {
+            final int id = resolveSecurityId(ticker);
+            if (id < 0) {
+                return false;
+            }
+            event.qty = 0;
+            event.limitPx = 0L;
+            event.type = InputEvent.TYPE_SECURITY_CONTROL;
+            event.accountId = 0;
+            event.securityId = id;
+            event.setControlEnabled(true);
+            event.setControlVersion(version);
+            offerBlocking();
+            return true;
+        });
+        if (!Boolean.TRUE.equals(ok)) {
+            throw new IllegalStateException("could not register " + ticker + " from the control feed");
+        }
+        controlReplica.compute(ticker, (k, prev) -> new long[] {
+            1, prev == null ? 0 : prev[1], version,
+        });
+        controlWatermark = Math.max(controlWatermark, version);
+        System.out.println("CONTROL-FEED applied ticker=" + ticker + " version=" + version);
+    }
+
     private void handleRiskControl(final HttpExchange exchange) {
         try {
             final String requestPath = exchange.getRequestURI().getPath();
