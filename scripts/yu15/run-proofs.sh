@@ -232,11 +232,19 @@ if [[ "${NEED_FRESH}" == "0" ]]; then
   # 510-security stream into a MAX_SECURITIES=64 table did exactly this. Detect it the way a proof
   # would hit it: try to register a throwaway ticker, and rebuild if the engine refuses.
   if [[ "${NEED_FRESH}" != "1" ]]; then
-    probe="$(curl -s -m20 -X POST http://localhost:18110/seed -H 'Content-Type: application/json'       -d '{"accountId":42422,"tickers":"ZZPROBE9","price":100}' 2>/dev/null)"
-    if [[ "${probe}" != *'"seeded":true'* ]]; then
-      echo "[epoch] engine cannot register a fresh ticker (${probe:-no answer}): symbol table exhausted; rebuilding"
+    # The probe needs a live forward: without one curl answers nothing, and "no answer" read as
+    # "exhausted" triggered a needless multi-minute rebuild on every fresh runner invocation --
+    # safe in direction, but it buries the real signal. Unreachable and exhausted are different
+    # verdicts; establish the forward first so a refusal can only mean the table.
+    start_forwards || { echo "[fail] could not establish forwards for the symbol-table probe"; exit 1; }
+    probe="$(curl -s -m20 -X POST http://localhost:18110/seed -H 'Content-Type: application/json' -d '{"accountId":42422,"tickers":"ZZPROBE9","price":100}' 2>/dev/null)"
+    if [[ "${probe}" == *'"seeded":false'* ]]; then
+      echo "[epoch] engine refuses to register a fresh ticker: symbol table exhausted; rebuilding"
       rebuild_fresh_epoch
       NEED_FRESH=1
+    elif [[ "${probe}" != *'"seeded":true'* ]]; then
+      echo "[fail] symbol-table probe got no usable answer (${probe:-nothing}) even with a verified forward"
+      exit 1
     fi
   fi
 fi
