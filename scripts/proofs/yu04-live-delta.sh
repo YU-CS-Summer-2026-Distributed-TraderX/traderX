@@ -11,7 +11,9 @@
 #   bash yu04-live-delta.sh ZZZZ       # explicit ticker
 set -uo pipefail
 REF=${REF:-http://localhost:18085}
-OM=${OM:-http://127.0.0.1:8080/order-matcher}
+# The cluster gateway directly — no edge-proxy on this rig. For the state-014 rig:
+# OM=http://127.0.0.1:8080/order-matcher
+OM=${OM:-http://localhost:18110}
 TK=${1:-Z$(date +%s | tail -c 5)}
 
 # CAPABILITY CHECK, round two — and the state of it is now precise. The machinery EXISTS on this

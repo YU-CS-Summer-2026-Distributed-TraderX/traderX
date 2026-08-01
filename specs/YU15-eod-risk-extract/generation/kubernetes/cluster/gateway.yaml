@@ -49,6 +49,11 @@ spec:
               value: "18110"
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
+            # YU04 durable control feed: consume reference-data's security deltas and sequence them
+            # through consensus. On for the kind rig (this is the support/demo story); benches that
+            # want a quiet startup leave it unset.
+            - name: CONTROL_FEED_SUBSCRIBER
+              value: "1"
             - name: FIX_ACCEPTOR_PORT
               value: "18130"
             - name: FIX_SESSION_COMPIDS

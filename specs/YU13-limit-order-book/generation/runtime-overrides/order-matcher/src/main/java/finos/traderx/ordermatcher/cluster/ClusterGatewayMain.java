@@ -1195,23 +1195,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * yet must not stop the gateway from serving orders.
      */
     private void startControlFeedSubscriber() {
-        // OFF by default, and that default is a finding rather than caution.
+        // Opt-in per manifest rather than on in code: the replay-on-connect that makes offline
+        // catch-up work (DeliverPolicy.All) re-sequences the whole security universe through
+        // consensus at every gateway start — correct and idempotent, but ~510 commands of startup
+        // noise a latency bench would rather not pay. The kind cluster manifest sets
+        // CONTROL_FEED_SUBSCRIBER=1; benches simply leave it unset.
         //
-        // The feed carries the whole stock universe -- 510 securities on this rig -- while the
-        // clustered service's symbol table is MAX_SECURITIES = 64. Replaying the stream fills the
-        // table and then resolveSecurityId fails for every subsequent ticker. Worse, this consumer
-        // deliberately does NOT ack a failed delta (strict version order is the point of an
-        // outbox), so the first un-registerable ticker wedges the control plane permanently: the
-        // feed stops making progress and no later delta is ever applied.
-        //
-        // Both halves of the machinery are correct and proven -- with the subscriber on, the
-        // gateway consumed the stream and sequenced SECURITY_CONTROL commands through consensus
-        // ("CONTROL-FEED applied ticker=A version=14"). What is unresolved is a CAPACITY decision
-        // that is not mine to take: raise MAX_SECURITIES (replicated state sizing, with snapshot
-        // implications), or narrow what the feed carries, or bound the symbol table with an
-        // eviction policy. Silently dropping securities is the one option ADR-021 forbids.
-        //
-        // Set CONTROL_FEED_SUBSCRIBER=1 to turn it on once that is decided.
+        // (Historical: this was first forced off because MAX_SECURITIES was 64 and the 510-security
+        // universe wedged the consumer at ticker 65. The engine is sized 1024 now — see the sizing
+        // block in MatchingEngineClusteredService — so that reason is gone.)
         if (!"1".equals(env("CONTROL_FEED_SUBSCRIBER", "0"))) {
             return;
         }
@@ -1224,6 +1216,20 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     private void runControlFeed(final String natsUrl) {
         while (true) {
+            // Do not subscribe until the cluster session can actually take an offer. Consuming
+            // earlier makes the whole replay burst fail unacked while the session dials, and an
+            // ephemeral push consumer then redelivers those messages only after the ~30s AckWait —
+            // observed live as an offline-injected delta arriving well after the gateway reported
+            // ready, which reads as the durable feed failing to catch up when it is only waiting
+            // out an ack timer nobody needed to start.
+            while (!connected) {
+                try {
+                    Thread.sleep(200);
+                } catch (final InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
             try (io.nats.client.Connection nats = io.nats.client.Nats.connect(natsUrl)) {
                 final io.nats.client.JetStream js = nats.jetStream();
                 // Ephemeral push subscription from the START of the stream: replaying the whole

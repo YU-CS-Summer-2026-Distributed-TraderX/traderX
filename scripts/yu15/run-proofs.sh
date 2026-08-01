@@ -254,6 +254,20 @@ for p in "${PROOFS[@]}"; do
   script="${ROOT}/scripts/proofs/${p}.sh"
   [[ -f "${script}" ]] || { echo "[warn] no such proof: ${p}"; continue; }
 
+  # yu13-stp-and-replace rolls the members onto HISTORICAL engine builds (yu15-pre / yu15-stp)
+  # with PVCs intact -- that epoch continuity is the point of the proof. Those builds hold
+  # MAX_SECURITIES=64, and with the control feed on, the current epoch's log carries the full
+  # 510-security universe as sequenced registrations, which a 64-capacity build cannot replay:
+  # rolling onto it wedges or diverges the members. So the proof gets an epoch the old builds can
+  # carry -- subscriber off, fresh epoch, so the log holds only the proof's own fixtures -- and the
+  # feed is restored (env back on + gateway restart replays the stream) afterwards.
+  if [[ "${p}" == yu13-stp-and-replace ]]; then
+    echo "[stp-prep] control feed off + fresh epoch (historical 64-capacity builds cannot replay a 510-security log)"
+    ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
+    rebuild_fresh_epoch
+    STP_RESTORE_FEED=1
+  fi
+
   # yu08 is the only proof that needs the algo engine; everything else is better off without its
   # traffic moving the counters.
   if [[ "${p}" == yu08-* ]]; then
@@ -273,6 +287,14 @@ for p in "${PROOFS[@]}"; do
     2) echo "SKIP (capability absent — see log)"; skip=$((skip + 1)); results+=("SKIP ${p}") ;;
     *) echo "FAIL"; fail=$((fail + 1)); results+=("FAIL ${p}") ;;
   esac
+
+  if [[ "${STP_RESTORE_FEED:-0}" == "1" && "${p}" == yu13-stp-and-replace ]]; then
+    echo "[stp-prep] restoring the control feed (env on + gateway restart replays the stream)"
+    ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
+    ${K} rollout restart deploy/cluster-gateway >/dev/null
+    ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
+    STP_RESTORE_FEED=0
+  fi
 done
 
 echo

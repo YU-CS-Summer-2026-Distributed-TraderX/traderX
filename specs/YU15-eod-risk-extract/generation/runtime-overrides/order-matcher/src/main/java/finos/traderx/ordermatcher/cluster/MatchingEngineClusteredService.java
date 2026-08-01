@@ -61,7 +61,19 @@ import java.util.concurrent.TimeUnit;
 public final class MatchingEngineClusteredService implements ClusteredService {
     // ponytail: spike-fixed engine/risk sizing; the production path re-reads these from
     // properties — they must be identical on every member (config identity, see the matrix)
-    static final int MAX_SECURITIES = 64;
+    //
+    // 64 -> 1024 (2026-07-31): 64 was sized for the demo universe and could not hold the YU04
+    // control feed, which replays reference-data's full 510-security universe through consensus —
+    // the subscriber wedged at ticker 65 (a consumer that will not silently drop securities cannot
+    // get past a full table). 1024 = the universe plus headroom, power of two. This is capacity,
+    // not format: the snapshot writes ONE T_SECURITY tuple per registered security (variable
+    // length), so SNAPSHOT_FORMAT is untouched; per-security fixed cost is ~26 bytes in
+    // BlpRiskState plus a lazily-created book, and the Spring tier has run
+    // blp.books.max-securities=4096 all along — 64 was the outlier, not the design. Like ANY
+    // change to this block it must land on all members via a fresh-epoch same-image roll, never a
+    // rolling swap: a 64-member and a 1024-member disagree about whether ticker 65 registers,
+    // which is permanent divergence.
+    static final int MAX_SECURITIES = 1024;
     static final int POOL_SIZE = 1024;
     // The service thread is BOTH producer (engine emits during apply) and consumer (drainOutputs
     // after apply), so a single event whose output burst exceeds free ring space self-deadlocks in

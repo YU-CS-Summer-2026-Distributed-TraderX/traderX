@@ -15,7 +15,9 @@ set -uo pipefail
 CTX=${CTX:-kind-traderx-yu12-cluster}
 NS=${NS:-traderx}
 REF=${REF:-http://localhost:18085}
-OM=${OM:-http://127.0.0.1:8080/order-matcher}
+# The cluster gateway directly — no edge-proxy on this rig. For the state-014 rig:
+# OM=http://127.0.0.1:8080/order-matcher
+OM=${OM:-http://localhost:18110}
 TK=${1:-Z$(date +%s | tail -c 5)}
 
 # CAPABILITY CHECK, round two — and the state of it is now precise. The machinery EXISTS on this
@@ -42,12 +44,24 @@ fi
 K="kubectl -n $NS --context $CTX"
 
 # Works whether order-matcher is a Deployment (kind) or StatefulSet (GKE).
-WL=$($K get deploy order-matcher -o name 2>/dev/null || $K get statefulset order-matcher -o name 2>/dev/null)
-[ -z "$WL" ] && { echo "order-matcher workload not found in ns/$NS"; exit 1; }
+# The workload that CONSUMES the feed — that is what must be down while the delta is published.
+# On this rig it is the cluster gateway (its subscriber replays the durable stream from the start
+# on every connect, which IS the bootstrap path); on the state-014 rig it was the Spring
+# order-matcher. The members are deliberately NOT touched: the point is that the consumer catches
+# up, not that the cluster survives — that is other proofs' job.
+CONSUMER_WL="${CONSUMER_WL:-deploy/cluster-gateway}"
+WL=$($K get "$CONSUMER_WL" -o name 2>/dev/null)
+[ -z "$WL" ] && WL=$($K get deploy order-matcher -o name 2>/dev/null || $K get statefulset order-matcher -o name 2>/dev/null)
+[ -z "$WL" ] && { echo "feed-consumer workload not found in ns/$NS (tried $CONSUMER_WL, order-matcher)"; exit 1; }
 
 wm(){ curl -s -m8 "$REF/stocks/control-snapshot" \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print('epoch=%s watermark=%s count=%s'%(d.get('sourceEpoch'),d.get('watermark'),d.get('count')))" 2>/dev/null; }
-replica_has(){ curl -s -m8 "$OM/risk/control/snapshot" \
+# Read the replica FROM INSIDE the cluster. This proof scales the gateway to zero and back, which
+# kills any port-forward attached to its pod — so a localhost read here polls a dead socket forever
+# and reports "not seen", i.e. the proof's own restart machinery masquerades as a catch-up failure.
+# An exec through a stable pod (trade-processor) reaches the Service address, which follows the new
+# pod on its own.
+replica_has(){ $K exec deploy/trade-processor -- curl -s -m8 "http://order-matcher:18110/risk/control/snapshot" 2>/dev/null \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((s for s in d.get('securities',[]) if s.get('ticker')=='$TK'),'null'))" 2>/dev/null; }
 
 echo "── OFFLINE CATCH-UP (change published while $WL is DOWN) ──"
@@ -66,9 +80,19 @@ printf "   %-30s " "scale $WL -> 1, wait ready"
 $K scale "$WL" --replicas=1 >/dev/null && $K rollout status "$WL" --timeout=180s >/dev/null 2>&1; echo "up"
 
 printf "   %-30s " "replica after bootstrap"
-for i in $(seq 1 40); do
+# 90s, not 20s: on the cluster tier "bootstrap" is the gateway replaying the ENTIRE durable stream
+# through consensus (500+ sequenced commands), which is the mechanism under test, not overhead.
+# And the verdict is now the exit code — this used to print ✘ and exit 0, which is how a timeout
+# was reported as a pass earlier tonight.
+FAIL=1
+for i in $(seq 1 90); do
   v=$(replica_has)
-  if [ "$v" != "null" ] && [ -n "$v" ]; then echo "$TK present — durable catch-up ✔ (no re-push, no manual recon)"; break; fi
-  [ "$i" = 40 ] && echo "TIMEOUT — $TK not seen 20s after ready ✘"
-  sleep 0.5
+  if [ "$v" != "null" ] && [ -n "$v" ]; then
+    echo "$TK present — durable catch-up ✔ (no re-push, no manual recon)"
+    FAIL=0
+    break
+  fi
+  [ "$i" = 90 ] && echo "TIMEOUT — $TK not seen 90s after ready ✘"
+  sleep 1
 done
+exit "$FAIL"
