@@ -224,6 +224,21 @@ if [[ "${NEED_FRESH}" == "0" ]]; then
     rebuild_fresh_epoch
     NEED_FRESH=1
   fi
+
+  # Symbol-table exhaustion is replicated state, so it survives everything except an epoch wipe --
+  # the image matches, the members agree, and yet every proof that mints a fresh ticker fails at
+  # its seed step ("seed failed for <acct>", {"seeded":false}). It happens when something registers
+  # a large universe through consensus: the control-feed subscriber replaying reference-data's
+  # 510-security stream into a MAX_SECURITIES=64 table did exactly this. Detect it the way a proof
+  # would hit it: try to register a throwaway ticker, and rebuild if the engine refuses.
+  if [[ "${NEED_FRESH}" != "1" ]]; then
+    probe="$(curl -s -m20 -X POST http://localhost:18110/seed -H 'Content-Type: application/json'       -d '{"accountId":42422,"tickers":"ZZPROBE9","price":100}' 2>/dev/null)"
+    if [[ "${probe}" != *'"seeded":true'* ]]; then
+      echo "[epoch] engine cannot register a fresh ticker (${probe:-no answer}): symbol table exhausted; rebuilding"
+      rebuild_fresh_epoch
+      NEED_FRESH=1
+    fi
+  fi
 fi
 
 if [[ "${NEED_FRESH}" == "1" ]]; then
