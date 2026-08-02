@@ -1207,9 +1207,15 @@
   padding: clamp(2.5rem, 6vw, 4rem) 1.5rem;
 }
 
+/* Width is FOUR WHOLE CARDS plus the three gaps between them, expressed as the arithmetic rather
+   than a magic number so it stays true if the column width changes. At the previous 72rem the band
+   was 60px narrower than four cards, so the fourth sat 79% visible and looked sliced. Making the
+   viewport an exact multiple of the card pitch also makes the scroll land cleanly: total scroll is
+   now exactly one card step, so a single arrow click moves cards 1-4 to cards 2-5 with no card ever
+   straddling an edge. */
 .resultsInner {
   margin: 0 auto;
-  max-width: 72rem;
+  max-width: calc(4 * 18rem + 3 * 1.25rem);
 }
 
 .resultsHeading h2 {
@@ -1241,8 +1247,8 @@
 }
 
 /* One line, sliding horizontally. grid-auto-flow: column keeps every card on a single row instead
-   of wrapping a lonely last card onto a second row (.resultsInner caps at 1152px, so auto-fit could
-   never seat more than four columns).
+   of wrapping a lonely last card onto a second row (.resultsInner is a fixed four-card width, so
+   auto-fit could never seat more than four columns).
 
    COLUMN WIDTH IS SET BY THE WIDEST FIGURE, not by how many cards fit on screen. At 13rem each card
    offered 164px of inner width while "0.45–0.57" needs 197px at the 40px figure size, so two of the
@@ -1329,10 +1335,11 @@
   right: -3.25rem;
 }
 
-/* Clear of the cards entirely on wide screens. Below ~1150px the band runs out of margin to sit in,
-   so the bubbles overlay the row edge instead — the alternative is an arrow clipped by the page's
-   overflow-x: hidden, which would silently amputate the control rather than move it. */
-@media (max-width: 1150px) {
+/* Clear of the cards entirely on wide screens. The band is now 1212px, so it needs 1212 + 2×52px of
+   arrow before the bubbles fit outside it — below ~1320px they overlay the row edge instead. The
+   alternative is an arrow clipped by the page's overflow-x: hidden, which would silently amputate
+   the control rather than move it. */
+@media (max-width: 1320px) {
   .resultsArrowLeft {
     left: 0.25rem;
   }
