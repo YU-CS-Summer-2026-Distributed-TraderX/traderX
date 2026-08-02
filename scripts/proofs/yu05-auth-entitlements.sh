@@ -57,12 +57,21 @@ SCOPED=$(mint false "[${OWN_ACCT}]")
 printf "   %-38s %s\n" "mint admin + account-scoped tokens" "ok"
 
 echo "── cross-account endpoint: admin claim required ──"
-# UTC, not local: trade-processor runs in a UTC container and keys EOD sessions by UTC date, so a
-# host-local date here diverges from the service every evening (20:00 EDT = midnight UTC). Under a
-# local date this proof polls the PREVIOUS session's frozen record while closes mint versions under
-# the new date — observed as "close -> v48 flagged=0" eight times while the service was actually on
-# v82 of the next day. A latent bug this suite only surfaced by running at night.
-XACCT="$TP/eod/prices/$(date -u +%F)"
+# Pick a session date that actually HAS a published version, rather than assuming today does.
+#
+# This axis tests the ADMIN CLAIM; whether an EOD session exists is a different proof's business.
+# Coupling the two made this fail at 20:00 EDT — that is midnight UTC, a brand-new session date
+# with no data, so the admin got a truthful 404 and the proof called an authorization decision
+# wrong. (The tell: 403 and 401 were still correct, i.e. the gate was working perfectly.) An
+# earlier local-vs-UTC fix moved the failure window without removing it; discovery removes it.
+SESSION_DATE="${SESSION_DATE:-$(dbq "SELECT session_date FROM eod_price_session WHERE status='PUBLISHED' ORDER BY session_date DESC, version DESC LIMIT 1;" | tr -d '\r')}"
+if [ -z "$SESSION_DATE" ]; then
+  echo "   ✘ no PUBLISHED EOD session in the projection to authorize against."
+  echo "   Close one first:  bash scripts/proofs/yu06-quality-gate.sh"
+  exit 1
+fi
+echo "   authorizing against published session ${SESSION_DATE}"
+XACCT="$TP/eod/prices/${SESSION_DATE}"
 check "admin token"          "$(hs GET "$XACCT" "$ADMIN")"  200 "admin sees cross-account data"
 check "account-scoped token" "$(hs GET "$XACCT" "$SCOPED")" 403 "authenticated, but no admin claim"
 check "no token"             "$(hs GET "$XACCT" "")"        401 "no bearer at all"
