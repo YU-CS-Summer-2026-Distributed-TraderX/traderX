@@ -1693,6 +1693,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      *
      * <p>A connection failure to every member is 503, never an empty 200: "no member answered" and
      * "the log holds nothing" must not look alike to a reconciliation caller.
+     *
+     * <p>This file is the YU13 layer, so YU13 and YU14 carry it too — and their members predate
+     * {@code ClusterRecon} and serve no such routes. There the member answers 404 and this forwards
+     * it, which is byte-for-byte the answer those states already gave before this route existed:
+     * the capability is YU15's, and the forward is inert until a member serves it.
      */
     private void handleMemberProxy(final HttpExchange exchange) {
         final int healthPort = Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT", "8080"));
