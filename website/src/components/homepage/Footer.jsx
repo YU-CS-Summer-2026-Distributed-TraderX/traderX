@@ -2,7 +2,7 @@ import React from 'react';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import {Icon} from './Icons';
 import {ExternalLink, SmartLink} from './Links';
-import {catalogSource, repoBaseUrl, upstreamRepoUrl} from './homepageData';
+import {catalogSource, repoTreeUrl, upstreamRepoUrl} from './homepageData';
 import styles from './TraderXHomepage.module.css';
 
 export default function Footer() {
@@ -22,9 +22,10 @@ export default function Footer() {
             {/*
               Was "Copyright (c) 2026 Fintech Open Source Foundation" — not who holds this work. The
               upstream project is credited on the line below rather than misattributed as the author
-              of this deployment.
+              of this deployment. The copyright notice itself is gone: it was a hardcoded year that
+              would silently go stale, and attribution is what this line is actually for.
             */}
-            <p>Copyright &copy; 2026 Yeshiva University Computer Science.</p>
+            <p>Yeshiva University Computer Science.</p>
             <small>
               Built on <ExternalLink href={upstreamRepoUrl}>FINOS TraderX</ExternalLink>. Homepage
               state list sourced from{' '}
@@ -38,7 +39,7 @@ export default function Footer() {
         <div className={styles.footerLinks}>
           <ExternalLink href={catalogSource.catalogUrl}>State Catalog</ExternalLink>
           <SmartLink to={catalogSource.generatedBranchesDocs}>Generated Branches</SmartLink>
-          <ExternalLink href={repoBaseUrl}>
+          <ExternalLink href={repoTreeUrl}>
             <Icon name="github" />
             Repository
           </ExternalLink>

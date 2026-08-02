@@ -5,7 +5,7 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import {Icon} from './Icons';
 import {ExternalLink} from './Links';
-import {catalogSource, internalNav, repoBaseUrl} from './homepageData';
+import {catalogSource, internalNav, repoTreeUrl} from './homepageData';
 import styles from './TraderXHomepage.module.css';
 
 function TopBanner() {
@@ -37,7 +37,7 @@ function HeroNav() {
             {item.label}
           </Link>
         ))}
-        <ExternalLink href={repoBaseUrl} className={styles.navLink}>
+        <ExternalLink href={repoTreeUrl} className={styles.navLink}>
           GitHub
           <Icon name="external" />
         </ExternalLink>
@@ -101,7 +101,7 @@ export default function Hero() {
             <Link to={catalogSource.liveEnvironmentsDocs} className={styles.primaryAction}>
               Live Demos
             </Link>
-            <ExternalLink href={repoBaseUrl} className={styles.secondaryAction}>
+            <ExternalLink href={repoTreeUrl} className={styles.secondaryAction}>
               GitHub Repository
             </ExternalLink>
           </div>

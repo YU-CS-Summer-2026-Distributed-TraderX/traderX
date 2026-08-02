@@ -5,6 +5,12 @@ import liveEnvironments from '../../../../catalog/live-environments.json';
 // was pointing readers at finos/traderX, where our state branches and catalog files do not exist.
 export const repoBaseUrl = 'https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX';
 export const upstreamRepoUrl = 'https://github.com/finos/traderX';
+
+// Where a "go to the repository" link should land. The default branch is not the interesting one:
+// YU15 is the tip state, the only branch carrying every ancestor's spec pack, and the state this
+// site documents. repoBaseUrl stays the bare root because catalog and per-state links build their
+// own /blob/<ref>/ and /tree/<branch>/ paths from it — do not fold the branch into that constant.
+export const repoTreeUrl = `${repoBaseUrl}/tree/YU15-eod-risk-extract`;
 const trackLabels = {
   prelude: 'Prelude Track',
   baseline: 'Baseline Track',

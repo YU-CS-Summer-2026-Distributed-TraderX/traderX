@@ -40,6 +40,9 @@ const repoOwner = 'YU-CS-Summer-2026-Distributed-TraderX';
 // added here. Change this if the site starts deploying from a different branch.
 const repoBranch = process.env.DOCS_BRANCH || 'YU15-eod-risk-extract';
 const repoUrl = `https://github.com/${repoOwner}/${projectSlug}`;
+// Where "go to the repository" should land. repoUrl stays the bare root because the editUrl below
+// builds its own /edit/<branch>/ paths from it; only the human-facing links get the branch.
+const repoTreeUrl = `${repoUrl}/tree/${repoBranch}`;
 
 // Remark plugin to transform relative links to GitHub URLs
 const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
@@ -100,14 +103,16 @@ module.exports = {
         {
           // Was https://github.com/finos/ — the FINOS org root, which is neither this fork nor even
           // the upstream repo. Points at our repository now; upstream is credited in the footer.
-          href: repoUrl,
+          href: repoTreeUrl,
           label: 'GitHub',
           position: 'right',
         }
       ],
     },
     footer: {
-      copyright: `Copyright © ${new Date().getFullYear()} ${copyrightOwner}`,
+      // Attribution without a copyright notice: the line exists to say whose work this is, and a
+      // rendered "Copyright © <year>" adds a legal assertion nobody asked this footer to make.
+      copyright: copyrightOwner,
       logo: {
         alt: 'Yeshiva University',
         // Navy-ground crest rather than the white-ground one: the footer is dark, and a white plate
@@ -161,7 +166,7 @@ module.exports = {
             },
             {
               label: 'This deployment on GitHub',
-              to: repoUrl,
+              to: repoTreeUrl,
             }
           ]
         },
