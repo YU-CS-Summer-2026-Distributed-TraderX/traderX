@@ -91,11 +91,21 @@ digest_consensus() {
   local b0 b1 b2 i
   for i in $(seq 1 "${DIGEST_TIMEOUT_S}"); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
-    # Non-empty is part of agreement. Three EMPTY reads compare equal, so a metrics endpoint that
-    # is not answering yet — exactly the case right after roll_to restarts every member — used to
-    # satisfy this and print "book agreed at []". That is a vacuous consensus check: it reports
-    # agreement strongest at the moment it knows least.
-    if [[ -n "${b0}" && "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
+    # Agreement means three members agreed on A DIGEST, not on a non-answer. Reads that returned
+    # nothing compare equal, so a metrics endpoint that is not answering yet — exactly the case
+    # right after roll_to restarts every member — used to satisfy this and print "book agreed at
+    # []". That is a vacuous consensus check: it reports agreement strongest at the moment it
+    # knows least.
+    #
+    # `-n` did NOT close that, which is why this is a shape test and not an emptiness test. On no
+    # input at all, book()'s `END {print d, h}` still fires with both variables unset and prints a
+    # single SPACE (verified: `printf '' | awk ... | od -c` -> ' ' '\n'). `-n " "` is true and
+    # " " == " " == " ", so three unreachable members would sail straight through the guard added
+    # to stop exactly this and print "book agreed at [ ]" — one character away from the bug it
+    # replaced. Established from the helper's behaviour on empty input, not from a captured run;
+    # the guard is insufficient either way. Require two integers (the hash is routinely negative)
+    # and the no-data value cannot spell agreement in any form.
+    if [[ "${b0}" =~ ^[0-9]+\ -?[0-9]+$ && "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
       echo "${b0}"
       return 0
     fi
@@ -143,8 +153,67 @@ restore_image() {
 }
 trap restore_image EXIT
 
+# A SNAPSHOT BARRIER IS PART OF THE ROLLING PROCEDURE, not a convenience.
+#
+# Recovery is "latest snapshot + replay the log tail". A rolling restart takes the members down one
+# at a time, so the FIRST member back replays the un-snapshotted tail on the NEW build while the
+# other two still hold the OLD build's result of the very same events. When those events are
+# semantics-sensitive -- and steps 2-3 deliberately put a self-cross in that tail, the one event
+# whose meaning this bundle changes -- the members diverge the moment the first one comes back. The
+# 60 s periodic snapshot then fires mid-roll, each member writes its OWN state at the shared log
+# position, and every later restart restores that member's own divergent snapshot. The divergence
+# stops being transient and becomes the epoch.
+#
+# Measured 2026-08-02 on the kind rig, and this is the whole failure: after roll_to(yu15-stp) the
+# members sat at applied=336 with m2 (highest ordinal -> restarted first, replayed the tail under
+# STP) reporting trades=6 open=1 while m0/m1 reported trades=8 open=0. Exactly the wash trade, two
+# ways. It survived the restore roll back to yu15-pre, because by then each member was loading its
+# own snapshot. Waiting longer could never fix it: this is divergence, not lag.
+#
+# So take the barrier BEFORE the roll. Every member then recovers from a snapshot authored under
+# the OLD semantics that already contains the self-cross's effect, and replays only the idle tail
+# after it -- which has no semantics-sensitive event in it. Nothing re-adjudicates.
+#
+# NOTE THE FINDING, which is about the system and not about this script: rolling the deterministic
+# core with PVCs intact is only safe across a snapshot barrier. Without one it diverges the cluster
+# permanently, silently, and with all three members reporting Ready.
+snap_count() { # snap_count <ordinal> -> local snapshots taken by that member since it started
+  ${K} exec "order-matcher-cluster-$1" -- \
+    sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+    | awk '/^traderx_cluster_snapshots/ {print $2}'
+}
+# Deliberately waits for the members' OWN periodic trigger (CLUSTER_SNAPSHOT_INTERVAL_MS, 60 s)
+# rather than toggling the control counter from outside: the leader already runs that trigger, so
+# there is nothing to detect, nothing to race it with, and nothing new that can fail. A snapshot
+# counted AFTER the baseline is read is necessarily at a log position at or past everything this
+# proof has submitted, which is the only property the barrier needs.
+SNAPSHOT_BARRIER_TIMEOUT_S="${SNAPSHOT_BARRIER_TIMEOUT_S:-150}"
+snapshot_barrier() {
+  local b0 b1 b2 i
+  b0="$(snap_count 0)"; b1="$(snap_count 1)"; b2="$(snap_count 2)"
+  [[ -n "${b0}" && -n "${b1}" && -n "${b2}" ]] \
+    || fail "cannot read traderx_cluster_snapshots from all three members ([${b0}] [${b1}] [${b2}]) — refusing to roll without a barrier"
+  echo "  waiting for a snapshot barrier on all three members (from [${b0} ${b1} ${b2}])"
+  for i in $(seq 1 "${SNAPSHOT_BARRIER_TIMEOUT_S}"); do
+    if [[ "$(snap_count 0)" -gt "${b0}" && "$(snap_count 1)" -gt "${b1}" && "$(snap_count 2)" -gt "${b2}" ]]; then
+      echo "  snapshot barrier taken; the tail this roll replays holds no pre-change event"
+      return 0
+    fi
+    sleep 1
+  done
+  fail "no snapshot barrier within ${SNAPSHOT_BARRIER_TIMEOUT_S}s (still [$(snap_count 0) $(snap_count 1) $(snap_count 2)]):
+  rolling the deterministic core without one diverges the members permanently, so this proof stops
+  rather than produce that divergence and report it as a book disagreement."
+}
+
 roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is unchanged
   local image="$1"
+  # Only when the image actually changes. `set image` to the value already there starts no rollout,
+  # so no member restarts, so there is no tail for anyone to replay under new semantics -- and the
+  # 60 s wait would be pure cost. Step 1 rolls to the image the runner already minted the epoch on
+  # and hits exactly this case.
+  [[ "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')" == "${image}" ]] \
+    || snapshot_barrier
   ${K} set image statefulset/order-matcher-cluster \
     "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   ${K} set image deployment/cluster-gateway \
@@ -249,7 +318,10 @@ await_trades_agree() {
   local t0 t1 t2 tries=0
   while [[ ${tries} -lt 120 ]]; do
     t0="$(trade_count 0)"; t1="$(trade_count 1)"; t2="$(trade_count 2)"
-    if [[ "${t0}" == "${t1}" && "${t1}" == "${t2}" ]]; then
+    # Numeric for the same reason the digest is shape-tested: an unreadable counter yields "" on
+    # all three, "" == "" == "" is agreement, and every later `-eq` against that baseline evaluates
+    # "" as 0 — so "the members did not book a self-trade" would be asserted from no data at all.
+    if [[ "${t0}" =~ ^[0-9]+$ && "${t0}" == "${t1}" && "${t1}" == "${t2}" ]]; then
       T0_0="${t0}"; T0_1="${t1}"; T0_2="${t2}"
       return 0
     fi
@@ -301,7 +373,7 @@ roll_to "${IMAGE_FIX}"
 STP0_0="$(stp_count 0)"; STP0_1="$(stp_count 1)"; STP0_2="$(stp_count 2)"
 
 step "5. the SAME self-cross now books nothing and cancels the resting order instead"
-T0_0="$(trade_count 0)"; T0_1="$(trade_count 1)"; T0_2="$(trade_count 2)"
+await_trades_agree   # a consistent cut, not three separate snapshots — see step 2
 BEFORE="$(digest_consensus)"
 SELF_SELL2="$(order "${SELF}" Sell)"; echo "  ${SELF} sell -> ${SELF_SELL2}"
 MID="$(digest_consensus)"; echo "  book with the sell resting: ${MID}"
@@ -325,7 +397,7 @@ done
 echo "  traderx_stp_cancels advanced on all three members"
 
 step "6. falsification arm: the identical economics from TWO accounts still fill"
-T0_0="$(trade_count 0)"; T0_1="$(trade_count 1)"; T0_2="$(trade_count 2)"
+await_trades_agree   # a consistent cut, not three separate snapshots — see step 2
 order "${OTHER}" Sell >/dev/null
 order "${SELF}" Buy >/dev/null
 sleep 5
@@ -361,7 +433,7 @@ echo "  book: ${BEFORE} -> ${AFTER}"
 [[ "${BEFORE}" == "${AFTER}" ]] \
   || fail "a REJECTED replace changed the book — the client's order was not left intact"
 # ...and it is still tradeable at the price the accepted replace moved it to.
-T0_0="$(trade_count 0)"; T0_1="$(trade_count 1)"; T0_2="$(trade_count 2)"
+await_trades_agree   # a consistent cut, not three separate snapshots — see step 2
 order "${SELF}" Buy "$(python3 -c "print(${PRICE} + 3)")" >/dev/null
 sleep 5
 echo "  engine trades: [${T0_0} ${T0_1} ${T0_2}] -> [$(trades_all)]   (the survived order fills)"

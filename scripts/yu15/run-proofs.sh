@@ -61,12 +61,27 @@ fi
 FORWARDS=(
   "svc/order-matcher 18110:18110"
   "deploy/trade-processor 18091:18091"
+  # The yu04 pair reads reference-data's control snapshot directly and SKIPs without it. Both
+  # scripts document `kubectl port-forward svc/reference-data 18085:18085` as a manual
+  # prerequisite, so the suite's result depended on whether a human happened to be holding one in
+  # another terminal -- and both proofs reported "capability absent" when nobody was, which reads
+  # as a statement about the tier rather than about a missing tunnel. The runner owns its forwards;
+  # this is one of them.
+  "svc/reference-data 18085:18085"
   "svc/tempo 3200:3200"
   "svc/loki 3100:3100"
   "svc/grafana 3000:3000"
 )
 
-kill_forwards() { pkill -f "port-forward.*${NS}" 2>/dev/null; sleep 1; }
+# Match kubectl+port-forward in EITHER order. `port-forward.*${NS}` matched nothing here and never
+# had: every forward this runner starts is `kubectl --context kind-traderx-... -n traderx
+# port-forward svc/...`, so "traderx" appears BEFORE "port-forward" and the pattern could not hit.
+# (It did match the manual form the yu04 proofs document, where `-n traderx` comes after -- so it
+# killed the forwards nobody asked it to and none of its own.) The kill half of "forwards are
+# re-established before every proof" was therefore vacuous: nothing was ever torn down, the first
+# forward to bind a port kept it for the whole suite, and a stale tunnel to a dead gateway pod
+# would have survived every re-establish while the replacements silently lost the bind.
+kill_forwards() { pkill -f "kubectl.*port-forward" 2>/dev/null; sleep 1; }
 trap kill_forwards EXIT
 
 start_forwards() {
@@ -75,6 +90,11 @@ start_forwards() {
   for pf in "${FORWARDS[@]}"; do
     # shellcheck disable=SC2086
     ${K} port-forward ${pf} >/dev/null 2>&1 &
+    # Forget the job, or bash reports each one when kill_forwards reaps it -- six
+    # "Terminated: 15" lines per proof, ~114 across a full suite, all of them noise in the log a
+    # human reads to decide what passed. Invisible until kill_forwards actually started killing
+    # things; the old pattern never matched, so nothing ever died to be reported.
+    disown 2>/dev/null || true
   done
   # Verify EVERY forward, not just the gateway. Waiting only on 18110 is what made a suite run
   # fail four proofs that pass individually: the OTel pair needs Tempo on 3200 (which answers 503
@@ -86,6 +106,7 @@ start_forwards() {
     ready=1
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || ready=0
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || ready=0
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18085/stocks/control-snapshot 2>/dev/null)" == "200" ]] || ready=0
     # Only when the observability stack is expected to be up. stp deliberately scales it to zero
     # for a quiet box, and waiting on a service we just switched off is an unsatisfiable condition
     # -- it aborted the whole stp wrap with "forwards never all became reachable".
@@ -281,11 +302,16 @@ for p in "${PROOFS[@]}"; do
     #
     # This proof rolls the members onto historical builds (yu15-pre, then yu15-stp) with PVCs
     # intact -- that epoch continuity is the point. So whatever log exists when it starts gets
-    # replayed by a 64-capacity engine. Minting the epoch with the CURRENT 1024-capacity build and
-    # then rolling back is the mixed-version hazard in a new costume: observed twice as two members
-    # stuck applying nothing while the third held state ([0 0] [0 0] [1 <hash>], applied m0= m1=
-    # m2=seq616). Bringing the cluster up ON yu15-pre first means the log is authored by the same
-    # engine that will replay it, and the proof's own step-1 roll_to(pre) becomes a no-op.
+    # replayed by a 64-capacity engine, and minting it here means the log is authored by the same
+    # engine that will replay it. The proof's own step-1 roll_to(pre) also becomes a no-op, which
+    # is worth having on its own.
+    #
+    # WHAT THIS DOES NOT FIX, corrected 2026-08-02. This block used to name the authoring build as
+    # the cause of [0 0] [0 0] [1 <hash>] -- two members holding one book and the third another.
+    # It is not: that signature reproduced with the epoch minted right here on yu15-pre, three
+    # times. The real cause is a missing SNAPSHOT BARRIER before the roll, and the fix lives in
+    # roll_to() in scripts/proofs/yu13-stp-and-replace.sh -- read the comment there before
+    # attributing that shape to anything on this line.
     #
     # Seeding after this registers ~20 tickers, comfortably inside the historical 64 limit.
     # Quiet the box first. This proof rolls all three members TWICE and needs consensus to re-form
