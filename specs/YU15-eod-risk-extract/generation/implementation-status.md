@@ -162,3 +162,62 @@ before that proof can run. Not built here: it is brief 04's scope and needs the 
 
 The kind path (`generation/kubernetes/cluster/`) is unaffected by the YU13 GKE campaign and was
 correctly left alone.
+
+## Journal-sourced reconciliation on the cluster tier (2026-08-02)
+
+YU05's reconciliation and regulatory-audit contract now has a source on this tier. It did not
+before: `TradeNatsPublisher` drains its queue and keeps only a count, and the gateway's egress acks
+carry a kind byte and a sequence rather than trade detail, so nothing here could answer
+`/recon/trades/blotter`, `/recon/full-history/*` or `/regulatory/report`. Both proofs were honest
+stated skips for exactly that reason, and `POST /recon/orphan-sweep` 500'd as a consequence
+(`IOException: full-history reindex trigger failed: HTTP 404`), never as a fault of its own.
+
+**The source is the Aeron Archive's cluster-log recording, replayed on demand** into a shadow
+instance of `MatchingEngineClusteredService` (`ClusterRecon`). The members serve the routes because
+that is where the log is; the gateway forwards to the first member that answers.
+
+**Why not a retained trade list in the clustered service.** It is wrong, not merely expensive.
+`ReconciliationService.runOrphanSweep()` flags every local trade id ABSENT from the full-history
+index as `ORPHAN_IN_PROJECTION`, so a bounded list turns every trade older than its bound into a
+FALSE orphan, while an unbounded one is new replicated state that every snapshot pays for forever.
+No bound is both safe and correct. It could not serve `/regulatory/report` at all — that reports
+order accept/reject/cancel/fill events over an input-sequence range, which no trade list holds.
+This is also what the Spring tier already concluded: its live `TradeBlotter` is explicitly outside
+the snapshot, and `LmaxEngine.reindexFullHistory()` replays the whole journal into a shadow engine.
+
+**Snapshot impact: none. `SNAPSHOT_FORMAT` stays 3 and no `T_*` record was added.** Nothing here is
+replicated state. The live forward blotter and the full-history index have exactly the status of the
+NATS bridges and the kdb tap already in the same drain loop: read-side projections of committed
+output, rebuilt by replay. The one core edit is a nullable output sink, null in production unless
+`RECON_BLOTTER_CAPACITY` is set, which exists so the replay drives the REAL apply path rather than a
+reimplementation that could drift from it.
+
+**Retention bound = the archive's own log retention.** The snapshot trigger does not purge log
+segments, so "full history" is genuinely full for the epoch; the lever is an explicit ops purge.
+The index and the report are additionally capped (`RECON_FULL_HISTORY_MAX`,
+`REGULATORY_MAX_RECORDS`) and REFUSE past the cap rather than truncate — a truncated index
+manufactures orphans, and a member is a consensus participant that an admin query must not OOM.
+
+**Proven on the kind cluster rig, 2026-08-02** (fresh epoch, `traderx/cluster-node:yu15`):
+
+- 1337 committed log messages replayed from position 0 reproduce the live engine's trade population
+  exactly (indexed 6, live counter 6..6), on all three members independently.
+- `matched=6`, `field_mismatch=0`, `missing_in_projection=0` from the scheduled sweep — so
+  `RECON_POLL_INTERVAL_MS` went back to YU05's own 10s default, having been backed off to daily
+  only because the endpoint did not exist.
+- All 6 projection rows have journal provenance, AND a planted projection-only row is named as
+  `ORPHAN_IN_PROJECTION` — without that positive control, `orphanCount=0` is indistinguishable from
+  a check that does nothing.
+- The regulatory export is byte-identical across calls over a CLOSED range, and carries 12
+  order-lifecycle records the `trades` table has no column for. The range must be closed: with the
+  control feed and price publisher committing, "toSeq = to the end" answers over a longer log on
+  the second call and reports a MISMATCH about a system that is behaving as specified.
+- Snapshot round-trip and member re-identity: with the tap live, snapshots continue and all three
+  members hold identical applied / trades / orderHash / positionHash / nextOrderRef; a member
+  restarted with its PVC intact (snapshot + tail recovery) rejoins byte-identical and still replays
+  its own archive to the same 1337 messages / 6 trades.
+
+Trade ids on this tier are `<tradeSeq>-<B|S>` (what `TradeNatsPublisher` publishes and
+trade-processor keys on), NOT the Spring tier's `trd-09b-<seq>`; order ids are
+`<CLUSTER_EPOCH>-<orderRef>`. Minting the Spring scheme here would orphan every projection row —
+pinned by `ClusterReconTapTest`.

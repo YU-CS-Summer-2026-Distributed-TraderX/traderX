@@ -79,6 +79,27 @@ spec:
               value: "http://otel-collector:4318"
             - name: OTEL_SAMPLE_MASK
               value: "0"
+            # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). The forward window
+            # a reconciliation sweep classifies against the projection; the full-history index and
+            # the audit export are built by replaying the Aeron Archive's log on demand and are not
+            # retained. Unset leaves every /recon and /regulatory route 503 and the apply path
+            # byte-for-byte what it was — the capability is opt-in, not a silent default.
+            - name: RECON_BLOTTER_CAPACITY
+              value: "500000"
+            # Refuse-rather-than-truncate ceilings. A truncated full-history index reports FALSE
+            # orphans, so exceeding this is an error, not a shorter answer. Sized for a 512Mi heap
+            # that is also running a consensus member: ~200k trades is ~40MB of shadow index.
+            - name: RECON_FULL_HISTORY_MAX
+              value: "200000"
+            - name: REGULATORY_MAX_RECORDS
+              value: "200000"
+            # These routes span every account, so the member validates the admin claim itself
+            # (ADR-025) rather than trusting the gateway that forwarded the request.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

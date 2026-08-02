@@ -46,6 +46,14 @@ public final class ClusterNodeMain {
         awaitDns(hostnames);
 
         final MatchingEngineClusteredService service = new MatchingEngineClusteredService();
+        // YU05 recon/regulatory on this tier (see ClusterRecon). Wired BEFORE the container
+        // launches so the live forward window also catches the recovery replay of the log tail,
+        // which is how a restarted member rebuilds it. Unset capacity leaves the tap null and the
+        // apply path byte-for-byte what it was.
+        final ClusterRecon recon = reconOrNull(baseDir, aeronDir);
+        if (recon != null) {
+            service.outputSink(out -> recon.onLiveOutput(out, service.tickerFor(out.securityId)));
+        }
         final ClusterNodeConfig.Contexts contexts =
             ClusterNodeConfig.contexts(memberId, hostnames, portBase, aeronDir, baseDir, service, false);
         contexts.consensusModule().terminationHook(() -> {
@@ -56,7 +64,7 @@ public final class ClusterNodeMain {
         final ClusteredMediaDriver driver = ClusteredMediaDriver.launch(
             contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
         final ClusteredServiceContainer container = ClusteredServiceContainer.launch(contexts.container());
-        final HttpServer health = healthServer(healthPort, memberId, hostnames, service);
+        final HttpServer health = healthServer(healthPort, memberId, hostnames, service, recon);
         startSnapshotTrigger(aeronDir, service);
         startElectionPhaseWatcher(aeronDir);
 
@@ -180,9 +188,24 @@ public final class ClusterNodeMain {
         return Integer.parseInt(hostname.substring(dash + 1));
     }
 
+    /** YU05 recon/regulatory surface, or null when {@code RECON_BLOTTER_CAPACITY} is 0/unset — in
+     *  which case the member behaves exactly as it did before this existed. */
+    private static ClusterRecon reconOrNull(final File baseDir, final String aeronDir) {
+        final int capacity = Integer.parseInt(env("RECON_BLOTTER_CAPACITY", "0"));
+        if (capacity <= 0) {
+            return null;
+        }
+        return new ClusterRecon(baseDir, aeronDir,
+            env("CLUSTER_EPOCH", "1"), // same default OrderNatsPublisher uses, so ids agree
+            capacity,
+            Integer.parseInt(env("RECON_FULL_HISTORY_MAX", "200000")),
+            Integer.parseInt(env("REGULATORY_MAX_RECORDS", "200000")));
+    }
+
     private static HttpServer healthServer(final int port, final int memberId,
                                            final List<String> hostnames,
-                                           final MatchingEngineClusteredService service) throws Exception {
+                                           final MatchingEngineClusteredService service,
+                                           final ClusterRecon recon) throws Exception {
         final HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         // Dedicated thread pool: without it the stdlib server runs every handler on ONE dispatcher
         // thread, so a slow /ready (synchronous peer HTTP below) head-of-line-blocks the liveness
@@ -318,8 +341,111 @@ public final class ClusterNodeMain {
             }
             respond(exchange, 200, lat.dump());
         });
+        reconRoutes(server, service, recon);
         server.start();
         return server;
+    }
+
+    /**
+     * YU05's reconciliation + regulatory contract (FR-PTC04/05/10/20/21) on the cluster tier. Every
+     * route here spans all accounts, so every one requires an {@code admin} JWT (ADR-025) — the
+     * same rule the Spring tier's {@code ReconController}/{@code RegulatoryReportController}
+     * enforce, and enforced HERE rather than at the gateway because this is where the data is.
+     *
+     * <p>503 rather than a plausible empty answer when the capability is off: a recon endpoint that
+     * returns {@code []} because it was never enabled is indistinguishable from a projection with
+     * nothing wrong in it, which is exactly the vacuous pass these proofs exist to refuse.
+     */
+    private static void reconRoutes(final HttpServer server,
+                                    final MatchingEngineClusteredService service,
+                                    final ClusterRecon recon) {
+        final com.fasterxml.jackson.databind.ObjectMapper json =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+        final finos.traderx.ordermatcher.auth.JwtAuthenticator jwt =
+            new finos.traderx.ordermatcher.auth.JwtAuthenticator(
+                env("AUTH_JWT_SECRET", "dev-jwt-shared-secret"));
+        final int pageSize = Integer.parseInt(env("RECON_PAGE_SIZE", "1000"));
+
+        final java.util.function.BiFunction<com.sun.net.httpserver.HttpExchange,
+            java.util.concurrent.Callable<Object>, Void> guarded = (exchange, body) -> {
+                try {
+                    if (recon == null) {
+                        respond(exchange, 503, "{\"error\":\"recon disabled; set RECON_BLOTTER_CAPACITY\"}");
+                        return null;
+                    }
+                    final java.util.Optional<finos.traderx.ordermatcher.auth.JwtPrincipal> principal =
+                        jwt.validate(exchange.getRequestHeaders().getFirst("Authorization"));
+                    if (principal.isEmpty() || !principal.get().admin()) {
+                        respond(exchange, 401, "{\"error\":\"admin JWT required\"}");
+                        return null;
+                    }
+                    respond(exchange, 200, json.writeValueAsString(body.call()));
+                } catch (final Exception ex) {
+                    try {
+                        respond(exchange, 500, "{\"error\":"
+                            + json.writeValueAsString(String.valueOf(ex.getMessage())) + "}");
+                    } catch (final Exception ignore) {
+                        // client went away
+                    }
+                }
+                return null;
+            };
+
+        server.createContext("/recon/trades/blotter", exchange ->
+            guarded.apply(exchange, () -> recon.liveSince(longParam(exchange, "sinceSeq", 0), pageSize)));
+
+        server.createContext("/recon/full-history/reindex", exchange ->
+            guarded.apply(exchange, () -> {
+                // Bracket the replay with the live trade counter. The replay's own index is a
+                // fixed prefix of a log that keeps moving, so "the replay reproduced the live
+                // engine" is only assertable as an interval — and stating it as one is what lets a
+                // proof fail when the replay is wrong instead of hand-waving a near-miss.
+                final long before = service.engine().tradeCounter();
+                final ClusterRecon.ReindexResult result = recon.reindexFullHistory();
+                final long after = service.engine().tradeCounter();
+                return java.util.Map.of(
+                    "indexedTrades", result.indexedTrades(),
+                    "evictions", result.evictions(),
+                    "replayedMessages", result.replayedMessages(),
+                    "replayedAppliedSeq", result.replayedAppliedSeq(),
+                    "shadowTradeCounter", result.shadowTradeCounter(),
+                    "liveTradeCounterBefore", before,
+                    "liveTradeCounterAfter", after);
+            }));
+
+        server.createContext("/recon/full-history/trades", exchange ->
+            guarded.apply(exchange, () -> {
+                final java.util.List<?> page =
+                    recon.fullHistorySince(longParam(exchange, "sinceSeq", 0), pageSize);
+                if (page == null) {
+                    throw new IllegalStateException(
+                        "no full-history index yet; POST /recon/full-history/reindex first");
+                }
+                return page;
+            }));
+
+        server.createContext("/regulatory/report", exchange ->
+            guarded.apply(exchange, () -> recon.regulatoryReport(
+                longParam(exchange, "fromSeq", 0), longParam(exchange, "toSeq", 0))));
+    }
+
+    private static long longParam(final com.sun.net.httpserver.HttpExchange exchange,
+                                  final String name, final long fallback) {
+        final String query = exchange.getRequestURI().getQuery();
+        if (query == null) {
+            return fallback;
+        }
+        for (final String pair : query.split("&")) {
+            final int eq = pair.indexOf('=');
+            if (eq > 0 && pair.substring(0, eq).equals(name)) {
+                try {
+                    return Long.parseLong(pair.substring(eq + 1));
+                } catch (final NumberFormatException ex) {
+                    return fallback;
+                }
+            }
+        }
+        return fallback;
     }
 
     /** Peer's applied sequence via its /health, or -1 if unreachable/unparsable (ignored). */

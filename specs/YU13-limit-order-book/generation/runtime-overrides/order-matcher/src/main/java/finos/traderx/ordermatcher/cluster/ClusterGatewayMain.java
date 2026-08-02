@@ -232,6 +232,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/resolve", this::handleResolve);
         // Prefix context: /risk/control/{policy,restriction,security,account} all land here.
         server.createContext("/risk/control", this::handleRiskControl);
+        // YU05 recon + regulatory audit (FR-PTC04/05/10/20/21). The gateway is stateless-forward and
+        // holds no history: egress acks carry a kind byte and a sequence, not trade detail, so it
+        // cannot answer these from anything it has seen. The data is the committed log, which lives
+        // on the MEMBERS — so this is a pass-through to a member's own surface, not a local answer.
+        // Deliberately a plain HTTP forward that references nothing new: this file is YU13's layer,
+        // and a reference here to a YU15-layer class would not compile on the YU13/YU14 branches.
+        server.createContext("/recon", this::handleMemberProxy);
+        server.createContext("/regulatory", this::handleMemberProxy);
         server.createContext("/ready", exchange ->
             respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
         server.createContext("/health", exchange ->
@@ -1670,6 +1678,61 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             Thread.yield();
         }
         return false;
+    }
+
+    /**
+     * Forward a {@code /recon/*} or {@code /regulatory/*} request to a member's health-port surface
+     * and return its answer verbatim, Authorization header included — the member enforces the admin
+     * claim, because that is where the trade detail is.
+     *
+     * <p>Members are tried in id order and the FIRST ONE REACHED answers. Any member can: all three
+     * hold the same committed log, and the full-history index is a pure function of it. The one
+     * asymmetry is that the index is cached per member, so a member that dies between a client's
+     * reindex and its paging leaves the next member answering 503 "reindex first" — an honest
+     * error the caller already handles, and better than pretending the pages are empty.
+     *
+     * <p>A connection failure to every member is 503, never an empty 200: "no member answered" and
+     * "the log holds nothing" must not look alike to a reconciliation caller.
+     */
+    private void handleMemberProxy(final HttpExchange exchange) {
+        final int healthPort = Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT", "8080"));
+        final String query = exchange.getRequestURI().getRawQuery();
+        final String suffix = exchange.getRequestURI().getRawPath() + (query == null ? "" : "?" + query);
+        final String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+        final StringBuilder tried = new StringBuilder();
+        for (final String entry : endpointEntries) {
+            final int eq = entry.indexOf('=');
+            final String hostPort = eq < 0 ? entry : entry.substring(eq + 1);
+            final int colon = hostPort.lastIndexOf(':');
+            final String host = colon < 0 ? hostPort : hostPort.substring(0, colon);
+            try {
+                final HttpRequest.Builder builder = HttpRequest
+                    .newBuilder(URI.create("http://" + host + ":" + healthPort + suffix))
+                    // A full-log reindex is expensive BY DESIGN (it is the Spring tier's own
+                    // contract), so the forward must outlast it; the caller's own timeout is the
+                    // real bound.
+                    .timeout(Duration.ofMinutes(10));
+                if (authorization != null) {
+                    builder.header("Authorization", authorization);
+                }
+                if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    builder.POST(HttpRequest.BodyPublishers.noBody());
+                } else {
+                    builder.GET();
+                }
+                final HttpResponse<String> response =
+                    readModelClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+                respond(exchange, response.statusCode(), response.body());
+                return;
+            } catch (final InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (final Exception ex) {
+                tried.append(tried.length() == 0 ? "" : ", ").append(host).append(": ").append(ex);
+            }
+        }
+        respond(exchange, 503, "{\"error\":\"no cluster member answered " + suffix + "\",\"tried\":\""
+            + tried.toString().replace('"', '\'') + "\"}");
     }
 
     private static void respond(final HttpExchange exchange, final int code, final String body) {

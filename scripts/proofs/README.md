@@ -40,8 +40,14 @@ _All four source [`yu05-common.sh`](yu05-common.sh) (shared setup: trade-process
 | Script | What it proves | CI counterpart |
 |---|---|---|
 | [`yu05-auth-entitlements.sh`](yu05-auth-entitlements.sh) | Real HS256 JWT auth + entitlement codes (cross-account→401, foreign-scope→403, no-bearer→401), replacing the YU02–YU04 open surface. | `JwtAuthenticatorTest`, `EntitlementGateTest` |
-| [`yu05-recon.sh`](yu05-recon.sh) | Reconciliation is the CQRS integrity check: journal↔projection classified matched / missing / mismatch, plus the full-history orphan sweep. | `ReconciliationServiceTest` |
-| [`yu05-regulatory-reproducible.sh`](yu05-regulatory-reproducible.sh) | The regulatory export is a **pure function of the journal** — the same query answered byte-reproducibly from the source of truth. | `RegulatoryReportDeterminismTest` |
+| [`yu05-recon.sh`](yu05-recon.sh) | Reconciliation is the CQRS integrity check: journal↔projection classified matched / missing / mismatch, plus the full-history orphan sweep — and a **planted projection-only row proves the sweep can actually fail**. | `ReconciliationServiceTest`, `ClusterReconTapTest` |
+| [`yu05-regulatory-reproducible.sh`](yu05-regulatory-reproducible.sh) | The regulatory export is a **pure function of the journal** — the same query answered byte-reproducibly from the source of truth, over a **closed** sequence range. | `RegulatoryReportDeterminismTest` |
+
+_On the cluster tier the journal is the Aeron Cluster log: the members serve `/recon/*` and
+`/regulatory/report` by replaying their own archive through a shadow engine ([`ClusterRecon`](../../specs/YU15-eod-risk-extract/generation/runtime-overrides/order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/ClusterRecon.java)),
+and the gateway forwards to a member because it holds no history itself. **The source is the whole
+point** — serving these trades from the SQL projection compares SQL against itself and passes
+vacuously with `matched=0`, which is why both scripts assert against the log side at every step._
 | [`yu05-settlement.sh`](yu05-settlement.sh) | The real settlement lifecycle: a booked trade walks Processing → Settled with a settlement date. | `SettlementServiceTest` |
 
 ### EOD price production (YU06)

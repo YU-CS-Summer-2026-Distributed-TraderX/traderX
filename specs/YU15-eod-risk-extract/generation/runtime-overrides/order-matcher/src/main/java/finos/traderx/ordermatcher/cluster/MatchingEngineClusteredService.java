@@ -213,6 +213,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private KdbTapWriter kdbTap;
     // Leader-side position-cut → NATS bridge (YU15). Gated by RISK_EXTRACT_NATS_URL; null until set.
     private RiskExtractCutPublisher extractBridge;
+    // Read-side output tap (YU05 recon/regulatory on this tier — see ClusterRecon). Null in every
+    // production member unless ClusterNodeMain wires the recon blotter, and null in EVERY shadow
+    // but the one replaying the log, so the apply path's state, outputs and egress bytes are
+    // unchanged. It exists so a full-log replay can drive the REAL apply path instead of a
+    // reimplementation of it: the orderRef generator, applied-sequence, symbol-id assignment and
+    // cluster-time conversion are then the same code on both, and cannot drift apart.
+    private volatile java.util.function.Consumer<OutputEvent> outputSink;
 
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
@@ -467,9 +474,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             tickerById, risk::contractMultiplier);
         lastExtractCutSeq = appliedSeq;
         lastExtractCutSha = RiskExtractCut.sha256(cut);
-        // Stamped on every member so a cross-member diff needs nothing but the pod logs.
-        System.out.println("RISK-EXTRACT-CUT seq=" + appliedSeq + " rows=" + positions.size()
-            + " sha256=" + lastExtractCutSha + " role=" + role);
+        // Stamped on every member so a cross-member diff needs nothing but the pod logs. Only a
+        // real member stamps it: a ClusterRecon shadow replaying the whole log would otherwise
+        // re-emit every historical marker line into the pod log the proofs grep, on every reindex.
+        if (cluster != null) {
+            System.out.println("RISK-EXTRACT-CUT seq=" + appliedSeq + " rows=" + positions.size()
+                + " sha256=" + lastExtractCutSha + " role=" + role);
+        }
         if (role == Cluster.Role.LEADER && extractBridge != null) {
             extractBridge.offer(cut);
         }
@@ -481,6 +492,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(22, (byte) 0);
         ackBuffer.putByte(23, (byte) 0);
         offerEgress(session);
+    }
+
+    /** Read-side output tap; see {@link #outputSink}. Package-private: only {@code ClusterNodeMain}
+     *  (live blotter) and {@code ClusterRecon} (shadow replay) wire one. */
+    void outputSink(final java.util.function.Consumer<OutputEvent> sink) {
+        this.outputSink = sink;
+    }
+
+    /** Committed ticker for a security id, or null if that id has never been registered. */
+    public String tickerFor(final int securityId) {
+        return securityId < 0 || securityId >= MAX_SECURITIES ? null : tickerById[securityId];
     }
 
     public int symbolIdFor(final String ticker) {
@@ -769,6 +791,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 && (OutputEvent.isOrderLifecycleKind(out.kind)
                     || out.kind == OutputEvent.KIND_ORDER_NOT_FOUND)) {
                 directAckKind = out.kind;
+            }
+            // Read-side tap (YU05 recon/regulatory). Handed the reusable ring slot, so a consumer
+            // copies what it needs synchronously. Placed before the leader-gated bridges on
+            // purpose: a shadow replay is never leader, and the recon window must see every
+            // committed output regardless of role.
+            final java.util.function.Consumer<OutputEvent> tap = outputSink;
+            if (tap != null) {
+                tap.accept(out);
             }
             // Leader-side trade bridge: every booked trade → NATS /trades → trade-processor → DB +
             // positions + UI. Leader-only so followers never duplicate; offer is non-blocking so the
