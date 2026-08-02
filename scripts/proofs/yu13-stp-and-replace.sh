@@ -91,7 +91,11 @@ digest_consensus() {
   local b0 b1 b2 i
   for i in $(seq 1 "${DIGEST_TIMEOUT_S}"); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
-    if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
+    # Non-empty is part of agreement. Three EMPTY reads compare equal, so a metrics endpoint that
+    # is not answering yet — exactly the case right after roll_to restarts every member — used to
+    # satisfy this and print "book agreed at []". That is a vacuous consensus check: it reports
+    # agreement strongest at the moment it knows least.
+    if [[ -n "${b0}" && "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
       echo "${b0}"
       return 0
     fi

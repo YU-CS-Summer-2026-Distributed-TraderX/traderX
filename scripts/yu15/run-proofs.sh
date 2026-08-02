@@ -107,6 +107,8 @@ start_forwards() {
 #
 # An engine build is the one variable no proof should inherit from the run before it.
 BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh.
+STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 
 # The only safe way to swap the engine build OR to recover a wedged rig: take the cluster down,
@@ -270,9 +272,20 @@ for p in "${PROOFS[@]}"; do
   # carry -- subscriber off, fresh epoch, so the log holds only the proof's own fixtures -- and the
   # feed is restored (env back on + gateway restart replays the stream) afterwards.
   if [[ "${p}" == yu13-stp-and-replace ]]; then
-    echo "[stp-prep] control feed off + fresh epoch (historical 64-capacity builds cannot replay a 510-security log)"
+    # Mint the epoch ON the pre-change image, not on the current one.
+    #
+    # This proof rolls the members onto historical builds (yu15-pre, then yu15-stp) with PVCs
+    # intact -- that epoch continuity is the point. So whatever log exists when it starts gets
+    # replayed by a 64-capacity engine. Minting the epoch with the CURRENT 1024-capacity build and
+    # then rolling back is the mixed-version hazard in a new costume: observed twice as two members
+    # stuck applying nothing while the third held state ([0 0] [0 0] [1 <hash>], applied m0= m1=
+    # m2=seq616). Bringing the cluster up ON yu15-pre first means the log is authored by the same
+    # engine that will replay it, and the proof's own step-1 roll_to(pre) becomes a no-op.
+    #
+    # Seeding after this registers ~20 tickers, comfortably inside the historical 64 limit.
+    echo "[stp-prep] control feed off + fresh epoch minted ON ${STP_IMAGE_PRE}"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
-    rebuild_fresh_epoch
+    rebuild_fresh_epoch "${STP_IMAGE_PRE}"
     # A fresh epoch needs a fresh projection — the engine's counters restart below the trade ids
     # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
     # path clears after its rebuilds; this wrap forgot to, and stp failed in-suite on exactly the
@@ -303,10 +316,16 @@ for p in "${PROOFS[@]}"; do
   esac
 
   if [[ "${STP_RESTORE_FEED:-0}" == "1" && "${p}" == yu13-stp-and-replace ]]; then
-    echo "[stp-prep] restoring the control feed (env on + gateway restart replays the stream)"
+    # Hand the rig back the way the rest of the suite expects it: the proof's own restore trap
+    # returns the image it FOUND, which after the prep above is the historical one. Rebuild the
+    # epoch on the baseline build before turning the feed back on, or the next 510-security replay
+    # lands on a 64-capacity engine.
+    echo "[stp-prep] restoring ${BASELINE_IMAGE} at a fresh epoch, then the control feed"
+    rebuild_fresh_epoch "${BASELINE_IMAGE}"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
     ${K} rollout restart deploy/cluster-gateway >/dev/null
     ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
+    start_forwards && FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
     STP_RESTORE_FEED=0
   fi
 done
