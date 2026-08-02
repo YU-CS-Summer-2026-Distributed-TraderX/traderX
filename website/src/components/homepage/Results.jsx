@@ -100,15 +100,15 @@ const Chevron = ({dir}) => (
 
 export default function Results() {
   const scroller = useRef(null);
-  const [overflow, setOverflow] = useState({left: false, right: false});
+  // Both arrows stay visible at both ends by design — an arrow that disappears at the end makes the
+  // control jump around under the cursor. They are hidden only when there is nothing to scroll at
+  // all, where they would be furniture rather than a control.
+  const [scrollable, setScrollable] = useState(false);
 
   const sync = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
-    // 1px slack: fractional layout widths mean scrollLeft rarely lands exactly on the end, and
-    // without it the trailing arrow stays enabled forever at the right-hand end.
-    const max = el.scrollWidth - el.clientWidth;
-    setOverflow({left: el.scrollLeft > 1, right: el.scrollLeft < max - 1});
+    setScrollable(el.scrollWidth - el.clientWidth > 1);
   }, []);
 
   useEffect(() => {
@@ -144,7 +144,18 @@ export default function Results() {
     const step = card
       ? card.getBoundingClientRect().width + parseFloat(getComputedStyle(el).columnGap || 0)
       : el.clientWidth * 0.8;
-    el.scrollBy({left: direction * step, behavior: 'smooth'});
+    const max = el.scrollWidth - el.clientWidth;
+    let target = el.scrollLeft + direction * step;
+
+    // Finish the run instead of stranding a sliver. On a desktop the track scrolls 368px against a
+    // 308px card step, so stepping blindly leaves 60px behind: the first click stops just short of
+    // the end and the second travels almost nothing, which reads as a dead click. Absorb a remainder
+    // of up to HALF a step; absorbing a full one made the last click on mobile jump 577px, nearly
+    // two screens, which is a worse problem than the one it solves.
+    if (direction > 0 && max - target < step / 2) target = max;
+    if (direction < 0 && target < step / 2) target = 0;
+
+    el.scrollTo({left: Math.max(0, Math.min(target, max)), behavior: 'smooth'});
   };
 
   return (
@@ -164,7 +175,7 @@ export default function Results() {
             type="button"
             className={`${styles.resultsArrow} ${styles.resultsArrowLeft}`}
             onClick={() => nudge(-1)}
-            hidden={!overflow.left}
+            hidden={!scrollable}
             aria-label="Show previous measurements">
             <Chevron dir="left" />
           </button>
@@ -188,7 +199,7 @@ export default function Results() {
             type="button"
             className={`${styles.resultsArrow} ${styles.resultsArrowRight}`}
             onClick={() => nudge(1)}
-            hidden={!overflow.right}
+            hidden={!scrollable}
             aria-label="Show more measurements">
             <Chevron dir="right" />
           </button>

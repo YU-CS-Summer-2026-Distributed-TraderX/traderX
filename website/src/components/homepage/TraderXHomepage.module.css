@@ -1260,7 +1260,10 @@
   margin: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
-  scroll-snap-type: x proximity;
+  /* NO scroll snapping. It fought the arrows: the track scrolls 368px total against a 308px card
+     step, so a scrollTo() aimed at the very end sat 60px past the last snap point and proximity
+     snapping dragged it back — the end of the row became unreachable in one click. The arrows
+     already move exactly one card plus gap, so alignment needs no help. */
   /* Scrollbar hidden deliberately: a full-width track under a dark band reads as a stray white rule
      rather than a control. The arrow bubbles carry the affordance instead, and shift+wheel, drag and
      keyboard scrolling all still work — the element is still overflow: auto, only the paint is gone. */
@@ -1319,16 +1322,17 @@
 }
 
 .resultsArrowLeft {
-  left: -1.25rem;
+  left: -3.25rem;
 }
 
 .resultsArrowRight {
-  right: -1.25rem;
+  right: -3.25rem;
 }
 
-/* The bubbles sit just outside the cards on wide screens; on narrow ones there is no room outside
-   the container, so tuck them back over the edge. */
-@media (max-width: 1280px) {
+/* Clear of the cards entirely on wide screens. Below ~1150px the band runs out of margin to sit in,
+   so the bubbles overlay the row edge instead — the alternative is an arrow clipped by the page's
+   overflow-x: hidden, which would silently amputate the control rather than move it. */
+@media (max-width: 1150px) {
   .resultsArrowLeft {
     left: 0.25rem;
   }
@@ -1343,7 +1347,6 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 0.75rem;
   padding: 1.5rem;
-  scroll-snap-align: start;
 }
 
 .resultCard dt {
