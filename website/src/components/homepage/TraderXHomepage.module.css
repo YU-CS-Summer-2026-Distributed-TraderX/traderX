@@ -1240,16 +1240,23 @@
   color: #c2d7e8;
 }
 
-/* One line, all five across, sliding horizontally when they don't fit.
-   grid-auto-flow: column keeps every card on a single row instead of wrapping a lonely last card
-   onto a second row (.resultsInner caps at 1152px, so auto-fit could never fit more than four).
-   13rem is the widest column that still fits five within that cap; below it the row scrolls.
+/* One line, sliding horizontally. grid-auto-flow: column keeps every card on a single row instead
+   of wrapping a lonely last card onto a second row (.resultsInner caps at 1152px, so auto-fit could
+   never seat more than four columns).
+
+   COLUMN WIDTH IS SET BY THE WIDEST FIGURE, not by how many cards fit on screen. At 13rem each card
+   offered 164px of inner width while "0.45–0.57" needs 197px at the 40px figure size, so two of the
+   five numbers broke across two lines. 18rem gives 240px inner — enough for the widest figure AND
+   its unit on one line. Five of those exceed the 1152px cap, which is exactly what the slider is
+   for: readable cards that slide beat cramped cards that all fit. If you add a card with a longer
+   figure, re-measure rather than assuming this width still holds.
+
    Scrolling is contained here so the page body never scrolls sideways. */
 .resultsGrid {
   display: grid;
   gap: 1.25rem;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(13rem, 1fr);
+  grid-auto-columns: minmax(18rem, 1fr);
   margin: 0;
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -1280,6 +1287,9 @@
   font-variant-numeric: tabular-nums;
   font-weight: 800;
   line-height: 1;
+  /* A headline number must never break across lines — "185–227" split after the dash reads as two
+     different figures. The column is sized to fit the widest one; this guarantees it regardless. */
+  white-space: nowrap;
 }
 
 .resultUnit {
