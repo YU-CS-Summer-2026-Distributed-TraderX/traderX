@@ -226,7 +226,27 @@ public class EodPnlConsumer {
         JetStreamManagement jsm = conn.jetStreamManagement();
         try {
             StreamInfo existing = jsm.getStreamInfo(streamName);
-            log.info("EOD stream already exists: subjects={}", existing.getConfiguration().getSubjects());
+            // An existing stream is not necessarily a CORRECT one. getStreamInfo succeeding proves
+            // only that the NAME is taken -- a stream left behind by an earlier incomplete create,
+            // or created by a component that needed just one of these subjects, can be missing the
+            // other. The publish then fails with "no responder" and the overnight batch chain
+            // breaks silently, which is precisely the damage this method exists to prevent. Repair
+            // rather than tolerate, matching RiskExtractMain.ensureStream in the same chain.
+            List<String> present = existing.getConfiguration().getSubjects();
+            List<String> merged = new ArrayList<>(present);
+            for (String required : List.of(pricesReadySubject, pnlDoneSubject)) {
+                if (!merged.contains(required)) {
+                    merged.add(required);
+                }
+            }
+            if (merged.size() != present.size()) {
+                jsm.updateStream(StreamConfiguration.builder(existing.getConfiguration())
+                    .subjects(merged)
+                    .build());
+                log.warn("repaired EOD stream {}: subjects {} -> {}", streamName, present, merged);
+            } else {
+                log.info("EOD stream already exists: subjects={}", present);
+            }
             return;
         } catch (JetStreamApiException ex) {
             if (ex.getApiErrorCode() != 10059) {

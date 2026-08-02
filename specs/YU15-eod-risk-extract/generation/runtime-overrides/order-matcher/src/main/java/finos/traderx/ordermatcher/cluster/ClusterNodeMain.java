@@ -356,6 +356,19 @@ public final class ClusterNodeMain {
      * returns {@code []} because it was never enabled is indistinguishable from a projection with
      * nothing wrong in it, which is exactly the vacuous pass these proofs exist to refuse.
      */
+    /**
+     * A capability that is present but not yet ready, answered 503 rather than 500. Distinct from a
+     * genuine failure so the generic handler cannot swallow it: a caller seeing 500 raises an
+     * incident, a caller seeing 503 runs the reindex the message names.
+     */
+    private static final class ReconNotReadyException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        ReconNotReadyException(final String message) {
+            super(message);
+        }
+    }
+
     private static void reconRoutes(final HttpServer server,
                                     final MatchingEngineClusteredService service,
                                     final ClusterRecon recon) {
@@ -380,6 +393,20 @@ public final class ClusterNodeMain {
                         return null;
                     }
                     respond(exchange, 200, json.writeValueAsString(body.call()));
+                } catch (final ReconNotReadyException ex) {
+                    // 503, not 500. "Not reindexed yet" is the same class of condition as "recon
+                    // disabled" above -- the capability is present and the caller should retry
+                    // after driving the documented next step -- whereas 500 says the server broke
+                    // and invites an alert instead of a reindex. ClusterRecon documents this
+                    // contract ("the caller answers 503, same as the Spring tier") and the Spring
+                    // tier's own paging returns 503 "reindex first"; the generic handler below was
+                    // silently answering 500 and breaking parity between the two tiers.
+                    try {
+                        respond(exchange, 503, "{\"error\":"
+                            + json.writeValueAsString(String.valueOf(ex.getMessage())) + "}");
+                    } catch (final Exception ignore) {
+                        // client went away
+                    }
                 } catch (final Exception ex) {
                     try {
                         respond(exchange, 500, "{\"error\":"
@@ -418,7 +445,7 @@ public final class ClusterNodeMain {
                 final java.util.List<?> page =
                     recon.fullHistorySince(longParam(exchange, "sinceSeq", 0), pageSize);
                 if (page == null) {
-                    throw new IllegalStateException(
+                    throw new ReconNotReadyException(
                         "no full-history index yet; POST /recon/full-history/reindex first");
                 }
                 return page;
