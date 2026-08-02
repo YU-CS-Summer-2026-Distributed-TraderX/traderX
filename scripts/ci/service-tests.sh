@@ -32,14 +32,24 @@ MODULES=(
   position-service
   account-service
   aeron-replication-sidecar
+  trade-service
 )
 
-# NOT LISTED, deliberately: trade-service. Its only test is TradeServiceApplicationTests, a
-# @SpringBootTest whose context cannot start without a live NATS broker (the tradePublisher bean
-# dials nats.address during bean creation) -- verified by experiment 2026-07-28, same root cause
-# as TradeProcessorApplicationTests. It therefore has ZERO runnable unit tests, and adding it here
-# would either fail the job or -- worse -- contribute a module that executes nothing. Its test
-# belongs in the Testcontainers tier. Recorded rather than silently omitted.
+# trade-service was excluded here until 2026-08-02, and the reason is worth keeping because it is
+# NOT the sourceSets story brief 03 fixed elsewhere. Its only test was TradeServiceApplicationTests,
+# a @SpringBootTest whose context cannot start without a live NATS broker (the tradePublisher bean
+# dials nats.address during bean creation) -- verified by experiment 2026-07-28, same root cause as
+# TradeProcessorApplicationTests. Registering its source directory would therefore not have produced
+# a passing module; it would have produced a red or hanging job.
+#
+# It is listed now because TradeOrderControllerTest gives it seven tests that construct the
+# controller directly and stub its RestTemplate, so they need neither a broker nor a network. They
+# live in the STANDARD src/test/java, which Gradle already compiles -- no build.gradle change.
+#
+# TradeServiceApplicationTests still sits, dormant and uncompiled, at src/main/test/java. Leave it
+# there: it belongs in the Testcontainers tier, and moving it into src/test/java would re-introduce
+# exactly the broker dependency this note exists to warn about. The executed-count assertion below
+# is what stops that mistake being silent.
 
 [[ -d "${GEN}" ]] || { echo "[fail] no rendered tree at ${GEN} — run pipeline/generate-state.sh first" >&2; exit 3; }
 
