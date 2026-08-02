@@ -221,3 +221,12 @@ Trade ids on this tier are `<tradeSeq>-<B|S>` (what `TradeNatsPublisher` publish
 trade-processor keys on), NOT the Spring tier's `trd-09b-<seq>`; order ids are
 `<CLUSTER_EPOCH>-<orderRef>`. Minting the Spring scheme here would orphan every projection row —
 pinned by `ClusterReconTapTest`.
+
+**GKE manifests: present but OFF, and unverified there.** `gke/statefulset-emptydir.yaml` (the one
+that actually runs) and the reference PVC variant carry the recon env with
+`RECON_BLOTTER_CAPACITY=0`, following the same house rule as `KDB_TAP_DIR` and `OTEL_TRACES` on that
+tier: the live forward blotter allocates per booked trade on the apply thread, and the banked GKE
+throughput numbers were taken without it. Turning it on is a one-value edit plus
+`RECON_POLL_INTERVAL_MS=10000` on `gke/trade-processor.yaml` — no rebuild. None of this has been
+exercised on GKE; there was no cluster to verify against when it landed (the GKE cluster was deleted
+2026-08-01). Everything above was proven on the kind cluster rig.

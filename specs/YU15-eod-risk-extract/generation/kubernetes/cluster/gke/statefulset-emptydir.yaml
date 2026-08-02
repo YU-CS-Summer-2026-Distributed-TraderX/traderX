@@ -157,6 +157,31 @@ spec:
             # sampling is what keeps tracing affordable at the rates this cluster actually runs.
             - name: OTEL_SAMPLE_MASK
               value: "127"
+            # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). PRESENT BUT OFF
+            # here, same rule as KDB_TAP_DIR and OTEL_TRACES above: the live forward blotter
+            # allocates per booked trade on the apply thread, and the banked GKE throughput numbers
+            # were taken without it. Set RECON_BLOTTER_CAPACITY to 500000 (and RECON_POLL_INTERVAL_MS
+            # to 10000 on trade-processor) for a reconciliation run — a one-value edit, no rebuild.
+            # The full-history index and the audit export are built by replaying the Aeron Archive's
+            # log on demand and are not retained, so nothing here enters the snapshot.
+            # UNVERIFIED ON GKE: proven on the kind cluster rig 2026-08-02; there was no GKE cluster
+            # to verify against when this landed.
+            - name: RECON_BLOTTER_CAPACITY
+              value: "0"
+            # Refuse-rather-than-truncate ceilings: a truncated full-history index reports FALSE
+            # orphans, so exceeding these is an error, not a shorter answer.
+            - name: RECON_FULL_HISTORY_MAX
+              value: "200000"
+            - name: REGULATORY_MAX_RECORDS
+              value: "200000"
+            # These routes span every account, so the member validates the admin claim itself
+            # (ADR-025) rather than trusting the gateway that forwarded the request. The secret is
+            # defined in trade-processor.yaml, which is in this same kustomization.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms512m -Xmx1536m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:

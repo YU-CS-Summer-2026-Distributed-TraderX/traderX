@@ -92,8 +92,10 @@ spec:
                   key: dev-token-master-secret
             - name: NATS_BROKER_HOST
               value: "nats"
-            # The reconciliation sweep's blotter endpoints live on the pre-cluster order-matcher,
-            # which has no endpoints in this topology — back it off to daily (inherited note).
+            # Daily here because the recon capability is PRESENT BUT OFF on the GKE members
+            # (RECON_BLOTTER_CAPACITY=0 — see statefulset-emptydir.yaml). Sweeping every 10s against
+            # members that answer 503 would only log "order-matcher unreachable". Set this to 10000
+            # in the same edit that turns the members on; the kind tier already runs YU05's default.
             - name: RECON_POLL_INTERVAL_MS
               value: "86400000"
             # A session close produces a version and, with nothing flagged, publishes it and emits
