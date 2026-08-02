@@ -1261,8 +1261,81 @@
   overflow-x: auto;
   overscroll-behavior-x: contain;
   scroll-snap-type: x proximity;
-  padding-bottom: 0.75rem;
-  scrollbar-width: thin;
+  /* Scrollbar hidden deliberately: a full-width track under a dark band reads as a stray white rule
+     rather than a control. The arrow bubbles carry the affordance instead, and shift+wheel, drag and
+     keyboard scrolling all still work — the element is still overflow: auto, only the paint is gone. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.resultsGrid::-webkit-scrollbar {
+  display: none;
+}
+
+/* Focus ring for keyboard users: with the scrollbar hidden, the scroller is still tabbable and
+   arrow-key scrollable, and it must show where focus is. */
+.resultsGrid:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 4px;
+  border-radius: 0.75rem;
+}
+
+.resultsSlider {
+  position: relative;
+}
+
+.resultsArrow {
+  align-items: center;
+  background: rgba(14, 22, 40, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  height: 2.5rem;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  width: 2.5rem;
+  z-index: 2;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.resultsArrow:hover {
+  background: rgba(30, 44, 74, 0.98);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.resultsArrow:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.resultsArrow[hidden] {
+  display: none;
+}
+
+.resultsArrowLeft {
+  left: -1.25rem;
+}
+
+.resultsArrowRight {
+  right: -1.25rem;
+}
+
+/* The bubbles sit just outside the cards on wide screens; on narrow ones there is no room outside
+   the container, so tuck them back over the edge. */
+@media (max-width: 1280px) {
+  .resultsArrowLeft {
+    left: 0.25rem;
+  }
+
+  .resultsArrowRight {
+    right: 0.25rem;
+  }
 }
 
 .resultCard {

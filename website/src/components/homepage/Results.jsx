@@ -1,4 +1,4 @@
-import React from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import Link from '@docusaurus/Link';
 import styles from './TraderXHomepage.module.css';
 
@@ -85,7 +85,68 @@ const results = [
   },
 ];
 
+const Chevron = ({dir}) => (
+  <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+    <path
+      d={dir === 'left' ? 'M15 5 L8 12 L15 19' : 'M9 5 L16 12 L9 19'}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2.25"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
 export default function Results() {
+  const scroller = useRef(null);
+  const [overflow, setOverflow] = useState({left: false, right: false});
+
+  const sync = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    // 1px slack: fractional layout widths mean scrollLeft rarely lands exactly on the end, and
+    // without it the trailing arrow stays enabled forever at the right-hand end.
+    const max = el.scrollWidth - el.clientWidth;
+    setOverflow({left: el.scrollLeft > 1, right: el.scrollLeft < max - 1});
+  }, []);
+
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return undefined;
+
+    // Shift+wheel, handled explicitly rather than left to the browser. It has to be a native
+    // listener with passive:false — React attaches wheel handlers passively, so a preventDefault
+    // from an onWheel prop is ignored and the page scrolls vertically underneath the slider.
+    const onWheel = (event) => {
+      if (!event.shiftKey) return;
+      const max = el.scrollWidth - el.clientWidth;
+      if (max <= 0) return;
+      event.preventDefault();
+      el.scrollLeft += event.deltaY + event.deltaX;
+    };
+    el.addEventListener('wheel', onWheel, {passive: false});
+    el.addEventListener('scroll', sync, {passive: true});
+    window.addEventListener('resize', sync);
+    sync();
+    return () => {
+      el.removeEventListener('wheel', onWheel);
+      el.removeEventListener('scroll', sync);
+      window.removeEventListener('resize', sync);
+    };
+  }, [sync]);
+
+  const nudge = (direction) => {
+    const el = scroller.current;
+    if (!el) return;
+    // One card plus its gap, read from the DOM so it tracks the CSS rather than duplicating it.
+    const card = el.firstElementChild;
+    const step = card
+      ? card.getBoundingClientRect().width + parseFloat(getComputedStyle(el).columnGap || 0)
+      : el.clientWidth * 0.8;
+    el.scrollBy({left: direction * step, behavior: 'smooth'});
+  };
+
   return (
     <section className={styles.resultsBand} aria-labelledby="measured-results">
       <div className={styles.resultsInner}>
@@ -98,20 +159,40 @@ export default function Results() {
           </p>
         </div>
 
-        <dl className={styles.resultsGrid}>
-          {results.map((item) => (
-            <div key={item.label} className={styles.resultCard}>
-              <dt>
-                <span className={styles.resultFigure}>{item.figure}</span>
-                <span className={styles.resultUnit}>{item.unit}</span>
-              </dt>
-              <dd>
-                <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-              </dd>
-            </div>
-          ))}
-        </dl>
+        <div className={styles.resultsSlider}>
+          <button
+            type="button"
+            className={`${styles.resultsArrow} ${styles.resultsArrowLeft}`}
+            onClick={() => nudge(-1)}
+            hidden={!overflow.left}
+            aria-label="Show previous measurements">
+            <Chevron dir="left" />
+          </button>
+
+          <dl className={styles.resultsGrid} ref={scroller} tabIndex={0}>
+            {results.map((item) => (
+              <div key={item.label} className={styles.resultCard}>
+                <dt>
+                  <span className={styles.resultFigure}>{item.figure}</span>
+                  <span className={styles.resultUnit}>{item.unit}</span>
+                </dt>
+                <dd>
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </dd>
+              </div>
+            ))}
+          </dl>
+
+          <button
+            type="button"
+            className={`${styles.resultsArrow} ${styles.resultsArrowRight}`}
+            onClick={() => nudge(1)}
+            hidden={!overflow.right}
+            aria-label="Show more measurements">
+            <Chevron dir="right" />
+          </button>
+        </div>
       </div>
     </section>
   );
