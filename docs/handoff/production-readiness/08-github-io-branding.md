@@ -33,9 +33,16 @@ critical path because it's ideal filler when blocked on a spike, a rebase, or a 
 - Matching/apply **0.45–0.57 µs**.
 - Per-order **p50 under 1.5 ms sustained to 75k/s**, p99 ~2 ms at a correctly-sized window.
 - HA: failover, snapshot/replay, and cold-follower rejoin from an empty disk, all proven live.
+- Leader failover **under 200 ms** on a 3-member GKE cluster (post-fix fast mode, measured
+  ~85–180 ms), plus **zero order-ID reuse** across every kill. Measure it with independent
+  same-cadence probes — `/orders`, which needs a leader, against `/ready`, which is gateway-local —
+  never a health-poll plus `kubectl delete pod`, which adds 400–600 ms of API and poll latency and
+  once produced a fake 37 s tail.
 
 **Do not publish**: single-run RTT absolutes to two significant figures (~1.5–2× run-to-run variance),
-the retired "12k ceiling", or the extrapolated ~440k consensus ceiling stated as measured.
+the retired "12k ceiling", the extrapolated ~440k consensus ceiling stated as measured, or the
+**superseded ~2.0 s system-facing failover** from 2026-07-18 — it predates both the consensus-timeout
+tuning and the gateway reconnect fix, and understates the system by an order of magnitude.
 
 ## Conventions
 

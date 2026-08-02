@@ -18,6 +18,26 @@ import styles from './TraderXHomepage.module.css';
  * slower path and the known ceiling. If you add a throughput number here, name the transport it was
  * measured on.
  *
+ * THE FAILOVER NUMBER HAS A SUPERSEDED PREDECESSOR — do not reintroduce it. An earlier measurement
+ * (2026-07-18) reported ~2.0 s system-facing re-election, and it is stale twice over: it predates the
+ * consensus-timeout tuning campaign AND the client fix below. Quoting it understates the system by an
+ * order of magnitude.
+ *
+ * The real story is that failover was BIMODAL — ~85-180 ms fast vs ~670-850 ms slow, with the mode
+ * decided purely by WHICH member was killed. That was never Raft: the gateway's reconnect restarted
+ * its endpoint scan at index 0, so killing member 0 (the first pod of the StatefulSet, and the one
+ * most likely to die in a real node drain or rolling update) blocked on the dead endpoint's connect
+ * timeout before trying a live one — 1270 ms vs 41 ms on GKE, a 31x penalty. `connectCycling()` now
+ * hands Aeron the complete member list first and rotates its fallback start, which collapses the slow
+ * mode. Published figure is the post-fix fast mode.
+ *
+ * Localising that took independent probes at the same cadence: `/orders` (needs a leader) against
+ * `/ready` (gateway-local, never touches the leader). Both failing for the same window means the
+ * gateway is reconnecting, not the cluster electing — which is how consensus was exonerated without
+ * touching a member. If you re-measure failover, use that method; a health-poll plus
+ * `kubectl delete pod` carries 400-600 ms of API and poll latency and once manufactured a fake "37 s
+ * failover tail" for a cluster that had actually re-elected in 1-2 s.
+ *
  * Deliberately NOT published here, per the same brief:
  *   - single-run client RTT absolutes to two significant figures (run-to-run variance is ~1.5-2x,
  *     so a two-sig-fig absolute implies precision the measurement does not have);
@@ -55,6 +75,13 @@ const results = [
     label: 'Per-order round trip',
     detail:
       'Client-observed, sustained to 75,000 orders/sec, with p99 near 2 ms once the in-flight window is sized for the load.',
+  },
+  {
+    figure: '< 200',
+    unit: 'ms',
+    label: 'Leader failover',
+    detail:
+      'Killing the leader to orders flowing again, measured on Kubernetes with an independent gateway-session probe. The election is Raft-internal, with Kubernetes out of the decision path, and no order ID was reused across any failover.',
   },
 ];
 
