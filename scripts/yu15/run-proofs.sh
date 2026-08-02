@@ -86,9 +86,14 @@ start_forwards() {
     ready=1
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || ready=0
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || ready=0
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3200/ready 2>/dev/null)" == "200" ]] || ready=0
-    # Loki and Grafana answer non-2xx on / by design; a connection at all is enough.
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3100/ 2>/dev/null)" != "000" ]] || ready=0
+    # Only when the observability stack is expected to be up. stp deliberately scales it to zero
+    # for a quiet box, and waiting on a service we just switched off is an unsatisfiable condition
+    # -- it aborted the whole stp wrap with "forwards never all became reachable".
+    if [[ "${OBS_EXPECTED:-1}" == "1" ]]; then
+      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3200/ready 2>/dev/null)" == "200" ]] || ready=0
+      # Loki and Grafana answer non-2xx on / by design; a connection at all is enough.
+      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3100/ 2>/dev/null)" != "000" ]] || ready=0
+    fi
     [[ ${ready} -eq 1 ]] && break
     tries=$((tries + 1))
     [[ ${tries} -lt 90 ]] || { echo "[fail] forwards never all became reachable"; return 1; }
@@ -283,6 +288,19 @@ for p in "${PROOFS[@]}"; do
     # engine that will replay it, and the proof's own step-1 roll_to(pre) becomes a no-op.
     #
     # Seeding after this registers ~20 tickers, comfortably inside the historical 64 limit.
+    # Quiet the box first. This proof rolls all three members TWICE and needs consensus to re-form
+    # after each roll; on a contended kind node it instead logs "leader heartbeat timeout" and
+    # "quorum position went backwards" and the members never agree. It passed standalone before the
+    # observability stack and the control-feed services joined the rig — the box got busier, not
+    # the proof wronger. Nothing here is used by stp, and the OTel proofs that need it have already
+    # run by this point in the order.
+    echo "[stp-prep] scaling the observability stack to 0 (stp needs a quiet box for consensus)"
+    for d in grafana loki tempo prometheus otel-collector; do
+      ${K} scale deploy/"${d}" --replicas=0 >/dev/null 2>&1 || true
+    done
+    STP_RESTORE_OBS=1
+    OBS_EXPECTED=0
+
     echo "[stp-prep] control feed off + fresh epoch minted ON ${STP_IMAGE_PRE}"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
     rebuild_fresh_epoch "${STP_IMAGE_PRE}"
@@ -326,11 +344,23 @@ for p in "${PROOFS[@]}"; do
     ${K} rollout restart deploy/cluster-gateway >/dev/null
     ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
     start_forwards && FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
+    if [[ "${STP_RESTORE_OBS:-0}" == "1" ]]; then
+      echo "[stp-prep] restoring the observability stack"
+      for d in grafana loki tempo prometheus otel-collector; do
+        ${K} scale deploy/"${d}" --replicas=1 >/dev/null 2>&1 || true
+      done
+      STP_RESTORE_OBS=0
+      OBS_EXPECTED=1
+    fi
     STP_RESTORE_FEED=0
   fi
 done
 
 echo
 echo "==== ${pass} passed, ${skip} skipped, ${fail} failed ===="
-printf '%s\n' "${results[@]}" | grep -v '^PASS' || true
+# "${results[@]}" on an EMPTY array trips set -u ("unbound variable") and turned a clean
+# no-proofs-ran outcome into a shell error after the summary had already printed.
+if [[ ${#results[@]} -gt 0 ]]; then
+  printf '%s\n' "${results[@]}" | grep -v '^PASS' || true
+fi
 [[ ${fail} -eq 0 ]]
