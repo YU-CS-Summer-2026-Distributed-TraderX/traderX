@@ -19,19 +19,21 @@ Where the two disagree, the executed number is the real one, and it is the one u
 
 ## Coverage summary
 
-### Tests that run on every push, per branch
+### Tests that run on every push
 
-| Suite | YU13 | YU14 | YU15 |
-|---|---:|---:|---:|
-| Composed engine (`order-matcher`) | 304 | 318 | 335 |
-| Composed service modules | 110 | 110 | 118 |
-| **Total per branch** | **414** | **428** | **453** |
+| Suite | Tests |
+|---|---:|
+| Composed engine (`order-matcher`) | 335 |
+| Composed service modules | 118 |
+| **Total** | **453** |
 
-Zero failures on all three.
+Zero failures.
 
-Each branch renders its own effective tree, so the same test name runs against differently composed
-code depending on which state you build. That is why the totals differ per branch, and it is the
-reason the suite is run against three trees.
+Every number in this document is counted on **YU15**, the tip state: the only branch that carries
+every ancestor's spec pack, and the one the deployed system is built from. Earlier states remain
+buildable and are still exercised in CI (see [What CI runs](#what-ci-runs)), but they are ancestors
+of this one rather than separate products, so reporting three sets of numbers described a choice
+nobody makes.
 
 ### Everything else
 
@@ -42,24 +44,24 @@ reason the suite is run against three trees.
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
-| Java test classes in the unit tier | 100 | counted on YU15 |
+| Java test classes in the unit tier | 100 | the composed tree |
 
 ## Java — the composed tree
 
-Counted on the YU15 effective tree.
+Counted on the YU15 effective tree — the code that exists once every ancestor's spec layers are
+composed and the shadowed copies are resolved.
 
 | Module | Test classes | Tests executed | In CI |
 |---|---|---|---|
-| **order-matcher** (engine, book, journal, Aeron replication, cluster, gateways, risk, reporting, risk extract, tracing) | **74** | **335** | ✅ all 3 branches |
-| trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ all 3 branches |
-| execution-algo-engine | 8 | 29 | ✅ all 3 branches |
-| position-service | 2 | 11 | ✅ all 3 branches |
-| account-service | 4 | 7 | ✅ all 3 branches |
-| aeron-replication-sidecar | 1 | 2 | ✅ all 3 branches |
+| **order-matcher** (engine, book, journal, Aeron replication, cluster, gateways, risk, reporting, risk extract, tracing) | **74** | **335** | ✅ |
+| trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ |
+| execution-algo-engine | 8 | 29 | ✅ |
+| position-service | 2 | 11 | ✅ |
+| account-service | 4 | 7 | ✅ |
+| aeron-replication-sidecar | 1 | 2 | ✅ |
 | trade-service | 0 | 0 | no runnable unit test |
-| **Total (YU15)** | **100** | **453** | |
+| **Total** | **100** | **453** | |
 
-YU14 renders 98 classes and 428 tests; YU13 renders 97 and 414.
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
 counted separately under [Cross-service integration](#cross-service-integration).
@@ -181,12 +183,11 @@ cluster, so they are operator-run.
 
 ## What CI runs
 
-The workflow has 8 job definitions and 10 legs on a push, because the main engine job is a
-three-branch matrix.
+The workflow has 8 job definitions and 10 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine × 3 (YU13, YU14, YU15) | composed order-matcher suite (304 / 318 / 335) + 4 allocation gates, then the five other service modules (110 / 110 / 118) — **414 / 428 / 453 per branch** | push and pull request |
+| engine | composed order-matcher suite (335) + 4 allocation gates, then the five other service modules (118) — **453** | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
@@ -195,9 +196,12 @@ three-branch matrix.
 | integration (context) | real MariaDB and message broker | push and pull request |
 | cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
 
-The matrix is the point. Each branch renders its **own** effective tree, so the same test name runs
-against differently composed code, which is how a propagation regression becomes visible — a fix
-that is live on one branch and shadowed on another shows up as one red leg beside two green ones.
+The engine job also runs against YU15's two ancestor branches, which is why 8 job definitions
+produce 10 legs. That is not three products being tested; it is one propagation check. Each
+branch renders its own effective tree, so the same test name runs against differently composed
+code, and a fix that is live on one layer while shadowed on another appears as a single red leg
+beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests
+only because they carry fewer spec layers; **453 is the number that describes what is deployed**.
 
 ## Verification tiers
 
@@ -205,7 +209,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 453 / 428 / 414 per branch, plus 48 baseline | CI, every push |
+| In-process tests | 453, plus 48 baseline | CI, every push |
 | Cross-service integration | 3 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
