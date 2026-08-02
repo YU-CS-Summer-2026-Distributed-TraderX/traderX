@@ -100,15 +100,19 @@ const Chevron = ({dir}) => (
 
 export default function Results() {
   const scroller = useRef(null);
-  // Both arrows stay visible at both ends by design — an arrow that disappears at the end makes the
-  // control jump around under the cursor. They are hidden only when there is nothing to scroll at
-  // all, where they would be furniture rather than a control.
-  const [scrollable, setScrollable] = useState(false);
+  // Each arrow shows only while there is travel left in its direction. The band is exactly one card
+  // step wide, so in practice exactly one arrow is on screen at a time: right at rest, left once
+  // scrolled. The same expression also hides BOTH when the row does not overflow at all — with
+  // max at 0, `scrollLeft > 1` and `scrollLeft < max - 1` are both false.
+  const [edges, setEdges] = useState({left: false, right: false});
 
   const sync = useCallback(() => {
     const el = scroller.current;
     if (!el) return;
-    setScrollable(el.scrollWidth - el.clientWidth > 1);
+    // 1px of slack at each end: fractional layout widths mean scrollLeft rarely lands exactly on 0
+    // or on max, and without it an arrow lingers at the end it has already reached.
+    const max = el.scrollWidth - el.clientWidth;
+    setEdges({left: el.scrollLeft > 1, right: el.scrollLeft < max - 1});
   }, []);
 
   useEffect(() => {
@@ -175,7 +179,7 @@ export default function Results() {
             type="button"
             className={`${styles.resultsArrow} ${styles.resultsArrowLeft}`}
             onClick={() => nudge(-1)}
-            hidden={!scrollable}
+            hidden={!edges.left}
             aria-label="Show previous measurements">
             <Chevron dir="left" />
           </button>
@@ -199,7 +203,7 @@ export default function Results() {
             type="button"
             className={`${styles.resultsArrow} ${styles.resultsArrowRight}`}
             onClick={() => nudge(1)}
-            hidden={!scrollable}
+            hidden={!edges.right}
             aria-label="Show more measurements">
             <Chevron dir="right" />
           </button>
