@@ -24,8 +24,8 @@ Where the two disagree, the executed number is the real one, and it is the one u
 | Suite | Tests |
 |---|---:|
 | Composed engine (`order-matcher`) | 335 |
-| Composed service modules | 118 |
-| **Total** | **453** |
+| Composed service modules | 125 |
+| **Total** | **460** |
 
 Zero failures.
 
@@ -44,7 +44,7 @@ nobody makes.
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
-| Java test classes in the unit tier | 100 | the composed tree |
+| Java test classes in the unit tier | 101 | the composed tree |
 
 ## Java — the composed tree
 
@@ -59,14 +59,14 @@ composed and the shadowed copies are resolved.
 | position-service | 2 | 11 | ✅ |
 | account-service | 4 | 7 | ✅ |
 | aeron-replication-sidecar | 1 | 2 | ✅ |
-| trade-service | 0 | 0 | no runnable unit test |
-| **Total** | **100** | **453** | |
+| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 7 | ✅ |
+| **Total** | **101** | **460** | |
 
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
 counted separately under [Cross-service integration](#cross-service-integration).
 
-`order-matcher` is 74% of the test classes and holds the correctness properties the system is built
+`order-matcher` is 73% of the test classes and holds the correctness properties the system is built
 on: self-trade prevention, atomic replace, client-order-ID idempotency, byte-identical consensus
 allocation, deterministic replay, and reproducible regulatory and risk exports.
 
@@ -187,7 +187,7 @@ The workflow has 8 job definitions and 10 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine | composed order-matcher suite (335) + 4 allocation gates, then the five other service modules (118) — **453** | push and pull request |
+| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (125) — **460** | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
@@ -209,7 +209,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 453, plus 48 baseline | CI, every push |
+| In-process tests | 460, plus 48 baseline | CI, every push |
 | Cross-service integration | 3 tests against real MariaDB and a real broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |

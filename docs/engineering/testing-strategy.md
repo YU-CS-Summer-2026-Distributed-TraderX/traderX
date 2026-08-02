@@ -9,7 +9,7 @@ hardware. Nothing was weakened to make it fit a pipeline.
 
 ## Tier 1 — in-process tests, in CI on every push
 
-The engine, cluster, gateway, risk and post-trade logic are covered by **453 machine-verified
+The engine, cluster, gateway, risk and post-trade logic are covered by **460 machine-verified
 tests**, plus **48 baseline-service tests**. They need no cluster, no network and no
 database server, using an in-memory database where a datasource is required.
 
@@ -187,7 +187,7 @@ projector and order-book tests.
 
 Every figure here is counted on **YU15**, the tip state — the only branch carrying every ancestor's
 spec pack, and the tree the deployed system is built from. On the CI path that is engine 335 plus
-service modules 118, for **453 with zero failures**.
+service modules 125, for **460 with zero failures**.
 
 The engine job additionally runs against YU15's two ancestor branches. That is a propagation check
 rather than three products under test: each renders its own effective tree, so a fix that is live on
