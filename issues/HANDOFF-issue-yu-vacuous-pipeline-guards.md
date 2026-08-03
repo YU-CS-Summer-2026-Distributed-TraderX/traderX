@@ -74,6 +74,43 @@ demands a `code/generated-state-*` ref for every implemented state and so cannot
 first publish of a new lineage. The invariant itself is already known to hold (see above), so that
 work is expected to land green.
 
+## The same gap from the other side: a validator that loudly rejects a YU state
+
+Found 2026-08-03 while the `pipeline/*.sh` bash-3.2 sweep was running. **Open — not fixed here**,
+because `validate-state-doc-consistency.sh` is on all 16 branches and a YU15-only fix would reopen
+the propagation gap that `a5cbd18a` documents.
+
+```
+$ bash pipeline/validate-state-doc-consistency.sh
+[fail] specs/README.md Active Feature Packs missing YU01-lmax-sequencer
+```
+
+`specs/README.md` is not missing it. Line 28 reads:
+
+```
+- `YU01-lmax-sequencer` (directory: `YU01-lmax-sequencer`)
+```
+
+The awk block that parses the section strips a leading ``- ` `` and then a trailing backtick
+*anchored at end of line* (`gsub(/`$/, "", line)`). YU01 is the only entry carrying a
+` (directory: …)` annotation, so its line ends in `)`, the anchor misses, and the extracted token
+comes out as the whole mangled remainder:
+
+```
+[YU01-lmax-sequencer` (directory: `YU01-lmax-sequencer`)]
+```
+
+which matches no catalog id. One-line fix — take the first backticked token instead of trusting the
+line to end at one: `sub(/`.*$/, "", line)` in place of `gsub(/`$/, "", line)`. Verified: that
+extracts `YU01-lmax-sequencer` and leaves every numbered entry unchanged.
+
+Only one `[fail]` prints because `fail` exits; the second complaint the mangled token would trigger
+(`has non-catalog Active Feature Pack: …`) is never reached.
+
+Same family as the four guards above, opposite symptom. The guards did not recognise a YU **id** and
+silently passed; this does not recognise a YU **line shape** and loudly rejects. A validator that
+rejects correct input is the louder failure but the cheaper one — it gets noticed.
+
 ## The lesson
 
 A guard that returns early on an unrecognised id shape reports success for every state it does not
