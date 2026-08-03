@@ -1,10 +1,15 @@
 module.exports = {
   mainSidebar: [
     'home',
+    // Top-level, directly under the portal: "what's new" is the entry point for a reader who has
+    // not been told what this build IS yet, so burying it inside Testing put the answer behind the
+    // question. It still sits immediately before the Testing category, which keeps its pager
+    // pointing at Testing strategy — what was built, then how each claim is checked.
+    'engineering/whats-new',
     {
       type: 'category',
       label: 'Testing',
-      items: ['engineering/whats-new', 'engineering/testing-strategy', 'engineering/test-coverage'],
+      items: ['engineering/testing-strategy', 'engineering/test-coverage'],
     },
     {
       type: 'category',
