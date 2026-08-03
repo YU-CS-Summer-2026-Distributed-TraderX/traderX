@@ -10,12 +10,14 @@ import java.util.Date;
  * 009-compatible `/accounts/{accountId}/trades` payload emitted directly from TradeBooked.
  */
 public final class AccountTrade {
+    private static final OrderSide[] SIDES = OrderSide.values();
+
     private String id;
-    private Integer accountId;
+    private int accountId;
     private String security;
     private OrderSide side;
     private String state;
-    private Integer quantity;
+    private int quantity;
     private BigDecimal price;
     private Date created;
     private Date updated;
@@ -32,7 +34,7 @@ public final class AccountTrade {
         return accountId;
     }
 
-    public void setAccountId(Integer accountId) {
+    public void setAccountId(int accountId) {
         this.accountId = accountId;
     }
 
@@ -64,7 +66,7 @@ public final class AccountTrade {
         return quantity;
     }
 
-    public void setQuantity(Integer quantity) {
+    public void setQuantity(int quantity) {
         this.quantity = quantity;
     }
 
@@ -94,15 +96,31 @@ public final class AccountTrade {
 
     public static AccountTrade fromEvent(OutputEvent e, SymbolTable symbols) {
         AccountTrade payload = new AccountTrade();
-        payload.setId(e.tradeSeq > 0 ? OrderSnapshot.tradeIdFor(e.tradeSeq) : OrderSnapshot.orderIdFor(e.orderRef));
-        payload.setAccountId(e.accountId);
-        payload.setSecurity(symbols.tickerFor(e.securityId));
-        payload.setSide(OrderSide.values()[e.side]);
-        payload.setState("Settled");
-        payload.setQuantity(e.tradeQty);
-        payload.setPrice(Px.toBigDecimal(e.tradePx != Px.NONE ? e.tradePx : e.lastExecPx));
-        payload.setCreated(new Date(e.updatedAtMillis));
-        payload.setUpdated(new Date(e.updatedAtMillis));
+        payload.copyFromEvent(e, symbols);
         return payload;
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols, OutputValueCache values) {
+        setId(e.tradeSeq > 0 ? values.tradeIdFor(e.tradeSeq) : values.orderIdFor(e.orderRef));
+        setAccountId(e.accountId);
+        setSecurity(symbols.tickerFor(e.securityId));
+        setSide(SIDES[e.side]);
+        setState("Settled");
+        setQuantity(e.tradeQty);
+        price = values.priceFor(e.tradePx != Px.NONE ? e.tradePx : e.lastExecPx);
+        if (created == null) {
+            created = new Date(e.updatedAtMillis);
+        } else {
+            created.setTime(e.updatedAtMillis);
+        }
+        if (updated == null) {
+            updated = new Date(e.updatedAtMillis);
+        } else {
+            updated.setTime(e.updatedAtMillis);
+        }
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols) {
+        copyFromEvent(e, symbols, new OutputValueCache());
     }
 }
