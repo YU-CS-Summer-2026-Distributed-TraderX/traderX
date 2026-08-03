@@ -9,6 +9,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+/*
+ * LAYER OVERRIDE, and it has to be one. The composed account-service does not take this file from
+ * templates/ -- specs/004-containerized-compose-runtime's 0001-state-overlay.patch supplies it, so
+ * a fix to the template alone reaches the BASELINE service and never the deployed one. Editing that
+ * patch would put every state from 004 onward at risk of a rendering failure for a two-line change
+ * (the same reasoning that kept trade-service untested for months), so the fix lands here instead,
+ * where the overlay is last-wins and nothing else has to move.
+ *
+ * The template copy is fixed too: the baseline service runs its own suite in CI and there is no
+ * reason to leave the defect standing there.
+ */
 @Service
 public class PeopleValidationService {
 
