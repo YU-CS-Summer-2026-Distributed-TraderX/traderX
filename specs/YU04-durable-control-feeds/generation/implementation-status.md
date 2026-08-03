@@ -4,8 +4,7 @@
 (7/7), `reference-data` (8/8), `order-matcher` (65/65, one pre-existing unrelated flake). Only the
 isolated staging CI/CD pipeline remains (requires explicit go-ahead).
 **Parent:** `YU03-in-memory-risk-gateway`
-**Branch:** `YU03-in-memory-risk-gateway` (this state has not been split to its own branch yet —
-see `tasks.md` T-02/T-03 for the generation-hook scaffolding step that comes first).
+**Branch:** `YU04-durable-control-feeds` (own worktree `traderX-YU04-durable-control-feeds`).
 
 ## Done
 
