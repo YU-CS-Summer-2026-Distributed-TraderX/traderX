@@ -123,12 +123,16 @@ for id in "${all_ids[@]}"; do
 
   # A README that *states* it has no PowerShell equivalent used to satisfy this check, because the
   # test is a bare '.ps1' substring and the caveat sentence contains one -- the gate went green on
-  # the string, not the property. So the opt-out must now declare itself, and the declaring line is
-  # excluded from the substring search rather than answering it.
+  # the string, not the property.
+  #
+  # The branch ordering is what fixes that, and it is the only thing that does: a declared opt-out
+  # is claimed by the first branch, so the substring test below never sees a README carrying the
+  # caveat and cannot be answered by it. That also makes this robust to the bullet being rewrapped,
+  # since the opt-out fires on the bullet's presence rather than on where '.ps1' lands.
   if rg -q '\.sh`|\.sh$|\.sh ' "${readme}"; then
     if grep -q '^- No PowerShell parity:' "${readme}"; then
       powershell_optouts+=("${id}")
-    elif grep -v '^- No PowerShell parity:' "${readme}" | rg -q '\.ps1`|\.ps1$|\.ps1 '; then
+    elif rg -q '\.ps1`|\.ps1$|\.ps1 ' "${readme}"; then
       :
     else
       fail "${readme} contains shell invocation(s) without PowerShell equivalent"
