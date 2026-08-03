@@ -1,0 +1,9 @@
+{
+  "name": "traderx-order-matcher-bench",
+  "private": true,
+  "type": "module",
+  "description": "Same-workload benchmark driver for state 009 vs 009b order-matcher (REST orders + NATS price ticks)",
+  "dependencies": {
+    "nats": "^2.28.2"
+  }
+}
