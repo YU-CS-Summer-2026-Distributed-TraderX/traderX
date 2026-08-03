@@ -70,6 +70,32 @@ These cannot be resolved file-by-file; the adjudication flagged explicit depende
 - `TradeOrderController.java` (trade-service) — shadowed on the tip; corrected from home-wins to
   merge-both on re-check.
 
+## The pack README must come from the tip, or `main`'s docs gate fails
+
+A second file settles itself, and it bites at carry time rather than at build time.
+`specs/YU01-lmax-sequencer/README.md` differs on its first line:
+
+```
+home  YU01-lmax-sequencer  : # Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)
+tip   YU15-eod-risk-extract: # Feature Pack YU01: LMAX Sequencer Architecture (Trading Hot Path)
+```
+
+Home still carries the pre-rename `009b` heading. `main`'s
+`pipeline/validate-state-doc-consistency.sh` captures the id from that line and requires it to equal
+the state id, so home's copy fails (`009b` != `YU01`) while the tip's passes. The adjudication
+independently resolved this file to **tip-wins** from git history, which agrees.
+
+Note this is specific to `main`. On the YU branches the same validator still has the un-widened
+`^# Feature Pack ([0-9]{3}[a-z]?):` regex and rejects every YU pack heading, so the check has never
+accepted a YU state there and this divergence is invisible. `main` carries the widened form
+(`[0-9]{3}[a-z]?|YU[0-9]{2}`) and the 14 packs it already holds were normalised to
+`# Feature Pack <id>: <Title>` on the way in — the same shape the 13 numbered packs use.
+
+Canonical heading is `# Feature Pack <id>: <Title>`. Keeping the id inside the capture group is what
+makes the duplicate-Feature-Pack-number bookkeeping work: on `main` that check now covers 27 of 28
+states, against 13 of 28 on the YU branches. Normalising YU02–YU15's headings on the YU branches to
+match is the remaining follow-up, and is a propagation pass rather than new authoring.
+
 ## YU01 generation is currently broken on the tip
 
 Independent of the merge question, one file settles itself and matters immediately:
