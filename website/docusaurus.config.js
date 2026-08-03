@@ -82,7 +82,7 @@ module.exports = {
         // Docusaurus does not run through its link resolver, so a root-absolute "/docs/..." here
         // resolves to https://host/docs/... and 404s on every page — the homepage only worked
         // because its own banner is a <Link>, which does apply baseUrl.
-        `<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. Read the <a href="${docsBaseUrl}docs/engineering/testing-strategy"><strong>testing strategy</strong></a>.`,
+        `<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. <a href="${docsBaseUrl}docs/engineering/whats-new"><strong>See what’s new</strong></a>.`,
     },
     navbar: {
       title: navbarTitle,

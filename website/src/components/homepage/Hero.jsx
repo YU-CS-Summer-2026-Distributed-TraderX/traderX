@@ -12,8 +12,8 @@ function TopBanner() {
   return (
     <div className={styles.topBanner}>
       <strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron
-      Raft cluster. Read the{' '}
-      <Link to="/docs/engineering/testing-strategy">testing strategy</Link>.
+      Raft cluster.{' '}
+      <Link to="/docs/engineering/whats-new">See what&rsquo;s new</Link>.
     </div>
   );
 }
@@ -94,7 +94,7 @@ export default function Hero() {
           {/* Its own sentence on its own line. Joined to the line above with an em dash, the link
               wrapped onto a new line by itself and read as a fragment. */}
           <p className={styles.heroCopyLink}>
-            <Link to="/docs/engineering/test-coverage">See how it is verified.</Link>
+            <Link to="/docs/engineering/whats-new">See what’s new.</Link>
           </p>
 
           <div className={styles.heroActions}>
