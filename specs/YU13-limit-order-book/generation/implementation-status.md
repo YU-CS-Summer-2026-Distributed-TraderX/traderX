@@ -526,6 +526,77 @@ this).
 5. **Bypass HTTP for machine flow** (Aeron ingress client / the FIX gateway) — the REST hop
    is a convenience contract, not the product's fast path.
 
+## Added later — tracing across consensus, and the KDB-X capture tap (2026-07-27 / 2026-07-29)
+
+Specified in the addendum in `spec.md`, decided in `system/adr-060`. Neither changes the wire
+shapes, the replicated log, the snapshot format, or what the state machine reads.
+
+| File | Role |
+|---|---|
+| `cluster/OrderTrace.java` | Trace identity, the member's parent span and the head sampling verdict, derived on both tiers by a pure function of the client idempotency key the log already carries. |
+| `cluster/SpanSink.java` | The asynchronous sink. Producer copies a fixed record into a pre-allocated Agrona ring buffer and returns; a full ring drops and counts; one daemon thread does every format, batch and HTTP call. Null unless `OTEL_TRACES=1`. |
+| `cluster/ClusterGatewayMain.java` | Emits the gateway's `gateway.queue` and `cluster.consensus` spans, both parented to the root, from the owner thread with the committed ack byte already in hand — which is what makes escalating a reject at the head possible at all. |
+| `cluster/KdbTapWriter.java` | The leader-side, off-consensus KDB-X capture tap, third sibling of `TradeNatsPublisher`/`OrderNatsPublisher` in the same output-ring drain. Inert unless `KDB_TAP_DIR` is set; stops at `KDB_TAP_MAX_MB` (default 256). |
+| `kubernetes-runtime/manifests/base/observability-prometheus-configmap.yaml` | The cluster tier's first Prometheus scrape — per pod through the headless service. |
+
+### Layer coverage — read this before quoting the capability
+
+`ClusterGatewayMain` is overridden at `YU12` and `YU13` only, so this state's copy is operative on
+every descendant and the **gateway-side spans hold on generated `YU13`, `YU14` and `YU15` alike.**
+
+The member-side spans (`cluster.commit`, `cluster.apply`) and the tap's construction both live in
+`MatchingEngineClusteredService`, which `YU13`, `YU14` and `YU15` **each override** — so only a
+state's own copy is operative when that state is generated. Measured across the layers:
+
+| Generated state | Gateway spans | Member spans | KDB-X tap wired |
+|---|---|---|---|
+| `YU13-limit-order-book` | yes | **no** | yes |
+| `YU14-listed-equity-options` | yes | **no** | **no** |
+| `YU15-eod-risk-extract` | yes | yes | yes |
+
+So a whole trace crossing consensus is live on **generated `YU15` only**, which is consistent with
+the proofs being named `yu15-otel-*` and the suite running on the YU15 rig. The `YU14` tap gap is
+different in kind: `YU14`'s override was cut from a pre-tap `YU13` and never carried the wiring
+forward, so generated `YU14` ships `KdbTapWriter.java` on disk with nothing constructing it. That
+is the standing dead-layer trap (the same shape as the `BlpRiskState` YU14 override), not a
+deliberate scope decision — closing it is a hand-merge into `YU14`'s clustered service.
+
+**The trace an order produces:**
+
+```
+order                (traderx-cluster-gateway)   root — the residence the client experiences
+├── gateway.queue    (traderx-cluster-gateway)   submit → offer cleared into the log
+└── cluster.consensus(traderx-cluster-gateway)   THE BLACK BOX: offer → committed ack
+    ├── cluster.commit (traderx-cluster-member)  sequenced → apply start, leader clock
+    └── cluster.apply  (traderx-cluster-member)  match + emit
+```
+
+**Verified:**
+- `OrderTraceTest` — both tiers reach the same trace id, parent span and sampling verdict from the
+  same key; a rejected order force-samples on both sides independently.
+- `SpanSinkTest` — a full ring drops and counts rather than blocking the producer.
+- `KdbTapWriterTest` — non-blocking offer, drop accounting, epoch-qualified rows, the
+  `KDB_TAP_MAX_MB` ceiling, and an unregistered ticker captured as `#<id>` rather than dropped.
+- `AeronClusterSpikeTest.leaderTapCapturesTheAppliedSessionForKdb` — a real Aeron cluster applying
+  real consensus ingress, whose Java assertions pin the captured session against the engine's own
+  trade counter. Its output is the committed fixture the YU07 q gate runs on.
+- `scripts/proofs/yu15-otel-trace-join.sh` — one order produces one trace spanning both tiers,
+  against a deployed cluster.
+- `scripts/proofs/yu15-otel-reject-trace-log-join.sh` — a rejected order's log line resolves to
+  that order's own trace by the derived id.
+- The allocation gates and the Epsilon no-GC run stay green with both compiled in.
+
+**What already existed, and what was actually missing:** the Kubernetes runtime has shipped an OTel
+Collector, Tempo, Loki, Prometheus, Grafana and promtail since state `007`. What was missing was
+that **nothing emitted to the collector** — zero OTLP emitters anywhere in the tree — and that
+**Prometheus never scraped the Aeron cluster tier at all**, so `traderx_cluster_next_order_ref`,
+the committed ground truth, existed on `/metrics` and reached no dashboard. Both are wired now.
+
+**Gotcha recorded:** on kind the observability stack and the cluster bring-up land in *different*
+clusters, so the collector endpoint resolves to nothing and the trace pipeline is **silently** dead
+— orders book fine, spans go nowhere, and the only symptom is an empty Tempo.
+`scripts/yu15/start-observability-kind.sh` exists to prevent exactly that.
+
 ## Open
 
 - ~~The `ordersByRef` unbounded-index bug~~ — **fixed and soak-proven 2026-07-21** (136M booked
