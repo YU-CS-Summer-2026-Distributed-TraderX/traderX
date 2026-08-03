@@ -16,8 +16,8 @@ members. Risk moved in front of the book. Settlement, reconciliation, regulatory
 ingress, listed options and an end-of-day risk extract were added on top. Every state below still
 generates, deploys and runs — and each links to the spec pack that defines it.
 
-Two later additions — OpenTelemetry tracing and a KDB-X tick store — arrived after the sequence was
-finished and deliberately did **not** become new states. See [Other additions](#other-additions).
+Two further capabilities — OpenTelemetry tracing and a KDB-X tick store — extend existing states
+rather than adding new ones. See [Other additions](#other-additions).
 
 ## The fifteen states
 
@@ -139,16 +139,16 @@ bytes are identical every time for a given identifier.
 
 ## Other additions
 
-Two capabilities were asked for once the state sequence was already complete, with the explicit
-constraint that they should not become states sixteen and seventeen. Both were folded into the state
-that already owned the ground, which is why they do not appear in the list above.
+Two capabilities extend states that already exist rather than standing as states of their own, which
+is why they do not appear in the list above. Both were built to the same constraint: they may not
+change what the trading path costs.
 
 ### OpenTelemetry tracing
 
 An order's trace follows it across the Raft cluster, exported asynchronously so telemetry never sits
 in front of a trade — a producer copies a few longs into a ring buffer and returns, and a full ring
 drops the span rather than slowing the order. Grafana, Prometheus, Loki and Tempo deploy with the
-platform. Folded into [YU13](/specs/YU13-limit-order-book) — the long version is in
+platform. Built into [YU13](/specs/YU13-limit-order-book) — the long version is in
 [Observability and replay](observability-and-replay.md#opentelemetry--a-trace-that-survives-consensus).
 
 ### KDB-X tick store (kdb+/q)
@@ -156,7 +156,7 @@ platform. Folded into [YU13](/specs/YU13-limit-order-book) — the long version 
 Two datasets side by side: the NYSE TAQ tape as `quote` and `trade`, and our own engine's flow as
 `txOrder` and `txTrade`, captured by a leader-side tap that sits off the consensus path. Naming them
 apart is deliberate — one `trade` table holding both is what makes a VWAP answer the wrong question.
-Folded into [YU07](/specs/YU07-historical-tick-store) — the long version is in
+Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
 [Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
 
 ## See how it is verified
