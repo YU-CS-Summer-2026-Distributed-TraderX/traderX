@@ -24,8 +24,8 @@ Where the two disagree, the executed number is the real one, and it is the one u
 | Suite | Tests |
 |---|---:|
 | Composed engine (`order-matcher`) | 335 |
-| Composed service modules | 125 |
-| **Total** | **460** |
+| Composed service modules | 149 |
+| **Total** | **484** |
 
 Zero failures.
 
@@ -45,7 +45,7 @@ nobody makes.
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
 | Composed Node and Python suites | 44 | reference-data 9 · price-publisher 11 · tick-store 24 |
-| Java test classes in the unit tier | 101 | the composed tree |
+| Java test classes in the unit tier | 105 | the composed tree |
 
 ## Java — the composed tree
 
@@ -58,16 +58,16 @@ composed and the shadowed copies are resolved.
 | trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ |
 | execution-algo-engine | 8 | 29 | ✅ |
 | position-service | 2 | 11 | ✅ |
-| account-service | 4 | 7 | ✅ |
+| account-service (account and user CRUD, people validation, outbox) | 8 | 31 | ✅ |
 | aeron-replication-sidecar | 1 | 2 | ✅ |
 | trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 7 | ✅ |
-| **Total** | **101** | **460** | |
+| **Total** | **105** | **484** | |
 
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
 counted separately under [Cross-service integration](#cross-service-integration).
 
-`order-matcher` is 73% of the test classes and holds the correctness properties the system is built
+`order-matcher` is 70% of the test classes and holds the correctness properties the system is built
 on: self-trade prevention, atomic replace, client-order-ID idempotency, byte-identical consensus
 allocation, deterministic replay, and reproducible regulatory and risk exports.
 
@@ -194,7 +194,7 @@ The workflow has 10 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (125) — **460** | push and pull request |
+| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (149) — **484** | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
@@ -210,7 +210,7 @@ produce 10 legs. That is not three products being tested; it is one propagation 
 branch renders its own effective tree, so the same test name runs against differently composed
 code, and a fix that is live on one layer while shadowed on another appears as a single red leg
 beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests
-only because they carry fewer spec layers; **460 is the number that describes what is deployed**.
+only because they carry fewer spec layers; **484 is the number that describes what is deployed**.
 
 ## Verification tiers
 
@@ -218,7 +218,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 460, plus 48 baseline | CI, every push |
+| In-process tests | 484, plus 48 baseline | CI, every push |
 | Cross-service integration | 5 suites against real MariaDB and a real JetStream broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
