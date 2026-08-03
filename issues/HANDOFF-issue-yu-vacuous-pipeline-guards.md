@@ -203,7 +203,20 @@ alt style. Duplicate-number coverage goes 13 → 29.
 
 ## Unmasked in turn: three YU packs fail the shell/PowerShell parity check
 
-**Open — not fixed.** With the heading check accepting YU states, the validator advances one further
+**Check FIXED 2026-08-03, all 16 branches (`e87161da` on YU15). The three YU-branch packs remain
+open content work.** yaakov picked the explicit-marker option: a `- No PowerShell parity:` bullet is
+now a recognised, declared opt-out, and *that line is excluded from the substring search rather than
+answering it*. The honest prose keeps its meaning and can no longer satisfy the gate by accident.
+Opt-outs are reported (`[warn] PowerShell parity explicitly declined by N pack(s): …`) rather than
+passing silently — a declared opt-out is not PowerShell coverage, and a green run that does not say
+so is exactly how this check came to overstate itself. No `specs/` file was touched, so it stays
+clear of the in-flight pack merges: on the YU branches YU09/YU10/YU11 still fail, correctly and
+unchanged; on main they take the declared path and the run now says so.
+
+What remains open is the underlying content question — whether those three packs should gain real
+`.ps1` runners — not the check.
+
+With the heading check accepting YU states, the validator advances one further
 and stops at the *first* genuine content violation this chain has produced:
 
 ```
