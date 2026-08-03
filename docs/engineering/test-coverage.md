@@ -24,8 +24,8 @@ Where the two disagree, the executed number is the real one, and it is the one u
 | Suite | Tests |
 |---|---:|
 | Composed engine (`order-matcher`) | 335 |
-| Composed service modules | 162 |
-| **Total** | **497** |
+| Composed service modules | 164 |
+| **Total** | **499** |
 
 Zero failures.
 
@@ -58,10 +58,10 @@ composed and the shadowed copies are resolved.
 | trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ |
 | execution-algo-engine | 8 | 29 | ✅ |
 | position-service | 2 | 11 | ✅ |
-| account-service (account and user CRUD, people validation, outbox) | 8 | 31 | ✅ |
+| account-service (account and user CRUD, people validation, outbox) | 8 | 32 | ✅ |
 | aeron-replication-sidecar (peer resolution, readiness and schema endpoints) | 2 | 15 | ✅ |
-| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 7 | ✅ |
-| **Total** | **106** | **497** | |
+| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 8 | ✅ |
+| **Total** | **106** | **499** | |
 
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
@@ -194,7 +194,7 @@ The workflow has 10 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (162) — **497** | push and pull request |
+| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (164) — **499** | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
@@ -210,7 +210,7 @@ produce 10 legs. That is not three products being tested; it is one propagation 
 branch renders its own effective tree, so the same test name runs against differently composed
 code, and a fix that is live on one layer while shadowed on another appears as a single red leg
 beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests
-only because they carry fewer spec layers; **497 is the number that describes what is deployed**.
+only because they carry fewer spec layers; **499 is the number that describes what is deployed**.
 
 ## Verification tiers
 
@@ -218,7 +218,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 497, plus 48 baseline | CI, every push |
+| In-process tests | 499, plus 48 baseline | CI, every push |
 | Cross-service integration | 5 suites against real MariaDB and a real JetStream broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
