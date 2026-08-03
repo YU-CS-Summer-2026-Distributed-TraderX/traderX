@@ -76,6 +76,7 @@ for listed in ${active_packs[@]+"${active_packs[@]}"}; do
   (( found == 1 )) || fail "specs/README.md has non-catalog Active Feature Pack: ${listed}"
 done
 
+pack_id_re='[0-9]{3}[a-z]?|YU[0-9]{2}'
 seen_feature_pack_numbers=()
 seen_feature_pack_files=()
 for id in "${all_ids[@]}"; do
@@ -84,32 +85,39 @@ for id in "${all_ids[@]}"; do
   first_line="$(sed -n '1p' "${readme}")"
   expected_num="${id%%-*}"
 
-  # The YU lineage is a fork of the numbered states and uses YUnn ids rather than three digits;
-  # its packs follow the same '# Feature Pack <id>: <title>' heading style, so accept both forms.
-  # The duplicate-number check below then covers YU ids too, since it compares captured text.
-  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}[a-z]?|YU[0-9]{2}): ]]; then
+  # The YU lineage is a fork of the numbered states and uses YUnn ids rather than three digits.
+  # Three heading shapes are in use across the packs: '# Feature Pack <id>: <title>' (the numbered
+  # packs and main's YU packs), '# Feature Pack: <full-id>' (the YU packs as they exist on the YU
+  # branches), and the '# <id> <title>' baseline style that 001 uses. Each branch below only
+  # classifies; the id match, duplicate scan and bookkeeping happen once on the shared path after
+  # the if, so every accepting shape is recorded -- keeping them inside the first branch is what
+  # left 001 invisible to duplicate detection.
+  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ (${pack_id_re}): ]]; then
     actual_num="${BASH_REMATCH[1]}"
-    [[ "${actual_num}" == "${expected_num}" ]] || fail "${readme} heading number ${actual_num} does not match state id ${expected_num}"
-    idx=-1
-    i=0
-    for seen_num in "${seen_feature_pack_numbers[@]-}"; do
-      if [[ "${seen_num}" == "${actual_num}" ]]; then
-        idx="${i}"
-        break
-      fi
-      i=$((i + 1))
-    done
-    if (( idx >= 0 )); then
-      fail "duplicate Feature Pack number ${actual_num} in ${readme} and ${seen_feature_pack_files[${idx}]}"
-    fi
-    seen_feature_pack_numbers+=("${actual_num}")
-    seen_feature_pack_files+=("${readme}")
+  elif [[ "${first_line}" =~ ^#\ Feature\ Pack:\ (${pack_id_re})- ]]; then
+    actual_num="${BASH_REMATCH[1]}"
   elif [[ "${first_line}" =~ ^#\ ${expected_num}\  ]]; then
     # Allowed alternate style for baseline-style headers.
-    :
+    actual_num="${expected_num}"
   else
-    fail "${readme} heading must begin with '# Feature Pack ${expected_num}:' or '# ${expected_num} ...'"
+    fail "${readme} heading must begin with '# Feature Pack ${expected_num}:', '# Feature Pack: ${id}' or '# ${expected_num} ...'"
   fi
+
+  [[ "${actual_num}" == "${expected_num}" ]] || fail "${readme} heading number ${actual_num} does not match state id ${expected_num}"
+  idx=-1
+  i=0
+  for seen_num in "${seen_feature_pack_numbers[@]-}"; do
+    if [[ "${seen_num}" == "${actual_num}" ]]; then
+      idx="${i}"
+      break
+    fi
+    i=$((i + 1))
+  done
+  if (( idx >= 0 )); then
+    fail "duplicate Feature Pack number ${actual_num} in ${readme} and ${seen_feature_pack_files[${idx}]}"
+  fi
+  seen_feature_pack_numbers+=("${actual_num}")
+  seen_feature_pack_files+=("${readme}")
 
   grep -q 'badgen.net/badge/linux%2Fmac/' "${readme}" || fail "${readme} missing linux/mac support badge"
   grep -q 'badgen.net/badge/windows/' "${readme}" || fail "${readme} missing windows support badge"
