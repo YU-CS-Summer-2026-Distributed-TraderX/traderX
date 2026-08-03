@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: tick-store
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/tick-store:state009-yu09-20260713
+          image: traderx/tick-store:state-yu07
           imagePullPolicy: IfNotPresent
           env:
             - name: TICKSTORE_NATS_URL
