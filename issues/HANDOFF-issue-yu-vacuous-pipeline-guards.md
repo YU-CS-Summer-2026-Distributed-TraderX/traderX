@@ -115,7 +115,8 @@ rejects correct input is the louder failure but the cheaper one — it gets noti
 
 ## Unmasked by that fix: the Feature Pack heading check has never accepted a YU state
 
-**Open — not fixed.** Found 2026-08-03 immediately after `361272b5`: with the parser bug gone,
+**FIXED 2026-08-03 on YU15 — needs propagating to the other 15 branches.** yaakov picked option 1
+below; landed as the commit carrying this note. Found immediately after `361272b5`: with the parser bug gone,
 `validate-state-doc-consistency.sh` advances past the Active Feature Packs section and fails on the
 next check, which was unreachable while `fail` exited earlier.
 
@@ -175,6 +176,48 @@ the canon is yaakov's call.
 **Whichever is picked, the duplicate-detection bookkeeping must be fixed alongside the regex** — a
 regex widened on its own trades this loud failure for a quiet one, which is precisely the failure
 mode the four guards above document.
+
+### What landed
+
+Option 1, both halves. `pack_id_re='[0-9]{3}[a-z]?|YU[0-9]{2}'`, three accepting branches
+(`# Feature Pack <id>:`, `# Feature Pack: <id>-…`, and the `001` alt style), each setting
+`actual_num`; the id-match, duplicate-scan and `seen_feature_pack_numbers+=` bookkeeping moved out
+of the numeric branch and onto the shared path after the `if`. No `specs/` file touched.
+
+Re-simulated over all 29 catalog ids: **29 accepted, 29 recorded, 29 distinct, zero id mismatches**
+— 14 via `# Feature Pack <id>:` (13 numbered + YU01), 14 via `# Feature Pack: <id>`, `001` via the
+alt style. Duplicate-number coverage goes 13 → 29.
+
+## Unmasked in turn: three YU packs fail the shell/PowerShell parity check
+
+**Open — not fixed.** With the heading check accepting YU states, the validator advances one further
+and stops at the *first* genuine content violation this chain has produced:
+
+```
+[fail] specs/YU09-ops-hardening/README.md contains shell invocation(s) without PowerShell equivalent
+```
+
+`YU09-ops-hardening`, `YU10-fix-ingress` and `YU11-aeron-replication` mention a `.sh` file and carry
+no `.ps1` anywhere. The other twelve YU packs pass only because they never trip the trigger — none
+of them carries a `.ps1` either.
+
+Unlike every other finding in this file, **this one is not a parsing gap** — the check works, it has
+simply never been pointed at these packs. What it caught is arguably a false positive, and that is
+the decision to make before editing anything: the check fires on any *mention* of a `.sh` file,
+whereas all three hits are prose references to developer tooling, not run instructions a Windows
+user would follow —
+
+| pack | the line that trips it |
+|---|---|
+| YU09 | `` `pipeline/publish-generated-state-branch.sh` rebuilds a fresh jar before every JVM service's … `` |
+| YU10 | `` `scripts/bench/load/fix-load.mjs`, `scripts/proofs/yu10-fix-session.sh` — throughput sender and … `` |
+| YU11 | `` `scripts/bench/run-yu11-aeron-transport.sh` — transport A/B harness and allocation proof `` |
+
+The numbered packs that trip it (001, 002, 004, 011, 012, 013) all do carry `.ps1` equivalents,
+because there the `.sh` references *are* run instructions — so the check's intent is real and it
+should not be weakened on the strength of these three. Either add the PowerShell equivalents or
+reword the three bullets so they do not read as invocations. Left alone here: those packs are in
+flight, and this is content work on `specs/`, which the option-1 decision deliberately avoided.
 
 ## The lesson
 
