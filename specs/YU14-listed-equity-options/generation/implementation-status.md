@@ -73,7 +73,7 @@ read and one multiply; registration-path parsing is cold.
 first-limit sticky).
 
 - **Option-chain seeding + smoke (the OSFF-1 silent-reject gate, exercised first):**
-  `scripts/bench/seed-option-chain.sh` seeded the packaged 24-contract chain (AAPL/MSFT x
+  `scripts/proofs/seed-option-chain.sh` seeded the packaged 24-contract chain (AAPL/MSFT x
   2 expiries x 3 strikes x call/put, intrinsic+$2 premiums) through the unchanged `/seed`,
   then booked one option cross on `AAPL260918C00240000` @ $3.80 — fills 0 → 2 (both sides).
 - **No-regression bench** (in-cluster bench pod, conc 48 x batch 200, SIDES=alternate,

@@ -15,7 +15,7 @@
       non-3 formats; round-trip tests.
 - [x] T-LEO06 — Reference data: `instruments.csv` (seeded chain, derived columns, currency) and
       `counterparties.csv` (accountId → counterparty/netting set/currency).
-- [x] T-LEO07 — Seed + smoke: `scripts/bench/seed-option-chain.sh` seeds the chain through
+- [x] T-LEO07 — Seed + smoke: `scripts/proofs/seed-option-chain.sh` seeds the chain through
       `/seed` and proves one option cross books on a live kind cluster (the silent-reject
       admission gate exercised first).
 - [x] T-LEO08 — Full regression: `test`, `noGcTest`, `riskNoGcTest`, all four allocation gates.

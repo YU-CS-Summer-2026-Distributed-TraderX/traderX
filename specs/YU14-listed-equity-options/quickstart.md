@@ -43,7 +43,7 @@ x call/put, premium-scale prices), then cross one contract:
 
 ```bash
 bash scripts/start-state-YU14-listed-equity-options-generated.sh
-bash scripts/bench/seed-option-chain.sh          # seeds accounts, underlyings, and the chain
+bash scripts/proofs/seed-option-chain.sh          # seeds accounts, underlyings, and the chain
 ```
 
 The script finishes by submitting a resting sell and a crossing buy on one contract and
