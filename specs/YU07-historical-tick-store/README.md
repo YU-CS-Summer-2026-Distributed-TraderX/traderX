@@ -33,6 +33,7 @@ Core artifacts:
 - `system/runtime-topology.md`
 - `system/messaging-subject-map.md`
 - `system/adr-029-tick-store-component-and-streaming-taq-ingestion.md`
+- `system/adr-059-kdb-analytical-layer-and-off-consensus-capture.md`
 - `generation/generation-hook.md`
 - `generation/implementation-status.md`
 
@@ -42,3 +43,18 @@ Target runtime behavior:
   `ingest_taq_quotes.py` on demand against a TAQ CSV piped through `unzip -p`.
 - Everything else (deploy/runtime harness, observability stack, every existing service) is inherited
   unchanged from `YU06-eod-price-production`.
+
+## Added later — the KDB-X analytical layer
+
+Added after this state's original implementation; specified in the addendum in `spec.md` and
+decided in `system/adr-059`. It reads the corpus above rather than changing it.
+
+- `generation/runtime-overrides/tick-store/kdb/` — `tickstore.q` maps the existing ZSTD Parquet
+  objects as date/symbol-partitioned `quote` and `trade` tables with no conversion step; `txstore.q`
+  loads TraderX's own captured `txOrder` and `txTrade`; `selfcheck.q` (17 gates,
+  cross-implementation against DuckDB) and `txselfcheck.q` (18 gates over a fixture the cluster
+  itself wrote) gate both.
+- The leader-side capture tap that produces those rows, `KdbTapWriter`, ships in the
+  `YU13-limit-order-book` layer because it lives in the clustered `order-matcher`. On this state
+  and its pre-cluster descendants the session store loads from file, and its gates run against the
+  committed fixture without a cluster.

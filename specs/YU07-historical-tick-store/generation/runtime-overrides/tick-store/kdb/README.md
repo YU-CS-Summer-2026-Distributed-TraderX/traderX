@@ -1,9 +1,26 @@
 # KDB-X as the YU07 tick store
 
-KDB-X reads the existing TAQ Parquet corpus **natively, with no conversion step**. The store is
-the corpus: `gs://traderx-501015-tick-store/ticks/source=taq/`, ZSTD, untouched. What lives here
-is a ~130-line q layer that maps those objects as a date/symbol-partitioned virtual table and
-gives you `quote`, `trade`, VWAP, spread, and session playback on top.
+Two stores live here, side by side.
+
+**The market's tape** (`tickstore.q`) — KDB-X reads the existing TAQ Parquet corpus **natively,
+with no conversion step**. The store is the corpus:
+`gs://traderx-501015-tick-store/ticks/source=taq/`, ZSTD, untouched. A ~130-line q layer maps
+those objects as a date/symbol-partitioned virtual table and gives you `quote`, `trade`, VWAP,
+spread, and session playback on top.
+
+**Our own flow** (`txstore.q`) — the TraderX cluster's orders and executions, captured live off
+the leader by an off-consensus tap, as `txOrder` and `txTrade`.
+
+## The naming, because two things here would otherwise collide
+
+| table | what it is | written by | loaded by |
+|---|---|---|---|
+| `quote`, `trade` | NYSE TAQ tape — what the **market** did | the TAQ ingest | `tickstore.q` |
+| `txOrder`, `txTrade` | **our** matching engine's order lifecycle and executions | `KdbTapWriter` | `txstore.q` |
+
+A tape print and an engine execution are different objects with different provenance. One `trade`
+table holding both is exactly how a VWAP ends up silently answering a question nobody asked, so
+they never share a name. `txTrade` rows carry an `account`; tape trades never do.
 
 ## Two things called "journal", two things called "playback"
 
@@ -17,6 +34,10 @@ gives you `quote`, `trade`, VWAP, spread, and session playback on top.
 Nothing in this directory is authoritative, on the hot path, or required for recovery. The Aeron
 Archive consensus journal is untouched and stays the deterministic replay source of truth.
 
+Concretely, for our own session capture: the capture log is a kdb **tickerplant log**, not a
+journal. Delete the whole directory and the cluster still recovers byte-identically; delete the
+Aeron Archive and it does not. That asymmetry is the design, not an oversight.
+
 ## Run it
 
 ```bash
@@ -24,7 +45,21 @@ bash fetch-sample.sh                                  # ~310 MB, 2 days x 4 symb
 TICKSTORE_ROOT=~/dev/lmax/kdb-tickstore/sample q selfcheck.q
 ```
 
-`selfcheck.q` is the regression gate: 17 checks, every expected value computed independently with
+`txselfcheck.q` is the same kind of gate for the session store: 18 checks over a fixture the
+**cluster itself wrote** (`fixtures/session-yu13`, produced by
+`AeronClusterSpikeTest.leaderTapCapturesTheAppliedSessionForKdb` — a real Aeron cluster applying
+real consensus ingress, whose Java assertions pin the same session against the engine's own trade
+counter). It runs without a cluster, a corpus, or a network:
+
+```bash
+q txselfcheck.q                              # the committed fixture
+TXSTORE_DIR=./capture q txselfcheck.q        # shape checks against a live capture
+```
+
+It is falsifiable, which is the only reason to trust it: drop one side of a cross from the fixture
+and the gate fails with exit 1 rather than quietly halving every volume.
+
+`selfcheck.q` is the tape's regression gate: 17 checks, every expected value computed independently with
 DuckDB over the same files, so it is a cross-implementation check rather than kdb agreeing with
 itself. It fails loudly on a wrong row count, a lost duplicate collapse, a broken quote/trade
 split, a drifted VWAP, or an out-of-order replay.
@@ -39,6 +74,54 @@ ok   deduped corpus total
 ...
 selfcheck: 17 checks passed.
 ```
+
+## The live capture (our own flow)
+
+`KdbTapWriter` (order-matcher, `cluster` package) sits beside `TradeNatsPublisher` and
+`OrderNatsPublisher` in the same output-ring drain: leader-only, off-consensus, best-effort, and
+non-blocking. Set `KDB_TAP_DIR` and it appends two CSVs per member; leave it unset and the tap
+never starts (one null check per output event, the same shape as the two NATS bridges).
+
+```
+/data/kdb-capture/txorder-<epoch>-<member>.csv
+/data/kdb-capture/txtrade-<epoch>-<member>.csv
+```
+
+Only the leader writes, but a member that led earlier keeps its own file, so pull all three into
+one directory and load them together:
+
+```bash
+for i in 0 1 2; do
+  kubectl -n traderx cp order-matcher-cluster-$i:/data/kdb-capture ./capture
+done
+TXSTORE_DIR=./capture q txstore.q
+```
+
+Then:
+
+```q
+.tx.fills[]                     / per symbol: executions, volume, our fill VWAP
+.tx.orders[]                    / final state per order, keyed (epoch;ref)
+.tx.gaps[]                      / consensus sequences that produced no captured row
+.tx.replay[.tx.session[];1.0;{show x}]   / 1.0 = real time, 0w = as fast as possible
+```
+
+**Four properties worth stating out loud**, because each is a bug this project has already paid
+for once:
+
+1. **The tap is never in the apply path.** The service thread allocates one record and does a
+   non-blocking queue offer; a daemon thread does every file system call. A stalled disk fills the
+   queue and drops — it cannot wedge apply.
+2. **Drops are the sampling policy, and they are loud.** The first drop and every 10,000th print a
+   WARN; `stop()` prints the totals — that counter is the authoritative loss signal. `.tx.gaps[]`
+   is the view from the other end and answers a narrower question: which consensus sequences
+   produced no captured row. Control events (seeding, price ticks, symbol registration) consume
+   sequence numbers without producing one, so gaps are **expected** around them — a gap is a
+   question, not a verdict, and it is here so nobody quotes an aggregate as a census unread.
+3. **Rows are epoch-qualified.** `orderRef` restarts at 1 on a fresh cluster incarnation, so
+   `.tx.orders[]` keys on `(epoch;ref)`. A bare ref silently merges two different orders.
+4. **A security whose ticker was never registered is captured as `#<id>`, not dropped.** Skipping
+   it would thin the store silently — the failure mode the tap exists to make impossible.
 
 ## Query it
 
@@ -102,9 +185,17 @@ those columns is a change to the ingest, not a re-run.
 - Never hand the store a recursive glob. ~10,100 symbol partitions per trading day means `**`
   LISTs ~400k objects before any predicate prunes. `.ts.scan` walks `dt=`/`symbol=` literally.
 
+## Where the tap ships, which is not here
+
+`KdbTapWriter` lives in the **`YU13-limit-order-book`** layer, not this one, because it sits in the
+clustered `order-matcher` that only exists from `YU12-aeron-cluster` onward. This directory is the
+store and its gates; the tap is the writer.
+
+That split is why `txselfcheck.q` runs off a committed fixture rather than a live capture: on this
+state and every pre-cluster descendant there is no cluster to tap, and the gate still has to pass.
+Load a real capture with `TXSTORE_DIR` when you have one.
+
 ## Not done here
 
-The off-consensus leader-side tap that feeds live cluster orders and trades into this store is not
-built — it needs a running cluster, and this work was deliberately local. The tap belongs beside
-`TradeNatsPublisher` / `OrderNatsPublisher`, best-effort with a visible drop signal, never in the
-apply path, reusing the `OutputPublisher` drain-and-retry discipline.
+Backtesting and serving the execution algo engine off this store — both are separate work, not
+this directory's.

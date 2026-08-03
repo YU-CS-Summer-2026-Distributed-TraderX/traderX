@@ -34,3 +34,29 @@ queried by symbol and date range.
   inventory queries that read live and TAQ rows together in one `read_parquet(..., hive_partitioning=true)`.
 - Optional Google Cloud Storage output: a `gs://` destination path configures DuckDB's native `gcs`
   secret from HMAC environment variables, letting the store run with no attached volume.
+
+## Added later — the KDB-X analytical layer
+
+Added after this state's original implementation; see the addendum in `spec.md`. It reads the
+corpus above rather than changing it — the Parquet layout, schema and ingestion contract are
+untouched.
+
+- A KDB-X layer (`kdb/tickstore.q`) that maps the existing ZSTD Parquet objects as a
+  date/symbol-partitioned virtual table. There is no conversion step and no second copy: the store
+  *is* the corpus, and partition columns come from the path the ingest already wrote.
+- `quote` and `trade` for the market tape, `txOrder` and `txTrade` (`kdb/txstore.q`) for TraderX's
+  own flow. The two never share a table name, because one `trade` table holding both is how a VWAP
+  ends up silently answering a question nobody asked.
+- Query verbs over the tape — `.ts.vwap`, `.ts.spread`, `.ts.session`, `.ts.replay` — and over our
+  own flow — `.tx.fills`, `.tx.orders`, `.tx.gaps`, `.tx.replay`.
+- Duplicate collapse at load: re-ingest wrote new UUID-named files beside the old ones, so one file
+  per distinct byte size is kept within each `(dt;symbol;kind)` group, and what was dropped is
+  printed. An *unequal*-sized pair is a partial write, not a duplicate, so it is kept and flagged.
+- `kdb/selfcheck.q` — 17 gates over the tape, every expected value computed independently in DuckDB
+  over the same files, so the store is checked against something other than itself.
+- `kdb/txselfcheck.q` — 18 gates over the session store, run against a fixture the cluster itself
+  wrote under real consensus, needing no cluster, corpus or network.
+- The leader-side capture tap that produces `txOrder`/`txTrade` is `KdbTapWriter` and ships in the
+  `YU13-limit-order-book` layer, since it lives in the clustered `order-matcher`. Its rows are
+  epoch-qualified, and a security whose ticker was never registered is captured under a synthetic
+  identifier rather than dropped.
