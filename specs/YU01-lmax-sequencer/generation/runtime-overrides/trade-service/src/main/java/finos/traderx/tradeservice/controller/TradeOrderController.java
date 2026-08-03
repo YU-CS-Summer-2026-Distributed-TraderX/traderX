@@ -85,33 +85,28 @@ public class TradeOrderController {
   }
 
   private boolean validateTicker(String ticker) {
-    String url = this.referenceDataServiceAddress + "/stocks/" + ticker;
+    // Only a 404 means "no such ticker"; every other 4xx propagates, as 5xx already did. The
+    // ticker is a URI VARIABLE so a symbol carrying a delimiter is carried by the request rather
+    // than changing it. Same fix as the YU02 layer, which supersedes this copy from YU02 onward.
+    String url = this.referenceDataServiceAddress + "/stocks/{ticker}";
     try {
-      ResponseEntity<Security> response = this.restTemplate.getForEntity(url, Security.class);
+      ResponseEntity<Security> response = this.restTemplate.getForEntity(url, Security.class, ticker);
       log.info("Validate ticker {}", response.getBody());
       return true;
-    } catch (HttpClientErrorException ex) {
-      if (ex.getRawStatusCode() == 404) {
-        log.info("{} not found in reference data service.", ticker);
-      } else {
-        log.error(ex.getMessage(), ex);
-      }
+    } catch (HttpClientErrorException.NotFound ex) {
+      log.info("{} not found in reference data service.", ticker);
       return false;
     }
   }
 
   private boolean validateAccount(Integer id) {
-    String url = this.accountServiceAddress + "/account/" + id;
+    String url = this.accountServiceAddress + "/account/{id}";
     try {
-      ResponseEntity<Account> response = this.restTemplate.getForEntity(url, Account.class);
+      ResponseEntity<Account> response = this.restTemplate.getForEntity(url, Account.class, id);
       log.info("Validate account {}", response.getBody());
       return true;
-    } catch (HttpClientErrorException ex) {
-      if (ex.getRawStatusCode() == 404) {
-        log.info("Account {} not found in account service.", id);
-      } else {
-        log.error(ex.getMessage(), ex);
-      }
+    } catch (HttpClientErrorException.NotFound ex) {
+      log.info("Account {} not found in account service.", id);
       return false;
     }
   }

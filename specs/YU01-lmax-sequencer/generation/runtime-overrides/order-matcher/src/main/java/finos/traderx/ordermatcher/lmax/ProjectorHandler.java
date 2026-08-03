@@ -6,6 +6,8 @@ import finos.traderx.ordermatcher.model.PositionID;
 import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.model.TradeSide;
 import finos.traderx.ordermatcher.model.TradeState;
+import finos.traderx.ordermatcher.repository.OrderRepository;
+import finos.traderx.ordermatcher.repository.PositionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -54,6 +56,10 @@ import java.util.concurrent.atomic.LongAdder;
  *       sequence absorbed, advanced on every event incl. no-ops). {@code projectedSeq} advances to
  *       that target only after the flush commits, so it still marks exactly how far the durable
  *       projection has caught up (recovery resume point + {@code traderx_projector_lag_seq}).</li>
+ *   <li><b>Retry without loss (FR-09B24).</b> A rolled-back flush is folded back UNDER whatever
+ *       arrived during it and retried after a short back-off. That is what the older drain thread's
+ *       {@code dbDown} flag bought — a DB outage costs staleness, never a dropped row — without a
+ *       second stalled-DB code path.</li>
  * </ul>
  *
  * <p><b>Trades are the one exception.</b> They are append-only, so they cannot coalesce — the trade
@@ -61,11 +67,16 @@ import java.util.concurrent.atomic.LongAdder;
  * fine for bench/demo bursts but is the firehose that step 3 (trades-as-async-archive / journal as
  * source of truth) removes from the DB hot path entirely. Orders and positions are already bounded.
  *
+ * <p>All three tables are written as blind multi-row upserts in MariaDB dialect
+ * ({@code ON DUPLICATE KEY UPDATE}) straight through the {@link JdbcTemplate}; the JPA repositories
+ * are no longer on this path — their per-row merge SELECT is exactly the cost this variant removes.
+ *
  * <p>Durability of accepted orders is unaffected — that lives on the INPUT ring (journaler +
  * replicator, gated before matching). This handler is only the queryable projection; schema and row
  * semantics still match 009. Live consumers already get real-time data over NATS, so the DB lagging
  * the engine (now pure, measurable buffer depth rather than engine backpressure) is invisible to
- * them.
+ * them. Journal replay writes through here too — the projection is what a replay rebuilds, so
+ * unlike the NATS-facing handlers this one is deliberately NOT gated on {@code isReplaying()}.
  */
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
@@ -103,14 +114,29 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                             int queueCapacity, HotPathMetrics metrics) {
         this.jdbcTemplate = jdbcTemplate;
         // One transaction manager over the same DataSource the JdbcTemplate uses, so the whole flush
-        // (orders + trades + positions) runs on a single connection and commits exactly once.
-        this.txTemplate = new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource()));
+        // (orders + trades + positions) runs on a single connection and commits exactly once. Null
+        // is the no-DB harness below: it never starts the drain, so no manager is needed.
+        this.txTemplate = jdbcTemplate == null ? null
+            : new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource()));
         this.symbols = symbols;
         this.batchSize = Math.max(1, batchSize);
         this.queueCapacity = Math.max(1024, queueCapacity);
         this.metrics = metrics;
         this.drainThread = new Thread(this::drainLoop, "projector-drain");
         this.drainThread.setDaemon(true);
+    }
+
+    /**
+     * No-DB harness constructor for the output-handler allocation gate, attribution and topology
+     * benchmarks (ODL-05 / SC-NGC-04), which drive {@link #onEvent} with null repositories and no
+     * JdbcTemplate and never {@link #start()} the drain. The repository arguments are inert — this
+     * variant upserts every table through the JdbcTemplate — and stay in the signature only so
+     * those gates keep compiling against the projector they were written for.
+     */
+    public ProjectorHandler(OrderRepository orderRepository, PositionRepository positionRepository,
+                            JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
+                            HotPathMetrics metrics) {
+        this(jdbcTemplate, symbols, batchSize, 0, metrics);   // capacity is advisory only now
     }
 
     public void start() {
@@ -202,7 +228,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 // One transaction for the whole flush: orders + trades + positions commit as a single
                 // DB-visible unit on one connection, so the read-model always reflects a consistent
                 // PREFIX of the sequenced stream. All three are blind multi-row upserts (no per-row
-                // merge SELECT).
+                // merge SELECT), chunked so no single statement grows unbounded.
                 txTemplate.executeWithoutResult(status -> {
                     if (!orderFlush.isEmpty()) {
                         insertOrdersBatch(orderFlush.values());
@@ -218,7 +244,8 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 // Rolled back: nothing was written. Fold the failed batch back UNDER any newer updates
                 // that arrived during the flush (newer wins for coalesced keys; trades are restored
                 // ahead of newer trades), then back off and retry. Idempotent upserts make the retry
-                // safe; the watermark does not advance, so no consumer sees a gap. No row is dropped.
+                // safe; the watermark does not advance, so no consumer sees a gap. No row is dropped
+                // (FR-09B24), and memory stays bounded for orders/positions because they coalesce.
                 log.warn("Read-model projection failed at seq {} ({} rows): {}", target, rows, ex.getMessage());
                 synchronized (lock) {
                     for (Map.Entry<String, OrderRecord> en : orderFlush.entrySet()) {

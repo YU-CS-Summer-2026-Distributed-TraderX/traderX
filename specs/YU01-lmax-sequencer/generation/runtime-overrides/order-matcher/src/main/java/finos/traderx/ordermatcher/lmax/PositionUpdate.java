@@ -9,9 +9,9 @@ import java.util.Date;
  * from PositionUpdated. Field names match the existing position-service/web UI contract.
  */
 public final class PositionUpdate {
-    private Integer accountId;
+    private int accountId;
     private String security;
-    private Integer quantity;
+    private int quantity;
     private BigDecimal averageCostBasis;
     private Date updated;
 
@@ -19,7 +19,7 @@ public final class PositionUpdate {
         return accountId;
     }
 
-    public void setAccountId(Integer accountId) {
+    public void setAccountId(int accountId) {
         this.accountId = accountId;
     }
 
@@ -35,7 +35,7 @@ public final class PositionUpdate {
         return quantity;
     }
 
-    public void setQuantity(Integer quantity) {
+    public void setQuantity(int quantity) {
         this.quantity = quantity;
     }
 
@@ -57,11 +57,23 @@ public final class PositionUpdate {
 
     public static PositionUpdate fromEvent(OutputEvent e, SymbolTable symbols) {
         PositionUpdate payload = new PositionUpdate();
-        payload.setAccountId(e.accountId);
-        payload.setSecurity(symbols.tickerFor(e.securityId));
-        payload.setQuantity(e.positionQty);
-        payload.setAverageCostBasis(e.averageCostBasisPx == Px.NONE ? null : Px.toBigDecimal(e.averageCostBasisPx));
-        payload.setUpdated(new Date(e.updatedAtMillis));
+        payload.copyFromEvent(e, symbols);
         return payload;
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols, OutputValueCache values) {
+        setAccountId(e.accountId);
+        setSecurity(symbols.tickerFor(e.securityId));
+        setQuantity(e.positionQty);
+        averageCostBasis = values.priceFor(e.averageCostBasisPx);
+        if (updated == null) {
+            updated = new Date(e.updatedAtMillis);
+        } else {
+            updated.setTime(e.updatedAtMillis);
+        }
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols) {
+        copyFromEvent(e, symbols, new OutputValueCache());
     }
 }

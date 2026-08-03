@@ -12,7 +12,7 @@ import java.math.RoundingMode;
 import java.util.Date;
 
 /**
- * Net-position read-model row (POSITIONS). state YU01: the BLP is the single position writer
+ * Net-position read-model row (POSITIONS). State 009b: the BLP is the single position writer
  * (FR-09B10) and the order-matcher Projector persists the result (FR-09B22). Schema and shape
  * are identical to 009 — only the writer changed (the BLP keeps the running net quantity and
  * weighted {@code AVERAGECOSTBASIS} on the single thread, FR-09B40 contract parity).
@@ -72,6 +72,10 @@ public class Position implements Serializable {
 
   public void setAverageCostBasis(BigDecimal averageCostBasis) {
     this.averageCostBasis = averageCostBasis == null ? null : averageCostBasis.setScale(3, RoundingMode.HALF_UP);
+  }
+
+  public void setPreScaledAverageCostBasis(BigDecimal averageCostBasis) {
+    this.averageCostBasis = averageCostBasis;
   }
 
   public Date getUpdated() {
