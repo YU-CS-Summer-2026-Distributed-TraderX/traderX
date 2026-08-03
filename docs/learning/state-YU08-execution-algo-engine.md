@@ -20,12 +20,12 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 
 ## Rendered Code
 
-- Generated branch: [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine)
+- Generated branch: [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU07-historical-tick-store`: [YU07-historical-tick-store...YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU07-historical-tick-store...YU08-execution-algo-engine)
+- Compare against `YU07-historical-tick-store`: [code/generated-state-YU07-historical-tick-store...code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU07-historical-tick-store...code%2Fgenerated-state-YU08-execution-algo-engine)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 ## Run This State
 
 ```bash
-inherits YU07-historical-tick-store runtime harness
+./scripts/start-state-YU08-execution-algo-engine-generated.sh
 ```
 
 ## Canonical Spec Links
