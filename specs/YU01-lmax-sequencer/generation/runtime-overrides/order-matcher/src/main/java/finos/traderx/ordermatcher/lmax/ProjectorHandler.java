@@ -7,6 +7,7 @@ import finos.traderx.ordermatcher.repository.OrderRepository;
 import finos.traderx.ordermatcher.repository.PositionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.NestedExceptionUtils;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -243,7 +244,12 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 // ahead of newer trades), then back off and retry. Idempotent upserts make the retry
                 // safe; the watermark does not advance, so no consumer sees a gap. No row is dropped
                 // (FR-09B24), and memory stays bounded for orders/positions because they coalesce.
-                log.warn("Read-model projection failed at seq {} ({} rows): {}", target, rows, ex.getMessage());
+                // Log the most specific cause, not just Spring's wrapper. The wrapper says
+                // "bad SQL grammar" for a plain missing table, which cost real time here: the flush
+                // was failing with Table "ORDERBOOK" not found and the message read like a dialect
+                // problem. YU02's layer already carries this; YU01's did not.
+                log.warn("Read-model projection failed at seq {} ({} rows): {} || cause: {}", target, rows,
+                    ex.getMessage(), NestedExceptionUtils.getMostSpecificCause(ex).toString());
                 synchronized (lock) {
                     // Same semantics as before the columns change: coalesced keys keep the NEWER value
                     // (fold-under, not overwrite), and restored trades go AHEAD of newer ones.
