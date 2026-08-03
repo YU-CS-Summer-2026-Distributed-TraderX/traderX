@@ -108,15 +108,15 @@ This state also carries the leader-side `KdbTapWriter` capture tap, for the reas
 in the clustered `order-matcher`. The store it feeds is specified in the
 `YU07-historical-tick-store` pack, which owns the tick store.
 
-**Where these are live, which is not uniform across the descendants.** The trace classes and the
-gateway-side spans sit in this state's `ClusterGatewayMain`, the operative copy on every
-descendant, so they hold on generated `YU13`, `YU14` and `YU15` alike. The member-side spans and
-the tap's wiring both sit in `MatchingEngineClusteredService` — a class `YU13`, `YU14` and `YU15`
-each override, so only a state's own copy is operative when that state is generated. Today that
-means a whole trace crossing consensus is live on generated `YU15` only, and the capture tap is
-wired on generated `YU13` and `YU15` but not `YU14`, whose override predates it. The requirements
-below state the capability's contract; `generation/implementation-status.md` records which
-generated state currently satisfies which.
+**Both hold on generated `YU13`, `YU14` and `YU15`, and getting there took a repair.** The trace
+classes and the gateway-side spans sit in this state's `ClusterGatewayMain`, which is the operative
+copy on every descendant. The member-side spans and the tap's construction both sit in
+`MatchingEngineClusteredService` — a class `YU13`, `YU14` and `YU15` each override, so only a
+state's own copy is operative when that state is generated, and each copy has to carry the
+capability itself. `YU14`'s did not: it was cut from a pre-tap, pre-tracing `YU13` and never
+re-synced, which left generated `YU14` unable to compile at all once the gateway began calling
+`spanSink()`. See the layer-coverage note in `generation/implementation-status.md` for what the
+repair was and what it proves.
 
 ### Functional Requirements
 

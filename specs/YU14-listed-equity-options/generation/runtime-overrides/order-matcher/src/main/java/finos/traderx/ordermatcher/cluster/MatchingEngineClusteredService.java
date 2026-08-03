@@ -698,17 +698,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
                     out.side, out.tradeQty, out.tradePx);
             }
-            // Leader-side order bridge: every order-state transition → NATS /orders → read model →
-            // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
-            // the trade bridge. Covers both the input's own order and counterparty resting orders
-            // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
-            // order is observable to its owner via this feed (brief 07).
-            if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
-                && orderBridge != null) {
-                orderBridge.offer(out.orderRef, out.accountId, tickerById[out.securityId],
-                    out.side, out.quantity, out.remainingQty, out.limitPx, out.status,
-                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis);
-            }
             // Analytical capture (brief 06), same leader-only non-blocking discipline, separate
             // queue. Deliberately in the same drain loop rather than a new emission point: the tap
             // observes what the deterministic engine already produced and adds nothing to it.
@@ -723,6 +712,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                         out.remainingQty, out.limitPx, out.status, out.lastExecPx, out.lastFillQty,
                         out.createdAtMillis, out.updatedAtMillis);
                 }
+            }
+            // Leader-side order bridge: every order-state transition → NATS /orders → read model →
+            // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
+            // the trade bridge. Covers both the input's own order and counterparty resting orders
+            // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
+            // order is observable to its owner via this feed (brief 07).
+            if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
+                && orderBridge != null) {
+                orderBridge.offer(out.orderRef, out.accountId, tickerById[out.securityId],
+                    out.side, out.quantity, out.remainingQty, out.limitPx, out.status,
+                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis);
             }
             ackBuffer.putLong(0, out.inputSeq);
             ackBuffer.putInt(8, out.orderRef);
