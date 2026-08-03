@@ -93,3 +93,73 @@
   p50/p99/p99.9/p99.99/max in nanoseconds for resting inserts, limit crosses, and market orders.
 - SC-LOB06: The full order-matcher test suite passes, with tick-triggered-fill scenarios
   rewritten as crossing scenarios that preserve each test's original proof intent.
+
+## Addendum: distributed tracing across the consensus boundary
+
+Added to this state after its original implementation. Tracing instruments the clustered
+`order-matcher` and its gateway, which is where this state's code already lives, so it extends
+`YU13` rather than standing as a state of its own. It is bound by one constraint above all others:
+**it may not change what the trading path costs, and it may not put a byte into the replicated
+log.** The observability platform itself — OTel Collector, Tempo, Loki, Prometheus, Grafana — has
+shipped in the Kubernetes runtime since state `007`; what was missing was anything emitting to it,
+and any scrape of the cluster tier.
+
+This state also carries the leader-side `KdbTapWriter` capture tap, for the reason above: it sits
+in the clustered `order-matcher`. The store it feeds is specified in the
+`YU07-historical-tick-store` pack, which owns the tick store.
+
+**Where these are live, which is not uniform across the descendants.** The trace classes and the
+gateway-side spans sit in this state's `ClusterGatewayMain`, the operative copy on every
+descendant, so they hold on generated `YU13`, `YU14` and `YU15` alike. The member-side spans and
+the tap's wiring both sit in `MatchingEngineClusteredService` — a class `YU13`, `YU14` and `YU15`
+each override, so only a state's own copy is operative when that state is generated. Today that
+means a whole trace crossing consensus is live on generated `YU15` only, and the capture tap is
+wired on generated `YU13` and `YU15` but not `YU14`, whose override predates it. The requirements
+below state the capability's contract; `generation/implementation-status.md` records which
+generated state currently satisfies which.
+
+### Functional Requirements
+
+- FR-TR01: One order SHALL produce one distributed trace spanning both tiers — the gateway's
+  submit and queue spans, the consensus black box, and the member's commit and apply spans.
+- FR-TR02: Trace identity, the member's parent span, and the head sampling verdict SHALL be
+  DERIVED on each tier by a pure function of a field the replicated log already carries (the
+  client idempotency key). No trace context SHALL be added to any sequenced message, and no
+  schema change SHALL be made on tracing's behalf.
+- FR-TR03: The member SHALL derive that key before the sequenced generator overwrites `orderRef`,
+  so both tiers hash identical input and independently reach the same trace id.
+- FR-TR04: A rejected order SHALL be traced whatever the sampling verdict said, with both tiers
+  reaching that decision independently from committed data — error sampling is decided at the
+  head, because a collector's tail sampling cannot recover a span head sampling never emitted.
+- FR-TR05: A log line SHALL join its trace by carrying the derived id in the line itself, not by a
+  label on the log stream.
+- FR-TR06: Cluster members SHALL be scraped per pod through the headless service, since role,
+  applied sequence and next order reference are per-member facts that a Service-level scrape
+  would round-robin into nonsense.
+- FR-TR07: Tracing SHALL be off unless explicitly enabled (`OTEL_TRACES=1`); otherwise every call
+  site SHALL hold a null reference.
+
+### Non-Functional Requirements
+
+- NFR-TR01: A producer thread — REST or FIX submit, the gateway owner thread, a member's apply
+  thread — SHALL do no more than copy a fixed record into a pre-allocated ring buffer and return.
+  No lock, no allocation, no I/O, and no backpressure path back to the caller. A full ring SHALL
+  drop the span and increment a counter.
+- NFR-TR02: All formatting, batching, HTTP and retry SHALL happen on a daemon thread that no order
+  ever touches; a collector outage SHALL cost a counter, not a millisecond.
+- NFR-TR03: The trace path SHALL allocate zero bytes on the gated hot path, holding under the same
+  allocation gates and the Epsilon no-GC run as the engine. The OpenTelemetry SDK SHALL NOT be
+  used, since its API allocates per span; OTLP/HTTP is emitted directly with a JSON body, adding
+  no dependency.
+- NFR-TR04: The derivation SHALL be one-way and read-only. It SHALL NOT be written back, encoded
+  into any output event, or branched on by the engine — deleting the tracing code SHALL leave
+  every member's output byte-identical.
+
+### Success Criteria
+
+- SC-TR01: One order produces one trace whose gateway root, queue span and consensus span carry
+  the member's commit and apply spans as children, proven end to end against a deployed cluster.
+- SC-TR02: A rejected order's log line resolves to that order's own trace by the derived id,
+  proven end to end.
+- SC-TR03: Both tiers are unit-proven to reach the same trace id, parent span and sampling verdict
+  from the same key, and the sink is unit-proven to drop rather than block when its ring is full.
