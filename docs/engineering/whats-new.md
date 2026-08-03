@@ -148,14 +148,16 @@ that already owned the ground, which is why they do not appear in the list above
 An order's trace follows it across the Raft cluster, exported asynchronously so telemetry never sits
 in front of a trade — a producer copies a few longs into a ring buffer and returns, and a full ring
 drops the span rather than slowing the order. Grafana, Prometheus, Loki and Tempo deploy with the
-platform. Folded into [YU13](/specs/YU13-limit-order-book).
+platform. Folded into [YU13](/specs/YU13-limit-order-book) — the long version is in
+[Observability and replay](observability-and-replay.md#opentelemetry--a-trace-that-survives-consensus).
 
 ### KDB-X tick store (kdb+/q)
 
 Two datasets side by side: the NYSE TAQ tape as `quote` and `trade`, and our own engine's flow as
 `txOrder` and `txTrade`, captured by a leader-side tap that sits off the consensus path. Naming them
 apart is deliberate — one `trade` table holding both is what makes a VWAP answer the wrong question.
-Folded into [YU07](/specs/YU07-historical-tick-store).
+Folded into [YU07](/specs/YU07-historical-tick-store) — the long version is in
+[Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
 
 ## See how it is verified
 

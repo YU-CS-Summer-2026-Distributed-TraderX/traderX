@@ -11,6 +11,9 @@ module.exports = {
       label: 'Testing',
       items: ['engineering/testing-strategy', 'engineering/test-coverage'],
     },
+    // After Testing, and top-level rather than inside it: tracing and the tick store are neither
+    // states nor test tiers, so they had nowhere to live. What's new links here for the long version.
+    'engineering/observability-and-replay',
     {
       type: 'category',
       label: 'Engineering Blog',
