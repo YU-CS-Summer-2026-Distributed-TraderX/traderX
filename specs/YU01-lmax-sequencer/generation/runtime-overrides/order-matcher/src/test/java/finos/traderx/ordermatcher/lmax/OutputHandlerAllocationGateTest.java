@@ -24,7 +24,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * framework overhead after warm-up.
  */
 class OutputHandlerAllocationGateTest {
-    private static final int WARMUP = 500;
+    // 500 was not enough to reach the steady state this test's name claims to measure: a JIT
+    // event landed inside the measured window and charged a one-off ~576 bytes to whichever
+    // handler happened to be measuring at the time — it moved between PositionUpdateHandler and
+    // TradeSubmitHandler across consecutive runs, which is how it was identified as an artifact
+    // rather than a per-event cost. At 20k it is gone and repeat runs agree. Budgets below are
+    // unchanged; this makes the measurement valid, it does not make the gate easier.
+    private static final int WARMUP = 20_000;
     private static final int ITERATIONS = 1_000;
     private static final int VARIED_EVENTS = 128;
 
