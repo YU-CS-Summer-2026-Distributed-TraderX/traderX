@@ -222,7 +222,13 @@ public class EodPnlConsumer {
         log.info("published eod.pnl.done msgId={} payload={}", msgId, payload);
     }
 
-    private void ensureStream(Connection conn) throws Exception {
+    /**
+     * Package-private so the container-backed test can drive it against a real broker, the same
+     * visibility {@code publishPnlDone} above already carries and for the same reason. The repair
+     * branch below is only meaningful against a real JetStream: a mocked JetStreamManagement
+     * returns the subjects the caller sets up, so it can never disagree with the caller.
+     */
+    void ensureStream(Connection conn) throws Exception {
         JetStreamManagement jsm = conn.jetStreamManagement();
         try {
             StreamInfo existing = jsm.getStreamInfo(streamName);

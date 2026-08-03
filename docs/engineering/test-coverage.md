@@ -40,7 +40,7 @@ nobody makes.
 | Coverage | Count | Made up of |
 |---|---:|---|
 | Baseline inherited services | 48 | Java 25 · NestJS 7 · .NET 16 |
-| Cross-service integration | 3 | real MariaDB, and a real broker where one is needed |
+| Cross-service integration | 4 suites | real MariaDB, and a real JetStream broker |
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
@@ -97,7 +97,7 @@ path and the build skipped them silently while still reporting success.
 
 ## Cross-service integration
 
-Three tests run against real infrastructure in containers rather than in-memory substitutes. They
+Four suites run against real infrastructure in containers rather than in-memory substitutes. They
 cover properties that live in the infrastructure rather than in application code, which is exactly
 the set a mock cannot reach: a mock returns what the caller expects, so a test built on one shows
 that the code asked for the right thing, never that the database agreed.
@@ -107,6 +107,7 @@ that the code asked for the right thing, never that the database agreed.
 | `TradeProcessorPersistenceIT` | MariaDB, deployed schema | an order for a non-existent account is rejected by the foreign key and **fails loudly** rather than being silently dropped |
 | `AccountOutboxAtomicityIT` | MariaDB, deployed schema and deployed server flags | the account write and its outbox row **commit as one unit or not at all** — asserted from a connection outside the application's transaction |
 | `TradeProcessorContextIT` | MariaDB + message broker | the composed context starts with wiring that dials the broker during bean creation |
+| `EodStreamRepairIT` (7 cases) | real JetStream | an existing `TRADERX_EOD` missing a required subject is **repaired, not accepted** — an unrepaired stream rejects the completion publish and the overnight chain breaks silently |
 
 `AccountOutboxAtomicityIT` is the counterpart to a unit test that mocks the outbox repository. With
 the repository mocked, the assertion is that it was *called* — which holds whether or not the two
@@ -184,7 +185,7 @@ cluster, so they are operator-run.
 
 ## What CI runs
 
-The workflow has 9 job definitions and 11 legs on a push.
+The workflow has 10 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
@@ -196,6 +197,7 @@ The workflow has 9 job definitions and 11 legs on a push.
 | integration (persistence) | real MariaDB in a container | push and pull request |
 | integration (outbox atomicity) | real MariaDB, deployed schema and server flags | push and pull request |
 | integration (context) | real MariaDB and message broker | push and pull request |
+| integration (EOD stream repair) | real JetStream broker | push and pull request |
 | cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
 
 The engine job also runs against YU15's two ancestor branches, which is why 8 job definitions
@@ -212,7 +214,7 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 | Layer | What | Where |
 |---|---|---|
 | In-process tests | 460, plus 48 baseline | CI, every push |
-| Cross-service integration | 3 tests against real MariaDB and a real broker | CI, every push |
+| Cross-service integration | 4 suites against real MariaDB and a real JetStream broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
 | Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
