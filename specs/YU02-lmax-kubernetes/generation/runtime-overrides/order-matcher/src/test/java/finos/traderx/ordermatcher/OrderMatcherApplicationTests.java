@@ -7,7 +7,9 @@ import org.springframework.boot.test.context.SpringBootTest;
 // journal off) so the suite is green without runtime infrastructure; messaging behavior
 // is covered by the state smoke tests against the real NATS broker.
 @SpringBootTest(properties = {
-    "spring.datasource.url=jdbc:h2:mem:ordermatcher;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+    // MySQL compat mode (not PostgreSQL): the projector's batch upserts use MariaDB dialect
+    // (INSERT IGNORE / ON DUPLICATE KEY UPDATE) since the read-model DB moved off Postgres.
+    "spring.datasource.url=jdbc:h2:mem:ordermatcher;MODE=MySQL;DB_CLOSE_DELAY=-1",
     "spring.datasource.driverClassName=org.h2.Driver",
     "spring.datasource.username=sa",
     "spring.datasource.password=sa",

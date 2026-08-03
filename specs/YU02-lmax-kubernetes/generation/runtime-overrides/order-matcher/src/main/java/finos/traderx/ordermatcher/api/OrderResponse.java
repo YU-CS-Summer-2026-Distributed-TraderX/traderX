@@ -21,8 +21,15 @@ public class OrderResponse {
     private BigDecimal lastExecutionPrice;
     private Integer lastFillQuantity;
     private BigDecimal marketPrice;
+    private String riskReason;
 
     public static OrderResponse from(OrderRecord order, BigDecimal marketPrice) {
+        return from(order, marketPrice, null);
+    }
+
+    /** Same as {@link #from(OrderRecord, BigDecimal)}, plus the risk rejection reason (FR-IMRG44)
+     * — null unless the risk gateway rejected this order (RiskReason name, e.g. "PRICE_COLLAR"). */
+    public static OrderResponse from(OrderRecord order, BigDecimal marketPrice, String riskReason) {
         OrderResponse response = new OrderResponse();
         response.orderId = order.getOrderId();
         response.accountId = order.getAccountId();
@@ -37,6 +44,7 @@ public class OrderResponse {
         response.lastExecutionPrice = order.getLastExecutionPrice();
         response.lastFillQuantity = order.getLastFillQuantity();
         response.marketPrice = marketPrice;
+        response.riskReason = riskReason;
         return response;
     }
 
@@ -52,6 +60,16 @@ public class OrderResponse {
                                      OrderStatus status, Instant createdAt, Instant updatedAt,
                                      BigDecimal lastExecutionPrice, Integer lastFillQuantity,
                                      BigDecimal marketPrice) {
+        return from(orderId, accountId, security, side, quantity, remainingQuantity, limitPrice, status,
+            createdAt, updatedAt, lastExecutionPrice, lastFillQuantity, marketPrice, null);
+    }
+
+    /** Same as the 13-arg {@code from(...)}, plus the risk rejection reason (FR-IMRG44). */
+    public static OrderResponse from(String orderId, Integer accountId, String security, OrderSide side,
+                                     Integer quantity, Integer remainingQuantity, BigDecimal limitPrice,
+                                     OrderStatus status, Instant createdAt, Instant updatedAt,
+                                     BigDecimal lastExecutionPrice, Integer lastFillQuantity,
+                                     BigDecimal marketPrice, String riskReason) {
         OrderResponse response = new OrderResponse();
         response.orderId = orderId;
         response.accountId = accountId;
@@ -66,6 +84,7 @@ public class OrderResponse {
         response.lastExecutionPrice = lastExecutionPrice;
         response.lastFillQuantity = lastFillQuantity;
         response.marketPrice = marketPrice;
+        response.riskReason = riskReason;
         return response;
     }
 
@@ -119,5 +138,9 @@ public class OrderResponse {
 
     public BigDecimal getMarketPrice() {
         return marketPrice;
+    }
+
+    public String getRiskReason() {
+        return riskReason;
     }
 }

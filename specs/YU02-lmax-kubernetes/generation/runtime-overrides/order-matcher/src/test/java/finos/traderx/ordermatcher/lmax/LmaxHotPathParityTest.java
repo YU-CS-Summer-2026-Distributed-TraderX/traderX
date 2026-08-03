@@ -33,7 +33,9 @@ import static org.junit.jupiter.api.Assertions.fail;
  * 009 poll/lock pipeline.
  */
 @SpringBootTest(properties = {
-    "spring.datasource.url=jdbc:h2:mem:ordermatcher9b;MODE=PostgreSQL;DB_CLOSE_DELAY=-1",
+    // MySQL compat mode (not PostgreSQL): the projector's batch upserts use MariaDB dialect
+    // (INSERT IGNORE / ON DUPLICATE KEY UPDATE) since the read-model DB moved off Postgres.
+    "spring.datasource.url=jdbc:h2:mem:ordermatcher9b;MODE=MySQL;DB_CLOSE_DELAY=-1",
     "spring.datasource.driverClassName=org.h2.Driver",
     "spring.datasource.username=sa",
     "spring.datasource.password=sa",
@@ -143,6 +145,23 @@ class LmaxHotPathParityTest {
         awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
         int securityId = engine.symbols().idFor("POSSELL");
         assertEquals(-300, engine.blp().positionQuantity(account, securityId));
+    }
+
+    @Test
+    void onPriceTickRawMatchesDecimalTickForSameFillOutcome() {
+        // The binary NATS tick subscriber calls onPriceTickRaw(ticker, priceTicks, sourceEpochMillis)
+        // with a price already in Px fixed-point ticks; it must drive the same auto-fill outcome as
+        // the JSON/BigDecimal path (onPriceTick) for the identical price.
+        int account = 62654;
+        OrderResponse created = service.createOrder(request(account, "GS", OrderSide.Buy, 400, "50.000"));
+        long priceTicks = Px.toTicks(new BigDecimal("49.750")); // in the money, 400 < 1000 -> full fill
+        service.onPriceTickRaw("GS", priceTicks, System.currentTimeMillis());
+        OrderResponse filled = awaitOrder(created.getOrderId(), o -> o.getStatus() == OrderStatus.FILLED);
+        assertEquals(0, filled.getRemainingQuantity());
+        assertEquals(400, filled.getLastFillQuantity());
+        assertEquals(0, new BigDecimal("49.750").compareTo(filled.getLastExecutionPrice()));
+        int securityId = engine.symbols().idFor("GS");
+        assertEquals(400, engine.blp().positionQuantity(account, securityId));
     }
 
     @Test

@@ -219,7 +219,9 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 // that arrived during the flush (newer wins for coalesced keys; trades are restored
                 // ahead of newer trades), then back off and retry. Idempotent upserts make the retry
                 // safe; the watermark does not advance, so no consumer sees a gap. No row is dropped.
-                log.warn("Read-model projection failed at seq {} ({} rows): {}", target, rows, ex.getMessage());
+                Throwable rootCause = org.springframework.core.NestedExceptionUtils.getMostSpecificCause(ex);
+                log.warn("Read-model projection failed at seq {} ({} rows): {} (root cause: {})",
+                    target, rows, ex.getMessage(), rootCause.getMessage());
                 synchronized (lock) {
                     for (Map.Entry<String, OrderRecord> en : orderFlush.entrySet()) {
                         orders.putIfAbsent(en.getKey(), en.getValue());
