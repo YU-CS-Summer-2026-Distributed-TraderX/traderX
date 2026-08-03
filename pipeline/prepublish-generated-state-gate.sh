@@ -105,10 +105,18 @@ done
 }
 
 state_num="${STATE_ID%%-*}"
-[[ "${state_num}" =~ ^[0-9]+[a-z]?$ ]] || fail "invalid state id format: ${STATE_ID}"
-# Numeric gate thresholds treat letter-suffixed sibling states (e.g. 009b-*)
-# as their numeric base.
-state_num="${state_num%%[a-z]*}"
+if [[ "${state_num}" =~ ^YU[0-9][0-9]$ ]]; then
+  # The YU lineage forks off after 014, so every numeric threshold below -- all of which ask "is
+  # this state at or past N?" -- must answer yes. Rank YU01..YU15 as 101..115: above the whole
+  # numbered lineage, order-preserving within itself. Matches publish-generated-state-branch.sh,
+  # which calls this script.
+  state_num="1${state_num#YU}"
+else
+  [[ "${state_num}" =~ ^[0-9]+[a-z]?$ ]] || fail "invalid state id format: ${STATE_ID}"
+  # Numeric gate thresholds treat letter-suffixed sibling states (e.g. 009b-*)
+  # as their numeric base.
+  state_num="${state_num%%[a-z]*}"
+fi
 state_num_decimal=$((10#${state_num}))
 
 [[ -d "${TARGET_ROOT}" ]] || fail "target root not found: ${TARGET_ROOT}"
