@@ -45,11 +45,16 @@ kind: Deployment
 metadata:
   name: cluster-gateway
 spec:
-  # 3 replicas is the baseline: with the REST Service now affinity-free (see above), the three
-  # gateways actually share load, which is the whole point of the split. Each pod is independent
-  # (own cluster session, own POD_IP:egress) so they scale linearly; std-pool has the capacity
-  # (3 ran here all session). Bump higher with `kubectl scale deploy/cluster-gateway --replicas=N`.
-  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # 4 replicas is the retained tier (2026-07-21 C4D retest): on C3 the fourth gateway lost to
+  # three because the leader was apply-saturated (2.80/3 cores); on c4d-standard-8 the leader
+  # peaks ~1.8/3 cores and the fourth gateway banked 382-426k booked/s vs 320-343k for three at
+  # the same b1000/c64. Needs four non-member nodes (default pool + three std-pool).
+  replicas: 4
   selector:
     matchLabels:
       app: cluster-gateway
@@ -60,20 +65,17 @@ spec:
     spec:
       # No node pin: the gateway is stateless-forward and runs on any non-member pool (default-pool
       # or std-pool). Removing the default-pool pin let scale-out replicas schedule onto std-pool
-      # once its capacity was added — the members' blp-c3-pool stays reserved via its taint.
+      # once its capacity was added — the members' tuned C4D pool stays reserved via its taint.
       #
-      # Spread gateways across nodes: each gateway's owner thread needs a real core. With all
-      # three packed on one 2-vCPU node (observed 2026-07-21 pre-restart) the tier tops out near
-      # the old 75k booked/s; spread one-per-node the same config measured 146-165k booked/s.
+      # Guarantee one gateway per node: each gateway's owner thread needs a real core. Preferred
+      # anti-affinity was observed packing replicas during rolling updates, invalidating runs.
       affinity:
         podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                labelSelector:
-                  matchLabels:
-                    app: cluster-gateway
-                topologyKey: kubernetes.io/hostname
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: cluster-gateway
+              topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
           image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13-idempfix
