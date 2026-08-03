@@ -271,7 +271,7 @@ validate_state_entries() {
 
   local extras=()
   local entry
-  for entry in "${entries[@]}"; do
+  for entry in ${entries[@]+"${entries[@]}"}; do
     is_ignored_entry "${entry}" && continue
     if ! path_in_list "${entry}" "${allowed[@]}"; then
       extras+=("${entry}")
@@ -297,7 +297,7 @@ validate_state_entries() {
   local missing_clone_entries=()
   local required_entry
   for required_entry in "${required_clone_entries[@]}"; do
-    if ! path_in_list "${required_entry}" "${entries[@]}"; then
+    if ! path_in_list "${required_entry}" ${entries[@]+"${entries[@]}"}; then
       missing_clone_entries+=("${required_entry}")
     fi
   done
@@ -317,7 +317,7 @@ validate_state_entries() {
     state_num="${state_num%%[a-z]*}"
   fi
   if [[ "${state_num}" =~ ^[0-9]+$ ]] && (( 10#${state_num} >= 6 )); then
-    if path_in_list "trade-feed" "${entries[@]}"; then
+    if path_in_list "trade-feed" ${entries[@]+"${entries[@]}"}; then
       echo "[fail] decommission invariant violation: trade-feed must not reappear after state 006"
       exit 1
     fi
@@ -338,7 +338,7 @@ validate_catalog_branches() {
       [[ -n "${line}" ]] || continue
       entries+=("${line}")
     done < <(collect_entries_from_branch "${branch}")
-    validate_state_entries "${state_id}" "${entries[@]}"
+    validate_state_entries "${state_id}" ${entries[@]+"${entries[@]}"}
   done < <(jq -r '.states[] | [.id, (.publish.branch // ""), (.generation.mode // .status // "")] | @tsv' "${CATALOG}")
 }
 
@@ -359,7 +359,7 @@ if [[ -n "${SNAPSHOT_DIR}" ]]; then
     [[ -n "${line}" ]] || continue
     entries+=("${line}")
   done < <(collect_entries_from_snapshot_dir "${SNAPSHOT_DIR}")
-  validate_state_entries "${STATE_ID}" "${entries[@]}"
+  validate_state_entries "${STATE_ID}" ${entries[@]+"${entries[@]}"}
   echo "[ok] lineage invariants validated for snapshot dir ${SNAPSHOT_DIR} (${STATE_ID})"
   exit 0
 fi
@@ -377,7 +377,7 @@ if [[ -n "${BRANCH_NAME}" ]]; then
     [[ -n "${line}" ]] || continue
     entries+=("${line}")
   done < <(collect_entries_from_branch "${BRANCH_NAME}")
-  validate_state_entries "${STATE_ID}" "${entries[@]}"
+  validate_state_entries "${STATE_ID}" ${entries[@]+"${entries[@]}"}
   echo "[ok] lineage invariants validated for branch ${BRANCH_NAME} (${STATE_ID})"
   exit 0
 fi
