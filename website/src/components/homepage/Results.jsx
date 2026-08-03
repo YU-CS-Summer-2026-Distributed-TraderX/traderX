@@ -170,7 +170,8 @@ export default function Results() {
           <p>
             Taken from benchmark campaigns on a Kubernetes cluster. Failover, snapshot and replay,
             and a cold follower rejoining from an empty disk are all proven live.{' '}
-            <Link to="/docs/engineering/test-coverage">How every claim is verified</Link>.
+            <Link to="/whats-new">See what’s new</Link> — what each state added, and how every claim
+            on this page is verified.
           </p>
         </div>
 
