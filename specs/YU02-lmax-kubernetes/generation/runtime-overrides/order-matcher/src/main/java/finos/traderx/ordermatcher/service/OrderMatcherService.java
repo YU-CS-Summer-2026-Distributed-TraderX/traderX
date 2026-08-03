@@ -9,6 +9,7 @@ import finos.traderx.ordermatcher.lmax.InMemoryOrderReadModel;
 import finos.traderx.ordermatcher.lmax.LeaderElection;
 import finos.traderx.ordermatcher.lmax.LmaxEngine;
 import finos.traderx.ordermatcher.lmax.OrderSnapshot;
+import finos.traderx.ordermatcher.lmax.Px;
 import finos.traderx.ordermatcher.model.OrderSide;
 import finos.traderx.ordermatcher.model.OrderStatus;
 import org.springframework.beans.factory.annotation.Value;
@@ -80,6 +81,19 @@ public class OrderMatcherService {
         }
         readModel.recordPrice(normalizedTicker, normalizedPrice);
         engine.submitPriceTick(normalizedTicker, normalizedPrice);
+    }
+
+    /** Same as {@link #onPriceTick(String, BigDecimal)} but for the binary tick subscriber,
+     * which already has the price as fixed-point ticks — no BigDecimal parse on the hot path.
+     * sourceEpochMillis is unused here (no risk replica to feed in this state) but kept in the
+     * signature so the subscriber calls the same method regardless of state. */
+    public void onPriceTickRaw(String ticker, long priceTicks, long sourceEpochMillis) {
+        if (!StringUtils.hasText(ticker) || priceTicks == Px.NONE) {
+            return;
+        }
+        String normalizedTicker = ticker.trim().toUpperCase(Locale.ROOT);
+        readModel.recordPrice(normalizedTicker, Px.toBigDecimal(priceTicks));
+        engine.submitPriceTick(normalizedTicker, priceTicks);
     }
 
     // ----- command path (validate at the edge, sequence, await the BLP's response event) ---
