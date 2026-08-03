@@ -2673,6 +2673,51 @@ EOF
 
 write_clone_runbook() {
   case "${STATE_ID}" in
+    YU01-lmax-sequencer)
+      # YU01 forks from 009, not 014: its lifecycle scripts exec the 009 compose harness, which the
+      # clone-harness case installs alongside YU01's own. So the accurate instructions are 009's,
+      # not the kubernetes ones the rest of the YU lineage uses.
+      cat > "${SNAPSHOT_DIR}/RUN_FROM_CLONE.md" <<'EOF'
+# Run From Clone
+
+Generated snapshot of TraderX state `YU01-lmax-sequencer` — the LMAX sequencer hot-path overlay on
+the state-009 runtime.
+
+Prerequisites:
+- Docker Desktop (or Docker Engine + Compose plugin)
+
+Start:
+
+```bash
+./scripts/start-state-YU01-lmax-sequencer-generated.sh
+./scripts/start-state-YU01-lmax-sequencer-generated.sh --skip-build
+```
+
+These delegate to the state-009 lifecycle scripts carried in this snapshot; the compose project is
+shared with the 009 lineage.
+
+Endpoints:
+- UI / ingress: `http://localhost:8080`
+- API explorer (ingress): `http://localhost:8080/api/docs`
+- Ingress health: `http://localhost:8080/health`
+- Order matcher health: `http://localhost:18110/health`
+- Grafana dashboards: `http://localhost:8080/grafana/`
+- Prometheus: `http://localhost:9090`
+
+Status / stop:
+
+```bash
+./scripts/status-state-YU01-lmax-sequencer-generated.sh
+./scripts/stop-state-YU01-lmax-sequencer-generated.sh
+```
+
+Smoke test:
+
+```bash
+./test-env.sh
+```
+EOF
+      ;;
     YU[0-9][0-9]-*)
       # Every YU02..YU15 start script chains, transitively, to the 014 kubernetes harness
       # (YU04->YU03->014, YU10->YU09->YU08->014, YU11..YU15->YU10->...), and
@@ -3772,7 +3817,15 @@ case "${STATE_ID}" in
     ;;
   YU01-lmax-sequencer)
     # Forks from 009, so it takes the compose lineage's harness, not the kubernetes one.
+    # The 009 harness must be installed EXPLICITLY. YU01's lifecycle scripts delegate with
+    #   exec bash "${ROOT}/start-state-009-order-management-matcher-generated.sh"
+    # where ROOT is the scripts dir itself, so the line carries no literal "/scripts/" and
+    # extract_script_dependencies_from_file -- which matches on that -- finds nothing. Relying on
+    # dependency following alone would publish a snapshot whose start script execs a file the
+    # snapshot does not contain. Every other YU state names its parent via an absolute
+    # .../scripts/... path and is followed correctly.
     install_state_compose_clone_harness "${STATE_ID}"
+    install_state_compose_clone_harness "009-order-management-matcher"
     ;;
   YU[0-9][0-9]-*)
     # YU02 onward inherit 014's kubernetes runtime, so they take 014's pairing. The compose
