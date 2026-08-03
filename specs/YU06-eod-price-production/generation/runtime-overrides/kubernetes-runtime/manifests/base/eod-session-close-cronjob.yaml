@@ -3,7 +3,8 @@
 # the exact same on-demand endpoint an operator uses. Demo schedule is hourly so the workflow is
 # observable in a meeting; change `schedule` for a real daily close.
 #
-# The dev-token master secret is provisioned out-of-band with the other YU09 auth credentials.
+# ponytail: master secret inlined to the dev default for the demo. For anything real, replace the
+# EOD_MASTER_SECRET env with a valueFrom.secretKeyRef and rotate it.
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -32,10 +33,7 @@ spec:
                 - name: TRADE_PROCESSOR_URL
                   value: "http://trade-processor:18091"
                 - name: EOD_MASTER_SECRET
-                  valueFrom:
-                    secretKeyRef:
-                      name: auth-secrets
-                      key: dev-token-master-secret
+                  value: "dev-token-master-secret"
               command: ["/bin/sh", "-c"]
               args:
                 - |
