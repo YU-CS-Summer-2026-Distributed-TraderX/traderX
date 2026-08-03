@@ -42,6 +42,12 @@ const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
 module.exports = {
   markdown: {
     mermaid: true,
+    // Parse .md as CommonMark, not MDX. The spec packs are plain Markdown written for
+    // humans and for git, and they legitimately contain angle-bracket placeholders such as
+    // <state-id> and <branch-name>. MDX reads those as JSX tags and fails the build --
+    // 18 files across the YU packs did exactly that. .mdx files are unaffected and still
+    // compile as MDX; no .md file in docs/ or specs/ uses an import or a JSX component.
+    format: 'md',
   },
   themes: ['@docusaurus/theme-mermaid'],
   onBrokenLinks: 'ignore',
@@ -60,6 +66,12 @@ module.exports = {
   stylesheets: ['https://fonts.googleapis.com/css?family=Overpass:400,400i,700'],
   markdown: {
     mermaid: true,
+    // Parse .md as CommonMark, not MDX. The spec packs are plain Markdown written for
+    // humans and for git, and they legitimately contain angle-bracket placeholders such as
+    // <state-id> and <branch-name>. MDX reads those as JSX tags and fails the build --
+    // 18 files across the YU packs did exactly that. .mdx files are unaffected and still
+    // compile as MDX; no .md file in docs/ or specs/ uses an import or a JSX component.
+    format: 'md',
   },
   themes: ['@docusaurus/theme-mermaid'],
   themeConfig: {
