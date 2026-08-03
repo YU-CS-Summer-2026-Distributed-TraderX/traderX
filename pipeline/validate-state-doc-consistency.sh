@@ -56,7 +56,7 @@ done < <(
 
 for id in "${all_ids[@]}"; do
   found=0
-  for listed in "${active_packs[@]}"; do
+  for listed in ${active_packs[@]+"${active_packs[@]}"}; do
     if [[ "${listed}" == "${id}" ]]; then
       found=1
       break
@@ -65,7 +65,7 @@ for id in "${all_ids[@]}"; do
   (( found == 1 )) || fail "specs/README.md Active Feature Packs missing ${id}"
 done
 
-for listed in "${active_packs[@]}"; do
+for listed in ${active_packs[@]+"${active_packs[@]}"}; do
   found=0
   for id in "${all_ids[@]}"; do
     if [[ "${listed}" == "${id}" ]]; then
@@ -119,7 +119,7 @@ for id in "${all_ids[@]}"; do
   fi
 done
 
-for id in "${implemented_ids[@]}"; do
+for id in ${implemented_ids[@]+"${implemented_ids[@]}"}; do
   branch_ref="code/generated-state-${id}"
   if ! grep -q "${branch_ref}" "${GETTING_STARTED}"; then
     fail "missing generated branch link in getting-started doc: ${branch_ref}"
