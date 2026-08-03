@@ -6,9 +6,8 @@ description: How an order's trace survives Raft consensus without adding a byte 
 
 # Observability and replay
 
-Two capabilities arrived after the fifteen states were complete, and deliberately did not become
-states sixteen and seventeen. Both were folded into the state that already owned the ground, and
-both were bound by the same constraint: **they may not change what the trading path costs.**
+Two capabilities extend states that already exist rather than standing as states of their own. Both
+were built to the same constraint: **they may not change what the trading path costs.**
 
 This page is the long version. The short one is on
 [What's new](whats-new.md#other-additions).
@@ -142,13 +141,12 @@ TICKSTORE_ROOT=/path/to/sample q kdb/selfcheck.q     # 17 gates over it
 
 ## Where each lives
 
-Neither is a state, so neither has a spec pack of its own. Each sits in the layer of the state that
-already owned the ground:
+Neither is a state of its own, so each sits in the layer of the state it extends:
 
 - **Tracing** — the [YU13](/specs/YU13-limit-order-book) layer, alongside the order-matcher and
   gateway it instruments.
-- **Tick store** — the [YU07](/specs/YU07-historical-tick-store) layer, which is the historical tick
-  store state.
+- **Tick store** — the [YU07](/specs/YU07-historical-tick-store) layer, the historical tick store
+  state.
 
 ## How this is verified
 
