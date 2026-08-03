@@ -21,8 +21,10 @@ This is the tier that makes a green build mean something, because it gates merge
 
 ## Tier 1.5 — cross-service integration, in CI with containers
 
-Three tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
-their own task so the fast unit job needs no container runtime.
+Five suites run against real infrastructure rather than in-memory substitutes, isolated by tag into
+their own task so the fast unit job needs no container runtime. Two of them cover the end-of-day
+chain: the JetStream stream contract, and the snapshot read and P&L write against a MariaDB running
+the schema read live from the deployed ConfigMap rather than a copied fixture that could drift.
 
 This tier exists for properties that are enforced by infrastructure rather than by application
 code. A mock can be made to return whatever the code under test expects, so a test built on one can
