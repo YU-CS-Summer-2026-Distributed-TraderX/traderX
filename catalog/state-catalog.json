@@ -415,7 +415,7 @@
         "runtime": "./scripts/start-state-YU01-lmax-sequencer-generated.sh"
       },
       "publish": {
-        "branch": "YU01-lmax-sequencer",
+        "branch": "code/generated-state-YU01-lmax-sequencer",
         "tag": "generated/YU01-lmax-sequencer/v1"
       }
     },
@@ -438,7 +438,7 @@
         "runtime": "./scripts/start-state-YU02-lmax-kubernetes-generated.sh"
       },
       "publish": {
-        "branch": "YU02-lmax-kubernetes-blp-ha",
+        "branch": "code/generated-state-YU02-lmax-kubernetes",
         "tag": "generated/YU02-lmax-kubernetes/v1"
       }
     },
@@ -461,7 +461,7 @@
         "runtime": "inherits YU02-lmax-kubernetes runtime harness"
       },
       "publish": {
-        "branch": "YU03-in-memory-risk-gateway",
+        "branch": "code/generated-state-YU03-in-memory-risk-gateway",
         "tag": "generated/YU03-in-memory-risk-gateway/v1"
       }
     },
@@ -484,7 +484,7 @@
         "runtime": "inherits YU03-in-memory-risk-gateway runtime harness"
       },
       "publish": {
-        "branch": "YU04-durable-control-feeds",
+        "branch": "code/generated-state-YU04-durable-control-feeds",
         "tag": "generated/YU04-durable-control-feeds/v1"
       }
     },
@@ -507,7 +507,7 @@
         "runtime": "inherits YU04-durable-control-feeds runtime harness"
       },
       "publish": {
-        "branch": "YU05-post-trade-compliance",
+        "branch": "code/generated-state-YU05-post-trade-compliance",
         "tag": "generated/YU05-post-trade-compliance/v1"
       }
     },
@@ -530,7 +530,7 @@
         "runtime": "inherits YU05-post-trade-compliance runtime harness"
       },
       "publish": {
-        "branch": "YU06-eod-price-production",
+        "branch": "code/generated-state-YU06-eod-price-production",
         "tag": "generated/YU06-eod-price-production/v1"
       }
     },
@@ -553,7 +553,7 @@
         "runtime": "inherits YU06-eod-price-production runtime harness"
       },
       "publish": {
-        "branch": "YU07-historical-tick-store",
+        "branch": "code/generated-state-YU07-historical-tick-store",
         "tag": "generated/YU07-historical-tick-store/v1"
       }
     },
@@ -576,7 +576,7 @@
         "runtime": "inherits YU07-historical-tick-store runtime harness"
       },
       "publish": {
-        "branch": "YU08-execution-algo-engine",
+        "branch": "code/generated-state-YU08-execution-algo-engine",
         "tag": "generated/YU08-execution-algo-engine/v1"
       }
     },
@@ -599,7 +599,7 @@
         "runtime": "inherits YU08-execution-algo-engine runtime harness"
       },
       "publish": {
-        "branch": "YU09-ops-hardening",
+        "branch": "code/generated-state-YU09-ops-hardening",
         "tag": "generated/YU09-ops-hardening/v1"
       }
     },
@@ -622,7 +622,7 @@
         "runtime": "inherits YU09-ops-hardening runtime harness"
       },
       "publish": {
-        "branch": "YU10-fix-ingress",
+        "branch": "code/generated-state-YU10-fix-ingress",
         "tag": "generated/YU10-fix-ingress/v1"
       }
     },
@@ -645,7 +645,7 @@
         "runtime": "inherits YU10-fix-ingress runtime harness"
       },
       "publish": {
-        "branch": "YU11-aeron-replication",
+        "branch": "code/generated-state-YU11-aeron-replication",
         "tag": "generated/YU11-aeron-replication/v1"
       }
     },
@@ -668,7 +668,7 @@
         "runtime": "inherits YU11-aeron-replication runtime harness"
       },
       "publish": {
-        "branch": "YU12-aeron-cluster",
+        "branch": "code/generated-state-YU12-aeron-cluster",
         "tag": "generated/YU12-aeron-cluster/v1"
       }
     },
@@ -691,7 +691,7 @@
         "runtime": "inherits YU12-aeron-cluster runtime harness"
       },
       "publish": {
-        "branch": "YU13-limit-order-book",
+        "branch": "code/generated-state-YU13-limit-order-book",
         "tag": "generated/YU13-limit-order-book/v1"
       }
     },
@@ -714,7 +714,7 @@
         "runtime": "inherits YU13-limit-order-book runtime harness"
       },
       "publish": {
-        "branch": "YU14-listed-equity-options",
+        "branch": "code/generated-state-YU14-listed-equity-options",
         "tag": "generated/YU14-listed-equity-options/v1"
       }
     },
@@ -737,7 +737,7 @@
         "runtime": "inherits YU14-listed-equity-options runtime harness"
       },
       "publish": {
-        "branch": "YU15-eod-risk-extract",
+        "branch": "code/generated-state-YU15-eod-risk-extract",
         "tag": "generated/YU15-eod-risk-extract/v1"
       }
     }
