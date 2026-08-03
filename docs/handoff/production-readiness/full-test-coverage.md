@@ -3,7 +3,8 @@
 > Companion to [02-RESULT-coverage-map.md](02-RESULT-coverage-map.md), which is a **frozen
 > 2026-07-24 snapshot** taken before CI existed (its `In CI? ✗` column is the finding that
 > motivated brief 04 — deliberately preserved, not updated). **This doc is the live picture.**
-> **Measured 2026-07-29**, every branch rendered and run fresh (not extrapolated from one branch).
+> **Measured 2026-07-29; service-module and CI figures re-measured 2026-08-02**, every branch
+> rendered and run fresh (not extrapolated from one branch).
 
 ## How these numbers were measured
 
@@ -24,8 +25,8 @@ Where the two disagree, the executed number is the real one.
 | | |
 |---|---|
 | **Composed engine suite (per branch)** | **YU15 335 · YU14 318 · YU13 304** — 0 failures |
-| **Composed service modules (per branch)** | **YU15 118 · YU14 110 · YU13 110** — 0 failures |
-| **Every composed test, per branch** | **YU15 453 · YU14 428 · YU13 414** — 0 failures |
+| **Composed service modules (per branch)** | **YU15 125 · YU14 117 · YU13 117** — 0 failures |
+| **Every composed test, per branch** | **YU15 460 · YU14 435 · YU13 421** — 0 failures |
 | **Baseline inherited services** | **48** (Java 25 · NestJS 7 · .NET 16) |
 | **Allocation / no-GC gates** | **6** (4 allocation + 2 Epsilon-GC) |
 | **q data gates** | **35** (17 historical + 18 live capture) |
@@ -52,10 +53,10 @@ source files never run), and where they do, this is the one that is true.
 | position-service (YU06 EOD) | 2 | 11 | ✅ **all 3 branches** |
 | account-service (YU04 outbox + inherited) | 4 | 7 | ✅ **all 3 branches** |
 | aeron-replication-sidecar | 1 | 2 | ✅ **all 3 branches** |
-| trade-service | 0 | 0 | ✗ — **no runnable unit test** (see §9) |
-| **Total (YU15)** | **100** | **453** | |
+| trade-service (validating edge) | 1 | 7 | ✅ **all 3 branches** |
+| **Total (YU15)** | **101** | **460** | |
 
-YU14 renders 98 classes / 428 tests and YU13 97 / 414 — same names, differently composed code.
+YU14 renders 99 classes / 435 tests and YU13 98 / 421 — same names, differently composed code.
 
 **The single most important line:** `order-matcher` is 74% of the classes and holds every
 correctness property the system is sold on. **All six substantial modules run in CI on all three
@@ -148,25 +149,28 @@ in this repo do not have and arguably should.
 
 | Component | Tests | Status |
 |---|---|---|
-| `reference-data` (composed) | 3 `.spec.ts` | not in CI (the **template** copy is) |
-| `web-front-end` (Angular) | 10 `.spec.ts` | **inherited scaffolding — never executed here** |
-| `price-publisher` (Node) | 1 | not in CI |
+| `reference-data` (composed) | 3 `.spec.ts`, **9 tests** | ✅ `composed-extras` (the **template** copy still runs in `baseline-reference-data`) |
+| `web-front-end` (Angular) | 10 `.spec.ts`, 49 cases | **disabled at source** — every suite is `xdescribe`, so wiring the job would execute zero tests (see §9) |
+| `price-publisher` (Node) | **11** | ✅ `composed-extras` |
 | `database`, `ingress`, `api-explorer` | 0 | no tests |
 
 ## 8. What CI executes today
 
-Workflow `engine-tests.yml` — 7 job definitions, 9 legs on a push (the `hosted` job is a 3-branch
-matrix). Last green CI run recorded: #9 (`f6cf4255`); the counts below were re-measured locally on
+Workflow `engine-tests.yml` — **10 job definitions, 11 legs** on a push (the `hosted` job is a
+3-branch matrix). Counts computed from the workflow rather than tallied by hand. Last green CI run recorded: #9 (`f6cf4255`); the counts below were re-measured locally on
 2026-07-29 against the current tips, which carry commits CI has not run yet (nothing is pushed).
 
 | Job | Scope | Trigger |
 |---|---|---|
-| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite (304 / 318 / 335) + 4 allocation gates, **then the five other service modules** (110 / 110 / 118) — **414 / 428 / 453 per branch** | push + PR |
+| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite (304 / 318 / 335) + 4 allocation gates, **then the six other service modules** (117 / 117 / 125) — **421 / 435 / 460 per branch** | push + PR |
 | `baseline` | 4 Java baseline services | push + PR |
 | `baseline-reference-data` | NestJS baseline | push + PR |
 | `baseline-people-service` | .NET baseline | push + PR |
 | `integration-trade-processor` | Testcontainers MariaDB | push + PR |
 | `integration-trade-processor-context` | composed context vs real MariaDB **and** real NATS | push + PR |
+| `integration-account-outbox` | outbox atomicity vs real MariaDB + deployed server flags | push + PR |
+| `integration-eod-stream-repair` | EOD stream repair + snapshot/P&L vs real JetStream **and** real MariaDB (18 cases) | push + PR |
+| `composed-extras` | composed reference-data (jest 9), price-publisher (`node:test` 11), tick-store (pytest 24) | push + PR |
 | `dedicated` | 3-node cluster + wall-clock timing + 2 Epsilon gates | **manual** (`workflow_dispatch`) |
 
 The matrix is the point: each branch renders its **own** effective tree, so the same test name runs
@@ -183,17 +187,28 @@ gateway keepalive, the kdb tap).
   (Testcontainers) and asserts the Publisher bean is wired. Tagged `integration` with its own task,
   so the unit job stays Docker-free (verified green with the Docker daemon down). New
   `integration-trade-processor-context` CI job.
-- **`trade-service` still has no runnable unit test, and I deliberately did not fix it.** Same root
-  cause (`tradePublisher` dials `nats.address` at bean creation), but its `build.gradle` is produced
-  by `specs/006-messaging-nats-replacement/generation/patches/0001-state-overlay.patch` — a
-  `git apply` artifact whose context lines are the baseline files, i.e. the same class of artifact
-  that broke YU02 rendering during the rebase. There is no layer `build.gradle` to add test
-  dependencies to. Editing the patch would risk generation for **every state from 006 onward** to
-  recover **one** context-load test. If that patch is ever restructured for another reason, add the
-  container test then.
-- **The Angular front-end has never been executed here at all.**
+- ~~`trade-service` has no runnable unit test~~ **CLOSED 2026-08-02.** The earlier reasoning was
+  that its `build.gradle` comes from a `git apply` patch overlay with no layer file to add test
+  dependencies to, so closing the gap meant editing a patch that every state from 006 onward
+  renders through. That premise was sound but the conclusion was avoidable: **no build change was
+  ever required.** The module's only test sat in `src/main/test/java`, which Gradle does not
+  compile; the STANDARD `src/test/java` was already being compiled and was simply empty. Seven
+  tests for the validating edge now live there — they construct the controller directly and bind a
+  `MockRestServiceServer` to its `RestTemplate`, so they need neither broker nor network, and the
+  patch was never touched. `TradeServiceApplicationTests` stays dormant where it is; it is a
+  `@SpringBootTest` needing a live broker and belongs in the container tier.
+
+- **The Angular front-end is disabled at source, not merely unwired.** Its 10 spec files hold 49
+  cases and every suite is wrapped in `xdescribe`. Turning on the existing `npm run test:ci`
+  would add a headless-browser dependency to CI in exchange for executing **zero** tests — the
+  silent-pass shape this repo guards against everywhere else. Closing it means un-disabling the
+  suites and fixing what surfaces, which is real work with an unknown tail, not an enablement.
 - **No proof script runs in CI** — deliberate (they need a live cluster) and documented in the [test strategy](04-RESULT-test-strategy.md), but it means they can rot.
 - **q gates aren't wired to anything automated.**
+- ~~The tick-store pytest suite could skip itself silently~~ **CLOSED 2026-08-02.** The runner
+  skipped pytest with a `[warn]` when duckdb was not importable, reporting success having
+  executed nothing. That is now fatal under CI, and the 24 tests run for real in
+  `composed-extras` against the module's own pinned `requirements.txt`.
 
 ## 10. The three-tier framing
 
@@ -201,7 +216,8 @@ Full rationale in [04-RESULT-test-strategy.md](04-RESULT-test-strategy.md):
 
 | Tier | What | Where |
 |---|---|---|
-| **1 — in-process** | 453 / 428 / 414 per branch + 48 baseline, 4 allocation gates | CI, every push |
+| **1 — in-process** | 460 / 435 / 421 per branch + 48 baseline + 44 composed Node/Python, 4 allocation gates | CI, every push |
+| **1.5 — cross-service** | 5 container-backed suites vs real MariaDB / JetStream | CI, every push |
 | **2 — end-to-end proofs** | 26 falsifiable scripts | manual, live cluster |
 | **3 — cluster + timing** | 3-node failover, wall-clock budgets, 2 Epsilon gates | on-demand, idle hardware |
 
