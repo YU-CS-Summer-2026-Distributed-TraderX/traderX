@@ -20,12 +20,12 @@ title: "State YU02-lmax-kubernetes: LMAX Kubernetes"
 
 ## Rendered Code
 
-- Generated branch: [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha)
+- Generated branch: [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha)
+- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...code%2Fgenerated-state-YU02-lmax-kubernetes)
 
 ## Plain-English Code Delta
 
