@@ -1,7 +1,7 @@
 ---
 title: Observability and replay
 sidebar_label: Observability and replay
-description: How an order's trace survives Raft consensus without adding a byte to the replicated log, and how the KDB-X tick store keeps the market's prints and our engine's own flow deliberately apart.
+description: How an order's trace survives Raft consensus without adding a byte to the replicated log, and how the platform's history is journalled and played back in kdb+/q, the time-series database this industry runs on.
 ---
 
 # Observability and replay
@@ -99,25 +99,62 @@ exactly that.
 
 ## KDB-X tick store (kdb+/q)
 
-### Two stores, deliberately separate
+### Why kdb
 
-The tick store holds two datasets side by side, and keeping them apart is the whole design.
+kdb+/q is the time-series database this corner of finance actually runs on. Tick capture,
+journaling and session playback sit on it across front offices in the industry, and analysts query
+it in q rather than in SQL. Putting the platform's history there — and querying it the way the
+desk would — is what makes the data side of this system read as the real thing rather than a
+trading demo with a database bolted on.
+
+So the platform's history lives in KDB-X, and the same verbs work over all of it: `.ts.vwap` and
+`.ts.spread` for prices, `.ts.session` to pull a window out, `.tx.fills` and `.tx.orders` for our
+own executions, and `.ts.replay` / `.tx.replay` to step a captured session back through at real
+time or as fast as the machine will go.
+
+### Reading the corpus in place
+
+KDB-X reads the existing ZSTD Parquet corpus **natively — there is no conversion step and no second
+copy.** A q layer maps each object as a virtual table, prunes row groups against the `WHERE` clause,
+and stitches the per-file tables into one date/symbol-partitioned table whose partition columns come
+from the path the ingest already wrote.
+
+That reader also settled the practical worry about the Community edition's 16 GiB ceiling: an
+aggregate over all 47.8M quote rows peaked at **768 MiB**, because it works a row group at a time
+rather than materialising the table.
+
+### What is stored
 
 | Tables | Source | Loader | What it is |
 |---|---|---|---|
 | `quote` / `trade` | NYSE TAQ tape | `tickstore.q` | what the **market** did |
 | `txOrder` / `txTrade` | TraderX cluster | `txstore.q` | what **our engine** did |
 
-A tape print and an engine execution are different objects with different provenance. A single
-`trade` table holding both is exactly the mistake that makes a VWAP silently answer the wrong
-question — a number that looks right, reconciles against nothing, and is wrong. The two stores load
-side by side and stay distinguishable.
+The two keep separate names because a tape print and an engine execution are different objects with
+different provenance — a single `trade` table holding both is how a VWAP ends up quietly answering
+a question nobody asked.
 
 ### The live capture tap
 
 Our own flow is captured off the running cluster by a **leader-side tap that sits off the consensus
 path**, so recording never becomes something consensus waits for. The capture is a read-side
 projection of committed output, exactly like the SQL bridge — not an input the state machine reads.
+A stalled disk fills its queue and drops, loudly and counted; it cannot stall an apply thread.
+
+### Journal and playback, in two senses
+
+Both words do double duty in this system, and the distinction is worth stating plainly.
+
+| | Authoritative | Analytical |
+|---|---|---|
+| Store | Aeron Archive (+ snapshots) | **KDB-X** |
+| Purpose | consensus, recovery, determinism | query, analytics, session playback |
+| Playback means | replay the log to rebuild exact state | replay a captured session to study it |
+| On the hot path? | yes, synchronous, before commit | no — off-consensus, best-effort |
+
+Nothing in the tick store is authoritative or required for recovery. What it holds is a kdb
+tickerplant log, not a consensus journal: delete the whole thing and the cluster still recovers
+byte-identically; delete the Aeron Archive and it does not.
 
 ### The gates
 

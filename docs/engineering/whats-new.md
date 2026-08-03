@@ -153,10 +153,11 @@ platform. Built into [YU13](/specs/YU13-limit-order-book) — the long version i
 
 ### KDB-X tick store (kdb+/q)
 
-Two datasets side by side: the NYSE TAQ tape as `quote` and `trade`, and our own engine's flow as
-`txOrder` and `txTrade`, captured by a leader-side tap that sits off the consensus path. Naming them
-apart is deliberate — one `trade` table holding both is what makes a VWAP answer the wrong question.
-Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
+kdb+/q is the time-series database this corner of finance actually runs on, so the platform's
+history is journalled and played back there — VWAP, spreads, a session pulled out by time window
+and replayed at real time or as fast as the machine will go, all in q. It holds the NYSE TAQ tape
+and our own engine's flow, the latter captured by a leader-side tap that sits off the consensus
+path. Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
 [Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
 
 ## See how it is verified
