@@ -25,8 +25,8 @@ Where the two disagree, the executed number is the real one.
 | | |
 |---|---|
 | **Composed engine suite (per branch)** | **YU15 335 · YU14 318 · YU13 304** — 0 failures |
-| **Composed service modules (per branch)** | **YU15 149 · YU14 141 · YU13 141** — 0 failures |
-| **Every composed test, per branch** | **YU15 484 · YU14 459 · YU13 445** — 0 failures |
+| **Composed service modules (per branch)** | **YU15 162 · YU14 154 · YU13 154** — 0 failures |
+| **Every composed test, per branch** | **YU15 497 · YU14 472 · YU13 458** — 0 failures |
 | **Baseline inherited services** | **48** (Java 25 · NestJS 7 · .NET 16) |
 | **Allocation / no-GC gates** | **6** (4 allocation + 2 Epsilon-GC) |
 | **q data gates** | **35** (17 historical + 18 live capture) |
@@ -52,11 +52,11 @@ source files never run), and where they do, this is the one that is true.
 | execution-algo-engine (YU08) | 8 | 29 | ✅ **all 3 branches** |
 | position-service (YU06 EOD) | 2 | 11 | ✅ **all 3 branches** |
 | account-service (account + user CRUD, people validation, YU04 outbox) | 8 | 31 | ✅ **all 3 branches** |
-| aeron-replication-sidecar | 1 | 2 | ✅ **all 3 branches** |
+| aeron-replication-sidecar (peer resolution, readiness + schema endpoints) | 2 | 15 | ✅ **all 3 branches** |
 | trade-service (validating edge) | 1 | 7 | ✅ **all 3 branches** |
-| **Total (YU15)** | **105** | **484** | |
+| **Total (YU15)** | **106** | **497** | |
 
-YU14 renders 103 classes / 459 tests and YU13 102 / 445 — same names, differently composed code.
+YU14 renders 104 classes / 472 tests and YU13 103 / 458 — same names, differently composed code.
 
 **The single most important line:** `order-matcher` is 74% of the classes and holds every
 correctness property the system is sold on. **All six substantial modules run in CI on all three
@@ -162,7 +162,7 @@ Workflow `engine-tests.yml` — **10 job definitions, 11 legs** on a push (the `
 
 | Job | Scope | Trigger |
 |---|---|---|
-| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite (304 / 318 / 335) + 4 allocation gates, **then the six other service modules** (141 / 141 / 149) — **445 / 459 / 484 per branch** | push + PR |
+| `hosted` × 3 (YU13, YU14, YU15) | composed **order-matcher** suite (304 / 318 / 335) + 4 allocation gates, **then the six other service modules** (154 / 154 / 162) — **458 / 472 / 497 per branch** | push + PR |
 | `baseline` | 4 Java baseline services | push + PR |
 | `baseline-reference-data` | NestJS baseline | push + PR |
 | `baseline-people-service` | .NET baseline | push + PR |
@@ -216,7 +216,7 @@ Full rationale in [04-RESULT-test-strategy.md](04-RESULT-test-strategy.md):
 
 | Tier | What | Where |
 |---|---|---|
-| **1 — in-process** | 484 / 459 / 445 per branch + 48 baseline + 44 composed Node/Python, 4 allocation gates | CI, every push |
+| **1 — in-process** | 497 / 472 / 458 per branch + 48 baseline + 44 composed Node/Python, 4 allocation gates | CI, every push |
 | **1.5 — cross-service** | 5 container-backed suites vs real MariaDB / JetStream | CI, every push |
 | **2 — end-to-end proofs** | 26 falsifiable scripts | manual, live cluster |
 | **3 — cluster + timing** | 3-node failover, wall-clock budgets, 2 Epsilon gates | on-demand, idle hardware |
