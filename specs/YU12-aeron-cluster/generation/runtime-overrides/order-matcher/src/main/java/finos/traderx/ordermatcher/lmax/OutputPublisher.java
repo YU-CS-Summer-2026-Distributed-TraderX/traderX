@@ -90,6 +90,29 @@ public final class OutputPublisher {
         }
     }
 
+    /**
+     * Reject a request that TARGETED an existing order, without mutating that order (YU13 atomic
+     * replace, ADR-058). The payload is the order exactly as it still stands — status, remaining
+     * and limit price unchanged — while kind and riskReason carry the rejection.
+     *
+     * Separate from {@link #emitOrderUpdate} because that one reads the reason off the order, and a
+     * live order must never be made to carry a rejection reason it did not suffer: {@code
+     * riskReason} is serialized into every snapshot's order row, so a borrowed byte would outlive
+     * the request that borrowed it. {@code publishNats} is false — nothing changed, so there is
+     * nothing to bridge.
+     */
+    public void emitRequestRejected(RestingOrder order, long inputSeq, byte riskReasonOrdinal,
+                                    long marketPx, long ingressNanos) {
+        long seq = claim(1);
+        try {
+            OutputEvent e = ring.get(seq);
+            writeOrderUpdate(e, order, inputSeq, OutputEvent.FLAG_REJECT, false, marketPx, ingressNanos);
+            e.riskReason = riskReasonOrdinal;
+        } finally {
+            ring.publish(seq);
+        }
+    }
+
     public void emitOrderNotFound(long inputSeq, long ingressNanos) {
         long seq = claim(1);
         try {
