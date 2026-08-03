@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # Horizontal scale-out (burst-free ingress): each gateway replica holds its OWN AeronCluster
+  # session + owner thread, and the cluster assigns order refs globally, so REST batches fan out
+  # across replicas with no coordination — N replicas = N× parallel batch submission, the real fix
+  # for sustaining ~134k without the single-owner-thread ceiling. REST is stateless per request so
+  # it round-robins freely (NO sessionAffinity here — k8s affinity is per-Service, not per-port,
+  # and ClientIP on this Service pinned all REST load from one client IP to ONE pod: 2 of 3
+  # gateways sat at 0 accepted orders, 41k via Service vs 64k direct). FIX needs stickiness, so it
+  # gets its own Service below (order-matcher-gw-fix).
+  ports:
+    - name: http
+      port: 18110
+      targetPort: 18110
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw-fix
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # FIX sessions are stateful per CompID (each replica is its own acceptor with its own sequence
+  # numbers) — a client bouncing between pods breaks the session. Keep FIX pinned here.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+    - name: fix
+      port: 18130
+      targetPort: 18130
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-gateway
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # 4 replicas is the retained tier (2026-07-21 C4D retest): on C3 the fourth gateway lost to
+  # three because the leader was apply-saturated (2.80/3 cores); on c4d-standard-8 the leader
+  # peaks ~1.8/3 cores and the fourth gateway banked 382-426k booked/s vs 320-343k for three at
+  # the same b1000/c64. Needs four non-member nodes (default pool + three std-pool).
+  replicas: 4
+  selector:
+    matchLabels:
+      app: cluster-gateway
+  template:
+    metadata:
+      labels:
+        app: cluster-gateway
+    spec:
+      # No node pin: the gateway is stateless-forward and runs on any non-member pool (default-pool
+      # or std-pool). Removing the default-pool pin let scale-out replicas schedule onto std-pool
+      # once its capacity was added — the members' tuned C4D pool stays reserved via its taint.
+      #
+      # Guarantee one gateway per node: each gateway's owner thread needs a real core. Preferred
+      # anti-affinity was observed packing replicas during rolling updates, invalidating runs.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: cluster-gateway
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: gateway
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13-idempfix
+          imagePullPolicy: Always
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.ClusterGatewayMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GATEWAY_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            - name: GATEWAY_HTTP_PORT
+              value: "18110"
+            - name: GATEWAY_EGRESS_PORT
+              value: "40470"
+            - name: FIX_ACCEPTOR_PORT
+              value: "18130"
+            - name: FIX_SESSION_COMPIDS
+              value: "CLIENT1"
+            # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
+            # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
+            # deployed default and the "on" arm must be reachable without a rebuild. Flip
+            # OTEL_TRACES to "1" (both here and on the peer manifest) to take the "on" run.
+            - name: OTEL_TRACES
+              value: "0"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            # 1 in 128. At ~190k orders/s a per-order span is its own performance problem; head
+            # sampling is what keeps tracing affordable at the rates this cluster actually runs.
+            - name: OTEL_SAMPLE_MASK
+              value: "127"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dsun.net.httpserver.nodelay=true -Xms256m -Xmx1g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: http
+              containerPort: 18110
+            - name: fix
+              containerPort: 18130
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 18110
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: 250m
+              memory: 640Mi
+            limits:
+              cpu: "2"
+              memory: 1536Mi
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

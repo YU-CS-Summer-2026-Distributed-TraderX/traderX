@@ -1,0 +1,13 @@
+# No syntax directive: it forces a network fetch of the BuildKit frontend image, which fails
+# offline or after a builder-cache prune; multi-stage builds need no 1.x syntax features.
+FROM eclipse-temurin:21-jdk AS build
+WORKDIR /app
+COPY . .
+RUN --mount=type=cache,target=/root/.gradle,sharing=locked \
+    chmod +x gradlew && ./gradlew --no-daemon clean installDist
+
+FROM eclipse-temurin:21-jre
+WORKDIR /opt/app
+COPY --from=build /app/build/install/aeron-replication-sidecar/ ./
+EXPOSE 18080 40123/udp 40124/udp 8010/udp 8011/udp
+ENTRYPOINT ["/opt/app/bin/aeron-replication-sidecar"]

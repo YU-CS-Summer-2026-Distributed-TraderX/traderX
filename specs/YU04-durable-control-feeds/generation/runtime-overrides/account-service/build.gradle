@@ -1,0 +1,83 @@
+plugins {
+  id 'java'
+  id 'org.springframework.boot' version '3.5.16'
+  id 'io.spring.dependency-management' version '1.1.7'
+}
+
+ext['jackson-bom.version'] = '2.22.1'
+ext['tomcat.version'] = '10.1.57'
+
+group = 'finos.traderx.account-service-specfirst'
+version = '0.1.0'
+
+java {
+  sourceCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+  mavenCentral()
+}
+
+// This project's test sources live at src/main/test/java (a pre-existing convention across
+// several TraderX services), which Gradle's Java plugin does not pick up by default (its
+// default test source dir is src/test/java) — without this, `./gradlew test` silently reports
+// NO-SOURCE and every test here (including the pre-existing smoke test) never actually runs.
+sourceSets {
+  test {
+    java.srcDirs = ['src/main/test/java']
+    resources.srcDirs = ['src/main/test/resources']
+  }
+}
+
+dependencies {
+  implementation 'org.springframework.boot:spring-boot-starter-web'
+  implementation 'org.springframework.boot:spring-boot-starter-actuator'
+  runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
+  implementation 'org.springframework.boot:spring-boot-starter-jdbc'
+  runtimeOnly 'org.mariadb.jdbc:mariadb-java-client:3.5.9'
+  implementation 'org.springdoc:springdoc-openapi-starter-webmvc-api:2.8.17'
+  implementation 'io.nats:jnats:2.20.5'
+
+  implementation ('ch.qos.logback:logback-core:1.5.34') {
+    because 'version brought in by spring boot 3.5.14 affected by CVE-2024-12798'
+  }
+  implementation 'ch.qos.logback:logback-classic:1.5.34'
+  implementation 'org.apache.logging.log4j:log4j-api:2.26.1'
+  implementation 'org.apache.logging.log4j:log4j-to-slf4j:2.26.1'
+  implementation 'org.apache.commons:commons-lang3:3.20.0'
+
+  testImplementation 'org.springframework.boot:spring-boot-starter-test'
+  testRuntimeOnly 'com.h2database:h2:2.3.232'
+  // Integration tier only: a real MariaDB running the deployed DDL and the deployed server flags,
+  // so the outbox's atomicity guarantee is asserted where it is actually enforced -- in the
+  // database -- rather than around a mocked repository. See AccountOutboxAtomicityIT.
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+  testImplementation 'org.testcontainers:mariadb:1.20.4'
+}
+
+// Declared BEFORE the two task configurations below, deliberately: configureEach actions fire when
+// a task is realized, so keeping the blanket default first leaves the per-task tag filters as the
+// last word. The reverse order happens to work too (verified on the trade-processor), but it makes
+// the "unit job needs no Docker" split depend on Gradle's realization order rather than on reading
+// order, and if that ever changed nothing would fail -- the ITs would just quietly join the unit job.
+tasks.withType(Test).configureEach {
+  useJUnitPlatform()
+}
+
+// Unit tier: no container runtime. @Tag("integration") runs in integrationTest instead.
+test {
+  useJUnitPlatform { excludeTags 'integration' }
+}
+
+// Needs a Docker daemon (Testcontainers). Kept OUT of the infrastructure-free unit task so the
+// hosted CI job stays fast and Docker-free; run by its own CI job, the same split the
+// trade-processor already uses.
+tasks.register('integrationTest', Test) {
+  description = 'Outbox atomicity against a real MariaDB running the deployed schema.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  useJUnitPlatform { includeTags 'integration' }
+  shouldRunAfter test
+}

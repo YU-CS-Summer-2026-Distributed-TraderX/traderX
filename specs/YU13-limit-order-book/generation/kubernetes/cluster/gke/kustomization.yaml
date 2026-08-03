@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+# Production GKE deploy is the emptyDir variant (Raft quorum is the durability, no PVC) with all the
+# hardening — 20Gi data, tcpSocket liveness, 300s snapshots, TRADE_BRIDGE_NATS_URL. The old
+# statefulset.yaml (PVC variant) is kept for reference but is NOT what runs. `kubectl apply -k .`
+# from this dir is the one-shot deploy.
+resources:
+  - statefulset-emptydir.yaml
+  - gateway.yaml
+  - backup-cronjob.yaml
+  - seed-accounts-job.yaml

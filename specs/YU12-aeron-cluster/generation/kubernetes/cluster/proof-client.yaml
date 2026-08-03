@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: cluster-proof-client
+  labels:
+    app: cluster-proof-client
+spec:
+  restartPolicy: Never
+  containers:
+    - name: proof-client
+      image: traderx/cluster-node:yu12
+      imagePullPolicy: IfNotPresent
+      command:
+        - java
+        - -cp
+        - /opt/app/classes:/opt/app/lib/*
+        - finos.traderx.ordermatcher.cluster.ClusterProofClient
+      env:
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        - name: PROOF_INGRESS_ENDPOINTS
+          value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+        - name: PROOF_INTERVAL_MS
+          value: "100"
+        - name: PROOF_GAP_MS
+          value: "500"
+        - name: PROOF_EGRESS_PORT
+          value: "40460"
+        - name: JAVA_TOOL_OPTIONS
+          value: "-Xms128m -Xmx256m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      volumeMounts:
+        - name: shm
+          mountPath: /dev/shm
+  volumes:
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 256Mi

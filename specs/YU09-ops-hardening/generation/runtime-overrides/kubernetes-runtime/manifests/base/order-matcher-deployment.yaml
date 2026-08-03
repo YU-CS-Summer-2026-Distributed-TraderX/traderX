@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-matcher
+  namespace: traderx
+  labels:
+    app: order-matcher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: order-matcher
+  template:
+    metadata:
+      labels:
+        app: order-matcher
+    spec:
+      containers:
+        - name: order-matcher
+          image: traderx/order-matcher:state009
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18110
+              protocol: TCP
+          env:
+            - name: ORDER_MATCHER_PORT
+              value: "18110"
+            - name: DATABASE_PG_HOST
+              value: "database"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            # Post-trade compliance (YU05) shared HS256 secret — sourced from the auth-secrets
+            # Secret (created out-of-band, never committed) instead of the code's dev-default.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            # Journal archival (YU09): rotate the journal at every snapshot boundary and upload the
+            # closed segment to GCS via HMAC creds for a bucket-scoped service account (same shape
+            # as YU07's tick-store-gcs-hmac, kept in its own Secret so the two archival paths never
+            # share a credential). The Secret is optional so pods still start without it —
+            # rotation still bounds local journal growth; only the GCS upload leg is skipped.
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_ARCHIVE_BUCKET
+              value: "gs://traderx-501015-order-matcher-journal-archive"
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: access-key-id
+                  optional: true
+            - name: JOURNAL_ARCHIVE_GCS_HMAC_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: order-matcher-journal-gcs-hmac
+                  key: secret-access-key
+                  optional: true
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "http://localhost:8080,http://127.0.0.1:8080"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: TRADE_SERVICE_URL
+              value: "http://trade-service:18092/trade/"
+            - name: ORDER_FILL_FULL_THRESHOLD
+              value: "1000"
+            - name: RUNTIME_PROFILE
+              value: "demo"
+            - name: DISRUPTOR_INPUT_RING_SIZE
+              value: "65536"
+            - name: DISRUPTOR_OUTPUT_RING_SIZE
+              value: "65536"
+            - name: ORDER_MATCHER_JOURNAL_ENABLED
+              value: "true"
+            - name: ORDER_MATCHER_JOURNAL_PATH
+              value: "/var/lib/traderx-lmax/journal"
+            - name: JOURNAL_REPLAY_VERIFY
+              value: "true"
+            - name: OUTPUT_LEGACY_TRADES_ENABLED
+              value: "false"
+            - name: OUTPUT_PROJECTOR_BATCH_SIZE
+              value: "500"
+            - name: OUTPUT_PROJECTOR_QUEUE_CAPACITY
+              value: "1000000"
+            - name: OUTPUT_PROJECTOR_DB_ENABLED
+              value: "true"
+            - name: BLP_MAX_SECURITIES
+              value: "4096"
+            - name: BLP_BOOK_POOL_SIZE
+              value: "65536"
+            - name: BLP_GATEWAY_ACK_TIMEOUT_MS
+              value: "5000"
+            - name: SNAPSHOT_INTERVAL_MS
+              value: "300000"
+            - name: RECOVERY_SOURCE
+              # journal: the journal is the source of truth and replay is bounded by the snapshot
+              # interval; db warm-up rebuilds the book from a projection (and OOMed on populated
+              # DBs before DbWarmupReader streamed it). Matches the GKE StatefulSet. The CODE
+              # default stays db (documented warm-start for compose/tests).
+              value: "journal"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+            - name: MANAGEMENT_ENDPOINT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_METRICS_EXPORT_PROMETHEUS_ENABLED
+              value: "true"
+            - name: MANAGEMENT_ENDPOINT_HEALTH_PROBES_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_LIVENESSSTATE_ENABLED
+              value: "true"
+            - name: MANAGEMENT_HEALTH_READINESSSTATE_ENABLED
+              value: "true"
+          # Startup targets READINESS (stays DOWN until recovery completes) with a
+          # replay-sized budget: engine init is synchronous, so HTTP serves nothing during
+          # journal replay and the old 24x5s=120s budget kill-looped any recovery longer
+          # than 2 minutes. 120x5s = 10 min ceiling.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 120
+          # Tolerant timeouts: under saturating load the CPU-bound pod is alive but slow to
+          # answer; a 1s probe timeout has SIGTERM-killed a healthy-but-busy pod (2026-07-02).
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - name: lmax-runtime-data
+              mountPath: /var/lib/traderx-lmax
+      volumes:
+        - name: lmax-runtime-data
+          persistentVolumeClaim:
+            claimName: order-matcher-lmax-data

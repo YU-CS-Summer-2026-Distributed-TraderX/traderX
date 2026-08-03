@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-cluster
+  labels:
+    app: order-matcher-cluster
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: order-matcher-cluster
+  ports:
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher-cluster
+spec:
+  serviceName: order-matcher-cluster
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: order-matcher-cluster
+  template:
+    metadata:
+      labels:
+        app: order-matcher-cluster
+    spec:
+      terminationGracePeriodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: order-matcher-cluster
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: cluster-node
+          image: traderx/cluster-node:yu13
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLUSTER_HOSTNAMES
+              value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
+            - name: CLUSTER_PORT_BASE
+              value: "21800"
+            - name: CLUSTER_BASE_DIR
+              value: "/data"
+            - name: CLUSTER_AERON_DIR
+              value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). Leader-side, off-consensus,
+            # best-effort: this directory is NOT the Aeron Archive, holds nothing recovery needs,
+            # and can be wiped without touching correctness. Unset it and the tap never starts.
+            - name: KDB_TAP_DIR
+              value: "/data/kdb-capture"
+            # OTEL-01: the member half of the trace. Only the LEADER emits (a follower's
+            # commit-to-apply is not the round-trip the client is waiting on), so all three carry
+            # the same config and the role decides. OTEL_SAMPLE_MASK MUST match the gateway's —
+            # both sides derive the sampling verdict independently from the idempotency key, so a
+            # mismatched mask yields member spans whose parent was never emitted.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

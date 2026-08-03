@@ -1,0 +1,30 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: order-matcher-cluster
+spec:
+  podSelector:
+    matchLabels:
+      app: order-matcher-cluster
+  policyTypes:
+    - Ingress
+  ingress:
+    # Consensus/log/ingress/archive UDP between members and from the proof client / gateway tier.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: order-matcher-cluster
+        - podSelector:
+            matchLabels:
+              app: cluster-proof-client
+        - podSelector:
+            matchLabels:
+              app: cluster-gateway
+      ports:
+        - protocol: UDP
+          port: 21800
+          endPort: 22200
+    # Health checks from anywhere in the namespace (kubelet probes are node-local and bypass policy).
+    - ports:
+        - protocol: TCP
+          port: 8080

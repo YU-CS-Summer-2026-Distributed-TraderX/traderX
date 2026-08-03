@@ -1,0 +1,126 @@
+{
+  "uid": "traderx-risk-gateway",
+  "title": "TraderX Risk Gateway (YU03)",
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "tags": ["traderx", "risk", "order-matcher", "prometheus", "provisioned"],
+  "time": { "from": "now-30m", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Risk Enabled / Policy Version",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "max(traderx_risk_policy_version)" }]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Decisions/sec (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(traderx_risk_decisions_total[5m]))" }]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Gateway Rejections/sec (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(traderx_gateway_rejections_total[5m]))" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 10 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Control Updates Rejected/sec (5m)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "refId": "A", "expr": "sum(rate(traderx_control_update_rejected_total[5m]))" }],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Rejections by Reason (5m rate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(traderx_gateway_rejections_total[5m]))" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "BLP Risk Decisions by Reason (5m rate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(traderx_risk_decisions_total[5m]))" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Gateway Validation Latency p99 (s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(traderx_gateway_validation_latency_seconds_bucket[5m])))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "BLP Risk Decision Latency p99 (s)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(traderx_risk_decision_latency_seconds_bucket[5m])))"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Replica Rebootstrap Events (5m rate)",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
+      "targets": [
+        { "refId": "A", "expr": "sum by (reason) (rate(traderx_replica_rebootstrap_total[5m]))" }
+      ],
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" } }
+    }
+  ]
+}

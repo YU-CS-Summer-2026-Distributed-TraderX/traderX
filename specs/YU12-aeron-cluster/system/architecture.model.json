@@ -1,0 +1,101 @@
+{
+  "title": "YU12-aeron-cluster architecture",
+  "stateId": "YU12-aeron-cluster",
+  "parentState": "YU11-aeron-replication",
+  "description": "BLP high availability as Raft consensus: an odd-quorum Aeron Cluster replicates one committed log into a deterministic ClusteredService hosting the inherited matching/risk core; a gateway tier terminates FIX/REST sessions and follows the leader; a feed adapter sequences price ticks and control updates as ingress; committed outputs feed the unchanged CQRS/read-model side.",
+  "inheritsFrom": "YU11-aeron-replication (which inherits the full YU02..YU10 LMAX/Kubernetes lineage)",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "counterparty",
+      "label": "FIX + REST counterparties",
+      "kind": "external",
+      "description": "Unchanged external contracts: FIX 4.4 sessions and REST/UI order entry."
+    },
+    {
+      "id": "gateway",
+      "label": "FIX/REST gateway tier",
+      "kind": "service",
+      "description": "Terminates counterparty sessions, screens admission against control-feed state, and forwards through the cluster client; sessions survive leader changes."
+    },
+    {
+      "id": "cluster_client",
+      "label": "Aeron Cluster client",
+      "kind": "service",
+      "description": "Speaks the cluster ingress/egress protocol and routes to the current leader natively."
+    },
+    {
+      "id": "feed_adapter",
+      "label": "Feed adapter",
+      "kind": "service",
+      "description": "Consumes inherited NATS pricing and control subjects, conflates per symbol, and publishes ticks and policy updates as cluster ingress."
+    },
+    {
+      "id": "consensus_leader",
+      "label": "Leader: Consensus Module + log",
+      "kind": "service",
+      "description": "Raft leader sequences ingress into the replicated log and commits on majority acknowledgement."
+    },
+    {
+      "id": "consensus_followers",
+      "label": "Followers: Consensus Module + log",
+      "kind": "service",
+      "description": "Raft followers replicate and acknowledge the log; a partition minority cannot elect a leader."
+    },
+    {
+      "id": "service_container",
+      "label": "ClusteredService: MatchingEngine + risk",
+      "kind": "service",
+      "description": "Single-threaded deterministic apply of committed messages through the inherited matching and two-tier risk core on every member."
+    },
+    {
+      "id": "snapshot_store",
+      "label": "Cluster snapshots + per-pod log PVC",
+      "kind": "store",
+      "description": "onTakeSnapshot state bound to the applied log position: book, ID generators, idempotency, risk, symbols, control versions."
+    },
+    {
+      "id": "egress",
+      "label": "Committed output egress",
+      "kind": "queue",
+      "description": "Leader-emitted committed outputs: order lifecycle events, fills, and admission responses."
+    },
+    {
+      "id": "projector",
+      "label": "Projector / read-model",
+      "kind": "service",
+      "description": "Unchanged CQRS side draining committed outputs to MariaDB and inherited NATS distribution subjects."
+    },
+    {
+      "id": "nats",
+      "label": "NATS (pricing, control, distribution)",
+      "kind": "queue",
+      "description": "Inherited subjects for pricing, control feeds, and output distribution; no replication or witness role."
+    },
+    {
+      "id": "db",
+      "label": "MariaDB read model",
+      "kind": "store",
+      "description": "Inherited read-model and downstream service storage."
+    }
+  ],
+  "edges": [
+    { "from": "counterparty", "to": "gateway", "label": "FIX 4.4 session / REST order entry" },
+    { "from": "gateway", "to": "cluster_client", "label": "screened order/cancel commands" },
+    { "from": "nats", "to": "feed_adapter", "label": "pricing + control subjects" },
+    { "from": "feed_adapter", "to": "cluster_client", "label": "conflated ticks + policy updates" },
+    { "from": "cluster_client", "to": "consensus_leader", "label": "SBE ingress to current leader" },
+    { "from": "consensus_leader", "to": "consensus_followers", "label": "log replication + majority commit" },
+    { "from": "consensus_followers", "to": "consensus_leader", "label": "acknowledgement + election votes" },
+    { "from": "consensus_leader", "to": "service_container", "label": "committed messages in log order" },
+    { "from": "consensus_followers", "to": "service_container", "label": "committed messages in log order" },
+    { "from": "service_container", "to": "snapshot_store", "label": "onTakeSnapshot at applied position" },
+    { "from": "snapshot_store", "to": "service_container", "label": "recovery: snapshot + log tail, no-ID-reuse assertion" },
+    { "from": "service_container", "to": "egress", "label": "leader-only committed outputs" },
+    { "from": "egress", "to": "cluster_client", "label": "admission responses to gateway" },
+    { "from": "egress", "to": "projector", "label": "order lifecycle + fills" },
+    { "from": "projector", "to": "db", "label": "read-model projection" },
+    { "from": "projector", "to": "nats", "label": "inherited distribution subjects" }
+  ]
+}

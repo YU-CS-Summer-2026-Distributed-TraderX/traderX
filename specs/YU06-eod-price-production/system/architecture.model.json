@@ -1,0 +1,78 @@
+{
+  "title": "EOD Price Production and Overnight Batch Chain",
+  "stateId": "YU06-eod-price-production",
+  "parentState": "YU05-post-trade-compliance",
+  "description": "Versioned, immutable end-of-day closing-price production gated behind a durable event, driving one downstream position-marking consumer.",
+  "inheritsFrom": "YU05-post-trade-compliance",
+  "flowDoc": "../001-baseline-uncontainerized-parity/system/end-to-end-flows.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "ops",
+      "label": "Ops / Admin",
+      "kind": "actor",
+      "description": "Triggers session close, resolves flagged prices via override, publishes."
+    },
+    {
+      "id": "cron",
+      "label": "EOD Session-Close CronJob",
+      "kind": "service",
+      "description": "Scheduled trigger calling the same session-close endpoint an operator uses."
+    },
+    {
+      "id": "price_publisher",
+      "label": "Price Publisher",
+      "kind": "service",
+      "description": "Existing last-trade feed (pricing.*) that EOD production reads from."
+    },
+    {
+      "id": "trade_processor",
+      "label": "Trade Processor",
+      "kind": "service",
+      "description": "Hosts EOD price production: classify, version, override, publish, emit gate event."
+    },
+    {
+      "id": "mariadb",
+      "label": "MariaDB",
+      "kind": "service",
+      "description": "Versioned closing-price snapshot tables and the consumer's P&L result table."
+    },
+    {
+      "id": "nats",
+      "label": "NATS JetStream",
+      "kind": "service",
+      "description": "Durable stream carrying EOD_PRICES_READY and eod.pnl.done."
+    },
+    {
+      "id": "position_service",
+      "label": "Position Service",
+      "kind": "service",
+      "description": "EOD consumer: marks positions against the published snapshot version, fail-safe per account."
+    },
+    {
+      "id": "prometheus",
+      "label": "Prometheus",
+      "kind": "service",
+      "description": "Scrapes EOD chain metrics from both services."
+    },
+    {
+      "id": "grafana",
+      "label": "Grafana",
+      "kind": "service",
+      "description": "EOD batch chain dashboard: published/flagged/marked/halted, chain latency."
+    }
+  ],
+  "edges": [
+    { "from": "ops", "to": "trade_processor", "label": "Triggers close / override / publish (admin JWT)" },
+    { "from": "cron", "to": "trade_processor", "label": "Triggers scheduled session close" },
+    { "from": "price_publisher", "to": "trade_processor", "label": "Last-trade prices (pricing.*)" },
+    { "from": "trade_processor", "to": "mariadb", "label": "Writes versioned closing-price snapshot" },
+    { "from": "trade_processor", "to": "nats", "label": "Publishes EOD_PRICES_READY (durable)" },
+    { "from": "nats", "to": "position_service", "label": "Delivers EOD_PRICES_READY (durable, redelivered)" },
+    { "from": "position_service", "to": "mariadb", "label": "Reads positions, writes eod_position_pnl" },
+    { "from": "position_service", "to": "nats", "label": "Publishes eod.pnl.done" },
+    { "from": "prometheus", "to": "trade_processor", "label": "Scrapes /actuator/prometheus" },
+    { "from": "prometheus", "to": "position_service", "label": "Scrapes /actuator/prometheus" },
+    { "from": "grafana", "to": "prometheus", "label": "Queries EOD chain metrics" }
+  ]
+}

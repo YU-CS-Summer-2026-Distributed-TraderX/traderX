@@ -1,0 +1,77 @@
+# The TraderX database for the cluster tier. It runs the state's OWN schema — the ConfigMap
+# comes from generation/runtime-overrides/kubernetes-runtime/manifests/base/, referenced by the
+# kustomization — so a proof taken here exercises exactly the DDL this state ships rather than a
+# hand-written subset of it. That matters for the widened instrument-identifier columns: the
+# thing under test IS the schema.
+#
+# Both init keys are mounted the way the real database Deployment mounts them: 001 on a fresh
+# volume, 900-migrations on every start.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eod-price-db
+  labels:
+    app: eod-price-db
+spec:
+  selector:
+    app: eod-price-db
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eod-price-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eod-price-db
+  template:
+    metadata:
+      labels:
+        app: eod-price-db
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: MARIADB_DATABASE
+              value: traderx
+            - name: MARIADB_USER
+              value: traderx
+            - name: MARIADB_PASSWORD
+              value: traderx
+            - name: MARIADB_ROOT_PASSWORD
+              value: traderx
+          ports:
+            - name: mysql
+              containerPort: 3306
+          readinessProbe:
+            exec:
+              command: ["mariadb-admin", "ping", "-utraderx", "-ptraderx"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            failureThreshold: 24
+          args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
+          volumeMounts:
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/001-initialSchema.sql
+              subPath: 001-initialSchema.sql
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d/900-migrations.sql
+              subPath: 900-migrations.sql
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 768Mi
+      volumes:
+        - name: init
+          configMap:
+            name: database-init-sql

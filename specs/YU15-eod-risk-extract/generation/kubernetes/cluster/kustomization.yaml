@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+resources:
+  - statefulset.yaml
+  - networkpolicy.yaml
+  - nats.yaml
+  - eod-price-db.yaml
+  - trade-processor.yaml
+  - eod-chain.yaml
+  - risk-extract.yaml
+  - execution-algo-engine.yaml
+  - reference-data.yaml
+# Applied separately by the start script, NOT part of this kustomization:
+#   - gateway.yaml (inherited from the YU12 kind layout)
+#   - ../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
+#     (kustomize cannot reference a file outside its root; referencing it in place keeps exactly
+#     one copy of the schema, so a proof taken here tests the DDL the state actually ships)

@@ -1,0 +1,54 @@
+# reference-data with DB + NATS env for the YU04 durable control feed. YU04 gave reference-data its
+# first-ever persistence (MariaDB-backed stocks + outbox) and a JetStream publisher, but never added
+# the DB/NATS env to this manifest — so on kind mysql2 defaulted to localhost:3306 (ECONNREFUSED) and
+# the publisher to localhost:4222. Adds the same DB env account-service uses plus NATS_BROKER_HOST.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reference-data
+  namespace: traderx
+  labels:
+    app: reference-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reference-data
+  template:
+    metadata:
+      labels:
+        app: reference-data
+    spec:
+      containers:
+        - name: reference-data
+          image: traderx/reference-data:state009
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18085
+              protocol: TCP
+          env:
+            - name: REFERENCE_DATA_SERVICE_PORT
+              value: "18085"
+            - name: DATABASE_PG_HOST
+              value: "database"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            - name: NATS_BROKER_HOST
+              value: "nats-broker"
+            - name: CORS_ALLOWED_ORIGINS
+              value: "http://localhost:8080,http://127.0.0.1:8080"
+            - name: REFERENCE_DATA_SUPPORTED_TICKERS
+              value: "AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF"

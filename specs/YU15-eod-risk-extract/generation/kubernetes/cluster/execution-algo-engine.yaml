@@ -1,0 +1,106 @@
+# Execution algo engine on the CLUSTER tier.
+#
+# Ported from the state-014 rig manifest (YU08) with exactly three deltas, all of them address
+# changes — the service itself is unmodified:
+#
+#   NATS_BROKER_HOST   nats-broker -> nats     (this rig's broker Service is plainly "nats")
+#   ORDER_MATCHER_URL  unchanged               (svc/order-matcher here fronts the CLUSTER GATEWAY,
+#                                               not a single-BLP matcher — same name, same port,
+#                                               different engine behind it, which is the point)
+#   PRICE_SERVICE_URL  unchanged               (price-publisher is in eod-chain.yaml on this rig)
+#
+# The engine posts orders with a "security" field, which this gateway now accepts alongside
+# "ticker" (see instrumentOf in ClusterGatewayMain) — so pointing it at consensus needs no change
+# to OrderMatcherClient. Its orders are sequenced like any other client's.
+#
+# Not in the member NetworkPolicy allowlist deliberately: this talks to the gateway Service, never
+# to a member directly, so it needs no ingress to order-matcher-cluster.
+apiVersion: v1
+kind: Service
+metadata:
+  name: execution-algo-engine
+  namespace: traderx
+  labels:
+    app: execution-algo-engine
+spec:
+  type: ClusterIP
+  selector:
+    app: execution-algo-engine
+  ports:
+    - name: http
+      protocol: TCP
+      port: 18120
+      targetPort: 18120
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-algo-engine
+  namespace: traderx
+  labels:
+    app: execution-algo-engine
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-algo-engine
+  template:
+    metadata:
+      labels:
+        app: execution-algo-engine
+    spec:
+      containers:
+        - name: execution-algo-engine
+          image: traderx/execution-algo-engine:yu15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18120
+              protocol: TCP
+          env:
+            - name: ALGO_ENGINE_PORT
+              value: "18120"
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            - name: ORDER_MATCHER_URL
+              value: "http://order-matcher:18110"
+            - name: PRICE_SERVICE_URL
+              value: "http://price-publisher:18100"
+            - name: ALGO_BUCKET_SECONDS_DEFAULT
+              value: "10"
+            - name: ALGO_LIMIT_OFFSET_BPS
+              value: "10"
+            # Synthetic needs no captured data; the DuckDB path is a YU07 tick-store concern and
+            # has no bearing on whether a parent order slices correctly.
+            - name: ALGO_VOLUME_PROFILE_SOURCE
+              value: "synthetic"
+          # Startup targets READINESS: the event store replays its JetStream log synchronously
+          # before the app is ready, and on a cold kind broker that is the slow part.
+          startupProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: "100m"
+              memory: 256Mi
+            limits:
+              memory: 768Mi

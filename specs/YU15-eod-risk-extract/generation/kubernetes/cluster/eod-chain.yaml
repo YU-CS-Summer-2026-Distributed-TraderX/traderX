@@ -1,0 +1,154 @@
+# The YU06 EOD batch chain beside the cluster tier, so the extract's trigger is the real one.
+#
+#   price-publisher  --pricing.*-->  trade-processor  --eod.prices.ready-->  position-service
+#                                          |                                       |
+#                                    eod_price_snapshot                      eod_position_pnl
+#                                                                                  |
+#                                                                          eod.pnl.done --> risk-extract
+#
+# price-publisher quotes the listed option chain off its underlyings (YU15). Without it options are
+# MISSING in every snapshot and YU06's fail-safe halts any account holding one, so no account with
+# an option position is ever marked.
+apiVersion: v1
+kind: Service
+metadata:
+  name: price-publisher
+  labels:
+    app: price-publisher
+spec:
+  selector:
+    app: price-publisher
+  ports:
+    - name: http
+      port: 18100
+      targetPort: 18100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: price-publisher
+  labels:
+    app: price-publisher
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: price-publisher
+  template:
+    metadata:
+      labels:
+        app: price-publisher
+    spec:
+      containers:
+        - name: price-publisher
+          image: traderx/price-publisher:yu15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18100
+          env:
+            - name: PRICE_PUBLISHER_PORT
+              value: "18100"
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            - name: PRICE_BOOTSTRAP_MODE
+              value: "snapshot"
+            # The underlyings the seeded option chain references must be present, or their
+            # contracts are skipped rather than quoted off a fabricated price.
+            - name: PRICE_TICKERS
+              value: "AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF"
+            # PRICE_OPTION_CONTRACTS defaults to the YU14 seeded chain; set it to "" to quote
+            # equities only. PRICE_OPTION_IV / PRICE_OPTION_RATE are the model inputs, reported on
+            # /health so a consumer can reproduce our marks exactly.
+            - name: PRICE_OPTION_IV
+              value: "0.25"
+            - name: PRICE_OPTION_RATE
+              value: "0.04"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 18100
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 384Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: position-service
+  labels:
+    app: position-service
+spec:
+  selector:
+    app: position-service
+  ports:
+    - name: http
+      port: 18090
+      targetPort: 18090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: position-service
+  labels:
+    app: position-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: position-service
+  template:
+    metadata:
+      labels:
+        app: position-service
+    spec:
+      containers:
+        - name: position-service
+          image: traderx/position-service:yu15
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18090
+          env:
+            - name: POSITION_SERVICE_PORT
+              value: "18090"
+            - name: DATABASE_PG_HOST
+              value: "eod-price-db"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            # The EOD P&L consumer: marks positions against the named snapshot version and emits
+            # eod.pnl.done — the risk extract's real trigger.
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 18090
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 200m
+              memory: 384Mi
+            limits:
+              memory: 768Mi

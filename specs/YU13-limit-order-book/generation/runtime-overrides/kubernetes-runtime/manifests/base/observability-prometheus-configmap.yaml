@@ -1,0 +1,108 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-prometheus-config
+  namespace: traderx
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      - job_name: prometheus
+        metrics_path: /prometheus/metrics
+        static_configs:
+          - targets: ["prometheus:9090"]
+    
+      - job_name: otel-collector
+        static_configs:
+          - targets: ["otel-collector:8888", "otel-collector:8889", "otel-collector:13133"]
+    
+      - job_name: blackbox-exporter
+        static_configs:
+          - targets: ["blackbox-exporter:9115"]
+    
+      - job_name: traderx-spring-boot-actuator
+        metrics_path: /actuator/prometheus
+        static_configs:
+          - targets: ["account-service:18088", "position-service:18090", "trade-processor:18091", "trade-service:18092", "order-matcher:18110"]
+    
+      - job_name: traderx-http-probe
+        metrics_path: /probe
+        params:
+          module: [http_2xx]
+        static_configs:
+          - targets:
+              - http://edge-proxy:8080/health
+              - http://edge-proxy:8080/
+              - http://reference-data:18085/stocks
+              - http://price-publisher:18100/health
+              - http://price-publisher:18100/prices/IBM
+              - http://account-service:18088/account/22214
+              - http://people-service:18089/swagger
+              - http://position-service:18090/health/alive
+              - http://trade-processor:18091/system/health
+              - http://trade-service:18092/v3/api-docs
+              - http://web-front-end-angular:18093/
+              - http://nats-broker:8222/varz
+              - http://order-matcher:18110/health
+              - http://order-matcher:18110/orders/open-count
+        relabel_configs:
+          - source_labels: [__address__]
+            target_label: __param_target
+          - source_labels: [__param_target]
+            target_label: instance
+          - target_label: __address__
+            replacement: blackbox-exporter:9115
+    
+    
+      - job_name: order-matcher
+        metrics_path: /metrics
+        scrape_interval: 250ms
+        scrape_timeout: 250ms
+        static_configs:
+          - targets: ["order-matcher:18110"]
+
+      # OTEL-01: the Aeron cluster tier. Until now Prometheus scraped only the single-process
+      # order-matcher, so the counters that are actually authoritative under consensus — above all
+      # traderx_cluster_next_order_ref, the committed ground truth — existed on /metrics but never
+      # reached a dashboard. These two jobs close that gap.
+      #
+      # Scraped DIRECTLY rather than routed through the OTel Collector on purpose. The collector
+      # owns traces, where a dropped span costs nothing; putting the ground-truth counters behind it
+      # would mean a collector outage silently blanks the number an operator uses to decide whether
+      # the cluster is committing. One less hop between truth and the dashboard.
+      #
+      # The target is the gateway SERVICE name, not the Deployment name. This job originally read
+      # "cluster-gateway:18110" — which is the Deployment — and so resolved to nothing anywhere:
+      # the Service is order-matcher-gw on GKE and order-matcher on kind. On kind the metrics
+      # arrived regardless, through the order-matcher job above, because the kind gateway Service
+      # happens to reuse that name; on GKE they reached no dashboard at all. Found 2026-07-29
+      # while standing the trace demo up.
+      #
+      # Only the GKE name is listed. The kind name is deliberately NOT added here: it is already
+      # scraped by the order-matcher job above, and scraping one endpoint from two jobs duplicates
+      # every gateway series, which would silently double the dashboard's sum() panels. One
+      # permanently-unresolved target per environment is the cheaper wrong thing.
+      - job_name: traderx-cluster-gateway
+        metrics_path: /metrics
+        static_configs:
+          - targets: ["order-matcher-gw:18110"]
+
+      # Members are scraped per-pod through the headless service: role, applied sequence and
+      # next_order_ref are per-member facts, and "which one is leader" is only answerable if the
+      # three are distinguishable. A Service-level scrape would round-robin and make the leader
+      # gauge flicker between pods.
+      - job_name: traderx-cluster-members
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:8080"
+              - "order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:8080"
+              - "order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:8080"
+        relabel_configs:
+          - source_labels: [__address__]
+            regex: "order-matcher-cluster-([0-9]+)\\..*"
+            target_label: member
+            replacement: "$1"

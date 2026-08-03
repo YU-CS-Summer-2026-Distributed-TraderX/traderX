@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    cloud.google.com/neg: '{"ingress":true}'
+  labels:
+    app: order-matcher
+  name: order-matcher-headless
+  namespace: traderx
+spec:
+  clusterIP: None
+  clusterIPs:
+  - None
+  # Aeron publications resolve the peer ordinal while both parallel pods are still starting.
+  publishNotReadyAddresses: true
+  ports:
+  - name: http
+    port: 18110
+    protocol: TCP
+    targetPort: 18110
+  selector:
+    app: order-matcher
+  type: ClusterIP

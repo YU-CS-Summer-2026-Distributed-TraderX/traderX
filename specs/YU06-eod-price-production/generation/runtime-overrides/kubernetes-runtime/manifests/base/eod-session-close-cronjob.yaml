@@ -1,0 +1,49 @@
+# YU06 (eod-price-production, FR-EOD01, contract-delta #8): scheduled session-close trigger. Mints
+# a short-lived admin JWT via trade-processor's dev-token endpoint, then POSTs /eod/session/close —
+# the exact same on-demand endpoint an operator uses. Demo schedule is hourly so the workflow is
+# observable in a meeting; change `schedule` for a real daily close.
+#
+# ponytail: master secret inlined to the dev default for the demo. For anything real, replace the
+# EOD_MASTER_SECRET env with a valueFrom.secretKeyRef and rotate it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: eod-session-close
+  namespace: traderx
+  labels:
+    app: eod-session-close
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: eod-session-close
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: eod-trigger
+              image: curlimages/curl:8.11.1
+              env:
+                - name: TRADE_PROCESSOR_URL
+                  value: "http://trade-processor:18091"
+                - name: EOD_MASTER_SECRET
+                  value: "dev-token-master-secret"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  echo "minting admin token..."
+                  TOKEN=$(curl -fsS -X POST "$TRADE_PROCESSOR_URL/auth/dev-token" \
+                    -H "X-Auth-Master-Secret: $EOD_MASTER_SECRET" \
+                    -H "Content-Type: application/json" \
+                    -d '{"subject":"eod-cron","accounts":[],"admin":true,"ttlSeconds":600}')
+                  echo "triggering EOD session close..."
+                  curl -fsS -X POST "$TRADE_PROCESSOR_URL/eod/session/close" \
+                    -H "Authorization: Bearer $TOKEN"
+                  echo "eod session close triggered."

@@ -1,0 +1,9 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+resources:
+  - order-matcher-rbac.yaml
+  - order-matcher-headless-service.yaml
+  - order-matcher-primary-service.yaml
+  - order-matcher-aeron-networkpolicy.yaml
+  - order-matcher-statefulset.yaml

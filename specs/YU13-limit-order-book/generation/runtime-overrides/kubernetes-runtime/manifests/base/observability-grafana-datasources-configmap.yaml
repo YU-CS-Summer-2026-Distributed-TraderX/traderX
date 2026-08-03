@@ -1,0 +1,92 @@
+# OTEL-01 follow-up: the log <-> trace join, wired in Grafana.
+#
+# This file OVERRIDES the datasources configmap that pipeline/render-state-010-kubernetes-runtime.sh
+# renders from the state-007 observability sources, in the same way this layer already overrides the
+# dashboards and Prometheus configmaps. Note the Prometheus URL carries the /prometheus route prefix
+# already: the renderer applies that with a perl substitution AFTER reading its source, and a whole
+# -file override lands after the renderer has run, so the prefix has to be baked in here or Grafana
+# queries a Prometheus path that 404s.
+#
+# WHAT CHANGED, and why the trace id is IN THE LINE rather than a label:
+#
+#   * A Loki LABEL per trace id would be one log stream per order. Loki's index is per stream, so at
+#     the measured 190k orders/s ceiling that asks for 190k new streams a second — the canonical
+#     cardinality bomb, and it would take Loki down long before it helped anyone find an order.
+#
+#   * STRUCTURED METADATA is the modern home for exactly this (high-cardinality, attached to a line,
+#     not indexed as a label). The deployed Loki is 2.9.8 and its config ships
+#     `allow_structured_metadata: false`, so it would need a limits change plus a promtail stage —
+#     for no query benefit here, because the query below is a substring filter on a stream already
+#     narrowed to one namespace.
+#
+#   * IN THE LINE (`trace=<32 hex>`) needs no Loki change at all, costs no cardinality, and is the
+#     only form that works in BOTH directions, which is what a support workflow actually needs:
+#     derivedFields makes a log line link to its trace, tracesToLogsV2 makes a span find its logs.
+#
+# The gateway does not have to be told any of this: it DERIVES the trace id from the client
+# idempotency key with the same splitmix64 the span emitters use (OrderTrace.traceIdHex), so the
+# line joins the trace with nothing plumbed and nothing added to the replicated log.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: observability-grafana-datasources
+  namespace: traderx
+data:
+  datasources.yaml: |
+    apiVersion: 1
+
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090/prometheus
+        isDefault: true
+
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki:3100
+        jsonData:
+          # LOG -> TRACE. Turns the `trace=<32 hex>` token the gateway prints on a reject into a
+          # clickable link into Tempo. `$$` escapes the `$` so Grafana's provisioning loader leaves
+          # `${__value.raw}` for the datasource to interpolate at query time instead of trying to
+          # expand it as an environment variable.
+          derivedFields:
+            - name: TraceID
+              matcherRegex: 'trace=([0-9a-f]{32})'
+              url: '$${__value.raw}'
+              datasourceUid: tempo
+
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo:3200
+        jsonData:
+          httpMethod: GET
+          # TRACE -> LOG, i.e. the "Logs for this span" button. This replaces the v1 `tracesToLogs`
+          # block, which named the Loki datasource and nothing else: with no tags and no query it
+          # could only ever build `{}` — an empty stream selector Loki rejects outright — so the
+          # button has never returned a line in any environment since it shipped.
+          #
+          # filterByTraceID is OFF and the query is explicit, because the automatic form appends
+          # Loki's own `traceID` filter, which assumes an OTel log appender put a traceID field on
+          # the line. Nothing here does; the id is derived and printed as `trace=<hex>`, so the
+          # filter has to match what is actually written.
+          #
+          # The time shifts matter more than they look: a span's start and end are a few hundred
+          # microseconds apart, and the log line is written when the committed ack lands, which is
+          # after the span it belongs to has closed. Without a window either side, the query looks
+          # in an interval the line is not in and returns nothing while everything is correct.
+          tracesToLogsV2:
+            datasourceUid: loki
+            spanStartTimeShift: '-5m'
+            spanEndTimeShift: '5m'
+            filterByTraceID: false
+            filterBySpanID: false
+            customQuery: true
+            query: '{namespace="traderx"} |= "trace=$${__trace.traceId}"'
+          serviceMap:
+            datasourceUid: prometheus
