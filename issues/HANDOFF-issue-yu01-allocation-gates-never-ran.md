@@ -1,8 +1,31 @@
 # Issue: YU01's allocation gates have never run, and the ProjectorHandler budgets are unmet
 
-**Status:** open — needs a decision from the state's owner. Recorded 2026-08-03 while reconciling
-the YU01 pack (`reconcile the YU01-lmax-sequencer spec layer: merge the two threads`).
+**Status:** RESOLVED 2026-08-03 by `YU01 projector: buffer primitive columns so the ring thread
+allocates nothing`. All eight handlers now measure 0 bytes per 1,000 events and `noGcTest` passes —
+the first time in this state's history. The history below is kept because the *reason* it went
+unnoticed is the reusable lesson, and because §3 records a judgement that was deliberately not taken.
 **Related:** `HANDOFF-issue-yu01-home-vs-tip-divergence.md` (the reconciliation itself).
+
+## Resolution
+
+| handler | budget | before | after |
+|---|---:|---:|---:|
+| ProjectorHandler (order) | 512 | 864,056 | **0** |
+| ProjectorHandler (trade) | 512 | 239,688 | **0** |
+| ProjectorHandler (position) | 512 | 216,000 | **0** |
+| the other five | 0 / 512 | 0 | **0** |
+
+`onEvent` now writes primitive columns into pre-allocated arrays and coalesces on the event's own
+integer keys; every object it used to build per event — the entities, the id Strings, the
+`BigDecimal` prices, the `Timestamp` stamps — is constructed at flush time on the drain thread.
+Coalescing (last-write-wins) and the fold-under-newer retry are unchanged.
+
+**The gate's `WARMUP` went 500 → 20,000, budgets untouched.** At 500 a JIT event landed inside the
+measured window and charged a one-off ~576 bytes to whichever handler was measuring at the time — it
+moved between `PositionUpdateHandler` and `TradeSubmitHandler` across consecutive runs, which is how
+it was identified as an artifact and not a per-event cost, and it appears as ~80 bytes on pristine
+home too. It was invisible until the projector's 864 KB failure stopped dominating the same test.
+Option 2 in §3 — re-baselining the budgets — was **not** taken.
 
 ---
 
