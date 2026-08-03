@@ -725,7 +725,10 @@ validate_wrapper_compose_project_alignment() {
   local action="$1"
   local target_script="$2"
   local state_num="${STATE_ID%%-*}"
-  [[ "${state_num}" =~ ^[0-9]+$ ]] || return 0
+  # YU ids count too. Unlike the lineage thresholds this builds a NAME (traderx-state-<prefix>)
+  # rather than comparing a rank, so it keeps the id's own prefix -- the 101..115 rank used for
+  # YU01..YU15 elsewhere would expect a compose project no script declares.
+  [[ "${state_num}" =~ ^([0-9]+|YU[0-9][0-9])$ ]] || return 0
 
   local script_path="${SCRIPTS_DST}/${target_script}"
   [[ -f "${script_path}" ]] || return 0
@@ -1403,7 +1406,14 @@ EOF
 
 write_generated_agentic_docs() {
   local state_num="${STATE_ID%%-*}"
-  state_num="${state_num%%[a-z]*}"
+  if [[ "${state_num}" =~ ^YU[0-9][0-9]$ ]]; then
+    # The YU lineage forks off after 014, so every numeric threshold below -- all of which ask "is
+    # this state at or past N?" -- must answer yes. Rank YU01..YU15 as 101..115: above the whole
+    # numbered lineage, order-preserving within itself. Matches publish-generated-state-branch.sh.
+    state_num="1${state_num#YU}"
+  else
+    state_num="${state_num%%[a-z]*}"
+  fi
   if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
     return
   fi

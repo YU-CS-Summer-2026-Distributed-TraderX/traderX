@@ -308,7 +308,14 @@ validate_state_entries() {
   fi
 
   local state_num="${state_id%%-*}"
-  state_num="${state_num%%[a-z]*}"
+  if [[ "${state_num}" =~ ^YU[0-9][0-9]$ ]]; then
+    # The YU lineage forks off after 014, so every numeric threshold below -- all of which ask "is
+    # this state at or past N?" -- must answer yes. Rank YU01..YU15 as 101..115: above the whole
+    # numbered lineage, order-preserving within itself. Matches publish-generated-state-branch.sh.
+    state_num="1${state_num#YU}"
+  else
+    state_num="${state_num%%[a-z]*}"
+  fi
   if [[ "${state_num}" =~ ^[0-9]+$ ]] && (( 10#${state_num} >= 6 )); then
     if path_in_list "trade-feed" "${entries[@]}"; then
       echo "[fail] decommission invariant violation: trade-feed must not reappear after state 006"

@@ -29,10 +29,17 @@ parent_state_id=""
 parent_feature_pack=""
 parent_map_file=""
 if [[ -n "${state_id}" ]] && [[ -f "${STATE_CATALOG}" ]] && command -v jq >/dev/null 2>&1; then
-  # Strip the optional letter suffix of sibling branch states (e.g. 009b-*)
-  # so numeric lineage thresholds apply to them as well.
   state_num="${state_id%%-*}"
-  state_num="${state_num%%[a-z]*}"
+  if [[ "${state_num}" =~ ^YU[0-9][0-9]$ ]]; then
+    # The YU lineage forks off after 014, so every numeric threshold below -- all of which ask "is
+    # this state at or past N?" -- must answer yes. Rank YU01..YU15 as 101..115: above the whole
+    # numbered lineage, order-preserving within itself. Matches publish-generated-state-branch.sh.
+    state_num="1${state_num#YU}"
+  else
+    # Strip the optional letter suffix of sibling branch states (e.g. 009b-*)
+    # so numeric lineage thresholds apply to them as well.
+    state_num="${state_num%%[a-z]*}"
+  fi
   state_feature_pack="$(jq -r --arg id "${state_id}" '.states[] | select(.id == $id) | .featurePack // ""' "${STATE_CATALOG}")"
   parent_state_id="$(jq -r --arg id "${state_id}" '.states[] | select(.id == $id) | ((.previous // [])[0] // "")' "${STATE_CATALOG}")"
   if [[ -n "${state_feature_pack}" ]]; then
