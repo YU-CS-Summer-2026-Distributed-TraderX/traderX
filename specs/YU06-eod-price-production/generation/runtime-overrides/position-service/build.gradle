@@ -14,6 +14,17 @@ java {
   sourceCompatibility = JavaVersion.VERSION_21
 }
 
+// Test sources for this project live at src/main/test/java (a pre-existing TraderX convention),
+// which Gradle does not pick up by default — without this the inherited @SpringBootTest smoke
+// test reports NO-SOURCE and silently never runs. Same fix brief 03 applied to the templates;
+// this is the COMPOSED layer, which brief 03 deferred.
+sourceSets {
+  test {
+    java.srcDirs = ["src/test/java", "src/main/test/java"]
+    resources.srcDirs = ["src/test/resources", "src/main/test/resources"]
+  }
+}
+
 repositories {
   mavenCentral()
 }
@@ -43,8 +54,36 @@ dependencies {
 
   testImplementation 'org.springframework.boot:spring-boot-starter-test'
   testRuntimeOnly 'com.h2database:h2:2.3.232'
+
+  // Container-backed tier. The EOD chain's two hardest properties -- that an already-existing
+  // JetStream stream gets REPAIRED rather than accepted, and that the P&L write is idempotent
+  // across a reprocess -- live in the broker and the database, not in application code, so a
+  // mock cannot reach them: a mocked JetStreamManagement returns whatever the caller expects.
+  testImplementation 'org.testcontainers:testcontainers:1.20.4'
+  testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
 }
 
+// This block must stay ABOVE the `test` block and the integrationTest registration below.
+// configureEach applies to tasks as they are realised; declaring it after a task that sets its own
+// useJUnitPlatform { ... } filter overwrites that filter, which silently un-does the tag split and
+// lets the container tests run in the fast unit job.
 tasks.withType(Test).configureEach {
   useJUnitPlatform()
+}
+
+// Unit tier: no container runtime. @Tag("integration") runs in integrationTest instead.
+test {
+  useJUnitPlatform { excludeTags 'integration' }
+}
+
+// Needs a Docker daemon (Testcontainers). Kept OUT of the infrastructure-free unit task so the
+// hosted CI job stays fast and Docker-free; run by its own CI job, the same split account-service
+// and trade-processor already use.
+tasks.register('integrationTest', Test) {
+  description = 'EOD stream repair and P&L idempotency against a real broker.'
+  group = 'verification'
+  testClassesDirs = sourceSets.test.output.classesDirs
+  classpath = sourceSets.test.runtimeClasspath
+  useJUnitPlatform { includeTags 'integration' }
+  shouldRunAfter test
 }
