@@ -118,6 +118,21 @@ if [[ "${state_num_decimal}" -ge 2 ]]; then
   [[ -f "${STATE_METADATA}" ]] || fail "missing state metadata: ${STATE_METADATA}"
 fi
 
+# Checked up front, not in run_cve_scan: the scan is the last gate, so without this
+# a missing key surfaces as a Java stack trace ~15 minutes into the run, after the
+# license scan and container build preflight have already burned the time.
+if [[ "${SKIP_CVE_SCAN}" != "1" && "${state_num_decimal}" -ge 2 && -z "${NVD_API_KEY:-}" ]]; then
+  if [[ "${DEPENDENCY_CHECK_NO_UPDATE}" == "1" && -f "${DEPENDENCY_CHECK_DATA_DIR}/odc.mv.db" ]]; then
+    echo "[info] no NVD_API_KEY; reusing cached NVD database at ${DEPENDENCY_CHECK_DATA_DIR}"
+  else
+    echo "[fail] CVE dependency scan needs NVD_API_KEY: dependency-check rejects an empty key"
+    echo "[hint] export NVD_API_KEY=<key from https://nvd.nist.gov/developers/request-an-api-key>"
+    echo "[hint] or reuse a synced cache: TRADERX_DEPENDENCY_CHECK_NO_UPDATE=1 (needs ${DEPENDENCY_CHECK_DATA_DIR}/odc.mv.db)"
+    echo "[hint] or skip the scan: --skip-cve-scan"
+    exit 1
+  fi
+fi
+
 run_core_gates() {
   echo "[step] smoke dependency version targets"
   smoke_args=(--generated --target-root "${TARGET_ROOT}" --components-root "${COMPONENTS_ROOT}")
@@ -264,7 +279,7 @@ run_dependency_check_local() {
         --suppression "${suppression}" \
         --failOnCVSS "${CVSS_THRESHOLD}" \
         --enableRetired \
-        "${update_args[@]}" \
+        ${update_args[@]+"${update_args[@]}"} \
         ${extra_args}
     )
     return 0
@@ -294,7 +309,7 @@ run_dependency_check_local() {
     --suppression "/src/${rel_suppression}" \
     --failOnCVSS "${CVSS_THRESHOLD}" \
     --enableRetired \
-    "${update_args[@]}" \
+    ${update_args[@]+"${update_args[@]}"} \
     ${extra_args}
 }
 
