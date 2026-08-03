@@ -115,8 +115,21 @@ rejects correct input is the louder failure but the cheaper one — it gets noti
 
 ## Unmasked by that fix: the Feature Pack heading check has never accepted a YU state
 
-**FIXED 2026-08-03 on YU15 — needs propagating to the other 15 branches.** yaakov picked option 1
-below; landed as the commit carrying this note. Found immediately after `361272b5`: with the parser bug gone,
+**FIXED 2026-08-03, all 16 branches.** yaakov picked option 1 below; landed on YU15 as `f7bb7cf6`
+and propagated to the other 15.
+
+**`main` was not a verbatim copy — it had already diverged**, and the divergence is worth knowing
+about for future passes over this file. main's copy already carried the YU-aware regex
+`([0-9]{3}[a-z]?|YU[0-9]{2})` plus an explanatory comment, because **main's own YU packs use a
+different heading shape than the YU branches do**: `# Feature Pack YU02: LMAX Kubernetes` on main
+versus `# Feature Pack: YU02-lmax-kubernetes` on YU02–YU15. So main never had the loud failure —
+its only gap was the `001` bookkeeping hole. The equivalent change was hand-merged there, keeping
+and extending its comment. `pack_id_re` also had to be *introduced* on main; it does not exist in
+that copy, and referencing it without defining it would have been an unbound variable under
+`set -u` — the same variable-existence trap recorded against the NVD guard in
+`HANDOFF-issue-spec-layer-propagation-gaps.md` instance 4. main now records 28 of 28, up from 27.
+
+Found immediately after `361272b5`: with the parser bug gone,
 `validate-state-doc-consistency.sh` advances past the Active Feature Packs section and fails on the
 next check, which was unreachable while `fail` exited earlier.
 
