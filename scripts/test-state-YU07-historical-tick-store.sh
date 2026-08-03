@@ -61,6 +61,13 @@ rg -q 'tick-store-gcs-hmac' "${DEPLOY}" || { echo "[error] tick-store-deployment
 echo "[check] tick-store unit tests pass"
 if command -v python3 >/dev/null 2>&1 && python3 -c "import duckdb" >/dev/null 2>&1; then
   (cd "${TICK_STORE_DIR}" && python3 -m pytest tests/ -q) || { echo "[error] tick-store tests failed"; exit 1; }
+elif [[ -n "${CI:-}" ]]; then
+  # A skip is a reasonable courtesy on a laptop without duckdb. In CI it is a vacuous pass: the
+  # check reports success having executed nothing, which is indistinguishable from the tests
+  # actually passing. The composed-extras workflow job installs requirements.txt and runs pytest
+  # directly, so there is no excuse for the interpreter to be unequipped here.
+  echo "[error] duckdb not importable under CI; the tick-store suite must run, not be skipped"
+  exit 1
 else
   echo "[warn] duckdb not importable in this environment; skipping in-process test run (see quickstart.md self-check)"
 fi

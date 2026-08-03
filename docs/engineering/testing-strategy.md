@@ -9,8 +9,8 @@ hardware. Nothing was weakened to make it fit a pipeline.
 
 ## Tier 1 — in-process tests, in CI on every push
 
-The engine, cluster, gateway, risk and post-trade logic are covered by **414 to 453 machine-verified
-tests per branch**, plus **48 baseline-service tests**. They need no cluster, no network and no
+The engine, cluster, gateway, risk and post-trade logic are covered by **460 machine-verified
+tests**, plus **48 baseline-service tests**. They need no cluster, no network and no
 database server, using an in-memory database where a datasource is required.
 
 They assert the correctness properties directly: self-trade prevention, atomic replace, client-order-ID
@@ -183,12 +183,13 @@ this project has repeatedly measured as unreliable for consensus. Trading a trus
 for an unreliable automated one is a poor exchange. Its properties are gated in-process by the
 projector and order-book tests.
 
-## Branch matrix
+## Which tree the numbers describe
 
-The engine job runs as a per-branch matrix across **YU13, YU14 and YU15**. Each branch renders its
-own effective tree, so the same test name runs against differently composed code — which is how a
-propagation regression becomes visible. A fix that is live on one branch and shadowed on another
-appears as one red leg beside two green ones.
+Every figure here is counted on **YU15**, the tip state — the only branch carrying every ancestor's
+spec pack, and the tree the deployed system is built from. On the CI path that is engine 335 plus
+service modules 125, for **460 with zero failures**.
 
-Current counts on the CI path: engine 304 / 318 / 335, service modules 110 / 110 / 118, for
-**414 / 428 / 453 per branch** with zero failures.
+The engine job additionally runs against YU15's two ancestor branches. That is a propagation check
+rather than three products under test: each renders its own effective tree, so a fix that is live on
+one spec layer while shadowed on another surfaces as a single red leg — and surfaces nowhere at all
+without it. The ancestors report fewer tests only because they compose fewer layers.
