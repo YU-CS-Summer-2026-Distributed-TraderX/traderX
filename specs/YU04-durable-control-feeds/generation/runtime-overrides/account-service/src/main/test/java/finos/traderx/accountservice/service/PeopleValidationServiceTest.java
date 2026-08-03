@@ -15,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
@@ -74,31 +75,42 @@ class PeopleValidationServiceTest {
   }
 
   /**
-   * Pins CURRENT behaviour for the case that IS conflated. Only 404 means "no such person", but
-   * every 4xx is treated as one, so an expired credential or a policy change is reported to the
-   * caller as an unknown user — a misleading diagnosis that sends the investigation to the wrong
-   * team. Narrowing the catch to 404 SHOULD break this test; read that as the fix landing.
+   * Only 404 means "no such person". Any other 4xx now propagates, exactly as a 5xx does — an
+   * expired credential or a policy change is a fault, not a missing user, and reporting it as one
+   * sent the investigation to the wrong team. Fixed 2026-08-02; this test previously asserted the
+   * opposite and was written to fail when the fix landed.
    */
   @Test
-  void aNon404ClientErrorIsCollapsedIntoUnknownUser() {
+  void aNon404ClientErrorIsSurfacedRatherThanReadAsUnknownUser() {
     http.expect(requestTo(PEOPLE + "/People/GetPerson?LogonId=rick"))
         .andRespond(withStatus(HttpStatus.FORBIDDEN));
 
-    assertThat(service.validatePerson("rick")).isFalse();
+    assertThatThrownBy(() -> service.validatePerson("rick"))
+        .isInstanceOf(HttpClientErrorException.class);
     http.verify();
   }
 
   /**
-   * The username is concatenated straight into the query string rather than encoded. This test
-   * records what that means for a username carrying a URL delimiter — the assertion is on the URL
-   * the directory actually receives, which is the only place the difference is observable.
+   * The username is carried as a URI variable, so a value containing a URL delimiter is ENCODED
+   * rather than changing the request. Before the fix, "rick&admin=true" arrived at people-service
+   * as a second query parameter; it now arrives as one opaque LogonId value.
    */
   @Test
-  void aUsernameCarryingAQueryDelimiterReachesTheDirectoryUnencoded() {
-    http.expect(requestTo(PEOPLE + "/People/GetPerson?LogonId=rick&admin=true"))
+  void aUsernameCarryingAQueryDelimiterIsEncodedRatherThanInjected() {
+    http.expect(requestTo(PEOPLE + "/People/GetPerson?LogonId=rick%26admin%3Dtrue"))
         .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
 
     assertThat(service.validatePerson("rick&admin=true")).isTrue();
+    http.verify();
+  }
+
+  /** A space is encoded too, rather than producing an illegal request line. */
+  @Test
+  void aUsernameContainingASpaceIsEncoded() {
+    http.expect(requestTo(PEOPLE + "/People/GetPerson?LogonId=ann%20smith"))
+        .andRespond(withSuccess("{}", MediaType.APPLICATION_JSON));
+
+    assertThat(service.validatePerson("ann smith")).isTrue();
     http.verify();
   }
 }
