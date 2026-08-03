@@ -4,7 +4,7 @@ module.exports = {
     {
       type: 'category',
       label: 'Testing',
-      items: ['engineering/testing-strategy', 'engineering/test-coverage'],
+      items: ['engineering/whats-new', 'engineering/testing-strategy', 'engineering/test-coverage'],
     },
     {
       type: 'category',
