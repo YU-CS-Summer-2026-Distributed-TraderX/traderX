@@ -24,13 +24,13 @@
 4. Run the session proof (logon, order → ExecutionReport, cancel, status, duplicate rejection):
 
    ```bash
-   FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh
+   FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh
    ```
 
 5. Throughput (completed D→8 lifecycles; alternate sides to stay clear of risk caps):
 
    ```bash
-   FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/fix-load.mjs --secs 60
+   FIX_JWT="$FIX_JWT" SIDES=alternate node scripts/bench/load/fix-load.mjs --secs 60
    ```
 
 ## Demonstrating this state's behavior
@@ -38,8 +38,8 @@
 - **Fail-closed logon** — a wrong password or unmapped CompID never gets a session:
 
   ```bash
-  FIX_JWT=not-a-jwt bash scripts/bench/yu10-fix-session.sh          # expect: logon rejected
-  FIX_COMP_ID=NOBODY FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh   # same
+  FIX_JWT=not-a-jwt bash scripts/proofs/yu10-fix-session.sh          # expect: logon rejected
+  FIX_COMP_ID=NOBODY FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh   # same
   ```
 
 - **Restart reconciliation** — kill the pod mid-session and watch the resend window reconcile:
@@ -49,11 +49,11 @@
   # yu10-fix-session.sh --resume reconnects after readiness, verifies sequence recovery,
   # re-requests order state with OrderStatusRequest, and proves a same-ClOrdID retry is
   # answered as a duplicate, not re-executed.
-  FIX_JWT="$FIX_JWT" bash scripts/bench/yu10-fix-session.sh --resume
+  FIX_JWT="$FIX_JWT" bash scripts/proofs/yu10-fix-session.sh --resume
   ```
 
 - **The FIX/REST equivalence** — an order admitted over FIX appears in the same blotter, risk
-  state, journal, and DB projection as a REST order; `scripts/bench/yu10-fix-session.sh` checks
+  state, journal, and DB projection as a REST order; `scripts/proofs/yu10-fix-session.sh` checks
   the DB projection row as its final step.
 
 ## Stopping
