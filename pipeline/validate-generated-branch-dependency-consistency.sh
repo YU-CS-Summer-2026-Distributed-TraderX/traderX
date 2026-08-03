@@ -170,6 +170,7 @@ fi
 
 missing=0
 scanned_states=0
+skipped_unpublished=0
 
 while IFS=$'\t' read -r state_id publish_branch; do
   [[ -n "${state_id}" && -n "${publish_branch}" ]] || continue
@@ -178,6 +179,7 @@ while IFS=$'\t' read -r state_id publish_branch; do
   if [[ -z "${ref}" ]]; then
     if (( ALLOW_MISSING == 1 )); then
       echo "[warn] missing generated branch ref for ${state_id}: ${publish_branch}"
+      skipped_unpublished=$((skipped_unpublished + 1))
       continue
     fi
     echo "[fail] missing generated branch ref for ${state_id}: ${publish_branch}"
@@ -299,6 +301,17 @@ if (( missing > 0 )); then
 fi
 
 if [[ ! -s "${rows_file}" ]]; then
+  # Bootstrap: --allow-missing-branches downgrades an unpublished state to a warning and skips it
+  # without counting it as scanned. If EVERY state in scope was skipped that way there is nothing
+  # for it to be inconsistent WITH -- that is the first publish of a lineage, not a vacuous pass,
+  # and failing here made the first publish of any new lineage impossible to reach.
+  # Zero rows from branches that DO exist stays a failure: that is the empty-precondition case
+  # this guard was added for.
+  if (( scanned_states == 0 && skipped_unpublished > 0 )); then
+    echo "[warn] no published generated branches in scope: ${skipped_unpublished} state(s) not published yet"
+    echo "[warn] skipping cross-branch dependency consistency (nothing to compare against)"
+    exit 0
+  fi
   echo "[fail] no dependency rows collected from generated branches"
   exit 1
 fi
