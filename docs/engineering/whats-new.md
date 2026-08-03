@@ -1,7 +1,7 @@
 ---
 title: What's new
 sidebar_label: What's new
-description: What Yeshiva University's build adds to FINOS TraderX, state by state — an LMAX matching engine on Raft consensus, pre-trade risk, a crossing order book, listed options and an end-of-day risk extract.
+description: What Yeshiva University's build adds to FINOS TraderX, state by state — an LMAX matching engine on Raft consensus, pre-trade risk, a crossing order book, listed options, an end-of-day risk extract, plus OpenTelemetry tracing and a KDB-X tick store.
 ---
 
 # What's new
@@ -15,6 +15,10 @@ The matching engine moved in-memory and single-threaded, then onto Raft consensu
 members. Risk moved in front of the book. Settlement, reconciliation, regulatory export, FIX
 ingress, listed options and an end-of-day risk extract were added on top. Every state below still
 generates, deploys and runs — and each links to the spec pack that defines it.
+
+Two later additions — OpenTelemetry tracing and a KDB-X tick store — arrived after the sequence was
+finished and deliberately did **not** become new states. They are described in
+[Added after the fifteen](#added-after-the-fifteen--without-adding-a-state).
 
 ## The fifteen states
 
@@ -133,6 +137,58 @@ held, and its risk number means nothing. Rows are un-netted with the counterpart
 bytes are identical every time for a given identifier.
 
 [Spec pack →](/specs/YU15-eod-risk-extract)
+
+## Added after the fifteen — without adding a state
+
+Two capabilities were asked for once the state sequence was already complete, with the explicit
+constraint that they should **not** become states sixteen and seventeen. Both were folded into the
+state that already owned the ground, which is why they do not appear in the list above — and both
+had to earn their place without changing what the trading path costs.
+
+### Observability — traces that survive consensus
+
+An order's trace has to follow it across a Raft cluster, and the requirement attached to that was
+blunt: integrate it asynchronously, so it does not slow the flow of trades. The design serves that
+one rule.
+
+A producer — a REST or FIX submit thread, the gateway's owner thread, a member's apply thread —
+does exactly one thing: copies eight longs into a pre-allocated ring buffer and returns. No lock, no
+allocation, no I/O, and deliberately **no backpressure path back to the caller**. If the ring is
+full the write fails, a counter increments, and the order carries on untouched. Dropping telemetry
+under load is correct; stalling an owner thread behind a slow collector is the worst outcome
+available, so the code makes it unreachable rather than unlikely.
+
+Everything expensive — hex formatting, JSON assembly, HTTP, retries, the collector being down —
+happens on one daemon thread no order ever touches. A collector outage costs a counter, not a
+millisecond.
+
+It deliberately does not use the OpenTelemetry SDK. That SDK's batching has the right shape, but the
+API above it allocates per span, and this path runs under an allocation gate and under Epsilon GC —
+no collector at all — in the no-GC proofs, where a single allocated byte fails the build. The sink
+emits the same OTLP/HTTP wire format any SDK would, to the same endpoint, in about a hundred lines
+and with no new dependencies. Grafana, Prometheus, Loki and Tempo deploy with the platform, and
+traces are off unless explicitly enabled.
+
+### Market and engine data in KDB-X (kdb+/q)
+
+The tick store holds two datasets side by side, and keeping them separate is the whole design.
+
+`tickstore.q` loads the NYSE TAQ tape as `quote` and `trade` — what the *market* did, tens of
+millions of real prints. `txstore.q` loads our own matching engine's flow as `txOrder` and
+`txTrade`, captured off the running cluster by a leader-side tap that sits **off** the consensus
+path, so recording never becomes something consensus waits for.
+
+The naming split is deliberate rather than cosmetic. A tape print and an engine execution are
+different objects with different provenance, and a single `trade` table holding both is exactly the
+mistake that makes a VWAP silently answer the wrong question — a number that looks right, reconciles
+against nothing, and is wrong. The two stores load side by side and stay distinguishable.
+
+Both are checked by q gates that are **cross-implementation**: every expected value was computed
+independently in a second engine over the same files, so the store is verified against something
+other than itself — 17 checks on the historical tape (row counts per partition, deduplication, the
+quote/trade split, first trades to the tick, regular-hours VWAP across every symbol-day, replay
+ordering) and 18 on the live capture (schema, the leader-only guard, and capture count equal to the
+cluster's own trade count).
 
 ## See how it is verified
 
