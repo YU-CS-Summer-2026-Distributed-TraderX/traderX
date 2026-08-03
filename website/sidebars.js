@@ -118,6 +118,7 @@ module.exports = {
         'learning/state-012-platform-convergence-c3',
         'learning/state-013-radius-kubernetes-platform',
         'learning/state-014-fdc3-intent-interoperability',
+        'learning/state-YU01-lmax-sequencer',
         'learning/state-YU02-lmax-kubernetes',
         'learning/state-YU03-in-memory-risk-gateway',
         'learning/state-YU04-durable-control-feeds',

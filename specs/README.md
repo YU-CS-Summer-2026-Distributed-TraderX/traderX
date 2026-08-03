@@ -21,6 +21,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `012-platform-convergence-c3`
 - `013-radius-kubernetes-platform`
 - `014-fdc3-intent-interoperability`
+- `YU01-lmax-sequencer`
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`

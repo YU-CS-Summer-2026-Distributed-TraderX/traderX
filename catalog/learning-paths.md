@@ -25,6 +25,7 @@ This file is generated from `catalog/state-catalog.json`.
 
 - `005-postgres-database-replacement`
 - `006-messaging-nats-replacement`
+- `YU01-lmax-sequencer`
 - `YU02-lmax-kubernetes`
 - `YU11-aeron-replication`
 - `YU12-aeron-cluster`
@@ -53,6 +54,7 @@ This file is generated from `catalog/state-catalog.json`.
 ### Optional
 
 - `013-radius-kubernetes-platform`
+- `YU01-lmax-sequencer`
 - `YU02-lmax-kubernetes`
 - `YU03-in-memory-risk-gateway`
 - `YU04-durable-control-feeds`
@@ -93,6 +95,7 @@ This file is generated from `catalog/state-catalog.json`.
 | `012-platform-convergence-c3` | 011-tilt-kubernetes-dev-loop | `C3` | `true` | `canonical` | `specs/012-platform-convergence-c3/spec.md` |
 | `013-radius-kubernetes-platform` | 012-platform-convergence-c3 | `none` | `false` | `optional` | `specs/013-radius-kubernetes-platform/spec.md` |
 | `014-fdc3-intent-interoperability` | 012-platform-convergence-c3 | `none` | `false` | `canonical` | `specs/014-fdc3-intent-interoperability/spec.md` |
+| `YU01-lmax-sequencer` | 009-order-management-matcher | `none` | `false` | `optional` | `specs/YU01-lmax-sequencer/spec.md` |
 | `YU02-lmax-kubernetes` | 014-fdc3-intent-interoperability | `none` | `false` | `optional` | `specs/YU02-lmax-kubernetes/spec.md` |
 | `YU03-in-memory-risk-gateway` | YU02-lmax-kubernetes | `none` | `false` | `optional` | `specs/YU03-in-memory-risk-gateway/spec.md` |
 | `YU04-durable-control-feeds` | YU03-in-memory-risk-gateway | `none` | `false` | `optional` | `specs/YU04-durable-control-feeds/spec.md` |

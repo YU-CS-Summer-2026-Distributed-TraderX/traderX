@@ -27,6 +27,7 @@ tracks:
     states:
       - 005-postgres-database-replacement
       - 006-messaging-nats-replacement
+      - YU01-lmax-sequencer
       - YU02-lmax-kubernetes
       - YU11-aeron-replication
       - YU12-aeron-cluster
@@ -55,6 +56,7 @@ tracks:
     description: "Optional side branches not in primary publish lineage."
     states:
       - 013-radius-kubernetes-platform
+      - YU01-lmax-sequencer
       - YU02-lmax-kubernetes
       - YU03-in-memory-risk-gateway
       - YU04-durable-control-feeds
@@ -175,6 +177,13 @@ stateCatalog:
     isConvergence: false
     lineageRole: canonical
     spec: specs/014-fdc3-intent-interoperability/spec.md
+  - id: YU01-lmax-sequencer
+    previous:
+      - 009-order-management-matcher
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU01-lmax-sequencer/spec.md
   - id: YU02-lmax-kubernetes
     previous:
       - 014-fdc3-intent-interoperability

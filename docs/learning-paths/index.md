@@ -49,6 +49,7 @@ flowchart TB
   S012_platform_convergence_c3["012: Platform Convergence C3 [C3]"]
   S013_radius_kubernetes_platform["013: Radius Platform on Kubernetes (Optional)"]
   S014_fdc3_intent_interoperability["014: FDC3 Intent Interoperability on C3"]
+  SYU01_lmax_sequencer["YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"]
   SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
   SYU03_in_memory_risk_gateway["YU03-in-memory-risk-gateway: In-Memory Risk Gateway"]
   SYU04_durable_control_feeds["YU04-durable-control-feeds: Durable Control Feeds"]
@@ -76,6 +77,7 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S009_order_management_matcher --> SYU01_lmax_sequencer
   S014_fdc3_intent_interoperability --> SYU02_lmax_kubernetes
   SYU02_lmax_kubernetes --> SYU03_in_memory_risk_gateway
   SYU03_in_memory_risk_gateway --> SYU04_durable_control_feeds
@@ -105,6 +107,7 @@ flowchart TB
   click S012_platform_convergence_c3 href "/specs/platform-convergence-c3" "Open State 012 Spec Pack"
   click S013_radius_kubernetes_platform href "/specs/radius-kubernetes-platform" "Open State 013 Spec Pack"
   click S014_fdc3_intent_interoperability href "/specs/fdc3-intent-interoperability" "Open State 014 Spec Pack"
+  click SYU01_lmax_sequencer href "/specs/YU01-lmax-sequencer" "Open State YU01-lmax-sequencer Spec Pack"
   click SYU02_lmax_kubernetes href "/specs/YU02-lmax-kubernetes" "Open State YU02-lmax-kubernetes Spec Pack"
   click SYU03_in_memory_risk_gateway href "/specs/YU03-in-memory-risk-gateway" "Open State YU03-in-memory-risk-gateway Spec Pack"
   click SYU04_durable_control_feeds href "/specs/YU04-durable-control-feeds" "Open State YU04-durable-control-feeds Spec Pack"
@@ -144,6 +147,7 @@ flowchart TB
 | **[`012-platform-convergence-c3`](pathname:///specs/platform-convergence-c3)** [(C3)](pathname:///docs/spec-kit/convergence-states#c3) | [link](pathname:///specs/platform-convergence-c3) | [link](pathname:///specs/platform-convergence-c3/system/architecture) | [link](pathname:///specs/platform-convergence-c3/system/runtime-topology) | [link](pathname:///docs/learning/state-012-platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/tree/code/generated-state-012-platform-convergence-c3) |
 | [`013-radius-kubernetes-platform`](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform/system/architecture) | [link](pathname:///specs/radius-kubernetes-platform/system/runtime-topology) | [link](pathname:///docs/learning/state-013-radius-kubernetes-platform) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform) |
 | [`014-fdc3-intent-interoperability`](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability/system/architecture) | [link](pathname:///specs/fdc3-intent-interoperability/system/runtime-topology) | [link](pathname:///docs/learning/state-014-fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) |
+| [`YU01-lmax-sequencer`](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer/system/architecture) | [link](pathname:///specs/YU01-lmax-sequencer/system/runtime-topology) | [link](pathname:///docs/learning/state-YU01-lmax-sequencer) | [code/generated-state-YU01-lmax-sequencer](https://github.com/finos/traderX/tree/code/generated-state-YU01-lmax-sequencer) |
 | [`YU02-lmax-kubernetes`](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes/system/architecture) | [link](pathname:///specs/YU02-lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-YU02-lmax-kubernetes) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/finos/traderX/tree/code/generated-state-YU02-lmax-kubernetes) |
 | [`YU03-in-memory-risk-gateway`](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/architecture) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/runtime-topology) | [link](pathname:///docs/learning/state-YU03-in-memory-risk-gateway) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/finos/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) |
 | [`YU04-durable-control-feeds`](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds/system/architecture) | [link](pathname:///specs/YU04-durable-control-feeds/system/runtime-topology) | [link](pathname:///docs/learning/state-YU04-durable-control-feeds) | [code/generated-state-YU04-durable-control-feeds](https://github.com/finos/traderX/tree/code/generated-state-YU04-durable-control-feeds) |
@@ -174,6 +178,7 @@ flowchart TB
   subgraph ARCHITECTURE["Architecture Track"]
     S005_postgres_database_replacement["005: PostgreSQL Database Replacement"]
     S006_messaging_nats_replacement["006: Messaging Layer Replacement with NATS"]
+    SYU01_lmax_sequencer["YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"]
     SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
     SYU11_aeron_replication["YU11-aeron-replication: Aeron SBE BLP Replication"]
     SYU12_aeron_cluster["YU12-aeron-cluster: Aeron Cluster BLP Consensus"]
@@ -216,6 +221,7 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S009_order_management_matcher --> SYU01_lmax_sequencer
   S014_fdc3_intent_interoperability --> SYU02_lmax_kubernetes
   SYU02_lmax_kubernetes --> SYU03_in_memory_risk_gateway
   SYU03_in_memory_risk_gateway --> SYU04_durable_control_feeds

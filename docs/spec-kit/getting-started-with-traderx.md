@@ -35,9 +35,11 @@ If you want to run demos quickly, use the generated state branches listed below.
 
 ### YU lineage
 
-The states above are the upstream lineage and live on `finos/traderX`. The YU states below fork off
-after 014 and are published from this repository.
+The states above are the upstream lineage and live on `finos/traderX`. The YU states below branch off
+it and are published from this repository: `YU01` continues from `009-order-management-matcher`,
+`YU02` from `014-fdc3-intent-interoperability`, and `YU03` onward each follow the previous YU state.
 
+- [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer)
 - [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
 - [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
 - [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
