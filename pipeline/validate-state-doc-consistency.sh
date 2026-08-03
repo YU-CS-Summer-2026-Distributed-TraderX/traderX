@@ -126,7 +126,7 @@ for id in "${all_ids[@]}"; do
   if rg -q '\.sh`|\.sh$|\.sh ' "${readme}"; then
     if grep -q '^- No PowerShell parity:' "${readme}"; then
       powershell_optouts+=("${id}")
-    elif grep -v '^- No PowerShell parity:' "${readme}" | rg -q '\.ps1`|\.ps1$|\.ps1 '; then
+    elif rg -q '\.ps1`|\.ps1$|\.ps1 ' "${readme}"; then
       :
     else
       fail "${readme} contains shell invocation(s) without PowerShell equivalent"
