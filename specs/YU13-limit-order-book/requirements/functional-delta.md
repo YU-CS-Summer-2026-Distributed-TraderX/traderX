@@ -64,3 +64,36 @@ volume, both noted below.
   side, where the parent published one; `trade-processor` dedup absorbs it unchanged.
 - The replicated duplicate-suppression window grows from 1,024 to 256Ki entries and is global
   across sessions, with its snapshot cost measured at 28 bytes per entry rather than assumed.
+
+## Added later — tracing across consensus, and the KDB-X capture tap
+
+Added after this state's original implementation; see the addendum in `spec.md`. Neither changes
+the wire shapes, the replicated log, or what the state machine reads.
+
+- One order produces one distributed trace spanning the gateway and the member: a root span for
+  the residence the client experiences, the gateway's queue span, the consensus black box, and the
+  member's commit and apply spans beneath it.
+- Trace identity, the member's parent span and the head sampling verdict are **derived** on each
+  tier from the client idempotency key the log already carries, not carried in the message. Adding
+  a `traceparent` field would be a schema change, a member roll and a standing determinism risk
+  taken on behalf of a debugging feature — and a resend carrying a fresh id would no longer be
+  byte-identical, so replay would stop reproducing.
+- The member derives that key before the sequenced generator overwrites `orderRef`, so both tiers
+  hash identical input.
+- A rejected order is force-sampled by both tiers independently, because "was it rejected" is
+  likewise a committed, deterministic fact read off the same ack.
+- A log line joins its trace by computing the id and carrying it in the line, so correlation needs
+  no new log label and no new field in any message.
+- Prometheus scrapes the cluster tier for the first time, per pod through the headless service, so
+  role, applied sequence and `traderx_cluster_next_order_ref` reach a dashboard as per-member
+  facts rather than a round-robin average.
+- `KdbTapWriter`, the leader-side capture tap feeding the KDB-X session store, sits beside
+  `TradeNatsPublisher` and `OrderNatsPublisher` in the same output-ring drain: leader-only,
+  off-consensus, best-effort and non-blocking. The store it writes into is specified in the
+  `YU07-historical-tick-store` pack.
+
+The gateway half of both lands on every descendant, since this state's `ClusterGatewayMain` is the
+operative copy throughout. The member half of each sits in `MatchingEngineClusteredService`, which
+`YU13`, `YU14` and `YU15` each override — so a whole trace crossing consensus is live on generated
+`YU15` only, and the tap is wired on generated `YU13` and `YU15` but not `YU14`. See the layer
+coverage table in `generation/implementation-status.md`.

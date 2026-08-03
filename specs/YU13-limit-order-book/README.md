@@ -47,3 +47,21 @@ Target runtime behavior:
 - market orders never rest: they execute against available depth and cancel the remainder,
 - every member computes an identical book from the identical committed log, and a member restored
   from snapshot answers the next crossing order exactly as a never-restarted member.
+
+## Added later — tracing across consensus, and the KDB-X capture tap
+
+Added after this state's original implementation; specified in the addendum in `spec.md` and
+decided in `system/adr-060`. Both instrument the clustered `order-matcher` and its gateway, which
+is where this state's code already lives, and neither changes the wire shapes or the replicated log.
+
+- `generation/runtime-overrides/order-matcher/.../cluster/OrderTrace.java` — trace identity, the
+  member's parent span and the head sampling verdict, all derived on both tiers from the client
+  idempotency key the log already carries. No trace context enters any sequenced message.
+- `.../cluster/SpanSink.java` — the asynchronous sink: a producer copies a fixed record into a
+  pre-allocated ring buffer and returns, a full ring drops and counts, and one daemon thread does
+  every format, batch and HTTP call. Off unless `OTEL_TRACES=1`.
+- `.../cluster/KdbTapWriter.java` — the leader-side, off-consensus capture tap feeding the KDB-X
+  session store, which is specified in the `YU07-historical-tick-store` pack.
+- `generation/runtime-overrides/kubernetes-runtime/manifests/base/observability-*` — the cluster
+  tier's first Prometheus scrape, per pod through the headless service, plus its datasources and
+  dashboards.

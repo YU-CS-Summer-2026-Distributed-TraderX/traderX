@@ -185,9 +185,17 @@ those columns is a change to the ingest, not a re-run.
 - Never hand the store a recursive glob. ~10,100 symbol partitions per trading day means `**`
   LISTs ~400k objects before any predicate prunes. `.ts.scan` walks `dt=`/`symbol=` literally.
 
+## Where the tap ships, which is not here
+
+`KdbTapWriter` lives in the **`YU13-limit-order-book`** layer, not this one, because it sits in the
+clustered `order-matcher` that only exists from `YU12-aeron-cluster` onward. This directory is the
+store and its gates; the tap is the writer.
+
+That split is why `txselfcheck.q` runs off a committed fixture rather than a live capture: on this
+state and every pre-cluster descendant there is no cluster to tap, and the gate still has to pass.
+Load a real capture with `TXSTORE_DIR` when you have one.
+
 ## Not done here
 
-The off-consensus leader-side tap that feeds live cluster orders and trades into this store is not
-built — it needs a running cluster, and this work was deliberately local. The tap belongs beside
-`TradeNatsPublisher` / `OrderNatsPublisher`, best-effort with a visible drop signal, never in the
-apply path, reusing the `OutputPublisher` drain-and-retry discipline.
+Backtesting and serving the execution algo engine off this store — both are separate work, not
+this directory's.
