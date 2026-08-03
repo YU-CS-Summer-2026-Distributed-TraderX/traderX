@@ -48,6 +48,39 @@ always there. The failure only appears where **Hibernate owns DDL** — the
   and `spring.jpa.hibernate.ddl-auto=create-drop`. It does **not** set `recovery.source`.
 - No `.sql` file exists in `src/test/resources` or `src/main/resources` in the composed tree.
 
+---
+
+## SOLVED 2026-08-03 — root cause found while fixing the same failure on YU01
+
+**The table is created under a different name than the projector queries.** Spring Boot's default
+naming strategy splits camel humps, so the `@Table(name = "OrderBook")` entity is created as
+`order_book`, while the projector writes to `orderbook` — the name `mariadb-init` creates in
+production. `TRADES` and `POSITIONS` have no camel hump, so `orderbook` is the only table that
+misses; and because the flush is a single transaction, its failure rolls the trades and positions
+writes back with it.
+
+**The leading hypothesis below (H2 `MODE=MySQL` identifier casing) is DISPROVEN.** So is an earlier
+claim that H2 was rejecting the MariaDB `ON DUPLICATE KEY UPDATE … VALUES(col)` — probing H2
+2.4.240 directly refuted that one. Read the rest of this document as a record of how the bug hid,
+not as a live investigation.
+
+Note the diagnosis was only reachable after most-specific-cause logging was added: Spring's wrapper
+reports a **missing table** as `BadSqlGrammarException`, which is what sent two separate
+investigations toward the SQL dialect instead of the schema.
+
+**The fix, and why it applies here.** It was fixed on YU01 by making the *test* schema match
+production, not by bending the SQL — the right call, since production's schema is authoritative and
+the entity mapping is what disagrees with it. YU01's layer now ships **1 `.sql` file; the YU02
+layer ships 0**, which is precisely why YU02's 13 failures remain. Backporting the same shape to
+the YU02 layer is the expected fix.
+
+⚠️ **Unverified for YU02.** The root cause and the fix pattern are confirmed on YU01; nobody has yet
+re-run YU02's suite with a test schema in place. Do that before closing this.
+
+---
+
+## Original investigation (superseded — kept for the traps it records)
+
 ## The unexplained part — start here
 
 **Generated YU15 passes 340 tests / 0 failures with materially the same setup.** Verified identical
