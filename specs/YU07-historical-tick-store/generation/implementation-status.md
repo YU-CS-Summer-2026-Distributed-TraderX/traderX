@@ -141,6 +141,50 @@ secret as YU05/YU06).
   `gcloud storage cp` + `read_parquet` on the downloaded copy returned `[('IBM', 1)]` — exact match.
   Test object removed from the bucket afterward.
 
+## Added later — the KDB-X analytical layer (2026-07-27)
+
+Specified in the addendum in `spec.md`, decided in `system/adr-059`. Read-only over the corpus
+above: no change to `capture.py`, either normalizer, the schema, the partition layout, or any
+manifest.
+
+| File | Role |
+|---|---|
+| `kdb/tickstore.q` | Maps the existing ZSTD Parquet objects as date/symbol-partitioned `quote` and `trade` virtual tables — no conversion step, partition columns read from the path. Verbs: `.ts.vwap`, `.ts.spread`, `.ts.session`, `.ts.replay`. |
+| `kdb/txstore.q` | Loads TraderX's own captured flow as `txOrder`/`txTrade`, keyed `(epoch;ref)`. Verbs: `.tx.fills`, `.tx.orders`, `.tx.gaps`, `.tx.replay`. |
+| `kdb/selfcheck.q` | 17 gates over the tape; every expected value computed independently in DuckDB over the same files. |
+| `kdb/txselfcheck.q` | 18 gates over the session store, run against `kdb/fixtures/session-yu13` — written by a real Aeron cluster applying real consensus ingress. No cluster, corpus or network needed. |
+| `kdb/fetch-sample.sh` | Pulls the ~310 MB verification sample (2 days × 4 symbols). |
+
+**Verified:**
+- `selfcheck.q` — **17/17 green** against the real sample: 52,265,720 rows after duplicate
+  collapse (3.2M trades, 47.8M quotes) across 17 files, 2 dates, 4 symbols.
+- `txselfcheck.q` — **18/18 green** against the committed fixture, and falsifiable: removing one
+  side of a cross fails the gate with exit 1 rather than quietly halving every volume.
+- **The 16 GiB Community cap is not binding.** An aggregate over all 47.8M quote rows peaked at
+  **768 MiB** (4.7% of the cap), because the reader works a row group at a time rather than
+  materialising the table. Disk was never the constraint and RAM turns out not to be either.
+- **Duplicate collapse is real and is said out loud.** Re-ingest wrote new UUID-named files beside
+  the old ones, so AAPL 2025-02-03 carries two equal-sized quote files differing only in
+  `ingested_at`. Loading both would report 9,256,890 quotes; the gate asserts 4,628,445.
+
+**Not in this layer:** `KdbTapWriter`, the leader-side capture tap, ships in the
+`YU13-limit-order-book` layer — it lives in the clustered `order-matcher`, which does not exist
+until `YU12-aeron-cluster`. This pack owns the store and the gates; that pack owns the writer.
+
+**Gotchas recorded:**
+- **A line containing only `/` starts a q block comment** running to a line containing only `\`. A
+  file whose header uses a bare `/` as a separator silently loads as nothing and exits 0 — which
+  reads exactly like a pass. Use `//`.
+- `exp` and `ss` are reserved q words and cannot be used as variable names.
+- The virtual-table query engine rejects the each-both form `ts within'(dt+t0;dt+t1)`; iterate
+  dates and query per date.
+- Never hand the store a recursive glob: ~10,100 symbol partitions per trading day means `**`
+  lists ~400k objects before any predicate prunes. `.ts.scan` walks `dt=`/`symbol=` literally.
+- VWAP here is arithmetic over **unfiltered** prints — the ingest dropped `TR_CORR` and `TR_SCOND`,
+  the fields used to exclude corrected, cancelled and non-last-eligible sales. Correct over what is
+  stored; not a reference-grade VWAP. Recovering those columns is a change to the ingest, not a
+  re-run.
+
 ## Not implemented (out of this state's scope — see spec.md)
 
 - **TAQ trades ingestion — now implemented (2026-07-15).** `ingest_taq_trades.py` normalizes a NYSE
