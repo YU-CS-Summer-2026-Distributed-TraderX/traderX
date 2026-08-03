@@ -22,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.client.MockRestServiceServer;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
@@ -200,26 +201,34 @@ class TradeOrderControllerTest {
   }
 
   /**
-   * Pins CURRENT behaviour for the one case that IS conflated, called out rather than hidden.
-   *
-   * <p>Only 404 means "no such ticker", but every 4xx is treated as one. A 401 or 403 from
-   * reference-data — an expired credential, a policy change — is reported to the trader as an
-   * unknown symbol, which is a misleading diagnosis and sends the investigation to the wrong team.
-   * The blast radius is far narrower than a full outage (see the test above), which is why this is
-   * recorded rather than fixed in passing.
-   *
-   * <p>If the validator is later narrowed to 404 alone, this test SHOULD fail — read that as the
-   * fix landing, not as a break.
+   * Only 404 means "no such ticker". Any other 4xx now propagates, exactly as a 5xx does — a 401 or
+   * 403 from reference-data is a fault, not an invalid symbol, and telling a trader their good
+   * symbol does not exist both misdiagnoses the incident and hides it. Fixed 2026-08-02; this test
+   * previously asserted the opposite and was written to fail when the fix landed.
    */
   @Test
-  void aNon404ClientErrorFromReferenceDataIsCollapsedIntoUnknownTicker() {
+  void aNon404ClientErrorFromReferenceDataIsSurfacedRatherThanReadAsUnknownTicker() {
     http.expect(requestTo(REF_DATA + "/stocks/AAPL"))
         .andExpect(method(HttpMethod.GET))
         .andRespond(withStatus(HttpStatus.FORBIDDEN));
 
     assertThatThrownBy(() -> controller.createTradeOrder(order()))
-        .isInstanceOf(ResourceNotFoundException.class)
-        .hasMessageContaining("AAPL");
+        .isInstanceOf(HttpClientErrorException.class)
+        .isNotInstanceOf(ResourceNotFoundException.class);
+
+    http.verify();
+  }
+
+  /** The same rule on the account leg: a refusal is not "no such account". */
+  @Test
+  void aNon404ClientErrorFromAccountServiceIsSurfacedRatherThanReadAsUnknownAccount() {
+    expectTickerFound();
+    http.expect(requestTo(ACCOUNTS + "/account/44044"))
+        .andRespond(withStatus(HttpStatus.FORBIDDEN));
+
+    assertThatThrownBy(() -> controller.createTradeOrder(order()))
+        .isInstanceOf(HttpClientErrorException.class)
+        .isNotInstanceOf(ResourceNotFoundException.class);
 
     http.verify();
   }
