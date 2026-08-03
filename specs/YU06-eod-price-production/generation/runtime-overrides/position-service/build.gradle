@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.PathSensitivity
+
 plugins {
   id 'java'
   id 'org.springframework.boot' version '3.5.16'
@@ -61,6 +63,9 @@ dependencies {
   // mock cannot reach them: a mocked JetStreamManagement returns whatever the caller expects.
   testImplementation 'org.testcontainers:testcontainers:1.20.4'
   testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+  testImplementation 'org.testcontainers:mariadb:1.20.4'
+  // The driver is already runtimeOnly for the app; testRuntimeOnly extends runtimeOnly, so it is
+  // on the test runtime classpath too and does not need repeating.
 }
 
 // This block must stay ABOVE the `test` block and the integrationTest registration below.
@@ -86,4 +91,14 @@ tasks.register('integrationTest', Test) {
   classpath = sourceSets.test.runtimeClasspath
   useJUnitPlatform { includeTags 'integration' }
   shouldRunAfter test
+
+  // The deployed schema is a real INPUT of these tests -- EodSnapshotAndPnlIT applies the ConfigMap's
+  // DDL verbatim -- but Gradle cannot know that, so without this a DDL-only edit leaves the task
+  // UP-TO-DATE and the previous run's results stand. Found the hard way: deleting the PRIMARY KEY
+  // from eod_position_pnl appeared to change nothing, because the suite never re-ran and the stale
+  // green XML was still on disk. Declared, so a schema change re-runs the tests that check it.
+  inputs.file("../kubernetes-runtime/manifests/base/database-init-configmap.yaml")
+    .withPropertyName('deployedSchema')
+    .withPathSensitivity(PathSensitivity.RELATIVE)
+    .optional()
 }
