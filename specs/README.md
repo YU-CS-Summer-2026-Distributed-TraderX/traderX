@@ -21,6 +21,20 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `012-platform-convergence-c3`
 - `013-radius-kubernetes-platform`
 - `014-fdc3-intent-interoperability`
+- `YU02-lmax-kubernetes`
+- `YU03-in-memory-risk-gateway`
+- `YU04-durable-control-feeds`
+- `YU05-post-trade-compliance`
+- `YU06-eod-price-production`
+- `YU07-historical-tick-store`
+- `YU08-execution-algo-engine`
+- `YU09-ops-hardening`
+- `YU10-fix-ingress`
+- `YU11-aeron-replication`
+- `YU12-aeron-cluster`
+- `YU13-limit-order-book`
+- `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
 
 ## Portal Feature Packs
 

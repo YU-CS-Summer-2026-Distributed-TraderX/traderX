@@ -49,6 +49,20 @@ flowchart TB
   S012_platform_convergence_c3["012: Platform Convergence C3 [C3]"]
   S013_radius_kubernetes_platform["013: Radius Platform on Kubernetes (Optional)"]
   S014_fdc3_intent_interoperability["014: FDC3 Intent Interoperability on C3"]
+  SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
+  SYU03_in_memory_risk_gateway["YU03-in-memory-risk-gateway: In-Memory Risk Gateway"]
+  SYU04_durable_control_feeds["YU04-durable-control-feeds: Durable Control Feeds"]
+  SYU05_post_trade_compliance["YU05-post-trade-compliance: Post-Trade Compliance Bundle"]
+  SYU06_eod_price_production["YU06-eod-price-production: EOD Price Production + Overnight Batch Chain"]
+  SYU07_historical_tick_store["YU07-historical-tick-store: Historical Tick Store"]
+  SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
+  SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
+  SYU10_fix_ingress["YU10-fix-ingress: FIX Order-Entry Ingress"]
+  SYU11_aeron_replication["YU11-aeron-replication: Aeron SBE BLP Replication"]
+  SYU12_aeron_cluster["YU12-aeron-cluster: Aeron Cluster BLP Consensus"]
+  SYU13_limit_order_book["YU13-limit-order-book: Crossing Limit-Order Book"]
+  SYU14_listed_equity_options["YU14-listed-equity-options: Listed Equity Options"]
+  SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -62,6 +76,20 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S014_fdc3_intent_interoperability --> SYU02_lmax_kubernetes
+  SYU02_lmax_kubernetes --> SYU03_in_memory_risk_gateway
+  SYU03_in_memory_risk_gateway --> SYU04_durable_control_feeds
+  SYU04_durable_control_feeds --> SYU05_post_trade_compliance
+  SYU05_post_trade_compliance --> SYU06_eod_price_production
+  SYU06_eod_price_production --> SYU07_historical_tick_store
+  SYU07_historical_tick_store --> SYU08_execution_algo_engine
+  SYU08_execution_algo_engine --> SYU09_ops_hardening
+  SYU09_ops_hardening --> SYU10_fix_ingress
+  SYU10_fix_ingress --> SYU11_aeron_replication
+  SYU11_aeron_replication --> SYU12_aeron_cluster
+  SYU12_aeron_cluster --> SYU13_limit_order_book
+  SYU13_limit_order_book --> SYU14_listed_equity_options
+  SYU14_listed_equity_options --> SYU15_eod_risk_extract
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -77,6 +105,20 @@ flowchart TB
   click S012_platform_convergence_c3 href "/specs/platform-convergence-c3" "Open State 012 Spec Pack"
   click S013_radius_kubernetes_platform href "/specs/radius-kubernetes-platform" "Open State 013 Spec Pack"
   click S014_fdc3_intent_interoperability href "/specs/fdc3-intent-interoperability" "Open State 014 Spec Pack"
+  click SYU02_lmax_kubernetes href "/specs/YU02-lmax-kubernetes" "Open State YU02-lmax-kubernetes Spec Pack"
+  click SYU03_in_memory_risk_gateway href "/specs/YU03-in-memory-risk-gateway" "Open State YU03-in-memory-risk-gateway Spec Pack"
+  click SYU04_durable_control_feeds href "/specs/YU04-durable-control-feeds" "Open State YU04-durable-control-feeds Spec Pack"
+  click SYU05_post_trade_compliance href "/specs/YU05-post-trade-compliance" "Open State YU05-post-trade-compliance Spec Pack"
+  click SYU06_eod_price_production href "/specs/YU06-eod-price-production" "Open State YU06-eod-price-production Spec Pack"
+  click SYU07_historical_tick_store href "/specs/YU07-historical-tick-store" "Open State YU07-historical-tick-store Spec Pack"
+  click SYU08_execution_algo_engine href "/specs/YU08-execution-algo-engine" "Open State YU08-execution-algo-engine Spec Pack"
+  click SYU09_ops_hardening href "/specs/YU09-ops-hardening" "Open State YU09-ops-hardening Spec Pack"
+  click SYU10_fix_ingress href "/specs/YU10-fix-ingress" "Open State YU10-fix-ingress Spec Pack"
+  click SYU11_aeron_replication href "/specs/YU11-aeron-replication" "Open State YU11-aeron-replication Spec Pack"
+  click SYU12_aeron_cluster href "/specs/YU12-aeron-cluster" "Open State YU12-aeron-cluster Spec Pack"
+  click SYU13_limit_order_book href "/specs/YU13-limit-order-book" "Open State YU13-limit-order-book Spec Pack"
+  click SYU14_listed_equity_options href "/specs/YU14-listed-equity-options" "Open State YU14-listed-equity-options Spec Pack"
+  click SYU15_eod_risk_extract href "/specs/YU15-eod-risk-extract" "Open State YU15-eod-risk-extract Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -102,6 +144,20 @@ flowchart TB
 | **[`012-platform-convergence-c3`](pathname:///specs/platform-convergence-c3)** [(C3)](pathname:///docs/spec-kit/convergence-states#c3) | [link](pathname:///specs/platform-convergence-c3) | [link](pathname:///specs/platform-convergence-c3/system/architecture) | [link](pathname:///specs/platform-convergence-c3/system/runtime-topology) | [link](pathname:///docs/learning/state-012-platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/finos/traderX/tree/code/generated-state-012-platform-convergence-c3) |
 | [`013-radius-kubernetes-platform`](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform/system/architecture) | [link](pathname:///specs/radius-kubernetes-platform/system/runtime-topology) | [link](pathname:///docs/learning/state-013-radius-kubernetes-platform) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform) |
 | [`014-fdc3-intent-interoperability`](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability/system/architecture) | [link](pathname:///specs/fdc3-intent-interoperability/system/runtime-topology) | [link](pathname:///docs/learning/state-014-fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) |
+| [`YU02-lmax-kubernetes`](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes/system/architecture) | [link](pathname:///specs/YU02-lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-YU02-lmax-kubernetes) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/finos/traderX/tree/code/generated-state-YU02-lmax-kubernetes) |
+| [`YU03-in-memory-risk-gateway`](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/architecture) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/runtime-topology) | [link](pathname:///docs/learning/state-YU03-in-memory-risk-gateway) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/finos/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) |
+| [`YU04-durable-control-feeds`](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds/system/architecture) | [link](pathname:///specs/YU04-durable-control-feeds/system/runtime-topology) | [link](pathname:///docs/learning/state-YU04-durable-control-feeds) | [code/generated-state-YU04-durable-control-feeds](https://github.com/finos/traderX/tree/code/generated-state-YU04-durable-control-feeds) |
+| [`YU05-post-trade-compliance`](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance/system/architecture) | [link](pathname:///specs/YU05-post-trade-compliance/system/runtime-topology) | [link](pathname:///docs/learning/state-YU05-post-trade-compliance) | [code/generated-state-YU05-post-trade-compliance](https://github.com/finos/traderX/tree/code/generated-state-YU05-post-trade-compliance) |
+| [`YU06-eod-price-production`](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production/system/architecture) | [link](pathname:///specs/YU06-eod-price-production/system/runtime-topology) | [link](pathname:///docs/learning/state-YU06-eod-price-production) | [code/generated-state-YU06-eod-price-production](https://github.com/finos/traderX/tree/code/generated-state-YU06-eod-price-production) |
+| [`YU07-historical-tick-store`](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store/system/architecture) | [link](pathname:///specs/YU07-historical-tick-store/system/runtime-topology) | [link](pathname:///docs/learning/state-YU07-historical-tick-store) | [code/generated-state-YU07-historical-tick-store](https://github.com/finos/traderX/tree/code/generated-state-YU07-historical-tick-store) |
+| [`YU08-execution-algo-engine`](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine/system/architecture) | [link](pathname:///specs/YU08-execution-algo-engine/system/runtime-topology) | [link](pathname:///docs/learning/state-YU08-execution-algo-engine) | [code/generated-state-YU08-execution-algo-engine](https://github.com/finos/traderX/tree/code/generated-state-YU08-execution-algo-engine) |
+| [`YU09-ops-hardening`](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening/system/architecture) | [link](pathname:///specs/YU09-ops-hardening/system/runtime-topology) | [link](pathname:///docs/learning/state-YU09-ops-hardening) | [code/generated-state-YU09-ops-hardening](https://github.com/finos/traderX/tree/code/generated-state-YU09-ops-hardening) |
+| [`YU10-fix-ingress`](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress/system/architecture) | [link](pathname:///specs/YU10-fix-ingress/system/runtime-topology) | [link](pathname:///docs/learning/state-YU10-fix-ingress) | [code/generated-state-YU10-fix-ingress](https://github.com/finos/traderX/tree/code/generated-state-YU10-fix-ingress) |
+| [`YU11-aeron-replication`](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication/system/architecture) | [link](pathname:///specs/YU11-aeron-replication/system/runtime-topology) | [link](pathname:///docs/learning/state-YU11-aeron-replication) | [code/generated-state-YU11-aeron-replication](https://github.com/finos/traderX/tree/code/generated-state-YU11-aeron-replication) |
+| [`YU12-aeron-cluster`](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster/system/architecture) | [link](pathname:///specs/YU12-aeron-cluster/system/runtime-topology) | [link](pathname:///docs/learning/state-YU12-aeron-cluster) | [code/generated-state-YU12-aeron-cluster](https://github.com/finos/traderX/tree/code/generated-state-YU12-aeron-cluster) |
+| [`YU13-limit-order-book`](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book/system/architecture) | [link](pathname:///specs/YU13-limit-order-book/system/runtime-topology) | [link](pathname:///docs/learning/state-YU13-limit-order-book) | [code/generated-state-YU13-limit-order-book](https://github.com/finos/traderX/tree/code/generated-state-YU13-limit-order-book) |
+| [`YU14-listed-equity-options`](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options/system/architecture) | [link](pathname:///specs/YU14-listed-equity-options/system/runtime-topology) | [link](pathname:///docs/learning/state-YU14-listed-equity-options) | [code/generated-state-YU14-listed-equity-options](https://github.com/finos/traderX/tree/code/generated-state-YU14-listed-equity-options) |
+| [`YU15-eod-risk-extract`](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract/system/architecture) | [link](pathname:///specs/YU15-eod-risk-extract/system/runtime-topology) | [link](pathname:///docs/learning/state-YU15-eod-risk-extract) | [code/generated-state-YU15-eod-risk-extract](https://github.com/finos/traderX/tree/code/generated-state-YU15-eod-risk-extract) |
 
 ## Swimlane View
 
@@ -118,14 +174,28 @@ flowchart TB
   subgraph ARCHITECTURE["Architecture Track"]
     S005_postgres_database_replacement["005: PostgreSQL Database Replacement"]
     S006_messaging_nats_replacement["006: Messaging Layer Replacement with NATS"]
+    SYU02_lmax_kubernetes["YU02-lmax-kubernetes: LMAX Kubernetes"]
+    SYU11_aeron_replication["YU11-aeron-replication: Aeron SBE BLP Replication"]
+    SYU12_aeron_cluster["YU12-aeron-cluster: Aeron Cluster BLP Consensus"]
   end
   subgraph NONFUNCTIONAL["Nonfunctional Track"]
     S007_observability_lgtm_compose["007: Observability with LGTM on Compose [C1]"]
+    SYU04_durable_control_feeds["YU04-durable-control-feeds: Durable Control Feeds"]
+    SYU09_ops_hardening["YU09-ops-hardening: Ops Hardening"]
   end
   subgraph FUNCTIONAL["Functional Track"]
     S008_pricing_awareness_market_data["008: Pricing Awareness and Market Data Streaming"]
     S009_order_management_matcher["009: Order Management and Matcher [C2]"]
     S014_fdc3_intent_interoperability["014: FDC3 Intent Interoperability on C3"]
+    SYU03_in_memory_risk_gateway["YU03-in-memory-risk-gateway: In-Memory Risk Gateway"]
+    SYU05_post_trade_compliance["YU05-post-trade-compliance: Post-Trade Compliance Bundle"]
+    SYU06_eod_price_production["YU06-eod-price-production: EOD Price Production + Overnight Batch Chain"]
+    SYU07_historical_tick_store["YU07-historical-tick-store: Historical Tick Store"]
+    SYU08_execution_algo_engine["YU08-execution-algo-engine: Execution Algo Engine"]
+    SYU10_fix_ingress["YU10-fix-ingress: FIX Order-Entry Ingress"]
+    SYU13_limit_order_book["YU13-limit-order-book: Crossing Limit-Order Book"]
+    SYU14_listed_equity_options["YU14-listed-equity-options: Listed Equity Options"]
+    SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
   end
   subgraph DEVEX["Devex Track"]
     S010_kubernetes_runtime["010: Kubernetes Runtime on C2"]
@@ -146,6 +216,20 @@ flowchart TB
   S011_tilt_kubernetes_dev_loop --> S012_platform_convergence_c3
   S012_platform_convergence_c3 --> S013_radius_kubernetes_platform
   S012_platform_convergence_c3 --> S014_fdc3_intent_interoperability
+  S014_fdc3_intent_interoperability --> SYU02_lmax_kubernetes
+  SYU02_lmax_kubernetes --> SYU03_in_memory_risk_gateway
+  SYU03_in_memory_risk_gateway --> SYU04_durable_control_feeds
+  SYU04_durable_control_feeds --> SYU05_post_trade_compliance
+  SYU05_post_trade_compliance --> SYU06_eod_price_production
+  SYU06_eod_price_production --> SYU07_historical_tick_store
+  SYU07_historical_tick_store --> SYU08_execution_algo_engine
+  SYU08_execution_algo_engine --> SYU09_ops_hardening
+  SYU09_ops_hardening --> SYU10_fix_ingress
+  SYU10_fix_ingress --> SYU11_aeron_replication
+  SYU11_aeron_replication --> SYU12_aeron_cluster
+  SYU12_aeron_cluster --> SYU13_limit_order_book
+  SYU13_limit_order_book --> SYU14_listed_equity_options
+  SYU14_listed_equity_options --> SYU15_eod_risk_extract
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

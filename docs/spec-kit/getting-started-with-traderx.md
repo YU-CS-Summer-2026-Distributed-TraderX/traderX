@@ -33,6 +33,26 @@ If you want to run demos quickly, use the generated state branches listed below.
 - [code/generated-state-013-radius-kubernetes-platform](https://github.com/finos/traderX/tree/code/generated-state-013-radius-kubernetes-platform)
 - [code/generated-state-014-fdc3-intent-interoperability](https://github.com/finos/traderX/tree/code/generated-state-014-fdc3-intent-interoperability)
 
+### YU lineage
+
+The states above are the upstream lineage and live on `finos/traderX`. The YU states below fork off
+after 014 and are published from this repository.
+
+- [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
+- [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
+- [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
+- [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance)
+- [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production)
+- [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store)
+- [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine)
+- [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening)
+- [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress)
+- [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication)
+- [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster)
+- [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
+- [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options)
+- [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
+
 ## Why This Works
 
 These codebases are generated from specifications using GitHub Spec Kit.  
