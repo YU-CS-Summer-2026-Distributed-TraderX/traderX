@@ -7,11 +7,15 @@
 ## Context
 
 ADR-029 established the tick store: a partitioned ZSTD Parquet corpus of NYSE TAQ data, queried
-through DuckDB. Two things were then wanted on top of it. First, a real q/kdb query surface over
-the same corpus — the language this asset class is actually analysed in, and the one a reviewer
-will ask about. Second, a way to put TraderX's *own* order and execution flow into the same
-analytical world, so the engine's behaviour could be queried and replayed with the same verbs as
-the market's tape.
+through DuckDB. What it did not give was the thing this corner of finance actually uses for tick
+data — kdb+/q, the time-series database front offices across the industry journal and play sessions
+back on, and the language analysts query it in rather than SQL. Moving the platform's history there
+is what makes its data side read as a real trading system rather than a demo with a database
+attached.
+
+That implied two pieces: a q surface over the corpus already stored, and a way to get TraderX's
+*own* order and execution flow into the same analytical world, so the engine's behaviour could be
+queried and replayed with the same verbs as the market's tape.
 
 Both had to be answered without touching the ingestion contract, and — critically for the second —
 without putting anything on or near the consensus path. The cluster's deterministic replay source
