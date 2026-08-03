@@ -20,12 +20,12 @@ title: "State YU01-lmax-sequencer: LMAX Sequencer (Trading Hot Path)"
 
 ## Rendered Code
 
-- Generated branch: [YU01-lmax-sequencer](https://github.com/finos/traderX/tree/YU01-lmax-sequencer)
+- Generated branch: [code/generated-state-YU01-lmax-sequencer](https://github.com/finos/traderX/tree/code/generated-state-YU01-lmax-sequencer)
 - Authoring branch (spec source): [main](https://github.com/finos/traderX/tree/main)
 
 ## Code Comparison With Previous State
 
-- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...YU01-lmax-sequencer](https://github.com/finos/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...YU01-lmax-sequencer)
+- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...code/generated-state-YU01-lmax-sequencer](https://github.com/finos/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-YU01-lmax-sequencer)
 
 ## Plain-English Code Delta
 
