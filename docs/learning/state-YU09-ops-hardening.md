@@ -20,12 +20,12 @@ title: "State YU09-ops-hardening: Ops Hardening"
 
 ## Rendered Code
 
-- Generated branch: [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening)
+- Generated branch: [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU08-execution-algo-engine`: [YU08-execution-algo-engine...YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU08-execution-algo-engine...YU09-ops-hardening)
+- Compare against `YU08-execution-algo-engine`: [code/generated-state-YU08-execution-algo-engine...code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU08-execution-algo-engine...code%2Fgenerated-state-YU09-ops-hardening)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU09-ops-hardening: Ops Hardening"
 ## Run This State
 
 ```bash
-inherits YU08-execution-algo-engine runtime harness
+./scripts/start-state-YU09-ops-hardening-generated.sh
 ```
 
 ## Canonical Spec Links
