@@ -104,7 +104,7 @@ if [[ "${RUN_BRANCH_CONSISTENCY}" == "1" ]]; then
   fi
 
   echo "[step] smoke generated-branch dependency consistency"
-  bash "${ROOT}/pipeline/validate-generated-branch-dependency-consistency.sh" "${args[@]}"
+  bash "${ROOT}/pipeline/validate-generated-branch-dependency-consistency.sh" ${args[@]+"${args[@]}"}
 fi
 
 echo "[ok] dependency version target smoke checks passed"
