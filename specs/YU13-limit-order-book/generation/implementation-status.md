@@ -539,27 +539,56 @@ shapes, the replicated log, the snapshot format, or what the state machine reads
 | `cluster/KdbTapWriter.java` | The leader-side, off-consensus KDB-X capture tap, third sibling of `TradeNatsPublisher`/`OrderNatsPublisher` in the same output-ring drain. Inert unless `KDB_TAP_DIR` is set; stops at `KDB_TAP_MAX_MB` (default 256). |
 | `kubernetes-runtime/manifests/base/observability-prometheus-configmap.yaml` | The cluster tier's first Prometheus scrape — per pod through the headless service. |
 
-### Layer coverage — read this before quoting the capability
+### Layer coverage, and the YU14 repair (2026-08-03)
 
 `ClusterGatewayMain` is overridden at `YU12` and `YU13` only, so this state's copy is operative on
-every descendant and the **gateway-side spans hold on generated `YU13`, `YU14` and `YU15` alike.**
+every descendant and the gateway-side spans were never in question.
 
 The member-side spans (`cluster.commit`, `cluster.apply`) and the tap's construction both live in
 `MatchingEngineClusteredService`, which `YU13`, `YU14` and `YU15` **each override** — so only a
-state's own copy is operative when that state is generated. Measured across the layers:
+state's own copy is operative when that state is generated, and each copy has to carry the
+capability itself. `YU14`'s did not. It was cut from a `YU13` that predated the KDB-X tap, the
+`/orders` read-model bridge, the `LATENCY-01` commit/apply instrumentation and the OTEL-01 member
+spans, and was never re-synced.
 
-| Generated state | Gateway spans | Member spans | KDB-X tap wired |
-|---|---|---|---|
-| `YU13-limit-order-book` | yes | **no** | yes |
-| `YU14-listed-equity-options` | yes | **no** | **no** |
-| `YU15-eod-risk-extract` | yes | yes | yes |
+**The visible consequence was worse than a missing feature: generated `YU14` did not compile.**
+Commit `1792c1f2` (2026-07-27, "keep the YU13-layer `ClusterNodeMain` identical across all three
+branches") made the gateway call `service.spanSink()`, and `YU14`'s service had no such method:
 
-So a whole trace crossing consensus is live on **generated `YU15` only**, which is consistent with
-the proofs being named `yu15-otel-*` and the suite running on the YU15 rig. The `YU14` tap gap is
-different in kind: `YU14`'s override was cut from a pre-tap `YU13` and never carried the wiring
-forward, so generated `YU14` ships `KdbTapWriter.java` on disk with nothing constructing it. That
-is the standing dead-layer trap (the same shape as the `BlpRiskState` YU14 override), not a
-deliberate scope decision — closing it is a hand-merge into `YU14`'s clustered service.
+```
+ClusterNodeMain.java:289: error: cannot find symbol
+        + (service.spanSink() == null ? "" : service.spanSink().metrics());
+  symbol: method spanSink()
+```
+
+A second copy of the same trap sat underneath it: the **`YU13`-layer file itself had diverged
+between worktrees** — 780 lines with the tracing on the `YU13` branch, 695 lines without it in the
+`YU14` and `YU15` worktrees' copies of that same layer. On `YU15` that divergence is inert, because
+`YU15`'s own override shadows it; on `YU14` it removed the last place the method could have come
+from. A stale layer is silent exactly until it is the operative one.
+
+**Repair.** `YU14`'s override was rebuilt as the `YU13` branch's file plus `YU14`'s own five
+options hunks — the `OccSymbol` import, `SNAPSHOT_FORMAT` 3, `putContractMultiplier` on symbol
+registration, the format-3 security tuple, and the fail-closed format-3 restore. Verified by
+construction: `diff` against the `YU13` source now shows those five hunks and nothing else. The
+diverged `YU13` layer was resynced from its home branch across all three worktrees.
+
+| Generated state | Gateway spans | Member spans | KDB-X tap | `/orders` bridge | Compiles |
+|---|---|---|---|---|---|
+| `YU13-limit-order-book` | yes | yes | yes | yes | yes |
+| `YU14-listed-equity-options` | yes | yes | yes | yes | **yes (was no)** |
+| `YU15-eod-risk-extract` | yes | yes | yes | yes | yes |
+
+**Verified on a clean render** (`rm -rf generated/code/target-generated`, regenerate, then
+`./gradlew test --offline --rerun-tasks`):
+
+- generated `YU14` — **320 tests, 0 failures, 3 skipped**, including `KdbTapWriterTest` 8,
+  `OrderTraceTest` 11, `SpanSinkTest` 8, `ClusterSnapshotCodecTest` 18 (format 3 intact), and
+  `AeronClusterSpikeTest.leaderTapCapturesTheAppliedSessionForKdb` passing against a real cluster.
+- generated `YU15` — **340 tests, 0 failures**, unaffected by the dead-layer resync as expected.
+- generated `YU13` — green; its one red run was `SnapshotBarrierPerformanceTest` at 57.9 ms against
+  a 50 ms wall-clock threshold, on a box that had just run two full suites back to back. It passes
+  in 13 s when run alone, and no Java file in that worktree was touched.
 
 **The trace an order produces:**
 

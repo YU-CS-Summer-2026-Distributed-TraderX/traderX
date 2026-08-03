@@ -63,7 +63,7 @@ module.exports = {
   url: docsUrl,
   baseUrl: docsBaseUrl,
   trailingSlash: false,
-  favicon: 'img/yu/yu-cs-shield.png',
+  favicon: 'img/yu/yu-cs-shield-transparent.png',
   projectName: `${projectName}`,
   organizationName: 'YU-CS-Summer-2026-Distributed-TraderX',
   customFields: {

@@ -94,6 +94,7 @@ the wire shapes, the replicated log, or what the state machine reads.
 
 The gateway half of both lands on every descendant, since this state's `ClusterGatewayMain` is the
 operative copy throughout. The member half of each sits in `MatchingEngineClusteredService`, which
-`YU13`, `YU14` and `YU15` each override — so a whole trace crossing consensus is live on generated
-`YU15` only, and the tap is wired on generated `YU13` and `YU15` but not `YU14`. See the layer
-coverage table in `generation/implementation-status.md`.
+`YU13`, `YU14` and `YU15` each override — so every copy has to carry it. `YU14`'s did not, which
+left generated `YU14` unable to compile; it was rebuilt as the `YU13` file plus `YU14`'s own
+options hunks, and all three now carry both halves. See the layer-coverage note in
+`generation/implementation-status.md`.
