@@ -4,7 +4,8 @@
 identity (foundational fix), settlement + reconciliation (incl. full-history orphan detection),
 regulatory reporting, TCA, and real JWT-based auth/entitlements. Not yet deployed to any staging
 namespace (no isolated Cloud Build/Deploy pipeline stood up — requires explicit user go-ahead per
-repo convention). FR-PTC42 (principalKey wiring into order admission) and VWAP remain deferred.
+repo convention). FR-PTC42 (entitlement resolution into order admission) is now implemented
+(flag-gated, default off — see below); VWAP remains deferred.
 **Parent:** `YU03-in-memory-risk-gateway`
 **Branch:** `YU05-post-trade-compliance` (isolated worktree — see "Environment notes" below)
 
@@ -54,7 +55,7 @@ repo convention). FR-PTC42 (principalKey wiring into order admission) and VWAP r
   "worse than benchmark," regardless of side). `GET /tca/report/{tradeId}`.
 - VWAP genuinely deferred (FR-PTC32): the synthetic feed carries no per-tick volume.
 
-### Real auth/entitlements (ADR-025, FR-PTC40/41; FR-PTC42 deferred)
+### Real auth/entitlements (ADR-025, FR-PTC40/41/42)
 
 - `JwtAuthenticator`/`JwtPrincipal`/`JwtTokenMinter` (order-matcher and trade-processor, separate
   copies — no shared library between the Gradle modules): real HS256 signature verification via
@@ -68,9 +69,17 @@ repo convention). FR-PTC42 (principalKey wiring into order admission) and VWAP r
 - `ReconciliationService` mints its own long-lived, `admin`-scoped service-account JWT at
   construction for its machine-to-machine calls into order-matcher.
 - `POST /auth/dev-token` (trade-processor): local dev/test token minting, own master secret.
-- FR-PTC42 (feeding YU03's risk-gateway `principalKey`) deferred — needs wiring into order
-  *submission* (`OrderMatcherService`/`GatewayReplicaStore`), a hot-path-adjacent surface this
-  state deliberately never touched.
+- FR-PTC42 (entitlement resolution into order admission) implemented: `EntitlementGate` runs on
+  every command entry point (`OrderMatcherService.createOrder`/`createOrderBatch`/`bookMarketTrade`,
+  fed the `Authorization` header by `OrderController`/`MarketTradeController`). The resolved JWT
+  principal must be entitled to the order's account (401 missing/invalid token, 403 valid-but-
+  unentitled, `admin` passes any account). Memory-only check against the token claim — no synchronous
+  lookup on the admission path (FR-IMRG01); `GatewayReplicaStore.screen`/`BlpRiskState` untouched.
+  Gated by `risk.entitlement.enforced` (default false), so the token-less UI is unaffected until
+  enforcement is enabled. Closes FR-IMRG02/FR-IMRG30. Verified: `EntitlementGateTest` 7/7 and the
+  full order-matcher suite green (85 tests; the only failure is the pre-existing environmental
+  72-byte NGC-01 allocation flake in `AllocationGateTest`, on code this change does not touch —
+  the test drives `BlpRiskState`/the disruptor producer directly, not `OrderMatcherService`).
 
 ### Observability
 
@@ -137,10 +146,10 @@ runtime-harness wiring (`install-generated-runtime-harness.sh`, `install-generat
 
 ## Still open (next commits of this roadmap item)
 
-- FR-PTC42: feed the risk gateway's `principalKey` from real entitlement resolution — needs order-
-  admission wiring (`OrderMatcherService`/`GatewayReplicaStore`), with its own hot-path
-  allocation/latency verification, deliberately not touched by this state.
-- VWAP (FR-PTC32) — needs a real per-tick-volume data source (e.g. the professor's TAQ dataset).
+- VWAP (FR-PTC32) — needs a real per-tick-volume data source.
+- Enable `risk.entitlement.enforced` in a live environment: the gate is wired and tested but
+  defaults off; turning it on requires callers (the UI) to send a Bearer token, plus a bench-compare
+  on the enforced path (JWT verification per order on the request thread).
 - Order-matcher-side Micrometer metrics for the trade blotter (currently JSON-only).
 - Full container smoke test and an isolated staging Cloud Build/Deploy pipeline for YU05 — same
   discipline as YU03/YU04, **requires explicit user go-ahead** before touching any live CI/CD
