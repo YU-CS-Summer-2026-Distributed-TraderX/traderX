@@ -20,12 +20,12 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 
 ## Rendered Code
 
-- Generated branch: [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance)
+- Generated branch: [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU04-durable-control-feeds`: [YU04-durable-control-feeds...YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU04-durable-control-feeds...YU05-post-trade-compliance)
+- Compare against `YU04-durable-control-feeds`: [code/generated-state-YU04-durable-control-feeds...code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU04-durable-control-feeds...code%2Fgenerated-state-YU05-post-trade-compliance)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 ## Run This State
 
 ```bash
-inherits YU04-durable-control-feeds runtime harness
+./scripts/start-state-YU05-post-trade-compliance-generated.sh
 ```
 
 ## Canonical Spec Links

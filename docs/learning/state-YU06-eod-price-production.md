@@ -20,12 +20,12 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 
 ## Rendered Code
 
-- Generated branch: [YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU06-eod-price-production)
+- Generated branch: [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU05-post-trade-compliance`: [YU05-post-trade-compliance...YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU05-post-trade-compliance...YU06-eod-price-production)
+- Compare against `YU05-post-trade-compliance`: [code/generated-state-YU05-post-trade-compliance...code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU05-post-trade-compliance...code%2Fgenerated-state-YU06-eod-price-production)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 ## Run This State
 
 ```bash
-inherits YU05-post-trade-compliance runtime harness
+./scripts/start-state-YU06-eod-price-production-generated.sh
 ```
 
 ## Canonical Spec Links
