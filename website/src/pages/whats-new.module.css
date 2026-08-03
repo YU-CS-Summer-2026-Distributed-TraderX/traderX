@@ -1,0 +1,132 @@
+/* stylelint-disable docusaurus/copyright-header */
+
+/* Page-local styles only. Anything shared with the homepage — the page shell, the dark results
+   band, the sliding card row — is imported from TraderXHomepage.module.css rather than restated,
+   so the two pages cannot drift apart visually. */
+
+.header {
+  background: var(--home-slate);
+  color: #e8eef6;
+  padding: clamp(2.5rem, 6vw, 4rem) 1.5rem;
+}
+
+.headerInner {
+  margin: 0 auto;
+  max-width: 54rem;
+}
+
+.back {
+  color: #8fb8d8;
+  display: inline-block;
+  font-size: 0.95rem;
+  margin-bottom: 1.5rem;
+  text-decoration: none;
+}
+
+.back:hover {
+  color: #c2d7e8;
+  text-decoration: underline;
+}
+
+.headerInner h1 {
+  color: #ffffff;
+  font-size: clamp(2rem, 5vw, 3rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin: 0 0 1.25rem;
+}
+
+.headerInner p {
+  color: #b9c8da;
+  font-size: 1.0625rem;
+  line-height: 1.7;
+  margin: 0 0 1rem;
+}
+
+.stateList {
+  counter-reset: none;
+  list-style: none;
+  margin: 0 auto;
+  max-width: 54rem;
+  padding: 0;
+}
+
+.state {
+  border-bottom: 1px solid var(--ifm-color-emphasis-200);
+  padding: 1.75rem 0;
+}
+
+.state:last-child {
+  border-bottom: none;
+}
+
+/* The id sits on its own line on narrow screens rather than squeezing the title. */
+.stateHead {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.stateId {
+  background: var(--ifm-color-emphasis-200);
+  border-radius: 0.4rem;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.5rem;
+}
+
+.stateHead h2 {
+  font-size: 1.375rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.state p {
+  line-height: 1.7;
+  margin: 0 0 0.75rem;
+}
+
+.stateLink {
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+/* Sits in the shared .resultsGrid, so it inherits the one-row sliding behaviour and the arrow
+   bubbles. Only the link-specific styling lives here. */
+.verifyCard {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  color: inherit;
+  display: block;
+  padding: 1.5rem;
+  text-decoration: none;
+  transition: background 150ms ease, border-color 150ms ease, transform 150ms ease;
+}
+
+.verifyCard:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: inherit;
+  text-decoration: none;
+  transform: translateY(-2px);
+}
+
+.verifyCard dt {
+  margin: 0 0 0.5rem;
+}
+
+.verifyCard dt strong {
+  color: #ffffff;
+  font-size: 1.125rem;
+}
+
+.verifyCard dd {
+  color: #b9c8da;
+  line-height: 1.6;
+  margin: 0;
+}
