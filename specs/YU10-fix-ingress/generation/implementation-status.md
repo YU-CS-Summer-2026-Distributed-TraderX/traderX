@@ -34,3 +34,27 @@
   role change (TD-FIX02, single-BLP deployment).
 - (Resolved 2026-07-16) The matched-methodology REST completed-lifecycle control is recorded:
   FIX 5,213/s vs REST 3,479/s at a 256-in-flight window.
+
+## Performance characteristic: parallel-session scaling
+
+**Completed-lifecycle throughput does not scale with parallel FIX sessions**, and the ceiling is
+the output/ExecutionReport path — not the matching engine. Measured on kind 2026-07-16
+(`scripts/bench/results/yu10-fix-scaling-2026-07-16.md`), in-cluster load (no port-forward), 256
+in-flight per session: total ~1,600/s at 1 session, flat-to-declining through 4, host-CPU-exhausted
+at 7. The matching engine is idle throughout (~1.5M/s core capacity vs ~1,600/s measured — the
+`process_cpu_usage` ~1 core is the LMAX busy-spin wait strategy, not real work).
+
+Root cause: a completed lifecycle round-trips through two shared **single-threaded output-side**
+stages — the output disruptor (`ProducerType.SINGLE`) and the ExecutionReport delivery (one
+fix-report sender thread + QuickFIX/J `PersistMessages=Y` store writes). Parallel ingress sessions
+queue behind these, so ingress parallelism raises throughput only when ingress is the bottleneck
+(REST's per-connection block); FIX already pipelines past that with one session. This is the LMAX
+single-writer principle applying to the output path, and it caps both FIX and REST
+completed-lifecycle rates — FIX's ~1.5x advantage is purely on the ingress side.
+
+Levers (deferred, for the GKE re-run — a natural piggyback on YU11's pool scale-up, since kind
+cannot isolate client from server on one host): (1) the QuickFIX/J store sync mode
+(`FileStoreSync`/cached-store durability-vs-throughput trade, flagged in the design critique);
+(2) a multi-threaded ER sender if the single sender thread is confirmed as the serial choke on
+dedicated cores. Neither is a correctness gap; both are throughput tuning on a path that today
+comfortably serves the completed-lifecycle proof and the SC-FIX06 comparison.
