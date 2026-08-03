@@ -127,6 +127,32 @@ C2_COMPONENT_DIRS=(
   "web-front-end"
 )
 
+# The YU lineage forks off after 014 and accumulates. Every YU state from YU02 carries 014's
+# component set, its own per-state directory, and every YU ancestor's; only three new component
+# directories enter across the whole lineage. Derived from the catalog rather than spelled out
+# per state, so a new YU state needs no edit here. This mirrors state_allowed_roots in
+# install-generated-ci-assets.sh, which is the policy the generated tree is actually built to.
+# YU01 is NOT in this shape: it forks from 009, not 014, and is cased separately below.
+yu_allowed_roots() {
+  local state_id="$1"
+  local prefix="${state_id%%-*}"
+  printf '%s\n' "${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" \
+    "fdc3-intent-interoperability"
+
+  local id id_prefix
+  while IFS= read -r id; do
+    id_prefix="${id%%-*}"
+    [[ "${id_prefix}" > "YU01" ]] || continue
+    [[ "${id_prefix}" > "${prefix}" ]] && continue
+    printf '%s\n' "${id}"
+    case "${id_prefix}" in
+      YU07) printf '%s\n' "tick-store" ;;
+      YU08) printf '%s\n' "execution-algo-engine" ;;
+      YU11) printf '%s\n' "aeron-replication-sidecar" ;;
+    esac
+  done < <(jq -r '.states[].id | select(startswith("YU"))' "${CATALOG}")
+}
+
 allowed_roots_for_state() {
   local state_id="$1"
   case "${state_id}" in
@@ -165,6 +191,12 @@ allowed_roots_for_state() {
       ;;
     014-fdc3-intent-interoperability)
       printf '%s\n' "${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability"
+      ;;
+    YU01-lmax-sequencer)
+      printf '%s\n' "${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement"
+      ;;
+    YU[0-9][0-9]-*)
+      yu_allowed_roots "${state_id}"
       ;;
     *)
       return 1

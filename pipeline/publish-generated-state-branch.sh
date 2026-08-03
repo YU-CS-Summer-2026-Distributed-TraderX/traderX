@@ -400,6 +400,28 @@ C2_COMPONENT_DIRS=(
   "web-front-end"
 )
 
+# See yu_allowed_roots in validate-generated-state-lineage-invariants.sh — same accumulation, and
+# the same authoritative source (state_allowed_roots in install-generated-ci-assets.sh). Keep-paths
+# additionally carry .github and runtime, which the lineage validator ignores rather than allows.
+yu_snapshot_keep_paths() {
+  local prefix="${STATE_ID%%-*}"
+  printf '%s\n' "${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" \
+    "fdc3-intent-interoperability" ".github" "runtime"
+
+  local id id_prefix
+  while IFS= read -r id; do
+    id_prefix="${id%%-*}"
+    [[ "${id_prefix}" > "YU01" ]] || continue
+    [[ "${id_prefix}" > "${prefix}" ]] && continue
+    printf '%s\n' "${id}"
+    case "${id_prefix}" in
+      YU07) printf '%s\n' "tick-store" ;;
+      YU08) printf '%s\n' "execution-algo-engine" ;;
+      YU11) printf '%s\n' "aeron-replication-sidecar" ;;
+    esac
+  done < <(jq -r '.states[].id | select(startswith("YU"))' "${CATALOG}")
+}
+
 snapshot_keep_paths_for_state() {
   case "${STATE_ID}" in
     001-baseline-uncontainerized-parity)
@@ -455,6 +477,12 @@ snapshot_keep_paths_for_state() {
       ;;
     014-fdc3-intent-interoperability)
       printf '%s\n' "${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" "fdc3-intent-interoperability" ".github" "runtime"
+      ;;
+    YU01-lmax-sequencer)
+      printf '%s\n' "${ORDER_COMPONENT_DIRS[@]}" "ingress" "order-management-matcher" "postgres-database-replacement" ".github" "runtime"
+      ;;
+    YU[0-9][0-9]-*)
+      yu_snapshot_keep_paths
       ;;
     *)
       echo "[fail] missing explicit snapshot keep-path policy for ${STATE_ID}"
