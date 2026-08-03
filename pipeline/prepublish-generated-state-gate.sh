@@ -272,7 +272,7 @@ run_dependency_check_local() {
         --suppression "${suppression}" \
         --failOnCVSS "${CVSS_THRESHOLD}" \
         --enableRetired \
-        "${update_args[@]}" \
+        ${update_args[@]+"${update_args[@]}"} \
         ${extra_args}
     )
     return 0
@@ -302,7 +302,7 @@ run_dependency_check_local() {
     --suppression "/src/${rel_suppression}" \
     --failOnCVSS "${CVSS_THRESHOLD}" \
     --enableRetired \
-    "${update_args[@]}" \
+    ${update_args[@]+"${update_args[@]}"} \
     ${extra_args}
 }
 
