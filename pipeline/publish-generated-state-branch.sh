@@ -3724,6 +3724,18 @@ case "${STATE_ID}" in
     install_kubernetes_clone_harness
     install_state_compose_clone_harness "${STATE_ID}"
     ;;
+  YU01-lmax-sequencer)
+    # Forks from 009, so it takes the compose lineage's harness, not the kubernetes one.
+    install_state_compose_clone_harness "${STATE_ID}"
+    ;;
+  YU[0-9][0-9]-*)
+    # YU02 onward inherit 014's kubernetes runtime, so they take 014's pairing. The compose
+    # installer is what creates snapshot scripts/ and copies the state's own start/stop/status
+    # scripts; without a case here the snapshot has no scripts/ at all and write_env_entrypoint_
+    # wrappers fails with "missing mandatory runtime scripts for env wrappers".
+    install_kubernetes_clone_harness
+    install_state_compose_clone_harness "${STATE_ID}"
+    ;;
 esac
 
 write_env_entrypoint_wrappers
