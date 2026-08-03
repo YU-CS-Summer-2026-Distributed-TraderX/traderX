@@ -76,6 +76,7 @@ for listed in ${active_packs[@]+"${active_packs[@]}"}; do
   (( found == 1 )) || fail "specs/README.md has non-catalog Active Feature Pack: ${listed}"
 done
 
+powershell_optouts=()
 seen_feature_pack_numbers=()
 seen_feature_pack_files=()
 # A state id prefix is numeric (001, 009b) or a YU id. Three heading shapes are in use across the
@@ -120,8 +121,18 @@ for id in "${all_ids[@]}"; do
   grep -q 'badgen.net/badge/linux%2Fmac/' "${readme}" || fail "${readme} missing linux/mac support badge"
   grep -q 'badgen.net/badge/windows/' "${readme}" || fail "${readme} missing windows support badge"
 
+  # A README that *states* it has no PowerShell equivalent used to satisfy this check, because the
+  # test is a bare '.ps1' substring and the caveat sentence contains one -- the gate went green on
+  # the string, not the property. So the opt-out must now declare itself, and the declaring line is
+  # excluded from the substring search rather than answering it.
   if rg -q '\.sh`|\.sh$|\.sh ' "${readme}"; then
-    rg -q '\.ps1`|\.ps1$|\.ps1 ' "${readme}" || fail "${readme} contains shell invocation(s) without PowerShell equivalent"
+    if grep -q '^- No PowerShell parity:' "${readme}"; then
+      powershell_optouts+=("${id}")
+    elif grep -v '^- No PowerShell parity:' "${readme}" | rg -q '\.ps1`|\.ps1$|\.ps1 '; then
+      :
+    else
+      fail "${readme} contains shell invocation(s) without PowerShell equivalent"
+    fi
   fi
 done
 
@@ -137,4 +148,9 @@ for id in ${implemented_ids[@]+"${implemented_ids[@]}"}; do
   fi
 done
 
+if (( ${#powershell_optouts[@]} > 0 )); then
+  # Reported, not silent: a declared opt-out is not PowerShell coverage, and a green run that does
+  # not say so is how this check came to overstate itself in the first place.
+  echo "[warn] PowerShell parity explicitly declined by ${#powershell_optouts[@]} pack(s): ${powershell_optouts[*]}"
+fi
 echo "[ok] state-doc consistency validated (${#all_ids[@]} states)"
