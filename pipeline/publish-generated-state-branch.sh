@@ -25,8 +25,18 @@ if [[ -z "${STATE_ID}" ]]; then
   usage
   exit 1
 fi
-state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+$ ]]; then
+state_prefix="${STATE_ID%%-*}"
+# Numeric thresholds treat letter-suffixed sibling states (e.g. 009b-*) as
+# their numeric base; script-name lookups use the full STATE_ID prefix.
+if [[ "${state_prefix}" =~ ^[0-9]+[a-z]?$ ]]; then
+  state_num="${state_prefix%%[a-z]*}"
+elif [[ "${state_prefix}" =~ ^YU[0-9][0-9]$ ]]; then
+  # The YU lineage forks off after 014, so every numeric threshold in this script -- all of which
+  # ask "is this state at or past N?" -- must answer yes for a YU state. Rank YU01..YU15 as
+  # 101..115: above the whole numbered lineage, and order-preserving within itself. Script-name
+  # lookups are unaffected; they glob on STATE_ID's own prefix ("YU07"), not on this rank.
+  state_num="1${state_prefix#YU}"
+else
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
 fi
@@ -246,7 +256,7 @@ if [[ "${SKIP_PREPUBLISH_GATE}" == "1" ]]; then
     if [[ -f "${CI_METADATA}" ]]; then
       echo "[step] run generated compile preflight"
       bash "${ROOT}/pipeline/preflight-generated-ci.sh" "${GENERATED_ROOT}/code/target-generated"
-    elif [[ "${state_num}" -lt 2 ]]; then
+    elif (( 10#${state_num} < 2 )); then
       echo "[info] compile preflight metadata unavailable for ${STATE_ID}; skipping for legacy pre-CI state"
     else
       echo "[fail] missing compile preflight metadata: ${CI_METADATA}"
@@ -3336,8 +3346,10 @@ EOF
 }
 
 write_snapshot_agentic_docs() {
-  local state_num="${STATE_ID%%-*}"
-  if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
+  # Deliberately uses the global numeric rank set at the top of this script rather than
+  # re-deriving it: re-deriving here produced "YU07", which is not ^[0-9]+$, so every YU state
+  # silently returned early and shipped a snapshot with no AGENTS.md.
+  if (( 10#${state_num} < 3 )); then
     return
   fi
 

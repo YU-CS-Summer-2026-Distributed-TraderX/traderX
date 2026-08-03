@@ -84,7 +84,10 @@ for id in "${all_ids[@]}"; do
   first_line="$(sed -n '1p' "${readme}")"
   expected_num="${id%%-*}"
 
-  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}): ]]; then
+  # The YU lineage is a fork of the numbered states and uses YUnn ids rather than three digits;
+  # its packs follow the same '# Feature Pack <id>: <title>' heading style, so accept both forms.
+  # The duplicate-number check below then covers YU ids too, since it compares captured text.
+  if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}[a-z]?|YU[0-9]{2}): ]]; then
     actual_num="${BASH_REMATCH[1]}"
     [[ "${actual_num}" == "${expected_num}" ]] || fail "${readme} heading number ${actual_num} does not match state id ${expected_num}"
     idx=-1
