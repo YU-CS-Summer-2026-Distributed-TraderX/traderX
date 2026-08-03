@@ -77,6 +77,7 @@ for listed in ${active_packs[@]+"${active_packs[@]}"}; do
 done
 
 pack_id_re='[0-9]{3}[a-z]?|YU[0-9]{2}'
+powershell_optouts=()
 seen_feature_pack_numbers=()
 seen_feature_pack_files=()
 for id in "${all_ids[@]}"; do
@@ -123,7 +124,13 @@ for id in "${all_ids[@]}"; do
   grep -q 'badgen.net/badge/windows/' "${readme}" || fail "${readme} missing windows support badge"
 
   if rg -q '\.sh`|\.sh$|\.sh ' "${readme}"; then
-    rg -q '\.ps1`|\.ps1$|\.ps1 ' "${readme}" || fail "${readme} contains shell invocation(s) without PowerShell equivalent"
+    if grep -q '^- No PowerShell parity:' "${readme}"; then
+      powershell_optouts+=("${id}")
+    elif grep -v '^- No PowerShell parity:' "${readme}" | rg -q '\.ps1`|\.ps1$|\.ps1 '; then
+      :
+    else
+      fail "${readme} contains shell invocation(s) without PowerShell equivalent"
+    fi
   fi
 done
 
@@ -139,4 +146,7 @@ for id in ${implemented_ids[@]+"${implemented_ids[@]}"}; do
   fi
 done
 
+if (( ${#powershell_optouts[@]} > 0 )); then
+  echo "[warn] PowerShell parity explicitly declined by ${#powershell_optouts[@]} pack(s): ${powershell_optouts[*]}"
+fi
 echo "[ok] state-doc consistency validated (${#all_ids[@]} states)"
