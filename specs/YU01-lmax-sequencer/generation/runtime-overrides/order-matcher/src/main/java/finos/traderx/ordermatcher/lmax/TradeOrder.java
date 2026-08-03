@@ -12,12 +12,14 @@ import java.math.RoundingMode;
  * legacy type before deserializing.
  */
 public final class TradeOrder {
+    private static final OrderSide[] SIDES = OrderSide.values();
+
     private String id;
     private String state;
     private String security;
-    private Integer quantity;
+    private int quantity;
     private BigDecimal price;
-    private Integer accountId;
+    private int accountId;
     private OrderSide side;
 
     public String getId() {
@@ -48,7 +50,7 @@ public final class TradeOrder {
         return quantity;
     }
 
-    public void setQuantity(Integer quantity) {
+    public void setQuantity(int quantity) {
         this.quantity = quantity;
     }
 
@@ -64,7 +66,7 @@ public final class TradeOrder {
         return accountId;
     }
 
-    public void setAccountId(Integer accountId) {
+    public void setAccountId(int accountId) {
         this.accountId = accountId;
     }
 
@@ -78,12 +80,20 @@ public final class TradeOrder {
 
     public static TradeOrder fromEvent(OutputEvent e, SymbolTable symbols) {
         TradeOrder payload = new TradeOrder();
-        payload.setId(OrderSnapshot.orderIdFor(e.orderRef));
-        payload.setSecurity(symbols.tickerFor(e.securityId));
-        payload.setQuantity(e.tradeQty);
-        payload.setPrice(Px.toBigDecimal(e.lastExecPx));
-        payload.setAccountId(e.accountId);
-        payload.setSide(OrderSide.values()[e.side]);
+        payload.copyFromEvent(e, symbols);
         return payload;
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols, OutputValueCache values) {
+        setId(values.orderIdFor(e.orderRef));
+        setSecurity(symbols.tickerFor(e.securityId));
+        setQuantity(e.tradeQty);
+        price = values.priceFor(e.lastExecPx);
+        setAccountId(e.accountId);
+        setSide(SIDES[e.side]);
+    }
+
+    void copyFromEvent(OutputEvent e, SymbolTable symbols) {
+        copyFromEvent(e, symbols, new OutputValueCache());
     }
 }
