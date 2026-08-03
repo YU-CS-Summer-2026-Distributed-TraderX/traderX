@@ -190,8 +190,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
-        // Output ring fans out to the marshaller (rebuilds the read model), the NATS bridges, the
-        // optional legacy `/trades`, and the optional async DB projector. With the DB dropped
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). The output ring fans out
+        // to the marshaller (rebuilds the read model), the NATS bridges, the optional legacy
+        // `/trades`, and the optional async DB projector. With the DB dropped
         // (output.projector.db-enabled=false) the projector is simply absent — no DB writes at all.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
@@ -206,6 +207,10 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (projector != null) {
             outputHandlers.add(projector);
         }
+        // ONE handleEventsWith call over the whole set: every optimized output handler gets its own
+        // consumer and its own thread, so NATS and projection stay parallel rather than chained
+        // (never split this into .handleEventsWith(a).then(b) — that serialises the fan-out). The
+        // output ring itself provides bounded backpressure when any consumer falls behind.
         outputDisruptor.handleEventsWith(outputHandlers.toArray(new EventHandler[0]));
         if (projector != null) {
             projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
@@ -909,7 +914,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private OrderSnapshot snapshotOrderToReadModel(long[] o) {
         OrderRecord r = new OrderRecord();
         int ref = (int) o[0];
-        r.setOrderId(String.format(Locale.ROOT, "ord-013-%04d", ref));
+        r.setOrderId(OrderSnapshot.orderIdFor(ref));   // one id scheme, shared with the live marshaller
         r.setAccountId((int) o[1]);
         r.setSecurity(symbols.tickerFor((int) o[2]));
         r.setSide(OrderSide.values()[(int) o[3]]);
