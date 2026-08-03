@@ -13,52 +13,64 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * Output-side publishers for state 009b. Orders stay on the existing `/orders` subjects,
+ * Output-side publishers for state YU01. Orders stay on the existing `/orders` subjects,
  * direct account trades and positions use dedicated UI payloads, and the legacy `/trades`
  * payload stays available behind the optional compatibility handler.
+ *
+ * <p>Lever 3 (throughput): the NATS bridge handlers are gating consumers on the output ring, so a
+ * synchronous publish on them backpressures the BLP (and, via the gateway ack, ingress). By default
+ * the nats publishers are wrapped in {@link AsyncPublisher}, which moves the serialize+publish off
+ * the ring thread (non-gating, identical wire format). Set {@code order.matcher.publisher.async=false}
+ * to restore the synchronous path (A/B), or {@code order.matcher.publisher=noop} to drop NATS entirely.
  */
 @Configuration
 public class PubSubConfig {
     private static final String NATS = "nats";
     private static final String NOOP = "noop";
 
+    @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}")
+    private String natsAddress;
+
+    @Value("${order.matcher.publisher.async:true}")
+    private boolean async;
+
+    @Value("${order.matcher.publisher.async-capacity:65536}")
+    private int asyncCapacity;
+
     @Bean
     @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
-    public Publisher<OrderResponse> natsOrderPublisher(
-        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
-    ) {
-        return natsPublisher(natsAddress);
+    public Publisher<OrderResponse> natsOrderPublisher() {
+        return maybeAsync(this.<OrderResponse>natsPublisher(), "order");
     }
 
     @Bean
     @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
-    public Publisher<TradeOrder> natsTradePublisher(
-        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
-    ) {
-        return natsPublisher(natsAddress);
+    public Publisher<TradeOrder> natsTradePublisher() {
+        return maybeAsync(this.<TradeOrder>natsPublisher(), "trade");
     }
 
     @Bean
     @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
-    public Publisher<AccountTrade> natsAccountTradePublisher(
-        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
-    ) {
-        return natsPublisher(natsAddress);
+    public Publisher<AccountTrade> natsAccountTradePublisher() {
+        return maybeAsync(this.<AccountTrade>natsPublisher(), "accountTrade");
     }
 
     @Bean
     @ConditionalOnProperty(name = "order.matcher.publisher", havingValue = NATS, matchIfMissing = true)
-    public Publisher<PositionUpdate> natsPositionPublisher(
-        @Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress
-    ) {
-        return natsPublisher(natsAddress);
+    public Publisher<PositionUpdate> natsPositionPublisher() {
+        return maybeAsync(this.<PositionUpdate>natsPublisher(), "position");
     }
 
-    private static <T> NatsJSONPublisher<T> natsPublisher(String natsAddress) {
+    private <T> NatsJSONPublisher<T> natsPublisher() {
         NatsJSONPublisher<T> publisher = new NatsJSONPublisher<>();
         publisher.setServerAddress(natsAddress);
         publisher.setSender("order-matcher");
         return publisher;
+    }
+
+    /** Wrap a nats publisher in the non-gating async drain unless async is disabled (A/B knob). */
+    private <T> Publisher<T> maybeAsync(Publisher<T> delegate, String name) {
+        return async ? new AsyncPublisher<>(delegate, name, asyncCapacity) : delegate;
     }
 
     private static <T> Publisher<T> noopPublisher() {

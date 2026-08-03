@@ -35,10 +35,22 @@ public final class InMemoryOrderReadModel {
     private final LongAdder positionPublishFailures = new LongAdder();
     private final LongAdder natsErrors = new LongAdder();
 
+    // True while the live engine is reconstructing from snapshot+journal at startup: the NATS-publishing
+    // output handlers check this and skip, so recovery does not re-broadcast historical events.
+    private volatile boolean replaying;
+
     public InMemoryOrderReadModel() {
         for (String event : List.of("create", "partial_fill", "fill", "cancel", "reject", "force_fill")) {
             eventCounters.put(event, new LongAdder());
         }
+    }
+
+    public boolean isReplaying() {
+        return replaying;
+    }
+
+    public void setReplaying(boolean replaying) {
+        this.replaying = replaying;
     }
 
     // ----- writes (bootstrap thread, then marshaller handler only) -----------------------

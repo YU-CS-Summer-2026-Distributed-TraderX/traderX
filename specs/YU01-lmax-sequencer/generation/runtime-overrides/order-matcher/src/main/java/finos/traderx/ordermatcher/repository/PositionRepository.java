@@ -6,7 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 /**
- * Read-model writer + warm-start source for net positions (POSITIONS). State 009b: the BLP is
+ * Read-model writer + warm-start source for net positions (POSITIONS). state YU01: the BLP is
  * the single position writer (FR-09B10); the Projector persists results and the engine warms
  * the in-memory PositionBook from here at startup (FR-09B16 recovery parity).
  */

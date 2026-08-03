@@ -1,9 +1,54 @@
-# Implementation Status: 009b LMAX Hot Path (runtime overrides)
+# Implementation Status: YU01 LMAX Hot Path (runtime overrides)
 
-Date: 2026-06-09 (updated 2026-06-11, twice; 2026-06-25 throughput refinements). Scope of what
-`generation/runtime-overrides/order-matcher/` implements today versus what the spec defers to
-later milestones. Verified by compiling and running the module's test suite (15 tests green)
-plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
+Date: 2026-06-09 (updated 2026-06-11, twice; 2026-06-25 throughput refinements; 2026-06-30 snapshot
++ journal-replay recovery). Scope of what `generation/runtime-overrides/order-matcher/` implements
+today versus what the spec defers to later milestones. Verified by compiling and running the
+module's test suite (15 tests green) plus the Epsilon allocation gate against Java 21 / Gradle 8.14.5.
+
+## Recovery: periodic snapshot + bounded journal-tail replay + no-DB cutover (2026-06-30)
+
+State-YU01 recovery is no longer "warm-start only". The matcher now takes periodic full-state
+snapshots and can recover — and keep trading — with the database stopped. All overlay-owned
+(`generation/runtime-overrides/order-matcher/`), superseding the captured patchset (same precedent
+as the throughput overrides).
+
+- **Periodic snapshot (`SnapshotStore` (new), `LmaxEngine.writeSnapshot`)** — a `snapshot-scheduler`
+  thread sequences a `TYPE_SNAPSHOT` marker (`InputEvent`) every `snapshot.interval.ms` (env
+  `SNAPSHOT_INTERVAL_MS`; compose demo default `60000`, `0` = off). The marker rides the input ring
+  like any other event, so the BLP writes the checkpoint **on its own thread at a consistent sequence
+  point** — full book + net positions + last prices + `nextOrderRef`/`tradeCounter` — to
+  `snapshot.dat` in `journal.path`, **atomically** (temp file + atomic rename, so a crash mid-write
+  leaves the prior snapshot intact). The trigger is armed only AFTER recovery completes, so SNAPSHOT
+  markers replayed from the journal tail are no-ops.
+- **Bounded tail replay (`Journaler.lastSnapshotOffset`, `SnapshotStore.Data.coveredOffset`,
+  `JournalReader.replayFrom`)** — the journaler forces an fsync through every SNAPSHOT marker and
+  records the journal byte offset just past it; the snapshot persists that offset, so recovery loads
+  the latest snapshot and replays **only the journal tail after `coveredOffset`** rather than the
+  whole log. This bounds restart time as the journal grows (addresses the earlier unbounded-replay
+  restart-OOM).
+- **Two recovery sources (`recovery.source`, env `RECOVERY_SOURCE`, default `db`)**:
+  - `db` (default) — warm-start the BLP from the persisted read-model (orders + net positions +
+    trade counter), then `verifyJournalReplay()` rebuilds the same state in an **isolated shadow
+    engine** (snapshot+tail when a snapshot exists, else seed+full-journal), diffs the digests, and
+    logs `JOURNAL-REPLAY VERIFY: PASS|MISMATCH`. Verify-only — zero effect on the live engine; gate
+    off with `journal.replay.verify=false` once trusted.
+  - `journal` — `recoverLiveFromJournal()` reconstructs the **live** engine and read model from
+    snapshot+tail (or seed+full-journal when fresh) with the NATS bridges gated
+    (`readModel.setReplaying`) so recovery does not re-broadcast history. No DB warm-start: the
+    matcher needs no database to recover.
+- **No-DB cutover** — `output.projector.db.enabled=false` (env `OUTPUT_PROJECTOR_DB_ENABLED`) omits
+  the DB projector entirely (no DB writes at all); combined with `recovery.source=journal` and the
+  no-DB boot knobs (`SPRING_JPA_DDL_AUTO=none`, `HIKARI_INIT_FAIL_TIMEOUT=-1`,
+  `MANAGEMENT_HEALTH_DB_ENABLED=false`) the node boots, recovers, books trades, and serves `/orders`
+  + `/positions` from memory **with the database stopped** (reads repoint to the BLP via
+  `LmaxEngine.listPositions`).
+- **Durable ticker mapping (`SymbolTable` + `symbols.tab`)** — restored FIRST at boot (before any
+  `idFor`), so security ids replayed from the journal resolve to the same tickers the original run used.
+
+Overlay files: `lmax/SnapshotStore.java` (new), `lmax/JournalReader.java`, `lmax/Journaler.java`,
+`lmax/LmaxEngine.java`, `lmax/MatchingEngine.java`, `lmax/InputEvent.java` (`TYPE_SNAPSHOT`),
+`order-management-matcher/docker-compose.yml` (snapshot/recovery env + `order_matcher_journal` volume
+at `/opt/app/data`, durable across container recreate).
 
 ## Throughput refinements: batch ingress + decoupled projector + write-path (2026-06-25)
 
@@ -34,7 +79,7 @@ Measured (demo profile, single laptop; fill-counter delta = sustained, in-proces
 booking ~1,060/s → ~2,045/s → ~3,720/s across the three output-side fixes; the in-memory engine bursts to
 ~34k/s until the projector queue fills, then throttles to the DB drain. Remaining sustained ceiling is the
 order/position `merge` per-row SELECT (next step: `ON CONFLICT … DO UPDATE` + per-flush order-row dedup).
-Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch-experiment.mjs`,
+Bench tooling and findings: `scripts/bench/load/batch-load.mjs`, `scripts/bench/load/batch-experiment.mjs`,
 `scripts/bench/results/` (repo-root dev tooling, not generated runtime). Overlay files touched:
 `lmax/ProjectorHandler.java`, `lmax/LmaxEngine.java`, `service/OrderMatcherService.java`,
 `controller/OrderController.java` (new), `messaging/nats/NatsJSONPublisher.java` (new),
@@ -76,12 +121,12 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   `LMAX-OUTPUT-DISRUPTOR.md`, `LMAX-SEQUENCER-ARCHITECTURE.md`, and `LMAX-NO-GC-JAVA.md`
   (A12.2/A12.4/A12.5/A12.6/A12.8/A12.9/A12.10) were updated to match; `quickstart.md` step 4 now
   shows the real gate commands.
-- 2026-06-12 follow-ups: measured A/B benchmark vs `009` (`scripts/bench-009-vs-009b.sh`,
-  report `LMAX-BENCHMARK-009-VS-009B.md`: identical workload, `009` 179.6s vs `009b` 1.2s,
+- 2026-06-12 follow-ups: measured A/B benchmark vs `009` (`scripts/bench-009-vs-YU01.sh`,
+  report `LMAX-BENCHMARK-009-VS-009B.md`: identical workload, `009` 179.6s vs `YU01` 1.2s,
   identical outcomes; BLP allocated 4,776 B across the live run, corroborating the gate).
   Patchset now 41 entries: added `.github/workflows/no-gc-gate.yml` (Epsilon gate +
   hot-path conformance tests in generated-tree CI, T09B23 slice) and refreshed the stale
-  "patchset has not landed" comments in the generated 009b lifecycle delegates (their
+  "patchset has not landed" comments in the generated YU01 lifecycle delegates (their
   repo-side wrappers, the pipeline hook comment, and the quickstart warm-start note were
   fixed in place).
 
@@ -102,8 +147,8 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   `/runtime`, `state-ui.json`): they are absent in nested parent generations, so depth-1 forms
   would create patch entries whose preimages never exist at apply time. The state's own
   post-generation installers always rebuild them.
-- 009b-aware pipeline gates added: pubsub-inspector enablement in
-  `install-generated-api-explorer.sh`, a `009b` case (scripts/runbook/URLs/compose normalization)
+- YU01-aware pipeline gates added: pubsub-inspector enablement in
+  `install-generated-api-explorer.sh`, a `YU01` case (scripts/runbook/URLs/compose normalization)
   in `install-generated-runtime-harness.sh`, and `/grafana` + `/prometheus` ingress route
   injection in `render-state-YU01-lmax-sequencer.sh` (the 009 render only injects
   them at generation depth 1, which a nested parent run skips).
@@ -126,8 +171,10 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   read model + acks + end-to-end latency), `NatsBridgeHandler` (exact 009 subjects/payloads),
   `TradeSubmitHandler` (TradeBooked -> existing trade pipeline, off the ack path),
   `ProjectorHandler` (batched, lag-tolerant `OrderBook` writes) (FR-09B20/21/22/24/25).
-- **Recovery (demo shape)**: persisted read-model warm-start (seeds + open orders re-indexed
-  into the BLP at boot) + append-only input journal (FR-09B16, demo-simplified).
+- **Recovery**: persisted read-model warm-start (seeds + open orders + net positions re-indexed
+  into the BLP at boot) + append-only input journal — now with periodic full-state snapshots,
+  bounded journal-tail replay, journal-replay verification, and an optional DB-less
+  `recovery.source=journal` cutover (FR-09B16). See the 2026-06-30 section above.
 - **Metrics**: all 009 families retained (match-latency histogram now a real HdrHistogram
   measurement) plus input/BLP/output/projector/alloc families from the contract delta —
   including (2026-06-11) `traderx_input_backpressure_events_total` (counted tryNext-fallback
@@ -155,7 +202,10 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   never recycled; steady state is allocation-free up to `blp.book.pool-size`, then growth follows
   amortized doubling. Recycling/eviction arrives with the snapshot milestone (T09B14).
 - **Config keys not yet wired** (land with their milestones): `journal.type`, `replication.*`,
-  `affinity.*`, `nogc.*`, `blp.snapshot.*`, `blp.cache.*` (deferred features, T09B14/16/17/18);
+  `affinity.*`, `nogc.*`, `blp.cache.*` (deferred features, T09B14/16/17/18). Snapshot/recovery ARE
+  wired (2026-06-30), under `snapshot.interval.ms`, `recovery.source`, and
+  `output.projector.db.enabled` (env `SNAPSHOT_INTERVAL_MS`/`RECOVERY_SOURCE`/`OUTPUT_PROJECTOR_DB_ENABLED`),
+  not the spec's placeholder `blp.snapshot.*` / `output.projector.checkpoint-path` names;
   `output.nats.enabled`, `output.projector.enabled`, `output.projector.flush-interval-ms`,
   `output.projector.checkpoint-path` (output-stage toggles + idempotent checkpointed projection,
   FR-09B23 — T09B14/T09B22). `order.matcher.trade-service-url` is retained (contract delta lists
@@ -175,7 +225,9 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
   the output ring (strangler P2 boundary), preserving the 009 trade/position contract exactly.
   Consequence: a trade-service outage during a fill is surfaced via reject/tradeSubmitFailures
   counters instead of 009's pre-fill rejection — documented behavioral edge.
-- **Snapshot files, journal replay tooling, JIT warm-up, nightly bounce** (T09B14).
+- **JIT warm-up replay + cron-scheduled nightly bounce** (T09B14 remainder). Snapshot files
+  (`snapshot.dat`) and journal-replay recovery landed 2026-06-30 (section above); the JIT warm-up
+  replay before going live and a scheduled bounce window remain deferred.
 - **Real replication/failover** (T09B16): loopback stub only; no follower BLP yet.
 - **`perf`/`noGcTest` launch profiles for the packaged service** (T09B17): the demo profile uses
   BlockingWaitStrategy and standard GC. The Epsilon allocation gate itself is implemented (see the
@@ -187,7 +239,7 @@ Bench tooling and findings: `scripts/bench/batch-load.mjs`, `scripts/bench/batch
 ## How this was verified
 
 ```bash
-# module assembled exactly as generation produces it (009 patch + 009 render + 009b overrides)
+# module assembled exactly as generation produces it (009 patch + 009 render + YU01 overrides)
 ./gradlew compileJava   # clean (only pre-existing 009 deprecation warnings)
 ./gradlew test          # 15/15 green, broker-free (incl. AllocationGateTest byte-exact zero,
                         # HotPathBannedApiTest)

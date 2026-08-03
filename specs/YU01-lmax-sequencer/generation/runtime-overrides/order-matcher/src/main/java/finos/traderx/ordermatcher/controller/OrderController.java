@@ -37,6 +37,14 @@ public class OrderController {
         return orderMatcherService.getOrder(orderId);
     }
 
+    /** Net positions from the matcher's in-memory book — read-side repoint for the no-DB cutover. */
+    @GetMapping("/positions")
+    public List<finos.traderx.ordermatcher.lmax.PositionUpdate> listPositions(
+        @RequestParam(value = "accountId", required = false) Integer accountId
+    ) {
+        return orderMatcherService.listPositions(accountId);
+    }
+
     @PostMapping("/orders")
     @ResponseStatus(HttpStatus.CREATED)
     public OrderResponse createOrder(@RequestBody OrderCreateRequest request) {
@@ -48,7 +56,7 @@ public class OrderController {
     // Batch ingress (throughput experiment, option 2): one HTTP request carries many orders, so a
     // single Tomcat thread sequences them all and blocks once for all acks instead of one
     // round-trip + one ack-block per order. Lifecycle publication is owned by the output ring's
-    // NATS bridge (publishOrderUpdate is a no-op in 009b), so it is not called here.
+    // NATS bridge (publishOrderUpdate is a no-op in YU01), so it is not called here.
     @PostMapping("/orders/batch")
     @ResponseStatus(HttpStatus.CREATED)
     public List<OrderResponse> createOrderBatch(@RequestBody List<OrderCreateRequest> requests) {

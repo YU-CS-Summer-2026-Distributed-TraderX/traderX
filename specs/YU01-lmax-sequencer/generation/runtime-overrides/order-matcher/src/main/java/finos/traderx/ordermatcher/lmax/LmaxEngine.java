@@ -38,7 +38,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * LMAX hot-path wiring for state 009b (LMAX-SEQUENCER-ARCHITECTURE.md §4):
+ * LMAX hot-path wiring for state YU01 (LMAX-SEQUENCER-ARCHITECTURE.md §4):
  *
  *   gateway commands / price ticks
  *      -> input disruptor (multi-producer; the ring sequence IS the global sequence)
@@ -74,11 +74,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private final String outputWaitStrategy;
     private final boolean journalEnabled;
     private final String journalPath;
+    private final boolean replayVerifyEnabled;
     private final int projectorBatchSize;
     private final int projectorQueueCapacity;
     private final int maxSecurities;
     private final int bookPoolSize;
     private final int positionCapacity;
+    private final int blpPinCpu;
+    private final long snapshotIntervalMs;
+    private final String recoverySource;        // "db" (warm-start) or "journal" (snapshot+replay)
+    private final boolean projectorDbEnabled;   // false => no DB writes at all (cutover)
     private final long ackTimeoutMs;
     private final String runtimeProfile;
 
@@ -96,6 +101,8 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
     private ReplicatorStub replicator;
     private MarshallerHandler marshaller;
     private ProjectorHandler projector;
+    private SnapshotStore snapshotStore;
+    private java.util.concurrent.ScheduledExecutorService snapshotScheduler;
 
     public LmaxEngine(
         OrderRepository orderRepository,
@@ -115,11 +122,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         @Value("${disruptor.output.wait-strategy:blocking}") String outputWaitStrategy,
         @Value("${journal.enabled:true}") boolean journalEnabled,
         @Value("${journal.path:./data/journal}") String journalPath,
+        @Value("${journal.replay.verify:true}") boolean replayVerifyEnabled,
         @Value("${output.projector.batch-size:500}") int projectorBatchSize,
         @Value("${output.projector.queue-capacity:1000000}") int projectorQueueCapacity,
         @Value("${blp.books.max-securities:4096}") int maxSecurities,
         @Value("${blp.book.pool-size:65536}") int bookPoolSize,
         @Value("${blp.positions.capacity:8192}") int positionCapacity,
+        @Value("${blp.pin.cpu:-1}") int blpPinCpu,
+        @Value("${snapshot.interval.ms:0}") long snapshotIntervalMs,
+        @Value("${recovery.source:db}") String recoverySource,
+        @Value("${output.projector.db.enabled:true}") boolean projectorDbEnabled,
         @Value("${blp.gateway.ack-timeout-ms:5000}") long ackTimeoutMs,
         @Value("${runtime.profile:demo}") String runtimeProfile
     ) {
@@ -140,11 +152,16 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         this.outputWaitStrategy = outputWaitStrategy;
         this.journalEnabled = journalEnabled;
         this.journalPath = journalPath;
+        this.replayVerifyEnabled = replayVerifyEnabled;
         this.projectorBatchSize = projectorBatchSize;
         this.projectorQueueCapacity = projectorQueueCapacity;
         this.maxSecurities = maxSecurities;
         this.bookPoolSize = bookPoolSize;
         this.positionCapacity = positionCapacity;
+        this.blpPinCpu = blpPinCpu;
+        this.snapshotIntervalMs = snapshotIntervalMs;
+        this.recoverySource = recoverySource;
+        this.projectorDbEnabled = projectorDbEnabled;
         this.ackTimeoutMs = ackTimeoutMs;
         this.runtimeProfile = runtimeProfile;
         this.symbols = new SymbolTable(maxSecurities);
@@ -152,36 +169,72 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     @Override
     public void afterPropertiesSet() {
-        seedReadModelIfEmpty();
+        // Restore the durable ticker->securityId mapping FIRST (before any idFor): the journal stores
+        // ids, so replay must resolve them to the same tickers the original run used (FR-09B05 recovery).
+        if (journalEnabled) {
+            symbols.enablePersistence(Path.of(journalPath).resolve("symbols.tab"));
+            snapshotStore = new SnapshotStore(Path.of(journalPath));
+        }
+        boolean journalRecovery = "journal".equalsIgnoreCase(recoverySource);
+        if (!journalRecovery && projectorDbEnabled) {
+            seedReadModelIfEmpty();   // DB is the source of truth: seed it
+        }
 
         // Output ring first: the BLP needs its publisher before it can run.
         marshaller = new MarshallerHandler(readModel, symbols, metrics);
-        projector = new ProjectorHandler(orderRepository, positionRepository, jdbcTemplate, symbols,
-            projectorBatchSize, projectorQueueCapacity, metrics);
+        if (projectorDbEnabled) {
+            projector = new ProjectorHandler(jdbcTemplate, symbols,
+                projectorBatchSize, projectorQueueCapacity, metrics);
+        }
         NatsBridgeHandler natsBridge = new NatsBridgeHandler(orderPublisher, symbols, readModel);
         AccountTradeHandler accountTrade = new AccountTradeHandler(accountTradePublisher, symbols, readModel);
         PositionUpdateHandler positionUpdate = new PositionUpdateHandler(positionPublisher, symbols, readModel);
 
-        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). Each optimized
-        // output handler consumes independently so NATS and projection remain parallel. The
-        // output ring itself provides bounded backpressure when any consumer falls behind.
+        // Booking + position-keeping are fused into the BLP (FR-09B08/B10). The output ring fans out
+        // to the marshaller (rebuilds the read model), the NATS bridges, the optional legacy
+        // `/trades`, and the optional async DB projector. With the DB dropped
+        // (output.projector.db-enabled=false) the projector is simply absent — no DB writes at all.
         outputDisruptor = new Disruptor<>(OutputEvent::newInstance, normalizeRingSize(outputRingSize),
             DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, waitStrategy(outputWaitStrategy));
+        java.util.List<EventHandler<OutputEvent>> outputHandlers = new ArrayList<>();
+        outputHandlers.add(marshaller);
+        outputHandlers.add(natsBridge);
+        outputHandlers.add(accountTrade);
+        outputHandlers.add(positionUpdate);
         if (legacyTradeSubmitEnabled) {
-            TradeSubmitHandler tradeSubmit = new TradeSubmitHandler(tradePublisher, symbols, readModel);
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate,
-                tradeSubmit, projector);
-        } else {
-            outputDisruptor.handleEventsWith(marshaller, natsBridge, accountTrade, positionUpdate, projector);
+            outputHandlers.add(new TradeSubmitHandler(tradePublisher, symbols, readModel));
         }
-        projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
+        if (projector != null) {
+            outputHandlers.add(projector);
+        }
+        // ONE handleEventsWith call over the whole set: every optimized output handler gets its own
+        // consumer and its own thread, so NATS and projection stay parallel rather than chained
+        // (never split this into .handleEventsWith(a).then(b) — that serialises the fan-out). The
+        // output ring itself provides bounded backpressure when any consumer falls behind.
+        outputDisruptor.handleEventsWith(outputHandlers.toArray(new EventHandler[0]));
+        if (projector != null) {
+            projector.start();   // drain thread up before the ring feeds it (decoupled async writes)
+        }
         outputDisruptor.start();
         outputRing = outputDisruptor.getRingBuffer();
 
         matchingEngine = new MatchingEngine(new OutputPublisher(outputRing),
             metrics, maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+        matchingEngine.setPinCpu(blpPinCpu);   // perf profile: pin the BLP thread on ring start
 
-        bootstrapFromReadModel();
+        // Recovery: DB warm-start (+ shadow verify) OR snapshot+journal authoritative (no DB).
+        if (journalRecovery) {
+            recoverLiveFromJournal();
+        } else {
+            bootstrapFromReadModel();
+            verifyJournalReplay();   // prove the journal alone reconstructs the same state (verify-only)
+        }
+
+        // Set the snapshot trigger only AFTER recovery, so SNAPSHOT markers replayed from the journal
+        // tail are no-ops and do not overwrite snapshot.dat with mid-recovery state.
+        if (snapshotStore != null) {
+            matchingEngine.setSnapshotTrigger(this::writeSnapshot);
+        }
 
         // Input ring: journaler + replicator run in parallel; the BLP is gated behind both
         // (sequence barrier), so every event it acts on is already durable and replicated.
@@ -192,6 +245,7 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         inputDisruptor.handleEventsWith(journaler, replicator).then(matchingEngine);
         inputDisruptor.start();
         inputRing = inputDisruptor.getRingBuffer();
+        startSnapshotScheduler();
 
         log.info("LMAX hot path live: profile={} inputRing={} outputRing={} journal={} ({} orders warm)",
             runtimeProfile, normalizeRingSize(inputRingSize), normalizeRingSize(outputRingSize),
@@ -200,6 +254,9 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     @Override
     public void destroy() {
+        if (snapshotScheduler != null) {
+            snapshotScheduler.shutdownNow();   // stop emitting snapshot markers before the rings stop
+        }
         try {
             if (inputDisruptor != null) {
                 inputDisruptor.shutdown(5, TimeUnit.SECONDS);
@@ -442,7 +499,13 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         if (!seedEnabled || orderRepository.count() != 0) {
             return;
         }
-        List<OrderRecord> seed = List.of(
+        orderRepository.saveAll(seedOrders());
+    }
+
+    /** The fixed initial book (state YU01). Single source for both the DB seed and the journal-replay
+     *  verification's shadow seed, so both reconstruct from the identical initial condition. */
+    private List<OrderRecord> seedOrders() {
+        return List.of(
             seedOrder("ord-013-0001", 22214, "IBM", OrderSide.Buy, 1800, 1800, new BigDecimal("187.250"), OrderStatus.NEW),
             seedOrder("ord-013-0002", 22214, "MSFT", OrderSide.Sell, 900, 650, new BigDecimal("412.000"), OrderStatus.PARTIALLY_FILLED),
             seedOrder("ord-013-0003", 44044, "JPM", OrderSide.Buy, 1200, 1200, new BigDecimal("191.500"), OrderStatus.NEW),
@@ -451,7 +514,6 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
             seedOrder("ord-013-0006", 10031, "C", OrderSide.Sell, 1000, 1000, new BigDecimal("61.500"), OrderStatus.NEW),
             seedOrder("ord-013-0007", 62654, "META", OrderSide.Sell, 500, 500, new BigDecimal("507.880"), OrderStatus.NEW)
         );
-        orderRepository.saveAll(seed);
     }
 
     private OrderRecord seedOrder(String orderId, int accountId, String security, OrderSide side,
@@ -533,6 +595,365 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
         readModel.setCounter("force_fill", 0);
     }
 
+    /**
+     * Step 1 of "drop the DB": prove that replaying the input journal reconstructs the SAME
+     * recoverable state the DB warm-start produced. The live BLP stays DB-loaded (unchanged); this
+     * builds an ISOLATED shadow engine with its own discarding output ring, seeds it identically,
+     * replays the journal into it, and diffs the digests. Verify-only — zero effect on the running
+     * system. Precondition for a clean compare: the DB and journal were empty together at first start
+     * (so the journal covers exactly the history the DB accumulated). Gate off with
+     * journal.replay.verify=false once trusted.
+     */
+    private void verifyJournalReplay() {
+        if (!journalEnabled || !replayVerifyEnabled) {
+            return;
+        }
+        JournalReader reader = new JournalReader(Path.of(journalPath));
+        Disruptor<OutputEvent> shadowOut = new Disruptor<>(OutputEvent::newInstance, 16384,
+            DaemonThreadFactory.INSTANCE, ProducerType.SINGLE, new BlockingWaitStrategy());
+        shadowOut.handleEventsWith((EventHandler<OutputEvent>) (ev, seq, endOfBatch) -> { /* discard */ });
+        shadowOut.start();
+        try {
+            MatchingEngine shadow = new MatchingEngine(new OutputPublisher(shadowOut.getRingBuffer()),
+                new HotPathMetrics(), maxSecurities, fillFullThreshold, bookPoolSize, positionCapacity);
+            SnapshotStore.Data snap = snapshotStore != null ? snapshotStore.read() : null;
+            long t0 = System.nanoTime();
+            long replayed;
+            String mode;
+            if (snap != null) {
+                // Snapshot+tail recovery (step a): load the checkpoint, then replay only the journal tail.
+                loadSnapshotInto(shadow, snap);
+                replayed = reader.replayFrom(snap.coveredOffset(), e -> shadow.onEvent(e, e.seq, true));
+                mode = "snapshot(@" + snap.coveredOffset() + ")+tail";
+            } else {
+                // No snapshot yet: seed the initial condition and replay the whole journal.
+                seedShadow(shadow);
+                replayed = reader.replay(e -> shadow.onEvent(e, e.seq, true));
+                mode = "full-journal";
+            }
+            long ms = (System.nanoTime() - t0) / 1_000_000L;
+
+            MatchingEngine.RecoveryDigest live = matchingEngine.recoveryDigest();
+            MatchingEngine.RecoveryDigest replay = shadow.recoveryDigest();
+            boolean ordersMatch = live.openOrders() == replay.openOrders()
+                && live.orderHash() == replay.orderHash();
+            boolean positionsMatch = live.positions() == replay.positions()
+                && live.positionHash() == replay.positionHash();
+            boolean tradesMatch = live.tradeCounter() == replay.tradeCounter();
+
+            if (ordersMatch && positionsMatch && tradesMatch) {
+                log.info("JOURNAL-REPLAY VERIFY: PASS [{}] - replayed {} tail events in {} ms; replay == DB "
+                    + "warm-start (openOrders={}, positions={}, tradeCounter={}); replay additionally recovered "
+                    + "{} security prices the DB cannot. Durability via the journal is sound.",
+                    mode, replayed, ms, live.openOrders(), live.positions(), live.tradeCounter(),
+                    replay.pricedSecurities());
+            } else {
+                log.warn("JOURNAL-REPLAY VERIFY: MISMATCH - replayed {} events in {} ms (DB+journal must start "
+                    + "empty together for a clean compare)\n  DB-live: openOrders={} (h={}) positions={} (h={}) "
+                    + "tradeCounter={}\n  replay : openOrders={} (h={}) positions={} (h={}) tradeCounter={}",
+                    replayed, ms,
+                    live.openOrders(), live.orderHash(), live.positions(), live.positionHash(), live.tradeCounter(),
+                    replay.openOrders(), replay.orderHash(), replay.positions(), replay.positionHash(),
+                    replay.tradeCounter());
+                logStateDiff(matchingEngine, shadow);
+            }
+        } catch (Exception ex) {
+            log.warn("JOURNAL-REPLAY VERIFY: error during verification (non-fatal): {}", ex.toString(), ex);
+        } finally {
+            try {
+                shadowOut.shutdown(2, TimeUnit.SECONDS);
+            } catch (com.lmax.disruptor.TimeoutException ex) {
+                shadowOut.halt();
+            }
+        }
+    }
+
+    /** Seed the shadow engine with the same fixed initial condition the DB is seeded with — the
+     *  seed order book AND the seed positions — so a clean (empty-start) journal replay reconstructs
+     *  the identical state. These seeds are pre-loaded state, not produced by any journaled event, so
+     *  replay alone cannot recreate them; the comparison is replay+seed vs DB(seed+accumulated). */
+    private void seedShadow(MatchingEngine shadow) {
+        if (!seedEnabled) {
+            return;
+        }
+        for (OrderRecord r : seedOrders()) {
+            Matcher matcher = ORDER_ID_PATTERN.matcher(r.getOrderId() == null ? "" : r.getOrderId());
+            if (!matcher.matches()) {
+                continue;
+            }
+            int ref = Integer.parseInt(matcher.group(1));
+            int securityId = symbols.idFor(r.getSecurity());
+            shadow.bootstrapOrder(ref, r.getAccountId(), securityId, (byte) r.getSide().ordinal(),
+                r.getQuantity(), r.getRemainingQuantity() == null ? 0 : r.getRemainingQuantity(),
+                Px.toTicks(r.getLimitPrice()), (byte) r.getStatus().ordinal(),
+                r.getLastExecutionPrice() == null ? Px.NONE : Px.toTicks(r.getLastExecutionPrice()),
+                r.getLastFillQuantity() == null ? 0 : r.getLastFillQuantity(),
+                r.getCreatedAt() == null ? 0 : r.getCreatedAt().toEpochMilli(),
+                r.getUpdatedAt() == null ? 0 : r.getUpdatedAt().toEpochMilli());
+        }
+        // Seed positions mirror database/initialSchema.sql: pre-loaded holdings for accounts 22214
+        // and 52355 that no journaled event produces, so the shadow must start from them as well.
+        seedShadowPosition(shadow, 22214, "MS", 1000, "95.125");
+        seedShadowPosition(shadow, 22214, "IBM", -100, "136.250");
+        seedShadowPosition(shadow, 22214, "C", -2000, "57.500");
+        seedShadowPosition(shadow, 52355, "BAC", -2400, "41.125");
+    }
+
+    private void seedShadowPosition(MatchingEngine shadow, int accountId, String security, int quantity,
+                                    String averageCostBasis) {
+        shadow.bootstrapPosition(accountId, symbols.idFor(security), quantity,
+            Px.toTicks(new BigDecimal(averageCostBasis)));
+    }
+
+    /** Diagnostic: log the open orders / positions that differ between the DB-warm-started live engine
+     *  and the journal-replay shadow, to pinpoint where (and why) recovery diverges. */
+    private void logStateDiff(MatchingEngine live, MatchingEngine shadow) {
+        java.util.Map<Long, long[]> liveO = new java.util.HashMap<>();
+        for (long[] t : live.openOrderTuples()) {
+            liveO.put(t[0], t);
+        }
+        java.util.Map<Long, long[]> repO = new java.util.HashMap<>();
+        for (long[] t : shadow.openOrderTuples()) {
+            repO.put(t[0], t);
+        }
+        java.util.TreeSet<Long> refs = new java.util.TreeSet<>();
+        refs.addAll(liveO.keySet());
+        refs.addAll(repO.keySet());
+        int shown = 0;
+        for (Long ref : refs) {
+            long[] a = liveO.get(ref);
+            long[] b = repO.get(ref);
+            if (a == null || b == null || a[1] != b[1] || a[2] != b[2] || a[3] != b[3]) {
+                log.warn("  OPEN-ORDER DIFF ref={} sec={} live=[{}] replay=[{}]", ref,
+                    a != null ? sym((int) a[5]) : (b != null ? sym((int) b[5]) : "?"),
+                    a == null ? "<absent>" : ("st=" + a[1] + " rem=" + a[2] + " lim=" + a[3] + " acct=" + a[4]),
+                    b == null ? "<absent>" : ("st=" + b[1] + " rem=" + b[2] + " lim=" + b[3] + " acct=" + b[4]));
+                if (++shown >= 12) { log.warn("  ... (open-order diffs truncated)"); break; }
+            }
+        }
+        java.util.Map<Long, long[]> liveP = new java.util.HashMap<>();
+        for (long[] t : live.positionTuples()) {
+            liveP.put((t[0] << 32) | (t[1] & 0xFFFFFFFFL), t);
+        }
+        java.util.Map<Long, long[]> repP = new java.util.HashMap<>();
+        for (long[] t : shadow.positionTuples()) {
+            repP.put((t[0] << 32) | (t[1] & 0xFFFFFFFFL), t);
+        }
+        java.util.TreeSet<Long> pks = new java.util.TreeSet<>();
+        pks.addAll(liveP.keySet());
+        pks.addAll(repP.keySet());
+        shown = 0;
+        for (Long k : pks) {
+            long[] a = liveP.get(k);
+            long[] b = repP.get(k);
+            if (a == null || b == null || a[2] != b[2] || a[3] != b[3]) {
+                long[] any = a != null ? a : b;
+                log.warn("  POSITION DIFF acct={} sec={} live=[{}] replay=[{}]", any[0], sym((int) any[1]),
+                    a == null ? "<absent>" : ("qty=" + a[2] + " avg=" + a[3]),
+                    b == null ? "<absent>" : ("qty=" + b[2] + " avg=" + b[3]));
+                if (++shown >= 12) { log.warn("  ... (position diffs truncated)"); break; }
+            }
+        }
+    }
+
+    private String sym(int securityId) {
+        try {
+            return symbols.tickerFor(securityId);
+        } catch (RuntimeException ex) {
+            return "sec#" + securityId;
+        }
+    }
+
+    // ----- periodic snapshot (step a: bound journal replay) ------------------------------------
+
+    private void startSnapshotScheduler() {
+        if (snapshotStore == null || snapshotIntervalMs <= 0) {
+            return;
+        }
+        snapshotScheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "snapshot-scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+        snapshotScheduler.scheduleAtFixedRate(this::submitSnapshot, snapshotIntervalMs, snapshotIntervalMs,
+            java.util.concurrent.TimeUnit.MILLISECONDS);
+        log.info("Periodic state snapshot every {} ms -> {}/snapshot.dat", snapshotIntervalMs, journalPath);
+    }
+
+    /** Sequence a SNAPSHOT marker so the BLP checkpoints its state at a consistent point in the stream. */
+    public void submitSnapshot() {
+        if (inputRing == null) {
+            return;
+        }
+        long seq = claimInputSlot();
+        try {
+            InputEvent e = inputRing.get(seq);
+            e.seq = seq;
+            e.type = InputEvent.TYPE_SNAPSHOT;
+            e.orderRef = 0;
+            e.accountId = 0;
+            e.securityId = 0;
+            e.side = 0;
+            e.qty = 0;
+            e.limitPx = 0L;
+            e.priceTicks = 0L;
+            e.ingressNanos = System.nanoTime();
+            e.eventTimeMillis = System.currentTimeMillis();
+        } finally {
+            inputRing.publish(seq);
+        }
+    }
+
+    /** Runs on the BLP thread at a SNAPSHOT marker: write a consistent full-state checkpoint plus the
+     *  journal tail boundary it covers, so recovery loads it and replays only the tail (bounded). */
+    private void writeSnapshot() {
+        try {
+            long offset = journaler == null ? 0L : journaler.lastSnapshotOffset();
+            snapshotStore.write(new SnapshotStore.Data(offset, nextOrderRef.get(),
+                matchingEngine.tradeCounter(), matchingEngine.priceTuples(),
+                matchingEngine.positionTuples(), matchingEngine.allOrderTuples()));
+        } catch (Exception ex) {
+            log.warn("Snapshot write failed (continuing): {}", ex.toString());
+        }
+    }
+
+    /** Restore engine state (orders + positions + prices + trade counter) from a loaded snapshot. */
+    private void loadSnapshotInto(MatchingEngine engine, SnapshotStore.Data data) {
+        for (long[] o : data.orders()) {
+            engine.bootstrapOrder((int) o[0], (int) o[1], (int) o[2], (byte) o[3], (int) o[4], (int) o[5],
+                o[6], (byte) o[7], o[8], (int) o[9], o[10], o[11]);
+        }
+        for (long[] p : data.positions()) {
+            engine.bootstrapPosition((int) p[0], (int) p[1], (int) p[2], p[3]);
+        }
+        for (long[] pr : data.prices()) {
+            engine.bootstrapPrice((int) pr[0], pr[1]);
+        }
+        engine.bootstrapTradeCounter(data.tradeCounter());
+    }
+
+    // ----- step b: snapshot+journal recovery is AUTHORITATIVE (no DB) --------------------------
+
+    /** Reconstruct the LIVE engine and read model from snapshot+journal (or seed+journal when fresh),
+     *  with the NATS bridges gated so recovery does not re-broadcast history. Replaces the DB warm-start
+     *  when recovery.source=journal — the matcher then needs no database to recover. */
+    private void recoverLiveFromJournal() {
+        JournalReader reader = new JournalReader(Path.of(journalPath));
+        SnapshotStore.Data snap = null;
+        try {
+            snap = snapshotStore != null ? snapshotStore.read() : null;
+        } catch (Exception ex) {
+            log.warn("Snapshot read failed; recovering from the full journal: {}", ex.toString());
+        }
+        readModel.setReplaying(true);   // gate NATS handlers; the marshaller still rebuilds the read model
+        long replayed = 0;
+        String mode = "unknown";
+        try {
+            long offset;
+            if (snap != null) {
+                loadSnapshotInto(matchingEngine, snap);
+                for (long[] o : snap.orders()) {
+                    readModel.bootstrap(snapshotOrderToReadModel(o));
+                }
+                nextOrderRef.set(snap.nextOrderRef());
+                offset = snap.coveredOffset();
+                mode = "snapshot(@" + offset + ")+tail";
+            } else {
+                seedLiveInitialCondition();
+                offset = 0;
+                mode = "seed+full-journal";
+            }
+            replayed = reader.replayFrom(offset, e -> matchingEngine.onEvent(e, e.seq, true));
+            drainOutputRing();   // let the marshaller rebuild the read model from the replayed tail
+        } catch (Exception ex) {
+            log.error("Journal recovery failed: {}", ex.toString(), ex);
+        } finally {
+            readModel.setReplaying(false);
+        }
+        refreshCounters();
+        log.info("LIVE RECOVERY [journal]: {} - replayed {} tail events; {} orders warm, nextRef {}, tradeCounter {}",
+            mode, replayed, readModel.totalOrders(), nextOrderRef.get(), matchingEngine.tradeCounter());
+    }
+
+    /** Seed the fresh initial condition (the DB's seed orders + seed positions) directly into the live
+     *  engine and read model — the journal-only equivalent of seedReadModelIfEmpty + initialSchema.sql. */
+    private void seedLiveInitialCondition() {
+        if (!seedEnabled) {
+            return;
+        }
+        for (OrderRecord r : seedOrders()) {
+            Matcher matcher = ORDER_ID_PATTERN.matcher(r.getOrderId() == null ? "" : r.getOrderId());
+            if (!matcher.matches()) {
+                continue;
+            }
+            int ref = Integer.parseInt(matcher.group(1));
+            int securityId = symbols.idFor(r.getSecurity());
+            matchingEngine.bootstrapOrder(ref, r.getAccountId(), securityId, (byte) r.getSide().ordinal(),
+                r.getQuantity(), r.getRemainingQuantity() == null ? 0 : r.getRemainingQuantity(),
+                Px.toTicks(r.getLimitPrice()), (byte) r.getStatus().ordinal(),
+                r.getLastExecutionPrice() == null ? Px.NONE : Px.toTicks(r.getLastExecutionPrice()),
+                r.getLastFillQuantity() == null ? 0 : r.getLastFillQuantity(),
+                r.getCreatedAt() == null ? 0 : r.getCreatedAt().toEpochMilli(),
+                r.getUpdatedAt() == null ? 0 : r.getUpdatedAt().toEpochMilli());
+            readModel.bootstrap(OrderSnapshot.fromRecord(ref, r));
+            nextOrderRef.set(Math.max(nextOrderRef.get(), ref + 1));
+        }
+        seedLivePosition(22214, "MS", 1000, "95.125");
+        seedLivePosition(22214, "IBM", -100, "136.250");
+        seedLivePosition(22214, "C", -2000, "57.500");
+        seedLivePosition(52355, "BAC", -2400, "41.125");
+    }
+
+    private void seedLivePosition(int accountId, String security, int quantity, String averageCostBasis) {
+        matchingEngine.bootstrapPosition(accountId, symbols.idFor(security), quantity,
+            Px.toTicks(new BigDecimal(averageCostBasis)));
+    }
+
+    /** Build a read-model entry from a snapshot order tuple (so the read model is restored alongside
+     *  the engine when loading a snapshot, before the tail rebuilds the rest via the marshaller). */
+    private OrderSnapshot snapshotOrderToReadModel(long[] o) {
+        OrderRecord r = new OrderRecord();
+        int ref = (int) o[0];
+        r.setOrderId(OrderSnapshot.orderIdFor(ref));   // one id scheme, shared with the live marshaller
+        r.setAccountId((int) o[1]);
+        r.setSecurity(symbols.tickerFor((int) o[2]));
+        r.setSide(OrderSide.values()[(int) o[3]]);
+        r.setQuantity((int) o[4]);
+        r.setRemainingQuantity((int) o[5]);
+        r.setLimitPrice(Px.toDecimalOrZero(o[6]));
+        r.setStatus(OrderStatus.values()[(int) o[7]]);
+        r.setLastExecutionPrice(o[8] == Px.NONE ? null : Px.toDecimalOrZero(o[8]));
+        r.setLastFillQuantity((int) o[9]);
+        r.setCreatedAt(Instant.ofEpochMilli(o[10]));
+        r.setUpdatedAt(Instant.ofEpochMilli(o[11]));
+        return OrderSnapshot.fromRecord(ref, r);
+    }
+
+    /** Wait for the marshaller to catch up to the output cursor so the read model reflects the replay. */
+    private void drainOutputRing() {
+        if (marshaller == null || outputRing == null) {
+            return;
+        }
+        long deadline = System.nanoTime() + 10_000_000_000L;
+        while (marshaller.marshalledSeq() < outputRing.getCursor() && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+    }
+
+    private void refreshCounters() {
+        readModel.setCounter("create", readModel.totalOrders());
+        readModel.setCounter("partial_fill", readModel.countByStatus(OrderStatus.PARTIALLY_FILLED));
+        readModel.setCounter("fill", readModel.countByStatus(OrderStatus.FILLED));
+        readModel.setCounter("cancel", readModel.countByStatus(OrderStatus.CANCELED));
+        readModel.setCounter("reject", readModel.countByStatus(OrderStatus.REJECTED));
+        readModel.setCounter("force_fill", 0);
+    }
+
     // ----- wiring helpers ----------------------------------------------------------------------
 
     private static int normalizeRingSize(int requested) {
@@ -557,6 +978,31 @@ public class LmaxEngine implements InitializingBean, DisposableBean {
 
     public SymbolTable symbols() {
         return symbols;
+    }
+
+    /** Net positions straight from the BLP's in-memory PositionBook (no DB) — the read-side repoint for
+     *  the cutover. Flat positions are omitted; filter by account when given. */
+    public List<PositionUpdate> listPositions(Integer accountIdFilter) {
+        List<PositionUpdate> out = new ArrayList<>();
+        if (matchingEngine == null) {
+            return out;
+        }
+        for (long[] p : matchingEngine.positionTuples()) {
+            int accountId = (int) p[0];
+            if (accountIdFilter != null && accountIdFilter != accountId) {
+                continue;
+            }
+            if (p[2] == 0) {
+                continue;   // flat
+            }
+            PositionUpdate pos = new PositionUpdate();
+            pos.setAccountId(accountId);
+            pos.setSecurity(symbols.tickerFor((int) p[1]));
+            pos.setQuantity((int) p[2]);
+            pos.setAverageCostBasis(p[3] == Px.NONE ? null : Px.toBigDecimal(p[3]));
+            out.add(pos);
+        }
+        return out;
     }
 
     public HotPathMetrics metrics() {

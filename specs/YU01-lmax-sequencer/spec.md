@@ -95,11 +95,15 @@ conformance requirements use the `NGC` namespace defined in `requirements/no-gc-
   net quantity and weighted average cost basis (FR-09B18); a fill SHALL emit its order update,
   `TradeBooked`, and `PositionUpdated` as one paired ring claim. The `009` output-ring trade-submit
   handler that re-POSTed fills to `trade-service` SHALL be removed.
-- FR-09B16: BLP state SHALL be recoverable via snapshot + journal replay to the last journaled
-  sequence, followed by a JIT warm-up replay before going live. Warm-start from the persisted
-  read-model SHALL restore the in-memory order book, the net positions (quantity AND weighted average
-  cost basis), and the trade-number counter, so the single-writer BLP resumes consistent with durable
-  state.
+- FR-09B16: BLP state SHALL be recoverable via periodic full-state snapshot (`snapshot.dat`) plus
+  journal-tail replay to the last journaled sequence, bounded by the snapshot interval. Recovery is
+  selectable via `recovery.source`: `db` (default) warm-starts the BLP from the persisted read-model and
+  verifies that snapshot+tail replay reconstructs the same state, while `journal` rebuilds the live BLP from
+  snapshot+tail with no database (paired with `output.projector.db.enabled=false`). Warm-start from the
+  persisted read-model SHALL restore the in-memory order book, the net positions (quantity AND weighted
+  average cost basis), and the trade-number counter, so the single-writer BLP resumes consistent with
+  durable state. (A JIT warm-up replay before going live is a deferred target — see
+  `generation/implementation-status.md`.)
 - FR-09B17: The BLP SHALL stamp every booked trade with an execution price: an order fill books at its
   fill execution price (last market price, or the limit price on a force-fill before any tick), and a
   `TRADE_NEW` market trade books at the security's last sequenced market price (`PRICE_TICK`),

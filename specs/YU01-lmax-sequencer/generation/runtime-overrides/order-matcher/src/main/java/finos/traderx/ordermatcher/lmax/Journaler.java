@@ -38,6 +38,8 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
     private final ByteBuffer buffer = ByteBuffer.allocateDirect(RECORD_SIZE).order(ByteOrder.LITTLE_ENDIAN);
     private FileChannel channel;
     private volatile long journaledSeq = -1;
+    private long writtenBytes;                   // journaler-thread byte cursor (APPEND-mode position() is unreliable)
+    private volatile long lastSnapshotOffset;   // journal byte offset just past the most recent SNAPSHOT marker
     private volatile long threadId;
     private volatile boolean failed;
 
@@ -50,7 +52,8 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
                 Files.createDirectories(journalDir);
                 this.channel = FileChannel.open(journalFile,
                     StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
-                log.info("Journaling sequenced input events to {}", journalFile.toAbsolutePath());
+                this.writtenBytes = channel.size();   // continue the byte cursor across restarts (append)
+                log.info("Journaling sequenced input events to {} (at byte {})", journalFile.toAbsolutePath(), writtenBytes);
             } catch (IOException ex) {
                 log.error("Unable to open journal at {}; journaling disabled", journalFile, ex);
                 this.failed = true;
@@ -90,7 +93,13 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
             while (buffer.hasRemaining()) {
                 channel.write(buffer);
             }
-            if (endOfBatch) {
+            writtenBytes += RECORD_SIZE;
+            if (e.type == InputEvent.TYPE_SNAPSHOT) {
+                // Force the journal through the marker and record the tail boundary the snapshot covers,
+                // so recovery can load the snapshot and replay only from here.
+                channel.force(false);
+                lastSnapshotOffset = writtenBytes;
+            } else if (endOfBatch) {
                 channel.force(false); // durability amortized across the drained batch
             }
         } catch (IOException ex) {
@@ -103,6 +112,11 @@ public final class Journaler implements EventHandler<InputEvent>, AutoCloseable 
 
     public long journaledSeq() {
         return journaledSeq;
+    }
+
+    /** Journal byte offset just past the most recent SNAPSHOT marker (the tail start for recovery). */
+    public long lastSnapshotOffset() {
+        return lastSnapshotOffset;
     }
 
     public long journalThreadId() {

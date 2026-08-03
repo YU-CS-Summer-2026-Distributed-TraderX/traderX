@@ -11,93 +11,132 @@ import finos.traderx.ordermatcher.repository.PositionRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import com.lmax.disruptor.EventHandler;
 
 import java.sql.Timestamp;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Date;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Async read-model projector (FR-09B22..FR-09B24), DECOUPLED variant (throughput experiment).
+ * Async read-model projector (FR-09B22..FR-09B24), NON-GATING COALESCING-TAP variant (step 1 of
+ * the "take the DB off the hot path" plan).
  *
- * <p>Originally this handler did the DB writes inline on its output-ring consumer thread. Because
- * an LMAX ring producer cannot reclaim a slot until the slowest consumer releases it, the slow
- * per-row JPA writes (~1k rows/s) gated the entire single-writer engine: under sustained load the
- * output ring filled, the BLP stalled, and gateway acks timed out. The fix here unbinds the hot
- * path from the database:
+ * <p>The earlier decoupled variant moved the DB writes to a drain thread but still fed it through a
+ * BOUNDED FIFO queue holding one entry per event. Under sustained load that queue filled, the
+ * on-ring {@code onEvent} blocked on {@code queue.put}, the projector's ring sequence froze, and —
+ * because an LMAX ring producer cannot reclaim a slot until its slowest consumer releases it — the
+ * single-writer BLP stalled at MariaDB's write rate. The DB was reaching back through the output
+ * ring and throttling an engine that runs millions/sec. This variant severs that path:
  *
  * <ul>
- *   <li>The on-ring {@link #onEvent} only converts the event to a detached JPA entity and ENQUEUES
- *       it into a bounded in-memory queue — O(1), no DB. So the projector's ring sequence advances
- *       at ring speed and never drags down the producer's gating sequence.</li>
- *   <li>A single {@code projector-drain} thread batches rows out of the queue and writes them to
- *       Postgres at whatever rate the DB sustains. The DB falling behind becomes pure queue depth
- *       (measurable staleness), not engine backpressure.</li>
- *   <li>The queue is BOUNDED. If the DB stays slower than ingress long enough to fill it, the
- *       on-ring enqueue blocks (counted as a high-water event) — degrading to the old bounded
- *       backpressure rather than unbounded memory growth or dropped rows. No data is lost and the
- *       DB always reflects a consistent prefix (FIFO drain), just a staler one.</li>
- *   <li>The {@code projectedSeq} watermark advances only after a successful commit, so it marks
- *       exactly how far the durable projection has caught up (recovery resume point + the metric
- *       behind {@code traderx_projector_lag_seq}).</li>
+ *   <li><b>Non-gating.</b> {@link #onEvent} only converts the event to a detached row and drops it
+ *       into an in-memory buffer under a nanosecond lock — never any DB, never a blocking enqueue.
+ *       So the projector's ring sequence advances at ring speed and never drags the producer's
+ *       gating sequence. {@link #enqueueBlocks()} stays 0; that is the proof the ring no longer
+ *       blocks on the DB.</li>
+ *   <li><b>Coalescing.</b> Positions and orders carry ABSOLUTE state, so only the latest value per
+ *       key ever needs to reach the DB. They buffer into maps keyed by PK (last write wins), so a
+ *       key's memory footprint is one row no matter how many intermediate updates churn through —
+ *       buffering is bounded by the number of distinct open orders / positions, not by event
+ *       volume. Many updates per key collapse to a single upsert, which also cuts DB work.</li>
+ *   <li><b>Double-buffered swap.</b> The drain thread atomically swaps the live buffers out for
+ *       fresh empties (lock held only for the reference swap), then writes the swapped-out copy to
+ *       the DB with no lock held, in one transaction. Producer and writer never contend on the DB;
+ *       the lock guards only O(1) map puts and the swap.</li>
+ *   <li><b>Consistent prefix watermark.</b> Each swap captures {@code bufferedMaxSeq} (the highest
+ *       sequence absorbed, advanced on every event incl. no-ops). {@code projectedSeq} advances to
+ *       that target only after the flush commits, so it still marks exactly how far the durable
+ *       projection has caught up (recovery resume point + {@code traderx_projector_lag_seq}).</li>
+ *   <li><b>Retry without loss (FR-09B24).</b> A rolled-back flush is folded back UNDER whatever
+ *       arrived during it and retried after a short back-off. That is what the older drain thread's
+ *       {@code dbDown} flag bought — a DB outage costs staleness, never a dropped row — without a
+ *       second stalled-DB code path.</li>
  * </ul>
  *
- * Durability of accepted orders is unaffected — that lives on the INPUT ring (journaler +
- * replicator, gated before matching). This handler is only the queryable projection. Schema and
- * row semantics still match 009; only the writer thread changed.
+ * <p><b>Trades are the one exception.</b> They are append-only, so they cannot coalesce — the trade
+ * buffer grows with volume until the DB drains it. It is unbounded here (never blocks), which is
+ * fine for bench/demo bursts but is the firehose that step 3 (trades-as-async-archive / journal as
+ * source of truth) removes from the DB hot path entirely. Orders and positions are already bounded.
+ *
+ * <p>All three tables are written as blind multi-row upserts in MariaDB dialect
+ * ({@code ON DUPLICATE KEY UPDATE}) straight through the {@link JdbcTemplate}; the JPA repositories
+ * are no longer on this path — their per-row merge SELECT is exactly the cost this variant removes.
+ *
+ * <p>Durability of accepted orders is unaffected — that lives on the INPUT ring (journaler +
+ * replicator, gated before matching). This handler is only the queryable projection; schema and row
+ * semantics still match 009. Live consumers already get real-time data over NATS, so the DB lagging
+ * the engine (now pure, measurable buffer depth rather than engine backpressure) is invisible to
+ * them. Journal replay writes through here too — the projection is what a replay rebuilds, so
+ * unlike the NATS-facing handlers this one is deliberately NOT gated on {@code isReplaying()}.
  */
 public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(ProjectorHandler.class);
 
-    private final OrderRepository orderRepository;
-    private final PositionRepository positionRepository;
+    /** Idle poll when there is nothing to flush (under load the drain always has work, never sleeps). */
+    private static final long IDLE_SLEEP_MS = 1;
+    /** Back-off after a failed flush before retrying the same (idempotent) rows. */
+    private static final long RETRY_SLEEP_MS = 50;
+
     private final JdbcTemplate jdbcTemplate;
+    private final TransactionTemplate txTemplate;
     private final SymbolTable symbols;
     private final int batchSize;
+    private final int queueCapacity;
     private final HotPathMetrics metrics;
 
-    // One unit of pending work; exactly one of order/trade/position is non-null. Carries its ring
-    // sequence so the drain thread can advance the durable watermark after a successful commit.
-    private record ProjectionItem(long sequence, OrderRecord order, Trade trade, Position position) {}
+    // ----- live buffers (producer writes, drain swaps), all guarded by `lock` -------------------
+    // Orders/positions coalesce by PK (last write wins): one row per key bounds memory regardless of
+    // churn, and guarantees a key never repeats inside one multi-row upsert. Trades are append-only.
+    private final Object lock = new Object();
+    private Map<String, OrderRecord> orders = new HashMap<>();
+    private List<Trade> trades = new ArrayList<>();
+    private Map<PositionID, Position> positions = new HashMap<>();
+    private long bufferedMaxSeq = -1;   // highest sequence absorbed (advanced on EVERY event)
 
-    private final BlockingQueue<ProjectionItem> queue;
-    private final int queueCapacity;
     private final Thread drainThread;
     private volatile boolean running;
 
-    // Drain-thread-only state (single consumer): the in-flight flush batch.
-    private final List<OrderRecord> orderBuffer = new ArrayList<>();
-    private final List<Trade> tradeBuffer = new ArrayList<>();
-    private final Map<PositionID, Position> positionBuffer = new LinkedHashMap<>();
-    private long pendingSeq = -1;
-    private boolean dbDown = false;
-
     private volatile long projectedSeq = -1;   // durable watermark: every event <= this is committed
-    private volatile long pendingRows;          // queued + buffered rows = staleness window, in rows
+    private volatile long pendingRows;          // buffered rows = staleness window, in rows
     private volatile long tradesPersisted;      // trades actually committed (real DB booking rate)
-    private final LongAdder enqueueBlocks = new LongAdder(); // times the bounded queue was full (ring stalled)
+    private final LongAdder enqueueBlocks = new LongAdder(); // ring stalls on the DB; stays 0 by design now
 
-    public ProjectorHandler(OrderRepository orderRepository, PositionRepository positionRepository,
-                            JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
+    public ProjectorHandler(JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
                             int queueCapacity, HotPathMetrics metrics) {
-        this.orderRepository = orderRepository;
-        this.positionRepository = positionRepository;
         this.jdbcTemplate = jdbcTemplate;
+        // One transaction manager over the same DataSource the JdbcTemplate uses, so the whole flush
+        // (orders + trades + positions) runs on a single connection and commits exactly once. Null
+        // is the no-DB harness below: it never starts the drain, so no manager is needed.
+        this.txTemplate = jdbcTemplate == null ? null
+            : new TransactionTemplate(new DataSourceTransactionManager(jdbcTemplate.getDataSource()));
         this.symbols = symbols;
         this.batchSize = Math.max(1, batchSize);
         this.queueCapacity = Math.max(1024, queueCapacity);
         this.metrics = metrics;
-        this.queue = new LinkedBlockingQueue<>(this.queueCapacity);
         this.drainThread = new Thread(this::drainLoop, "projector-drain");
         this.drainThread.setDaemon(true);
+    }
+
+    /**
+     * No-DB harness constructor for the output-handler allocation gate, attribution and topology
+     * benchmarks (ODL-05 / SC-NGC-04), which drive {@link #onEvent} with null repositories and no
+     * JdbcTemplate and never {@link #start()} the drain. The repository arguments are inert — this
+     * variant upserts every table through the JdbcTemplate — and stay in the signature only so
+     * those gates keep compiling against the projector they were written for.
+     */
+    public ProjectorHandler(OrderRepository orderRepository, PositionRepository positionRepository,
+                            JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
+                            HotPathMetrics metrics) {
+        this(jdbcTemplate, symbols, batchSize, 0, metrics);   // capacity is advisory only now
     }
 
     public void start() {
@@ -115,151 +154,146 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         }
     }
 
-    // ----- on-ring producer side (fast: convert + enqueue, no DB) ----------------------------
+    // ----- on-ring producer side (fast: convert + buffer under a nanosecond lock, no DB) ---------
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        ProjectionItem item = toItem(e, sequence);
-        if (item == null) {
-            return;   // KIND_ORDER_NOT_FOUND or a flags==0 no-op update: nothing to persist
-        }
-        if (!queue.offer(item)) {
-            // Bounded queue full: the DB has been slower than ingress for too long. Block here
-            // (counted) — this is the deliberate backpressure fallback, never a dropped row.
-            enqueueBlocks.increment();
-            try {
-                queue.put(item);
-            } catch (InterruptedException ex) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        pendingRows = queue.size();
-    }
-
-    private ProjectionItem toItem(OutputEvent e, long sequence) {
+        // Convert OUTSIDE the lock: the ring slot is reused once we return, so the event's data must
+        // be extracted into a detached row now; only the cheap buffer put happens under the lock.
+        OrderRecord order = null;
+        Trade trade = null;
+        Position position = null;
         switch (e.kind) {
             case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
                  OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
                  OutputEvent.KIND_ORDER_CANCELED -> {
-                if (e.flags != 0) {
-                    return new ProjectionItem(sequence, OrderSnapshot.fromEvent(e, symbols).toRecord(), null, null);
+                if (e.flags != 0) {   // flags==0 is a no-op update with nothing to persist
+                    order = OrderSnapshot.fromEvent(e, symbols).toRecord();
                 }
-                return null;
             }
-            case OutputEvent.KIND_TRADE_BOOKED -> {
-                return new ProjectionItem(sequence, null, toTrade(e), null);
-            }
-            case OutputEvent.KIND_POSITION_UPDATED -> {
-                return new ProjectionItem(sequence, null, null, toPosition(e));
-            }
-            default -> {
-                return null;
-            }
+            case OutputEvent.KIND_TRADE_BOOKED -> trade = toTrade(e);
+            case OutputEvent.KIND_POSITION_UPDATED -> position = toPosition(e);
+            default -> { /* KIND_ORDER_NOT_FOUND etc.: nothing to persist, still advance the watermark */ }
         }
+
+        long buffered;
+        synchronized (lock) {
+            if (order != null) {
+                orders.put(order.getOrderId(), order);   // coalesce by orderId, last write wins
+            } else if (trade != null) {
+                trades.add(trade);                        // append-only firehose (bounded by step 3)
+            } else if (position != null) {
+                positions.put(new PositionID(position.getAccountId(), position.getSecurity()), position);
+            }
+            bufferedMaxSeq = sequence;   // advance for EVERY event so the watermark tracks real progress
+            buffered = orders.size() + trades.size() + positions.size();
+        }
+        pendingRows = buffered;
     }
 
-    // ----- drain thread (slow: the DB writes) ------------------------------------------------
+    // ----- drain thread (slow: the DB writes, off the ring) --------------------------------------
 
     private void drainLoop() {
-        final List<ProjectionItem> drained = new ArrayList<>(batchSize);
-        while (running || !queue.isEmpty() || hasBuffered()) {
+        while (running || hasBuffered()) {
+            Map<String, OrderRecord> orderFlush;
+            List<Trade> tradeFlush;
+            Map<PositionID, Position> positionFlush;
+            long target;
+            synchronized (lock) {
+                if (orders.isEmpty() && trades.isEmpty() && positions.isEmpty()) {
+                    orderFlush = null;
+                    tradeFlush = null;
+                    positionFlush = null;
+                    target = -1;
+                } else {
+                    // Atomic swap: take the whole live set, install fresh empties for the producer.
+                    orderFlush = orders;
+                    orders = new HashMap<>();
+                    tradeFlush = trades;
+                    trades = new ArrayList<>();
+                    positionFlush = positions;
+                    positions = new HashMap<>();
+                    target = bufferedMaxSeq;
+                }
+            }
+
+            if (orderFlush == null) {
+                sleep(IDLE_SLEEP_MS);   // nothing buffered; brief idle (skipped entirely under load)
+                continue;
+            }
+
+            int rows = orderFlush.size() + tradeFlush.size() + positionFlush.size();
+            int tradeCount = tradeFlush.size();
             try {
-                // While the DB is healthy, top the batch up from the queue. While it is down, stop
-                // pulling (keep the batch small and bounded) and just retry the failed flush — the
-                // queue then absorbs the backlog and provides the backpressure.
-                if (!dbDown) {
-                    int room = Math.max(1, batchSize - bufferedCount());
-                    drained.clear();
-                    queue.drainTo(drained, room);
-                    if (drained.isEmpty() && !hasBuffered()) {
-                        ProjectionItem item = queue.poll(50, TimeUnit.MILLISECONDS);
-                        if (item == null) {
-                            continue;
-                        }
-                        drained.add(item);
+                // One transaction for the whole flush: orders + trades + positions commit as a single
+                // DB-visible unit on one connection, so the read-model always reflects a consistent
+                // PREFIX of the sequenced stream. All three are blind multi-row upserts (no per-row
+                // merge SELECT), chunked so no single statement grows unbounded.
+                txTemplate.executeWithoutResult(status -> {
+                    if (!orderFlush.isEmpty()) {
+                        insertOrdersBatch(orderFlush.values());
                     }
-                    for (ProjectionItem it : drained) {
-                        route(it);
+                    if (!tradeFlush.isEmpty()) {
+                        insertTradesBatch(tradeFlush);
                     }
-                }
-                boolean flushNow = dbDown || bufferedCount() >= batchSize || queue.isEmpty() || !running;
-                if (hasBuffered() && flushNow) {
-                    if (flush(pendingSeq)) {
-                        dbDown = false;
-                    } else {
-                        dbDown = true;
-                        Thread.sleep(50);   // back off, then retry the same rows (no data loss)
+                    if (!positionFlush.isEmpty()) {
+                        insertPositionsBatch(positionFlush.values());
                     }
+                });
+            } catch (Exception ex) {
+                // Rolled back: nothing was written. Fold the failed batch back UNDER any newer updates
+                // that arrived during the flush (newer wins for coalesced keys; trades are restored
+                // ahead of newer trades), then back off and retry. Idempotent upserts make the retry
+                // safe; the watermark does not advance, so no consumer sees a gap. No row is dropped
+                // (FR-09B24), and memory stays bounded for orders/positions because they coalesce.
+                log.warn("Read-model projection failed at seq {} ({} rows): {}", target, rows, ex.getMessage());
+                synchronized (lock) {
+                    for (Map.Entry<String, OrderRecord> en : orderFlush.entrySet()) {
+                        orders.putIfAbsent(en.getKey(), en.getValue());
+                    }
+                    for (Map.Entry<PositionID, Position> en : positionFlush.entrySet()) {
+                        positions.putIfAbsent(en.getKey(), en.getValue());
+                    }
+                    if (!tradeFlush.isEmpty()) {
+                        tradeFlush.addAll(trades);   // restored (older) trades first, then newer
+                        trades = tradeFlush;
+                    }
+                    pendingRows = orders.size() + trades.size() + positions.size();
                 }
-                pendingRows = queue.size() + bufferedCount();
-            } catch (InterruptedException ex) {
-                if (!running) {
-                    break;
-                }
-                Thread.currentThread().interrupt();
+                sleep(RETRY_SLEEP_MS);
+                continue;
+            }
+
+            // Commit succeeded: count trades, advance the durable watermark — every event <= target is
+            // now committed.
+            tradesPersisted += tradeCount;
+            metrics.recordProjectorBatch(rows);
+            projectedSeq = target;
+            synchronized (lock) {
+                pendingRows = orders.size() + trades.size() + positions.size();
             }
         }
-        if (hasBuffered()) {
-            flush(pendingSeq);   // best-effort final drain on shutdown
-        }
-    }
-
-    private void route(ProjectionItem it) {
-        if (it.order() != null) {
-            orderBuffer.add(it.order());
-        } else if (it.trade() != null) {
-            tradeBuffer.add(it.trade());
-        } else if (it.position() != null) {
-            // Dedupe within the flush: only the latest net quantity per (account, security) is written.
-            positionBuffer.put(new PositionID(it.position().getAccountId(), it.position().getSecurity()), it.position());
-        }
-        if (it.sequence() > pendingSeq) {
-            pendingSeq = it.sequence();
-        }
-    }
-
-    private int bufferedCount() {
-        return orderBuffer.size() + tradeBuffer.size() + positionBuffer.size();
     }
 
     private boolean hasBuffered() {
-        return bufferedCount() > 0;
+        synchronized (lock) {
+            return !orders.isEmpty() || !trades.isEmpty() || !positions.isEmpty();
+        }
     }
 
-    /** Returns true on a successful commit (buffers cleared, watermark advanced); false leaves them to retry. */
-    private boolean flush(long sequence) {
+    /** Sleep that treats interruption as the stop signal — the loop re-checks running/hasBuffered. */
+    private void sleep(long millis) {
         try {
-            int rows = bufferedCount();
-            if (!orderBuffer.isEmpty()) {
-                orderRepository.saveAll(orderBuffer);
-                orderBuffer.clear();
-            }
-            if (!tradeBuffer.isEmpty()) {
-                insertTradesBatch(tradeBuffer);   // insert-only multi-row upsert: no per-row merge SELECT
-                tradesPersisted += tradeBuffer.size();   // count AFTER a successful commit = real booking rate
-                tradeBuffer.clear();
-            }
-            if (!positionBuffer.isEmpty()) {
-                positionRepository.saveAll(positionBuffer.values());
-                positionBuffer.clear();
-            }
-            metrics.recordProjectorBatch(rows);
-            projectedSeq = sequence;   // durable watermark advances only after the commit succeeds
-            pendingSeq = -1;
-            return true;
-        } catch (Exception ex) {
-            // DB unavailable: keep the rows buffered and let the caller back off and retry
-            // (FR-09B24). Memory stays bounded because we stop draining the queue while down, and
-            // the queue itself is bounded (-> on-ring backpressure). Nothing is dropped.
-            log.warn("Read-model projection failed at seq {} ({} rows buffered, {} queued): {}",
-                sequence, bufferedCount(), queue.size(), ex.getMessage());
-            return false;
+            Thread.sleep(millis);
+        } catch (InterruptedException ex) {
+            // shutdown: do not re-arm the interrupt (we would just re-throw on the next sleep); the
+            // while-condition drains any remaining buffer, then exits because running is false.
         }
     }
 
     // Option 2 — trades are append-only, so skip JPA merge's per-row SELECT entirely: one multi-row
     // INSERT per chunk (a single DB round-trip), made idempotent for journal replay with
-    // ON CONFLICT (id) DO NOTHING. The whole flush stays one DB-visible unit alongside the batched
+    // ON DUPLICATE KEY UPDATE id=id (a no-op on the PK). The whole flush stays one DB-visible unit alongside the batched
     // order/position writes (option 1).
     private static final int TRADE_INSERT_CHUNK = 500;
     private static final String TRADE_COLS =
@@ -285,7 +319,75 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 args[a++] = t.getCreated() == null ? null : new Timestamp(t.getCreated().getTime());
                 args[a++] = t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime());
             }
-            sql.append(" ON CONFLICT (id) DO NOTHING");
+            sql.append(" ON DUPLICATE KEY UPDATE id=id");
+            jdbcTemplate.update(sql.toString(), args);
+        }
+    }
+
+    // Positions and orders are absolute state snapshots keyed by their PK, so each read-model write
+    // is a blind multi-row upsert: overwrite the row with the event's values and never SELECT it
+    // first (what JPA merge did per row). Each buffer is already deduped to one row per key, so a key
+    // never repeats inside one statement. MariaDB's VALUES(col) references the would-be-inserted value
+    // in the ON DUPLICATE KEY UPDATE clause.
+    private static final int UPSERT_CHUNK = 500;
+
+    private static final String POSITION_COLS = "(accountid, security, quantity, averagecostbasis, updated)";
+
+    private void insertPositionsBatch(Collection<Position> positionsColl) {
+        List<Position> positions = new ArrayList<>(positionsColl);
+        for (int start = 0; start < positions.size(); start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, positions.size());
+            StringBuilder sql = new StringBuilder(96 + (end - start) * 14)
+                .append("INSERT INTO positions ").append(POSITION_COLS).append(" VALUES ");
+            Object[] args = new Object[(end - start) * 5];
+            int a = 0;
+            for (int i = start; i < end; i++) {
+                sql.append(i > start ? ",(?,?,?,?,?)" : "(?,?,?,?,?)");
+                Position p = positions.get(i);
+                args[a++] = p.getAccountId();
+                args[a++] = p.getSecurity();
+                args[a++] = p.getQuantity();
+                args[a++] = p.getAverageCostBasis();
+                args[a++] = p.getUpdated() == null ? null : new Timestamp(p.getUpdated().getTime());
+            }
+            sql.append(" ON DUPLICATE KEY UPDATE quantity=VALUES(quantity),"
+                + " averagecostbasis=VALUES(averagecostbasis), updated=VALUES(updated)");
+            jdbcTemplate.update(sql.toString(), args);
+        }
+    }
+
+    // Only the mutable columns are refreshed on conflict; orderid (PK), accountid, security, side,
+    // quantity and createdat are fixed at creation and stay out of the UPDATE clause.
+    private static final String ORDER_COLS = "(orderid, accountid, security, side, quantity,"
+        + " remainingquantity, limitprice, status, createdat, updatedat, lastexecutionprice, lastfillquantity)";
+
+    private void insertOrdersBatch(Collection<OrderRecord> ordersColl) {
+        List<OrderRecord> orders = new ArrayList<>(ordersColl);
+        for (int start = 0; start < orders.size(); start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, orders.size());
+            StringBuilder sql = new StringBuilder(176 + (end - start) * 28)
+                .append("INSERT INTO orderbook ").append(ORDER_COLS).append(" VALUES ");
+            Object[] args = new Object[(end - start) * 12];
+            int a = 0;
+            for (int i = start; i < end; i++) {
+                sql.append(i > start ? ",(?,?,?,?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?,?,?,?)");
+                OrderRecord o = orders.get(i);
+                args[a++] = o.getOrderId();
+                args[a++] = o.getAccountId();
+                args[a++] = o.getSecurity();
+                args[a++] = o.getSide() == null ? null : o.getSide().name();
+                args[a++] = o.getQuantity();
+                args[a++] = o.getRemainingQuantity();
+                args[a++] = o.getLimitPrice();
+                args[a++] = o.getStatus() == null ? null : o.getStatus().name();
+                args[a++] = o.getCreatedAt() == null ? null : new Timestamp(o.getCreatedAt().toEpochMilli());
+                args[a++] = o.getUpdatedAt() == null ? null : new Timestamp(o.getUpdatedAt().toEpochMilli());
+                args[a++] = o.getLastExecutionPrice();
+                args[a++] = o.getLastFillQuantity();
+            }
+            sql.append(" ON DUPLICATE KEY UPDATE status=VALUES(status),"
+                + " remainingquantity=VALUES(remainingquantity), updatedat=VALUES(updatedat),"
+                + " lastexecutionprice=VALUES(lastexecutionprice), lastfillquantity=VALUES(lastfillquantity)");
             jdbcTemplate.update(sql.toString(), args);
         }
     }
@@ -325,21 +427,22 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         return pendingRows;
     }
 
-    /** Trades committed to the DB since start — the real (Postgres-bound) booking counter. */
+    /** Trades committed to the DB since start — the real (MariaDB-bound) booking counter. */
     public long tradesPersisted() {
         return tradesPersisted;
     }
 
-    /** Current decoupling-queue depth (rows enqueued, not yet handed to a flush). */
+    /** Current buffered row count (orders + trades + positions not yet committed) = staleness depth. */
     public long queueDepth() {
-        return queue.size();
+        return pendingRows;
     }
 
+    /** Advisory only now: the coalescing buffers are unbounded (the ring never blocks on the DB). */
     public long queueCapacity() {
         return queueCapacity;
     }
 
-    /** Times the bounded queue was full and the on-ring handler had to block (ring backpressure). */
+    /** Times the on-ring handler had to block on the DB. Stays 0 by design — the proof of non-gating. */
     public long enqueueBlocks() {
         return enqueueBlocks.sum();
     }

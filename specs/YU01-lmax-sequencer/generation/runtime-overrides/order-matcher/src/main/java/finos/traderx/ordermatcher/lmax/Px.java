@@ -4,7 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 /**
- * Fixed-point price arithmetic for the LMAX hot path (state 009b, FR-09B05 / NGC-03).
+ * Fixed-point price arithmetic for the LMAX hot path (state YU01, FR-09B05 / NGC-03).
  *
  * Prices travel through the rings and the BLP as {@code long} "ticks" (price x 1e6).
  * BigDecimal conversion happens only at the edges (gateway in, read-model/NATS out) and

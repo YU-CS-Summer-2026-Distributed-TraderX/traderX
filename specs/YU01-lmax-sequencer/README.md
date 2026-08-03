@@ -1,4 +1,4 @@
-# Feature Pack 009b: LMAX Sequencer Architecture (Trading Hot Path)
+# Feature Pack YU01: LMAX Sequencer Architecture (Trading Hot Path)
 
 ![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
 

@@ -28,6 +28,9 @@ public final class AccountTradeHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+        if (readModel.isReplaying()) {
+            return;   // recovery replay: do not re-broadcast historical trades
+        }
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;
         }

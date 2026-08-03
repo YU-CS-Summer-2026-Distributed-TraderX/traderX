@@ -26,14 +26,23 @@ in-memory and binary structures is introduced on the hot path.
   - `qty` (long), `pxTicks` (long fixed-point), `remainingQty` (long)
   - `status` (byte: `NEW | PARTIALLY_FILLED | FILLED | CANCELED | REJECTED`)
   - `ingressNanos` (long, carried through for true end-to-end latency at egress)
-- Added: **Journal record** (append-only, authoritative): `(seq, type, raw SBE bytes, ingressNanos)`;
-  schema-versioned (`schemaId`/`version`) for forward replay.
-- Added: **Snapshot**: serialized BLP state (order books, positions, caches) plus the sequence number it
-  reflects; written on the snapshot cadence and on nightly bounce.
-- Added: **Projection checkpoint**: last projected `seq`, persisted by the Read-model Projector so
-  rebuilds and restarts are idempotent.
+- Added: **Journal record** (append-only, authoritative; `input-events.journal`): fixed **64-byte
+  little-endian** record — `seq, type, side, orderRef, accountId, securityId, qty, limitPx, priceTicks,
+  eventTimeMillis` (+ pad). `ingressNanos` is a latency field, not state, so it is **not** journaled. A
+  torn trailing record (crash mid-append, < 64 bytes) is discarded on replay. (SBE-encoded bytes +
+  `schemaId`/`version` are the deferred perf-profile form; today the record is typed fields.)
+- Added: **Snapshot** (`snapshot.dat`): full BLP state — orders, net positions, last prices,
+  `nextOrderRef`, `tradeCounter` — plus `coveredOffset`, the journal byte offset just past the most recent
+  `SNAPSHOT` marker. Written **atomically** (temp + atomic rename) on the BLP thread at a sequenced SNAPSHOT
+  marker, on the `snapshot.interval.ms` cadence. Recovery loads it and replays only the journal tail after
+  `coveredOffset`. Binary layout: `magic|version|coveredOffset|nextOrderRef|tradeCounter`, then
+  count-prefixed prices, positions, and orders.
+- Added: **Projection checkpoint**: the projector's last projected `seq` watermark (`projectedSeq`),
+  advanced only on a committed DB flush so re-projection is idempotent. In-memory in YU01 (no standalone
+  checkpoint file yet); the snapshot's `coveredOffset` is the durable recovery boundary.
 - Added: **Symbol table**: `ticker (string) <-> securityId (int)` mapping owned by the Gateway;
-  strings never cross into the rings or BLP.
+  strings never cross into the rings or BLP. Persisted as `symbols.tab` in `journal.path` and restored
+  FIRST at boot, so security ids replayed from the journal resolve to the same tickers.
 - Added: in-memory BLP state (pre-allocated/pooled, never `new`-ed mid-life):
   - `OrderBook[] booksBySecurity` — array indexed by `securityId`; pooled resting-order entries,
     returned to the free list at terminal status.

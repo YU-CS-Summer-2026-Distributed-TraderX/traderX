@@ -32,7 +32,7 @@ import static org.springframework.http.HttpStatus.GATEWAY_TIMEOUT;
 import static org.springframework.http.HttpStatus.NOT_FOUND;
 
 /**
- * State 009b: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
+ * state YU01: the 009 matcher service re-cast as the LMAX Gateway/Receptionist facade.
  *
  * The public surface (REST semantics, payload shapes, metric families, NATS subjects) is
  * parity-locked to 009 (FR-09B40). Internally, every state mutation is a sequenced input
@@ -146,7 +146,7 @@ public class OrderMatcherService {
 
     /**
      * Retained for controller compatibility: in 009 the controller re-published command
-     * responses onto the order subjects. In 009b every lifecycle transition is published by
+     * responses onto the order subjects. In YU01 every lifecycle transition is published by
      * the output-disruptor NATS bridge (exactly once), so this is intentionally a no-op.
      */
     public void publishOrderUpdate(OrderResponse order) {
@@ -172,6 +172,11 @@ public class OrderMatcherService {
             throw new ResponseStatusException(NOT_FOUND, "order not found");
         }
         return toResponse(snapshot);
+    }
+
+    /** Net positions from the BLP's in-memory book (no DB) — the cutover read-side repoint. */
+    public List<finos.traderx.ordermatcher.lmax.PositionUpdate> listPositions(Integer accountIdFilter) {
+        return engine.listPositions(accountIdFilter);
     }
 
     public OpenCountResponse openCounts() {
@@ -260,7 +265,7 @@ public class OrderMatcherService {
 
         HotPathMetrics metrics = engine.metrics();
         HotPathMetrics.renderHistogram(sb, "traderx_order_match_latency_seconds",
-            "Order eligible-to-fill latency (ingress to fill emission); real measurement in 009b.",
+            "Order eligible-to-fill latency (ingress to fill emission); real measurement in YU01.",
             metrics.matchHistogram(), new double[]{0.01, 0.05, 0.1, 0.25, 0.5, 1});
         HotPathMetrics.renderHistogram(sb, "traderx_blp_event_latency_seconds",
             "BLP event handling latency (ingress to onEvent completion).",

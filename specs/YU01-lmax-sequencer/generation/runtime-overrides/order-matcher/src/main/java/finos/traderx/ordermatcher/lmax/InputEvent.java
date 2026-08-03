@@ -13,6 +13,9 @@ public final class InputEvent {
     public static final byte TYPE_PRICE_TICK = 4;
     /** Market trade from the trade ticket, sequenced through the gateway (FR-09B08). */
     public static final byte TYPE_TRADE_NEW = 5;
+    /** Snapshot marker (state YU01 recovery): sequenced so the BLP checkpoints its state at a
+     *  consistent point, bounding journal replay. Carries no business payload. */
+    public static final byte TYPE_SNAPSHOT = 6;
 
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;

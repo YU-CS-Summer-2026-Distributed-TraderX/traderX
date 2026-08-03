@@ -1,7 +1,7 @@
 package finos.traderx.ordermatcher.lmax;
 
 /**
- * BLP-private net-position store (state 009b, FR-09B08/FR-09B10): the single in-memory,
+ * BLP-private net-position store (state YU01, FR-09B08/FR-09B10): the single in-memory,
  * single-writer record of {@code (accountId, securityId) -> (net quantity, average cost
  * basis)}. Booking and position-keeping are fused into the BLP, so a fill or market trade
  * updates the position — quantity and weighted average cost — with one in-memory call on the
@@ -108,6 +108,46 @@ public final class PositionBook {
         return size;
     }
 
+    /**
+     * Order-independent recovery digest over all non-empty positions, for replay verification
+     * (startup only, not hot-path): returns {@code {xorHash, count}}. XOR of per-entry avalanche
+     * hashes is commutative, so it does not depend on probe/iteration order.
+     */
+    public long[] recoveryDigest() {
+        long hash = 0L;
+        long count = 0L;
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] != EMPTY) {
+                int accountId = (int) (keys[i] >> 32);
+                int securityId = (int) (keys[i] & 0xFFFFFFFFL);
+                long h = 1125899906842597L;
+                h = h * 31 + accountId;
+                h = h * 31 + securityId;
+                h = h * 31 + values[i];
+                // Compare cost basis at the DB's DECIMAL(18,3) precision: the persisted read-model can
+                // only hold 3 decimals, so a DB warm-start rounds to .000 while in-memory replay keeps
+                // full 6-decimal ticks. Rounding here makes the comparison fair (replay is the more
+                // precise of the two); a journal-only world keeps the full precision.
+                h = h * 31 + round3dp(avgCostTicks[i]);
+                hash ^= mix(h);
+                count++;
+            }
+        }
+        return new long[] { hash, count };
+    }
+
+    /** All non-empty positions as {accountId, securityId, quantity, avgCostTicks} (debug/verify only). */
+    public java.util.List<long[]> tuples() {
+        java.util.List<long[]> out = new java.util.ArrayList<>(size);
+        for (int i = 0; i < keys.length; i++) {
+            if (keys[i] != EMPTY) {
+                out.add(new long[] { (int) (keys[i] >> 32), (int) (keys[i] & 0xFFFFFFFFL),
+                    values[i], avgCostTicks[i] });
+            }
+        }
+        return out;
+    }
+
     private int indexOf(long k) {
         int idx = (int) (mix(k) & mask);
         while (keys[idx] != EMPTY && keys[idx] != k) {
@@ -131,6 +171,20 @@ public final class PositionBook {
                 size++;
             }
         }
+    }
+
+    /** Round a 6-decimal Px-tick cost basis to 3 decimals (nearest 1000 ticks, half away from zero),
+     *  matching how the DECIMAL(18,3) read-model column stores it. Verify-only. */
+    private static long round3dp(long ticks) {
+        long r = ticks % 1000;
+        long base = ticks - r;
+        if (r >= 500) {
+            return base + 1000;
+        }
+        if (r <= -500) {
+            return base - 1000;
+        }
+        return base;
     }
 
     /** Fibonacci-style mix so sequential account/security ids scatter across buckets. */

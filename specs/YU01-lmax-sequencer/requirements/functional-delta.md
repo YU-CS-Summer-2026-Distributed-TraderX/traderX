@@ -21,8 +21,10 @@ parity-locked to `009`; the delta is in how that behavior is produced.
   Read-model Projector handlers (FR-09B15, FR-09B20).
 - Asynchronous request/response event pattern for BLP cache misses (e.g.
   `AccountLookupRequest/Response`) replacing blocking lookups (FR-09B11).
-- Event sourcing operability: snapshot + journal replay recovery, JIT warm-up replay before going
-  live, nightly bounce window, deterministic replay for diagnostics (FR-09B16, NFR-09B05).
+- Event sourcing operability: periodic full-state snapshot (`snapshot.dat`) + bounded journal-tail replay
+  recovery, with a `recovery.source=db` (warm-start + verify) / `journal` (no-DB cutover) switch;
+  deterministic replay for diagnostics (FR-09B16, NFR-09B05). JIT warm-up replay before going live and a
+  scheduled bounce window remain aspirational.
 - Replication and warm-standby failover: follower BLPs consume the identical replicated input stream in
   lock-step with output suppressed; promotion at current sequence on leader failure (FR-09B30..32).
 - Optional batch ingress: `POST /orders/batch` accepts an array of new orders and sequences the whole
@@ -98,6 +100,7 @@ parity-locked to `009`; the delta is in how that behavior is produced.
   validate -> publish -> book -> match -> POST-back into a single-threaded in-memory event handle;
   lifecycle statuses and policy unchanged.
 - `F6` (order ticket + account orders blotter cancel workflow): unchanged at the UI/API contract.
-- New flow: `F7` (event-sourced recovery) — snapshot load -> journal replay -> warm-up -> live.
+- New flow: `F7` (event-sourced recovery) — snapshot load -> journal-tail replay -> live (`db` verifies
+  against the read-model warm-start; `journal` rebuilds the live BLP with no DB). Warm-up replay aspirational.
 - New flow: `F8` (failover) — leader loss -> follower promotion at current sequence -> output
   un-suppressed -> Gateway re-targets.

@@ -11,8 +11,8 @@
 - [x] T09B09 Author ADRs 014–017 (input disruptor, single-thread BLP, async read-model, no-GC gate).
 - [x] T09B09A Scaffold pipeline readiness: catalog entry (`status: draft`), generation hook,
       render stub, lifecycle delegate scripts to `009`, and letter-suffix state-id support in
-      pipeline validators/installers. (2026-06-10: added the `009b` runtime-harness case,
-      pubsub-inspector gate, ingress observability route injection in the 009b render, and
+      pipeline validators/installers. (2026-06-10: added the `YU01` runtime-harness case,
+      pubsub-inspector gate, ingress observability route injection in the YU01 render, and
       capture excludes for top-level-only installer outputs; overlay patchset captured and
       consumer-verified — see `generation/implementation-status.md`.)
 - [ ] T09B10 Establish the P0 latency harness (HdrHistogram/JLBH/jHiccup) against generated `009`.
@@ -31,8 +31,9 @@
       `/accounts/{id}/trades` and `/accounts/{id}/positions`. trade-service forwards market trades to
       the gateway; the old `TradeSubmitHandler` round-trip is removed and `trade-processor` is idle on
       this path (still deployed for read endpoints + smoke parity).
-- [~] T09B14 Recovery: persisted read-model warm-start + input-event journal implemented; snapshot
-      files, journal replay tooling, JIT warm-up, and nightly bounce deferred.
+- [~] T09B14 Recovery: persisted read-model warm-start + input-event journal + periodic `snapshot.dat`
+      checkpoint + bounded journal-tail replay + journal-replay verify + DB-less `recovery.source=journal`
+      cutover implemented (2026-06-30); JIT warm-up replay and a cron-scheduled nightly bounce deferred.
 - [x] T09B15 Implement the output disruptor (Marshaller/read-model, NATS bridge preserving `009`
       subjects/payloads, TradeBooked bridge, batched Read-model Projector).
 - [~] T09B16 Replication seam implemented as loopback stub gating the BLP (demo profile); real

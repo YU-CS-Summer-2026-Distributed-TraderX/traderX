@@ -20,15 +20,15 @@ contracts and observability obligations.
 
 1. **Single combined state pack.** The LMAX docs staged the work as three future states
    (input disruptor → fused BLP → output disruptor) plus a cross-cutting no-GC profile. Those state
-   IDs (`010`–`012`) are already taken by the canonical lineage, and the requested shape is one `009b`
+   IDs (`010`–`012`) are already taken by the canonical lineage, and the requested shape is one `YU01`
    branch; the staging survives as plan milestones P0–P4 inside this pack.
-2. **Sibling branch, not canonical lineage.** `009b` branches off `009`; the canonical `010+` lineage
+2. **Sibling branch, not canonical lineage.** `YU01` branches off `009`; the canonical `010+` lineage
    (Kubernetes/Tilt/C3/FDC3) is unaffected. The state is registered in `catalog/state-catalog.json`
    (`status: draft`, `primaryLineageRole: optional`) because the generation pipeline's post-install
    steps resolve state metadata from the catalog; pipeline scaffolding (generation hook, render stub,
    lifecycle delegates to `009`) keeps `pipeline/generate-state.sh YU01-lmax-sequencer`
    runnable end-to-end, producing `009`-parity output until the overlay patchset lands. Letter-suffixed
-   state ids are supported by the pipeline by treating `009b` as numeric base `009` for lineage
+   state ids are supported by the pipeline by treating `YU01` as numeric base `009` for lineage
    thresholds while using the full prefix for script-name resolution.
 3. **Requirement ID namespace `09B` + `NGC`.** The LMAX docs' illustrative `FR-014xx` block collides
    with `014-fdc3-intent-interoperability`, so this pack uses `FR-09Bxx`/`NFR-09Bxx`/`SC-09Bxx`. The

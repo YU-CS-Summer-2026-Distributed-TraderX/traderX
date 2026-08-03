@@ -29,6 +29,9 @@ public final class PositionUpdateHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
+        if (readModel.isReplaying()) {
+            return;   // recovery replay: do not re-broadcast historical position updates
+        }
         if (e.kind != OutputEvent.KIND_POSITION_UPDATED) {
             return;
         }

@@ -20,7 +20,7 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 /**
- * State 009b (FR-09B08): the trade ticket's market trades enter the LMAX sequencer instead of
+ * state YU01 (FR-09B08): the trade ticket's market trades enter the LMAX sequencer instead of
  * the {@code /trades} bus. trade-service stays the validating gateway edge — it still checks the
  * ticker (reference-data) and account (account-service) exactly as in 009 — but on success it
  * forwards the validated trade to the order-matcher gateway, where it is sequenced as a
@@ -34,7 +34,7 @@ public class TradeOrderController {
 
   private static final Logger log = LoggerFactory.getLogger(TradeOrderController.class);
 
-  // Retained for bean compatibility; the /trades publish is gone in 009b (booking moved to
+  // Retained for bean compatibility; the /trades publish is gone in YU01 (booking moved to
   // the sequencer), so this publisher is intentionally unused on the create path.
   private final Publisher<TradeOrder> tradePublisher;
   private final RestTemplate restTemplate = new RestTemplate();

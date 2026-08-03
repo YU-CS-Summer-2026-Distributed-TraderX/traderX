@@ -367,5 +367,4 @@ class OutputDisruptorHandlersTest {
             return topics;
         }
     }
-
 }

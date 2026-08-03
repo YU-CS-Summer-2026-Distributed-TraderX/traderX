@@ -14,19 +14,22 @@ Document NFR changes introduced by this state.
 - `trade-service` additionally plays the Gateway/Receptionist role: edge validation from in-memory
   replicas, `ticker -> securityId` mapping, fixed-point conversion, SBE encode, sequence submission.
   Its REST/WS contract is unchanged.
-- New durable runtime state: journal directory (`journal.path`, default `./data/journal`), snapshot
-  directory (`blp.snapshot.path`, default `./data/snapshots`), projection checkpoint
-  (`output.projector.checkpoint-path`). These must survive restarts and be writable volumes in
-  containerized profiles.
+- New durable runtime state: one journal directory (`journal.path`, default `./data/journal`) holding the
+  append-only `input-events.journal`, the periodic `snapshot.dat` checkpoint, and the `symbols.tab` ticker
+  map (mounted volume `order_matcher_journal` -> `/opt/app/data` in containers, durable across recreate).
+  These must survive restarts/recreate. (A standalone projection-checkpoint file is deferred; the projector
+  `projectedSeq` watermark is in-memory, advanced on a committed DB flush.)
 - Run profiles (`runtime.profile`): `demo` (default for `C2` containers — BlockingWaitStrategy, no
   pinning, no hugepages, single replica, replication loopback/stub), `perf` (bare metal — busy-spin on
   BLP/Journaler, pinned isolated cores via `isolcpus`/Affinity, ZGC/Shenandoah, large pages, NUMA,
   replicas + DR), `noGcTest` (CI — Epsilon GC small fixed heap). JVM flag matrix in
   `requirements/no-gc-conformance.md`.
-- Operability: nightly bounce (restart + snapshot/replay) in a configured quiet window
-  (`nogc.bounce.cron`); JIT warm-up replay (`nogc.warmup.events`) before the node reports ready.
-- Startup order and health gating per `system/runtime-topology.md` (node is not "ready" until replay +
-  warm-up complete).
+- Operability: recovery is snapshot + journal-tail replay on every restart (`recovery.source=db` warm-start
+  + verify, or `journal` no-DB cutover with `output.projector.db.enabled=false`). A cron-scheduled nightly
+  bounce (`nogc.bounce.cron`) and a JIT warm-up replay before going live (`nogc.warmup.events`) remain
+  aspirational.
+- Startup order and health gating per `system/runtime-topology.md` (node is "ready" once recovery
+  completes; no warm-up gate yet).
 
 ## Security / Compliance
 
@@ -69,8 +72,10 @@ allocation gate):
 
 ## Reliability / Observability
 
-- Recovery: snapshot + journal replay to the last journaled sequence; restart target `< 1 minute`
-  including warm-up. Read-model loss degrades to projector rebuild, not trading-state loss.
+- Recovery: periodic `snapshot.dat` + bounded journal-tail replay to the last journaled sequence
+  (`recovery.source=db` warm-start + verify, or `journal` no-DB cutover); restart target `< 1 minute`.
+  Read-model loss degrades to projector rebuild, not trading-state loss. (Warm-up replay before going
+  live is deferred.)
 - Failover: follower BLPs at the same sequence with output suppressed; promotion-based failover without
   cold replay (perf profile; contract-level check in demo profile).
 - Decoupling: DB or NATS outage must not stop matching; affected output handlers lag within the bounded
@@ -93,8 +98,8 @@ allocation gate):
 | `traderx_blp_book_depth{security=...}` | gauge | Resting orders per security. |
 | `traderx_blp_positions_total` | gauge | Distinct in-memory positions. |
 | `traderx_blp_cache_miss_total{cache=...}` | counter | Request/response events emitted for misses. |
-| `traderx_blp_snapshot_seconds` | histogram | Snapshot duration. |
-| `traderx_blp_replay_seconds` | gauge | Last recovery replay duration. |
+| `traderx_blp_snapshot_seconds` | histogram | Snapshot duration *(planned; snapshot/recovery currently logged, not metered)*. |
+| `traderx_blp_replay_seconds` | gauge | Last recovery replay duration *(planned; see `JOURNAL-REPLAY VERIFY` / `LIVE RECOVERY` log lines)*. |
 | `traderx_output_publish_latency_seconds` | histogram | True end-to-end (`now − ingressNanos`) at egress. |
 | `traderx_output_remaining_capacity` | gauge | Output ring headroom. |
 | `traderx_output_events_total{kind=...}` | counter | Per-kind egress counts. |
