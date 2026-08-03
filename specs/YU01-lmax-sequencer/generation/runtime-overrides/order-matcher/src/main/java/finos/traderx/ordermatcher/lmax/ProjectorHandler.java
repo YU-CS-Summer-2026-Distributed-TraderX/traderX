@@ -1,8 +1,5 @@
 package finos.traderx.ordermatcher.lmax;
 
-import finos.traderx.ordermatcher.model.OrderRecord;
-import finos.traderx.ordermatcher.model.Position;
-import finos.traderx.ordermatcher.model.PositionID;
 import finos.traderx.ordermatcher.model.Trade;
 import finos.traderx.ordermatcher.model.TradeSide;
 import finos.traderx.ordermatcher.model.TradeState;
@@ -17,12 +14,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.lmax.disruptor.EventHandler;
 
 import java.sql.Timestamp;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -96,10 +87,16 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     // ----- live buffers (producer writes, drain swaps), all guarded by `lock` -------------------
     // Orders/positions coalesce by PK (last write wins): one row per key bounds memory regardless of
     // churn, and guarantees a key never repeats inside one multi-row upsert. Trades are append-only.
+    //
+    // The buffers hold PRIMITIVE COLUMNS, not entity objects, and the two buffer instances are
+    // allocated once and swapped rather than replaced. That is what keeps onEvent allocation-free:
+    // OrderRecord/Trade/Position and every derived value they carry — the id Strings, the BigDecimal
+    // prices, the Instant/Timestamp stamps — are built at FLUSH time, off the ring thread, from these
+    // columns. Buffering an entity per event instead costs ~900 bytes/event on the order path and is
+    // what OutputHandlerAllocationGateTest's 512-byte budget exists to prevent.
     private final Object lock = new Object();
-    private Map<String, OrderRecord> orders = new HashMap<>();
-    private List<Trade> trades = new ArrayList<>();
-    private Map<PositionID, Position> positions = new HashMap<>();
+    private RowBuffer live;
+    private RowBuffer spare;
     private long bufferedMaxSeq = -1;   // highest sequence absorbed (advanced on EVERY event)
 
     private final Thread drainThread;
@@ -108,6 +105,11 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private volatile long projectedSeq = -1;   // durable watermark: every event <= this is committed
     private volatile long pendingRows;          // buffered rows = staleness window, in rows
     private volatile long tradesPersisted;      // trades actually committed (real DB booking rate)
+    private static final finos.traderx.ordermatcher.model.OrderStatus[] STATUSES =
+        finos.traderx.ordermatcher.model.OrderStatus.values();
+    private static final finos.traderx.ordermatcher.model.OrderSide[] SIDES =
+        finos.traderx.ordermatcher.model.OrderSide.values();
+
     private final LongAdder enqueueBlocks = new LongAdder(); // ring stalls on the DB; stays 0 by design now
 
     public ProjectorHandler(JdbcTemplate jdbcTemplate, SymbolTable symbols, int batchSize,
@@ -122,6 +124,15 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         this.batchSize = Math.max(1, batchSize);
         this.queueCapacity = Math.max(1024, queueCapacity);
         this.metrics = metrics;
+        // Sized per row kind, to the shape each one actually has. Orders and positions COALESCE, so
+        // their depth is the number of distinct open orders / positions, not event volume — a fixed
+        // starting capacity covers them. Only trades are append-only and grow with volume, so they
+        // start at the batch this flush cycle exists to hold (capped: batchSize is Integer.MAX_VALUE
+        // in the no-DB harness). Growth is amortised doubling and only happens when the DB is behind.
+        int coalescedRows = 1024;
+        int tradeRows = Math.max(1024, Math.min(this.batchSize, 8192));
+        this.live = new RowBuffer(coalescedRows, tradeRows);
+        this.spare = new RowBuffer(coalescedRows, tradeRows);
         this.drainThread = new Thread(this::drainLoop, "projector-drain");
         this.drainThread.setDaemon(true);
     }
@@ -158,35 +169,27 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     @Override
     public void onEvent(OutputEvent e, long sequence, boolean endOfBatch) {
-        // Convert OUTSIDE the lock: the ring slot is reused once we return, so the event's data must
-        // be extracted into a detached row now; only the cheap buffer put happens under the lock.
-        OrderRecord order = null;
-        Trade trade = null;
-        Position position = null;
-        switch (e.kind) {
-            case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
-                 OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
-                 OutputEvent.KIND_ORDER_CANCELED -> {
-                if (e.flags != 0) {   // flags==0 is a no-op update with nothing to persist
-                    order = OrderSnapshot.fromEvent(e, symbols).toRecord();
-                }
-            }
-            case OutputEvent.KIND_TRADE_BOOKED -> trade = toTrade(e);
-            case OutputEvent.KIND_POSITION_UPDATED -> position = toPosition(e);
-            default -> { /* KIND_ORDER_NOT_FOUND etc.: nothing to persist, still advance the watermark */ }
-        }
-
+        // The ring slot is reused once we return, so the event's data must be copied out now — but it
+        // is copied as PRIMITIVES straight into the buffer's columns. Nothing is constructed here: no
+        // row object, no id String, no BigDecimal, no Instant. Those are derived at flush, off this
+        // thread. Coalescing keys are the event's own ints (orderRef; accountId+securityId), so even
+        // the map keys cost nothing.
         long buffered;
         synchronized (lock) {
-            if (order != null) {
-                orders.put(order.getOrderId(), order);   // coalesce by orderId, last write wins
-            } else if (trade != null) {
-                trades.add(trade);                        // append-only firehose (bounded by step 3)
-            } else if (position != null) {
-                positions.put(new PositionID(position.getAccountId(), position.getSecurity()), position);
+            switch (e.kind) {
+                case OutputEvent.KIND_ORDER_ACCEPTED, OutputEvent.KIND_ORDER_REJECTED,
+                     OutputEvent.KIND_ORDER_PARTIALLY_FILLED, OutputEvent.KIND_ORDER_FILLED,
+                     OutputEvent.KIND_ORDER_CANCELED -> {
+                    if (e.flags != 0) {   // flags==0 is a no-op update with nothing to persist
+                        live.putOrder(e);   // coalesce by orderRef, last write wins
+                    }
+                }
+                case OutputEvent.KIND_TRADE_BOOKED -> live.addTrade(e);
+                case OutputEvent.KIND_POSITION_UPDATED -> live.putPosition(e);
+                default -> { /* KIND_ORDER_NOT_FOUND etc.: nothing to persist, still advance the watermark */ }
             }
             bufferedMaxSeq = sequence;   // advance for EVERY event so the watermark tracks real progress
-            buffered = orders.size() + trades.size() + positions.size();
+            buffered = live.rowCount();
         }
         pendingRows = buffered;
     }
@@ -195,49 +198,43 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     private void drainLoop() {
         while (running || hasBuffered()) {
-            Map<String, OrderRecord> orderFlush;
-            List<Trade> tradeFlush;
-            Map<PositionID, Position> positionFlush;
+            RowBuffer flush;
             long target;
             synchronized (lock) {
-                if (orders.isEmpty() && trades.isEmpty() && positions.isEmpty()) {
-                    orderFlush = null;
-                    tradeFlush = null;
-                    positionFlush = null;
+                if (live.isEmpty()) {
+                    flush = null;
                     target = -1;
                 } else {
-                    // Atomic swap: take the whole live set, install fresh empties for the producer.
-                    orderFlush = orders;
-                    orders = new HashMap<>();
-                    tradeFlush = trades;
-                    trades = new ArrayList<>();
-                    positionFlush = positions;
-                    positions = new HashMap<>();
+                    // Atomic swap: the producer takes the (already empty) spare, we take the live set.
+                    // Both instances are long-lived — swapping references, not allocating new buffers.
+                    flush = live;
+                    live = spare;
+                    spare = flush;
                     target = bufferedMaxSeq;
                 }
             }
 
-            if (orderFlush == null) {
+            if (flush == null) {
                 sleep(IDLE_SLEEP_MS);   // nothing buffered; brief idle (skipped entirely under load)
                 continue;
             }
 
-            int rows = orderFlush.size() + tradeFlush.size() + positionFlush.size();
-            int tradeCount = tradeFlush.size();
+            int rows = flush.rowCount();
+            int tradeCount = flush.tradeCount;
             try {
                 // One transaction for the whole flush: orders + trades + positions commit as a single
                 // DB-visible unit on one connection, so the read-model always reflects a consistent
                 // PREFIX of the sequenced stream. All three are blind multi-row upserts (no per-row
                 // merge SELECT), chunked so no single statement grows unbounded.
                 txTemplate.executeWithoutResult(status -> {
-                    if (!orderFlush.isEmpty()) {
-                        insertOrdersBatch(orderFlush.values());
+                    if (flush.orderCount > 0) {
+                        insertOrdersBatch(flush);
                     }
-                    if (!tradeFlush.isEmpty()) {
-                        insertTradesBatch(tradeFlush);
+                    if (flush.tradeCount > 0) {
+                        insertTradesBatch(flush);
                     }
-                    if (!positionFlush.isEmpty()) {
-                        insertPositionsBatch(positionFlush.values());
+                    if (flush.positionCount > 0) {
+                        insertPositionsBatch(flush);
                     }
                 });
             } catch (Exception ex) {
@@ -248,17 +245,11 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
                 // (FR-09B24), and memory stays bounded for orders/positions because they coalesce.
                 log.warn("Read-model projection failed at seq {} ({} rows): {}", target, rows, ex.getMessage());
                 synchronized (lock) {
-                    for (Map.Entry<String, OrderRecord> en : orderFlush.entrySet()) {
-                        orders.putIfAbsent(en.getKey(), en.getValue());
-                    }
-                    for (Map.Entry<PositionID, Position> en : positionFlush.entrySet()) {
-                        positions.putIfAbsent(en.getKey(), en.getValue());
-                    }
-                    if (!tradeFlush.isEmpty()) {
-                        tradeFlush.addAll(trades);   // restored (older) trades first, then newer
-                        trades = tradeFlush;
-                    }
-                    pendingRows = orders.size() + trades.size() + positions.size();
+                    // Same semantics as before the columns change: coalesced keys keep the NEWER value
+                    // (fold-under, not overwrite), and restored trades go AHEAD of newer ones.
+                    live.foldUnder(flush);
+                    flush.clear();
+                    pendingRows = live.rowCount();
                 }
                 sleep(RETRY_SLEEP_MS);
                 continue;
@@ -270,14 +261,15 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
             metrics.recordProjectorBatch(rows);
             projectedSeq = target;
             synchronized (lock) {
-                pendingRows = orders.size() + trades.size() + positions.size();
+                flush.clear();   // written and committed: reset for its next turn as the live buffer
+                pendingRows = live.rowCount();
             }
         }
     }
 
     private boolean hasBuffered() {
         synchronized (lock) {
-            return !orders.isEmpty() || !trades.isEmpty() || !positions.isEmpty();
+            return !live.isEmpty();
         }
     }
 
@@ -299,25 +291,27 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final String TRADE_COLS =
         "(id, accountid, security, side, state, quantity, price, created, updated)";
 
-    private void insertTradesBatch(List<Trade> trades) {
-        for (int start = 0; start < trades.size(); start += TRADE_INSERT_CHUNK) {
-            int end = Math.min(start + TRADE_INSERT_CHUNK, trades.size());
+    private void insertTradesBatch(RowBuffer b) {
+        for (int start = 0; start < b.tradeCount; start += TRADE_INSERT_CHUNK) {
+            int end = Math.min(start + TRADE_INSERT_CHUNK, b.tradeCount);
             StringBuilder sql = new StringBuilder(64 + (end - start) * 20)
                 .append("INSERT INTO trades ").append(TRADE_COLS).append(" VALUES ");
             Object[] args = new Object[(end - start) * 9];
             int a = 0;
             for (int i = start; i < end; i++) {
                 sql.append(i > start ? ",(?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?)");
-                Trade t = trades.get(i);
-                args[a++] = t.getId();
-                args[a++] = t.getAccountId();
-                args[a++] = t.getSecurity();
-                args[a++] = t.getSide() == null ? null : t.getSide().name();
-                args[a++] = t.getState() == null ? null : t.getState().name();
-                args[a++] = t.getQuantity();
-                args[a++] = t.getPrice();
-                args[a++] = t.getCreated() == null ? null : new Timestamp(t.getCreated().getTime());
-                args[a++] = t.getUpdated() == null ? null : new Timestamp(t.getUpdated().getTime());
+                // Derived here, not per event: the id String, the BigDecimal price and the Timestamps
+                // are the allocation the buffer exists to keep off the ring thread.
+                args[a++] = OrderSnapshot.tradeIdFor(b.tSeq[i]);
+                args[a++] = b.tAccountId[i];
+                args[a++] = symbols.tickerFor(b.tSecurityId[i]);
+                args[a++] = (b.tSide[i] == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell).name();
+                args[a++] = TradeState.Settled.name();
+                args[a++] = b.tQty[i];
+                args[a++] = Px.toDecimalOrZero(b.tPx[i]);   // stamped execution price (0.000 if no tick), FR-09B40
+                Timestamp when = new Timestamp(b.tUpdatedAt[i]);   // event-carried time, not wall clock
+                args[a++] = when;
+                args[a++] = when;
             }
             sql.append(" ON DUPLICATE KEY UPDATE id=id");
             jdbcTemplate.update(sql.toString(), args);
@@ -333,22 +327,20 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
 
     private static final String POSITION_COLS = "(accountid, security, quantity, averagecostbasis, updated)";
 
-    private void insertPositionsBatch(Collection<Position> positionsColl) {
-        List<Position> positions = new ArrayList<>(positionsColl);
-        for (int start = 0; start < positions.size(); start += UPSERT_CHUNK) {
-            int end = Math.min(start + UPSERT_CHUNK, positions.size());
+    private void insertPositionsBatch(RowBuffer b) {
+        for (int start = 0; start < b.positionCount; start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, b.positionCount);
             StringBuilder sql = new StringBuilder(96 + (end - start) * 14)
                 .append("INSERT INTO positions ").append(POSITION_COLS).append(" VALUES ");
             Object[] args = new Object[(end - start) * 5];
             int a = 0;
             for (int i = start; i < end; i++) {
                 sql.append(i > start ? ",(?,?,?,?,?)" : "(?,?,?,?,?)");
-                Position p = positions.get(i);
-                args[a++] = p.getAccountId();
-                args[a++] = p.getSecurity();
-                args[a++] = p.getQuantity();
-                args[a++] = p.getAverageCostBasis();
-                args[a++] = p.getUpdated() == null ? null : new Timestamp(p.getUpdated().getTime());
+                args[a++] = b.pAccountId[i];
+                args[a++] = symbols.tickerFor(b.pSecurityId[i]);
+                args[a++] = b.pQty[i];
+                args[a++] = Px.toDecimalOrZero(b.pAvgCostTicks[i]);   // weighted cost basis, FR-09B40
+                args[a++] = new Timestamp(b.pUpdatedAt[i]);
             }
             sql.append(" ON DUPLICATE KEY UPDATE quantity=VALUES(quantity),"
                 + " averagecostbasis=VALUES(averagecostbasis), updated=VALUES(updated)");
@@ -361,29 +353,29 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     private static final String ORDER_COLS = "(orderid, accountid, security, side, quantity,"
         + " remainingquantity, limitprice, status, createdat, updatedat, lastexecutionprice, lastfillquantity)";
 
-    private void insertOrdersBatch(Collection<OrderRecord> ordersColl) {
-        List<OrderRecord> orders = new ArrayList<>(ordersColl);
-        for (int start = 0; start < orders.size(); start += UPSERT_CHUNK) {
-            int end = Math.min(start + UPSERT_CHUNK, orders.size());
+    private void insertOrdersBatch(RowBuffer b) {
+        for (int start = 0; start < b.orderCount; start += UPSERT_CHUNK) {
+            int end = Math.min(start + UPSERT_CHUNK, b.orderCount);
             StringBuilder sql = new StringBuilder(176 + (end - start) * 28)
                 .append("INSERT INTO orderbook ").append(ORDER_COLS).append(" VALUES ");
             Object[] args = new Object[(end - start) * 12];
             int a = 0;
             for (int i = start; i < end; i++) {
                 sql.append(i > start ? ",(?,?,?,?,?,?,?,?,?,?,?,?)" : "(?,?,?,?,?,?,?,?,?,?,?,?)");
-                OrderRecord o = orders.get(i);
-                args[a++] = o.getOrderId();
-                args[a++] = o.getAccountId();
-                args[a++] = o.getSecurity();
-                args[a++] = o.getSide() == null ? null : o.getSide().name();
-                args[a++] = o.getQuantity();
-                args[a++] = o.getRemainingQuantity();
-                args[a++] = o.getLimitPrice();
-                args[a++] = o.getStatus() == null ? null : o.getStatus().name();
-                args[a++] = o.getCreatedAt() == null ? null : new Timestamp(o.getCreatedAt().toEpochMilli());
-                args[a++] = o.getUpdatedAt() == null ? null : new Timestamp(o.getUpdatedAt().toEpochMilli());
-                args[a++] = o.getLastExecutionPrice();
-                args[a++] = o.getLastFillQuantity();
+                // Same column values OrderSnapshot.toRecord() produced, derived from the buffered
+                // primitives at flush time instead of from an OrderRecord built per event.
+                args[a++] = OrderSnapshot.orderIdFor(b.oRef[i]);
+                args[a++] = b.oAccountId[i];
+                args[a++] = symbols.tickerFor(b.oSecurityId[i]);
+                args[a++] = SIDES[b.oSide[i]].name();
+                args[a++] = b.oQty[i];
+                args[a++] = b.oRemainingQty[i];
+                args[a++] = Px.toBigDecimal(b.oLimitPx[i]);
+                args[a++] = STATUSES[b.oStatus[i]].name();
+                args[a++] = new Timestamp(b.oCreatedAt[i]);
+                args[a++] = new Timestamp(b.oUpdatedAt[i]);
+                args[a++] = b.oLastExecPx[i] == Px.NONE ? null : Px.toBigDecimal(b.oLastExecPx[i]);
+                args[a++] = b.oLastFillQty[i] == 0 ? null : b.oLastFillQty[i];
             }
             sql.append(" ON DUPLICATE KEY UPDATE status=VALUES(status),"
                 + " remainingquantity=VALUES(remainingquantity), updatedat=VALUES(updatedat),"
@@ -392,30 +384,7 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
         }
     }
 
-    private Trade toTrade(OutputEvent e) {
-        Trade trade = new Trade();
-        trade.setId(OrderSnapshot.tradeIdFor(e.tradeSeq));
-        trade.setAccountId(e.accountId);
-        trade.setSecurity(symbols.tickerFor(e.securityId));
-        trade.setSide(e.side == InputEvent.SIDE_BUY ? TradeSide.Buy : TradeSide.Sell);
-        trade.setQuantity(e.tradeQty);
-        trade.setPrice(Px.toDecimalOrZero(e.tradePx));   // stamped execution price (0.000 if no tick), FR-09B40
-        trade.setState(TradeState.Settled);
-        Date when = new Date(e.updatedAtMillis);   // event-carried time (deterministic), not wall clock
-        trade.setCreated(when);
-        trade.setUpdated(when);
-        return trade;
-    }
 
-    private Position toPosition(OutputEvent e) {
-        Position position = new Position();
-        position.setAccountId(e.accountId);
-        position.setSecurity(symbols.tickerFor(e.securityId));
-        position.setQuantity(e.positionQty);
-        position.setAverageCostBasis(Px.toDecimalOrZero(e.positionAvgCostTicks));   // weighted cost basis, FR-09B40
-        position.setUpdated(new Date(e.updatedAtMillis));
-        return position;
-    }
 
     // ----- telemetry (read by the scrape thread) ---------------------------------------------
 
@@ -445,5 +414,310 @@ public final class ProjectorHandler implements EventHandler<OutputEvent> {
     /** Times the on-ring handler had to block on the DB. Stays 0 by design — the proof of non-gating. */
     public long enqueueBlocks() {
         return enqueueBlocks.sum();
+    }
+
+    /**
+     * One flush cycle's rows, held as primitive columns rather than entity objects.
+     *
+     * <p>This exists so {@link ProjectorHandler#onEvent} allocates nothing. Buffering an
+     * {@code OrderRecord}/{@code Trade}/{@code Position} per event costs an object plus every derived
+     * value it carries — the id String, the {@code BigDecimal} price, the {@code Instant} stamps —
+     * which measured ~900/240/216 bytes per event on the three paths against a 512-byte-per-1000
+     * budget. Columns move that construction to flush time, on the drain thread.
+     *
+     * <p>Two instances are allocated up front and swapped by the drain, so a flush cycle allocates
+     * nothing either. Arrays grow by doubling and are never shrunk, so growth is a warmup cost that
+     * amortises to zero; steady state reuses the same arrays forever.
+     *
+     * <p>Coalescing uses the event's own integer keys — {@code orderRef} for orders, the
+     * {@code (accountId, securityId)} pair packed into a long for positions — through small
+     * open-addressed maps, so even the map keys cost nothing. Not thread-safe: every access is under
+     * the handler's {@code lock}.
+     */
+    private static final class RowBuffer {
+        private static final int EMPTY = -1;
+
+        // orders, coalesced by orderRef (last write wins)
+        int[] oRef, oAccountId, oSecurityId, oQty, oRemainingQty, oLastFillQty;
+        byte[] oSide, oStatus;
+        long[] oLimitPx, oCreatedAt, oUpdatedAt, oLastExecPx;
+        int orderCount;
+        private int[] orderKeys, orderSlots;
+        private int orderMask;
+
+        // trades, append-only (cannot coalesce: every fill is its own row)
+        long[] tSeq, tPx, tUpdatedAt;
+        int[] tAccountId, tSecurityId, tQty;
+        byte[] tSide;
+        int tradeCount;
+
+        // positions, coalesced by (accountId, securityId)
+        int[] pAccountId, pSecurityId, pQty;
+        long[] pAvgCostTicks, pUpdatedAt;
+        int positionCount;
+        private long[] positionKeys;
+        private int[] positionSlots;
+        private int positionMask;
+
+        RowBuffer(int coalescedRows, int tradeRows) {
+            growOrders(coalescedRows);
+            growTrades(tradeRows);
+            growPositions(coalescedRows);
+        }
+
+        int rowCount() {
+            return orderCount + tradeCount + positionCount;
+        }
+
+        boolean isEmpty() {
+            return orderCount == 0 && tradeCount == 0 && positionCount == 0;
+        }
+
+        void putOrder(OutputEvent e) {
+            int i = orderIndexOf(e.orderRef);
+            if (i < 0) {
+                if (orderCount == oRef.length) {
+                    growOrders(oRef.length << 1);
+                }
+                i = orderCount++;
+                indexOrder(e.orderRef, i);
+            }
+            oRef[i] = e.orderRef;
+            oAccountId[i] = e.accountId;
+            oSecurityId[i] = e.securityId;
+            oSide[i] = e.side;
+            oQty[i] = e.quantity;
+            oRemainingQty[i] = e.remainingQty;
+            oLimitPx[i] = e.limitPx;
+            oStatus[i] = e.status;
+            oCreatedAt[i] = e.createdAtMillis;
+            oUpdatedAt[i] = e.updatedAtMillis;
+            oLastExecPx[i] = e.lastExecPx;
+            oLastFillQty[i] = e.lastFillQty;
+        }
+
+        void addTrade(OutputEvent e) {
+            if (tradeCount == tSeq.length) {
+                growTrades(tSeq.length << 1);
+            }
+            int i = tradeCount++;
+            tSeq[i] = e.tradeSeq;
+            tAccountId[i] = e.accountId;
+            tSecurityId[i] = e.securityId;
+            tSide[i] = e.side;
+            tQty[i] = e.tradeQty;
+            tPx[i] = e.tradePx;
+            tUpdatedAt[i] = e.updatedAtMillis;
+        }
+
+        void putPosition(OutputEvent e) {
+            long key = positionKey(e.accountId, e.securityId);
+            int i = positionIndexOf(key);
+            if (i < 0) {
+                if (positionCount == pAccountId.length) {
+                    growPositions(pAccountId.length << 1);
+                }
+                i = positionCount++;
+                indexPosition(key, i);
+            }
+            pAccountId[i] = e.accountId;
+            pSecurityId[i] = e.securityId;
+            pQty[i] = e.positionQty;
+            pAvgCostTicks[i] = e.positionAvgCostTicks;
+            pUpdatedAt[i] = e.updatedAtMillis;
+        }
+
+        /**
+         * Restore a rolled-back flush beneath whatever arrived while it was in flight: a coalesced key
+         * present here already holds the NEWER value and is left alone, and restored trades are placed
+         * AHEAD of newer ones so the append order still matches sequence order.
+         */
+        void foldUnder(RowBuffer older) {
+            for (int i = 0; i < older.orderCount; i++) {
+                if (orderIndexOf(older.oRef[i]) >= 0) {
+                    continue;   // newer update already buffered for this order
+                }
+                if (orderCount == oRef.length) {
+                    growOrders(oRef.length << 1);
+                }
+                int j = orderCount++;
+                indexOrder(older.oRef[i], j);
+                oRef[j] = older.oRef[i];
+                oAccountId[j] = older.oAccountId[i];
+                oSecurityId[j] = older.oSecurityId[i];
+                oSide[j] = older.oSide[i];
+                oQty[j] = older.oQty[i];
+                oRemainingQty[j] = older.oRemainingQty[i];
+                oLimitPx[j] = older.oLimitPx[i];
+                oStatus[j] = older.oStatus[i];
+                oCreatedAt[j] = older.oCreatedAt[i];
+                oUpdatedAt[j] = older.oUpdatedAt[i];
+                oLastExecPx[j] = older.oLastExecPx[i];
+                oLastFillQty[j] = older.oLastFillQty[i];
+            }
+            for (int i = 0; i < older.positionCount; i++) {
+                long key = positionKey(older.pAccountId[i], older.pSecurityId[i]);
+                if (positionIndexOf(key) >= 0) {
+                    continue;
+                }
+                if (positionCount == pAccountId.length) {
+                    growPositions(pAccountId.length << 1);
+                }
+                int j = positionCount++;
+                indexPosition(key, j);
+                pAccountId[j] = older.pAccountId[i];
+                pSecurityId[j] = older.pSecurityId[i];
+                pQty[j] = older.pQty[i];
+                pAvgCostTicks[j] = older.pAvgCostTicks[i];
+                pUpdatedAt[j] = older.pUpdatedAt[i];
+            }
+            if (older.tradeCount > 0) {
+                int needed = older.tradeCount + tradeCount;
+                if (needed > tSeq.length) {
+                    int cap = tSeq.length;
+                    while (cap < needed) {
+                        cap <<= 1;
+                    }
+                    growTrades(cap);
+                }
+                int shift = older.tradeCount;
+                System.arraycopy(tSeq, 0, tSeq, shift, tradeCount);
+                System.arraycopy(tAccountId, 0, tAccountId, shift, tradeCount);
+                System.arraycopy(tSecurityId, 0, tSecurityId, shift, tradeCount);
+                System.arraycopy(tSide, 0, tSide, shift, tradeCount);
+                System.arraycopy(tQty, 0, tQty, shift, tradeCount);
+                System.arraycopy(tPx, 0, tPx, shift, tradeCount);
+                System.arraycopy(tUpdatedAt, 0, tUpdatedAt, shift, tradeCount);
+                System.arraycopy(older.tSeq, 0, tSeq, 0, shift);
+                System.arraycopy(older.tAccountId, 0, tAccountId, 0, shift);
+                System.arraycopy(older.tSecurityId, 0, tSecurityId, 0, shift);
+                System.arraycopy(older.tSide, 0, tSide, 0, shift);
+                System.arraycopy(older.tQty, 0, tQty, 0, shift);
+                System.arraycopy(older.tPx, 0, tPx, 0, shift);
+                System.arraycopy(older.tUpdatedAt, 0, tUpdatedAt, 0, shift);
+                tradeCount = needed;
+            }
+        }
+
+        /** Reset counts and indexes; the arrays themselves are kept for the next cycle. */
+        void clear() {
+            orderCount = 0;
+            tradeCount = 0;
+            positionCount = 0;
+            java.util.Arrays.fill(orderSlots, EMPTY);
+            java.util.Arrays.fill(positionSlots, EMPTY);
+        }
+
+        private static long positionKey(int accountId, int securityId) {
+            return ((long) accountId << 32) | (securityId & 0xFFFFFFFFL);
+        }
+
+        /** Fibonacci-style spread: securityIds and orderRefs are dense small ints, so raw values collide. */
+        private static int spread(int h) {
+            h *= 0x9E3779B9;
+            return (h ^ (h >>> 16)) & 0x7FFFFFFF;
+        }
+
+        private int orderIndexOf(int ref) {
+            int i = spread(ref) & orderMask;
+            while (orderSlots[i] != EMPTY) {
+                if (orderKeys[i] == ref) {
+                    return orderSlots[i];
+                }
+                i = (i + 1) & orderMask;
+            }
+            return -1;
+        }
+
+        private void indexOrder(int ref, int slot) {
+            int i = spread(ref) & orderMask;
+            while (orderSlots[i] != EMPTY) {
+                i = (i + 1) & orderMask;
+            }
+            orderKeys[i] = ref;
+            orderSlots[i] = slot;
+        }
+
+        private int positionIndexOf(long key) {
+            int i = spread((int) (key ^ (key >>> 32))) & positionMask;
+            while (positionSlots[i] != EMPTY) {
+                if (positionKeys[i] == key) {
+                    return positionSlots[i];
+                }
+                i = (i + 1) & positionMask;
+            }
+            return -1;
+        }
+
+        private void indexPosition(long key, int slot) {
+            int i = spread((int) (key ^ (key >>> 32))) & positionMask;
+            while (positionSlots[i] != EMPTY) {
+                i = (i + 1) & positionMask;
+            }
+            positionKeys[i] = key;
+            positionSlots[i] = slot;
+        }
+
+        private void growOrders(int rows) {
+            oRef = grow(oRef, rows);
+            oAccountId = grow(oAccountId, rows);
+            oSecurityId = grow(oSecurityId, rows);
+            oQty = grow(oQty, rows);
+            oRemainingQty = grow(oRemainingQty, rows);
+            oLastFillQty = grow(oLastFillQty, rows);
+            oSide = grow(oSide, rows);
+            oStatus = grow(oStatus, rows);
+            oLimitPx = grow(oLimitPx, rows);
+            oCreatedAt = grow(oCreatedAt, rows);
+            oUpdatedAt = grow(oUpdatedAt, rows);
+            oLastExecPx = grow(oLastExecPx, rows);
+            // Index kept at 2x rows (power of two) so load factor stays <= 0.5 and probes stay short.
+            int cap = Integer.highestOneBit(Math.max(16, rows) - 1) << 2;
+            orderKeys = new int[cap];
+            orderSlots = new int[cap];
+            orderMask = cap - 1;
+            java.util.Arrays.fill(orderSlots, EMPTY);
+            for (int i = 0; i < orderCount; i++) {
+                indexOrder(oRef[i], i);   // rehash the rows already buffered
+            }
+        }
+
+        private void growTrades(int rows) {
+            tSeq = grow(tSeq, rows);
+            tPx = grow(tPx, rows);
+            tUpdatedAt = grow(tUpdatedAt, rows);
+            tAccountId = grow(tAccountId, rows);
+            tSecurityId = grow(tSecurityId, rows);
+            tQty = grow(tQty, rows);
+            tSide = grow(tSide, rows);
+        }
+
+        private void growPositions(int rows) {
+            pAccountId = grow(pAccountId, rows);
+            pSecurityId = grow(pSecurityId, rows);
+            pQty = grow(pQty, rows);
+            pAvgCostTicks = grow(pAvgCostTicks, rows);
+            pUpdatedAt = grow(pUpdatedAt, rows);
+            int cap = Integer.highestOneBit(Math.max(16, rows) - 1) << 2;
+            positionKeys = new long[cap];
+            positionSlots = new int[cap];
+            positionMask = cap - 1;
+            java.util.Arrays.fill(positionSlots, EMPTY);
+            for (int i = 0; i < positionCount; i++) {
+                indexPosition(positionKey(pAccountId[i], pSecurityId[i]), i);
+            }
+        }
+
+        private static int[] grow(int[] a, int n) {
+            return a == null ? new int[n] : java.util.Arrays.copyOf(a, n);
+        }
+
+        private static long[] grow(long[] a, int n) {
+            return a == null ? new long[n] : java.util.Arrays.copyOf(a, n);
+        }
+
+        private static byte[] grow(byte[] a, int n) {
+            return a == null ? new byte[n] : java.util.Arrays.copyOf(a, n);
+        }
     }
 }
