@@ -1,7 +1,8 @@
 # Issue: spec-layer forward-propagation gaps (recurring pattern) + open instances
 
 **Status: pattern documented 2026-07-14; YU04/YU05 instance FIXED same day; YU02 database-manifests
-instance FIXED same day (committed on all 8 branches). No open instances.**
+instance FIXED same day (committed on all 8 branches); `pipeline/*.sh` instance FIXED 2026-08-03
+(committed on all 15 non-YU15 branches). No open instances.**
 
 ## The pattern
 
@@ -27,6 +28,27 @@ Known instances of this class (chronological):
    (`ECONNREFUSED 127.0.0.1:3306` — mysql2 defaulting to localhost). Live cluster was hot-patched
    (`CREATE TABLE IF NOT EXISTS` + `kubectl set env` + restarts) instead of recreated; both YU04
    proofs (live-delta no-restart, offline catch-up) then green.
+4. **`pipeline/*.sh` prepublish gate — macOS bash 3.2 crash + missing NVD preflight** (fixed
+   2026-08-03, commits on all 15 non-YU15 branches). **This instance widens the pattern beyond
+   `specs/`:** `pipeline/*.sh` is shared root tooling with no overlay semantics at all, but every
+   branch still carries its own copy, so a fix landed on YU15 reached nothing — the same gap, a
+   different mechanism. Two defects, both present on every branch and both predating `b434b08e`:
+   (a) under `set -u`, bash 3.2.57 — what macOS ships — treats `"${arr[@]}"` as an unbound variable
+   when `arr` is empty (bash 4.4+ made it legal). `update_args` in `run_dependency_check_local` is
+   empty unless `TRADERX_DEPENDENCY_CHECK_NO_UPDATE=1`, so `publish-generated-state-branch.sh` died
+   in the Node CVE scan on every Mac run — *after* the container build preflight had already spent
+   several minutes. `smoke-dependency-version-targets.sh` had the same shape in `args`, which a bare
+   `--branch-consistency` run hits. Fixed with `${arr[@]+"${arr[@]}"}` at all three sites.
+   (b) the CVE scan is the last gate, so a missing `NVD_API_KEY` surfaced as an OWASP
+   dependency-check stack trace (`Invalid API Key, length of 0`) roughly fifteen minutes in; now
+   checked alongside the up-front validations.
+   **Propagated by re-applying the edit, NOT by copying the file** — YU15's copy carries `b434b08e`
+   (accept YU state ids), which ancestors must not have. **`main` needed a different guard:** its
+   gate predates `--noupdate` support, so it has no `update_args` (the array fix is N/A there) and
+   no `DEPENDENCY_CHECK_NO_UPDATE` variable — referencing that var in the guard would itself have
+   been an unbound variable under `set -u`, reintroducing the exact bug on the one branch CI
+   watches. Generalisable lesson: when the propagated fix *adds* a reference to a variable, check
+   that the variable exists on every target branch, not just that the patch applies.
 
 ## Open instances
 
@@ -62,6 +84,10 @@ version re-breaks the diverging branch.
   Full narrative: `docs/handoff/production-readiness/REBASE-EXPERIENCE.md` (Surprise #6).
 
 ## Convention going forward
+
+The rule is not limited to `specs/` — it covers **any per-branch copy of a shared file**, including
+root tooling like `pipeline/*.sh` (see instance 4). There the fix is re-applied as an edit rather
+than copied, because the branches' copies legitimately differ.
 
 When a fix lands in an **ancestor state's** spec layer (`specs/YUxx-*/generation/...`) on its home
 branch, immediately copy it to that path on **every descendant branch** and commit — the
