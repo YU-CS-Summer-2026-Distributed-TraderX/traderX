@@ -49,11 +49,27 @@ public class OrderMatcherClient {
         .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)))
         .build();
     HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-    if (response.statusCode() != 201) {
+    // Any 2xx is an acceptance. This used to demand exactly 201, which is what the single-BLP
+    // Spring matcher answers -- the cluster gateway answers 200. Against the cluster tier every
+    // child was therefore BOOKED and then thrown away as a failure, and because AlgoScheduler
+    // retries a bucket it could not confirm, the same slice was resubmitted every tick: the engine
+    // reported "no child submitted" while the venue filled a growing pile of them. A rejection is
+    // a non-2xx (the gateway answers 422 with a risk reason), so it still throws here.
+    if (response.statusCode() / 100 != 2) {
       throw new IllegalStateException("child order submit " + clientOrderId + " -> HTTP "
           + response.statusCode() + ": " + response.body());
     }
     JsonNode responseBody = mapper.readTree(response.body());
-    return responseBody.get("orderId").asText();
+    // ...and the id field differs with it: "orderId" from the Spring matcher, "orderRef" from the
+    // cluster gateway. Reading only the first returned a null node whose asText() then failed, so
+    // fixing the status check alone would have moved the failure rather than removed it.
+    JsonNode id = responseBody.hasNonNull("orderId")
+        ? responseBody.get("orderId") : responseBody.get("orderRef");
+    if (id == null) {
+      throw new IllegalStateException("child order submit " + clientOrderId
+          + " -> accepted (HTTP " + response.statusCode() + ") but no order id in: "
+          + response.body());
+    }
+    return id.asText();
   }
 }
