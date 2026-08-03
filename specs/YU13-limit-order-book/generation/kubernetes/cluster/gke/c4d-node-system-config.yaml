@@ -1,0 +1,5 @@
+# Passed to `gcloud container node-pools create --system-config-from-file` for the dedicated
+# member pool. Guaranteed member pods request/limit an integer 3 CPU, so static CPU Manager
+# assigns three exclusive physical CPUs on c4d-standard-8 nodes created with threadsPerCore=1.
+kubeletConfig:
+  cpuManagerPolicy: static
