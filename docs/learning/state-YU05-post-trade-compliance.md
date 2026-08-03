@@ -41,7 +41,7 @@ title: "State YU05-post-trade-compliance: Post-Trade Compliance Bundle"
 ## Run This State
 
 ```bash
-inherits YU04-durable-control-feeds runtime harness
+./scripts/start-state-YU05-post-trade-compliance-generated.sh
 ```
 
 ## Canonical Spec Links

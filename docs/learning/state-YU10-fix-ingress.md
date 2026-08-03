@@ -39,7 +39,7 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 ## Run This State
 
 ```bash
-inherits YU09-ops-hardening runtime harness
+./scripts/start-state-YU10-fix-ingress-generated.sh
 ```
 
 ## Canonical Spec Links

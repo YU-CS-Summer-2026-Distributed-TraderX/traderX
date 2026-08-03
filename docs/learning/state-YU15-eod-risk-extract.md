@@ -41,7 +41,7 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 ## Run This State
 
 ```bash
-inherits YU14-listed-equity-options runtime harness
+./scripts/start-state-YU15-eod-risk-extract-generated.sh
 ```
 
 ## Canonical Spec Links

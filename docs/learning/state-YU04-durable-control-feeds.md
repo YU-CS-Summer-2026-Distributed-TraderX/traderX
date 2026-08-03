@@ -41,7 +41,7 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 ## Run This State
 
 ```bash
-inherits YU03-in-memory-risk-gateway runtime harness
+./scripts/start-state-YU04-durable-control-feeds-generated.sh
 ```
 
 ## Canonical Spec Links

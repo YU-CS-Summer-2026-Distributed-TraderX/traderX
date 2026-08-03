@@ -41,7 +41,7 @@ title: "State YU14-listed-equity-options: Listed Equity Options"
 ## Run This State
 
 ```bash
-inherits YU13-limit-order-book runtime harness
+./scripts/start-state-YU14-listed-equity-options-generated.sh
 ```
 
 ## Canonical Spec Links

@@ -41,7 +41,7 @@ title: "State YU09-ops-hardening: Ops Hardening"
 ## Run This State
 
 ```bash
-inherits YU08-execution-algo-engine runtime harness
+./scripts/start-state-YU09-ops-hardening-generated.sh
 ```
 
 ## Canonical Spec Links

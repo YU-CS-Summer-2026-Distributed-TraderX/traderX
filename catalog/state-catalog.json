@@ -410,7 +410,7 @@
         "014-fdc3-intent-interoperability"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU02-lmax-kubernetes",
         "runtime": "./scripts/start-state-YU02-lmax-kubernetes-generated.sh"
       },
@@ -433,7 +433,7 @@
         "YU02-lmax-kubernetes"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU03-in-memory-risk-gateway",
         "runtime": "./scripts/start-state-YU03-in-memory-risk-gateway-generated.sh"
       },
@@ -456,7 +456,7 @@
         "YU03-in-memory-risk-gateway"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU04-durable-control-feeds",
         "runtime": "./scripts/start-state-YU04-durable-control-feeds-generated.sh"
       },
@@ -479,7 +479,7 @@
         "YU04-durable-control-feeds"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU05-post-trade-compliance",
         "runtime": "./scripts/start-state-YU05-post-trade-compliance-generated.sh"
       },
@@ -502,7 +502,7 @@
         "YU05-post-trade-compliance"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU06-eod-price-production",
         "runtime": "./scripts/start-state-YU06-eod-price-production-generated.sh"
       },
@@ -525,7 +525,7 @@
         "YU06-eod-price-production"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU07-historical-tick-store",
         "runtime": "./scripts/start-state-YU07-historical-tick-store-generated.sh"
       },
@@ -548,7 +548,7 @@
         "YU07-historical-tick-store"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU08-execution-algo-engine",
         "runtime": "./scripts/start-state-YU08-execution-algo-engine-generated.sh"
       },
@@ -571,7 +571,7 @@
         "YU08-execution-algo-engine"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU09-ops-hardening",
         "runtime": "./scripts/start-state-YU09-ops-hardening-generated.sh"
       },
@@ -594,7 +594,7 @@
         "YU09-ops-hardening"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU10-fix-ingress",
         "runtime": "./scripts/start-state-YU10-fix-ingress-generated.sh"
       },
@@ -617,7 +617,7 @@
         "YU10-fix-ingress"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU11-aeron-replication",
         "runtime": "./scripts/start-state-YU11-aeron-replication-generated.sh"
       },
@@ -640,7 +640,7 @@
         "YU11-aeron-replication"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU12-aeron-cluster",
         "runtime": "./scripts/start-state-YU12-aeron-cluster-generated.sh"
       },
@@ -663,7 +663,7 @@
         "YU12-aeron-cluster"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU13-limit-order-book",
         "runtime": "./scripts/start-state-YU13-limit-order-book-generated.sh"
       },
@@ -686,7 +686,7 @@
         "YU13-limit-order-book"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU14-listed-equity-options",
         "runtime": "./scripts/start-state-YU14-listed-equity-options-generated.sh"
       },
@@ -709,7 +709,7 @@
         "YU14-listed-equity-options"
       ],
       "generation": {
-        "mode": "implemented",
+        "mode": "specified",
         "entrypoint": "bash pipeline/generate-state.sh YU15-eod-risk-extract",
         "runtime": "./scripts/start-state-YU15-eod-risk-extract-generated.sh"
       },

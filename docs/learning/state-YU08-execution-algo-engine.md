@@ -41,7 +41,7 @@ title: "State YU08-execution-algo-engine: Execution Algo Engine"
 ## Run This State
 
 ```bash
-inherits YU07-historical-tick-store runtime harness
+./scripts/start-state-YU08-execution-algo-engine-generated.sh
 ```
 
 ## Canonical Spec Links

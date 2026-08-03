@@ -41,7 +41,7 @@ title: "State YU06-eod-price-production: EOD Price Production + Overnight Batch 
 ## Run This State
 
 ```bash
-inherits YU05-post-trade-compliance runtime harness
+./scripts/start-state-YU06-eod-price-production-generated.sh
 ```
 
 ## Canonical Spec Links

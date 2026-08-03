@@ -41,7 +41,7 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 ## Run This State
 
 ```bash
-inherits YU12-aeron-cluster runtime harness
+./scripts/start-state-YU13-limit-order-book-generated.sh
 ```
 
 ## Canonical Spec Links

@@ -41,7 +41,7 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 ## Run This State
 
 ```bash
-inherits YU02-lmax-kubernetes runtime harness
+./scripts/start-state-YU03-in-memory-risk-gateway-generated.sh
 ```
 
 ## Canonical Spec Links

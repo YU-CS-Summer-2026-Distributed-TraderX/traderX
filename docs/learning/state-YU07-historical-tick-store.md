@@ -41,7 +41,7 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 ## Run This State
 
 ```bash
-inherits YU06-eod-price-production runtime harness
+./scripts/start-state-YU07-historical-tick-store-generated.sh
 ```
 
 ## Canonical Spec Links

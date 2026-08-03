@@ -41,7 +41,7 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 ## Run This State
 
 ```bash
-inherits YU10-fix-ingress runtime harness
+./scripts/start-state-YU11-aeron-replication-generated.sh
 ```
 
 ## Canonical Spec Links

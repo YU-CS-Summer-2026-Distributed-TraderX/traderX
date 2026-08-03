@@ -41,7 +41,7 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 ## Run This State
 
 ```bash
-inherits YU11-aeron-replication runtime harness
+./scripts/start-state-YU12-aeron-cluster-generated.sh
 ```
 
 ## Canonical Spec Links
