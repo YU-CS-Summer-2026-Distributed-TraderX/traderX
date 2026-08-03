@@ -20,12 +20,12 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 
 ## Rendered Code
 
-- Generated branch: [YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU07-historical-tick-store)
+- Generated branch: [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU06-eod-price-production`: [YU06-eod-price-production...YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU06-eod-price-production...YU07-historical-tick-store)
+- Compare against `YU06-eod-price-production`: [code/generated-state-YU06-eod-price-production...code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU06-eod-price-production...code%2Fgenerated-state-YU07-historical-tick-store)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU07-historical-tick-store: Historical Tick Store"
 ## Run This State
 
 ```bash
-inherits YU06-eod-price-production runtime harness
+./scripts/start-state-YU07-historical-tick-store-generated.sh
 ```
 
 ## Canonical Spec Links

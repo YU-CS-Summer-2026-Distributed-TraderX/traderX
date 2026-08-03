@@ -20,12 +20,12 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 
 ## Rendered Code
 
-- Generated branch: [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Generated branch: [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU14-listed-equity-options`: [YU14-listed-equity-options...YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU14-listed-equity-options...YU15-eod-risk-extract)
+- Compare against `YU14-listed-equity-options`: [code/generated-state-YU14-listed-equity-options...code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU14-listed-equity-options...code%2Fgenerated-state-YU15-eod-risk-extract)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 ## Run This State
 
 ```bash
-inherits YU14-listed-equity-options runtime harness
+./scripts/start-state-YU15-eod-risk-extract-generated.sh
 ```
 
 ## Canonical Spec Links
