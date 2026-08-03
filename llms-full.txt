@@ -1550,6 +1550,199 @@ This blog captures the broader TraderX story over time: how the project started,
 
 ---
 
+## Observability and replay
+
+
+Two capabilities extend states that already exist rather than standing as states of their own. Both
+were built to the same constraint: **they may not change what the trading path costs.**
+
+This page is the long version. The short one is on
+[What's new](whats-new.md#other-additions).
+
+## OpenTelemetry — a trace that survives consensus
+
+### The problem
+
+A useful trace has to span gateway → sequence → consensus commit → apply → egress. But the gateway
+and the members are **different processes joined only by the replicated log**, so the trace has to
+cross a consensus boundary.
+
+The obvious fix — put a `traceparent` in the sequenced message — is the one thing we may not do.
+Bytes in the log are replicated state, so adding them is a schema change, a member roll, and a
+permanent determinism risk taken on behalf of a debugging feature. It is also a correctness hazard:
+a resend carrying a *new* trace id would no longer be byte-identical to the original, so replay
+would stop reproducing.
+
+### Derive, don't carry
+
+Every order already carries a **client idempotency key** through the log — set by the gateway from
+the client's ClOrdID and read by the engine for duplicate suppression. It is business data that is
+already replicated, already unique per order, and already identical on every member and on replay.
+
+Both sides run the *same pure function* over it:
+
+```
+traceId       = splitmix64(key), splitmix64(key ^ TRACE_SALT)   (128-bit)
+sampled?      = (splitmix64(key ^ SAMPLE_SALT) & mask) == 0
+clusterSpanId = splitmix64(key ^ CLUSTER_SALT)
+```
+
+So a member independently arrives at the same trace id, the same parent span id and the same
+sampling verdict the gateway did — with **zero bytes added to the log, zero schema change, and
+nothing new for the state machine to read.**
+
+Two consequences fall out of that choice:
+
+- **A rejected order is traced whatever the sampling verdict said.** "Was it rejected" is likewise a
+  committed, deterministic fact that both sides read off the same ack, so both escalate together and
+  the trace stays whole. Error sampling is only possible here *because* the decision is derivable —
+  a collector's tail sampling cannot recover a span that head sampling never emitted.
+- **A log line can join a trace by computing its id** rather than by being handed one. The id lives
+  in the line itself, not in a label.
+
+### Why this is not telemetry in replicated state
+
+The derivation is one-way and read-only. It consumes a committed field and produces an id that is
+never written back, never encoded into an output event, and never branched on by the engine. Delete
+the class and every member still emits byte-identical output.
+
+### Not slowing the trade path
+
+A producer — a REST or FIX submit thread, the gateway's owner thread, a member's apply thread — does
+exactly one thing: copies eight longs into a pre-allocated ring buffer and returns. No lock, no
+allocation, no I/O, and deliberately **no backpressure path back to the caller**. If the ring is
+full, the write fails, a counter increments, and the order carries on untouched.
+
+Dropping telemetry under load is correct behaviour. Stalling an owner thread behind a slow collector
+would be the worst outcome available, so the design makes it unreachable rather than unlikely.
+
+Everything expensive — hex formatting, JSON assembly, HTTP, retries, the collector being down —
+happens on one daemon thread that no order ever touches. A collector outage costs a counter, not a
+millisecond.
+
+### Why not the OpenTelemetry SDK
+
+Its batching processor has the right shape — bounded queue, drop on full — but the API above it
+allocates per span. This path runs under an allocation gate, and under Epsilon GC (no collector at
+all) in the no-GC proofs, where a single allocated byte fails the build.
+
+The sink emits OTLP/HTTP with a JSON body instead: a documented, stable wire format, posted to the
+same `/v1/traces` endpoint any SDK would use. About a hundred lines, and no new dependencies.
+
+### Running it
+
+Tracing is off unless `OTEL_TRACES=1`; otherwise every call site holds a null reference.
+
+```bash
+bash scripts/yu15/start-observability-kind.sh   # OTel Collector, Tempo, Prometheus, Grafana, Loki
+bash scripts/yu15/demo-otel-traffic.sh          # drive traffic and watch traces arrive
+```
+
+The observability stack has shipped in the manifests since state 007, but the cluster bring-up
+deploys only the trading tier — so on kind the two halves land in different clusters and the
+collector endpoint resolves to nothing. The trace pipeline is then *silently* dead: orders book
+fine, spans go nowhere, and the only symptom is an empty Tempo. That script exists to prevent
+exactly that.
+
+## KDB-X tick store (kdb+/q)
+
+### Why kdb
+
+kdb+/q is the time-series database this corner of finance actually runs on. Tick capture,
+journaling and session playback sit on it across front offices in the industry, and analysts query
+it in q rather than in SQL. Putting the platform's history there — and querying it the way the
+desk would — is what makes the data side of this system read as the real thing rather than a
+trading demo with a database bolted on.
+
+So the platform's history lives in KDB-X, and the same verbs work over all of it: `.ts.vwap` and
+`.ts.spread` for prices, `.ts.session` to pull a window out, `.tx.fills` and `.tx.orders` for our
+own executions, and `.ts.replay` / `.tx.replay` to step a captured session back through at real
+time or as fast as the machine will go.
+
+### Reading the corpus in place
+
+KDB-X reads the existing ZSTD Parquet corpus **natively — there is no conversion step and no second
+copy.** A q layer maps each object as a virtual table, prunes row groups against the `WHERE` clause,
+and stitches the per-file tables into one date/symbol-partitioned table whose partition columns come
+from the path the ingest already wrote.
+
+That reader also settled the practical worry about the Community edition's 16 GiB ceiling: an
+aggregate over all 47.8M quote rows peaked at **768 MiB**, because it works a row group at a time
+rather than materialising the table.
+
+### What is stored
+
+| Tables | Source | Loader | What it is |
+|---|---|---|---|
+| `quote` / `trade` | NYSE TAQ tape | `tickstore.q` | what the **market** did |
+| `txOrder` / `txTrade` | TraderX cluster | `txstore.q` | what **our engine** did |
+
+The two keep separate names because a tape print and an engine execution are different objects with
+different provenance — a single `trade` table holding both is how a VWAP ends up quietly answering
+a question nobody asked.
+
+### The live capture tap
+
+Our own flow is captured off the running cluster by a **leader-side tap that sits off the consensus
+path**, so recording never becomes something consensus waits for. The capture is a read-side
+projection of committed output, exactly like the SQL bridge — not an input the state machine reads.
+A stalled disk fills its queue and drops, loudly and counted; it cannot stall an apply thread.
+
+### Journal and playback, in two senses
+
+Both words do double duty in this system, and the distinction is worth stating plainly.
+
+| | Authoritative | Analytical |
+|---|---|---|
+| Store | Aeron Archive (+ snapshots) | **KDB-X** |
+| Purpose | consensus, recovery, determinism | query, analytics, session playback |
+| Playback means | replay the log to rebuild exact state | replay a captured session to study it |
+| On the hot path? | yes, synchronous, before commit | no — off-consensus, best-effort |
+
+Nothing in the tick store is authoritative or required for recovery. What it holds is a kdb
+tickerplant log, not a consensus journal: delete the whole thing and the cluster still recovers
+byte-identically; delete the Aeron Archive and it does not.
+
+### The gates
+
+Both stores are checked by q gates that are **cross-implementation**: every expected value was
+computed independently in a second engine over the same files, so the store is verified against
+something other than itself.
+
+| Gate | Checks | Covers |
+|---|---:|---|
+| `selfcheck.q` | 17 | per-partition row counts, deduplication, the quote/trade split, first trades to the tick, regular-hours VWAP across every symbol-day, replay ordering and pacing |
+| `txselfcheck.q` | 18 | schema, the leader-only guard, and capture count equal to the cluster's own trade count |
+
+### Running it
+
+```bash
+TICKSTORE_ROOT=/path/to/ticks  q kdb/tickstore.q     # the market tape
+TICKSTORE_ROOT=/path/to/sample q kdb/selfcheck.q     # 17 gates over it
+```
+
+`txstore.q` and `txselfcheck.q` take the same shape over a captured session.
+
+## Where each lives
+
+Neither is a state of its own, so each sits in the layer of the state it extends:
+
+- **Tracing** — the [YU13](/specs/YU13-limit-order-book) layer, alongside the order-matcher and
+  gateway it instruments.
+- **Tick store** — the [YU07](/specs/YU07-historical-tick-store) layer, the historical tick store
+  state.
+
+## How this is verified
+
+The 35 q gates run as their own tier. The tick store's Python side runs 24 tests in CI against the
+module's pinned requirements, and the trace pipeline has two end-to-end proofs that assert a trace
+actually crosses consensus and that a rejected order's log line joins its trace.
+
+- **[Testing strategy](testing-strategy.md)** — which tier proves what, and what stays manual.
+- **[Test coverage](test-coverage.md)** — what runs automatically, and how every number was counted.
+
+---
+
 ## Test coverage
 
 
@@ -1577,8 +1770,8 @@ Where the two disagree, the executed number is the real one, and it is the one u
 | Suite | Tests |
 |---|---:|
 | Composed engine (`order-matcher`) | 335 |
-| Composed service modules | 118 |
-| **Total** | **453** |
+| Composed service modules | 164 |
+| **Total** | **499** |
 
 Zero failures.
 
@@ -1593,11 +1786,12 @@ nobody makes.
 | Coverage | Count | Made up of |
 |---|---:|---|
 | Baseline inherited services | 48 | Java 25 · NestJS 7 · .NET 16 |
-| Cross-service integration | 3 | real MariaDB, and a real broker where one is needed |
+| Cross-service integration | 5 suites | real MariaDB, and a real JetStream broker |
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
-| Java test classes in the unit tier | 100 | the composed tree |
+| Composed Node and Python suites | 44 | reference-data 9 · price-publisher 11 · tick-store 24 |
+| Java test classes in the unit tier | 106 | the composed tree |
 
 ## Java — the composed tree
 
@@ -1610,15 +1804,15 @@ composed and the shadowed copies are resolved.
 | trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ |
 | execution-algo-engine | 8 | 29 | ✅ |
 | position-service | 2 | 11 | ✅ |
-| account-service | 4 | 7 | ✅ |
-| aeron-replication-sidecar | 1 | 2 | ✅ |
-| trade-service | 0 | 0 | no runnable unit test |
-| **Total** | **100** | **453** | |
+| account-service (account and user CRUD, people validation, outbox) | 8 | 32 | ✅ |
+| aeron-replication-sidecar (peer resolution, readiness and schema endpoints) | 2 | 15 | ✅ |
+| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 8 | ✅ |
+| **Total** | **106** | **499** | |
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
 counted separately under [Cross-service integration](#cross-service-integration).
 
-`order-matcher` is 74% of the test classes and holds the correctness properties the system is built
+`order-matcher` is 70% of the test classes and holds the correctness properties the system is built
 on: self-trade prevention, atomic replace, client-order-ID idempotency, byte-identical consensus
 allocation, deterministic replay, and reproducible regulatory and risk exports.
 
@@ -1648,7 +1842,7 @@ path and the build skipped them silently while still reporting success.
 
 ## Cross-service integration
 
-Three tests run against real infrastructure in containers rather than in-memory substitutes. They
+Five suites run against real infrastructure in containers rather than in-memory substitutes. They
 cover properties that live in the infrastructure rather than in application code, which is exactly
 the set a mock cannot reach: a mock returns what the caller expects, so a test built on one shows
 that the code asked for the right thing, never that the database agreed.
@@ -1658,6 +1852,8 @@ that the code asked for the right thing, never that the database agreed.
 | `TradeProcessorPersistenceIT` | MariaDB, deployed schema | an order for a non-existent account is rejected by the foreign key and **fails loudly** rather than being silently dropped |
 | `AccountOutboxAtomicityIT` | MariaDB, deployed schema and deployed server flags | the account write and its outbox row **commit as one unit or not at all** — asserted from a connection outside the application's transaction |
 | `TradeProcessorContextIT` | MariaDB + message broker | the composed context starts with wiring that dials the broker during bean creation |
+| `EodStreamRepairIT` (7 cases) | real JetStream | an existing `TRADERX_EOD` missing a required subject is **repaired, not accepted** — an unrepaired stream rejects the completion publish and the overnight chain breaks silently |
+| `EodSnapshotAndPnlIT` (11 cases) | MariaDB, **schema read live from the deployed ConfigMap** | the snapshot read returns exactly the `(date, version)` asked for, and the P&L upsert is idempotent under redelivery — idempotency lives in the table's PRIMARY KEY, not in the Java |
 
 `AccountOutboxAtomicityIT` is the counterpart to a unit test that mocks the outbox repository. With
 the repository mocked, the assertion is that it was *called* — which holds whether or not the two
@@ -1665,9 +1861,13 @@ writes share a transaction, so the one property the outbox exists to provide is 
 cannot see.
 
 Every case here was falsified before it was trusted: the code was deliberately broken to confirm
-the test fails, and fails for the stated reason.
+the test fails, and fails for the stated reason. For `EodSnapshotAndPnlIT` that meant deleting the
+PRIMARY KEY from the deployed DDL — exactly the two idempotency cases fail, the other nine pass.
+The schema is a declared Gradle input for that reason: without it a DDL-only edit leaves the task
+up to date and the previous run's green results stand, which is how the first falsification
+attempt appeared to prove the opposite.
 
-All three are isolated by tag into their own task, so the fast unit job needs no container runtime.
+All five are isolated by tag into their own task, so the fast unit job needs no container runtime.
 
 ## Gates
 
@@ -1728,24 +1928,26 @@ cluster, so they are operator-run.
 
 | Component | Tests | Status |
 |---|---|---|
-| `reference-data` (composed) | 3 | not in CI; the template copy is |
-| `web-front-end` (Angular) | 10 | inherited scaffolding |
-| `price-publisher` | 1 | not in CI |
+| `reference-data` (composed) | 9 | ✅ in CI, alongside the template copy |
+| `web-front-end` (Angular) | 49 in 10 specs | **disabled at source** — every suite is `xdescribe`, so wiring the job would run zero tests |
+| `price-publisher` | 11 | ✅ in CI |
 | `database`, `ingress`, `api-explorer` | 0 | no tests |
 
 ## What CI runs
 
-The workflow has 8 job definitions and 10 legs on a push.
+The workflow has 10 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine | composed order-matcher suite (335) + 4 allocation gates, then the five other service modules (118) — **453** | push and pull request |
+| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (164) — **499** | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
+| composed extras | composed reference-data (jest), price-publisher (`node:test`), tick-store (pytest) — 44 tests | push and pull request |
 | integration (persistence) | real MariaDB in a container | push and pull request |
 | integration (outbox atomicity) | real MariaDB, deployed schema and server flags | push and pull request |
 | integration (context) | real MariaDB and message broker | push and pull request |
+| integration (EOD stream repair + snapshot/P&L) | real JetStream broker and real MariaDB — 18 cases | push and pull request |
 | cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
 
 The engine job also runs against YU15's two ancestor branches, which is why 8 job definitions
@@ -1753,7 +1955,7 @@ produce 10 legs. That is not three products being tested; it is one propagation 
 branch renders its own effective tree, so the same test name runs against differently composed
 code, and a fix that is live on one layer while shadowed on another appears as a single red leg
 beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests
-only because they carry fewer spec layers; **453 is the number that describes what is deployed**.
+only because they carry fewer spec layers; **499 is the number that describes what is deployed**.
 
 ## Verification tiers
 
@@ -1761,8 +1963,8 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 453, plus 48 baseline | CI, every push |
-| Cross-service integration | 3 tests against real MariaDB and a real broker | CI, every push |
+| In-process tests | 499, plus 48 baseline | CI, every push |
+| Cross-service integration | 5 suites against real MariaDB and a real JetStream broker | CI, every push |
 | End-to-end proofs | 26 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
 | Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
@@ -1784,7 +1986,7 @@ hardware. Nothing was weakened to make it fit a pipeline.
 
 ## Tier 1 — in-process tests, in CI on every push
 
-The engine, cluster, gateway, risk and post-trade logic are covered by **453 machine-verified
+The engine, cluster, gateway, risk and post-trade logic are covered by **499 machine-verified
 tests**, plus **48 baseline-service tests**. They need no cluster, no network and no
 database server, using an in-memory database where a datasource is required.
 
@@ -1796,8 +1998,10 @@ This is the tier that makes a green build mean something, because it gates merge
 
 ## Tier 1.5 — cross-service integration, in CI with containers
 
-Three tests run against real infrastructure rather than in-memory substitutes, isolated by tag into
-their own task so the fast unit job needs no container runtime.
+Five suites run against real infrastructure rather than in-memory substitutes, isolated by tag into
+their own task so the fast unit job needs no container runtime. Two of them cover the end-of-day
+chain: the JetStream stream contract, and the snapshot read and P&L write against a MariaDB running
+the schema read live from the deployed ConfigMap rather than a copied fixture that could drift.
 
 This tier exists for properties that are enforced by infrastructure rather than by application
 code. A mock can be made to return whatever the code under test expects, so a test built on one can
@@ -1962,12 +2166,181 @@ projector and order-book tests.
 
 Every figure here is counted on **YU15**, the tip state — the only branch carrying every ancestor's
 spec pack, and the tree the deployed system is built from. On the CI path that is engine 335 plus
-service modules 118, for **453 with zero failures**.
+service modules 164, for **499 with zero failures**.
 
 The engine job additionally runs against YU15's two ancestor branches. That is a propagation check
 rather than three products under test: each renders its own effective tree, so a fix that is live on
 one spec layer while shadowed on another surfaces as a single red leg — and surfaces nowhere at all
 without it. The ancestors report fewer tests only because they compose fewer layers.
+
+---
+
+## What's new
+
+
+FINOS TraderX is a reference trading platform: correct, readable and deliberately simple. This
+build asks what it would take to make it behave like a **sell-side order management system** — and
+answers in fifteen runnable states, each one a working system rather than a branch of half-finished
+work.
+
+The matching engine moved in-memory and single-threaded, then onto Raft consensus across three
+members. Risk moved in front of the book. Settlement, reconciliation, regulatory export, FIX
+ingress, listed options and an end-of-day risk extract were added on top. Every state below still
+generates, deploys and runs — and each links to the spec pack that defines it.
+
+Two further capabilities — OpenTelemetry tracing and a KDB-X tick store — extend existing states
+rather than adding new ones. See [Other additions](#other-additions).
+
+## The fifteen states
+
+### YU01 — LMAX Sequencer Architecture
+
+Replaces the request/response matcher with the LMAX pattern: a single-threaded, in-memory sequencer
+fed by a Disruptor ring buffer and journaled to disk. Order handling becomes deterministic and
+replayable, and the database stops being the source of truth.
+
+[Spec pack →](/specs/YU01-lmax-sequencer)
+
+### YU02 — LMAX on Kubernetes
+
+Runs that engine as the deployed order-matcher, recovering from journal plus periodic snapshots and
+held un-ready until replay finishes. Adds the approval-gated build and deploy path: a push builds an
+image, but nothing reaches the cluster without a human saying so.
+
+[Spec pack →](/specs/YU02-lmax-kubernetes)
+
+### YU03 — In-Memory Risk Gateway
+
+Pre-trade risk on the hot path (SEC 15c3-5): credit, order size, notional and price-collar checks
+decided in memory, with no database round trip per order. A rejected order never reaches the book.
+
+[Spec pack →](/specs/YU03-in-memory-risk-gateway)
+
+### YU04 — Durable Control Feeds
+
+Makes risk control changes durable. A limit, restriction or new security is written to a
+transactional outbox in the same commit as the row it describes, then published in strict version
+order — so a change survives the consumer being offline instead of being lost.
+
+[Spec pack →](/specs/YU04-durable-control-feeds)
+
+### YU05 — Post-Trade Compliance
+
+The post-trade bundle: a real settlement lifecycle, reconciliation of the journal against the SQL
+projection, a reproducible regulatory export, transaction-cost analysis, and real JWT auth where
+account scope is checked against the trade's own account rather than assumed.
+
+[Spec pack →](/specs/YU05-post-trade-compliance)
+
+### YU06 — EOD Price Production
+
+End-of-day closing prices as a versioned, immutable snapshot, with a quality gate that blocks
+publication on stale, spiking or missing marks until a human overrides it — and a durable overnight
+chain that computes end-of-day P&L from the published cut.
+
+[Spec pack →](/specs/YU06-eod-price-production)
+
+### YU07 — Historical Tick Store
+
+A columnar store of real historical market data, verified by cross-implementation gates whose
+expected values were computed independently in a second engine — so the store is checked against
+something other than itself.
+
+[Spec pack →](/specs/YU07-historical-tick-store)
+
+### YU08 — Execution Algo Engine
+
+Large orders become TWAP parents sliced into child orders on a schedule, submitted through the same
+risk-gated ingress as any other order rather than around it.
+
+[Spec pack →](/specs/YU08-execution-algo-engine)
+
+### YU09 — Ops Hardening
+
+The unglamorous pass: credentials from Kubernetes secrets rather than literals, probe and durability
+fixes, memory limits that stop a warm-up OOM, and continuous delivery for the remaining services.
+
+[Spec pack →](/specs/YU09-ops-hardening)
+
+### YU10 — FIX Order-Entry Ingress
+
+A standard FIX 4.4 session for external counterparties — new orders and cancels arriving over the
+protocol the industry actually uses, mapped onto the same sequenced path as REST.
+
+[Spec pack →](/specs/YU10-fix-ingress)
+
+### YU11 — Aeron + SBE Replication
+
+Replaces warm-standby replication with Aeron transport and SBE encoding, lifting replication
+capacity by a large multiple and proving recovery across an epoch boundary.
+
+[Spec pack →](/specs/YU11-aeron-replication)
+
+### YU12 — Aeron Cluster Consensus
+
+High availability becomes Raft consensus across three members, decided by the cluster itself with
+Kubernetes out of the decision path. Leader failover under 200 ms, and no order ID is ever reused
+across one.
+
+[Spec pack →](/specs/YU12-aeron-cluster)
+
+### YU13 — Crossing Limit-Order Book
+
+A genuine crossing book: price-time priority, marketable orders filled at the resting price, market
+orders that cannot rest at an undefined price, self-trade prevention, atomic replace, idempotent
+client order IDs — and the whole resting book carried in the cluster snapshot.
+
+[Spec pack →](/specs/YU13-limit-order-book)
+
+### YU14 — Listed Equity Options
+
+Listed equity options trade as ordinary securities on the unchanged book, with no second matching
+path. The risk math becomes contract-multiplier aware, so a $2.50 option controlling 100 shares
+consumes $250 of credit rather than $2.50.
+
+[Spec pack →](/specs/YU14-listed-equity-options)
+
+### YU15 — EOD Risk Extract
+
+A portfolio extract for an external risk engine, with every account frozen at the same consensus
+instant — a portfolio assembled from accounts sampled at different moments is one the firm never
+held, and its risk number means nothing. Rows are un-netted with the counterparty attached, and the
+bytes are identical every time for a given identifier.
+
+[Spec pack →](/specs/YU15-eod-risk-extract)
+
+## Other additions
+
+Two capabilities extend states that already exist rather than standing as states of their own, which
+is why they do not appear in the list above. Both were built to the same constraint: they may not
+change what the trading path costs.
+
+### OpenTelemetry tracing
+
+An order's trace follows it across the Raft cluster, exported asynchronously so telemetry never sits
+in front of a trade — a producer copies a few longs into a ring buffer and returns, and a full ring
+drops the span rather than slowing the order. Grafana, Prometheus, Loki and Tempo deploy with the
+platform. Built into [YU13](/specs/YU13-limit-order-book) — the long version is in
+[Observability and replay](observability-and-replay.md#opentelemetry--a-trace-that-survives-consensus).
+
+### KDB-X tick store (kdb+/q)
+
+kdb+/q is the time-series database this corner of finance actually runs on, so the platform's
+history is journalled and played back there — VWAP, spreads, a session pulled out by time window
+and replayed at real time or as fast as the machine will go, all in q. It holds the NYSE TAQ tape
+and our own engine's flow, the latter captured by a leader-side tap that sits off the consensus
+path. Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
+[Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
+
+## See how it is verified
+
+Every claim above is checked by something that can fail. The engine, cluster, gateway, risk and
+post-trade logic run as machine-verified tests on every push; container-backed suites check the
+properties that only a real database or broker can disagree about; and end-to-end proof scripts
+drive the deployed system and print an explicit pass or fail per step.
+
+- **[Testing strategy](testing-strategy.md)** — which tier proves what, and what stays manual and why.
+- **[Test coverage](test-coverage.md)** — what is tested, how much runs automatically, and how every number was counted.
 
 ---
 

@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en" dir="ltr" class="docs-wrapper plugin-docs plugin-id-default docs-version-current docs-doc-page docs-doc-id-engineering/observability-and-replay" data-has-hydrated="false">
+<head>
+<meta charset="UTF-8">
+<meta name="generator" content="Docusaurus v3.10.1">
+<title data-rh="true">Observability and replay | Distributed TraderX · Yeshiva University</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/observability-and-replay"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-default-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-default-current"><meta data-rh="true" property="og:title" content="Observability and replay | Distributed TraderX · Yeshiva University"><meta data-rh="true" name="description" content="How an order&#x27;s trace survives Raft consensus without adding a byte to the replicated log, and how the platform&#x27;s history is journalled and played back in kdb+/q, the time-series database this industry runs on."><meta data-rh="true" property="og:description" content="How an order&#x27;s trace survives Raft consensus without adding a byte to the replicated log, and how the platform&#x27;s history is journalled and played back in kdb+/q, the time-series database this industry runs on."><link data-rh="true" rel="icon" href="/traderX/img/yu/yu-cs-shield-transparent.png"><link data-rh="true" rel="canonical" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/observability-and-replay"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/observability-and-replay" hreflang="en"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/observability-and-replay" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Observability and replay","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/docs/engineering/observability-and-replay"}]}</script><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Overpass:400,400i,700">
+<script src="https://buttons.github.io/buttons.js"></script><link rel="stylesheet" href="/traderX/assets/css/styles.67602e12.css">
+<script src="/traderX/assets/js/runtime~main.69418eb1.js" defer="defer"></script>
+<script src="/traderX/assets/js/main.883e1832.js" defer="defer"></script>
+</head>
+<body>
+<svg style="display: none;"><defs>
+<symbol id="theme-svg-external-link" viewBox="0 0 24 24"><path fill="currentColor" d="M21 13v10h-21v-19h12v2h-10v15h17v-8h2zm3-12h-10.988l4.035 4-6.977 7.07 2.828 2.828 6.977-7.07 4.125 4.172v-11z"/></symbol>
+</defs></svg>
+<script>!function(){var t=function(){try{return new URLSearchParams(window.location.search).get("docusaurus-theme")}catch(t){}}()||function(){try{return window.localStorage.getItem("theme")}catch(t){}}();document.documentElement.setAttribute("data-theme",t||"light"),document.documentElement.setAttribute("data-theme-choice",t||"light")}(),function(){try{const a=new URLSearchParams(window.location.search).entries();for(var[t,e]of a)if(t.startsWith("docusaurus-data-")){var n=t.replace("docusaurus-data-","data-");document.documentElement.setAttribute(n,e)}}catch(t){}}(),document.documentElement.setAttribute("data-announcement-bar-initially-dismissed",function(){try{return"true"===localStorage.getItem("docusaurus.announcement.dismiss")}catch(t){}return!1}())</script><div id="__docusaurus"><div role="region" aria-label="Skip to main content"><a class="skipToContent_fXgn" href="#__docusaurus_skipToContent_fallback">Skip to main content</a></div><div class="theme-announcement-bar announcementBar_mb4j" style="background-color:#23437c;color:#ffffff" role="banner"><div class="content_knG7 announcementBarContent_xLdY"><strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. <a href="/traderX/docs/engineering/whats-new"><strong>See what’s new</strong></a>.</div></div><nav aria-label="Main" class="theme-layout-navbar navbar navbar--fixed-top"><div class="navbar__inner"><div class="theme-layout-navbar-left navbar__items"><button aria-label="Toggle navigation bar" aria-expanded="false" class="navbar__toggle clean-btn" type="button"><svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true"><path stroke="currentColor" stroke-linecap="round" stroke-miterlimit="10" stroke-width="2" d="M4 7h22M4 15h22M4 23h22"></path></svg></button><a class="navbar__brand" href="/traderX/"><div class="navbar__logo"><img src="/traderX/img/yu/yu-cs-shield-transparent.png" alt="Yeshiva University Computer Science" class="themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/yu/yu-cs-shield-transparent.png" alt="Yeshiva University Computer Science" class="themedComponent_mlkZ themedComponent--dark_xIcU"></div><b class="navbar__title text--truncate">TraderX</b></a></div><div class="theme-layout-navbar-right navbar__items navbar__items--right"><a class="navbar__item navbar__link" href="/traderX/docs/home">Overview</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a><a class="navbar__item navbar__link" href="/traderX/specs">Specs</a><a class="navbar__item navbar__link" href="/traderX/docs/spec-kit/state-docs">State Docs</a><a class="navbar__item navbar__link" href="/traderX/docs/adr">ADRs</a><a class="navbar__item navbar__link" href="/traderX/docs/learning">Learning</a><div class="navbarSearchContainer_Bca1"><div class="navbar__search"><span aria-label="expand searchbar" role="button" class="search-icon" tabindex="0"></span><input id="search_input_react" type="search" placeholder="Loading..." aria-label="Search" class="navbar__search-input search-bar" disabled=""></div></div><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract" target="_blank" rel="noopener noreferrer" class="navbar__item navbar__link">GitHub<svg width="13.5" height="13.5" aria-label="(opens in new tab)" class="iconExternalLink_nPIU"><use href="#theme-svg-external-link"></use></svg></a><div class="toggle_vylO colorModeToggle_DEke"><button class="clean-btn toggleButton_gllP toggleButtonDisabled_aARS" type="button" disabled="" title="system mode" aria-label="Switch between dark and light mode (currently system mode)"><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP lightToggleIcon_pyhR"><path fill="currentColor" d="M12,9c1.65,0,3,1.35,3,3s-1.35,3-3,3s-3-1.35-3-3S10.35,9,12,9 M12,7c-2.76,0-5,2.24-5,5s2.24,5,5,5s5-2.24,5-5 S14.76,7,12,7L12,7z M2,13l2,0c0.55,0,1-0.45,1-1s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S1.45,13,2,13z M20,13l2,0c0.55,0,1-0.45,1-1 s-0.45-1-1-1l-2,0c-0.55,0-1,0.45-1,1S19.45,13,20,13z M11,2v2c0,0.55,0.45,1,1,1s1-0.45,1-1V2c0-0.55-0.45-1-1-1S11,1.45,11,2z M11,20v2c0,0.55,0.45,1,1,1s1-0.45,1-1v-2c0-0.55-0.45-1-1-1C11.45,19,11,19.45,11,20z M5.99,4.58c-0.39-0.39-1.03-0.39-1.41,0 c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0s0.39-1.03,0-1.41L5.99,4.58z M18.36,16.95 c-0.39-0.39-1.03-0.39-1.41,0c-0.39,0.39-0.39,1.03,0,1.41l1.06,1.06c0.39,0.39,1.03,0.39,1.41,0c0.39-0.39,0.39-1.03,0-1.41 L18.36,16.95z M19.42,5.99c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06c-0.39,0.39-0.39,1.03,0,1.41 s1.03,0.39,1.41,0L19.42,5.99z M7.05,18.36c0.39-0.39,0.39-1.03,0-1.41c-0.39-0.39-1.03-0.39-1.41,0l-1.06,1.06 c-0.39,0.39-0.39,1.03,0,1.41s1.03,0.39,1.41,0L7.05,18.36z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP darkToggleIcon_wfgR"><path fill="currentColor" d="M9.37,5.51C9.19,6.15,9.1,6.82,9.1,7.5c0,4.08,3.32,7.4,7.4,7.4c0.68,0,1.35-0.09,1.99-0.27C17.45,17.19,14.93,19,12,19 c-3.86,0-7-3.14-7-7C5,9.07,6.81,6.55,9.37,5.51z M12,3c-4.97,0-9,4.03-9,9s4.03,9,9,9s9-4.03,9-9c0-0.46-0.04-0.92-0.1-1.36 c-0.98,1.37-2.58,2.26-4.4,2.26c-2.98,0-5.4-2.42-5.4-5.4c0-1.81,0.89-3.42,2.26-4.4C12.92,3.04,12.46,3,12,3L12,3z"></path></svg><svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" class="toggleIcon_g3eP systemToggleIcon_QzmC"><path fill="currentColor" d="m12 21c4.971 0 9-4.029 9-9s-4.029-9-9-9-9 4.029-9 9 4.029 9 9 9zm4.95-13.95c1.313 1.313 2.05 3.093 2.05 4.95s-0.738 3.637-2.05 4.95c-1.313 1.313-3.093 2.05-4.95 2.05v-14c1.857 0 3.637 0.737 4.95 2.05z"></path></svg></button></div></div></div><div role="presentation" class="navbar-sidebar__backdrop"></div></nav><div id="__docusaurus_skipToContent_fallback" class="theme-layout-main main-wrapper mainWrapper_z2l0"><div class="docsWrapper_hBAB"><button aria-label="Scroll back to top" class="clean-btn theme-back-to-top-button backToTopButton_sjWU" type="button"></button><div class="docRoot_UBD9"><aside class="theme-doc-sidebar-container docSidebarContainer_YfHR"><div class="sidebarViewport_aRkj"><div class="sidebar_njMd"><nav aria-label="Docs sidebar" class="menu thin-scrollbar menu_SIkG menuWithAnnouncementBar_GW3s"><ul class="theme-doc-sidebar-menu menu__list"><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/traderX/docs/home"><span title="TraderX Portal" class="linkLabel_WmDU">TraderX Portal</span></a></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link" href="/traderX/docs/engineering/whats-new"><span title="What&#x27;s new" class="linkLabel_WmDU">What&#x27;s new</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/traderX/docs/engineering/testing-strategy"><span title="Testing" class="categoryLinkLabel_W154">Testing</span></a></div></li><li class="theme-doc-sidebar-item-link theme-doc-sidebar-item-link-level-1 menu__list-item"><a class="menu__link menu__link--active" aria-current="page" href="/traderX/docs/engineering/observability-and-replay"><span title="Observability and replay" class="linkLabel_WmDU">Observability and replay</span></a></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/docs/blog"><span title="Engineering Blog" class="categoryLinkLabel_W154">Engineering Blog</span></a><button aria-label="Expand sidebar category &#x27;Engineering Blog&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist" href="/traderX/docs/spec-kit/getting-started-with-traderx"><span title="Start Here" class="categoryLinkLabel_W154">Start Here</span></a><button aria-label="Expand sidebar category &#x27;Start Here&#x27;" aria-expanded="false" type="button" class="clean-btn menu__caret"></button></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/traderX/docs/spec-kit/spec-kit-portal"><span title="SpecKit Sources" class="categoryLinkLabel_W154">SpecKit Sources</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/traderX/docs/learning"><span title="Learning Paths" class="categoryLinkLabel_W154">Learning Paths</span></a></div></li><li class="theme-doc-sidebar-item-category theme-doc-sidebar-item-category-level-1 menu__list-item menu__list-item--collapsed"><div class="menu__list-item-collapsible"><a class="categoryLink_byQd menu__link menu__link--sublist menu__link--sublist-caret" role="button" aria-expanded="false" href="/traderX/docs/adr/001-adopt-github-speckit"><span title="Reference" class="categoryLinkLabel_W154">Reference</span></a></div></li></ul></nav></div></div></aside><main class="docMainContainer_TBSr"><div class="container padding-top--md padding-bottom--lg"><div class="row"><div class="col docItemCol_VOVn"><div class="docItemContainer_Djhp"><article><nav class="theme-doc-breadcrumbs breadcrumbsContainer_Z_bl" aria-label="Breadcrumbs"><ul class="breadcrumbs"><li class="breadcrumbs__item"><a aria-label="Home page" class="breadcrumbs__link" href="/traderX/"><svg viewBox="0 0 24 24" class="breadcrumbHomeIcon_YNFT"><path d="M10 19v-5h4v5c0 .55.45 1 1 1h3c.55 0 1-.45 1-1v-7h1.7c.46 0 .68-.57.33-.87L12.67 3.6c-.38-.34-.96-.34-1.34 0l-8.36 7.53c-.34.3-.13.87.33.87H5v7c0 .55.45 1 1 1h3c.55 0 1-.45 1-1z" fill="currentColor"></path></svg></a></li><li class="breadcrumbs__item breadcrumbs__item--active"><span class="breadcrumbs__link">Observability and replay</span></li></ul></nav><div class="tocCollapsible_ETCw theme-doc-toc-mobile tocMobile_ITEo"><button type="button" class="clean-btn tocCollapsibleButton_TO0P">On this page</button></div><div class="theme-doc-markdown markdown"><header><h1>Observability and replay</h1></header>
+<p>Two capabilities extend states that already exist rather than standing as states of their own. Both
+were built to the same constraint: <strong>they may not change what the trading path costs.</strong></p>
+<p>This page is the long version. The short one is on
+<a class="" href="/traderX/docs/engineering/whats-new#other-additions">What&#x27;s new</a>.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="opentelemetry--a-trace-that-survives-consensus">OpenTelemetry — a trace that survives consensus<a href="#opentelemetry--a-trace-that-survives-consensus" class="hash-link" aria-label="Direct link to OpenTelemetry — a trace that survives consensus" title="Direct link to OpenTelemetry — a trace that survives consensus" translate="no">​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-problem">The problem<a href="#the-problem" class="hash-link" aria-label="Direct link to The problem" title="Direct link to The problem" translate="no">​</a></h3>
+<p>A useful trace has to span gateway → sequence → consensus commit → apply → egress. But the gateway
+and the members are <strong>different processes joined only by the replicated log</strong>, so the trace has to
+cross a consensus boundary.</p>
+<p>The obvious fix — put a <code>traceparent</code> in the sequenced message — is the one thing we may not do.
+Bytes in the log are replicated state, so adding them is a schema change, a member roll, and a
+permanent determinism risk taken on behalf of a debugging feature. It is also a correctness hazard:
+a resend carrying a <em>new</em> trace id would no longer be byte-identical to the original, so replay
+would stop reproducing.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="derive-dont-carry">Derive, don&#x27;t carry<a href="#derive-dont-carry" class="hash-link" aria-label="Direct link to Derive, don&#x27;t carry" title="Direct link to Derive, don&#x27;t carry" translate="no">​</a></h3>
+<p>Every order already carries a <strong>client idempotency key</strong> through the log — set by the gateway from
+the client&#x27;s ClOrdID and read by the engine for duplicate suppression. It is business data that is
+already replicated, already unique per order, and already identical on every member and on replay.</p>
+<p>Both sides run the <em>same pure function</em> over it:</p>
+<div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#bfc7d5;--prism-background-color:#292d3e"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#bfc7d5;background-color:#292d3e"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#bfc7d5"><span class="token plain">traceId       = splitmix64(key), splitmix64(key ^ TRACE_SALT)   (128-bit)</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">sampled?      = (splitmix64(key ^ SAMPLE_SALT) &amp; mask) == 0</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">clusterSpanId = splitmix64(key ^ CLUSTER_SALT)</span><br></div></code></pre></div></div>
+<p>So a member independently arrives at the same trace id, the same parent span id and the same
+sampling verdict the gateway did — with <strong>zero bytes added to the log, zero schema change, and
+nothing new for the state machine to read.</strong></p>
+<p>Two consequences fall out of that choice:</p>
+<ul>
+<li class=""><strong>A rejected order is traced whatever the sampling verdict said.</strong> &quot;Was it rejected&quot; is likewise a
+committed, deterministic fact that both sides read off the same ack, so both escalate together and
+the trace stays whole. Error sampling is only possible here <em>because</em> the decision is derivable —
+a collector&#x27;s tail sampling cannot recover a span that head sampling never emitted.</li>
+<li class=""><strong>A log line can join a trace by computing its id</strong> rather than by being handed one. The id lives
+in the line itself, not in a label.</li>
+</ul>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="why-this-is-not-telemetry-in-replicated-state">Why this is not telemetry in replicated state<a href="#why-this-is-not-telemetry-in-replicated-state" class="hash-link" aria-label="Direct link to Why this is not telemetry in replicated state" title="Direct link to Why this is not telemetry in replicated state" translate="no">​</a></h3>
+<p>The derivation is one-way and read-only. It consumes a committed field and produces an id that is
+never written back, never encoded into an output event, and never branched on by the engine. Delete
+the class and every member still emits byte-identical output.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="not-slowing-the-trade-path">Not slowing the trade path<a href="#not-slowing-the-trade-path" class="hash-link" aria-label="Direct link to Not slowing the trade path" title="Direct link to Not slowing the trade path" translate="no">​</a></h3>
+<p>A producer — a REST or FIX submit thread, the gateway&#x27;s owner thread, a member&#x27;s apply thread — does
+exactly one thing: copies eight longs into a pre-allocated ring buffer and returns. No lock, no
+allocation, no I/O, and deliberately <strong>no backpressure path back to the caller</strong>. If the ring is
+full, the write fails, a counter increments, and the order carries on untouched.</p>
+<p>Dropping telemetry under load is correct behaviour. Stalling an owner thread behind a slow collector
+would be the worst outcome available, so the design makes it unreachable rather than unlikely.</p>
+<p>Everything expensive — hex formatting, JSON assembly, HTTP, retries, the collector being down —
+happens on one daemon thread that no order ever touches. A collector outage costs a counter, not a
+millisecond.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="why-not-the-opentelemetry-sdk">Why not the OpenTelemetry SDK<a href="#why-not-the-opentelemetry-sdk" class="hash-link" aria-label="Direct link to Why not the OpenTelemetry SDK" title="Direct link to Why not the OpenTelemetry SDK" translate="no">​</a></h3>
+<p>Its batching processor has the right shape — bounded queue, drop on full — but the API above it
+allocates per span. This path runs under an allocation gate, and under Epsilon GC (no collector at
+all) in the no-GC proofs, where a single allocated byte fails the build.</p>
+<p>The sink emits OTLP/HTTP with a JSON body instead: a documented, stable wire format, posted to the
+same <code>/v1/traces</code> endpoint any SDK would use. About a hundred lines, and no new dependencies.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="running-it">Running it<a href="#running-it" class="hash-link" aria-label="Direct link to Running it" title="Direct link to Running it" translate="no">​</a></h3>
+<p>Tracing is off unless <code>OTEL_TRACES=1</code>; otherwise every call site holds a null reference.</p>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#bfc7d5;--prism-background-color:#292d3e"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#bfc7d5;background-color:#292d3e"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#bfc7d5"><span class="token plain">bash scripts/yu15/start-observability-kind.sh   # OTel Collector, Tempo, Prometheus, Grafana, Loki</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">bash scripts/yu15/demo-otel-traffic.sh          # drive traffic and watch traces arrive</span><br></div></code></pre></div></div>
+<p>The observability stack has shipped in the manifests since state 007, but the cluster bring-up
+deploys only the trading tier — so on kind the two halves land in different clusters and the
+collector endpoint resolves to nothing. The trace pipeline is then <em>silently</em> dead: orders book
+fine, spans go nowhere, and the only symptom is an empty Tempo. That script exists to prevent
+exactly that.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="kdb-x-tick-store-kdbq">KDB-X tick store (kdb+/q)<a href="#kdb-x-tick-store-kdbq" class="hash-link" aria-label="Direct link to KDB-X tick store (kdb+/q)" title="Direct link to KDB-X tick store (kdb+/q)" translate="no">​</a></h2>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="why-kdb">Why kdb<a href="#why-kdb" class="hash-link" aria-label="Direct link to Why kdb" title="Direct link to Why kdb" translate="no">​</a></h3>
+<p>kdb+/q is the time-series database this corner of finance actually runs on. Tick capture,
+journaling and session playback sit on it across front offices in the industry, and analysts query
+it in q rather than in SQL. Putting the platform&#x27;s history there — and querying it the way the
+desk would — is what makes the data side of this system read as the real thing rather than a
+trading demo with a database bolted on.</p>
+<p>So the platform&#x27;s history lives in KDB-X, and the same verbs work over all of it: <code>.ts.vwap</code> and
+<code>.ts.spread</code> for prices, <code>.ts.session</code> to pull a window out, <code>.tx.fills</code> and <code>.tx.orders</code> for our
+own executions, and <code>.ts.replay</code> / <code>.tx.replay</code> to step a captured session back through at real
+time or as fast as the machine will go.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="reading-the-corpus-in-place">Reading the corpus in place<a href="#reading-the-corpus-in-place" class="hash-link" aria-label="Direct link to Reading the corpus in place" title="Direct link to Reading the corpus in place" translate="no">​</a></h3>
+<p>KDB-X reads the existing ZSTD Parquet corpus <strong>natively — there is no conversion step and no second
+copy.</strong> A q layer maps each object as a virtual table, prunes row groups against the <code>WHERE</code> clause,
+and stitches the per-file tables into one date/symbol-partitioned table whose partition columns come
+from the path the ingest already wrote.</p>
+<p>That reader also settled the practical worry about the Community edition&#x27;s 16 GiB ceiling: an
+aggregate over all 47.8M quote rows peaked at <strong>768 MiB</strong>, because it works a row group at a time
+rather than materialising the table.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="what-is-stored">What is stored<a href="#what-is-stored" class="hash-link" aria-label="Direct link to What is stored" title="Direct link to What is stored" translate="no">​</a></h3>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Tables</th><th>Source</th><th>Loader</th><th>What it is</th></tr></thead><tbody><tr><td><code>quote</code> / <code>trade</code></td><td>NYSE TAQ tape</td><td><code>tickstore.q</code></td><td>what the <strong>market</strong> did</td></tr><tr><td><code>txOrder</code> / <code>txTrade</code></td><td>TraderX cluster</td><td><code>txstore.q</code></td><td>what <strong>our engine</strong> did</td></tr></tbody></table>
+<p>The two keep separate names because a tape print and an engine execution are different objects with
+different provenance — a single <code>trade</code> table holding both is how a VWAP ends up quietly answering
+a question nobody asked.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-live-capture-tap">The live capture tap<a href="#the-live-capture-tap" class="hash-link" aria-label="Direct link to The live capture tap" title="Direct link to The live capture tap" translate="no">​</a></h3>
+<p>Our own flow is captured off the running cluster by a <strong>leader-side tap that sits off the consensus
+path</strong>, so recording never becomes something consensus waits for. The capture is a read-side
+projection of committed output, exactly like the SQL bridge — not an input the state machine reads.
+A stalled disk fills its queue and drops, loudly and counted; it cannot stall an apply thread.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="journal-and-playback-in-two-senses">Journal and playback, in two senses<a href="#journal-and-playback-in-two-senses" class="hash-link" aria-label="Direct link to Journal and playback, in two senses" title="Direct link to Journal and playback, in two senses" translate="no">​</a></h3>
+<p>Both words do double duty in this system, and the distinction is worth stating plainly.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th></th><th>Authoritative</th><th>Analytical</th></tr></thead><tbody><tr><td>Store</td><td>Aeron Archive (+ snapshots)</td><td><strong>KDB-X</strong></td></tr><tr><td>Purpose</td><td>consensus, recovery, determinism</td><td>query, analytics, session playback</td></tr><tr><td>Playback means</td><td>replay the log to rebuild exact state</td><td>replay a captured session to study it</td></tr><tr><td>On the hot path?</td><td>yes, synchronous, before commit</td><td>no — off-consensus, best-effort</td></tr></tbody></table>
+<p>Nothing in the tick store is authoritative or required for recovery. What it holds is a kdb
+tickerplant log, not a consensus journal: delete the whole thing and the cluster still recovers
+byte-identically; delete the Aeron Archive and it does not.</p>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="the-gates">The gates<a href="#the-gates" class="hash-link" aria-label="Direct link to The gates" title="Direct link to The gates" translate="no">​</a></h3>
+<p>Both stores are checked by q gates that are <strong>cross-implementation</strong>: every expected value was
+computed independently in a second engine over the same files, so the store is verified against
+something other than itself.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<table><thead><tr><th>Gate</th><th style="text-align:right">Checks</th><th>Covers</th></tr></thead><tbody><tr><td><code>selfcheck.q</code></td><td style="text-align:right">17</td><td>per-partition row counts, deduplication, the quote/trade split, first trades to the tick, regular-hours VWAP across every symbol-day, replay ordering and pacing</td></tr><tr><td><code>txselfcheck.q</code></td><td style="text-align:right">18</td><td>schema, the leader-only guard, and capture count equal to the cluster&#x27;s own trade count</td></tr></tbody></table>
+<h3 class="anchor anchorTargetStickyNavbar_Vzrq" id="running-it-1">Running it<a href="#running-it-1" class="hash-link" aria-label="Direct link to Running it" title="Direct link to Running it" translate="no">​</a></h3>
+<div class="language-bash codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#bfc7d5;--prism-background-color:#292d3e"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-bash codeBlock_bY9V thin-scrollbar" style="color:#bfc7d5;background-color:#292d3e"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#bfc7d5"><span class="token plain">TICKSTORE_ROOT=/path/to/ticks  q kdb/tickstore.q     # the market tape</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">TICKSTORE_ROOT=/path/to/sample q kdb/selfcheck.q     # 17 gates over it</span><br></div></code></pre></div></div>
+<p><code>txstore.q</code> and <code>txselfcheck.q</code> take the same shape over a captured session.</p>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="where-each-lives">Where each lives<a href="#where-each-lives" class="hash-link" aria-label="Direct link to Where each lives" title="Direct link to Where each lives" translate="no">​</a></h2>
+<p>Neither is a state of its own, so each sits in the layer of the state it extends:</p>
+<ul>
+<li class=""><strong>Tracing</strong> — the <a class="" href="/traderX/specs/YU13-limit-order-book">YU13</a> layer, alongside the order-matcher and
+gateway it instruments.</li>
+<li class=""><strong>Tick store</strong> — the <a class="" href="/traderX/specs/YU07-historical-tick-store">YU07</a> layer, the historical tick store
+state.</li>
+</ul>
+<h2 class="anchor anchorTargetStickyNavbar_Vzrq" id="how-this-is-verified">How this is verified<a href="#how-this-is-verified" class="hash-link" aria-label="Direct link to How this is verified" title="Direct link to How this is verified" translate="no">​</a></h2>
+<p>The 35 q gates run as their own tier. The tick store&#x27;s Python side runs 24 tests in CI against the
+module&#x27;s pinned requirements, and the trace pipeline has two end-to-end proofs that assert a trace
+actually crosses consensus and that a rejected order&#x27;s log line joins its trace.</p>
+<ul>
+<li class=""><strong><a class="" href="/traderX/docs/engineering/testing-strategy">Testing strategy</a></strong> — which tier proves what, and what stays manual.</li>
+<li class=""><strong><a class="" href="/traderX/docs/engineering/test-coverage">Test coverage</a></strong> — what runs automatically, and how every number was counted.</li>
+</ul></div><footer class="theme-doc-footer docusaurus-mt-lg"><div class="row margin-top--sm theme-doc-footer-edit-meta-row"><div class="col noPrint_WFHX"><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/edit/YU15-eod-risk-extract/website/../docs/engineering/observability-and-replay.md" target="_blank" rel="noopener noreferrer" class="theme-edit-this-page"><svg fill="currentColor" height="20" width="20" viewBox="0 0 40 40" class="iconEdit_Z9Sw" aria-hidden="true"><g><path d="m34.5 11.7l-3 3.1-6.3-6.3 3.1-3q0.5-0.5 1.2-0.5t1.1 0.5l3.9 3.9q0.5 0.4 0.5 1.1t-0.5 1.2z m-29.5 17.1l18.4-18.5 6.3 6.3-18.4 18.4h-6.3v-6.2z"></path></g></svg>Edit this page</a></div><div class="col lastUpdated_JAkA"></div></div></footer></article><nav class="docusaurus-mt-lg pagination-nav" aria-label="Docs pages"><a class="pagination-nav__link pagination-nav__link--prev" href="/traderX/docs/engineering/test-coverage"><div class="pagination-nav__sublabel">Previous</div><div class="pagination-nav__label">Test coverage</div></a><a class="pagination-nav__link pagination-nav__link--next" href="/traderX/docs/blog"><div class="pagination-nav__sublabel">Next</div><div class="pagination-nav__label">Blog</div></a></nav></div></div><div class="col col--3"><div class="tableOfContents_bqdL thin-scrollbar theme-doc-toc-desktop"><ul class="table-of-contents table-of-contents__left-border"><li><a href="#opentelemetry--a-trace-that-survives-consensus" class="table-of-contents__link toc-highlight">OpenTelemetry — a trace that survives consensus</a><ul><li><a href="#the-problem" class="table-of-contents__link toc-highlight">The problem</a></li><li><a href="#derive-dont-carry" class="table-of-contents__link toc-highlight">Derive, don&#39;t carry</a></li><li><a href="#why-this-is-not-telemetry-in-replicated-state" class="table-of-contents__link toc-highlight">Why this is not telemetry in replicated state</a></li><li><a href="#not-slowing-the-trade-path" class="table-of-contents__link toc-highlight">Not slowing the trade path</a></li><li><a href="#why-not-the-opentelemetry-sdk" class="table-of-contents__link toc-highlight">Why not the OpenTelemetry SDK</a></li><li><a href="#running-it" class="table-of-contents__link toc-highlight">Running it</a></li></ul></li><li><a href="#kdb-x-tick-store-kdbq" class="table-of-contents__link toc-highlight">KDB-X tick store (kdb+/q)</a><ul><li><a href="#why-kdb" class="table-of-contents__link toc-highlight">Why kdb</a></li><li><a href="#reading-the-corpus-in-place" class="table-of-contents__link toc-highlight">Reading the corpus in place</a></li><li><a href="#what-is-stored" class="table-of-contents__link toc-highlight">What is stored</a></li><li><a href="#the-live-capture-tap" class="table-of-contents__link toc-highlight">The live capture tap</a></li><li><a href="#journal-and-playback-in-two-senses" class="table-of-contents__link toc-highlight">Journal and playback, in two senses</a></li><li><a href="#the-gates" class="table-of-contents__link toc-highlight">The gates</a></li><li><a href="#running-it-1" class="table-of-contents__link toc-highlight">Running it</a></li></ul></li><li><a href="#where-each-lives" class="table-of-contents__link toc-highlight">Where each lives</a></li><li><a href="#how-this-is-verified" class="table-of-contents__link toc-highlight">How this is verified</a></li></ul></div></div></div></div></main></div></div></div><footer class="theme-layout-footer footer"><div class="container container-fluid"><div class="row footer__links"><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Docs</div><ul class="footer__items clean-list"><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/home">Home</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/blog">Blog</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/spec-kit/getting-started-with-traderx">Getting Started</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning-paths">Learning Paths</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/docs/learning">Learning Guides</a></li><li class="footer__item"><a class="footer__link-item" href="/traderX/specs">Specs</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Yeshiva University</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://www.yu.edu" target="_blank" rel="noopener noreferrer" class="footer__link-item">Yeshiva University</a></li><li class="footer__item"><a href="https://www.yu.edu/yeshiva-college/ug/computer-science" target="_blank" rel="noopener noreferrer" class="footer__link-item">YU Computer Science</a></li><li class="footer__item"><a href="https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract" target="_blank" rel="noopener noreferrer" class="footer__link-item">This deployment on GitHub</a></li></ul></div><div class="theme-layout-footer-column col footer__col"><div class="footer__title">Upstream — FINOS</div><ul class="footer__items clean-list"><li class="footer__item"><a href="https://github.com/finos/traderX" target="_blank" rel="noopener noreferrer" class="footer__link-item">TraderX (upstream)</a></li><li class="footer__item"><a href="https://www.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Website</a></li><li class="footer__item"><a href="https://landscape.finos.org" target="_blank" rel="noopener noreferrer" class="footer__link-item">FINOS Projects</a></li><li class="footer__item"><a href="https://community.finos.org/" target="_blank" rel="noopener noreferrer" class="footer__link-item">Community Handbook</a></li></ul></div></div><div class="footer__bottom text--center"><div class="margin-bottom--sm"><a href="https://www.yu.edu" rel="noopener noreferrer" class="footerLogoLink_BH7S"><img src="/traderX/img/yu/yu-crest-navy.jpg" alt="Yeshiva University" class="footer__logo themedComponent_mlkZ themedComponent--light_NVdE"><img src="/traderX/img/yu/yu-crest-navy.jpg" alt="Yeshiva University" class="footer__logo themedComponent_mlkZ themedComponent--dark_xIcU"></a></div><div class="footer__copyright">Yeshiva University CS · built on TraderX, a FINOS project</div></div></div></footer></div>
+</body>
+</html>
