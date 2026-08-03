@@ -20,12 +20,12 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 
 ## Rendered Code
 
-- Generated branch: [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds)
+- Generated branch: [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU03-in-memory-risk-gateway`: [YU03-in-memory-risk-gateway...YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU03-in-memory-risk-gateway...YU04-durable-control-feeds)
+- Compare against `YU03-in-memory-risk-gateway`: [code/generated-state-YU03-in-memory-risk-gateway...code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU03-in-memory-risk-gateway...code%2Fgenerated-state-YU04-durable-control-feeds)
 
 ## Plain-English Code Delta
 
@@ -41,7 +41,7 @@ title: "State YU04-durable-control-feeds: Durable Control Feeds"
 ## Run This State
 
 ```bash
-inherits YU03-in-memory-risk-gateway runtime harness
+./scripts/start-state-YU04-durable-control-feeds-generated.sh
 ```
 
 ## Canonical Spec Links

@@ -20,12 +20,12 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 
 ## Rendered Code
 
-- Generated branch: [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication)
+- Generated branch: [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU10-fix-ingress`: [YU10-fix-ingress...YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU10-fix-ingress...YU11-aeron-replication)
+- Compare against `YU10-fix-ingress`: [code/generated-state-YU10-fix-ingress...code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU10-fix-ingress...code%2Fgenerated-state-YU11-aeron-replication)
 
 ## Plain-English Code Delta
 
@@ -34,7 +34,7 @@ title: "State YU11-aeron-replication: Aeron SBE BLP Replication"
 ## Run This State
 
 ```bash
-inherits YU10-fix-ingress runtime harness
+./scripts/start-state-YU11-aeron-replication-generated.sh
 ```
 
 ## Canonical Spec Links
