@@ -20,12 +20,12 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 
 ## Rendered Code
 
-- Generated branch: [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress)
+- Generated branch: [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU09-ops-hardening`: [YU09-ops-hardening...YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU09-ops-hardening...YU10-fix-ingress)
+- Compare against `YU09-ops-hardening`: [code/generated-state-YU09-ops-hardening...code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU09-ops-hardening...code%2Fgenerated-state-YU10-fix-ingress)
 
 ## Plain-English Code Delta
 
@@ -39,7 +39,7 @@ title: "State YU10-fix-ingress: FIX Order-Entry Ingress"
 ## Run This State
 
 ```bash
-inherits YU09-ops-hardening runtime harness
+./scripts/start-state-YU10-fix-ingress-generated.sh
 ```
 
 ## Canonical Spec Links

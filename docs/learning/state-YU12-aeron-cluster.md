@@ -20,12 +20,12 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 
 ## Rendered Code
 
-- Generated branch: [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster)
+- Generated branch: [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU11-aeron-replication`: [YU11-aeron-replication...YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU11-aeron-replication...YU12-aeron-cluster)
+- Compare against `YU11-aeron-replication`: [code/generated-state-YU11-aeron-replication...code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU11-aeron-replication...code%2Fgenerated-state-YU12-aeron-cluster)
 
 ## Plain-English Code Delta
 
@@ -41,7 +41,7 @@ title: "State YU12-aeron-cluster: Aeron Cluster BLP Consensus"
 ## Run This State
 
 ```bash
-inherits YU11-aeron-replication runtime harness
+./scripts/start-state-YU12-aeron-cluster-generated.sh
 ```
 
 ## Canonical Spec Links

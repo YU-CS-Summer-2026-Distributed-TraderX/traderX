@@ -20,12 +20,12 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 
 ## Rendered Code
 
-- Generated branch: [YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU03-in-memory-risk-gateway)
+- Generated branch: [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU02-lmax-kubernetes`: [YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway)
+- Compare against `YU02-lmax-kubernetes`: [code/generated-state-YU02-lmax-kubernetes...code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU02-lmax-kubernetes...code%2Fgenerated-state-YU03-in-memory-risk-gateway)
 
 ## Plain-English Code Delta
 
@@ -41,7 +41,7 @@ title: "State YU03-in-memory-risk-gateway: In-Memory Risk Gateway"
 ## Run This State
 
 ```bash
-inherits YU02-lmax-kubernetes runtime harness
+./scripts/start-state-YU03-in-memory-risk-gateway-generated.sh
 ```
 
 ## Canonical Spec Links
