@@ -297,7 +297,7 @@
         "runtime": "./scripts/start-state-YU01-lmax-sequencer-generated.sh"
       },
       "publish": {
-        "branch": "YU01-lmax-sequencer",
+        "branch": "code/generated-state-YU01-lmax-sequencer",
         "tag": "generated/YU01-lmax-sequencer/v1"
       }
     },
