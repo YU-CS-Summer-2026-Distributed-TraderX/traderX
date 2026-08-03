@@ -251,10 +251,35 @@ resolution for the YU branches — it imports the caveat, turns the check green,
 about the underlying fact. Same family as everything else in this file, one level down: the earlier
 findings were checks that never ran, this is a check that runs and is answered by a substring.
 
-Deciding it is the same shape of call as the heading canon. Either the caveat is a legitimate answer
-— in which case the check should look for an explicit marker rather than any `.ps1` mention, so an
-incidental one cannot pass — or it is not, in which case `main`'s three packs need the same fix the
-YU branches do. Not decided here.
+### The check has never tested the property for anyone
+
+The caveat is not the outlier. Resolving every `.ps1` path named in every pack README against the
+tree — six numbered packs trip the `.sh` trigger, and exactly one of them delivers:
+
+| pack | what its `.ps1` mention is | on disk |
+|---|---|---|
+| `002-edge-proxy-uncontainerized` | `scripts/start-state-002-edge-proxy-generated.ps1`, `scripts/test-state-002-edge-proxy.ps1` | **exists** |
+| `004-containerized-compose-runtime` | `./scripts/start-state-004-containerized-generated.ps1` | missing |
+| `011-tilt-kubernetes-dev-loop` | `./scripts/start-state-011-tilt-kubernetes-dev-loop-generated.ps1` | missing |
+| `012-platform-convergence-c3` | `./scripts/start-state-012-platform-convergence-c3-generated.ps1` | missing |
+| `013-radius-kubernetes-platform` | `./scripts/start-state-013-radius-kubernetes-platform-generated.ps1` | missing |
+| `001-baseline-uncontainerized-parity` | `scripts/start-<state>.ps1` etc. — literal `<state>` placeholders, hedged "on supported states" | names no file |
+
+So the check is passed three different ways and tests the property in none of them: by real files
+(002 only), by a **dangling promise** (004/011/012/013 — a Windows reader following those gets a
+404), by a **placeholder pattern** (001), and now by a **truthful denial** (`main`'s YU09/10/11).
+Four of the six numbered packs it "covers" name runners that do not exist.
+
+That reframes the YU packs. Demanding `.ps1` siblings for `scripts/bench/run-yu11-aeron-transport.sh`
+would hold three YU packs to a standard five of six numbered packs do not meet — and those `.sh`
+references are an artifact index ("what this state adds"), not run instructions, so the siblings
+would be unused code written to satisfy a grep.
+
+**Recorded, not fixed, and deliberately so.** The mechanism fix is to key on an explicit marker — a
+declared PowerShell line resolving to either a real path or an explicit "none" — so neither an
+incidental mention, nor a placeholder, nor a path that does not exist can pass. That repairs
+upstream's four as much as the YU three, which makes it part of the upstream conform-vs-retire
+decision rather than a tail-end edit. It now has evidence attached, which it did not before.
 
 ## The lesson
 
