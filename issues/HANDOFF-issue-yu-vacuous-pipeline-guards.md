@@ -215,9 +215,33 @@ user would follow —
 
 The numbered packs that trip it (001, 002, 004, 011, 012, 013) all do carry `.ps1` equivalents,
 because there the `.sh` references *are* run instructions — so the check's intent is real and it
-should not be weakened on the strength of these three. Either add the PowerShell equivalents or
-reword the three bullets so they do not read as invocations. Left alone here: those packs are in
-flight, and this is content work on `specs/`, which the option-1 decision deliberately avoided.
+should not be weakened on the strength of these three. Left alone here: those packs are in flight,
+and this is content work on `specs/`, which the option-1 decision deliberately avoided.
+
+### …and `main` already "fixed" it in a way that is itself a vacuous pass
+
+`main` carries its own copies of these three packs and `validate-state-doc-consistency.sh` reports
+`[ok] state-doc consistency validated (28 states)` there. It passes because each of the three gained
+this bullet (`specs/YU09-ops-hardening/README.md:58` and the same in YU10/YU11):
+
+> - No PowerShell parity: the scripts named above are POSIX shell only. The `.ps1` runners the
+>   numbered states ship have no equivalent in the YU lineage — on Windows, run them under WSL
+>   or another POSIX shell.
+
+The prose is honest and useful — it tells a Windows reader exactly where they stand. But the check
+is `rg -q '\.ps1`|\.ps1$|\.ps1 '`, a substring test, so **a README stating that there is no
+PowerShell equivalent satisfies a check whose entire purpose is to catch READMEs with no PowerShell
+equivalent.** The gate is green on the appearance of the string `.ps1`, not on the property.
+
+So `main`'s 7/7 overstates coverage for these three packs, and "just take `main`'s copy" is not a
+resolution for the YU branches — it imports the caveat, turns the check green, and changes nothing
+about the underlying fact. Same family as everything else in this file, one level down: the earlier
+findings were checks that never ran, this is a check that runs and is answered by a substring.
+
+Deciding it is the same shape of call as the heading canon. Either the caveat is a legitimate answer
+— in which case the check should look for an explicit marker rather than any `.ps1` mention, so an
+incidental one cannot pass — or it is not, in which case `main`'s three packs need the same fix the
+YU branches do. Not decided here.
 
 ## The lesson
 
