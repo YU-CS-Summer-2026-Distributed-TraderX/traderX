@@ -20,12 +20,12 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 
 ## Rendered Code
 
-- Generated branch: [YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU13-limit-order-book)
+- Generated branch: [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU12-aeron-cluster`: [YU12-aeron-cluster...YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU12-aeron-cluster...YU13-limit-order-book)
+- Compare against `YU12-aeron-cluster`: [code/generated-state-YU12-aeron-cluster...code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU12-aeron-cluster...code%2Fgenerated-state-YU13-limit-order-book)
 
 ## Plain-English Code Delta
 
@@ -41,7 +41,7 @@ title: "State YU13-limit-order-book: Crossing Limit-Order Book"
 ## Run This State
 
 ```bash
-inherits YU12-aeron-cluster runtime harness
+./scripts/start-state-YU13-limit-order-book-generated.sh
 ```
 
 ## Canonical Spec Links
