@@ -126,7 +126,17 @@ kubectl logs -f order-matcher-0 -n traderx   # watch for "LIVE RECOVERY [journal
 # Node drain → pod reschedule:
 kubectl drain <node-name> --ignore-daemonsets --delete-emptydir-data
 kubectl uncordon <node-name>
+
+# HA mode (BLP_REPLICATION_ENABLED=true, 2 replicas) — leader failover:
+kubectl get pods -n traderx -l app=order-matcher --show-labels     # find blp-role=primary
+kubectl delete pod <primary-pod> -n traderx --grace-period=0
+# expect: standby promotes in ~2-3s (pod-GET fast path); watch the lease flip:
+kubectl get lease order-matcher-leader -n traderx -w
+# election health (renew age must stay well under RENEW_DEADLINE_SECONDS=10):
+curl -s localhost:18110/metrics | grep blp_lease
 ```
+
+Full HA election contract, failure modes, and tradeoffs: `LMAX-BLP-FAILOVER.md` at the repo root.
 
 ---
 
