@@ -125,6 +125,54 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+  composed-extras:
+    # The three suites that EXISTED but gated nothing: they were written, they pass, and until now
+    # nothing ran them on a push. Grouped into one job because each needs the rendered tree, and
+    # rendering three times to run ~44 fast tests is the expensive part, not the tests.
+    #
+    # These are the COMPOSED copies, which is the point. The baseline-reference-data job above runs
+    # the TEMPLATE suite; the composed tree is what the deployment actually builds from, and its
+    # spec layers add behaviour (the outbox publisher, the control snapshot) the template has no
+    # tests for at all.
+    name: composed — reference-data, price-publisher, tick-store
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: YU15-eod-risk-extract
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install shell dependencies
+        run: sudo apt-get update && sudo apt-get install -y jq ripgrep
+      - name: Render effective tree (YU15)
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+      - name: reference-data (composed, jest)
+        working-directory: generated/code/target-generated/reference-data
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+      - name: price-publisher (composed, node:test)
+        working-directory: generated/code/target-generated/price-publisher
+        run: npm test
+      - name: tick-store (composed, pytest)
+        working-directory: generated/code/target-generated/tick-store
+        # Deps come from the module's own pinned requirements.txt. Installing them is what makes
+        # this gating: the standalone runner skips pytest with a warning when duckdb is not
+        # importable, which passes green having executed nothing.
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pytest tests/ -q
+
   baseline-people-service:
     # Baseline people-service (.NET / xUnit). Separate test project referencing the WebApi.
     name: baseline — people-service (.NET unit)

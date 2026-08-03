@@ -44,6 +44,7 @@ nobody makes.
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
 | End-to-end proof scripts | 26 | operator-run against a live cluster |
+| Composed Node and Python suites | 44 | reference-data 9 · price-publisher 11 · tick-store 24 |
 | Java test classes in the unit tier | 101 | the composed tree |
 
 ## Java — the composed tree
@@ -176,14 +177,14 @@ cluster, so they are operator-run.
 
 | Component | Tests | Status |
 |---|---|---|
-| `reference-data` (composed) | 3 | not in CI; the template copy is |
-| `web-front-end` (Angular) | 10 | inherited scaffolding |
-| `price-publisher` | 1 | not in CI |
+| `reference-data` (composed) | 9 | ✅ in CI, alongside the template copy |
+| `web-front-end` (Angular) | 49 in 10 specs | **disabled at source** — every suite is `xdescribe`, so wiring the job would run zero tests |
+| `price-publisher` | 11 | ✅ in CI |
 | `database`, `ingress`, `api-explorer` | 0 | no tests |
 
 ## What CI runs
 
-The workflow has 8 job definitions and 10 legs on a push.
+The workflow has 9 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
@@ -191,6 +192,7 @@ The workflow has 8 job definitions and 10 legs on a push.
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
+| composed extras | composed reference-data (jest), price-publisher (`node:test`), tick-store (pytest) — 44 tests | push and pull request |
 | integration (persistence) | real MariaDB in a container | push and pull request |
 | integration (outbox atomicity) | real MariaDB, deployed schema and server flags | push and pull request |
 | integration (context) | real MariaDB and message broker | push and pull request |
