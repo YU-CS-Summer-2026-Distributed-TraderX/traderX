@@ -132,30 +132,49 @@ if [[ "${first_line}" =~ ^#\ Feature\ Pack\ ([0-9]{3}[a-z]?): ]]; then
 
 Three digits with an optional letter suffix. `YU01` cannot match, and the `elif` fallback
 (`^# YU01 `) does not match either, because the heading says `# Feature Pack YU01:`. Simulating the
-check over every catalog id: **14 numbered packs pass, all 15 YU packs are rejected.** It has never
-accepted a YU state.
+check over all 29 catalog ids: **13 take the numeric branch, `001` passes through the alt-style
+`elif`, and all 15 YU packs are rejected.** It has never accepted a YU state.
 
 This one carries **both** symptoms at once — which is why it belongs in this file rather than
 alongside the parser bug:
 
 - **Loud rejection**, as above.
 - **Silent vacuity**, the same shape as the four guards: `seen_feature_pack_numbers` is appended to
-  *only inside the numeric branch*, so no YU pack is ever recorded, and the duplicate-Feature-Pack-
-  number detection at line 99 has never covered a single YU state. Two YU packs could share a number
-  and nothing would notice.
+  *only inside the numeric branch*. Every id that passes via the alt-style `elif` is therefore
+  invisible to it as well — so duplicate-Feature-Pack-number detection at line 99 covers **13 of 29
+  states**, not 14 and not 15. It has never covered a YU pack *or* `001`. Two uncovered packs could
+  share a number and nothing would notice.
 
 Not fixed here because the correct behaviour is a **decision, not a mechanical edit** — there are
-three heading styles in play and no stated canon:
+four heading styles in play and no stated canon:
 
 | style | used by |
 |---|---|
-| `# Feature Pack 014: FDC3 Intent Interoperability on C3` | all 14 numbered packs |
+| `# Feature Pack 014: FDC3 Intent Interoperability on C3` | 002–014 (13 packs) |
+| `# 001 Simple App - Base Uncontainerized App` | `001` only — passes, never recorded |
 | `# Feature Pack YU01: LMAX Sequencer Architecture (…)` | YU01 only |
 | `# Feature Pack: YU15-eod-risk-extract` | YU02–YU15 |
 
-Widening the regex to `([0-9]{3}[a-z]?|YU[0-9]{2})` fixes YU01 and still rejects YU02–YU15; making
-the YU02–YU15 style canonical means changing YU01's README instead. Pick the canon first, then the
-regex and the duplicate-detection bookkeeping follow.
+The three options, priced. Note the second touches `specs/YU01-lmax-sequencer/README.md`, which is
+mid-merge in the two-unmerged-threads adjudication (11-file interlock) — editing it now walks into
+an in-flight merge.
+
+1. **Accept every shape, edit no packs.** Capture the id from either `# Feature Pack <id>:` or
+   `# Feature Pack: <id>`, keep the `001` alt-style branch, and record into
+   `seen_feature_pack_numbers` on *every* accepting path. Zero spec-pack churn, duplicate detection
+   finally covers all 29, no collision with the YU01 merge. Leaves four heading styles standing.
+2. **Canon = `# Feature Pack: <full-id>`.** 14 of 15 YU packs already match; only YU01's README
+   changes — but that is the file in flight.
+3. **Canon = `# Feature Pack <id>: <title>`.** YU01 already matches; 14 YU READMEs change.
+
+Option 1 is the standing recommendation from both sessions that looked at it: the check exists to
+catch mismatched and duplicate pack numbers, not to enforce prose style, and it can do that job
+without touching a single pack. It is a public-facing docs question as much as a validator one, so
+the canon is yaakov's call.
+
+**Whichever is picked, the duplicate-detection bookkeeping must be fixed alongside the regex** — a
+regex widened on its own trades this loud failure for a quiet one, which is precisely the failure
+mode the four guards above document.
 
 ## The lesson
 
