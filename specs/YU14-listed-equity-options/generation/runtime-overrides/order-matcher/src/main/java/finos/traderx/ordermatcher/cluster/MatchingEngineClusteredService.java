@@ -25,6 +25,8 @@ import org.agrona.collections.IntHashSet;
 import org.agrona.concurrent.IdleStrategy;
 import org.agrona.concurrent.UnsafeBuffer;
 
+import java.util.concurrent.TimeUnit;
+
 /**
  * Hosts the deterministic {@link MatchingEngine} plus the authoritative {@link BlpRiskState}
  * inside an Aeron Cluster service (ADR-044).
@@ -160,9 +162,32 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
     private volatile Cluster.Role role = Cluster.Role.FOLLOWER;
+    // LATENCY-01 Phase B: leader-clock commit/apply split; null unless LATENCY_DECOMP=1.
+    private final LeaderApplyLatency latency = LeaderApplyLatency.fromEnvOrNull();
+
+    // OTEL-01: the member half of the distributed trace; null unless OTEL_TRACES=1, so the apply
+    // path's allocation gate and the Epsilon-GC proofs see exactly the code they saw before. Spans
+    // are emitted on the LEADER only: a follower applies the same log, but its commit-to-apply delay
+    // is not the round-trip the gateway is waiting on, and three members emitting the same span ids
+    // would triple-write one trace. The leader check also excludes replay, which never runs as leader.
+    private final SpanSink traces = SpanSink.fromEnvOrNull("traderx-cluster-member");
+    private final int traceMask = SpanSink.sampleMaskFromEnv();
+    // OTEL-01 follow-up: the committed ack kind the CURRENT input produced, picked by the same rule
+    // the gateway uses to choose the ack that completes a pending order — first direct (non-resting)
+    // order-lifecycle output. Reset before every apply. It is what lets this member escalate a
+    // rejected order into the trace sample in step with the gateway, off the identical byte, with
+    // nothing exchanged. Telemetry-only: never read by the engine, never written to any output.
+    private byte directAckKind;
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
+    // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade
+    // bridge, gated on the same env so default behaviour is unchanged. Null on every member until then.
+    private OrderNatsPublisher orderBridge;
+    // Leader-side capture tap for the KDB-X analytical store (brief 06): third sibling of the two
+    // bridges, gated on KDB_TAP_DIR, null on every member until it is set. Off-consensus and
+    // best-effort — the Aeron Archive journal remains the authoritative replay source, untouched.
+    private KdbTapWriter kdbTap;
 
     @Override
     public void onStart(final Cluster cluster, final Image snapshotImage) {
@@ -177,7 +202,37 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
             tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", 1 << 16);
             tradeBridge.start();
+            // Epoch-qualified order ids so the read-model key never collides across incarnations
+            // (brief 05 item 0). Same value on every member via the manifest; bumped with a DB wipe.
+            final String epoch = System.getenv("CLUSTER_EPOCH");
+            orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
+                epoch == null || epoch.isBlank() ? "1" : epoch, 1 << 16);
+            orderBridge.start();
         }
+        // Analytical capture tap (brief 06), independent of the NATS bridges on purpose: kdb is a
+        // side observer, so a deployment can run the read-model bridges without it or it without
+        // them. Its own queue and thread too — sharing the order bridge's would let a slow disk
+        // back up the read model.
+        final String tapDir = System.getenv("KDB_TAP_DIR");
+        if (tapDir != null && !tapDir.isBlank()) {
+            final String tapEpoch = System.getenv("CLUSTER_EPOCH");
+            // Same identity ClusterNodeMain uses, and unique per pod either way: the capture files
+            // from all three members have to be loadable side by side in one directory.
+            String member = System.getenv("CLUSTER_MEMBER_ID");
+            if (member == null || member.isBlank()) {
+                member = System.getenv("HOSTNAME");
+            }
+            kdbTap = new KdbTapWriter(new java.io.File(tapDir),
+                tapEpoch == null || tapEpoch.isBlank() ? "1" : tapEpoch,
+                member == null || member.isBlank() ? "0" : member, 1 << 16);
+            kdbTap.start();
+        }
+    }
+
+    /** Test seam for the analytical capture tap; production wires it from KDB_TAP_DIR in
+     *  {@link #onStart}, which leaves an injected writer alone because the env is unset there. */
+    void kdbTap(final KdbTapWriter tap) {
+        this.kdbTap = tap;
     }
 
     /** Fresh deterministic core; package-private so unit tests can drive the record codec. */
@@ -227,6 +282,20 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
         }
+        // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
+        // orderRef below — at this instant the decoded event holds exactly the field values the
+        // gateway held when it made its own sampling decision, so the two derivations agree without
+        // a single byte of trace context having crossed the log. Read-only: nothing here is written
+        // back to the event, emitted, or branched on by the engine.
+        final long traceKey = traces != null && role == Cluster.Role.LEADER
+            ? OrderTrace.keyOf(event.priceTicks, event.orderRef) : 0L;
+        // OTEL-01 follow-up: the head verdict is now a flag, not the gate — a rejected order is
+        // traced whatever it said (OrderTrace.escalate), and that is only knowable after apply. So
+        // the apply-start timestamp is taken for every keyed order rather than the sampled fraction:
+        // one extra nanoTime, alongside the ingressNanos read this path already does, and only while
+        // OTEL_TRACES=1. With tracing off traceKey is 0 and this path is byte-for-byte what the
+        // allocation gates and the Epsilon-GC proofs have always measured.
+        final boolean traceSampled = OrderTrace.sampled(traceKey, traceMask);
         if (event.type == InputEvent.TYPE_ORDER_NEW) {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
@@ -235,14 +304,66 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
         }
         event.seq = ++appliedSeq;
-        event.eventTimeMillis = timestamp; // cluster time, identical on every member and replay (FR-AC06)
+        // The unit must be read HERE, not cached in onStart: the container is told the cluster's time
+        // unit when it joins the log, which is after onStart runs, so onStart still sees the default.
+        // Caching it there silently left this on the millisecond branch under CLUSTER_CLOCK=nanos and
+        // every commit sample went negative and was dropped. It is a field read behind the interface.
+        // Null when a harness drives apply directly without a Cluster (the allocation gates do).
+        final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
+        // cluster time, identical on every member and replay (FR-AC06). Under CLUSTER_CLOCK=nanos the
+        // cluster clock hands us epoch-NANOS; the divide is deterministic, so state is unchanged.
+        event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
         event.ingressNanos = System.nanoTime(); // telemetry only, never state
+        // LATENCY-01 Phase B (leader only, side-channel — never touches replicated state): the
+        // consensus commit round-trip = now - the sequencing timestamp, both read on the leader from
+        // the SAME clock source as the cluster clock; the apply span is timed around onEvent+
+        // drainOutputs below. Only the LEADER's commit-to-apply equals the gateway's black box, so
+        // record there alone. LATENCY-02: on the ms clock this is a 1ms quantum per sample — prefer
+        // CLUSTER_CLOCK=nanos, which resolves the real distribution.
+        final boolean timeThis = latency != null && role == Cluster.Role.LEADER;
+        final long applyStartNanos = timeThis || traceKey != 0L ? System.nanoTime() : 0L;
+        if (timeThis) {
+            if (nanosClusterClock) {
+                latency.recordCommitNanos(NanosClusterClock.epochNanos() - timestamp);
+            } else {
+                latency.recordCommitMillis(System.currentTimeMillis(), timestamp);
+            }
+        }
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
+        directAckKind = 0; // OTEL-01 follow-up: set by drainOutputs below (incl. the backpressure drain)
         engine.onEvent(event, appliedSeq, true);
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
+        if (timeThis) {
+            latency.recordApplyNanos(System.nanoTime() - applyStartNanos);
+        }
+        // OTEL-01: the two member-side spans, both children of the gateway's cluster.consensus span
+        // — whose id this member reconstructs from the idempotency key rather than receiving. That
+        // reconstruction IS the consensus-boundary crossing. Emitted after apply so nothing here can
+        // sit between a decision and its egress; two 64-byte ring writes on the sampled fraction.
+        //
+        // OTEL-01 follow-up: `directAckKind` is the byte this apply just produced and the gateway is
+        // about to read off the egress ack, so `escalate` is the SAME predicate on the SAME input on
+        // both sides of consensus. That is what keeps a reject's trace whole: neither tier tells the
+        // other it escalated, they both simply see the rejection.
+        if (traceKey != 0L && (traceSampled || OrderTrace.escalate(directAckKind))) {
+            final long hi = OrderTrace.traceIdHi(traceKey);
+            final long lo = OrderTrace.traceIdLo(traceKey);
+            final long parent = OrderTrace.clusterSpanId(traceKey);
+            // commit = sequenced -> apply-start. Both ends are the LEADER's own reading of the same
+            // clock the cluster timestamps with, so the subtraction obeys the single-clock rule; the
+            // ms branch carries a 1ms quantum exactly as LeaderApplyLatency documents.
+            final long sequencedEpochNanos = nanosClusterClock ? timestamp : timestamp * 1_000_000L;
+            final long applyStartEpochNanos = nanosClusterClock
+                ? NanosClusterClock.epochNanos() : System.currentTimeMillis() * 1_000_000L;
+            traces.span(hi, lo, OrderTrace.spanId(traceKey, 5), parent,
+                sequencedEpochNanos, applyStartEpochNanos, SpanSink.NAME_COMMIT, event.orderRef);
+            traces.span(hi, lo, OrderTrace.spanId(traceKey, 6), parent,
+                OrderTrace.epochNanos(applyStartNanos), OrderTrace.epochNanos(System.nanoTime()),
+                SpanSink.NAME_APPLY, event.orderRef);
+        }
         if (stampFirstApplyAsLeader) {
             stampFirstApplyAsLeader = false;
             System.out.println("FIRST-APPLY atMs=" + System.currentTimeMillis() + " seq=" + appliedSeq);
@@ -326,6 +447,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     public void onTerminate(final Cluster cluster) {
         if (tradeBridge != null) {
             tradeBridge.stop();
+        }
+        if (orderBridge != null) {
+            orderBridge.stop();
+        }
+        if (kdbTap != null) {
+            kdbTap.stop();
         }
     }
 
@@ -553,6 +680,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final long cursor = outputRing.getCursor();
         for (long seq = outputConsumed.get() + 1; seq <= cursor; seq++) {
             final OutputEvent out = outputRing.get(seq);
+            // OTEL-01 follow-up: remember the ack the GATEWAY will treat as this order's outcome, so
+            // both tiers escalate a reject off the same byte. The rule is copied from the gateway's
+            // egress filter deliberately — first direct (non-resting) order-lifecycle output wins,
+            // because that is the one that completes the pending; later fills under the same apply
+            // are continuations of the same order and must not overwrite the verdict.
+            if (directAckKind == 0 && (out.flags & OutputEvent.FLAG_RESTING_UPDATE) == 0
+                && (OutputEvent.isOrderLifecycleKind(out.kind)
+                    || out.kind == OutputEvent.KIND_ORDER_NOT_FOUND)) {
+                directAckKind = out.kind;
+            }
             // Leader-side trade bridge: every booked trade → NATS /trades → trade-processor → DB +
             // positions + UI. Leader-only so followers never duplicate; offer is non-blocking so the
             // deterministic apply thread is never held up by NATS.
@@ -560,6 +697,32 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
                     out.side, out.tradeQty, out.tradePx);
+            }
+            // Analytical capture (brief 06), same leader-only non-blocking discipline, separate
+            // queue. Deliberately in the same drain loop rather than a new emission point: the tap
+            // observes what the deterministic engine already produced and adds nothing to it.
+            if (kdbTap != null && role == Cluster.Role.LEADER) {
+                if (out.kind == OutputEvent.KIND_TRADE_BOOKED) {
+                    kdbTap.offerTrade(out.inputSeq, out.tradeSeq, out.accountId,
+                        tickerById[out.securityId], out.securityId, out.side, out.tradeQty,
+                        out.tradePx, out.updatedAtMillis);
+                } else if (OutputEvent.isOrderLifecycleKind(out.kind)) {
+                    kdbTap.offerOrder(out.inputSeq, out.orderRef, out.accountId,
+                        tickerById[out.securityId], out.securityId, out.side, out.quantity,
+                        out.remainingQty, out.limitPx, out.status, out.lastExecPx, out.lastFillQty,
+                        out.createdAtMillis, out.updatedAtMillis);
+                }
+            }
+            // Leader-side order bridge: every order-state transition → NATS /orders → read model →
+            // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
+            // the trade bridge. Covers both the input's own order and counterparty resting orders
+            // hit by an aggressor (FLAG_RESTING_UPDATE) — so an STP/replace cancel of a resting
+            // order is observable to its owner via this feed (brief 07).
+            if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
+                && orderBridge != null) {
+                orderBridge.offer(out.orderRef, out.accountId, tickerById[out.securityId],
+                    out.side, out.quantity, out.remainingQty, out.limitPx, out.status,
+                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis);
             }
             ackBuffer.putLong(0, out.inputSeq);
             ackBuffer.putInt(8, out.orderRef);
@@ -605,8 +768,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return lastLoadedNextOrderRef;
     }
 
+    /** OTEL-01 span sink, or null when tracing is off — read by the /metrics handler. */
+    public SpanSink spanSink() {
+        return traces;
+    }
+
     public Cluster.Role role() {
         return role;
+    }
+
+    /** LATENCY-01 Phase B side channel (leader commit/apply split); null unless LATENCY_DECOMP=1. */
+    public LeaderApplyLatency leaderLatency() {
+        return latency;
     }
 
     /** Plain read for quiesced cross-member equality checks; ordered by the engine's per-event
