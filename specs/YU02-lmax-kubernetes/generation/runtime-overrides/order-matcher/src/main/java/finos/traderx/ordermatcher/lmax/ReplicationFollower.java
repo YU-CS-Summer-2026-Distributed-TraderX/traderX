@@ -16,6 +16,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Supplier;
 
 /**
@@ -35,12 +36,36 @@ public final class ReplicationFollower {
     private static final Logger log = LoggerFactory.getLogger(ReplicationFollower.class);
     private static final Duration POLL_TIMEOUT = Duration.ofMillis(200);
     private static final Duration CATCH_UP_TIMEOUT = Duration.ofMillis(50);
+    private static final Duration ACK_FLUSH_TIMEOUT = Duration.ofSeconds(2);
+    private static final int DURABLE_ACK_QUEUE_CAPACITY = 65_536;
+    private static final int DURABLE_ACK_QUEUE_MASK = DURABLE_ACK_QUEUE_CAPACITY - 1;
+
+    enum AckMode {
+        ONRING,
+        DURABLE;
+
+        static AckMode configured() {
+            return parse(System.getenv("BLP_REPLICATION_ACK_MODE"));
+        }
+
+        static AckMode parse(String value) {
+            if (value == null || value.isBlank() || "onring".equalsIgnoreCase(value)) {
+                return ONRING;
+            }
+            if ("durable".equalsIgnoreCase(value)) {
+                return DURABLE;
+            }
+            log.warn("Unknown BLP_REPLICATION_ACK_MODE='{}'; preserving default onring ACKs", value);
+            return ONRING;
+        }
+    }
 
     private final Connection conn;
     private final String podName;
     private final long startJetsStreamSeq;   // -1 = deliver all from beginning
     private final Runnable readinessCallback;
     private final InMemoryOrderReadModel readModel;
+    private final AckMode ackMode;
 
     /** Set by LmaxEngine after afterPropertiesSet() wires up the ring. */
     private volatile RingBuffer<InputEvent> inputRing;
@@ -48,19 +73,37 @@ public final class ReplicationFollower {
     private final AtomicLong lastJetsStreamSeq = new AtomicLong(-1);
     private volatile JetStreamSubscription subscription;
     private volatile Thread followerThread;
+    private volatile Thread durableAckThread;
     private volatile boolean running;
 
     // Pre-allocated ACK buffer — inject() runs on a single thread (tailLoop / drainCatchUp),
     // so this is safe without synchronization and avoids ByteBuffer.allocate() on every event.
     private final ByteBuffer ackBuf = ByteBuffer.allocate(8).order(ByteOrder.LITTLE_ENDIAN);
 
+    // Durable mode is a single-producer/single-consumer handoff from the NATS injection thread to
+    // the ACK publisher. Each slot maps the follower's local ring sequence to the primary sequence
+    // carried in the replication record. The arrays are fixed at startup and pressure the injector
+    // when full; no event or ACK watermark is dropped.
+    private final long[] durableLocalSequences = new long[DURABLE_ACK_QUEUE_CAPACITY];
+    private final long[] durablePrimarySequences = new long[DURABLE_ACK_QUEUE_CAPACITY];
+    private long durableNextWriteCursor;
+    private volatile long durablePublishedCursor = -1L;
+    private volatile long durableConsumedCursor = -1L;
+
     public ReplicationFollower(Connection conn, String podName, long startJetsStreamSeq,
                                InMemoryOrderReadModel readModel, Runnable readinessCallback) {
+        this(conn, podName, startJetsStreamSeq, readModel, readinessCallback, AckMode.configured());
+    }
+
+    ReplicationFollower(Connection conn, String podName, long startJetsStreamSeq,
+                        InMemoryOrderReadModel readModel, Runnable readinessCallback,
+                        AckMode ackMode) {
         this.conn = conn;
         this.podName = podName;
         this.startJetsStreamSeq = startJetsStreamSeq;
         this.readModel = readModel;
         this.readinessCallback = readinessCallback;
+        this.ackMode = ackMode;
     }
 
     /** Called by LmaxEngine after the input ring is created. */
@@ -71,6 +114,10 @@ public final class ReplicationFollower {
     /** Current JetStream sequence position (for snapshot checkpointing). */
     public long lastJetsStreamSeq() {
         return lastJetsStreamSeq.get();
+    }
+
+    AckMode ackMode() {
+        return ackMode;
     }
 
     /**
@@ -105,12 +152,17 @@ public final class ReplicationFollower {
                 .configuration(ccb.build())
                 .build();
             subscription = js.subscribe(NatsJournalReplicator.SUBJECT, opts);
-            log.info("Follower subscribed to {} from JetStream seq={}", NatsJournalReplicator.SUBJECT, startSeq);
+            log.info("Follower subscribed to {} from JetStream seq={} ackMode={}",
+                NatsJournalReplicator.SUBJECT, startSeq, ackMode.name().toLowerCase());
         } catch (Exception ex) {
             log.warn("Could not subscribe to replication stream: {} — continuing without replication", ex.getMessage());
             readModel.setReplaying(false);
             readinessCallback.run();
             return;
+        }
+
+        if (ackMode == AckMode.DURABLE) {
+            startDurableAckPublisher();
         }
 
         // Drain catch-up messages (fast loop with short timeout to detect tail).
@@ -132,6 +184,14 @@ public final class ReplicationFollower {
             if (subscription != null) subscription.unsubscribe();
         } catch (Exception ex) {
             log.warn("Unsubscribe error: {}", ex.getMessage());
+        }
+        Thread ackThread = durableAckThread;
+        if (ackThread != null) {
+            try {
+                ackThread.join(5_000L);
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -198,16 +258,93 @@ public final class ReplicationFollower {
         }
         lastJetsStreamSeq.set(msg.metaData().streamSequence());
 
-        // ACK the primary so its onEvent() spin-wait can advance past this Disruptor sequence.
-        // Uses a pre-allocated buffer to avoid heap allocation on every event (no-GC safe).
         if (disruptorSeq >= 0) {
-            try {
-                ackBuf.clear();
-                ackBuf.putLong(disruptorSeq);
-                conn.publish(NatsJournalReplicator.ACK_SUBJECT, ackBuf.array());
-            } catch (Exception ex) {
-                log.warn("ACK publish failed at disruptorSeq {}: {}", disruptorSeq, ex.getMessage());
+            if (ackMode == AckMode.DURABLE) {
+                enqueueDurableAck(seq, disruptorSeq);
+            } else {
+                // Historical/default behavior: ACK immediately after ring publish. Deliberately
+                // unchanged until the user chooses the stronger RPO=0 policy.
+                publishAck(disruptorSeq, false);
             }
+        }
+    }
+
+    private void enqueueDurableAck(long localSequence, long primarySequence) {
+        long cursor = durableNextWriteCursor++;
+        while (cursor - durableConsumedCursor >= DURABLE_ACK_QUEUE_CAPACITY) {
+            if (!running) {
+                return;
+            }
+            Thread.onSpinWait();
+        }
+        int slot = (int) cursor & DURABLE_ACK_QUEUE_MASK;
+        durableLocalSequences[slot] = localSequence;
+        durablePrimarySequences[slot] = primarySequence;
+        // Volatile publication after both array writes makes the pair visible to the ACK thread.
+        durablePublishedCursor = cursor;
+    }
+
+    private void startDurableAckPublisher() {
+        durableAckThread = new Thread(this::durableAckLoop, "blp-replication-durable-ack");
+        durableAckThread.setDaemon(true);
+        durableAckThread.start();
+    }
+
+    private void durableAckLoop() {
+        long consumed = durableConsumedCursor;
+        while (running || consumed < durablePublishedCursor) {
+            long available = durablePublishedCursor;
+            RingBuffer<InputEvent> ring = inputRing;
+            if (ring == null || consumed >= available) {
+                LockSupport.parkNanos(100_000L);
+                continue;
+            }
+
+            // The final consumer is gated behind Journaler, whose journaledSeq is advanced only
+            // after end-of-batch FileChannel.force(false). Therefore the ring's minimum gating
+            // sequence is a conservative durable watermark. In the current topology it is also
+            // BLP-applied; exposing the narrower post-journal/pre-BLP sequence would require the
+            // LmaxEngine/Journaler wiring owned by another lane.
+            long durableLocalSequence = ring.getMinimumGatingSequence();
+            long candidateCursor = consumed;
+            long candidatePrimarySequence = -1L;
+            while (candidateCursor < available) {
+                long next = candidateCursor + 1L;
+                int slot = (int) next & DURABLE_ACK_QUEUE_MASK;
+                if (durableLocalSequences[slot] > durableLocalSequence) {
+                    break;
+                }
+                candidatePrimarySequence = durablePrimarySequences[slot];
+                candidateCursor = next;
+            }
+
+            if (candidatePrimarySequence >= 0L) {
+                if (publishAck(candidatePrimarySequence, true)) {
+                    consumed = candidateCursor;
+                    durableConsumedCursor = consumed;
+                } else {
+                    LockSupport.parkNanos(1_000_000L);
+                }
+            } else {
+                LockSupport.parkNanos(100_000L);
+            }
+        }
+    }
+
+    private boolean publishAck(long disruptorSeq, boolean flush) {
+        try {
+            ackBuf.clear();
+            ackBuf.putLong(disruptorSeq);
+            conn.publish(NatsJournalReplicator.ACK_SUBJECT, ackBuf.array());
+            if (flush) {
+                // PING/PONG orders the reusable ACK buffer behind the server's processing of this
+                // publish. It also makes the stronger watermark visible promptly to the primary.
+                conn.flush(ACK_FLUSH_TIMEOUT);
+            }
+            return true;
+        } catch (Exception ex) {
+            log.warn("ACK publish failed at disruptorSeq {}: {}", disruptorSeq, ex.getMessage());
+            return false;
         }
     }
 }
