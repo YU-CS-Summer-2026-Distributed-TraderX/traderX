@@ -5,15 +5,15 @@ import Link from '@docusaurus/Link';
 import useBaseUrl from '@docusaurus/useBaseUrl';
 import {Icon} from './Icons';
 import {ExternalLink} from './Links';
-import {catalogSource, internalNav, repoBaseUrl} from './homepageData';
+import {catalogSource, internalNav, repoTreeUrl} from './homepageData';
 import styles from './TraderXHomepage.module.css';
 
 function TopBanner() {
   return (
     <div className={styles.topBanner}>
       <strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron
-      Raft cluster. Read the{' '}
-      <Link to="/docs/engineering/testing-strategy">testing strategy</Link>.
+      Raft cluster.{' '}
+      <Link to="/docs/engineering/whats-new">See what&rsquo;s new</Link>.
     </div>
   );
 }
@@ -37,7 +37,7 @@ function HeroNav() {
             {item.label}
           </Link>
         ))}
-        <ExternalLink href={repoBaseUrl} className={styles.navLink}>
+        <ExternalLink href={repoTreeUrl} className={styles.navLink}>
           GitHub
           <Icon name="external" />
         </ExternalLink>
@@ -94,14 +94,14 @@ export default function Hero() {
           {/* Its own sentence on its own line. Joined to the line above with an em dash, the link
               wrapped onto a new line by itself and read as a fragment. */}
           <p className={styles.heroCopyLink}>
-            <Link to="/docs/engineering/test-coverage">See how it is verified.</Link>
+            <Link to="/docs/engineering/whats-new">See what’s new.</Link>
           </p>
 
           <div className={styles.heroActions}>
             <Link to={catalogSource.liveEnvironmentsDocs} className={styles.primaryAction}>
               Live Demos
             </Link>
-            <ExternalLink href={repoBaseUrl} className={styles.secondaryAction}>
+            <ExternalLink href={repoTreeUrl} className={styles.secondaryAction}>
               GitHub Repository
             </ExternalLink>
           </div>
