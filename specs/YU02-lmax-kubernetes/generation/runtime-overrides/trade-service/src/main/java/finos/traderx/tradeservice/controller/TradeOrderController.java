@@ -84,34 +84,34 @@ public class TradeOrderController {
     }
   }
 
+  /**
+   * Only a 404 means "no such ticker". Every other 4xx propagates, as 5xx already did — collapsing
+   * them told the trader their symbol did not exist when reference-data had actually refused the
+   * request, which is a misleading rejection and hides the fault. The ticker is passed as a URI
+   * VARIABLE so a symbol carrying a path or query delimiter is carried by the request rather than
+   * changing it.
+   */
   private boolean validateTicker(String ticker) {
-    String url = this.referenceDataServiceAddress + "/stocks/" + ticker;
+    String url = this.referenceDataServiceAddress + "/stocks/{ticker}";
     try {
-      ResponseEntity<Security> response = this.restTemplate.getForEntity(url, Security.class);
+      ResponseEntity<Security> response = this.restTemplate.getForEntity(url, Security.class, ticker);
       log.info("Validate ticker {}", response.getBody());
       return true;
-    } catch (HttpClientErrorException ex) {
-      if (ex.getRawStatusCode() == 404) {
-        log.info("{} not found in reference data service.", ticker);
-      } else {
-        log.error(ex.getMessage(), ex);
-      }
+    } catch (HttpClientErrorException.NotFound ex) {
+      log.info("{} not found in reference data service.", ticker);
       return false;
     }
   }
 
+  /** Same rule as validateTicker: only a 404 is "no such account"; anything else is a real fault. */
   private boolean validateAccount(Integer id) {
-    String url = this.accountServiceAddress + "/account/" + id;
+    String url = this.accountServiceAddress + "/account/{id}";
     try {
-      ResponseEntity<Account> response = this.restTemplate.getForEntity(url, Account.class);
+      ResponseEntity<Account> response = this.restTemplate.getForEntity(url, Account.class, id);
       log.info("Validate account {}", response.getBody());
       return true;
-    } catch (HttpClientErrorException ex) {
-      if (ex.getRawStatusCode() == 404) {
-        log.info("Account {} not found in account service.", id);
-      } else {
-        log.error(ex.getMessage(), ex);
-      }
+    } catch (HttpClientErrorException.NotFound ex) {
+      log.info("Account {} not found in account service.", id);
       return false;
     }
   }
