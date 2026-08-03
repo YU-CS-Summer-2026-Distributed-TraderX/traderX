@@ -84,17 +84,54 @@ The tip still carries the un-dropped hunk, and the tip's own `eceefa36` (2026-07
 "Generation of that state fails". So `main` must take **home's** copy of this file; taking the tip's
 would ship a YU01 that cannot be generated at all.
 
-## The blocking decision
+## The decision: home's primitive `OrderSnapshot` — settled by the spec, not by preference
 
-**What shape is `OrderSnapshot`?** Home's is no-GC primitives; the tip's is boxed
-`Instant`/`BigDecimal`. `OrderMatcherService.listOrders` and `InMemoryOrderReadModel` both have to
-follow whichever is chosen, and `AccountTrade.java` / `InMemoryOrderReadModel.java` /
-`AccountTradeHandler.java` move as one unit with it.
+`OrderSnapshot`'s shape drives nine of the ten merges. It is **not** an open judgement call: YU01's
+own `spec.md` — the text is identical on both branches — already requires the answer.
 
-This is not a merge mechanic, it is a decision about what YU01 *is*. YU01 is the state whose stated
-point is the LMAX sequencer hot path, and the allocation gates are how that claim is currently
-tested — so boxing the snapshot is not obviously free. Whoever picks this up should settle that
-first and let the other nine merges follow from it.
+> The position store SHALL be an allocation-free primitive structure (no `HashMap`/autoboxing/
+> `BigDecimal`), subject to the no-GC and banned-API gates (NFR-09B02, SC-09B13).
+
+The state's purpose line commits it to "zero steady-state allocation (no-GC)", and it carries a
+whole `NGC` requirement namespace (`requirements/no-gc-conformance.md`) plus a user story asking for
+CI enforcement under Epsilon GC.
+
+The tip's `OrderSnapshot` is `Integer` ×4, `BigDecimal` ×2, `Instant` ×2, and it is **constructed on
+the hot path** — four construction sites in `LmaxEngine` (the BLP thread), plus the output-ring
+handlers. That is per-order allocation on the exact path the state exists to make allocation-free.
+So the tip's code violates the tip's own spec.
+
+**Why nobody noticed:** the YU01 layer carries **three** allocation-gate tests on home and **one** on
+the tip. The tip dropped the gates that would have failed on this. The violation is not absent
+there, it is unobserved — the same shape as the YU14 breakage.
+
+### What the merge actually is
+
+Home's `OrderSnapshot` is a **mutable flyweight**: `volatile` primitives, one object per order,
+updated in place through `updateFromEvent`, never reallocated (that is what `OutputValueCache` is
+for). `limitPx` / `lastExecPx` are `long` fixed-point ticks, matching the spec's "computed in `long`
+fixed-point on the hot path … rendered at the edge."
+
+So the work is **not** "de-box the tip's version". It is "express the tip's recovery additions
+against home's flyweight". The seam already exists: home's `fromRecord(int, OrderRecord)` /
+`toRecord()` is precisely the serialisation hook `SnapshotStore` and `JournalReader` need — very
+likely why home has it and the tip does not.
+
+**One detail to settle explicitly:** `BigDecimal limitPrice` can be null (market order); `long
+limitPx` cannot. Do not invent a sentinel — the project already has a convention for an absent price
+in this same long-ticks representation. See `KdbTapWriterTest.pxNoneRendersAsZeroNotNegative` and the
+engine's `PRICE_MISSING` reject path.
+
+### The interlock set is closed at eleven files
+
+Confirmed against both branches. Home's eight — `OrderSnapshot`, `InMemoryOrderReadModel`,
+`LmaxEngine`, `OrderMatcherService`, `ProjectorHandler`, `TradeSubmitHandler`,
+`AccountTradeHandler`, `OutputValueCache` — plus the tip's `AccountTrade`, `TradeOrder` and
+`NatsBridgeHandler`. All eleven live in the YU01 layer; nothing outside it participates, so the
+merge does not reach into another state's layer.
+
+(In the composed YU15 tree ten files reference `OrderSnapshot`, including `DbWarmupReader` and
+`TradeBlotterHandler` — but those come from later layers and are not part of this merge.)
 
 ## Verification the fix needs
 
