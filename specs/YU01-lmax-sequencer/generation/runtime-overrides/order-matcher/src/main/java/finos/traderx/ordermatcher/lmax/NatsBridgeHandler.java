@@ -4,6 +4,8 @@ import com.lmax.disruptor.EventHandler;
 import finos.traderx.messaging.PubSubException;
 import finos.traderx.messaging.Publisher;
 import finos.traderx.ordermatcher.api.OrderResponse;
+import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.ordermatcher.model.OrderStatus;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,10 +16,15 @@ import org.slf4j.LoggerFactory;
 public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
     private static final Logger log = LoggerFactory.getLogger(NatsBridgeHandler.class);
     private static final String ALL_ORDERS_TOPIC = "/orders";
+    private static final OrderStatus[] STATUSES = OrderStatus.values();
+    private static final OrderSide[] SIDES = OrderSide.values();
 
     private final Publisher<OrderResponse> orderPublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final OrderResponse payload = new OrderResponse();
+    private final AccountTopicCache orderTopics = new AccountTopicCache("/orders");
+    private final OutputValueCache values = new OutputValueCache();
 
     public NatsBridgeHandler(Publisher<OrderResponse> orderPublisher, SymbolTable symbols,
                              InMemoryOrderReadModel readModel) {
@@ -38,15 +45,26 @@ public final class NatsBridgeHandler implements EventHandler<OutputEvent> {
     }
 
     private void publishOrder(OutputEvent e) {
-        OrderSnapshot snapshot = OrderSnapshot.fromEvent(e, symbols);
-        OrderResponse payload = OrderResponse.from(snapshot.toRecord(), Px.toBigDecimal(e.marketPx));
-        String accountTopic = "/accounts/" + e.accountId + "/orders";
+        payload.setOrderId(values.orderIdFor(e.orderRef));
+        payload.setAccountId(e.accountId);
+        payload.setSecurity(symbols.tickerFor(e.securityId));
+        payload.setSide(SIDES[e.side]);
+        payload.setQuantity(e.quantity);
+        payload.setRemainingQuantity(e.remainingQty);
+        payload.setLimitPrice(values.priceFor(e.limitPx));
+        payload.setStatus(STATUSES[e.status]);
+        payload.setCreatedAt(values.instantFor(e.createdAtMillis));
+        payload.setUpdatedAt(values.instantFor(e.updatedAtMillis));
+        payload.setLastExecutionPrice(values.priceFor(e.lastExecPx));
+        payload.setLastFillQuantity(e.lastFillQty == 0 ? null : e.lastFillQty);
+        payload.setMarketPrice(values.priceFor(e.marketPx));
+        String accountTopic = orderTopics.topicFor(e.accountId);
         try {
             orderPublisher.publish(accountTopic, payload);
             orderPublisher.publish(ALL_ORDERS_TOPIC, payload);
         } catch (PubSubException ex) {
             readModel.natsErrors().increment();
-            log.warn("Unable to publish order update for {} on {}/{}", snapshot.orderId,
+            log.warn("Unable to publish order update for {} on {}/{}", payload.getOrderId(),
                 accountTopic, ALL_ORDERS_TOPIC, ex);
         }
     }

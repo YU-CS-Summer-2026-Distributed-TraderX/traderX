@@ -160,8 +160,8 @@ public class OrderMatcherService {
             ? statusFilter.trim().toLowerCase(Locale.ROOT) : "open";
         return readModel.all().stream()
             .filter(snapshot -> filterByStatus(snapshot, normalizedStatus))
-            .filter(snapshot -> accountIdFilter == null || accountIdFilter.equals(snapshot.accountId))
-            .sorted(Comparator.comparing((OrderSnapshot snapshot) -> snapshot.updatedAt).reversed())
+            .filter(snapshot -> accountIdFilter == null || accountIdFilter == snapshot.accountId)
+            .sorted(Comparator.comparingLong((OrderSnapshot snapshot) -> snapshot.updatedAtMillis).reversed())
             .map(this::toResponse)
             .toList();
     }
