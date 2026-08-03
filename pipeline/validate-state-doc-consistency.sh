@@ -48,7 +48,7 @@ done < <(
     in_block && /^- `/ {
       line=$0
       gsub(/^- `/, "", line)
-      gsub(/`$/, "", line)
+      sub(/`.*$/, "", line)
       print line
     }
   ' "${SPECS_README}"
