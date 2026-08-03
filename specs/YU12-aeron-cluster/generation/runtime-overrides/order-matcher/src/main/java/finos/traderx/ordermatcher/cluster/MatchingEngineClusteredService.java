@@ -84,7 +84,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** Egress ack kind for symbol registration (outside OutputEvent's 1..8 range). */
     public static final byte KIND_SYMBOL_REGISTERED = 100;
 
-    static final int EGRESS_ACK_LENGTH = 24; // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20
+    static final int EGRESS_ACK_LENGTH = 24; // long appliedSeq, int orderRef, byte kind, long tradeSeq 13..20, byte riskReason 21
 
     /** Snapshot transport seam: production offers to the cluster snapshot publication; tests
      *  capture buffers directly. One call per record. */
@@ -488,6 +488,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             ackBuffer.putInt(8, out.orderRef);
             ackBuffer.putByte(12, out.kind);
             ackBuffer.putLong(13, out.tradeSeq);
+            // RiskReason ordinal in the free byte at 21 (buffer is 24) so the gateway can answer a
+            // synchronous /trades reject with WHY (UI create-order path); existing readers ignore it.
+            ackBuffer.putByte(21, out.riskReason);
             offerEgress(session);
         }
         outputConsumed.set(cursor);
