@@ -13,7 +13,7 @@ import java.math.RoundingMode;
 import java.util.Date;
 
 /**
- * Booked-trade read-model row (TRADES). state YU01: written by the order-matcher
+ * Booked-trade read-model row (TRADES). State 009b: written by the order-matcher
  * read-model Projector off the output ring (FR-09B22) instead of inline by trade-processor.
  * Schema and shape are identical to 009 — only the writer changed (the {@code PRICE} column
  * carries the stamped execution price, FR-09B40 contract parity).
@@ -109,6 +109,10 @@ public class Trade implements Serializable {
 
   public void setPrice(BigDecimal price) {
     this.price = price == null ? null : price.setScale(3, RoundingMode.HALF_UP);
+  }
+
+  public void setPreScaledPrice(BigDecimal price) {
+    this.price = price;
   }
 
   public Date getUpdated() {
