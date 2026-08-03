@@ -2673,6 +2673,52 @@ EOF
 
 write_clone_runbook() {
   case "${STATE_ID}" in
+    YU[0-9][0-9]-*)
+      # Every YU02..YU15 start script chains, transitively, to the 014 kubernetes harness
+      # (YU04->YU03->014, YU10->YU09->YU08->014, YU11..YU15->YU10->...), and
+      # copy_snapshot_script_with_deps follows those /scripts/*.sh references, so the whole chain is
+      # in the snapshot. That makes 014's prerequisites and endpoints the accurate ones here. The
+      # wrappers are state-local, so the commands are the same for every state in the lineage and
+      # this arm is parameterised rather than repeated fifteen times.
+      # YU01 is excluded: it forks from 009 and has its own self-contained compose harness.
+      cat > "${SNAPSHOT_DIR}/RUN_FROM_CLONE.md" <<EOF
+# Run From Clone
+
+Generated snapshot of TraderX state \`${STATE_ID}\`.
+
+Prerequisites:
+- Docker
+- kubectl
+- jq
+- Kind (default) or Minikube
+
+Start:
+
+\`\`\`bash
+./start-env.sh --provider kind
+\`\`\`
+
+This runs \`scripts/start-state-${STATE_ID}-generated.sh\`, which delegates down the YU lineage to
+the state-014 Kubernetes harness carried in this snapshot.
+
+Endpoints:
+- UI / edge: \`http://localhost:8080\`
+- API explorer (edge): \`http://localhost:8080/api/docs\`
+
+Status / stop:
+
+\`\`\`bash
+./status-env.sh --provider kind
+./stop-env.sh --provider kind
+\`\`\`
+
+Functional smoke test:
+
+\`\`\`bash
+./test-env.sh
+\`\`\`
+EOF
+      ;;
     001-baseline-uncontainerized-parity)
       cat > "${SNAPSHOT_DIR}/RUN_FROM_CLONE.md" <<'EOF'
 # Run From Clone
