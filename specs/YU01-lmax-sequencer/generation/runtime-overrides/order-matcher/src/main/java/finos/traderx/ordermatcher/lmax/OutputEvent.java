@@ -55,6 +55,33 @@ public final class OutputEvent {
         return new OutputEvent();
     }
 
+    public void copyFrom(OutputEvent source) {
+        inputSeq = source.inputSeq;
+        kind = source.kind;
+        flags = source.flags;
+        publishNats = source.publishNats;
+        orderRef = source.orderRef;
+        accountId = source.accountId;
+        securityId = source.securityId;
+        side = source.side;
+        quantity = source.quantity;
+        remainingQty = source.remainingQty;
+        limitPx = source.limitPx;
+        status = source.status;
+        lastExecPx = source.lastExecPx;
+        lastFillQty = source.lastFillQty;
+        createdAtMillis = source.createdAtMillis;
+        updatedAtMillis = source.updatedAtMillis;
+        marketPx = source.marketPx;
+        tradeQty = source.tradeQty;
+        tradeSeq = source.tradeSeq;
+        tradePx = source.tradePx;
+        positionQty = source.positionQty;
+        positionAvgCostTicks = source.positionAvgCostTicks;
+        averageCostBasisPx = source.averageCostBasisPx;
+        ingressNanos = source.ingressNanos;
+    }
+
     public static boolean isOrderLifecycleKind(byte kind) {
         return kind >= KIND_ORDER_ACCEPTED && kind <= KIND_ORDER_CANCELED;
     }

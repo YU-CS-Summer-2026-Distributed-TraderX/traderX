@@ -19,6 +19,8 @@ public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
     private final Publisher<TradeOrder> tradePublisher;
     private final SymbolTable symbols;
     private final InMemoryOrderReadModel readModel;
+    private final TradeOrder payload = new TradeOrder();
+    private final OutputValueCache values = new OutputValueCache();
 
     public TradeSubmitHandler(Publisher<TradeOrder> tradePublisher, SymbolTable symbols,
                               InMemoryOrderReadModel readModel) {
@@ -35,7 +37,7 @@ public final class TradeSubmitHandler implements EventHandler<OutputEvent> {
         if (e.kind != OutputEvent.KIND_TRADE_BOOKED) {
             return;
         }
-        TradeOrder payload = TradeOrder.fromEvent(e, symbols);
+        payload.copyFromEvent(e, symbols, values);
         try {
             tradePublisher.publish(TRADES_TOPIC, payload);
         } catch (PubSubException ex) {
