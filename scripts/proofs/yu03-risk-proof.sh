@@ -39,7 +39,7 @@ MODE="${1:-all}"
 CHECKS=0
 FAILED=0
 
-vlog(){ (( VERBOSE )) && printf '%s\n' "$@" || true; }
+vlog(){ (( VERBOSE )) && printf '%s\n' "$@" >&2 || true; }
 
 order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
   local r st rs got
