@@ -12,8 +12,16 @@ if [[ -z "${STATE_ID}" ]]; then
   exit 1
 fi
 
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+STATE_RANK="$(traderx_state_rank "${ROOT}/catalog/state-catalog.json" "${STATE_ID}")" || {
+  echo "[fail] unable to rank state id: ${STATE_ID}"
+  exit 1
+}
+
 ROOT="${ROOT}" \
 STATE_ID="${STATE_ID}" \
+STATE_RANK="${STATE_RANK}" \
 TARGET_ROOT="${TARGET_ROOT}" \
 COMPONENTS_ROOT="${COMPONENTS_ROOT}" \
 node <<'NODE'
@@ -24,31 +32,16 @@ const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
 
-function stateNumber(value) {
-  const numbered = /^([0-9]{3})-/.exec(value || '');
-  if (numbered) {
-    return Number.parseInt(numbered[1], 10);
-  }
-  // The YU lineage uses YUnn ids, which this returned 0 for — and 0 is the "unparseable" sentinel,
-  // so every YU state failed here before any of its metadata was looked at. Rank YU01..YU15 as
-  // 101..115: above the whole numbered lineage and order-preserving within itself, so the
-  // thresholds below (all of the form "is this state at or past N?") answer yes, which is correct
-  // for a lineage that forks off after the numbered states. Same rank the pipeline shell scripts use.
-  const yu = /^YU([0-9]{2})-/.exec(value || '');
-  if (yu) {
-    return 100 + Number.parseInt(yu[1], 10);
-  }
-  return 0;
-}
-
 function fail(message) {
   console.error(`[fail] ${message}`);
   process.exit(1);
 }
 
-const stateNo = stateNumber(stateId);
-if (stateNo === 0) {
-  fail(`unable to parse state number from id: ${stateId}`);
+// Ranked by pipeline/lib/state-rank.sh and passed in, so the producer of state-ui.json and this
+// asserter of it read the same number by construction rather than by two parsers agreeing.
+const stateNo = Number.parseInt(process.env.STATE_RANK || '', 10);
+if (!Number.isInteger(stateNo)) {
+  fail(`STATE_RANK not supplied for ${stateId}`);
 }
 
 const requiredBase = ['account-service', 'reference-data', 'position-service', 'trade-service', 'people-service'];

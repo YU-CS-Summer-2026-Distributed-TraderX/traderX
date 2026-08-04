@@ -104,8 +104,10 @@ done
   exit 1
 }
 
-state_num="${STATE_ID%%-*}"
-[[ "${state_num}" =~ ^[0-9]+$ ]] || fail "invalid state id format: ${STATE_ID}"
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+state_num="$(traderx_state_rank "${ROOT}/catalog/state-catalog.json" "${STATE_ID}")" \
+  || fail "invalid state id format: ${STATE_ID}"
 state_num_decimal=$((10#${state_num}))
 
 [[ -d "${TARGET_ROOT}" ]] || fail "target root not found: ${TARGET_ROOT}"

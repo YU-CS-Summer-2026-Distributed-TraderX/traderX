@@ -12,8 +12,16 @@ if [[ -z "${STATE_ID}" ]]; then
   exit 1
 fi
 
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+STATE_RANK="$(traderx_state_rank "${ROOT}/catalog/state-catalog.json" "${STATE_ID}")" || {
+  echo "[fail] unable to rank state id: ${STATE_ID}"
+  exit 1
+}
+
 ROOT="${ROOT}" \
 STATE_ID="${STATE_ID}" \
+STATE_RANK="${STATE_RANK}" \
 TARGET_ROOT="${TARGET_ROOT}" \
 COMPONENTS_ROOT="${COMPONENTS_ROOT}" \
 TRADERX_SOURCE_REPO_URL="${TRADERX_SOURCE_REPO_URL:-}" \
@@ -36,23 +44,6 @@ const activeState = stateById.get(stateId);
 
 if (!activeState) {
   throw new Error(`state not found in catalog: ${stateId}`);
-}
-
-function stateNumber(value) {
-  const numbered = /^([0-9]{3})-/.exec(value || '');
-  if (numbered) {
-    return Number.parseInt(numbered[1], 10);
-  }
-  // Must stay identical to the parser in validate-generated-ui-status-checks.sh: this function
-  // decides which features get written into state-ui.json and that one asserts the same
-  // thresholds against the result. While YU ids parsed as 0 here, every YU state was emitted with
-  // statusPage/apiExplorer/pubSubInspector false — and the validator could not report it, because
-  // it failed on the same unparseable id before reaching the comparison.
-  const yu = /^YU([0-9]{2})-/.exec(value || '');
-  if (yu) {
-    return 100 + Number.parseInt(yu[1], 10);
-  }
-  return 0;
 }
 
 function branchUrlEncode(branchName) {
@@ -119,7 +110,12 @@ function buildLineage(stateEntry) {
 
 const repoBaseUrl = deriveRepoBaseUrl();
 const activeBranch = activeState.publish?.branch || '';
-const stateNo = stateNumber(activeState.id);
+// Ranked by pipeline/lib/state-rank.sh and passed in, so this and the validator that asserts
+// against the result cannot drift apart -- there is one definition, in one language.
+const stateNo = Number.parseInt(process.env.STATE_RANK || '', 10);
+if (!Number.isInteger(stateNo)) {
+  throw new Error(`STATE_RANK not supplied for ${stateId}`);
+}
 const statusEnabled = stateNo >= 2;
 const apiExplorerEnabled = stateNo >= 2;
 const pubSubInspectorEnabled = stateNo >= 8;

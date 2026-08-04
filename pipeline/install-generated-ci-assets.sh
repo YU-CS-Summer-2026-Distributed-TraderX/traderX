@@ -28,29 +28,10 @@ if [[ -z "${state_entry}" ]]; then
   exit 1
 fi
 
-derive_state_num() {
-  local cursor="$1"
-  local visited=""
-  while [[ -n "${cursor}" ]]; do
-    if [[ ",${visited}," == *",${cursor},"* ]]; then
-      break
-    fi
-    visited="${visited},${cursor}"
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
 
-    local direct="${cursor%%-*}"
-    if [[ "${direct}" =~ ^[0-9]+[a-z]?$ ]]; then
-      direct="${direct%%[a-z]*}"
-      printf '%s\n' "${direct}"
-      return 0
-    fi
-
-    cursor="$(jq -r --arg id "${cursor}" '.states[] | select(.id == $id) | (.previous[0] // "")' "${CATALOG}")"
-  done
-
-  return 1
-}
-
-state_num="$(derive_state_num "${STATE_ID}")" || {
+state_num="$(traderx_state_rank "${CATALOG}" "${STATE_ID}")" || {
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
 }
@@ -1023,7 +1004,6 @@ EOF
 write_ghcr_run_bundle() {
   local namespace="$1"
   local bundle_dir="${TARGET_ROOT}/runtime/ghcr/${STATE_ID}"
-  local state_num="${STATE_ID%%-*}"
   mkdir -p "${bundle_dir}"
 
   {
