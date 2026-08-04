@@ -7,6 +7,10 @@ STATE_ID="${1:-}"
 TARGET_ROOT="${2:-${GENERATED_ROOT}/code/target-generated}"
 SCRIPTS_SRC="${ROOT}/scripts"
 SCRIPTS_DST="${TARGET_ROOT}/scripts"
+STATE_CATALOG="${ROOT}/catalog/state-catalog.json"
+
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
 
 if [[ -z "${STATE_ID}" ]]; then
   echo "usage: bash pipeline/install-generated-runtime-harness.sh <state-id> [target-root]"
@@ -725,7 +729,9 @@ validate_wrapper_compose_project_alignment() {
   local action="$1"
   local target_script="$2"
   local state_num="${STATE_ID%%-*}"
-  [[ "${state_num}" =~ ^[0-9]+$ ]] || return 0
+  # Builds a NAME (traderx-state-<prefix>), not a rank comparison, so it keeps the id's own
+  # prefix -- the lineage rank would name a compose project no script declares.
+  [[ "${state_num}" =~ ^([0-9]+|YU[0-9][0-9])$ ]] || return 0
 
   local script_path="${SCRIPTS_DST}/${target_script}"
   [[ -f "${script_path}" ]] || return 0
@@ -1402,9 +1408,9 @@ EOF
 }
 
 write_generated_agentic_docs() {
-  local state_num="${STATE_ID%%-*}"
-  state_num="${state_num%%[a-z]*}"
-  if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
+  local state_num
+  state_num="$(traderx_state_rank "${STATE_CATALOG}" "${STATE_ID}")" || return
+  if (( state_num < 3 )); then
     return
   fi
 
