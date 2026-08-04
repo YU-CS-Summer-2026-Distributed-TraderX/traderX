@@ -94,7 +94,7 @@ not force-sampled while a rejected one always is.
 
 ## Proof
 
-`scripts/proofs/yu15-otel-trace-join.sh`, cataloged in the proofs README. It is built to be able to
+`scripts/proofs/yu13-otel-trace-join.sh`, cataloged in the proofs README. It is built to be able to
 fail: it derives the expected trace id **and** the expected parent span id from the ClOrdID alone —
 in Python, with no input from either server, reimplementing the gateway's FNV-1a key hash and
 `OrderTrace`'s splitmix64 — then demands Tempo return exactly that trace, joined across both
@@ -336,7 +336,7 @@ drops rather than prevent any.
 
 ## Proof for the follow-ups
 
-`scripts/proofs/yu15-otel-reject-trace-log-join.sh`. Falsifiable on the same principle as the
+`scripts/proofs/yu13-otel-reject-trace-log-join.sh`. Falsifiable on the same principle as the
 original: every id is computed in Python from the ClOrdID alone, and Tempo and Loki are asked for
 exactly those. It runs with head sampling genuinely on (mask 127 on **both** tiers, restored on
 exit) and submits two orders that both *fail* the head verdict — one rejected, one accepted:

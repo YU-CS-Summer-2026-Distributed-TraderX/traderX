@@ -74,8 +74,8 @@ Almost every end-to-end proof has an in-process test asserting the same property
 | `yu03-risk-demo.sh` | two-tier risk gate, control plane, kill-switch | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
 | `yu04-live-delta.sh`, `yu04-offline-catchup.sh` | durable control feeds, bootstrap catch-up | `ControlFeedSubscriberTest`, `ControlFeedBootstrapStateTest` |
 | `yu15-risk-extract.sh`, `yu15-option-persistence.sh` | sequence-addressed, byte-identical EOD extract | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
-| `yu15-otel-trace-join.sh` | one order = one trace across consensus, trace id **derived** not carried | `OrderTraceTest`, `SpanSinkTest` |
-| `yu15-otel-reject-trace-log-join.sh` | a rejected order is traced even when head sampling dropped it; its log line and trace share the derived id | `OrderTraceTest`, `RejectLogCapTest` |
+| `yu13-otel-trace-join.sh` | one order = one trace across consensus, trace id **derived** not carried | `OrderTraceTest`, `SpanSinkTest` |
+| `yu13-otel-reject-trace-log-join.sh` | a rejected order is traced even when head sampling dropped it; its log line and trace share the derived id | `OrderTraceTest`, `RejectLogCapTest` |
 | `failover-nodeclock.sh` (HA) | sub-second failover, zero order loss | `ThreeMemberClusterTest` (Tier 3, dedicated) |
 | `yu13-readmodel-effect-end.sh` | order read model at the SQL effect end (place→NEW→cancel→CANCELED) | `ProjectorHandlerTest`, `OrderFeedHandler` rejection tests |
 | `yu06-quality-gate.sh`, `yu06-consumer-halt.sh` | EOD gate blocks flagged publish; P&L consumer halts fail-safe | EOD service/quality-checker unit tests |

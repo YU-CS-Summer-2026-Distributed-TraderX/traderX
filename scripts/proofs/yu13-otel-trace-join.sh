@@ -39,9 +39,30 @@ ok() { echo "[ok] $*"; }
 command -v python3 >/dev/null || fail "python3 required"
 
 curl -sf --max-time 5 "${MATCHER_URL}/ready" >/dev/null || fail "gateway not ready at ${MATCHER_URL}"
-curl -sf --max-time 5 "${TEMPO_URL}/status/version" >/dev/null 2>&1 ||
-  curl -sf --max-time 5 "${TEMPO_URL}/api/echo" >/dev/null 2>&1 ||
-  echo "[warn] could not probe Tempo at ${TEMPO_URL}; continuing"
+
+# PRECONDITION, not a warning. start-cluster-kind.sh deploys only the trading tier, so the
+# observability stack is absent by default and the trace pipeline dies SILENTLY: orders book
+# normally, spans go nowhere, and the only symptom is an empty Tempo. This probe used to warn and
+# continue, which turned that into a Tempo 404 reported as "the gateway and member did NOT derive
+# the same identity" — a precondition failure wearing the verdict of a real defect. Tempo is the
+# right thing to probe (not the collector): it is what the assertions below actually query.
+need_obs() { # url  name  port-forward-target
+  local i rc
+  for i in $(seq 1 "${OBS_WAIT_TRIES:-10}"); do
+    rc=0; curl -sf --max-time 5 "$1" >/dev/null 2>&1 || rc=$?
+    if [[ ${rc} -eq 0 ]]; then return 0; fi
+    # 7 = nothing listening. No stack and no port-forward look identical from here, and neither
+    # heals on its own — retrying is theatre. Anything else (a 503 from a Tempo that is still
+    # coming up after a fresh forward) is worth waiting out.
+    if [[ ${rc} -eq 7 ]]; then break; fi
+    sleep 2
+  done
+  echo "[FAIL] $2 unreachable at $1 — the observability stack is not up, or not forwarded." >&2
+  echo "[hint] bash scripts/yu15/start-observability-kind.sh" >&2
+  echo "[hint] ${K} port-forward $3 &" >&2
+  exit 1
+}
+need_obs "${TEMPO_URL}/ready" Tempo "svc/tempo 3200:3200"
 
 ref_before="$(curl -s --max-time 5 "${MATCHER_URL}/metrics" | awk '/traderx_gateway_pipeline_total\{stage="ack_completed"\}/{print $2}')"
 ref_before="${ref_before:-0}"

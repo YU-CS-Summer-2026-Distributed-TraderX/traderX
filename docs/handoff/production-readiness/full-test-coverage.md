@@ -131,7 +131,7 @@ infrastructure limit, not a flakiness one.
 | FIX ingress | `yu10-fix-session`, `yu13-fix-cancel.mjs` | kind |
 | Order book / lifecycle | `yu13-cancel-ingress`, `yu13-clordid-suppression`, `yu13-stp-and-replace`, `yu13-readmodel-effect-end` | kind |
 | Options / risk extract | `seed-option-chain`, `yu15-option-persistence`, `yu15-risk-extract` | kind |
-| Observability | `yu15-otel-trace-join`, `yu15-otel-reject-trace-log-join` | kind |
+| Observability | `yu13-otel-trace-join`, `yu13-otel-reject-trace-log-join` | kind |
 | **HA / DR / consensus** | `yu12-gke-recovery`, `yu12-gke-failover-transparency`, `yu12-gke-cross-epoch-idreuse`, `yu12-gke-restore-from-gcs`, `yu13-gke-replace-proof`, `failover-nodeclock` | **GKE** |
 
 (`yu05-common.sh` is a shared library, not a proof. `seed-option-chain.sh` is catalogued but is setup

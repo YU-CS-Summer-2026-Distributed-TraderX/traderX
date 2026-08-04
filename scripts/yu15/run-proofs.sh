@@ -42,8 +42,8 @@ PROOFS=(
   yu13-readmodel-effect-end
   yu15-option-persistence
   yu15-risk-extract
-  yu15-otel-trace-join
-  yu15-otel-reject-trace-log-join
+  yu13-otel-trace-join
+  yu13-otel-reject-trace-log-join
   yu10-fix-session
   yu08-algo-slicing          # needs the algo engine up; scaled in below
   yu13-cancel-ingress        # rolls the gateway
