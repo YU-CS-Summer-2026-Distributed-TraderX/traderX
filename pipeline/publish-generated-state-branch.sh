@@ -25,21 +25,14 @@ if [[ -z "${STATE_ID}" ]]; then
   usage
   exit 1
 fi
-state_prefix="${STATE_ID%%-*}"
-# Numeric thresholds treat letter-suffixed sibling states (e.g. 009b-*) as
-# their numeric base; script-name lookups use the full STATE_ID prefix.
-if [[ "${state_prefix}" =~ ^[0-9]+[a-z]?$ ]]; then
-  state_num="${state_prefix%%[a-z]*}"
-elif [[ "${state_prefix}" =~ ^YU[0-9][0-9]$ ]]; then
-  # The YU lineage forks off after 014, so every numeric threshold in this script -- all of which
-  # ask "is this state at or past N?" -- must answer yes for a YU state. Rank YU01..YU15 as
-  # 101..115: above the whole numbered lineage, and order-preserving within itself. Script-name
-  # lookups are unaffected; they glob on STATE_ID's own prefix ("YU07"), not on this rank.
-  state_num="1${state_prefix#YU}"
-else
+# Numeric thresholds here compare a lineage rank; script-name lookups elsewhere glob on
+# STATE_ID's own prefix ("YU07") and are deliberately not routed through this.
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+state_num="$(traderx_state_rank "${CATALOG}" "${STATE_ID}")" || {
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
-fi
+}
 shift || true
 
 BRANCH_OVERRIDE=""
