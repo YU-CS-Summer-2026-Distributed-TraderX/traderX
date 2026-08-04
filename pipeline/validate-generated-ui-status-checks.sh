@@ -25,8 +25,20 @@ const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
 
 function stateNumber(value) {
-  const match = /^([0-9]{3})-/.exec(value || '');
-  return match ? Number.parseInt(match[1], 10) : 0;
+  const numbered = /^([0-9]{3})-/.exec(value || '');
+  if (numbered) {
+    return Number.parseInt(numbered[1], 10);
+  }
+  // The YU lineage uses YUnn ids, which this returned 0 for — and 0 is the "unparseable" sentinel,
+  // so every YU state failed here before any of its metadata was looked at. Rank YU01..YU15 as
+  // 101..115: above the whole numbered lineage and order-preserving within itself, so the
+  // thresholds below (all of the form "is this state at or past N?") answer yes, which is correct
+  // for a lineage that forks off after the numbered states. Same rank the pipeline shell scripts use.
+  const yu = /^YU([0-9]{2})-/.exec(value || '');
+  if (yu) {
+    return 100 + Number.parseInt(yu[1], 10);
+  }
+  return 0;
 }
 
 function fail(message) {

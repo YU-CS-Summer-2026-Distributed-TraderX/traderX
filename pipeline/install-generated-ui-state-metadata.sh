@@ -39,8 +39,20 @@ if (!activeState) {
 }
 
 function stateNumber(value) {
-  const match = /^([0-9]{3})-/.exec(value || '');
-  return match ? Number.parseInt(match[1], 10) : 0;
+  const numbered = /^([0-9]{3})-/.exec(value || '');
+  if (numbered) {
+    return Number.parseInt(numbered[1], 10);
+  }
+  // Must stay identical to the parser in validate-generated-ui-status-checks.sh: this function
+  // decides which features get written into state-ui.json and that one asserts the same
+  // thresholds against the result. While YU ids parsed as 0 here, every YU state was emitted with
+  // statusPage/apiExplorer/pubSubInspector false — and the validator could not report it, because
+  // it failed on the same unparseable id before reaching the comparison.
+  const yu = /^YU([0-9]{2})-/.exec(value || '');
+  if (yu) {
+    return 100 + Number.parseInt(yu[1], 10);
+  }
+  return 0;
 }
 
 function branchUrlEncode(branchName) {
