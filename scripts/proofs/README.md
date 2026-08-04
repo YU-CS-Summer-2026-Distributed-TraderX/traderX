@@ -13,7 +13,7 @@ in-process on every commit by the JUnit tests named in the "CI counterpart" colu
 ## How to run
 
 Operator-driven against a live stack (kind unless noted GKE). Most take no arguments; some take a
-sub-command (e.g. `yu03-risk-demo.sh controls`). Bring the target state up first (see the state's
+sub-command (e.g. `yu03-risk-proof.sh controls`). Bring the target state up first (see the state's
 `quickstart.md`), then:
 
 ```bash
@@ -23,13 +23,114 @@ bash scripts/proofs/<script>.sh
 Prerequisites a script needs (port-forwards, a JWT, kube context) are documented in its own header
 comment. The four `yu05-*` proofs share [`yu05-common.sh`](yu05-common.sh) (sourced automatically).
 
+## Running them by hand: use this order
+
+`scripts/yu15/run-proofs.sh` runs the whole suite and **re-establishes and verifies all six
+port-forwards before every proof**, so the order in its `PROOFS` array is optimised for a runner
+that heals itself. Running them one at a time, you are the healer — and that order is the wrong one
+for you. This one is ordered so a forward dies as rarely as possible.
+
+### What actually kills a port-forward
+
+`set env` triggers a rollout. That is not obvious from reading the script, and it is the usual
+reason a proof "fails" on a system that is fine.
+
+| Proof | Disruptive operation | Forward it kills |
+|---|---|---|
+| `yu06-quality-gate` | `set env deploy/trade-processor` | **18091** |
+| `yu06-consumer-halt` | `set env deploy/trade-processor` | **18091** |
+| `yu13-otel-reject-trace-log-join` | `set env deployment/cluster-gateway` | **18110** |
+| `yu13-cancel-ingress` | `set image deploy/cluster-gateway` | **18110** |
+| `yu13-stp-and-replace` | `set image` gateway **and** statefulset | **18110**, plus a fresh epoch |
+| `yu15-risk-extract` | `delete pod order-matcher-cluster-2` | none — a member, not the gateway |
+
+The other thirteen disrupt nothing.
+
+### Two constraints that are not about forwards
+
+- **`yu08-algo-slicing` poisons every counter-exact proof.** It starts continuous algo traffic, and
+  `yu13-readmodel-effect-end` asserts `next_order_ref` moves by *exactly 2*. The algo engine has
+  been observed moving it by 24 mid-proof, failing a proof about a system that was behaving
+  correctly. Keep `execution-algo-engine` scaled to 0 until yu08, and scale it back to 0 after.
+- **`yu13-stp-and-replace` mints a fresh epoch**, which takes the seeded risk state with it.
+  Anything run afterwards needs `scripts/yu15/seed-proof-fixtures.sh` again. It goes last.
+
+### The order
+
+Bring up the rig, seed, quiet it, and open three forwards:
+
+```bash
+MATCHER_URL=http://localhost:18110 bash scripts/yu15/seed-proof-fixtures.sh
+kubectl -n traderx --context kind-traderx-yu12-cluster scale deploy/execution-algo-engine --replicas=0
+# separate terminals:
+kubectl -n traderx --context kind-traderx-yu12-cluster port-forward svc/order-matcher   18110:18110
+kubectl -n traderx --context kind-traderx-yu12-cluster port-forward deploy/trade-processor 18091:18091
+kubectl -n traderx --context kind-traderx-yu12-cluster port-forward svc/reference-data   18085:18085
+```
+
+**Block 1 — nothing disrupts anything (run straight through)**
+
+```
+yu03-risk-proof                 yu05-auth-entitlements        yu15-option-persistence
+yu05-settlement                 yu13-clordid-suppression      yu10-fix-session
+yu05-recon                      yu13-readmodel-effect-end
+yu05-regulatory-reproducible
+```
+
+**Block 2 — reference-data (already forwarded)**
+
+```
+yu04-live-delta                 yu04-offline-catchup
+```
+
+**Block 3 — observability.** Needs the stack and forwards on 3200/3100/3000:
+
+```bash
+bash scripts/yu15/start-observability-kind.sh
+```
+```
+yu13-otel-trace-join
+yu13-otel-reject-trace-log-join      <- rolls the gateway
+```
+→ **restart the 18110 forward**
+
+**Block 4 — trade-processor rollers**
+
+```
+yu06-quality-gate               yu06-consumer-halt
+```
+→ **restart the 18091 forward**
+
+**Block 5 — destructive, in increasing order of damage**
+
+```
+yu15-risk-extract        kills one member; it recovers on its own
+yu08-algo-slicing        starts algo traffic — scale the engine back to 0 afterwards
+yu13-cancel-ingress      rolls the gateway            -> restart 18110
+yu13-stp-and-replace     fresh epoch                  -> re-run seed-proof-fixtures.sh
+```
+
+That is **two forward restarts** for the whole suite, against six or more if you follow the
+runner's order by hand.
+
+### When a proof fails, check these before believing it
+
+1. **Is the forward alive?** `curl -s -o /dev/null -w '%{http_code}' localhost:18110/ready` — a
+   `000` is a dead tunnel, not a defect. Anything run after a roller needs its forward remade.
+2. **Is the image the baseline?** A leftover `traderx/cluster-node:yu15-stp` or `:yu15-pre` from an
+   interrupted run makes proofs report a *different build's* behaviour, truthfully. Check both the
+   StatefulSet and the gateway.
+3. **Are the fixtures seeded?** On this tier an account or security exists only once sequenced, and
+   most proofs count effects rather than inspecting rejections — so a missing fixture surfaces as a
+   false accusation about the system, not as `UNKNOWN_ACCOUNT`.
+
 ## The proofs
 
 ### Risk gateway & durable control feeds (YU03–YU04)
 
 | Script | What it proves (falsifiable claim) | CI counterpart |
 |---|---|---|
-| [`yu03-risk-demo.sh`](yu03-risk-demo.sh) | The two-tier in-memory risk gateway rejects orders that breach a control (position/notional/restriction/kill-switch); each reject control is demonstrated live. Takes a sub-command (`controls`, …). | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
+| [`yu03-risk-proof.sh`](yu03-risk-proof.sh) | The two-tier in-memory risk gateway rejects orders that breach a control (position/notional/restriction/kill-switch); each reject control is demonstrated live. Takes a sub-command (`controls`, …). | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
 | [`yu04-live-delta.sh`](yu04-live-delta.sh) | A control-feed change is delivered as a **live delta** with no consumer restart (watermark advances before→after). | `ControlFeedSubscriberTest` |
 | [`yu04-offline-catchup.sh`](yu04-offline-catchup.sh) | A change made while a replica is **offline** is caught up on reconnect via the watermarked-snapshot bootstrap (would be lost in YU03). | `ControlFeedBootstrapStateTest` |
 

@@ -26,6 +26,18 @@
 # that is only ever printed is a comment, not a check.
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/yu05-common.sh"
 
+VERBOSE=0
+while [ $# -gt 0 ]; do
+  case "$1" in -v|--verbose) VERBOSE=1; shift ;; *) break ;; esac
+done
+# STDERR: every value this script checks is captured with $(...), so a verbose line on stdout would
+# be parsed as an HTTP status code.
+vlog(){ [ "$VERBOSE" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+vlog "   endpoints: TP=${TP}  ctx=${CTX}  db=deploy/${DB_DEPLOY}"
+
+# hsv <METHOD> <url> <token> <who>  -> status code on stdout, the call on stderr under -v
+hsv(){ vlog "      ${1} ${2}   as: ${4}"; hs "$1" "$2" "$3"; }
+
 FAILED=0
 check() { # check <label> <actual> <expected> <why>
   if [ "$2" = "$3" ]; then
@@ -64,22 +76,45 @@ echo "── cross-account endpoint: admin claim required ──"
 # with no data, so the admin got a truthful 404 and the proof called an authorization decision
 # wrong. (The tell: 403 and 401 were still correct, i.e. the gate was working perfectly.) An
 # earlier local-vs-UTC fix moved the failure window without removing it; discovery removes it.
-SESSION_DATE="${SESSION_DATE:-$(dbq "SELECT session_date FROM eod_price_session WHERE status='PUBLISHED' ORDER BY session_date DESC, version DESC LIMIT 1;" | tr -d '\r')}"
+published_date(){ dbq "SELECT session_date FROM eod_price_session WHERE status='PUBLISHED' ORDER BY session_date DESC, version DESC LIMIT 1;" | tr -d '\r'; }
+SESSION_DATE="${SESSION_DATE:-$(published_date)}"
+
+# SELF-PROVISIONING. This axis is about the ADMIN CLAIM; it needs *a* published session only as
+# something to be admin ABOUT. Requiring the operator to have run yu06-quality-gate first made this
+# proof's result depend on run order — and the suite's own PROOFS array runs this FIFTH and the
+# quality gate EIGHTH, so on a genuinely fresh rig the suite would hit exactly this. It passed for
+# months only because the rig always happened to carry a session from an earlier run.
+#
+# So close and publish one. That is two ordinary admin calls, not a reimplementation of the quality
+# gate: if the close comes back FLAGGED the publish is refused with 409 and we say so rather than
+# overriding, because resolving a flagged session IS the quality gate's proof and duplicating it
+# here would mean two scripts asserting the same thing differently.
 if [ -z "$SESSION_DATE" ]; then
-  echo "   ✘ no PUBLISHED EOD session in the projection to authorize against."
-  echo "   Close one first:  bash scripts/proofs/yu06-quality-gate.sh"
+  vlog "   no PUBLISHED session — provisioning one"
+  CL=$(curl -s -m60 -o /dev/null -w '%{http_code}' -X POST "$TP/eod/session/close" -H "Authorization: Bearer $ADMIN")
+  vlog "      POST ${TP}/eod/session/close -> HTTP ${CL}"
+  D=$(dbq "SELECT session_date FROM eod_price_session ORDER BY session_date DESC, version DESC LIMIT 1;" | tr -d '\r')
+  PB=$(curl -s -m60 -o /dev/null -w '%{http_code}' -X POST "$TP/eod/prices/${D}/publish" -H "Authorization: Bearer $ADMIN")
+  vlog "      POST ${TP}/eod/prices/${D}/publish -> HTTP ${PB}"
+  SESSION_DATE="$(published_date)"
+  printf "   %-38s %s\n" "provisioned a published session" "${SESSION_DATE:-<none>}"
+fi
+if [ -z "$SESSION_DATE" ]; then
+  echo "   ✘ could not provision a PUBLISHED EOD session (close=${CL:-?} publish=${PB:-?})."
+  [ "${PB:-}" = "409" ] && echo "   409 = the session is FLAGGED: a ticker in the universe cannot be priced."
+  echo "   Resolve it there, since that is what it proves:  bash scripts/proofs/yu06-quality-gate.sh"
   exit 1
 fi
 echo "   authorizing against published session ${SESSION_DATE}"
 XACCT="$TP/eod/prices/${SESSION_DATE}"
-check "admin token"          "$(hs GET "$XACCT" "$ADMIN")"  200 "admin sees cross-account data"
-check "account-scoped token" "$(hs GET "$XACCT" "$SCOPED")" 403 "authenticated, but no admin claim"
-check "no token"             "$(hs GET "$XACCT" "")"        401 "no bearer at all"
+check "admin token"          "$(hsv GET "$XACCT" "$ADMIN"  'admin')"        200 "admin sees cross-account data"
+check "account-scoped token" "$(hsv GET "$XACCT" "$SCOPED" 'scoped-no-admin')" 403 "authenticated, but no admin claim"
+check "no token"             "$(hsv GET "$XACCT" ""        'anonymous')"    401 "no bearer at all"
 
 echo "── account-scoped endpoint: /tca/report/{tradeId} ──"
-check "scoped → own-account trade" "$(hs GET "$TP/tca/report/$OWN" "$SCOPED")"     200 "owns ${OWN_ACCT}"
-check "scoped → foreign trade"     "$(hs GET "$TP/tca/report/$FOREIGN" "$SCOPED")" 403 "not its account"
-check "admin  → foreign trade"     "$(hs GET "$TP/tca/report/$FOREIGN" "$ADMIN")"  200 "admin sees all"
+check "scoped → own-account trade" "$(hsv GET "$TP/tca/report/$OWN" "$SCOPED" "scoped[${OWN_ACCT}]")"     200 "owns ${OWN_ACCT}"
+check "scoped → foreign trade"     "$(hsv GET "$TP/tca/report/$FOREIGN" "$SCOPED" "scoped[${OWN_ACCT}]")" 403 "not its account"
+check "admin  → foreign trade"     "$(hsv GET "$TP/tca/report/$FOREIGN" "$ADMIN" 'admin')"                200 "admin sees all"
 
 echo
 if [ "$FAILED" = "0" ]; then
