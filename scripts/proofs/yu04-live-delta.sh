@@ -54,7 +54,6 @@ printf "   %-30s %s\n" "replica has $TK (before)" "$(replica_has)"
 curl -s -m8 -X POST "$REF/stocks" -H "Content-Type: application/json" \
   -d "{\"ticker\":\"$TK\",\"companyName\":\"Demo $TK Inc.\"}" >/dev/null
 printf "   %-30s %s\n" "inject $TK via reference-data" "POST /stocks (stocks + outbox, one txn)"
-printf "   %-30s %s\n" "source watermark (after)" "$(wm)"
 
 printf "   %-30s " "replica catches up"
 FAIL=1
@@ -64,6 +63,14 @@ for i in $(seq 1 20); do
   [ "$i" = 20 ] && echo "TIMEOUT — $TK not seen in 10s ✘"
   sleep 0.5
 done
+
+# Read the source watermark AFTER the replica has caught up, not immediately after the POST.
+# Publishing the outbox row is asynchronous, so an immediate read catches the source mid-flight and
+# prints the PREVIOUS watermark beside an already-incremented count -- which reads as "the watermark
+# never moved" and invites a hunt for a defect in a feed that is working. Observed exactly that:
+# "watermark=509 count=510" on a run whose delta arrived in ~1s, with the source settling to
+# watermark=510 moments later.
+printf "   %-30s %s\n" "source watermark (after)" "$(wm)"
 
 echo
 echo "── feed health ──"

@@ -139,7 +139,7 @@ runner's order by hand.
 | Script | What it proves (falsifiable claim) | CI counterpart |
 |---|---|---|
 | [`yu03-risk-proof.sh`](yu03-risk-proof.sh) | The two-tier in-memory risk gateway rejects orders that breach a control (position/notional/restriction/kill-switch); each reject control is demonstrated live. Takes a sub-command (`controls`, …). | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
-| [`yu04-live-delta.sh`](yu04-live-delta.sh) | A control-feed change is delivered as a **live delta** with no consumer restart (watermark advances before→after). | `ControlFeedSubscriberTest` |
+| [`yu04-live-delta.sh`](yu04-live-delta.sh) | A control-feed change is delivered as a **live delta** with no consumer restart: a security injected at reference-data appears in the gateway's risk replica without anything being restarted. (The source watermark is printed for context, not asserted — it advances asynchronously, so it is read only after catch-up.) | `ControlFeedSubscriberTest` |
 | [`yu04-offline-catchup.sh`](yu04-offline-catchup.sh) | A change made while a replica is **offline** is caught up on reconnect via the watermarked-snapshot bootstrap (would be lost in YU03). | `ControlFeedBootstrapStateTest` |
 
 ### Post-trade / compliance (YU05)
