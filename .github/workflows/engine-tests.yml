@@ -69,6 +69,20 @@ jobs:
         # which any pipeline executed before 2026-07-28. Validated green on all three branches
         # locally before being enabled.
         run: bash scripts/ci/service-tests.sh
+      - name: Assert every suite actually executed
+        # A green build is not evidence a suite ran. Three defects in one week were the same shape:
+        # the prune step that never ran for YU02-YU15, four validators that skipped every YU state
+        # and exited 0, and YU01's allocation gates — the gates for the state's headline no-GC
+        # claim — which had never compiled and so had never once executed, while CI stayed green.
+        #
+        # The two steps above each assert this for their OWN hardcoded module list, which cannot
+        # catch a suite no list mentions (engine-tests.sh had no such assert at all). This sweeps
+        # the rendered tree instead: any module with test sources that executed nothing fails here.
+        #
+        # `always()` on purpose — it is most useful exactly when a step above went red, to say
+        # whether a suite failed or never ran.
+        if: ${{ always() }}
+        run: bash scripts/ci/assert-suites-executed.sh
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
