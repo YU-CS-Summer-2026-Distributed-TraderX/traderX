@@ -17,6 +17,12 @@
 # Usage: ./yu15-option-persistence.sh     (assumes scripts/yu15/start-cluster-kind.sh has run)
 set -euo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: sql() is captured with $(...) at four sites (row counts, the stored symbol, the position
+# count), so a verbose line on stdout would be parsed as a count.
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
@@ -36,7 +42,7 @@ step() { echo; echo "=== $* ==="; }
 # Errors are surfaced, not swallowed: a silently failing ALTER would make the proof look like it
 # passed a step it never ran. The `|| true` is on the grep, which exits 1 when a statement
 # produces no output at all — which is the normal case for DELETE and ALTER.
-sql()  { ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+sql()  { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
            | { grep -v "Using a password on the command line" || true; }; }
 
 widths() {
@@ -47,6 +53,10 @@ widths() {
 }
 
 cross() { # cross <ticker> <price> — seed then trade both sides; returns after the bridge settles
+  # The symbol length is the whole subject: 19 chars against a VARCHAR(15) is the bug this proof
+  # demonstrates, so print it rather than leaving the reader to count characters.
+  vlog "      cross ${1} @ ${2}   (symbol length ${#1})"
+  vlog "      POST ${MATCHER_URL}/seed  {\"accountId\":${SELLER},\"tickers\":\"${1}\",\"price\":${2}}"
   curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${SELLER},\"tickers\":\"${1}\",\"price\":${2}}" >/dev/null \
     || fail "seed failed for ${1}"
@@ -55,6 +65,7 @@ cross() { # cross <ticker> <price> — seed then trade both sides; returns after
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
       -H 'Content-Type: application/json' \
       -d "{\"accountId\":${acct},\"ticker\":\"${1}\",\"side\":\"${side}\",\"quantity\":5,\"limitPrice\":${2}}")"
+    vlog "      POST /orders ${side} acct=${acct} qty=5 px=${2} -> HTTP ${code}"
     [[ "${code}" == 200 ]] || fail "${side} order on ${1} returned HTTP ${code}"
   done
   sleep 6
