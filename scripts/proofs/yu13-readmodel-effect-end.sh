@@ -23,6 +23,12 @@
 # kind-runnable: pure correctness, no timing claim. Usage: ./yu13-readmodel-effect-end.sh
 set -euo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: order(), cancel(), rest_orders(), refs_all() and sql() are all captured with $(...), so a
+# verbose line on stdout would be parsed as a body, a status code or a counter value.
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
@@ -45,14 +51,14 @@ SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
 # 30s was not enough for a follower catching up after a member roll; the proof reported the three
 # disagreeing on a book they agreed on moments later.
 AGREE_TIMEOUT_S="${AGREE_TIMEOUT_S:-180}"
-sql() { ${K} exec "deploy/${SQL_DB}" -c "${SQL_CONTAINER}" -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+sql() { vlog "      SQL: $1"; ${K} exec "deploy/${SQL_DB}" -c "${SQL_CONTAINER}" -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 member_metric() { # member_metric <ordinal> <metric-prefix>
   ${K} exec "order-matcher-cluster-$1" -- \
     sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' | awk -v m="^$2" '$0 ~ m {print $2}'
 }
-refs_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_next_order_ref)"; done; }
+refs_all() { local v; for m in 0 1 2; do v="$(member_metric "${m}" traderx_cluster_next_order_ref)"; vlog "      member ${m} next_order_ref=${v}"; printf "%s " "${v}"; done; }
 uniq_one() { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
 book() {
   ${K} exec "order-matcher-cluster-$1" -- \
@@ -100,8 +106,10 @@ trap stop_pf EXIT
 
 order() { # order <side> -> body (fails the run unless it RESTS: kind=1)
   local body kind
-  body="$(curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":5,\"limitPrice\":${PRICE}}")"
+  local req="{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"$1\",\"quantity\":5,\"limitPrice\":${PRICE}}"
+  vlog "      POST ${MATCHER_URL}/orders" "        ${req}"
+  body="$(curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${req}")"
+  vlog "      <- ${body}"
   kind="$(sed -n 's/.*"kind":\([0-9]*\).*/\1/p' <<<"${body}")"
   [[ "${kind}" == "1" ]] || fail "order did not rest (kind=${kind}, body=${body})"
   echo "${body}"
@@ -109,15 +117,21 @@ order() { # order <side> -> body (fails the run unless it RESTS: kind=1)
 ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 cancel() { # cancel <ref> -> "<http> <body>"
   local out
+  vlog "      POST ${MATCHER_URL}/cancel" "        {\"orderRef\":$1}"
   out="$(curl -s --max-time 30 -o /tmp/yu13-rme-body -w '%{http_code}' \
     -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$1}")"
+  vlog "      <- ${out} $(cat /tmp/yu13-rme-body)"
   echo "${out} $(cat /tmp/yu13-rme-body)"
 }
 
 # The REST enumeration, from inside the trade-processor pod (no second tunnel to die mid-proof).
 rest_orders() { # rest_orders [all] -> the raw JSON array
-  ${K} exec deploy/trade-processor -- \
-    sh -c "wget -qO- 'http://localhost:18091/accounts/${ACCT}/orders${1:+?status=all}' 2>/dev/null"
+  local j
+  vlog "      GET /accounts/${ACCT}/orders${1:+?status=all}   (from inside trade-processor)"
+  j="$(${K} exec deploy/trade-processor -- \
+    sh -c "wget -qO- 'http://localhost:18091/accounts/${ACCT}/orders${1:+?status=all}' 2>/dev/null")"
+  vlog "      <- ${j}"
+  printf '%s' "${j}"
 }
 # rest_status <ref> <all?> -> status of the row whose epoch-qualified id ends in "-<ref>", or ""
 rest_status() {
