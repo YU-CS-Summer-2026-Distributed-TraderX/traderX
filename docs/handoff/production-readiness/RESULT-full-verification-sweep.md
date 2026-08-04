@@ -30,7 +30,7 @@ timing/throughput number below comes from the GKE runs.
 
 | Proof | Result | Notes |
 |---|---|---|
-| `yu03-risk-demo controls` | **PASS** | |
+| `yu03-risk-proof controls` | **PASS** | |
 | `yu04-live-delta` | **PASS** | after a script fix it exposed: its exit code was the trailing *informational* metrics grep, not the catch-up verdict (a TIMEOUT could exit 0). Fixed + committed (`b23a387b`). |
 | `yu04-offline-catchup` | **PASS** | |
 | `yu05-auth-entitlements` / `recon` / `regulatory-reproducible` / `settlement` | **PASS** ×4 | |

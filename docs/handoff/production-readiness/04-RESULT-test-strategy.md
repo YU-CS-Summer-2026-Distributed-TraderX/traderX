@@ -71,7 +71,7 @@ Almost every end-to-end proof has an in-process test asserting the same property
 | `yu05-regulatory-reproducible.sh` | journal-sourced export is byte-reproducible | `RegulatoryReportDeterminismTest` |
 | `yu05-recon.sh` | journal↔projection reconciliation | `ReconciliationServiceTest` |
 | `yu05-settlement.sh` | T+N settlement lifecycle | `SettlementServiceTest` |
-| `yu03-risk-demo.sh` | two-tier risk gate, control plane, kill-switch | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
+| `yu03-risk-proof.sh` | two-tier risk gate, control plane, kill-switch | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
 | `yu04-live-delta.sh`, `yu04-offline-catchup.sh` | durable control feeds, bootstrap catch-up | `ControlFeedSubscriberTest`, `ControlFeedBootstrapStateTest` |
 | `yu15-risk-extract.sh`, `yu15-option-persistence.sh` | sequence-addressed, byte-identical EOD extract | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
 | `yu13-otel-trace-join.sh` | one order = one trace across consensus, trace id **derived** not carried | `OrderTraceTest`, `SpanSinkTest` |

@@ -13,7 +13,7 @@ in-process on every commit by the JUnit tests named in the "CI counterpart" colu
 ## How to run
 
 Operator-driven against a live stack (kind unless noted GKE). Most take no arguments; some take a
-sub-command (e.g. `yu03-risk-demo.sh controls`). Bring the target state up first (see the state's
+sub-command (e.g. `yu03-risk-proof.sh controls`). Bring the target state up first (see the state's
 `quickstart.md`), then:
 
 ```bash
@@ -29,7 +29,7 @@ comment. The four `yu05-*` proofs share [`yu05-common.sh`](yu05-common.sh) (sour
 
 | Script | What it proves (falsifiable claim) | CI counterpart |
 |---|---|---|
-| [`yu03-risk-demo.sh`](yu03-risk-demo.sh) | The two-tier in-memory risk gateway rejects orders that breach a control (position/notional/restriction/kill-switch); each reject control is demonstrated live. Takes a sub-command (`controls`, …). | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
+| [`yu03-risk-proof.sh`](yu03-risk-proof.sh) | The two-tier in-memory risk gateway rejects orders that breach a control (position/notional/restriction/kill-switch); each reject control is demonstrated live. Takes a sub-command (`controls`, …). | `BlpRiskStateTest`, `RiskControlControllerTest`, `OrderMatcherRiskMismatchTest`, `EntitlementGateTest` |
 | [`yu04-live-delta.sh`](yu04-live-delta.sh) | A control-feed change is delivered as a **live delta** with no consumer restart (watermark advances before→after). | `ControlFeedSubscriberTest` |
 | [`yu04-offline-catchup.sh`](yu04-offline-catchup.sh) | A change made while a replica is **offline** is caught up on reconnect via the watermarked-snapshot bootstrap (would be lost in YU03). | `ControlFeedBootstrapStateTest` |
 

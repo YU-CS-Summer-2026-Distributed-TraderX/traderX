@@ -38,7 +38,7 @@ Legend: ✅ substantial · ◐ token/partial · ✗ none · **CI = does any auto
 | Cluster / consensus (YU12) | ✅ deep (`ClusterSnapshotCodecTest` 18) | ✅ `ThreeMemberClusterTest` (real Aeron) | ✅ cluster apply-path | ✅ 3-member byte-identical | `yu13-gke-replace-proof.sh` | ✗ |
 | Aeron replication (YU11) | ✅ 25 | ✅ 6 real-MediaDriver tests | ✅ transport claim/encode | ✅ shadow round-trip | `run-aeron-replication-phase0.sh` | ✗ |
 | Journal / durability | ✅ 30 | ◐ | — | ✅ replay | `failover-nodeclock.sh` (timing) | ✗ |
-| Gateway — REST | ✅ 36 (`CommandAuthorizationControllerTest` 25) | ◐ contract test | — | — | `yu03-risk-demo.sh` | ✗ |
+| Gateway — REST | ✅ 36 (`CommandAuthorizationControllerTest` 25) | ◐ contract test | — | — | `yu03-risk-proof.sh` | ✗ |
 | Gateway — FIX (YU10/13) | ✅ 12 | ✅ `FixSessionIntegrationTest` | — | — | `yu10-fix-session.sh`, `yu13-fix-cancel.mjs` | ✗ |
 | Gateway — binary | ✅ 6 | — | — | — | (bench only) | ✗ |
 | Risk gateway (YU03/04) | ✅ 48 (`BlpRiskStateTest` 16, `ControlFeedBootstrapStateTest` 15) | ◐ | ✅ risk alloc gate | ✅ `RiskReplayDeterminismTest` | `yu04-live-delta.sh`, `yu04-offline-catchup.sh` | ✗ |
@@ -102,7 +102,7 @@ benchmarks and utilities. Proofs, and what they establish:
 
 | Script | Proves | Falsified before passing |
 |---|---|---|
-| `yu03-risk-demo.sh` | two-tier risk gateway, restricted-security toggle | yes |
+| `yu03-risk-proof.sh` | two-tier risk gateway, restricted-security toggle | yes |
 | `yu04-live-delta.sh` | control-feed delta reaches the BLP replica with no restart | yes |
 | `yu04-offline-catchup.sh` | offline replica bootstraps from watermarked snapshot + buffered deltas | yes |
 | `yu05-auth-entitlements.sh` | real JWT + per-account entitlement enforcement, both axes | yes |

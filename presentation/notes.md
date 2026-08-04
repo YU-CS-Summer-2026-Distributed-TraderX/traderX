@@ -126,13 +126,13 @@ then applies it to authoritative `BlpRiskState` in global order. So:
   is "every authoritative risk decision + control/reservation event," **not** a log of every 422.
   For 15c3-5 that's the right boundary. (Slide 8 says exactly this.)
 
-**Live demo cheat-sheet.** (`scripts/proofs/yu03-risk-demo.sh`, one readable line per step)
+**Live demo cheat-sheet.** (`scripts/proofs/yu03-risk-proof.sh`, one readable line per step)
 ```bash
 # separate terminal:
 kubectl port-forward -n traderx deploy/order-matcher 18110:18110 --context kind-traderx-state-014
-bash scripts/proofs/yu03-risk-demo.sh controls      # one order per reject control
-bash scripts/proofs/yu03-risk-demo.sh restriction   # restrict BAC live → rejected → un-restrict → flows
-bash scripts/proofs/yu03-risk-demo.sh killswitch    # engage → halted → disengage → flows
+bash scripts/proofs/yu03-risk-proof.sh controls      # one order per reject control
+bash scripts/proofs/yu03-risk-proof.sh restriction   # restrict BAC live → rejected → un-restrict → flows
+bash scripts/proofs/yu03-risk-proof.sh killswitch    # engage → halted → disengage → flows
 ```
 Show the journal too (rejects are journaled): the order-matcher journal at
 `/var/lib/traderx-lmax/journal`.
@@ -895,9 +895,9 @@ bash generated/code/target-generated/scripts/start-state-YU03-in-memory-risk-gat
 **Demo/proof** (separate terminal for the port-forward the script expects)
 ```bash
 kubectl port-forward -n traderx deploy/order-matcher 18110:18110 --context kind-traderx-state-014
-bash scripts/demo/yu03-risk-demo.sh controls      # one order per reject control
-bash scripts/demo/yu03-risk-demo.sh restriction   # restrict BAC live → REJECTED → un-restrict → NEW
-bash scripts/demo/yu03-risk-demo.sh killswitch    # engage → halted → disengage → flows
+bash scripts/demo/yu03-risk-proof.sh controls      # one order per reject control
+bash scripts/demo/yu03-risk-proof.sh restriction   # restrict BAC live → REJECTED → un-restrict → NEW
+bash scripts/demo/yu03-risk-proof.sh killswitch    # engage → halted → disengage → flows
 ```
 **What to look for / explain**
 - The gap: YU02 matched any valid-ticker order; the only "limit" was the order's own price. SEC 15c3-5

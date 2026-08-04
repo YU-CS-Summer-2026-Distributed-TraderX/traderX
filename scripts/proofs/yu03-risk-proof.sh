@@ -13,21 +13,40 @@
 # cluster-gateway and there is no Deployment by that name.
 #   kubectl port-forward -n traderx svc/order-matcher 18110:18110 --context "${CTX:-kind-traderx-yu12-cluster}"
 # Usage:
-#   bash yu03-risk-demo.sh restriction   # just the restricted-security toggle
-#   bash yu03-risk-demo.sh killswitch    # just the kill switch
-#   bash yu03-risk-demo.sh controls      # every rejection control at once
-#   bash yu03-risk-demo.sh               # all of the above
+#   bash yu03-risk-proof.sh restriction   # just the restricted-security toggle
+#   bash yu03-risk-proof.sh killswitch    # just the kill switch
+#   bash yu03-risk-proof.sh controls      # every rejection control at once
+#   bash yu03-risk-proof.sh               # all of the above
+#   bash yu03-risk-proof.sh -v [mode]     # verbose: show each request and the raw response
+#
+# -v exists because the one-line-per-step form is deliberately lossy: it reports the VERDICT and
+# hides what produced it. When a step fails, the next question is always "what did we actually
+# send, and what came back" — and re-deriving that from the source is slower than printing it.
 set -uo pipefail
 U=${MATCHER_URL:-http://localhost:18110}
 TOK=${RISK_CONTROL_TOKEN:-dev-risk-control}
 
+VERBOSE=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v|--verbose) VERBOSE=1; shift ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+done
+MODE="${1:-all}"
+
 CHECKS=0
 FAILED=0
+
+vlog(){ (( VERBOSE )) && printf '%s\n' "$@" || true; }
 
 order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
   local r st rs got
   CHECKS=$((CHECKS + 1))
+  vlog "      → POST ${U}/orders" "        ${3}" "        expect: ${2//·/ · }"
   r=$(curl -s -m8 "$U/orders" -H "Content-Type: application/json" -d "$3")
+  vlog "      ← ${r:-<empty>}"
   # An empty body is a dead port-forward or a gateway that is not serving, NOT a risk verdict.
   # Reported separately on purpose: the whole failure class this proof exists to catch is a
   # rejection reason being wrong, and a connection problem rendered as "expected REJECTED, got
@@ -53,8 +72,10 @@ order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
 ctl(){ # $1=label  $2=endpoint  $3=json body   (control-plane mutations must answer HTTP 200)
   local code
   CHECKS=$((CHECKS + 1))
+  vlog "      → POST ${U}/risk/control/${2}" "        ${3}" "        expect: HTTP 200"
   code=$(curl -s -m8 -o /dev/null -w "%{http_code}" -X POST "$U/risk/control/$2" \
     -H "Content-Type: application/json" -H "X-Risk-Control-Token: $TOK" -H "X-Risk-Operator: demo" -d "$3")
+  vlog "      ← HTTP ${code}"
   if [[ "${code}" == "200" ]]; then
     printf "   %-26s [control HTTP %s] ✔\n" "$1" "$code"
   else
@@ -101,12 +122,13 @@ controls(){
   order "max order size"      REJECTED·ORDER_SIZE      '{"accountId":22214,"security":"IBM","side":"Buy","quantity":2000000,"limitPrice":200}'
 }
 
-case "${1:-all}" in
+vlog "   endpoint: ${U}" "   mode:     ${MODE}" ""
+case "${MODE}" in
   restriction) restriction ;;
   killswitch)  killswitch ;;
   controls)    controls ;;
   all)         controls; echo; restriction; echo; killswitch ;;
-  *) echo "usage: $0 [restriction|killswitch|controls|all]"; exit 1 ;;
+  *) echo "usage: $0 [-v] [restriction|killswitch|controls|all]"; exit 1 ;;
 esac
 
 echo

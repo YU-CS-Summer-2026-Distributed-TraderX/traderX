@@ -113,7 +113,7 @@ benchmark numbers, with each item marked PASS / FAIL / SKIPPED-needs-cluster and
 
 **B) Proof scripts (need a live stack) — `scripts/proofs/`:**
 - **kind-runnable** (bring a state up on kind first; correctness only, set `CLUSTER_IDLE_SLEEP_MS=1`):
-  `yu03-risk-demo`, `yu04-{live-delta,offline-catchup}`, `yu05-{auth-entitlements,recon,regulatory-reproducible,settlement}`,
+  `yu03-risk-proof`, `yu04-{live-delta,offline-catchup}`, `yu05-{auth-entitlements,recon,regulatory-reproducible,settlement}`,
   `yu10-fix-session`, `yu13-{cancel-ingress,clordid-suppression,stp-and-replace}`,
   `yu15-{option-persistence,risk-extract}`, `seed-option-chain`, **plus the new kind proofs (#1–#3).**
 - **GKE-only** (needs a cluster + credits — coordinate with yaakov): `yu13-gke-replace-proof`,

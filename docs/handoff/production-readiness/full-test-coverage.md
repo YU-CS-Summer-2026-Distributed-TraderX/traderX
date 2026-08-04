@@ -124,7 +124,7 @@ infrastructure limit, not a flakiness one.
 
 | Area | Scripts | Tier |
 |---|---|---|
-| Risk gateway + control feeds | `yu03-risk-demo`, `yu04-live-delta`, `yu04-offline-catchup` | kind |
+| Risk gateway + control feeds | `yu03-risk-proof`, `yu04-live-delta`, `yu04-offline-catchup` | kind |
 | Post-trade / compliance | `yu05-auth-entitlements`, `yu05-recon`, `yu05-regulatory-reproducible`, `yu05-settlement` | kind |
 | EOD price chain | `yu06-quality-gate`, `yu06-consumer-halt` | kind |
 | Execution algo | `yu08-algo-slicing` | kind |
