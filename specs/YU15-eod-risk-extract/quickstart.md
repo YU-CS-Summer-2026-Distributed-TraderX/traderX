@@ -30,6 +30,11 @@ done
 bash scripts/proofs/yu15-risk-extract.sh        # the extract: cut, quiescence, reproducibility
 bash scripts/proofs/yu15-option-persistence.sh  # options reach SQL, and the migration fixes an old DB
 
+# the two trace proofs need the observability stack, which the bring-up above does NOT deploy
+bash scripts/yu15/start-observability-kind.sh   # OTel Collector, Tempo, Prometheus, Grafana, Loki
+bash scripts/proofs/yu15-otel-trace-join.sh              # one order, one trace, across consensus
+bash scripts/proofs/yu15-otel-reject-trace-log-join.sh   # a rejected order's log line joins its trace
+
 # teardown
 bash scripts/yu15/stop-cluster-kind.sh
 ```
@@ -37,6 +42,13 @@ bash scripts/yu15/stop-cluster-kind.sh
 Step 3 is not optional. The engine silently rejects orders for a security that is not enabled or
 has no price tick, and those rejects surface nowhere on some paths — `seed-option-chain.sh` fails
 loudly with the triage hint if orders are accepted but nothing fills.
+
+The observability line in step 5 is not optional either, for the two proofs under it. The stack has
+shipped in the manifests since state `007`, but `start-cluster-kind.sh` deploys only the trading
+tier — so on kind the two halves land in different clusters and the collector endpoint resolves to
+nothing. The trace pipeline is then **silently** dead: orders book normally, spans go nowhere, and
+the only symptom is an empty Tempo. There is no error to search for, which is why it is called out
+here rather than left to be discovered.
 
 ## Taking an extract by hand
 
