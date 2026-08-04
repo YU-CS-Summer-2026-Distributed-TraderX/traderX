@@ -8,6 +8,12 @@
 # Reaches the FIX acceptor via `kubectl port-forward` (the FIX port is cluster-internal by design).
 set -uo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: db_orders() is captured with $(...) for BEFORE/AFTER, so a verbose line on stdout would
+# be parsed as a row count.
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 NS="${NS:-traderx}"
 EDGE="${EDGE:-http://localhost:8080}"
 FIX_LOCAL_PORT="${FIX_LOCAL_PORT:-18130}"
@@ -65,6 +71,9 @@ db_orders() {
     mariadb -utraderx -ptraderx traderx -N -B \
     -e "SELECT COUNT(*) FROM orderbook WHERE accountid=${ACCOUNT}" 2>/dev/null | tail -1
 }
+vlog "   config: account=${ACCOUNT} compId=${COMP_ID} ticker=${FIX_TICKERS} px=${FIX_PX} secs=${SECS}" \
+     "   fix acceptor: svc/order-matcher :18130 -> localhost:${FIX_LOCAL_PORT}" \
+     "   projection:   deploy/${DB_DEPLOY:-eod-price-db} (container ${DB_CONTAINER:-mariadb})"
 BEFORE="$(db_orders)"; BEFORE="${BEFORE:-0}"
 step "orderbook rows before" "${BEFORE}"
 
@@ -74,8 +83,13 @@ PF=$!
 trap 'kill "${PF}" 2>/dev/null' EXIT
 sleep 3
 
+vlog "   running: SIDES=alternate QTY=1 PX=${FIX_PX:-200} TICKERS=${FIX_TICKERS:-IBM} ACCOUNT=${ACCOUNT} fix-load.mjs --secs ${SECS}"
 OUT="$(FIX_JWT="${FIX_JWT}" FIX_COMP_ID="${COMP_ID}" FIX_PORT="${FIX_LOCAL_PORT}" \
   SIDES=alternate QTY=1 PX="${FIX_PX:-200}" TICKERS="${FIX_TICKERS:-IBM}" ACCOUNT="${ACCOUNT}" node "${here}/../bench/load/fix-load.mjs" --secs "${SECS}" 2>&1)"
+# The FULL sender transcript, not just its last line. When rejected>0 the reason is in here and
+# nowhere else -- a run that rejects every order still prints a tidy summary line, and reading only
+# that line is how "1410 rejected" gets mistaken for FIX ingress being broken.
+vlog "   --- fix-load.mjs transcript ---" "$(printf '%s' "${OUT}" | sed 's/^/      /')" "   --- end transcript ---"
 echo "${OUT}" | tail -1
 COMPLETED="$(echo "${OUT}" | sed -n 's/.*completed=\([0-9]*\).*/\1/p' | tail -1)"
 COMPLETED="${COMPLETED:-0}"

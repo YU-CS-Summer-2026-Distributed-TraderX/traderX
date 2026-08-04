@@ -120,7 +120,15 @@ runner's order by hand.
 2. **Is the image the baseline?** A leftover `traderx/cluster-node:yu15-stp` or `:yu15-pre` from an
    interrupted run makes proofs report a *different build's* behaviour, truthfully. Check both the
    StatefulSet and the gateway.
-3. **Are the fixtures seeded?** On this tier an account or security exists only once sequenced, and
+3. **Has a previous proof moved a security's mark?** The last trade price IS the mark (ADR-051), so
+   a proof that crossed the same ticker at a different price can drift the reference until a later
+   proof's limit falls outside the collar. Seen live: `yu10-fix-session` rejected **1410 of 1426**
+   orders with the FIX ingress working perfectly — the session logged on, every order was sequenced
+   and every one reached the read model, they were simply all collared. Re-running
+   `seed-proof-fixtures.sh` re-anchors the mark and it went to 1463/1463, 0 rejected. The script's
+   own header records the same failure once before, on JPM. **Re-seed before `yu10-fix-session`**,
+   since it runs after the option and settlement proofs have both traded IBM.
+4. **Are the fixtures seeded?** On this tier an account or security exists only once sequenced, and
    most proofs count effects rather than inspecting rejections — so a missing fixture surfaces as a
    false accusation about the system, not as `UNKNOWN_ACCOUNT`.
 
