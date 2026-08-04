@@ -16,8 +16,21 @@
 # the rows DO appear. Without it, "no new rows" could equally mean the cross simply stopped
 # working, and the proof would assert nothing.
 #
-# Usage: ./yu13-clordid-suppression.sh   (needs: kubectl port-forward svc/order-matcher 18110:18110)
+# Usage:
+#   ./yu13-clordid-suppression.sh        (needs: kubectl port-forward svc/order-matcher 18110:18110)
+#   ./yu13-clordid-suppression.sh -v     verbose: the request bodies, the clientOrderId on each
+#                                        call, every SQL query and the row count after each step
+#
+# -v earns its place on THIS proof specifically: the whole claim turns on two requests being
+# identical except for one field. The terse output shows the orderRefs but not the keys, so you are
+# trusting the labels when the keys are the entire subject of the test.
 set -euo pipefail
+
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: order() and rows() are both captured with $(...), so a verbose line on stdout would be
+# parsed as an HTTP code or a row count.
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
@@ -46,16 +59,21 @@ step() { echo; echo "=== $* ==="; }
 # possible message for a container-name mismatch.
 SQL_DB="${SQL_DB:-eod-price-db}"
 SQL_CONTAINER="${SQL_CONTAINER:-mariadb}"
-sql() { ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+sql() { vlog "      SQL: $1"; ${K} exec deploy/${SQL_DB} -c ${SQL_CONTAINER} -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 rows() { sql "SELECT COUNT(*) FROM trades WHERE security='${TICKER}';"; }
 
 order() { # order <account> <side> <clientOrderId> -> "<http> <body>"
-  local out
+  local out body
+  body="{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":${QTY},\"limitPrice\":${PRICE},\"clientOrderId\":\"$3\"}"
+  # The clientOrderId is called out on its own line because it is the ONLY field that differs
+  # between the suppressed resend and the falsification order — everything else is identical by
+  # design, and that is exactly what the proof asserts.
+  vlog "      POST ${MATCHER_URL}/orders" "        ${body}" "        clientOrderId: $3"
   out="$(curl -s --max-time 30 -o /tmp/yu13-dup-body -w '%{http_code}' \
-    -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":${QTY},\"limitPrice\":${PRICE},\"clientOrderId\":\"$3\"}")"
+    -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}")"
+  vlog "      <- ${out} $(cat /tmp/yu13-dup-body)"
   echo "${out} $(cat /tmp/yu13-dup-body)"
 }
 
