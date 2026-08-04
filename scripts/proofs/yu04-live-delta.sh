@@ -9,12 +9,27 @@
 # Usage:
 #   bash yu04-live-delta.sh            # auto ticker (Z + time)
 #   bash yu04-live-delta.sh ZZZZ       # explicit ticker
+#   bash yu04-live-delta.sh -v [TICK]  # verbose: the URLs, the injected body, each replica poll
 set -uo pipefail
 REF=${REF:-http://localhost:18085}
 # The cluster gateway directly — no edge-proxy on this rig. For the state-014 rig:
 # OM=http://127.0.0.1:8080/order-matcher
 OM=${OM:-http://localhost:18110}
-TK=${1:-Z$(date +%s | tail -c 5)}
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: wm() and replica_has() are both captured with $(...).
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
+# Reject a flag-looking ticker instead of injecting it. $1 is the TICKER, and there was no -v until
+# now -- so `yu04-live-delta.sh -v` created a security literally named "-V" in reference-data, which
+# the feed then applied perfectly while the proof reported TIMEOUT (it searched for "-v" against a
+# stored "-V"). A silent injection of a junk instrument is a worse outcome than an unknown flag.
+case "${1:-}" in
+  -*) echo "usage: $0 [-v] [TICKER]   (unknown option: $1)" >&2; exit 1 ;;
+esac
+# Uppercased because the platform normalises tickers on the way in; comparing the raw argument
+# against the stored value is how the case mismatch above went unexplained.
+TK=$(printf '%s' "${1:-Z$(date +%s | tail -c 5)}" | tr '[:lower:]' '[:upper:]')
 
 # CAPABILITY CHECK, round two — and the state of it is now precise. The machinery EXISTS on this
 # tier: reference-data runs here, and the gateway carries a control-feed subscriber (see
@@ -39,10 +54,12 @@ if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/n
 fi
 
 wm(){ # source watermark line
+  vlog "      GET ${REF}/stocks/control-snapshot"
   curl -s -m8 "$REF/stocks/control-snapshot" \
     | python3 -c "import sys,json;d=json.load(sys.stdin);print('epoch=%s watermark=%s count=%s'%(d.get('sourceEpoch'),d.get('watermark'),d.get('count')))" 2>/dev/null
 }
 replica_has(){ # -> the replica's securities entry for <TK> (array of {ticker,...}), or 'null'
+  vlog "      GET ${OM}/risk/control/snapshot  looking for ticker=${TK}"
   curl -s -m8 "$OM/risk/control/snapshot" \
     | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((s for s in d.get('securities',[]) if s.get('ticker')=='$TK'),'null'))" 2>/dev/null
 }
@@ -53,6 +70,7 @@ printf "   %-30s %s\n" "replica has $TK (before)" "$(replica_has)"
 
 curl -s -m8 -X POST "$REF/stocks" -H "Content-Type: application/json" \
   -d "{\"ticker\":\"$TK\",\"companyName\":\"Demo $TK Inc.\"}" >/dev/null
+vlog "      POST ${REF}/stocks  {\"ticker\":\"${TK}\",\"companyName\":\"Demo ${TK} Inc.\"}"
 printf "   %-30s %s\n" "inject $TK via reference-data" "POST /stocks (stocks + outbox, one txn)"
 
 printf "   %-30s " "replica catches up"
