@@ -7,6 +7,9 @@ TARGET_ROOT="${1:-${GENERATED_ROOT}/code/target-generated}"
 STATE_METADATA="${TARGET_ROOT}/ci/state-metadata.json"
 STATE_CATALOG="${ROOT}/catalog/state-catalog.json"
 
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+
 if [[ ! -d "${TARGET_ROOT}" ]]; then
   echo "[fail] target root does not exist: ${TARGET_ROOT}"
   exit 1
@@ -31,8 +34,7 @@ parent_map_file=""
 if [[ -n "${state_id}" ]] && [[ -f "${STATE_CATALOG}" ]] && command -v jq >/dev/null 2>&1; then
   # Strip the optional letter suffix of sibling branch states (e.g. 009b-*)
   # so numeric lineage thresholds apply to them as well.
-  state_num="${state_id%%-*}"
-  state_num="${state_num%%[a-z]*}"
+  state_num="$(traderx_state_rank "${STATE_CATALOG}" "${state_id}")" || state_num=""
   state_feature_pack="$(jq -r --arg id "${state_id}" '.states[] | select(.id == $id) | .featurePack // ""' "${STATE_CATALOG}")"
   parent_state_id="$(jq -r --arg id "${state_id}" '.states[] | select(.id == $id) | ((.previous // [])[0] // "")' "${STATE_CATALOG}")"
   if [[ -n "${state_feature_pack}" ]]; then
@@ -46,7 +48,7 @@ if [[ -n "${state_id}" ]] && [[ -f "${STATE_CATALOG}" ]] && command -v jq >/dev/
   fi
 fi
 
-if [[ -n "${state_num}" ]] && [[ "${state_num}" =~ ^[0-9]+$ ]] && (( 10#${state_num} >= 6 )); then
+if [[ -n "${state_num}" ]] && (( 10#${state_num} >= 6 )); then
   if [[ -z "${state_map_file}" || ! -f "${state_map_file}" ]]; then
     echo "[fail] messaging subject-map contract violation: missing state map for ${state_id}"
     echo "[hint] expected: ${state_map_file:-<unresolved-from-catalog>}"
