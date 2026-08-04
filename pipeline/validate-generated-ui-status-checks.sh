@@ -31,12 +31,6 @@ const path = require('node:path');
 const stateId = process.env.STATE_ID;
 const targetRoot = process.env.TARGET_ROOT;
 const componentsRoot = process.env.COMPONENTS_ROOT;
-const root = process.env.ROOT;
-
-const stateCatalogPath = path.join(root, 'catalog', 'state-catalog.json');
-const stateCatalog = JSON.parse(fs.readFileSync(stateCatalogPath, 'utf8'));
-const states = Array.isArray(stateCatalog.states) ? stateCatalog.states : [];
-const stateById = new Map(states.map((entry) => [entry.id, entry]));
 
 function fail(message) {
   console.error(`[fail] ${message}`);
