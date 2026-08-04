@@ -25,14 +25,14 @@ if [[ -z "${STATE_ID}" ]]; then
   usage
   exit 1
 fi
-state_num="${STATE_ID%%-*}"
-if [[ ! "${state_num}" =~ ^[0-9]+[a-z]?$ ]]; then
+# Numeric thresholds here compare a lineage rank; script-name lookups elsewhere glob on
+# STATE_ID's own prefix ("YU07") and are deliberately not routed through this.
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+state_num="$(traderx_state_rank "${CATALOG}" "${STATE_ID}")" || {
   echo "[fail] invalid state id format: ${STATE_ID}"
   exit 1
-fi
-# Numeric thresholds treat letter-suffixed sibling states (e.g. 009b-*) as
-# their numeric base; script-name lookups use the full STATE_ID prefix.
-state_num="${state_num%%[a-z]*}"
+}
 shift || true
 
 BRANCH_OVERRIDE=""
