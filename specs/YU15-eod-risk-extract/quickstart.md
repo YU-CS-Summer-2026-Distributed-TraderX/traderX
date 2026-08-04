@@ -32,8 +32,8 @@ bash scripts/proofs/yu15-option-persistence.sh  # options reach SQL, and the mig
 
 # the two trace proofs need the observability stack, which the bring-up above does NOT deploy
 bash scripts/yu15/start-observability-kind.sh   # OTel Collector, Tempo, Prometheus, Grafana, Loki
-bash scripts/proofs/yu15-otel-trace-join.sh              # one order, one trace, across consensus
-bash scripts/proofs/yu15-otel-reject-trace-log-join.sh   # a rejected order's log line joins its trace
+bash scripts/proofs/yu13-otel-trace-join.sh              # one order, one trace, across consensus
+bash scripts/proofs/yu13-otel-reject-trace-log-join.sh   # a rejected order's log line joins its trace
 
 # teardown
 bash scripts/yu15/stop-cluster-kind.sh

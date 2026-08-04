@@ -33,7 +33,7 @@
 #   kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/tempo 3200:3200 &
 #   kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/loki 3100:3100 &
 #   kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/grafana 3000:3000 &
-#   bash scripts/proofs/yu15-otel-reject-trace-log-join.sh
+#   bash scripts/proofs/yu13-otel-reject-trace-log-join.sh
 set -euo pipefail
 
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
@@ -58,8 +58,32 @@ ok() { echo "[ok] $*"; }
 
 command -v python3 >/dev/null || fail "python3 required"
 curl -sf --max-time 5 "${MATCHER_URL}/ready" >/dev/null || fail "gateway not ready at ${MATCHER_URL}"
-curl -sf --max-time 5 "${LOKI_URL}/ready" >/dev/null 2>&1 ||
-  fail "Loki not reachable at ${LOKI_URL} — port-forward svc/loki 3100:3100"
+
+# PRECONDITIONS, checked BEFORE the mask roll below — that roll restarts the gateway and all three
+# members and costs minutes, and every one of them would be spent to arrive at an empty Tempo.
+# start-cluster-kind.sh deploys only the trading tier, so the observability stack is absent by
+# default and the trace pipeline dies SILENTLY: orders book normally, spans go nowhere, and the only
+# symptom is an empty Tempo. Probe the three services this proof actually reads from; the collector
+# it writes to is in-cluster and never forwarded, so it is not the dependency to guard here.
+need_obs() { # url  name  port-forward-target
+  local i rc
+  for i in $(seq 1 "${OBS_WAIT_TRIES:-10}"); do
+    rc=0; curl -sf --max-time 5 "$1" >/dev/null 2>&1 || rc=$?
+    if [[ ${rc} -eq 0 ]]; then return 0; fi
+    # 7 = nothing listening. No stack and no port-forward look identical from here, and neither
+    # heals on its own — retrying is theatre. Anything else (a 503 from a Tempo that is still
+    # coming up after a fresh forward) is worth waiting out.
+    if [[ ${rc} -eq 7 ]]; then break; fi
+    sleep 2
+  done
+  echo "[FAIL] $2 unreachable at $1 — the observability stack is not up, or not forwarded." >&2
+  echo "[hint] bash scripts/yu15/start-observability-kind.sh" >&2
+  echo "[hint] ${K} port-forward $3 &" >&2
+  exit 1
+}
+need_obs "${TEMPO_URL}/ready" Tempo "svc/tempo 3200:3200"
+need_obs "${LOKI_URL}/ready" Loki "svc/loki 3100:3100"
+need_obs "${GRAFANA_URL}/api/health" Grafana "svc/grafana 3000:3000"
 
 # ----- head sampling must actually be ON, or there is nothing for escalation to rescue ----------
 ORIG_MASK="$(${K} get deployment/cluster-gateway \

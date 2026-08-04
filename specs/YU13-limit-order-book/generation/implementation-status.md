@@ -609,9 +609,9 @@ order                (traderx-cluster-gateway)   root — the residence the clie
 - `AeronClusterSpikeTest.leaderTapCapturesTheAppliedSessionForKdb` — a real Aeron cluster applying
   real consensus ingress, whose Java assertions pin the captured session against the engine's own
   trade counter. Its output is the committed fixture the YU07 q gate runs on.
-- `scripts/proofs/yu15-otel-trace-join.sh` — one order produces one trace spanning both tiers,
+- `scripts/proofs/yu13-otel-trace-join.sh` — one order produces one trace spanning both tiers,
   against a deployed cluster.
-- `scripts/proofs/yu15-otel-reject-trace-log-join.sh` — a rejected order's log line resolves to
+- `scripts/proofs/yu13-otel-reject-trace-log-join.sh` — a rejected order's log line resolves to
   that order's own trace by the derived id.
 - The allocation gates and the Epsilon no-GC run stay green with both compiled in.
 
