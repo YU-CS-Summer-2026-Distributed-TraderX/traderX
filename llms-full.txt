@@ -2421,21 +2421,21 @@ For the visual progression map, see [Visual Learning Paths](/docs/learning-paths
 | `012-platform-convergence-c3` | [link](/docs/learning/state-012-platform-convergence-c3) | [link](/specs/platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-012-platform-convergence-c3) | `C3` | [009-order-management-matcher](/docs/learning/state-009-order-management-matcher) | [011-tilt-kubernetes-dev-loop](/docs/learning/state-011-tilt-kubernetes-dev-loop) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-011-tilt-kubernetes-dev-loop...code%2Fgenerated-state-012-platform-convergence-c3) | [link](/docs/adr/008-convergence-state-model) |
 | `013-radius-kubernetes-platform` | [link](/docs/learning/state-013-radius-kubernetes-platform) | [link](/specs/radius-kubernetes-platform) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform) | `none` | `none` | [012-platform-convergence-c3](/docs/learning/state-012-platform-convergence-c3) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-013-radius-kubernetes-platform) | `n/a` |
 | `014-fdc3-intent-interoperability` | [link](/docs/learning/state-014-fdc3-intent-interoperability) | [link](/specs/fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) | `none` | `none` | [012-platform-convergence-c3](/docs/learning/state-012-platform-convergence-c3) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-014-fdc3-intent-interoperability) | `n/a` |
-| `YU01-lmax-sequencer` | [link](/docs/learning/state-YU01-lmax-sequencer) | [link](/specs/YU01-lmax-sequencer) | [YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU01-lmax-sequencer) | `none` | `none` | [009-order-management-matcher](/docs/learning/state-009-order-management-matcher) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...YU01-lmax-sequencer) | `n/a` |
-| `YU02-lmax-kubernetes` | [link](/docs/learning/state-YU02-lmax-kubernetes) | [link](/specs/YU02-lmax-kubernetes) | [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha) | `none` | `none` | [014-fdc3-intent-interoperability](/docs/learning/state-014-fdc3-intent-interoperability) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha) | `n/a` |
-| `YU03-in-memory-risk-gateway` | [link](/docs/learning/state-YU03-in-memory-risk-gateway) | [link](/specs/YU03-in-memory-risk-gateway) | [YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU03-in-memory-risk-gateway) | `none` | `none` | [YU02-lmax-kubernetes](/docs/learning/state-YU02-lmax-kubernetes) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway) | `n/a` |
-| `YU04-durable-control-feeds` | [link](/docs/learning/state-YU04-durable-control-feeds) | [link](/specs/YU04-durable-control-feeds) | [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds) | `none` | `none` | [YU03-in-memory-risk-gateway](/docs/learning/state-YU03-in-memory-risk-gateway) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU03-in-memory-risk-gateway...YU04-durable-control-feeds) | `n/a` |
-| `YU05-post-trade-compliance` | [link](/docs/learning/state-YU05-post-trade-compliance) | [link](/specs/YU05-post-trade-compliance) | [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance) | `none` | `none` | [YU04-durable-control-feeds](/docs/learning/state-YU04-durable-control-feeds) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU04-durable-control-feeds...YU05-post-trade-compliance) | `n/a` |
-| `YU06-eod-price-production` | [link](/docs/learning/state-YU06-eod-price-production) | [link](/specs/YU06-eod-price-production) | [YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU06-eod-price-production) | `none` | `none` | [YU05-post-trade-compliance](/docs/learning/state-YU05-post-trade-compliance) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU05-post-trade-compliance...YU06-eod-price-production) | `n/a` |
-| `YU07-historical-tick-store` | [link](/docs/learning/state-YU07-historical-tick-store) | [link](/specs/YU07-historical-tick-store) | [YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU07-historical-tick-store) | `none` | `none` | [YU06-eod-price-production](/docs/learning/state-YU06-eod-price-production) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU06-eod-price-production...YU07-historical-tick-store) | `n/a` |
-| `YU08-execution-algo-engine` | [link](/docs/learning/state-YU08-execution-algo-engine) | [link](/specs/YU08-execution-algo-engine) | [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine) | `none` | `none` | [YU07-historical-tick-store](/docs/learning/state-YU07-historical-tick-store) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU07-historical-tick-store...YU08-execution-algo-engine) | `n/a` |
-| `YU09-ops-hardening` | [link](/docs/learning/state-YU09-ops-hardening) | [link](/specs/YU09-ops-hardening) | [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening) | `none` | `none` | [YU08-execution-algo-engine](/docs/learning/state-YU08-execution-algo-engine) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU08-execution-algo-engine...YU09-ops-hardening) | `n/a` |
-| `YU10-fix-ingress` | [link](/docs/learning/state-YU10-fix-ingress) | [link](/specs/YU10-fix-ingress) | [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress) | `none` | `none` | [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU09-ops-hardening...YU10-fix-ingress) | `n/a` |
-| `YU11-aeron-replication` | [link](/docs/learning/state-YU11-aeron-replication) | [link](/specs/YU11-aeron-replication) | [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication) | `none` | `none` | [YU10-fix-ingress](/docs/learning/state-YU10-fix-ingress) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU10-fix-ingress...YU11-aeron-replication) | `n/a` |
-| `YU12-aeron-cluster` | [link](/docs/learning/state-YU12-aeron-cluster) | [link](/specs/YU12-aeron-cluster) | [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster) | `none` | `none` | [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU11-aeron-replication...YU12-aeron-cluster) | `n/a` |
-| `YU13-limit-order-book` | [link](/docs/learning/state-YU13-limit-order-book) | [link](/specs/YU13-limit-order-book) | [YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU13-limit-order-book) | `none` | `none` | [YU12-aeron-cluster](/docs/learning/state-YU12-aeron-cluster) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU12-aeron-cluster...YU13-limit-order-book) | `n/a` |
-| `YU14-listed-equity-options` | [link](/docs/learning/state-YU14-listed-equity-options) | [link](/specs/YU14-listed-equity-options) | [YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU14-listed-equity-options) | `none` | `none` | [YU13-limit-order-book](/docs/learning/state-YU13-limit-order-book) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU13-limit-order-book...YU14-listed-equity-options) | `n/a` |
-| `YU15-eod-risk-extract` | [link](/docs/learning/state-YU15-eod-risk-extract) | [link](/specs/YU15-eod-risk-extract) | [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract) | `none` | `none` | [YU14-listed-equity-options](/docs/learning/state-YU14-listed-equity-options) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU14-listed-equity-options...YU15-eod-risk-extract) | `n/a` |
+| `YU01-lmax-sequencer` | [link](/docs/learning/state-YU01-lmax-sequencer) | [link](/specs/YU01-lmax-sequencer) | [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer) | `none` | `none` | [009-order-management-matcher](/docs/learning/state-009-order-management-matcher) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-YU01-lmax-sequencer) | `n/a` |
+| `YU02-lmax-kubernetes` | [link](/docs/learning/state-YU02-lmax-kubernetes) | [link](/specs/YU02-lmax-kubernetes) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes) | `none` | `none` | [014-fdc3-intent-interoperability](/docs/learning/state-014-fdc3-intent-interoperability) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...code%2Fgenerated-state-YU02-lmax-kubernetes) | `n/a` |
+| `YU03-in-memory-risk-gateway` | [link](/docs/learning/state-YU03-in-memory-risk-gateway) | [link](/specs/YU03-in-memory-risk-gateway) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) | `none` | `none` | [YU02-lmax-kubernetes](/docs/learning/state-YU02-lmax-kubernetes) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU02-lmax-kubernetes...code%2Fgenerated-state-YU03-in-memory-risk-gateway) | `n/a` |
+| `YU04-durable-control-feeds` | [link](/docs/learning/state-YU04-durable-control-feeds) | [link](/specs/YU04-durable-control-feeds) | [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds) | `none` | `none` | [YU03-in-memory-risk-gateway](/docs/learning/state-YU03-in-memory-risk-gateway) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU03-in-memory-risk-gateway...code%2Fgenerated-state-YU04-durable-control-feeds) | `n/a` |
+| `YU05-post-trade-compliance` | [link](/docs/learning/state-YU05-post-trade-compliance) | [link](/specs/YU05-post-trade-compliance) | [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance) | `none` | `none` | [YU04-durable-control-feeds](/docs/learning/state-YU04-durable-control-feeds) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU04-durable-control-feeds...code%2Fgenerated-state-YU05-post-trade-compliance) | `n/a` |
+| `YU06-eod-price-production` | [link](/docs/learning/state-YU06-eod-price-production) | [link](/specs/YU06-eod-price-production) | [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production) | `none` | `none` | [YU05-post-trade-compliance](/docs/learning/state-YU05-post-trade-compliance) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU05-post-trade-compliance...code%2Fgenerated-state-YU06-eod-price-production) | `n/a` |
+| `YU07-historical-tick-store` | [link](/docs/learning/state-YU07-historical-tick-store) | [link](/specs/YU07-historical-tick-store) | [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store) | `none` | `none` | [YU06-eod-price-production](/docs/learning/state-YU06-eod-price-production) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU06-eod-price-production...code%2Fgenerated-state-YU07-historical-tick-store) | `n/a` |
+| `YU08-execution-algo-engine` | [link](/docs/learning/state-YU08-execution-algo-engine) | [link](/specs/YU08-execution-algo-engine) | [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine) | `none` | `none` | [YU07-historical-tick-store](/docs/learning/state-YU07-historical-tick-store) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU07-historical-tick-store...code%2Fgenerated-state-YU08-execution-algo-engine) | `n/a` |
+| `YU09-ops-hardening` | [link](/docs/learning/state-YU09-ops-hardening) | [link](/specs/YU09-ops-hardening) | [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening) | `none` | `none` | [YU08-execution-algo-engine](/docs/learning/state-YU08-execution-algo-engine) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU08-execution-algo-engine...code%2Fgenerated-state-YU09-ops-hardening) | `n/a` |
+| `YU10-fix-ingress` | [link](/docs/learning/state-YU10-fix-ingress) | [link](/specs/YU10-fix-ingress) | [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress) | `none` | `none` | [YU09-ops-hardening](/docs/learning/state-YU09-ops-hardening) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU09-ops-hardening...code%2Fgenerated-state-YU10-fix-ingress) | `n/a` |
+| `YU11-aeron-replication` | [link](/docs/learning/state-YU11-aeron-replication) | [link](/specs/YU11-aeron-replication) | [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication) | `none` | `none` | [YU10-fix-ingress](/docs/learning/state-YU10-fix-ingress) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU10-fix-ingress...code%2Fgenerated-state-YU11-aeron-replication) | `n/a` |
+| `YU12-aeron-cluster` | [link](/docs/learning/state-YU12-aeron-cluster) | [link](/specs/YU12-aeron-cluster) | [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster) | `none` | `none` | [YU11-aeron-replication](/docs/learning/state-YU11-aeron-replication) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU11-aeron-replication...code%2Fgenerated-state-YU12-aeron-cluster) | `n/a` |
+| `YU13-limit-order-book` | [link](/docs/learning/state-YU13-limit-order-book) | [link](/specs/YU13-limit-order-book) | [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book) | `none` | `none` | [YU12-aeron-cluster](/docs/learning/state-YU12-aeron-cluster) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU12-aeron-cluster...code%2Fgenerated-state-YU13-limit-order-book) | `n/a` |
+| `YU14-listed-equity-options` | [link](/docs/learning/state-YU14-listed-equity-options) | [link](/specs/YU14-listed-equity-options) | [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options) | `none` | `none` | [YU13-limit-order-book](/docs/learning/state-YU13-limit-order-book) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU13-limit-order-book...code%2Fgenerated-state-YU14-listed-equity-options) | `n/a` |
+| `YU15-eod-risk-extract` | [link](/docs/learning/state-YU15-eod-risk-extract) | [link](/specs/YU15-eod-risk-extract) | [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract) | `none` | `none` | [YU14-listed-equity-options](/docs/learning/state-YU14-listed-equity-options) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU14-listed-equity-options...code%2Fgenerated-state-YU15-eod-risk-extract) | `n/a` |
 
 ## How To Use This Section
 
@@ -3203,12 +3203,12 @@ CORS_ALLOWED_ORIGINS=http://localhost:18093 ./scripts/start-base-uncontainerized
 
 ## Rendered Code
 
-- Generated branch: [YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU01-lmax-sequencer)
+- Generated branch: [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...YU01-lmax-sequencer)
+- Compare against `009-order-management-matcher`: [code/generated-state-009-order-management-matcher...code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-YU01-lmax-sequencer)
 
 ## Plain-English Code Delta
 
@@ -3258,12 +3258,12 @@ CORS_ALLOWED_ORIGINS=http://localhost:18093 ./scripts/start-base-uncontainerized
 
 ## Rendered Code
 
-- Generated branch: [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha)
+- Generated branch: [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha)
+- Compare against `014-fdc3-intent-interoperability`: [code/generated-state-014-fdc3-intent-interoperability...code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...code%2Fgenerated-state-YU02-lmax-kubernetes)
 
 ## Plain-English Code Delta
 
@@ -3313,12 +3313,12 @@ CORS_ALLOWED_ORIGINS=http://localhost:18093 ./scripts/start-base-uncontainerized
 
 ## Rendered Code
 
-- Generated branch: [YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU03-in-memory-risk-gateway)
+- Generated branch: [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU02-lmax-kubernetes`: [YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway)
+- Compare against `YU02-lmax-kubernetes`: [code/generated-state-YU02-lmax-kubernetes...code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU02-lmax-kubernetes...code%2Fgenerated-state-YU03-in-memory-risk-gateway)
 
 ## Plain-English Code Delta
 
@@ -3334,7 +3334,7 @@ CORS_ALLOWED_ORIGINS=http://localhost:18093 ./scripts/start-base-uncontainerized
 ## Run This State
 
 ```bash
-inherits YU02-lmax-kubernetes runtime harness
+./scripts/start-state-YU03-in-memory-risk-gateway-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3368,12 +3368,12 @@ inherits YU02-lmax-kubernetes runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds)
+- Generated branch: [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU03-in-memory-risk-gateway`: [YU03-in-memory-risk-gateway...YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU03-in-memory-risk-gateway...YU04-durable-control-feeds)
+- Compare against `YU03-in-memory-risk-gateway`: [code/generated-state-YU03-in-memory-risk-gateway...code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU03-in-memory-risk-gateway...code%2Fgenerated-state-YU04-durable-control-feeds)
 
 ## Plain-English Code Delta
 
@@ -3389,7 +3389,7 @@ inherits YU02-lmax-kubernetes runtime harness
 ## Run This State
 
 ```bash
-inherits YU03-in-memory-risk-gateway runtime harness
+./scripts/start-state-YU04-durable-control-feeds-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3423,12 +3423,12 @@ inherits YU03-in-memory-risk-gateway runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance)
+- Generated branch: [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU04-durable-control-feeds`: [YU04-durable-control-feeds...YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU04-durable-control-feeds...YU05-post-trade-compliance)
+- Compare against `YU04-durable-control-feeds`: [code/generated-state-YU04-durable-control-feeds...code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU04-durable-control-feeds...code%2Fgenerated-state-YU05-post-trade-compliance)
 
 ## Plain-English Code Delta
 
@@ -3444,7 +3444,7 @@ inherits YU03-in-memory-risk-gateway runtime harness
 ## Run This State
 
 ```bash
-inherits YU04-durable-control-feeds runtime harness
+./scripts/start-state-YU05-post-trade-compliance-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3478,12 +3478,12 @@ inherits YU04-durable-control-feeds runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU06-eod-price-production)
+- Generated branch: [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU05-post-trade-compliance`: [YU05-post-trade-compliance...YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU05-post-trade-compliance...YU06-eod-price-production)
+- Compare against `YU05-post-trade-compliance`: [code/generated-state-YU05-post-trade-compliance...code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU05-post-trade-compliance...code%2Fgenerated-state-YU06-eod-price-production)
 
 ## Plain-English Code Delta
 
@@ -3499,7 +3499,7 @@ inherits YU04-durable-control-feeds runtime harness
 ## Run This State
 
 ```bash
-inherits YU05-post-trade-compliance runtime harness
+./scripts/start-state-YU06-eod-price-production-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3533,12 +3533,12 @@ inherits YU05-post-trade-compliance runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU07-historical-tick-store)
+- Generated branch: [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU06-eod-price-production`: [YU06-eod-price-production...YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU06-eod-price-production...YU07-historical-tick-store)
+- Compare against `YU06-eod-price-production`: [code/generated-state-YU06-eod-price-production...code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU06-eod-price-production...code%2Fgenerated-state-YU07-historical-tick-store)
 
 ## Plain-English Code Delta
 
@@ -3554,7 +3554,7 @@ inherits YU05-post-trade-compliance runtime harness
 ## Run This State
 
 ```bash
-inherits YU06-eod-price-production runtime harness
+./scripts/start-state-YU07-historical-tick-store-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3588,12 +3588,12 @@ inherits YU06-eod-price-production runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine)
+- Generated branch: [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU07-historical-tick-store`: [YU07-historical-tick-store...YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU07-historical-tick-store...YU08-execution-algo-engine)
+- Compare against `YU07-historical-tick-store`: [code/generated-state-YU07-historical-tick-store...code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU07-historical-tick-store...code%2Fgenerated-state-YU08-execution-algo-engine)
 
 ## Plain-English Code Delta
 
@@ -3609,7 +3609,7 @@ inherits YU06-eod-price-production runtime harness
 ## Run This State
 
 ```bash
-inherits YU07-historical-tick-store runtime harness
+./scripts/start-state-YU08-execution-algo-engine-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3643,12 +3643,12 @@ inherits YU07-historical-tick-store runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening)
+- Generated branch: [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU08-execution-algo-engine`: [YU08-execution-algo-engine...YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU08-execution-algo-engine...YU09-ops-hardening)
+- Compare against `YU08-execution-algo-engine`: [code/generated-state-YU08-execution-algo-engine...code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU08-execution-algo-engine...code%2Fgenerated-state-YU09-ops-hardening)
 
 ## Plain-English Code Delta
 
@@ -3664,7 +3664,7 @@ inherits YU07-historical-tick-store runtime harness
 ## Run This State
 
 ```bash
-inherits YU08-execution-algo-engine runtime harness
+./scripts/start-state-YU09-ops-hardening-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3698,12 +3698,12 @@ inherits YU08-execution-algo-engine runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress)
+- Generated branch: [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU09-ops-hardening`: [YU09-ops-hardening...YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU09-ops-hardening...YU10-fix-ingress)
+- Compare against `YU09-ops-hardening`: [code/generated-state-YU09-ops-hardening...code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU09-ops-hardening...code%2Fgenerated-state-YU10-fix-ingress)
 
 ## Plain-English Code Delta
 
@@ -3717,7 +3717,7 @@ inherits YU08-execution-algo-engine runtime harness
 ## Run This State
 
 ```bash
-inherits YU09-ops-hardening runtime harness
+./scripts/start-state-YU10-fix-ingress-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3751,12 +3751,12 @@ inherits YU09-ops-hardening runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication)
+- Generated branch: [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU10-fix-ingress`: [YU10-fix-ingress...YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU10-fix-ingress...YU11-aeron-replication)
+- Compare against `YU10-fix-ingress`: [code/generated-state-YU10-fix-ingress...code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU10-fix-ingress...code%2Fgenerated-state-YU11-aeron-replication)
 
 ## Plain-English Code Delta
 
@@ -3772,7 +3772,7 @@ inherits YU09-ops-hardening runtime harness
 ## Run This State
 
 ```bash
-inherits YU10-fix-ingress runtime harness
+./scripts/start-state-YU11-aeron-replication-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3806,12 +3806,12 @@ inherits YU10-fix-ingress runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster)
+- Generated branch: [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU11-aeron-replication`: [YU11-aeron-replication...YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU11-aeron-replication...YU12-aeron-cluster)
+- Compare against `YU11-aeron-replication`: [code/generated-state-YU11-aeron-replication...code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU11-aeron-replication...code%2Fgenerated-state-YU12-aeron-cluster)
 
 ## Plain-English Code Delta
 
@@ -3827,7 +3827,7 @@ inherits YU10-fix-ingress runtime harness
 ## Run This State
 
 ```bash
-inherits YU11-aeron-replication runtime harness
+./scripts/start-state-YU12-aeron-cluster-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3861,12 +3861,12 @@ inherits YU11-aeron-replication runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU13-limit-order-book)
+- Generated branch: [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU12-aeron-cluster`: [YU12-aeron-cluster...YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU12-aeron-cluster...YU13-limit-order-book)
+- Compare against `YU12-aeron-cluster`: [code/generated-state-YU12-aeron-cluster...code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU12-aeron-cluster...code%2Fgenerated-state-YU13-limit-order-book)
 
 ## Plain-English Code Delta
 
@@ -3882,7 +3882,7 @@ inherits YU11-aeron-replication runtime harness
 ## Run This State
 
 ```bash
-inherits YU12-aeron-cluster runtime harness
+./scripts/start-state-YU13-limit-order-book-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3916,12 +3916,12 @@ inherits YU12-aeron-cluster runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU14-listed-equity-options)
+- Generated branch: [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU13-limit-order-book`: [YU13-limit-order-book...YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU13-limit-order-book...YU14-listed-equity-options)
+- Compare against `YU13-limit-order-book`: [code/generated-state-YU13-limit-order-book...code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU13-limit-order-book...code%2Fgenerated-state-YU14-listed-equity-options)
 
 ## Plain-English Code Delta
 
@@ -3937,7 +3937,7 @@ inherits YU12-aeron-cluster runtime harness
 ## Run This State
 
 ```bash
-inherits YU13-limit-order-book runtime harness
+./scripts/start-state-YU14-listed-equity-options-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -3971,12 +3971,12 @@ inherits YU13-limit-order-book runtime harness
 
 ## Rendered Code
 
-- Generated branch: [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
+- Generated branch: [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
 - Authoring branch (spec source): [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU14-listed-equity-options`: [YU14-listed-equity-options...YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU14-listed-equity-options...YU15-eod-risk-extract)
+- Compare against `YU14-listed-equity-options`: [code/generated-state-YU14-listed-equity-options...code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU14-listed-equity-options...code%2Fgenerated-state-YU15-eod-risk-extract)
 
 ## Plain-English Code Delta
 
@@ -3992,7 +3992,7 @@ inherits YU13-limit-order-book runtime harness
 ## Run This State
 
 ```bash
-inherits YU14-listed-equity-options runtime harness
+./scripts/start-state-YU15-eod-risk-extract-generated.sh
 ```
 
 ## Canonical Spec Links
@@ -4152,21 +4152,21 @@ flowchart TB
 | **[`012-platform-convergence-c3`](pathname:///specs/platform-convergence-c3)** [(C3)](pathname:///docs/spec-kit/convergence-states#c3) | [link](pathname:///specs/platform-convergence-c3) | [link](pathname:///specs/platform-convergence-c3/system/architecture) | [link](pathname:///specs/platform-convergence-c3/system/runtime-topology) | [link](pathname:///docs/learning/state-012-platform-convergence-c3) | [code/generated-state-012-platform-convergence-c3](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-012-platform-convergence-c3) |
 | [`013-radius-kubernetes-platform`](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform) | [link](pathname:///specs/radius-kubernetes-platform/system/architecture) | [link](pathname:///specs/radius-kubernetes-platform/system/runtime-topology) | [link](pathname:///docs/learning/state-013-radius-kubernetes-platform) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform) |
 | [`014-fdc3-intent-interoperability`](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability) | [link](pathname:///specs/fdc3-intent-interoperability/system/architecture) | [link](pathname:///specs/fdc3-intent-interoperability/system/runtime-topology) | [link](pathname:///docs/learning/state-014-fdc3-intent-interoperability) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) |
-| [`YU01-lmax-sequencer`](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer/system/architecture) | [link](pathname:///specs/YU01-lmax-sequencer/system/runtime-topology) | [link](pathname:///docs/learning/state-YU01-lmax-sequencer) | [YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU01-lmax-sequencer) |
-| [`YU02-lmax-kubernetes`](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes/system/architecture) | [link](pathname:///specs/YU02-lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-YU02-lmax-kubernetes) | [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha) |
-| [`YU03-in-memory-risk-gateway`](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/architecture) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/runtime-topology) | [link](pathname:///docs/learning/state-YU03-in-memory-risk-gateway) | [YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU03-in-memory-risk-gateway) |
-| [`YU04-durable-control-feeds`](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds/system/architecture) | [link](pathname:///specs/YU04-durable-control-feeds/system/runtime-topology) | [link](pathname:///docs/learning/state-YU04-durable-control-feeds) | [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds) |
-| [`YU05-post-trade-compliance`](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance/system/architecture) | [link](pathname:///specs/YU05-post-trade-compliance/system/runtime-topology) | [link](pathname:///docs/learning/state-YU05-post-trade-compliance) | [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance) |
-| [`YU06-eod-price-production`](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production/system/architecture) | [link](pathname:///specs/YU06-eod-price-production/system/runtime-topology) | [link](pathname:///docs/learning/state-YU06-eod-price-production) | [YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU06-eod-price-production) |
-| [`YU07-historical-tick-store`](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store/system/architecture) | [link](pathname:///specs/YU07-historical-tick-store/system/runtime-topology) | [link](pathname:///docs/learning/state-YU07-historical-tick-store) | [YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU07-historical-tick-store) |
-| [`YU08-execution-algo-engine`](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine/system/architecture) | [link](pathname:///specs/YU08-execution-algo-engine/system/runtime-topology) | [link](pathname:///docs/learning/state-YU08-execution-algo-engine) | [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine) |
-| [`YU09-ops-hardening`](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening/system/architecture) | [link](pathname:///specs/YU09-ops-hardening/system/runtime-topology) | [link](pathname:///docs/learning/state-YU09-ops-hardening) | [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening) |
-| [`YU10-fix-ingress`](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress/system/architecture) | [link](pathname:///specs/YU10-fix-ingress/system/runtime-topology) | [link](pathname:///docs/learning/state-YU10-fix-ingress) | [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress) |
-| [`YU11-aeron-replication`](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication/system/architecture) | [link](pathname:///specs/YU11-aeron-replication/system/runtime-topology) | [link](pathname:///docs/learning/state-YU11-aeron-replication) | [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication) |
-| [`YU12-aeron-cluster`](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster/system/architecture) | [link](pathname:///specs/YU12-aeron-cluster/system/runtime-topology) | [link](pathname:///docs/learning/state-YU12-aeron-cluster) | [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster) |
-| [`YU13-limit-order-book`](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book/system/architecture) | [link](pathname:///specs/YU13-limit-order-book/system/runtime-topology) | [link](pathname:///docs/learning/state-YU13-limit-order-book) | [YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU13-limit-order-book) |
-| [`YU14-listed-equity-options`](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options/system/architecture) | [link](pathname:///specs/YU14-listed-equity-options/system/runtime-topology) | [link](pathname:///docs/learning/state-YU14-listed-equity-options) | [YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU14-listed-equity-options) |
-| [`YU15-eod-risk-extract`](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract/system/architecture) | [link](pathname:///specs/YU15-eod-risk-extract/system/runtime-topology) | [link](pathname:///docs/learning/state-YU15-eod-risk-extract) | [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract) |
+| [`YU01-lmax-sequencer`](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer) | [link](pathname:///specs/YU01-lmax-sequencer/system/architecture) | [link](pathname:///specs/YU01-lmax-sequencer/system/runtime-topology) | [link](pathname:///docs/learning/state-YU01-lmax-sequencer) | [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer) |
+| [`YU02-lmax-kubernetes`](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes) | [link](pathname:///specs/YU02-lmax-kubernetes/system/architecture) | [link](pathname:///specs/YU02-lmax-kubernetes/system/runtime-topology) | [link](pathname:///docs/learning/state-YU02-lmax-kubernetes) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes) |
+| [`YU03-in-memory-risk-gateway`](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/architecture) | [link](pathname:///specs/YU03-in-memory-risk-gateway/system/runtime-topology) | [link](pathname:///docs/learning/state-YU03-in-memory-risk-gateway) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) |
+| [`YU04-durable-control-feeds`](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds) | [link](pathname:///specs/YU04-durable-control-feeds/system/architecture) | [link](pathname:///specs/YU04-durable-control-feeds/system/runtime-topology) | [link](pathname:///docs/learning/state-YU04-durable-control-feeds) | [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds) |
+| [`YU05-post-trade-compliance`](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance) | [link](pathname:///specs/YU05-post-trade-compliance/system/architecture) | [link](pathname:///specs/YU05-post-trade-compliance/system/runtime-topology) | [link](pathname:///docs/learning/state-YU05-post-trade-compliance) | [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance) |
+| [`YU06-eod-price-production`](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production) | [link](pathname:///specs/YU06-eod-price-production/system/architecture) | [link](pathname:///specs/YU06-eod-price-production/system/runtime-topology) | [link](pathname:///docs/learning/state-YU06-eod-price-production) | [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production) |
+| [`YU07-historical-tick-store`](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store) | [link](pathname:///specs/YU07-historical-tick-store/system/architecture) | [link](pathname:///specs/YU07-historical-tick-store/system/runtime-topology) | [link](pathname:///docs/learning/state-YU07-historical-tick-store) | [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store) |
+| [`YU08-execution-algo-engine`](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine) | [link](pathname:///specs/YU08-execution-algo-engine/system/architecture) | [link](pathname:///specs/YU08-execution-algo-engine/system/runtime-topology) | [link](pathname:///docs/learning/state-YU08-execution-algo-engine) | [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine) |
+| [`YU09-ops-hardening`](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening) | [link](pathname:///specs/YU09-ops-hardening/system/architecture) | [link](pathname:///specs/YU09-ops-hardening/system/runtime-topology) | [link](pathname:///docs/learning/state-YU09-ops-hardening) | [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening) |
+| [`YU10-fix-ingress`](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress) | [link](pathname:///specs/YU10-fix-ingress/system/architecture) | [link](pathname:///specs/YU10-fix-ingress/system/runtime-topology) | [link](pathname:///docs/learning/state-YU10-fix-ingress) | [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress) |
+| [`YU11-aeron-replication`](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication) | [link](pathname:///specs/YU11-aeron-replication/system/architecture) | [link](pathname:///specs/YU11-aeron-replication/system/runtime-topology) | [link](pathname:///docs/learning/state-YU11-aeron-replication) | [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication) |
+| [`YU12-aeron-cluster`](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster) | [link](pathname:///specs/YU12-aeron-cluster/system/architecture) | [link](pathname:///specs/YU12-aeron-cluster/system/runtime-topology) | [link](pathname:///docs/learning/state-YU12-aeron-cluster) | [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster) |
+| [`YU13-limit-order-book`](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book) | [link](pathname:///specs/YU13-limit-order-book/system/architecture) | [link](pathname:///specs/YU13-limit-order-book/system/runtime-topology) | [link](pathname:///docs/learning/state-YU13-limit-order-book) | [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book) |
+| [`YU14-listed-equity-options`](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options) | [link](pathname:///specs/YU14-listed-equity-options/system/architecture) | [link](pathname:///specs/YU14-listed-equity-options/system/runtime-topology) | [link](pathname:///docs/learning/state-YU14-listed-equity-options) | [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options) |
+| [`YU15-eod-risk-extract`](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract/system/architecture) | [link](pathname:///specs/YU15-eod-risk-extract/system/runtime-topology) | [link](pathname:///docs/learning/state-YU15-eod-risk-extract) | [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract) |
 
 ## Swimlane View
 
@@ -6956,21 +6956,21 @@ For progression context, see [Visual Learning Paths](/docs/learning-paths).
 | `012-platform-convergence-c3` | implemented | `C3`Dotted: [009](/docs/learning/state-009-order-management-matcher) | [Learning Guide](/docs/learning/state-012-platform-convergence-c3)[Quick Start](/specs/platform-convergence-c3/quickstart) | [Architecture](/specs/platform-convergence-c3/system/architecture)[Flows](/specs/platform-convergence-c3/system/runtime-topology)[Data Model](/specs/platform-convergence-c3/data-model) | [Spec Pack](/specs/platform-convergence-c3)[Research](/specs/platform-convergence-c3/research) | [code/generated-state-012-platform-convergence-c3](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-012-platform-convergence-c3) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-011-tilt-kubernetes-dev-loop...code%2Fgenerated-state-012-platform-convergence-c3) | [link](/docs/adr/008-convergence-state-model) |
 | `013-radius-kubernetes-platform` | implemented | `none` | [Learning Guide](/docs/learning/state-013-radius-kubernetes-platform)[Quick Start](/specs/radius-kubernetes-platform/quickstart) | [Architecture](/specs/radius-kubernetes-platform/system/architecture)[Flows](/specs/radius-kubernetes-platform/system/runtime-topology)[Data Model](/specs/radius-kubernetes-platform/data-model) | [Spec Pack](/specs/radius-kubernetes-platform)[Research](/specs/radius-kubernetes-platform/research) | [code/generated-state-013-radius-kubernetes-platform](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-013-radius-kubernetes-platform) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-013-radius-kubernetes-platform) | `n/a` |
 | `014-fdc3-intent-interoperability` | implemented | `none` | [Learning Guide](/docs/learning/state-014-fdc3-intent-interoperability)[Quick Start](/specs/fdc3-intent-interoperability/quickstart) | [Architecture](/specs/fdc3-intent-interoperability/system/architecture)[Flows](/specs/fdc3-intent-interoperability/system/runtime-topology)[Data Model](/specs/fdc3-intent-interoperability/data-model) | [Spec Pack](/specs/fdc3-intent-interoperability)[Research](/specs/fdc3-intent-interoperability/research) | [code/generated-state-014-fdc3-intent-interoperability](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-014-fdc3-intent-interoperability) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-012-platform-convergence-c3...code%2Fgenerated-state-014-fdc3-intent-interoperability) | `n/a` |
-| `YU01-lmax-sequencer` | implemented | `none` | [Learning Guide](/docs/learning/state-YU01-lmax-sequencer)[Quick Start](/specs/YU01-lmax-sequencer/quickstart) | [Architecture](/specs/YU01-lmax-sequencer/system/architecture)[Flows](/specs/YU01-lmax-sequencer/system/runtime-topology)[Data Model](/specs/YU01-lmax-sequencer/data-model) | [Spec Pack](/specs/YU01-lmax-sequencer)[Research](/specs/YU01-lmax-sequencer/research) | [YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU01-lmax-sequencer) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...YU01-lmax-sequencer) | `n/a` |
-| `YU02-lmax-kubernetes` | implemented | `none` | [Learning Guide](/docs/learning/state-YU02-lmax-kubernetes)[Quick Start](/specs/YU02-lmax-kubernetes/quickstart) | [Architecture](/specs/YU02-lmax-kubernetes/system/architecture)[Flows](/specs/YU02-lmax-kubernetes/system/runtime-topology)[Data Model](/specs/YU02-lmax-kubernetes/data-model) | [Spec Pack](/specs/YU02-lmax-kubernetes)[Research](/specs/YU02-lmax-kubernetes/research) | [YU02-lmax-kubernetes-blp-ha](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU02-lmax-kubernetes-blp-ha) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...YU02-lmax-kubernetes-blp-ha) | `n/a` |
-| `YU03-in-memory-risk-gateway` | implemented | `none` | [Learning Guide](/docs/learning/state-YU03-in-memory-risk-gateway)[Quick Start](/specs/YU03-in-memory-risk-gateway/quickstart) | [Architecture](/specs/YU03-in-memory-risk-gateway/system/architecture)[Flows](/specs/YU03-in-memory-risk-gateway/system/runtime-topology)[Data Model](/specs/YU03-in-memory-risk-gateway/data-model) | [Spec Pack](/specs/YU03-in-memory-risk-gateway)[Research](/specs/YU03-in-memory-risk-gateway/research) | [YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU03-in-memory-risk-gateway) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU02-lmax-kubernetes-blp-ha...YU03-in-memory-risk-gateway) | `n/a` |
-| `YU04-durable-control-feeds` | implemented | `none` | [Learning Guide](/docs/learning/state-YU04-durable-control-feeds)[Quick Start](/specs/YU04-durable-control-feeds/quickstart) | [Architecture](/specs/YU04-durable-control-feeds/system/architecture)[Flows](/specs/YU04-durable-control-feeds/system/runtime-topology)[Data Model](/specs/YU04-durable-control-feeds/data-model) | [Spec Pack](/specs/YU04-durable-control-feeds)[Research](/specs/YU04-durable-control-feeds/research) | [YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU04-durable-control-feeds) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU03-in-memory-risk-gateway...YU04-durable-control-feeds) | `n/a` |
-| `YU05-post-trade-compliance` | implemented | `none` | [Learning Guide](/docs/learning/state-YU05-post-trade-compliance)[Quick Start](/specs/YU05-post-trade-compliance/quickstart) | [Architecture](/specs/YU05-post-trade-compliance/system/architecture)[Flows](/specs/YU05-post-trade-compliance/system/runtime-topology)[Data Model](/specs/YU05-post-trade-compliance/data-model) | [Spec Pack](/specs/YU05-post-trade-compliance)[Research](/specs/YU05-post-trade-compliance/research) | [YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU05-post-trade-compliance) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU04-durable-control-feeds...YU05-post-trade-compliance) | `n/a` |
-| `YU06-eod-price-production` | implemented | `none` | [Learning Guide](/docs/learning/state-YU06-eod-price-production)[Quick Start](/specs/YU06-eod-price-production/quickstart) | [Architecture](/specs/YU06-eod-price-production/system/architecture)[Flows](/specs/YU06-eod-price-production/system/runtime-topology)[Data Model](/specs/YU06-eod-price-production/data-model) | [Spec Pack](/specs/YU06-eod-price-production)[Research](/specs/YU06-eod-price-production/research) | [YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU06-eod-price-production) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU05-post-trade-compliance...YU06-eod-price-production) | `n/a` |
-| `YU07-historical-tick-store` | implemented | `none` | [Learning Guide](/docs/learning/state-YU07-historical-tick-store)[Quick Start](/specs/YU07-historical-tick-store/quickstart) | [Architecture](/specs/YU07-historical-tick-store/system/architecture)[Flows](/specs/YU07-historical-tick-store/system/runtime-topology)[Data Model](/specs/YU07-historical-tick-store/data-model) | [Spec Pack](/specs/YU07-historical-tick-store)[Research](/specs/YU07-historical-tick-store/research) | [YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU07-historical-tick-store) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU06-eod-price-production...YU07-historical-tick-store) | `n/a` |
-| `YU08-execution-algo-engine` | implemented | `none` | [Learning Guide](/docs/learning/state-YU08-execution-algo-engine)[Quick Start](/specs/YU08-execution-algo-engine/quickstart) | [Architecture](/specs/YU08-execution-algo-engine/system/architecture)[Flows](/specs/YU08-execution-algo-engine/system/runtime-topology)[Data Model](/specs/YU08-execution-algo-engine/data-model) | [Spec Pack](/specs/YU08-execution-algo-engine)[Research](/specs/YU08-execution-algo-engine/research) | [YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU08-execution-algo-engine) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU07-historical-tick-store...YU08-execution-algo-engine) | `n/a` |
-| `YU09-ops-hardening` | implemented | `none` | [Learning Guide](/docs/learning/state-YU09-ops-hardening)[Quick Start](/specs/YU09-ops-hardening/quickstart) | [Architecture](/specs/YU09-ops-hardening/system/architecture)[Flows](/specs/YU09-ops-hardening/system/runtime-topology)[Data Model](/specs/YU09-ops-hardening/data-model) | [Spec Pack](/specs/YU09-ops-hardening)[Research](/specs/YU09-ops-hardening/research) | [YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU09-ops-hardening) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU08-execution-algo-engine...YU09-ops-hardening) | `n/a` |
-| `YU10-fix-ingress` | implemented | `none` | [Learning Guide](/docs/learning/state-YU10-fix-ingress)[Quick Start](/specs/YU10-fix-ingress/quickstart) | [Architecture](/specs/YU10-fix-ingress/system/architecture)[Flows](/specs/YU10-fix-ingress/system/runtime-topology)[Data Model](/specs/YU10-fix-ingress/data-model) | [Spec Pack](/specs/YU10-fix-ingress)[Research](/specs/YU10-fix-ingress/research) | [YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU10-fix-ingress) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU09-ops-hardening...YU10-fix-ingress) | `n/a` |
-| `YU11-aeron-replication` | implemented | `none` | [Learning Guide](/docs/learning/state-YU11-aeron-replication)[Quick Start](/specs/YU11-aeron-replication/quickstart) | [Architecture](/specs/YU11-aeron-replication/system/architecture)[Flows](/specs/YU11-aeron-replication/system/runtime-topology)[Data Model](/specs/YU11-aeron-replication/data-model) | [Spec Pack](/specs/YU11-aeron-replication)[Research](/specs/YU11-aeron-replication/research) | [YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU11-aeron-replication) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU10-fix-ingress...YU11-aeron-replication) | `n/a` |
-| `YU12-aeron-cluster` | implemented | `none` | [Learning Guide](/docs/learning/state-YU12-aeron-cluster)[Quick Start](/specs/YU12-aeron-cluster/quickstart) | [Architecture](/specs/YU12-aeron-cluster/system/architecture)[Flows](/specs/YU12-aeron-cluster/system/runtime-topology)[Data Model](/specs/YU12-aeron-cluster/data-model) | [Spec Pack](/specs/YU12-aeron-cluster)[Research](/specs/YU12-aeron-cluster/research) | [YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU12-aeron-cluster) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU11-aeron-replication...YU12-aeron-cluster) | `n/a` |
-| `YU13-limit-order-book` | implemented | `none` | [Learning Guide](/docs/learning/state-YU13-limit-order-book)[Quick Start](/specs/YU13-limit-order-book/quickstart) | [Architecture](/specs/YU13-limit-order-book/system/architecture)[Flows](/specs/YU13-limit-order-book/system/runtime-topology)[Data Model](/specs/YU13-limit-order-book/data-model) | [Spec Pack](/specs/YU13-limit-order-book)[Research](/specs/YU13-limit-order-book/research) | [YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU13-limit-order-book) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU12-aeron-cluster...YU13-limit-order-book) | `n/a` |
-| `YU14-listed-equity-options` | implemented | `none` | [Learning Guide](/docs/learning/state-YU14-listed-equity-options)[Quick Start](/specs/YU14-listed-equity-options/quickstart) | [Architecture](/specs/YU14-listed-equity-options/system/architecture)[Flows](/specs/YU14-listed-equity-options/system/runtime-topology)[Data Model](/specs/YU14-listed-equity-options/data-model) | [Spec Pack](/specs/YU14-listed-equity-options)[Research](/specs/YU14-listed-equity-options/research) | [YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU14-listed-equity-options) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU13-limit-order-book...YU14-listed-equity-options) | `n/a` |
-| `YU15-eod-risk-extract` | implemented | `none` | [Learning Guide](/docs/learning/state-YU15-eod-risk-extract)[Quick Start](/specs/YU15-eod-risk-extract/quickstart) | [Architecture](/specs/YU15-eod-risk-extract/system/architecture)[Flows](/specs/YU15-eod-risk-extract/system/runtime-topology)[Data Model](/specs/YU15-eod-risk-extract/data-model) | [Spec Pack](/specs/YU15-eod-risk-extract)[Research](/specs/YU15-eod-risk-extract/research) | [YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU15-eod-risk-extract) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/YU14-listed-equity-options...YU15-eod-risk-extract) | `n/a` |
+| `YU01-lmax-sequencer` | implemented | `none` | [Learning Guide](/docs/learning/state-YU01-lmax-sequencer)[Quick Start](/specs/YU01-lmax-sequencer/quickstart) | [Architecture](/specs/YU01-lmax-sequencer/system/architecture)[Flows](/specs/YU01-lmax-sequencer/system/runtime-topology)[Data Model](/specs/YU01-lmax-sequencer/data-model) | [Spec Pack](/specs/YU01-lmax-sequencer)[Research](/specs/YU01-lmax-sequencer/research) | [code/generated-state-YU01-lmax-sequencer](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU01-lmax-sequencer) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-009-order-management-matcher...code%2Fgenerated-state-YU01-lmax-sequencer) | `n/a` |
+| `YU02-lmax-kubernetes` | implemented | `none` | [Learning Guide](/docs/learning/state-YU02-lmax-kubernetes)[Quick Start](/specs/YU02-lmax-kubernetes/quickstart) | [Architecture](/specs/YU02-lmax-kubernetes/system/architecture)[Flows](/specs/YU02-lmax-kubernetes/system/runtime-topology)[Data Model](/specs/YU02-lmax-kubernetes/data-model) | [Spec Pack](/specs/YU02-lmax-kubernetes)[Research](/specs/YU02-lmax-kubernetes/research) | [code/generated-state-YU02-lmax-kubernetes](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU02-lmax-kubernetes) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-014-fdc3-intent-interoperability...code%2Fgenerated-state-YU02-lmax-kubernetes) | `n/a` |
+| `YU03-in-memory-risk-gateway` | implemented | `none` | [Learning Guide](/docs/learning/state-YU03-in-memory-risk-gateway)[Quick Start](/specs/YU03-in-memory-risk-gateway/quickstart) | [Architecture](/specs/YU03-in-memory-risk-gateway/system/architecture)[Flows](/specs/YU03-in-memory-risk-gateway/system/runtime-topology)[Data Model](/specs/YU03-in-memory-risk-gateway/data-model) | [Spec Pack](/specs/YU03-in-memory-risk-gateway)[Research](/specs/YU03-in-memory-risk-gateway/research) | [code/generated-state-YU03-in-memory-risk-gateway](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU03-in-memory-risk-gateway) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU02-lmax-kubernetes...code%2Fgenerated-state-YU03-in-memory-risk-gateway) | `n/a` |
+| `YU04-durable-control-feeds` | implemented | `none` | [Learning Guide](/docs/learning/state-YU04-durable-control-feeds)[Quick Start](/specs/YU04-durable-control-feeds/quickstart) | [Architecture](/specs/YU04-durable-control-feeds/system/architecture)[Flows](/specs/YU04-durable-control-feeds/system/runtime-topology)[Data Model](/specs/YU04-durable-control-feeds/data-model) | [Spec Pack](/specs/YU04-durable-control-feeds)[Research](/specs/YU04-durable-control-feeds/research) | [code/generated-state-YU04-durable-control-feeds](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU04-durable-control-feeds) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU03-in-memory-risk-gateway...code%2Fgenerated-state-YU04-durable-control-feeds) | `n/a` |
+| `YU05-post-trade-compliance` | implemented | `none` | [Learning Guide](/docs/learning/state-YU05-post-trade-compliance)[Quick Start](/specs/YU05-post-trade-compliance/quickstart) | [Architecture](/specs/YU05-post-trade-compliance/system/architecture)[Flows](/specs/YU05-post-trade-compliance/system/runtime-topology)[Data Model](/specs/YU05-post-trade-compliance/data-model) | [Spec Pack](/specs/YU05-post-trade-compliance)[Research](/specs/YU05-post-trade-compliance/research) | [code/generated-state-YU05-post-trade-compliance](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU05-post-trade-compliance) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU04-durable-control-feeds...code%2Fgenerated-state-YU05-post-trade-compliance) | `n/a` |
+| `YU06-eod-price-production` | implemented | `none` | [Learning Guide](/docs/learning/state-YU06-eod-price-production)[Quick Start](/specs/YU06-eod-price-production/quickstart) | [Architecture](/specs/YU06-eod-price-production/system/architecture)[Flows](/specs/YU06-eod-price-production/system/runtime-topology)[Data Model](/specs/YU06-eod-price-production/data-model) | [Spec Pack](/specs/YU06-eod-price-production)[Research](/specs/YU06-eod-price-production/research) | [code/generated-state-YU06-eod-price-production](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU06-eod-price-production) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU05-post-trade-compliance...code%2Fgenerated-state-YU06-eod-price-production) | `n/a` |
+| `YU07-historical-tick-store` | implemented | `none` | [Learning Guide](/docs/learning/state-YU07-historical-tick-store)[Quick Start](/specs/YU07-historical-tick-store/quickstart) | [Architecture](/specs/YU07-historical-tick-store/system/architecture)[Flows](/specs/YU07-historical-tick-store/system/runtime-topology)[Data Model](/specs/YU07-historical-tick-store/data-model) | [Spec Pack](/specs/YU07-historical-tick-store)[Research](/specs/YU07-historical-tick-store/research) | [code/generated-state-YU07-historical-tick-store](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU07-historical-tick-store) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU06-eod-price-production...code%2Fgenerated-state-YU07-historical-tick-store) | `n/a` |
+| `YU08-execution-algo-engine` | implemented | `none` | [Learning Guide](/docs/learning/state-YU08-execution-algo-engine)[Quick Start](/specs/YU08-execution-algo-engine/quickstart) | [Architecture](/specs/YU08-execution-algo-engine/system/architecture)[Flows](/specs/YU08-execution-algo-engine/system/runtime-topology)[Data Model](/specs/YU08-execution-algo-engine/data-model) | [Spec Pack](/specs/YU08-execution-algo-engine)[Research](/specs/YU08-execution-algo-engine/research) | [code/generated-state-YU08-execution-algo-engine](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU08-execution-algo-engine) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU07-historical-tick-store...code%2Fgenerated-state-YU08-execution-algo-engine) | `n/a` |
+| `YU09-ops-hardening` | implemented | `none` | [Learning Guide](/docs/learning/state-YU09-ops-hardening)[Quick Start](/specs/YU09-ops-hardening/quickstart) | [Architecture](/specs/YU09-ops-hardening/system/architecture)[Flows](/specs/YU09-ops-hardening/system/runtime-topology)[Data Model](/specs/YU09-ops-hardening/data-model) | [Spec Pack](/specs/YU09-ops-hardening)[Research](/specs/YU09-ops-hardening/research) | [code/generated-state-YU09-ops-hardening](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU09-ops-hardening) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU08-execution-algo-engine...code%2Fgenerated-state-YU09-ops-hardening) | `n/a` |
+| `YU10-fix-ingress` | implemented | `none` | [Learning Guide](/docs/learning/state-YU10-fix-ingress)[Quick Start](/specs/YU10-fix-ingress/quickstart) | [Architecture](/specs/YU10-fix-ingress/system/architecture)[Flows](/specs/YU10-fix-ingress/system/runtime-topology)[Data Model](/specs/YU10-fix-ingress/data-model) | [Spec Pack](/specs/YU10-fix-ingress)[Research](/specs/YU10-fix-ingress/research) | [code/generated-state-YU10-fix-ingress](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU10-fix-ingress) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU09-ops-hardening...code%2Fgenerated-state-YU10-fix-ingress) | `n/a` |
+| `YU11-aeron-replication` | implemented | `none` | [Learning Guide](/docs/learning/state-YU11-aeron-replication)[Quick Start](/specs/YU11-aeron-replication/quickstart) | [Architecture](/specs/YU11-aeron-replication/system/architecture)[Flows](/specs/YU11-aeron-replication/system/runtime-topology)[Data Model](/specs/YU11-aeron-replication/data-model) | [Spec Pack](/specs/YU11-aeron-replication)[Research](/specs/YU11-aeron-replication/research) | [code/generated-state-YU11-aeron-replication](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU11-aeron-replication) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU10-fix-ingress...code%2Fgenerated-state-YU11-aeron-replication) | `n/a` |
+| `YU12-aeron-cluster` | implemented | `none` | [Learning Guide](/docs/learning/state-YU12-aeron-cluster)[Quick Start](/specs/YU12-aeron-cluster/quickstart) | [Architecture](/specs/YU12-aeron-cluster/system/architecture)[Flows](/specs/YU12-aeron-cluster/system/runtime-topology)[Data Model](/specs/YU12-aeron-cluster/data-model) | [Spec Pack](/specs/YU12-aeron-cluster)[Research](/specs/YU12-aeron-cluster/research) | [code/generated-state-YU12-aeron-cluster](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU12-aeron-cluster) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU11-aeron-replication...code%2Fgenerated-state-YU12-aeron-cluster) | `n/a` |
+| `YU13-limit-order-book` | implemented | `none` | [Learning Guide](/docs/learning/state-YU13-limit-order-book)[Quick Start](/specs/YU13-limit-order-book/quickstart) | [Architecture](/specs/YU13-limit-order-book/system/architecture)[Flows](/specs/YU13-limit-order-book/system/runtime-topology)[Data Model](/specs/YU13-limit-order-book/data-model) | [Spec Pack](/specs/YU13-limit-order-book)[Research](/specs/YU13-limit-order-book/research) | [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU12-aeron-cluster...code%2Fgenerated-state-YU13-limit-order-book) | `n/a` |
+| `YU14-listed-equity-options` | implemented | `none` | [Learning Guide](/docs/learning/state-YU14-listed-equity-options)[Quick Start](/specs/YU14-listed-equity-options/quickstart) | [Architecture](/specs/YU14-listed-equity-options/system/architecture)[Flows](/specs/YU14-listed-equity-options/system/runtime-topology)[Data Model](/specs/YU14-listed-equity-options/data-model) | [Spec Pack](/specs/YU14-listed-equity-options)[Research](/specs/YU14-listed-equity-options/research) | [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU13-limit-order-book...code%2Fgenerated-state-YU14-listed-equity-options) | `n/a` |
+| `YU15-eod-risk-extract` | implemented | `none` | [Learning Guide](/docs/learning/state-YU15-eod-risk-extract)[Quick Start](/specs/YU15-eod-risk-extract/quickstart) | [Architecture](/specs/YU15-eod-risk-extract/system/architecture)[Flows](/specs/YU15-eod-risk-extract/system/runtime-topology)[Data Model](/specs/YU15-eod-risk-extract/data-model) | [Spec Pack](/specs/YU15-eod-risk-extract)[Research](/specs/YU15-eod-risk-extract/research) | [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract) | [link](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU14-listed-equity-options...code%2Fgenerated-state-YU15-eod-risk-extract) | `n/a` |
 
 ## API Explorer by State
 
