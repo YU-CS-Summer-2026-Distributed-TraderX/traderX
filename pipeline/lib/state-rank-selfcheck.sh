@@ -15,9 +15,19 @@ CATALOG="${ROOT}/catalog/state-catalog.json"
 source "${ROOT}/pipeline/lib/state-rank.sh"
 
 failures=0
+checked=0
+skipped=()
 
+# Branches carry different catalogs -- YU01's holds 15 states, the rest hold 29 -- so a pinned id
+# may legitimately be absent. Skip those, but SAY SO: a pin that silently evaporates on 14 of 15
+# branches is the same "check that never ran" this lib exists to prevent.
 expect() {
   local id="$1" want="$2" got
+  if ! jq -e --arg i "${id}" '.states[] | select(.id == $i)' "${CATALOG}" >/dev/null 2>&1; then
+    skipped+=("${id}")
+    return
+  fi
+  checked=$((checked + 1))
   got="$(traderx_state_rank "${CATALOG}" "${id}")" || got="<unranked>"
   if [[ "${got}" != "${want}" ]]; then
     echo "[fail] rank(${id}): want ${want}, got ${got}"
@@ -60,4 +70,14 @@ if (( failures > 0 )); then
   exit 1
 fi
 
-echo "[ok] state-rank self-check passed ($(jq -r '.states | length' "${CATALOG}") catalog states rankable)"
+# A run where every pin was skipped would report success having asserted nothing about ranking.
+if (( checked == 0 )); then
+  echo "[fail] state-rank self-check asserted no pinned rank; catalog matched none of them"
+  exit 1
+fi
+
+if (( ${#skipped[@]} > 0 )); then
+  echo "[info] pinned ranks not in this branch's catalog (skipped): ${skipped[*]}"
+fi
+
+echo "[ok] state-rank self-check passed (${checked} pinned, $(jq -r '.states | length' "${CATALOG}") catalog states rankable)"
