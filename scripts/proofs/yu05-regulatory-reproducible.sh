@@ -15,9 +15,28 @@
 # to a sequence the log has already passed.
 #
 # Prereq: source terminals in yu05-common.sh.
-# Usage: bash yu05-regulatory-reproducible.sh [fromSeq] [toSeq]
+# Usage:
+#   bash yu05-regulatory-reproducible.sh [fromSeq] [toSeq]
+#   bash yu05-regulatory-reproducible.sh -v [fromSeq] [toSeq]   # show the range, URL and record kinds
+#
+# -v matters more here than on most proofs: the terse form reports a HASH, and two hashes matching
+# tells you nothing about WHAT was hashed. Verbose prints the record-kind histogram and a sample
+# record, which is what lets you see the export is an audit trail rather than 81 copies of the same
+# shape.
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/yu05-common.sh"
+
+VERBOSE=0
+while [ $# -gt 0 ]; do
+  case "$1" in -v|--verbose) VERBOSE=1; shift ;; *) break ;; esac
+done
+# STDERR, always: digest()'s stdout is consumed by `read n1 h1 l1 < <(digest)`, so anything verbose
+# printed there would be parsed as the record count. That exact mistake corrupted a trade id in
+# yu05-settlement earlier today.
+vlog(){ [ "$VERBOSE" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+export PROOF_VERBOSE="$VERBOSE"
+
 ADMIN=$(mint true '[]')
+vlog "   endpoints: OM=${OM}  TP=${TP}  ctx=${CTX}"
 
 # 000 means the request never reached anything -- a dead port-forward, usually. Treating that as
 # "capability present" let the script sail past this check and produce a pass against a matcher it
@@ -60,16 +79,28 @@ esac
 FROM=${1:-0}; TO=${2:-$APPLIED}
 URL="$OM/regulatory/report?fromSeq=$FROM&toSeq=$TO"
 
+vlog "   applied seq (member 0 /health): ${APPLIED}" \
+     "   range: fromSeq=${FROM} toSeq=${TO}$([ -z "${2:-}" ] && echo '  (toSeq defaulted to applied)')" \
+     "   GET ${URL}"
+
 echo "── REGULATORY EXPORT REPRODUCIBILITY (seq $FROM..$TO) ──"
 # Canonicalize the records array (sorted keys) and hash it, so identical content -> identical hash
 # regardless of any wrapper/generatedAt field, plus the count of kinds that only journal replay can
 # produce.
 digest(){ curl -s -m600 "$URL" -H "Authorization: Bearer $ADMIN" \
-  | python3 -c "import sys,json,hashlib
+  | python3 -c "import sys,os,json,hashlib,collections
 d=json.load(sys.stdin)
 recs=d if isinstance(d,list) else d.get('records',[])   # /regulatory/report is a top-level array
 blob=json.dumps(recs,sort_keys=True,separators=(',',':')).encode()
 lifecycle=sum(1 for r in recs if r.get('kind')!='TRADE_BOOKED')
+if os.environ.get('PROOF_VERBOSE') == '1':
+    # To STDERR: this function's stdout is the parsed result line.
+    kinds = collections.Counter(r.get('kind','<no-kind>') for r in recs)
+    print('      %d bytes hashed, %d records' % (len(blob), len(recs)), file=sys.stderr)
+    print('      kinds: ' + ', '.join('%s=%d' % kv for kv in sorted(kinds.items())), file=sys.stderr)
+    if recs:
+        print('      first: ' + json.dumps(recs[0], sort_keys=True)[:220], file=sys.stderr)
+        print('      last:  ' + json.dumps(recs[-1], sort_keys=True)[:220], file=sys.stderr)
 print(len(recs), hashlib.sha256(blob).hexdigest()[:16], lifecycle)"; }
 
 read n1 h1 l1 < <(digest); printf "   %-24s records=%-7s sha=%-18s order-lifecycle=%s\n" "call 1" "$n1" "$h1" "$l1"
