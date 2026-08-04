@@ -7,6 +7,10 @@ STATE_ID="${1:-}"
 TARGET_ROOT="${2:-${GENERATED_ROOT}/code/target-generated}"
 SCRIPTS_SRC="${ROOT}/scripts"
 SCRIPTS_DST="${TARGET_ROOT}/scripts"
+STATE_CATALOG="${ROOT}/catalog/state-catalog.json"
+
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
 
 if [[ -z "${STATE_ID}" ]]; then
   echo "usage: bash pipeline/install-generated-runtime-harness.sh <state-id> [target-root]"
@@ -1405,16 +1409,9 @@ EOF
 }
 
 write_generated_agentic_docs() {
-  local state_num="${STATE_ID%%-*}"
-  if [[ "${state_num}" =~ ^YU[0-9][0-9]$ ]]; then
-    # The YU lineage forks off after 014, so every numeric threshold below -- all of which ask "is
-    # this state at or past N?" -- must answer yes. Rank YU01..YU15 as 101..115: above the whole
-    # numbered lineage, order-preserving within itself. Matches publish-generated-state-branch.sh.
-    state_num="1${state_num#YU}"
-  else
-    state_num="${state_num%%[a-z]*}"
-  fi
-  if [[ ! "${state_num}" =~ ^[0-9]+$ ]] || (( 10#${state_num} < 3 )); then
+  local state_num
+  state_num="$(traderx_state_rank "${STATE_CATALOG}" "${STATE_ID}")" || return
+  if (( state_num < 3 )); then
     return
   fi
 
