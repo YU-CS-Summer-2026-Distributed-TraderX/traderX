@@ -110,8 +110,8 @@ function buildLineage(stateEntry) {
 
 const repoBaseUrl = deriveRepoBaseUrl();
 const activeBranch = activeState.publish?.branch || '';
-// Ranked by pipeline/lib/state-rank.sh and passed in, so this and the validator that asserts
-// against the result cannot drift apart -- there is one definition, in one language.
+// Ranked by pipeline/lib/state-rank.sh and passed in, so the producer of state-ui.json and
+// its validator read one number by construction instead of two parsers agreeing.
 const stateNo = Number.parseInt(process.env.STATE_RANK || '', 10);
 if (!Number.isInteger(stateNo)) {
   throw new Error(`STATE_RANK not supplied for ${stateId}`);

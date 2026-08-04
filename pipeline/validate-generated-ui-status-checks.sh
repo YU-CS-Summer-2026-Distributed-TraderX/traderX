@@ -37,8 +37,8 @@ function fail(message) {
   process.exit(1);
 }
 
-// Ranked by pipeline/lib/state-rank.sh and passed in, so the producer of state-ui.json and this
-// asserter of it read the same number by construction rather than by two parsers agreeing.
+// Ranked by pipeline/lib/state-rank.sh and passed in, so the producer of state-ui.json and
+// its validator read one number by construction instead of two parsers agreeing.
 const stateNo = Number.parseInt(process.env.STATE_RANK || '', 10);
 if (!Number.isInteger(stateNo)) {
   fail(`STATE_RANK not supplied for ${stateId}`);
