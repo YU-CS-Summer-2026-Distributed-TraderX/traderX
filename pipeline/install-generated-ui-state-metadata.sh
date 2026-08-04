@@ -12,8 +12,16 @@ if [[ -z "${STATE_ID}" ]]; then
   exit 1
 fi
 
+# shellcheck source=lib/state-rank.sh
+source "${ROOT}/pipeline/lib/state-rank.sh"
+STATE_RANK="$(traderx_state_rank "${ROOT}/catalog/state-catalog.json" "${STATE_ID}")" || {
+  echo "[fail] unable to rank state id: ${STATE_ID}"
+  exit 1
+}
+
 ROOT="${ROOT}" \
 STATE_ID="${STATE_ID}" \
+STATE_RANK="${STATE_RANK}" \
 TARGET_ROOT="${TARGET_ROOT}" \
 COMPONENTS_ROOT="${COMPONENTS_ROOT}" \
 TRADERX_SOURCE_REPO_URL="${TRADERX_SOURCE_REPO_URL:-}" \
@@ -36,30 +44,6 @@ const activeState = stateById.get(stateId);
 
 if (!activeState) {
   throw new Error(`state not found in catalog: ${stateId}`);
-}
-
-function stateNumber(value) {
-  // Letter-suffixed sibling states (e.g. 009b-*) share their base number.
-  const match = /^([0-9]{3})[a-z]?-/.exec(value || '');
-  return match ? Number.parseInt(match[1], 10) : 0;
-}
-
-function effectiveStateNumber(value) {
-  const visited = new Set();
-  let cursor = value;
-
-  while (cursor && !visited.has(cursor)) {
-    visited.add(cursor);
-    const direct = stateNumber(cursor);
-    if (direct > 0) {
-      return direct;
-    }
-    const state = stateById.get(cursor);
-    const previous = Array.isArray(state?.previous) ? state.previous : [];
-    cursor = previous[0] || '';
-  }
-
-  return 0;
 }
 
 function branchUrlEncode(branchName) {
@@ -126,7 +110,12 @@ function buildLineage(stateEntry) {
 
 const repoBaseUrl = deriveRepoBaseUrl();
 const activeBranch = activeState.publish?.branch || '';
-const stateNo = effectiveStateNumber(activeState.id);
+// Ranked by pipeline/lib/state-rank.sh and passed in, so the producer of state-ui.json and
+// its validator read one number by construction instead of two parsers agreeing.
+const stateNo = Number.parseInt(process.env.STATE_RANK || '', 10);
+if (!Number.isInteger(stateNo)) {
+  throw new Error(`STATE_RANK not supplied for ${stateId}`);
+}
 const statusEnabled = stateNo >= 2;
 const apiExplorerEnabled = stateNo >= 2;
 const pubSubInspectorEnabled = stateNo >= 8;
