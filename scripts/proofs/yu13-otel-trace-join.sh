@@ -24,6 +24,10 @@
 # Usage: MATCHER_URL=http://localhost:18110 TEMPO_URL=http://localhost:3200 bash $0
 set -euo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 TEMPO_URL="${TEMPO_URL:-http://localhost:3200}"
 MEMBER_POD="${MEMBER_POD:-order-matcher-cluster-0}"
@@ -81,8 +85,11 @@ ok "${ORDERS} orders acked by the cluster"
 echo "[run] waiting for the asynchronous exporter to flush"
 sleep "${FLUSH_WAIT:-8}"
 
-TAG="${TAG}" ORDERS="${ORDERS}" TEMPO_URL="${TEMPO_URL}" python3 - <<'PY'
+vlog "   tempo=${TEMPO_URL}  matcher=${MATCHER_URL}  member=${MEMBER_POD}  tag=${TAG}  orders=${ORDERS}"
+TAG="${TAG}" ORDERS="${ORDERS}" TEMPO_URL="${TEMPO_URL}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import base64, json, os, sys, urllib.error, urllib.request
+
+VERBOSE = os.environ.get("PROOF_VERBOSE") == "1"
 
 M = (1 << 64) - 1
 TRACE_SALT = 0x5851F42D4C957F2D
@@ -113,6 +120,14 @@ for i in range(1, orders + 1):
         continue
     trace_id = f"{mix(key) or 1:016x}{mix(key ^ TRACE_SALT) or 1:016x}"
     predicted_parent = f"{mix(key ^ CLUSTER_SALT) or 1:016x}"
+    if VERBOSE:
+        # The whole point of this proof is that these three values come from the ClOrdID and
+        # NOTHING else — no server was consulted to produce them. Printing the inputs and the
+        # derived ids is what lets a reader check that claim instead of trusting it.
+        print(f"      derive {clordid}: key=0x{key:016x}", file=sys.stderr)
+        print(f"        traceId        = {trace_id}   (predicted, before asking Tempo)", file=sys.stderr)
+        print(f"        parentSpanId   = {predicted_parent}   (the gateway's cluster.consensus span)", file=sys.stderr)
+        print(f"        GET {tempo}/api/traces/{trace_id}", file=sys.stderr)
     try:
         doc = json.load(urllib.request.urlopen(f"{tempo}/api/traces/{trace_id}", timeout=15))
     except urllib.error.HTTPError as e:
@@ -133,6 +148,14 @@ for i in range(1, orders + 1):
                     "parent": base64.b64decode(s["parentSpanId"]).hex() if s.get("parentSpanId") else "",
                 })
 
+    if VERBOSE:
+        # The terse line says "5 spans, 2 services". This is the tree it is summarising: which
+        # service emitted each span and what it parents to, which is the actual shape assertions
+        # 2 and 3 are about.
+        print(f"      span tree for {clordid}:", file=sys.stderr)
+        for sp in sorted(spans, key=lambda x: (x["svc"], x["name"])):
+            par = sp["parent"] or "<root>"
+            print(f"        {sp['svc']:<26} {sp['name']:<18} id={sp['id']} parent={par}", file=sys.stderr)
     services = {s["svc"] for s in spans}
     names = {s["name"] for s in spans}
     consensus = [s for s in spans if s["name"] == "cluster.consensus"]
