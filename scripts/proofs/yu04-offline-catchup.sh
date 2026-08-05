@@ -12,6 +12,14 @@
 #   bash yu04-offline-catchup.sh          # auto ticker (Z + time)
 #   bash yu04-offline-catchup.sh ZOFF     # explicit ticker
 set -uo pipefail
+
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# Reject a flag-looking ticker rather than injecting it — $1 is the TICKER here, and the sibling
+# proof created a security literally named "-V" that way.
+case "${1:-}" in -*) echo "usage: $0 [-v] [TICKER]   (unknown option: $1)" >&2; exit 1 ;; esac
+# STDERR: wm() and replica_has() are both captured with $(...).
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX=${CTX:-kind-traderx-yu12-cluster}
 NS=${NS:-traderx}
 REF=${REF:-http://localhost:18085}
@@ -32,7 +40,20 @@ if ! curl -sf -m8 -o /dev/null "${REF}/stocks/control-snapshot" 2>/dev/null; the
   echo "   ✘ ${REF}/stocks/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
   exit 2
 fi
-if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/null     | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('count',0) > 64 else 1)" 2>/dev/null; then
+K="kubectl -n $NS --context $CTX"
+
+# IN-CLUSTER, for the same reason replica_has() is: this proof scales the gateway to zero and back,
+# so a localhost read here polls a port-forward THIS PROOF'S OWN PREVIOUS RUN destroyed. It then
+# reports "the subscriber is not consuming" — blaming a config flag for a tunnel the script killed
+# itself. Observed exactly that. The Service address follows the new pod without a forward.
+_SNAP="$($K exec deploy/trade-processor -- curl -s -m8 "http://order-matcher:18110/risk/control/snapshot" 2>/dev/null)"
+if ! printf '%s' "${_SNAP}" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('count',0) > 64 else 1)" 2>/dev/null; then
+  if [ -z "${_SNAP}" ]; then
+    echo "   ✘ could not read the gateway's control snapshot from inside the cluster —"
+    echo "   is cluster-gateway up, and deploy/trade-processor reachable? (This is NOT a"
+    echo "   statement about the control feed.)"
+    exit 2
+  fi
   echo "   ✘ the gateway's control-feed subscriber is not consuming (CONTROL_FEED_SUBSCRIBER=0 by default)."
   echo "   The subscriber works — it was observed applying this stream through consensus — but the"
   echo "   feed's 510-security universe does not fit the engine's MAX_SECURITIES=64 symbol table,"
@@ -41,7 +62,6 @@ if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/n
   echo "   feed / bound the table), then: CONTROL_FEED_SUBSCRIBER=1 on the cluster-gateway."
   exit 2
 fi
-K="kubectl -n $NS --context $CTX"
 
 # Works whether order-matcher is a Deployment (kind) or StatefulSet (GKE).
 # The workload that CONSUMES the feed — that is what must be down while the delta is published.
@@ -54,14 +74,14 @@ WL=$($K get "$CONSUMER_WL" -o name 2>/dev/null)
 [ -z "$WL" ] && WL=$($K get deploy order-matcher -o name 2>/dev/null || $K get statefulset order-matcher -o name 2>/dev/null)
 [ -z "$WL" ] && { echo "feed-consumer workload not found in ns/$NS (tried $CONSUMER_WL, order-matcher)"; exit 1; }
 
-wm(){ curl -s -m8 "$REF/stocks/control-snapshot" \
+wm(){ vlog "      GET ${REF}/stocks/control-snapshot"; curl -s -m8 "$REF/stocks/control-snapshot" \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print('epoch=%s watermark=%s count=%s'%(d.get('sourceEpoch'),d.get('watermark'),d.get('count')))" 2>/dev/null; }
 # Read the replica FROM INSIDE the cluster. This proof scales the gateway to zero and back, which
 # kills any port-forward attached to its pod — so a localhost read here polls a dead socket forever
 # and reports "not seen", i.e. the proof's own restart machinery masquerades as a catch-up failure.
 # An exec through a stable pod (trade-processor) reaches the Service address, which follows the new
 # pod on its own.
-replica_has(){ $K exec deploy/trade-processor -- curl -s -m8 "http://order-matcher:18110/risk/control/snapshot" 2>/dev/null \
+replica_has(){ vlog "      (via trade-processor) GET http://order-matcher:18110/risk/control/snapshot  looking for ${TK}"; $K exec deploy/trade-processor -- curl -s -m8 "http://order-matcher:18110/risk/control/snapshot" 2>/dev/null \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((s for s in d.get('securities',[]) if s.get('ticker')=='$TK'),'null'))" 2>/dev/null; }
 
 echo "── OFFLINE CATCH-UP (change published while $WL is DOWN) ──"
@@ -74,8 +94,8 @@ $K scale "$WL" --replicas=0 >/dev/null && $K rollout status "$WL" --timeout=60s 
 curl -s -m8 -X POST "$REF/stocks" -H "Content-Type: application/json" \
   -d "{\"ticker\":\"$TK\",\"companyName\":\"Demo $TK Inc.\"}" >/dev/null
 printf "   %-30s %s\n" "inject $TK while OFFLINE" "POST /stocks — published to JetStream, retained"
-printf "   %-30s %s\n" "source watermark (after)" "$(wm)"
 
+vlog "      scale ${WL} --replicas=1"
 printf "   %-30s " "scale $WL -> 1, wait ready"
 $K scale "$WL" --replicas=1 >/dev/null && $K rollout status "$WL" --timeout=180s >/dev/null 2>&1; echo "up"
 
@@ -95,4 +115,11 @@ for i in $(seq 1 90); do
   [ "$i" = 90 ] && echo "TIMEOUT — $TK not seen 90s after ready ✘"
   sleep 1
 done
+
+# Read the source watermark only AFTER catch-up has settled. Publishing the outbox row is
+# asynchronous, so reading it straight after the POST catches the source mid-flight and prints the
+# PREVIOUS watermark beside an already-incremented count — observed here as "watermark=516
+# count=517" on a run that worked. Same display race as yu04-live-delta; it reads as a stalled feed
+# and invites a hunt for a defect that is not there.
+printf "   %-30s %s\n" "source watermark (after)" "$(wm)"
 exit "$FAIL"

@@ -42,9 +42,10 @@ reason a proof "fails" on a system that is fine.
 | `yu13-otel-reject-trace-log-join` | `set env deployment/cluster-gateway` | **18110** |
 | `yu13-cancel-ingress` | `set image deploy/cluster-gateway` | **18110** |
 | `yu13-stp-and-replace` | `set image` gateway **and** statefulset | **18110**, plus a fresh epoch |
+| `yu04-offline-catchup` | `scale $WL --replicas=0/1` on cluster-gateway | **18110** |
 | `yu15-risk-extract` | `delete pod order-matcher-cluster-2` | none — a member, not the gateway |
 
-The other thirteen disrupt nothing.
+The other twelve disrupt nothing.
 
 ### Two constraints that are not about forwards
 
@@ -80,8 +81,11 @@ yu05-regulatory-reproducible
 **Block 2 — reference-data (already forwarded)**
 
 ```
-yu04-live-delta                 yu04-offline-catchup
+yu04-live-delta
+yu04-offline-catchup     <- scales cluster-gateway to 0 and back
 ```
+→ **restart the 18110 forward** (this one reads the replica in-cluster so it does not need the
+forward itself, but everything after it does)
 
 **Block 3 — observability.** Needs the stack and forwards on 3200/3100/3000:
 
