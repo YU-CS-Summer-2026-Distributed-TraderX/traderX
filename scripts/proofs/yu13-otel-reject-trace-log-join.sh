@@ -168,13 +168,23 @@ PY
 )"
 ok "chose two ClOrdIDs the head sample rejects: ${REJECT_CLORDID} / ${ACCEPT_CLORDID}"
 
-echo "[seed] account ${SEEDED_ACCOUNT} (idempotent) so the accepted control really is accepted"
+# A FRESH ticker per run, matching every sibling yu13-* proof (DUP/RPL/RM/STP + timestamp).
+#
+# This used to trade AAPL at a hardcoded 150.0 and seed AAPL at 150 to anchor it. That seed cannot
+# work on a rig where AAPL has already traded: per ADR-051 a price tick seeds the mark ONLY while no
+# trade has printed, and after that the LAST TRADE PRICE is the mark. The quickstart crosses AAPL at
+# 241.80, so 150.0 fell outside the collar and BOTH arms came back PRICE_COLLAR — including the arm
+# that has to be ACCEPTED, which the script correctly refused to proceed on ("the negative case
+# would be vacuous"). Re-seeding does not fix it; only a security that has never traded does.
+TICKER="${TICKER:-RJT$(date +%H%M%S)}"
+PX="${PX:-150.0}"
+echo "[seed] ${TICKER} @ ${PX} for account ${SEEDED_ACCOUNT} (fresh ticker: no trade has printed, so the tick IS the mark)"
 curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"AAPL\",\"price\":150}" >/dev/null
+  -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" >/dev/null
 
 submit() { # clOrdId account -> response body
   curl -s --max-time 15 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":$2,\"ticker\":\"AAPL\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":150.0,\"clientOrderId\":\"$1\"}"
+    -d "{\"accountId\":$2,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"$1\"}"
 }
 
 reject_body="$(submit "${REJECT_CLORDID}" "${UNKNOWN_ACCOUNT}")"
