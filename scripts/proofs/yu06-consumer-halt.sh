@@ -19,6 +19,11 @@
 # kind-runnable: pure correctness, no timing claim. Usage: ./yu06-consumer-halt.sh
 set -uo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: api() and the SQL reads are captured with $(...).
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 # Rig-dependent addresses. Defaults are the YU15 cluster rig; for the state-014 rig set
@@ -42,9 +47,12 @@ UNIVERSE="AAPL,MSFT,AMZN,GOOGL,META,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 kx() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
-db() { kx exec "deploy/${DB_DEPLOY}" -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
+db() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; kx exec "deploy/${DB_DEPLOY}" -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
 TOK='T=$(curl -s -m8 -X POST http://trade-processor:18091/auth/dev-token -H "X-Auth-Master-Secret: '"${MASTER}"'" -H "Content-Type: application/json" -d "{\"subject\":\"proof\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}")'
-api() { kx exec "deploy/${EXEC_POD}" -- sh -c "${TOK}; $1" 2>/dev/null; }
+# Everything goes through `kubectl exec` into the pod, never a port-forward — which is why this
+# proof runs with 18091 down. It also rolls trade-processor itself (set env EOD_UNIVERSE), so a
+# forward would die mid-run anyway; reaching the Service name from inside the cluster sidesteps it.
+api() { vlog "      exec deploy/${EXEC_POD}: $1"; kx exec "deploy/${EXEC_POD}" -- sh -c "${TOK}; $1" 2>/dev/null; }
 
 cleanup() {
   kx set env deploy/trade-processor EOD_UNIVERSE- >/dev/null 2>&1
@@ -53,6 +61,9 @@ cleanup() {
 trap cleanup EXIT
 
 # ---------------------------------------------------------------------------------------------
+vlog "   ctx=${CTX} ns=${NS}  exec-pod=${EXEC_POD}  db=${DB_DEPLOY}" \
+     "   held: account ${HELD_ACCT} holding ${HELD_SEC}  date=${DATE}" \
+     "   universe to inject (${HELD_SEC} deliberately absent): ${UNIVERSE}"
 step "0. preflight: ${HELD_ACCT} really holds ${HELD_SEC}, and other accounts hold marked stock"
 QTY="$(db "SELECT quantity FROM positions WHERE accountid=${HELD_ACCT} AND security='${HELD_SEC}';")"
 [[ -n "${QTY}" && "${QTY}" != "0" ]] \
