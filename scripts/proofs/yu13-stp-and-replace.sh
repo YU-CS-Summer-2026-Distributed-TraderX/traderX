@@ -206,14 +206,38 @@ snapshot_barrier() {
   rather than produce that divergence and report it as a book disagreement."
 }
 
+engines_dead() { # true only when NO member's clustered service has applied anything
+  local m ea
+  for m in 0 1 2; do
+    ea="$(${K} exec "order-matcher-cluster-${m}" -- sh -c 'wget -qO- http://localhost:8080/health 2>/dev/null' \
+      | sed -n 's/.*"engineApplied":\(-\{0,1\}[0-9]\{1,\}\).*/\1/p')"
+    [[ -n "${ea}" && "${ea}" -lt 0 ]] || return 1
+  done
+  return 0
+}
+
 roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is unchanged
   local image="$1"
   # Only when the image actually changes. `set image` to the value already there starts no rollout,
   # so no member restarts, so there is no tail for anyone to replay under new semantics -- and the
   # 60 s wait would be pure cost. Step 1 rolls to the image the runner already minted the epoch on
   # and hits exactly this case.
-  [[ "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')" == "${image}" ]] \
-    || snapshot_barrier
+  if [[ "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}')" != "${image}" ]]; then
+    # A DEAD ENGINE CANNOT TAKE A BARRIER — and that is precisely when the restore path runs.
+    # The barrier protects against a mixed-version replay of semantics-sensitive events. If no
+    # member's SERVICE has applied anything, nothing was adjudicated under the image being left
+    # behind, so there is no divergence for a barrier to prevent — while demanding one guarantees a
+    # deadlock in the only situation the restore path exists for. Observed 2026-08-05: a stale
+    # IMAGE_PRE fail-closed on the snapshot, every service agent died, the consensus modules stayed
+    # up reporting snapshots=[0 0 0], and restore spent its 150s waiting for a counter that could
+    # never move — then failed INSIDE the EXIT trap, leaving the cluster on the broken image.
+    if engines_dead; then
+      echo "  no member's engine has applied anything (engineApplied<0 on all three): nothing was"
+      echo "  adjudicated under the outgoing image, so no barrier is needed — or possible. Rolling."
+    else
+      snapshot_barrier
+    fi
+  fi
   ${K} set image statefulset/order-matcher-cluster \
     "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   ${K} set image deployment/cluster-gateway \
@@ -276,6 +300,37 @@ step "0. preflight"
 # image is "not yet present" every single time and re-copies 194MB into four nodes. On a host where
 # three busy-spinning Aeron members already burn ~150-200% CPU each, that load can take longer than
 # the whole proof. SKIP_KIND_LOAD=1 when the nodes demonstrably already have both tags.
+# PRESENT IS NOT CONTEMPORANEOUS.
+# `docker image inspect` passes any tag that exists, including one stranded by an earlier generation
+# of the rig -- and build-cluster-image.sh rebuilds the rig's own tag but NOT these two proof-only
+# tags, so every rebuild of the rig strands them a little further behind the state on disk.
+#
+# Rolling the deterministic core BACK to a build older than the state it must recover is not a
+# controlled experiment, it is a corrupt-snapshot event. Observed 2026-08-05 on this rig, with
+# IMAGE_PRE from 2026-07-22 and the deployed image rebuilt 2026-08-04: loading the barrier snapshot
+# the newer build had just written threw, inside onSnapshotRecord,
+#     java.lang.IllegalStateException: snapshot corrupt: symbol id 64
+# (MAX_SECURITIES is 64, so ids run 0..63) which killed the service agent on all three members with
+#     AgentTerminationException: failed to start service=0
+# The consensus modules stayed alive and the pods stayed READY, so the rig LOOKED healthy while
+# every engine was dead -- and the restore path then hung on a snapshot barrier a dead engine can
+# never take. Rebuild both tags from a pre-change tree, or point IMAGE_PRE/IMAGE_FIX at builds that
+# are at least as new as what is deployed.
+DEPLOYED_CREATED="$(docker image inspect "${ORIGINAL_IMAGE}" --format '{{.Created}}' 2>/dev/null || true)"
+for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
+  IMG_CREATED="$(docker image inspect "${img}" --format '{{.Created}}' 2>/dev/null || true)"
+  [[ -n "${DEPLOYED_CREATED}" && -n "${IMG_CREATED}" ]] || continue
+  if [[ "${IMG_CREATED}" < "${DEPLOYED_CREATED}" ]]; then
+    fail "${img} (built ${IMG_CREATED%%T*}) predates the deployed ${ORIGINAL_IMAGE} (built ${DEPLOYED_CREATED%%T*}).
+  This proof rolls the deterministic core back to that image, which would hand it a snapshot written
+  by a newer build. A build that cannot parse the snapshot fail-closes and its service agent dies on
+  all three members while the pods stay READY -- see the note above. Refusing to run.
+  Rebuild the proof-only tags (build-cluster-image.sh does NOT rebuild them) before re-running."
+  fi
+done
+
+# Only now pay for the load — kind re-copies 194MB into four nodes every time (see below), which is
+# a minute of work to reach a refusal the check above can reach in a second.
 for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
   docker image inspect "${img}" >/dev/null 2>&1 || fail "image ${img} not present locally"
   [[ "${SKIP_KIND_LOAD:-0}" == "1" ]] || kind load docker-image "${img}" --name "${CTX#kind-}" >/dev/null
