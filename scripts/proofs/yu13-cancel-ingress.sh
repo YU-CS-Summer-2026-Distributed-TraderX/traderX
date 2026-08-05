@@ -14,8 +14,19 @@
 # members, by depth AND by order digest. See the note at step 5 for why that is the end of the
 # line for orders today.
 #
-# Usage: ./yu13-cancel-ingress.sh   (needs: kubectl port-forward svc/order-matcher 18110:18110)
+# Usage:
+#   ./yu13-cancel-ingress.sh        (the script owns its own port-forward — see start_pf)
+#   ./yu13-cancel-ingress.sh -v     verbose: the resolved price and its source, every rollout and
+#                                   which image each gateway pod is serving, the port-forward
+#                                   lifecycle, each request body, and how long the three members
+#                                   took to agree on a digest
 set -euo pipefail
+
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR, not stdout: book(), digest_consensus(), place() and cancel() are all captured with $(...),
+# so a verbose line on stdout would be parsed as a book digest, an orderRef or an HTTP code.
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
@@ -36,11 +47,21 @@ TICKER="${TICKER:-IBM}"
 # PRICE_COLLAR -- which fails the proof for a reason that has nothing to do with cancel ingress.
 # This was hit directly: PRICE=100 against a live IBM of ~187, a 46% deviation. Falls back to the
 # old constant when the feed cannot be read, so the behaviour is unchanged off a live rig.
+PRICE_SRC="${PRICE:+env override}"
 PRICE="${PRICE:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" exec deploy/price-publisher -- \
   wget -qO- "http://localhost:18100/prices/${TICKER:-IBM}" 2>/dev/null \
   | python3 -c "import sys,json;print(round(json.load(sys.stdin)['price'],2))" 2>/dev/null)}"
+PRICE_SRC="${PRICE_SRC:-${PRICE:+live price-publisher feed}}"
 PRICE="${PRICE:-100.00}"
+PRICE_SRC="${PRICE_SRC:-fallback constant (feed unreadable)}"
 QTY=7
+
+# The resolved price is worth showing: it is read from the live feed, and a PRICE_COLLAR rejection
+# far from the reference is this proof's most common non-cancel failure.
+vlog "   ctx=${CTX} ns=${NS}  gateway=${MATCHER_URL}" \
+     "   ${TICKER} qty=${QTY} @ ${PRICE}  (${PRICE_SRC})  account=${ACCOUNT}" \
+     "   IMAGE_PRE=${IMAGE_PRE}" \
+     "   IMAGE_FIX=${IMAGE_FIX}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -69,9 +90,13 @@ digest_consensus() { # all three members must agree; echoes the agreed "<depth> 
   for i in $(seq 1 "${DIGEST_TIMEOUT_S}"); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
     if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then
+      # How long agreement took is the interesting number, and the terse output hides it entirely:
+      # agreeing on the first read and agreeing after 40s of follower catch-up print identically.
+      vlog "      digest agreed after ${i}s: ${b0}"
       echo "${b0}"
       return 0
     fi
+    vlog "      digest poll ${i}/${DIGEST_TIMEOUT_S}: m0=[${b0}] m1=[${b1}] m2=[${b2}] — not yet agreed"
     sleep 1
   done
   for m in 0 1 2; do
@@ -89,13 +114,15 @@ start_pf() {
   stop_pf
   ${K} port-forward svc/order-matcher "${PF_PORT}:18110" >/dev/null 2>&1 &
   PF_PID=$!
+  vlog "      port-forward svc/order-matcher ${PF_PORT}:18110 (pid ${PF_PID}), waiting for /ready"
   local tries=0
   until curl -sf --max-time 5 "${MATCHER_URL}/ready" >/dev/null 2>&1; do
     tries=$((tries + 1))
     [[ ${tries} -lt 60 ]] || fail "gateway never became reachable through a fresh port-forward"
-    kill -0 "${PF_PID}" 2>/dev/null || { ${K} port-forward svc/order-matcher "${PF_PORT}:18110" >/dev/null 2>&1 & PF_PID=$!; }
+    kill -0 "${PF_PID}" 2>/dev/null || { vlog "      forwarder died, restarting"; ${K} port-forward svc/order-matcher "${PF_PORT}:18110" >/dev/null 2>&1 & PF_PID=$!; }
     sleep 2
   done
+  vlog "      gateway reachable after ${tries} attempt(s)"
 }
 stop_pf() {
   # `wait` reports the forwarder's SIGTERM status (143); under `set -e` that would abort the run
@@ -111,6 +138,7 @@ trap stop_pf EXIT
 
 roll_gateway() { # roll_gateway <image>
   stop_pf
+  vlog "      set image deploy/cluster-gateway gateway=$1"
   ${K} set image deploy/cluster-gateway "gateway=$1" >/dev/null
   ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null \
     || fail "gateway rollout to $1 did not complete"
@@ -125,17 +153,25 @@ roll_gateway() { # roll_gateway <image>
       | grep '^|' | cut -d'|' -f2 | sort -u)"
     [[ "${serving}" == "$1" ]] && break
     tries=$((tries + 1))
+    # This poll can run for two minutes while the terse output shows nothing at all — and the thing
+    # it is waiting on (a straggler pod still on the old image) is exactly what would misattribute a
+    # response to the wrong build.
+    vlog "      waiting for every READY gateway pod to serve $1 — currently: ${serving//$'\n'/, }"
     [[ ${tries} -lt 60 ]] || fail "expected every gateway pod on $1, found: ${serving}"
     sleep 2
   done
+  vlog "      all READY gateway pods serving $1"
   start_pf
   sleep 3
 }
 
 place() { # place -> orderRef on stdout; fails the run if the order does not rest
-  local body code
+  local body code payload
+  payload="{\"accountId\":${ACCOUNT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":${QTY},\"limitPrice\":${PRICE},\"clientOrderId\":\"cxl-$(date +%s%N)\"}"
+  vlog "      POST ${MATCHER_URL}/orders" "        ${payload}"
   body="$(curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${ACCOUNT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":${QTY},\"limitPrice\":${PRICE},\"clientOrderId\":\"cxl-$(date +%s%N)\"}")"
+    -d "${payload}")"
+  vlog "      <- ${body}"
   code="$(sed -n 's/.*"kind":\([0-9]*\).*/\1/p' <<<"${body}")"
   [[ "${code}" == "1" ]] || fail "order did not rest (kind=${code}, body=${body}) — account exhausted or price collared"
   sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"${body}"
@@ -143,9 +179,11 @@ place() { # place -> orderRef on stdout; fails the run if the order does not res
 
 cancel() { # cancel <ref> -> "<httpCode> <body>"
   local out
+  vlog "      POST ${MATCHER_URL}/cancel  {\"orderRef\":$1}"
   out="$(curl -s --max-time 30 -o /tmp/yu13-cxl-body -w '%{http_code}' \
     -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
     -d "{\"orderRef\":$1}")"
+  vlog "      <- ${out} $(cat /tmp/yu13-cxl-body)"
   echo "${out} $(cat /tmp/yu13-cxl-body)"
 }
 
@@ -182,10 +220,21 @@ echo "[ok] starting book:"; book_all
 # the running gateway first, and if it already cancels, leave the deployment alone entirely and prove
 # the forward claim against what is actually deployed. Rolling the gateway to make a narrative work
 # is worse than not telling the narrative.
+#
+# The probe itself has to discriminate on the BODY, not the HTTP code. `cancel 0` answers 404 on a
+# gateway with no /cancel route (the framework's own 404) AND on one that has the route and rejects
+# the reserved fence ref -- so `!= 404*` was a condition that could never be true, and this shortcut
+# has never once fired. Only the real route emits a "canceled" field.
+# And it is only conclusive when the image now deployed IS ${IMAGE_PRE}: then rolling to IMAGE_PRE
+# provably demonstrates nothing. If a NEWER image is deployed, IMAGE_PRE may still genuinely predate
+# the route, so roll and find out rather than skipping coverage on a guess.
+DEPLOYED_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
 SKIP_REGRESSION=0
-if [[ "$(cancel 0 2>/dev/null)" != 404* ]]; then
+if [[ "${DEPLOYED_IMAGE}" == "${IMAGE_PRE}" && "$(cancel 0 2>/dev/null)" == *'"canceled"'* ]]; then
   SKIP_REGRESSION=1
 fi
+vlog "   deployed gateway image: ${DEPLOYED_IMAGE}" \
+     "   regression half: $([[ "${SKIP_REGRESSION}" == 1 ]] && echo "SKIPPED — the deployed image IS ${IMAGE_PRE} and it already serves /cancel" || echo "will run — rolling to ${IMAGE_PRE} to test it directly")"
 
 if [[ "${SKIP_REGRESSION}" == "1" ]]; then
   echo
@@ -225,11 +274,18 @@ fi
 
 sleep 2
 AFTER_PRE="$(digest_consensus)"
+# This verdict MUST be gated on the skip. It was not: on the skip path the cancel had just succeeded
+# and taken the order out of the book, and the script still printed "the order is still resting and
+# the book is byte-identical — the cancel had no ingress" as an [ok], directly above a book_all
+# showing the order gone. A claim that contradicts the data printed beneath it is worse than silence.
 if [[ "${SKIP_REGRESSION}" == "0" ]]; then
   [[ "${AFTER_PRE}" == "${BEFORE_PRE}" ]] \
     || fail "the pre-fix gateway somehow changed the book: ${BEFORE_PRE} -> ${AFTER_PRE}"
+  echo "[ok] the order is still resting and the book is byte-identical — the cancel had no ingress:"
+else
+  echo "[skip] the cancel DID take effect (${BEFORE_PRE} -> ${AFTER_PRE}) — which is precisely why"
+  echo "[skip] the pre-fix half cannot be demonstrated against ${IMAGE_PRE}:"
 fi
-echo "[ok] the order is still resting and the book is byte-identical — the cancel had no ingress:"
 book_all
 
 step "3. roll the gateway FORWARD to ${IMAGE_FIX}"
