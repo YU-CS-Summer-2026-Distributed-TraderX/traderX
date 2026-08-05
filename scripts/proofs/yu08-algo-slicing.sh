@@ -20,6 +20,12 @@
 # latency claim, so kind's idle-CPU distortion cannot flip it. Usage: ./yu08-algo-slicing.sh
 set -uo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+# STDERR: api() and parent_json() are captured with $(...) — a verbose line on stdout would be
+# parsed as JSON and break every downstream check.
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 # Rig-dependent workload names. On the cluster rig "order-matcher" is a SERVICE fronting the
@@ -49,11 +55,23 @@ fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 kx() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 # In-cluster curl via the edge-proxy pod: no port-forward to die mid-schedule.
-api() { kx exec "deploy/${EXEC_POD}" -- sh -c "curl -s -m30 $1" 2>/dev/null; }
+# In-cluster via exec, never a port-forward: the engine curls Service names, so this proof needs no
+# tunnels at all. Verbose shows the call AND the response, truncated — the parent document is the
+# schedule itself, and reading it is how you tell "no children yet" from "children with no ids".
+api() {
+  local out
+  vlog "      exec ${EXEC_POD}: curl $1"
+  out="$(kx exec "deploy/${EXEC_POD}" -- sh -c "curl -s -m30 $1" 2>/dev/null)"
+  vlog "      <- $(printf '%s' "${out}" | cut -c1-400)"
+  printf '%s' "${out}"
+}
 
 py() { python3 -c "$1"; }
 
 # ---------------------------------------------------------------------------------------------
+vlog "   ctx=${CTX} ns=${NS}  engine=${EXEC_POD}  matcher=${MATCHER_DEPLOY}" \
+     "   TWAP: account=${ACCT} ${SEC} qty=${QTY} over ${DURATION}s in ${N} buckets of ${BUCKET}s (slack ${SLACK_S}s)" \
+     "   blotter=${BLOTTER}"
 step "0. preflight"
 for d in execution-algo-engine "${MATCHER_DEPLOY}"; do
   [[ "$(kx get deploy "${d}" -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" == "1" ]] \
