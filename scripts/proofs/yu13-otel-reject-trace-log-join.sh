@@ -36,6 +36,10 @@
 #   bash scripts/proofs/yu13-otel-reject-trace-log-join.sh
 set -euo pipefail
 
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+vlog(){ [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 TEMPO_URL="${TEMPO_URL:-http://localhost:3200}"
 LOKI_URL="${LOKI_URL:-http://localhost:3100}"
@@ -124,7 +128,10 @@ own_forward() {
 if [[ "${ORIG_MASK}" != "${MASK}" ]]; then
   # BOTH tiers, always. A mask set on one side only is the documented way to manufacture
   # half-traces: each derives the verdict independently, so they must be given the same one.
-  echo "[setup] OTEL_SAMPLE_MASK ${ORIG_MASK} -> ${MASK} on gateway AND members"
+  vlog "   matcher=${MATCHER_URL}  tempo=${TEMPO_URL}  loki=${LOKI_URL}  grafana=${GRAFANA_URL}" \
+     "   own gateway forward=${OWN_PORT} (yours on 18110 is left alone until the roll)" \
+     "   accounts: seeded=${SEEDED_ACCOUNT} unknown=${UNKNOWN_ACCOUNT}   mask ${ORIG_MASK} -> ${MASK}"
+echo "[setup] OTEL_SAMPLE_MASK ${ORIG_MASK} -> ${MASK} on gateway AND members"
   ${K} set env deployment/cluster-gateway "OTEL_SAMPLE_MASK=${MASK}" >/dev/null
   ${K} set env statefulset/order-matcher-cluster "OTEL_SAMPLE_MASK=${MASK}" >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=300s
@@ -202,8 +209,9 @@ sleep "${FLUSH_WAIT:-12}"
 
 REJECT_CLORDID="${REJECT_CLORDID}" ACCEPT_CLORDID="${ACCEPT_CLORDID}" \
 TEMPO_URL="${TEMPO_URL}" LOKI_URL="${LOKI_URL}" GRAFANA_URL="${GRAFANA_URL}" \
-GRAFANA_USER="${GRAFANA_USER}" GRAFANA_PASSWORD="${GRAFANA_PASSWORD}" python3 - <<'PY'
+GRAFANA_USER="${GRAFANA_USER}" GRAFANA_PASSWORD="${GRAFANA_PASSWORD}" PROOF_VERBOSE="${VERBOSE}" python3 - <<'PY'
 import base64, json, os, sys, time, urllib.error, urllib.parse, urllib.request
+VERBOSE = os.environ.get("PROOF_VERBOSE") == "1"
 
 M = (1 << 64) - 1
 TRACE_SALT = 0x5851F42D4C957F2D
@@ -243,6 +251,8 @@ failures = []
 predicted = trace_id(reject_id)
 predicted_parent = consensus_span(reject_id)
 try:
+    if VERBOSE:
+        print(f"      GET {tempo}/api/traces/{predicted}   (predicted from the ClOrdID)", file=sys.stderr)
     doc = get(f"{tempo}/api/traces/{predicted}")
 except urllib.error.HTTPError as e:
     doc = None
@@ -289,6 +299,8 @@ if doc:
 # --- 2. the accepted order outside the sample is NOT traced (escalation, not trace-everything) ---
 control = trace_id(accept_id)
 try:
+    if VERBOSE:
+        print(f"      GET {tempo}/api/traces/{control}   (the ACCEPTED control — must 404)", file=sys.stderr)
     get(f"{tempo}/api/traces/{control}")
     failures.append(f"an ACCEPTED order outside the head sample was traced ({control}) — this is "
                     f"not error sampling, the build is tracing everything and the proof above is "
@@ -310,6 +322,8 @@ query = urllib.parse.urlencode({
 lines = []
 for attempt in range(10):                     # promtail ships on its own schedule; poll, briefly
     try:
+        if VERBOSE:
+            print(f"      GET {loki}/loki/api/v1/query_range?{query}", file=sys.stderr)
         res = get(f"{loki}/loki/api/v1/query_range?{query}")
         lines = [v[1] for r in res.get("data", {}).get("result", []) for v in r.get("values", [])]
     except urllib.error.HTTPError as e:
@@ -335,6 +349,8 @@ else:
 # --- 4. Grafana really provisioned the join, in both directions ----------------------------------
 try:
     creds = f"{os.environ['GRAFANA_USER']}:{os.environ['GRAFANA_PASSWORD']}"
+    if VERBOSE:
+        print(f"      GET {grafana}/api/datasources   (checking the join is provisioned both ways)", file=sys.stderr)
     datasources = get(f"{grafana}/api/datasources", auth=creds)
     by_uid = {d["uid"]: d for d in datasources}
     tempo_ds = by_uid.get("tempo", {}).get("jsonData", {})
