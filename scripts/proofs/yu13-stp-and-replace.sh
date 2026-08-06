@@ -317,17 +317,27 @@ step "0. preflight"
 # never take. Rebuild both tags from a pre-change tree, or point IMAGE_PRE/IMAGE_FIX at builds that
 # are at least as new as what is deployed.
 DEPLOYED_CREATED="$(docker image inspect "${ORIGINAL_IMAGE}" --format '{{.Created}}' 2>/dev/null || true)"
+STALE_IMAGES=""
 for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
   IMG_CREATED="$(docker image inspect "${img}" --format '{{.Created}}' 2>/dev/null || true)"
   [[ -n "${DEPLOYED_CREATED}" && -n "${IMG_CREATED}" ]] || continue
   if [[ "${IMG_CREATED}" < "${DEPLOYED_CREATED}" ]]; then
-    fail "${img} (built ${IMG_CREATED%%T*}) predates the deployed ${ORIGINAL_IMAGE} (built ${DEPLOYED_CREATED%%T*}).
-  This proof rolls the deterministic core back to that image, which would hand it a snapshot written
-  by a newer build. A build that cannot parse the snapshot fail-closes and its service agent dies on
-  all three members while the pods stay READY -- see the note above. Refusing to run.
-  Rebuild the proof-only tags (build-cluster-image.sh does NOT rebuild them) before re-running."
+    STALE_IMAGES="${STALE_IMAGES}${STALE_IMAGES:+, }${img} (built ${IMG_CREATED%%T*})"
   fi
 done
+
+# A stale pre-change image costs the REGRESSION half, not the whole proof. Steps 5-9 assert what
+# the bundle actually claims — STP cancels the oldest rather than booking a wash trade, replace is
+# atomic under the same orderRef — and the deployed build CARRIES the bundle, so they can be
+# asserted against it directly with no roll at all. Same shape as yu13-cancel-ingress.
+#
+# What is lost is real and is reported as lost: without a pre-change build, "no wash trade" is not
+# contrasted against a run that DID book one. Step 6's two-account falsification arm still runs, so
+# the claim is not vacuous — an inert book fails it — but the before/after story is not shown.
+SKIP_REGRESSION=0
+if [[ -n "${STALE_IMAGES}" ]]; then
+  SKIP_REGRESSION=1
+fi
 
 # Only now pay for the load — kind re-copies 194MB into four nodes every time (see below), which is
 # a minute of work to reach a refusal the check above can reach in a second.
@@ -357,12 +367,11 @@ RESTARTS0="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
 echo "[ok] preflight: both images loaded, trade-processor ready, ticker ${TICKER}"
 
-step "1. roll BACK to the pre-change members (${IMAGE_PRE})"
-roll_to "${IMAGE_PRE}"
-[[ "$(rows)" == "0" ]] || fail "${TICKER} already has trade rows; pick a fresh ticker"
-
-step "2. on the pre-change engine a self-cross BOOKS A WASH TRADE"
-BEFORE="$(digest_consensus)"
+# These two live HERE, not inside step 2 where they were declared, because the skip path below
+# reaches step 5 without ever executing step 2 — a skipped run then died on
+# "await_trades_agree: command not found", i.e. the proof aborting on its own helper rather than on
+# any claim about the system.
+#
 # Take the baseline only once the three members AGREE on it. These reads happen moments after
 # roll_to restarted every member, and sampling each in turn while they are still catching up
 # captured [6 12 12] -- a baseline the members never simultaneously held. want = baseline + 2 is
@@ -384,10 +393,7 @@ await_trades_agree() {
   done
   fail "members never agreed on a trade-count baseline: [${t0} ${t1} ${t2}]"
 }
-await_trades_agree
-ROWS0="$(rows)"
-SELF_SELL="$(order "${SELF}" Sell)"; echo "  ${SELF} sell -> ${SELF_SELL}"
-SELF_BUY="$(order "${SELF}" Buy)";   echo "  ${SELF} buy  -> ${SELF_BUY}"
+
 # Poll for the effect rather than sleeping a fixed 5s and asserting once. These members were
 # restarted moments ago by roll_to and a follower still catching up on the log legitimately reports
 # a stale trade count for a beat -- observed as [140 140 140] -> [140 142 142], which is member 0
@@ -407,6 +413,41 @@ await_trades() { # await_trades <want-delta>
   done
   return 1
 }
+
+if [[ "${SKIP_REGRESSION}" == "1" ]]; then
+echo
+echo "=== 1-4. SKIPPED: no pre-change image contemporaneous with the deployed build ==="
+echo "[skip] stale: ${STALE_IMAGES}"
+echo "[skip] deployed: ${ORIGINAL_IMAGE} (built ${DEPLOYED_CREATED%%T*})"
+echo "[skip] build-cluster-image.sh rebuilds the rig's tag but NOT these proof-only tags, so every"
+echo "[skip] rig rebuild strands them further behind the state on disk. Rolling the core back to one"
+echo "[skip] hands it a snapshot a newer build wrote; it fail-closes and its service agent dies on"
+echo "[skip] all three members while the pods stay READY."
+echo "[skip]"
+echo "[skip] NOT DEMONSTRATED: the pre-change half — that this same self-cross USED to book a wash"
+echo "[skip] trade, and that /replace USED to 404. Steps 5-9 below still assert the forward claims"
+echo "[skip] against the deployed build, which carries the bundle, and step 6's two-account arm"
+echo "[skip] still falsifies an inert book. Rebuild IMAGE_PRE from the current tree with the bundle"
+echo "[skip] reverted to get the before/after story back."
+# roll_to() is what normally opens the port-forward and seeds this proof's accounts and ticker.
+# The skip path never calls it, so a skipped run reached step 5 with no tunnel and died on curl's
+# exit 7 ("failed to connect") having printed nothing at all — a connection failure wearing the
+# costume of a proof result.
+start_pf
+seed
+echo "  gateway forwarded and fixtures seeded; book agreed at [$(digest_consensus)]"
+STP0_0="$(stp_count 0)"; STP0_1="$(stp_count 1)"; STP0_2="$(stp_count 2)"
+else
+step "1. roll BACK to the pre-change members (${IMAGE_PRE})"
+roll_to "${IMAGE_PRE}"
+[[ "$(rows)" == "0" ]] || fail "${TICKER} already has trade rows; pick a fresh ticker"
+
+step "2. on the pre-change engine a self-cross BOOKS A WASH TRADE"
+BEFORE="$(digest_consensus)"
+await_trades_agree
+ROWS0="$(rows)"
+SELF_SELL="$(order "${SELF}" Sell)"; echo "  ${SELF} sell -> ${SELF_SELL}"
+SELF_BUY="$(order "${SELF}" Buy)";   echo "  ${SELF} buy  -> ${SELF_BUY}"
 await_trades 2 \
   || fail "members did not all book the 2-sided wash trade within 60s: [$(trades_all)] (want +2 on each of [${T0_0} ${T0_1} ${T0_2}])"
 echo "  engine trades: [${T0_0} ${T0_1} ${T0_2}] -> [$(trades_all)]  (a self-trade books BOTH sides)"
@@ -426,6 +467,7 @@ echo "  POST /replace -> ${PRE_REPLACE}"
 step "4. roll FORWARD to the member bundle (${IMAGE_FIX})"
 roll_to "${IMAGE_FIX}"
 STP0_0="$(stp_count 0)"; STP0_1="$(stp_count 1)"; STP0_2="$(stp_count 2)"
+fi
 
 step "5. the SAME self-cross now books nothing and cancels the resting order instead"
 await_trades_agree   # a consistent cut, not three separate snapshots — see step 2
@@ -505,7 +547,16 @@ RESTARTS1="$(${K} get pods -l app=order-matcher-cluster \
   || fail "a member restarted mid-proof (${RESTARTS0} -> ${RESTARTS1}); results are not trustworthy"
 
 echo
+# The verdict must not claim the half that was skipped. "Proven against the pre-change failure" on
+# a run that never rolled to a pre-change image is the same defect yu13-cancel-ingress carried: an
+# [ok] line asserting the opposite of what the run did.
+if [[ "${SKIP_REGRESSION}" == "1" ]]; then
+echo "[PASS] self-trade prevention and atomic replace, asserted against the DEPLOYED build."
+echo "       NOT proven here: the pre-change contrast (steps 1-4 skipped — reason printed above)."
+echo "       Step 6's two-account arm did run, so an inert book would have failed this."
+else
 echo "[PASS] self-trade prevention and atomic replace, proven against the pre-change failure."
+fi
 echo "       Known limitation: order state has no SQL effect end (the orderbook table holds 0 rows"
 echo "       for every order ever submitted), so order assertions are against the three members'"
 echo "       agreed book digest. Trade assertions are in MariaDB."
