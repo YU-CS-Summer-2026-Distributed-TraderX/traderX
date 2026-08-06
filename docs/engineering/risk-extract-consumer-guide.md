@@ -78,6 +78,30 @@ curl -s -X POST http://localhost:18110/orders -H 'Content-Type: application/json
        "clientOrderId":"my-first-order"}'
 ```
 
+### Or run a whole day, in ten minutes
+
+Hand-placed orders and the fixtures give you a *shape*-complete extract with uninteresting content —
+a handful of rows, every `costBasis` the seeded `200.000000`, accounts holding mirror images of each
+other. If you want one that exercises your parser the way a real day would, run the flow generator:
+
+```bash
+bash scripts/sim/run-session.sh --minutes 10 --symbols 12
+```
+
+It runs a compressed session against the live book with distinct participants — a market maker
+quoting two-sided around its own inventory, a momentum taker, a mean-reversion taker, and one
+institutional parent order sliced by the execution-algo engine — with intensity varying across an
+open hump, a quiet midday and a close hump. Ten minutes of it produced the 37-row, 12-security
+extract this guide's examples come from: every security ends with both a net-long and a net-short
+holder, and cost bases spread across the whole book.
+
+One honest caveat, because it matters for what you conclude from the data. **This does not make the
+prices real.** No market data is involved and no vendor feed is consulted; synthetic participants
+produce a synthetic price. What it makes real is the price *formation*: the mark moves because
+someone lifted the offer, because depth got consumed, because a large order pushed through levels.
+Fills, marks and P&L all derive from one internally consistent market — which is what makes the
+extract worth testing against — but the price levels themselves are ours, not the market's.
+
 ### Taking a cut
 
 The extract's only trigger is the end-of-day chain finishing, so you close a session and the rest
