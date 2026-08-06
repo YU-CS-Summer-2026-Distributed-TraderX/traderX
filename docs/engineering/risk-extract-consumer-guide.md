@@ -19,14 +19,133 @@ and all three members independently render it byte-for-byte identically. That is
 makes it a defensible input to a risk calculation: there is exactly one answer to "what did we hold
 at the close", and it does not depend on which machine you asked or when the query ran.
 
-**Status as of 2026-08-06: this is a sample, not a live feed.** The GKE cluster that produces
-extracts was torn down on 2026-08-01 to stop compute spend. The bucket is deliberately kept — it is
-the deliverable — but nothing new is being written to it until the cluster is brought back up. Build
-against the files that are there; they are real output from a real run, not fixtures.
+---
+
+## 2. Two independent ways to get one — and Google Cloud is not required
+
+These are separate and neither depends on the other. Pick by what you are doing today.
+
+| | **A. Produce your own** | **B. Read our sample** |
+|---|---|---|
+| Needs | Docker + kind, on your laptop | A Google Cloud login |
+| Gives you | Live extracts from your own positions, on demand | Two files from our 2026-07-23 run |
+| Cloud cost | None | None (reads only) |
+| Good for | Building and testing your engine against changing data | Fixing the schema in your head in five minutes |
+
+**A is the one that matters for you.** The cluster runs entirely on your machine and writes extracts
+to a local path — `RISK_EXTRACT_SINK_URI=file:///data/risk-extracts` — with **no GCS, no HMAC
+credentials, no GCP project, and no cost**. You can drive positions in, take a cut, and get a real
+file. Nothing about YU15 requires the cloud.
+
+The GCS bucket exists because *our* deployment happens to be on GKE and the extract is a delivered
+artifact there. It is where you can read a known-good file without installing anything. That is its
+whole role in your workflow.
+
+**A file from either path is the same file.** Same schema, same header, same columns, same
+conventions — verified by comparing a locally-produced extract against the GCS one. Everything in
+sections 3 through 6 applies to both, so build your parser once.
+
+> Not to be confused with the **TAQ corpus**, which lives in a different bucket and is the kdb
+> tick-store data for a different piece of work. It has nothing to do with the risk extract.
 
 ---
 
-## 2. Getting the files
+## 2A. Produce your own, locally (recommended)
+
+You need Docker and [kind](https://kind.sigs.k8s.io/), and the repo you already have. Nothing else.
+
+```bash
+cd traderX-YU15-eod-risk-extract           # the YU15 worktree
+
+bash scripts/yu15/build-cluster-image.sh   # builds the cluster image (a few minutes, first time)
+bash scripts/yu15/start-cluster-kind.sh    # 3-member Aeron cluster + services on kind
+```
+
+Give it fixtures so there are positions to extract:
+
+```bash
+kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/order-matcher 18110:18110 &
+MATCHER_URL=http://localhost:18110 bash scripts/yu15/seed-proof-fixtures.sh
+MATCHER_URL=http://localhost:18110 bash scripts/proofs/seed-option-chain.sh   # adds listed options
+```
+
+Now trade whatever you want through `POST /orders` on `localhost:18110` — that is what ends up in
+the extract:
+
+```bash
+curl -s -X POST http://localhost:18110/orders -H 'Content-Type: application/json' \
+  -d '{"accountId":22214,"ticker":"IBM","side":"Buy","quantity":10,"limitPrice":187.00,
+       "clientOrderId":"my-first-order"}'
+```
+
+### Taking a cut
+
+The extract's only trigger is the end-of-day chain finishing, so you close a session and the rest
+runs itself:
+
+```bash
+K="kubectl --context kind-traderx-yu12-cluster -n traderx"
+
+TOKEN=$($K exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \
+  -H "X-Auth-Master-Secret: kind-local-dev-token-secret-not-a-real-credential" \
+  -H "Content-Type: application/json" \
+  -d "{\"subject\":\"manual\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}"')
+
+$K exec deploy/trade-processor -- sh -c \
+  "curl -fsS -X POST 'http://localhost:18091/eod/session/close' -H 'Authorization: Bearer $TOKEN'"
+
+$K logs -f deploy/risk-extract
+```
+
+The log prints the announcement, which carries everything needed to fetch and verify the result:
+
+```
+RISK-EXTRACT-READY {"schema":1,"uri":"file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+  "consensusSequence":43607,"quiesceWitnessSequence":43608,"rows":29,
+  "cutSha256":"236992a8...","sha256":"..."}
+```
+
+### Getting the files onto your machine
+
+```bash
+K="kubectl --context kind-traderx-yu12-cluster -n traderx"
+$K exec deploy/risk-extract -- find /data/risk-extracts -type f     # what exists
+
+POD=$($K get pod -l app=risk-extract -o jsonpath='{.items[0].metadata.name}')
+$K cp "${POD}:/data/risk-extracts/2026-08-06/v8/seq-43607.csv" ./seq-43607.csv
+$K cp "${POD}:/data/risk-extracts/2026-08-06/v8/seq-43607.cut" ./seq-43607.cut
+```
+
+⚠️ **That directory is an `emptyDir`, so it is wiped when the pod restarts.** Copy anything you want
+to keep. This is the one place the local path behaves differently from GCS, where objects are
+permanent and write-once.
+
+### Checking it works before you trust it
+
+```bash
+bash scripts/proofs/yu15-risk-extract.sh
+```
+
+That is the acceptance proof for this state. It takes a cut, asserts the file is **byte-identical
+across all three cluster members**, kills a member, and asserts the recovered member replays and
+re-renders the identical cut. If it passes, the extract on your rig carries the same guarantees as
+ours. It takes a few minutes.
+
+When you are done:
+
+```bash
+bash scripts/yu15/stop-cluster-kind.sh
+```
+
+---
+
+## 2B. Read our sample from GCS (optional)
+
+Only if you want a known-good file without setting anything up.
+
+**This is a sample, not a live feed.** The GKE cluster that produced it was torn down on 2026-08-01
+to stop compute spend. The bucket is deliberately kept — it is the deliverable — but nothing new is
+being written to it. The files there are real output from a real run, not fixtures.
 
 You have project access, so this should work without any grant. Check first:
 
@@ -270,34 +389,32 @@ the day someone changes a convention on our side without telling you.
 
 ---
 
-## 7. If you ever want to generate your own
+## 7. Consuming it as a feed, and a note on the cloud
 
-You do not need this yet, and it is a real amount of setup — but so you know the shape of it:
-
-Everything is in the repo you already have. The extract runs on a 3-member Aeron cluster on
-Kubernetes; on your own GCP project the path is `scripts/yu15/start-cluster-gke.sh`, and the
-extract's own environment contract is documented in
-`specs/YU15-eod-risk-extract/quickstart.md` (the `RISK_EXTRACT_*` variables — GCS bucket, HMAC
-credentials, the NATS subjects). `scripts/proofs/yu15-risk-extract.sh` runs the whole thing
-end to end and asserts the output is byte-identical across all three members and reproducible after
-a member is killed and recovers.
-
-There is also a local path that needs no cloud at all: a kind cluster on your laptop, via
-`scripts/yu15/build-cluster-image.sh` then `scripts/yu15/start-cluster-kind.sh`. That is how the
-sample above was validated. Ask when you get there and I will walk you through it rather than
-leaving you with a script name.
-
-**When it runs live**, delivery is announced on the NATS subject `risk.extract.ready`:
+**The readiness announcement.** However the extract is produced, delivery is announced on the NATS
+subject `risk.extract.ready`:
 
 ```json
-{ "schema": 1, "uri": "gs://.../2026-07-23/v2/seq-396.csv", "consensusSequence": 396,
-  "sessionDate": "2026-07-23", "priceSnapshotVersion": 2, "rows": 8,
-  "sha256": "...", "cutSha256": "...", "quiesceWitnessSequence": 397 }
+{ "schema": 1, "uri": "file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+  "consensusSequence": 43607, "sessionDate": "2026-08-06", "priceSnapshotVersion": 8,
+  "rows": 29, "sha256": "...", "cutSha256": "236992a8...",
+  "quiesceWitnessSequence": 43608 }
 ```
 
-`quiesceWitnessSequence` is always `consensusSequence + 1` and is the cluster proving it was
-genuinely quiet at the cut — nothing was sequenced between the cut and the witness. Until you have a
-live cluster, polling the bucket is fine.
+`quiesceWitnessSequence` is always `consensusSequence + 1`, and it is the cluster proving it was
+genuinely quiet at the cut — nothing was sequenced between the cut and the witness. If you want your
+engine to react to extracts rather than poll for them, subscribe to that subject; NATS is running in
+the local cluster already. Polling the directory is perfectly fine to start with.
+
+**On running it on GKE.** You do not need to, and I would not until you have a reason. The local
+cluster produces the identical artifact with the identical guarantees, at no cost and with no cloud
+account involved. If you later want it on your own GCP project, `scripts/yu15/start-cluster-gke.sh`
+exists but is **not** a from-scratch bring-up — it applies manifests to a cluster that already
+exists, and the manifests carry our project's image registry paths and a pre-created HMAC secret.
+The work in front of that (project, APIs, Artifact Registry, four `linux/amd64` image builds, a GKE
+cluster with two node pools, a bucket with `objectCreator`-but-not-`objectAdmin` IAM, a service
+account and its HMAC pair) is not written down anywhere yet. Ask when you actually want it and it
+will get written properly rather than guessed at.
 
 ---
 
