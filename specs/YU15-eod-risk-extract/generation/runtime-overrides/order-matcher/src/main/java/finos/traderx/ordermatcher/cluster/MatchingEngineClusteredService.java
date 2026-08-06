@@ -66,8 +66,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // control feed, which replays reference-data's full 510-security universe through consensus —
     // the subscriber wedged at ticker 65 (a consumer that will not silently drop securities cannot
     // get past a full table). 1024 = the universe plus headroom, power of two. This is capacity,
-    // not format: the snapshot writes ONE T_SECURITY tuple per registered security (variable
-    // length), so SNAPSHOT_FORMAT is untouched; per-security fixed cost is ~26 bytes in
+    // not LAYOUT: the snapshot writes ONE T_SECURITY tuple per registered security (variable
+    // length), so no record changed shape — which is why SNAPSHOT_FORMAT was left at 3 here, and
+    // that was the error. Layout compatibility is not READER capability: a widened domain lets
+    // this build emit a symbol id an older 64-build rejects outright. Bumped to 4 on 2026-08-05
+    // after exactly that failure; see SNAPSHOT_FORMAT below. Per-security fixed cost is ~26 bytes in
     // BlpRiskState plus a lazily-created book, and the Spring tier has run
     // blp.books.max-securities=4096 all along — 64 was the outlier, not the design. Like ANY
     // change to this block it must land on all members via a fresh-epoch same-image roll, never a
@@ -114,9 +117,32 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final long MAX_ORDER_NOTIONAL_TICKS = Long.MAX_VALUE / 4;
     static final long PRICE_MAX_AGE_MILLIS = Long.MAX_VALUE / 4;
 
-    /** Format 3 (YU14): the security record carries the contract multiplier (6 columns); format
-     *  2 (YU13) added book geometry/band anchors, which carry forward unchanged. */
-    static final int SNAPSHOT_FORMAT = 3;
+    /**
+     * Format 4 (YU15): MAX_SECURITIES 64 -> 1024 widened the symbol-id domain. Format 3 (YU14):
+     * the security record carries the contract multiplier (6 columns); format 2 (YU13) added book
+     * geometry/band anchors, which carry forward unchanged.
+     *
+     * <p>4 exists because 3 was NOT bumped when the domain widened, leaving two builds that were
+     * indistinguishable at the header while disagreeing about what a valid symbol id is. Observed
+     * 2026-08-05: a 64-build handed a snapshot written here failed deep in record parsing with
+     * "snapshot corrupt: symbol id 64" — a false accusation, since the snapshot was intact and the
+     * reader was simply too old — and its service agent died on all three members while the pods
+     * stayed READY, so the rig reported healthy with every engine dead.
+     *
+     * <p>The sharper problem was that the incompatibility was DATA-DEPENDENT. Below 64 registered
+     * securities a 1024-build's snapshot restores in a 64-build perfectly, so a rollback rehearsed
+     * on a quiet rig succeeds and the identical rollback fails the moment the 65th security exists.
+     * A version number makes that hazard unconditional and legible at the header instead of latent.
+     * Bump this for any change to what the records can CONTAIN, not merely to their shape.
+     */
+    static final int SNAPSHOT_FORMAT = 4;
+    /**
+     * Oldest format this build can still restore. 3 -> 4 changed no record's shape and only
+     * WIDENED the symbol-id domain, so every format-3 id (0..63) remains valid here and a format-3
+     * snapshot restores exactly — which is what lets this build roll onto an existing epoch without
+     * wiping it. Raise this only for a change that genuinely cannot read the older records.
+     */
+    static final int MIN_READABLE_SNAPSHOT_FORMAT = 3;
     static final int T_HEADER = 1;
     static final int T_ORDER = 2;
     static final int T_POSITION = 3;
@@ -640,8 +666,20 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         switch (type) {
             case T_HEADER -> {
                 final int format = buffer.getInt(offset + 4);
-                if (format != SNAPSHOT_FORMAT) {
-                    throw new IllegalStateException("unknown snapshot format: " + format);
+                // Name the DIRECTION of the mismatch. "unknown snapshot format" reads as a damaged
+                // file, and the only actionable fact is whether this build is too old or the
+                // snapshot is. A too-new snapshot is intact and is NOT a reason to wipe the epoch —
+                // rolling the members forward again restores it untouched — so the message says so.
+                if (format > SNAPSHOT_FORMAT) {
+                    throw new IllegalStateException("snapshot format " + format
+                        + " is NEWER than this build (format " + SNAPSHOT_FORMAT + "): it was"
+                        + " written by a later build and cannot be restored here. The snapshot is"
+                        + " intact — roll the members FORWARD; do not wipe the epoch.");
+                }
+                if (format < MIN_READABLE_SNAPSHOT_FORMAT) {
+                    throw new IllegalStateException("snapshot format " + format
+                        + " is older than this build can restore (minimum "
+                        + MIN_READABLE_SNAPSHOT_FORMAT + ", current " + SNAPSHOT_FORMAT + ")");
                 }
                 nextOrderRef = buffer.getLong(offset + 8);
                 highestIssuedRef = buffer.getLong(offset + 16);

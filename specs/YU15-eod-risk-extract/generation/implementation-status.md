@@ -86,7 +86,7 @@ ADR-056 intends now the feed covers the chain:
 ```
 
 The option row is the multiplier proof end to end: 10 contracts × $10.709 × 100 = $10,709 of
-notional, from a multiplier that lives in cluster state and rides the format-3 snapshot.
+notional, from a multiplier that lives in cluster state and rides the snapshot's security record.
 
 **The tie-out closes exactly.** For the same row, `eod_position_pnl` records
 `AAPL261218C00260000 qty 5 close 9.503 market_value 4751.500000` and the fixture records
@@ -185,7 +185,9 @@ order accept/reject/cancel/fill events over an input-sequence range, which no tr
 This is also what the Spring tier already concluded: its live `TradeBlotter` is explicitly outside
 the snapshot, and `LmaxEngine.reindexFullHistory()` replays the whole journal into a shadow engine.
 
-**Snapshot impact: none. `SNAPSHOT_FORMAT` stays 3 and no `T_*` record was added.** Nothing here is
+**Snapshot impact: none. No `T_*` record was added and the format is untouched by this change.**
+(`SNAPSHOT_FORMAT` is 4 as of 2026-08-05 — bumped by the `MAX_SECURITIES` 64 → 1024 widening, which
+changed what a symbol record may CONTAIN; nothing in this section moved it.) Nothing here is
 replicated state. The live forward blotter and the full-history index have exactly the status of the
 NATS bridges and the kdb tap already in the same drain loop: read-side projections of committed
 output, rebuilt by replay. The one core edit is a nullable output sink, null in production unless
