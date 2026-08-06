@@ -5,8 +5,8 @@
 <meta name="generator" content="Docusaurus v3.10.1">
 <title data-rh="true">Implementation Status: YU15-eod-risk-extract | Distributed TraderX · Yeshiva University</title><meta data-rh="true" name="viewport" content="width=device-width,initial-scale=1"><meta data-rh="true" name="twitter:card" content="summary_large_image"><meta data-rh="true" property="og:url" content="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/generation/implementation-status"><meta data-rh="true" property="og:locale" content="en"><meta data-rh="true" name="docusaurus_locale" content="en"><meta data-rh="true" name="docsearch:language" content="en"><meta data-rh="true" name="docusaurus_version" content="current"><meta data-rh="true" name="docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" name="docsearch:version" content="current"><meta data-rh="true" name="docsearch:docusaurus_tag" content="docs-traderspec-root-specs-current"><meta data-rh="true" property="og:title" content="Implementation Status: YU15-eod-risk-extract | Distributed TraderX · Yeshiva University"><meta data-rh="true" name="description" content="Status: implemented and verified on kind."><meta data-rh="true" property="og:description" content="Status: implemented and verified on kind."><link data-rh="true" rel="icon" href="/traderX/img/yu/yu-cs-shield-transparent.png"><link data-rh="true" rel="canonical" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/generation/implementation-status"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/generation/implementation-status" hreflang="en"><link data-rh="true" rel="alternate" href="https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/generation/implementation-status" hreflang="x-default"><script data-rh="true" type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"📦 Feature Pack: YU15-eod-risk-extract","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/"},{"@type":"ListItem","position":2,"name":"Implementation Status: YU15-eod-risk-extract","item":"https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/specs/YU15-eod-risk-extract/generation/implementation-status"}]}</script><link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Overpass:400,400i,700">
 <script src="https://buttons.github.io/buttons.js"></script><link rel="stylesheet" href="/traderX/assets/css/styles.67602e12.css">
-<script src="/traderX/assets/js/runtime~main.83525bad.js" defer="defer"></script>
-<script src="/traderX/assets/js/main.c0fcca67.js" defer="defer"></script>
+<script src="/traderX/assets/js/runtime~main.5938179f.js" defer="defer"></script>
+<script src="/traderX/assets/js/main.4d3b4cf9.js" defer="defer"></script>
 </head>
 <body>
 <svg style="display: none;"><defs>
@@ -205,7 +205,7 @@ one.</p>
 ADR-056 intends now the feed covers the chain:</p>
 <div class="language-text codeBlockContainer_Ckt0 theme-code-block" style="--prism-color:#bfc7d5;--prism-background-color:#292d3e"><div class="codeBlockContent_QJqH"><pre tabindex="0" class="prism-code language-text codeBlock_bY9V thin-scrollbar" style="color:#bfc7d5;background-color:#292d3e"><code class="codeBlockLines_e6Vv"><div class="token-line" style="color:#bfc7d5"><span class="token plain">22214,AAPL,EQUITY,13,1,241.800000,241.477000,EOD_SNAPSHOT,OK,3139.201000,-4.199000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">22214,AAPL260918C00240000,OPTION,10,100,3.900010,10.709000,EOD_SNAPSHOT,OK,10709.000000,6808.990000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01</span><br></div><div class="token-line" style="color:#bfc7d5"><span class="token plain">22214,AAPL261218C00260000,OPTION,5,100,2.400000,9.503000,EOD_SNAPSHOT,OK,4751.500000,3551.500000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01</span><br></div></code></pre></div></div>
 <p>The option row is the multiplier proof end to end: 10 contracts × $10.709 × 100 = $10,709 of
-notional, from a multiplier that lives in cluster state and rides the format-3 snapshot.</p>
+notional, from a multiplier that lives in cluster state and rides the snapshot&#x27;s security record.</p>
 <p><strong>The tie-out closes exactly.</strong> For the same row, <code>eod_position_pnl</code> records
 <code>AAPL261218C00260000 qty 5 close 9.503 market_value 4751.500000</code> and the fixture records
 <code>marketValue 4751.500000</code>. Before the multiplier fix these differed by exactly 100x — on the very
@@ -293,7 +293,9 @@ No bound is both safe and correct. It could not serve <code>/regulatory/report</
 order accept/reject/cancel/fill events over an input-sequence range, which no trade list holds.
 This is also what the Spring tier already concluded: its live <code>TradeBlotter</code> is explicitly outside
 the snapshot, and <code>LmaxEngine.reindexFullHistory()</code> replays the whole journal into a shadow engine.</p>
-<p><strong>Snapshot impact: none. <code>SNAPSHOT_FORMAT</code> stays 3 and no <code>T_*</code> record was added.</strong> Nothing here is
+<p><strong>Snapshot impact: none. No <code>T_*</code> record was added and the format is untouched by this change.</strong>
+(<code>SNAPSHOT_FORMAT</code> is 4 as of 2026-08-05 — bumped by the <code>MAX_SECURITIES</code> 64 → 1024 widening, which
+changed what a symbol record may CONTAIN; nothing in this section moved it.) Nothing here is
 replicated state. The live forward blotter and the full-history index have exactly the status of the
 NATS bridges and the kdb tap already in the same drain loop: read-side projections of committed
 output, rebuilt by replay. The one core edit is a nullable output sink, null in production unless
