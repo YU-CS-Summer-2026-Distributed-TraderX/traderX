@@ -371,6 +371,28 @@ for p in "${PROOFS[@]}"; do
     STP_RESTORE_FEED=1
   fi
 
+  # yu05-recon's forward-sweep verdict reads LIFETIME counters: ReconciliationService's
+  # matched/missing/field_mismatch are LongAdders that count classification EVENTS since the
+  # process started, not distinct trades. That makes the proof's verdict a function of everything
+  # trade-processor watched before it — and this suite deliberately mints fresh epochs (the
+  # baseline rebuild above, yu13-stp-and-replace below), after which trade ids restart from 1 and
+  # collide with projection rows the previous epoch left behind. A sweep that classifies id "7-S"
+  # against last epoch's "7-S" reports FIELD_MISMATCH truthfully and permanently.
+  #
+  # Observed: the proof failed in two suite runs with mismatching ids that were low-numbered
+  # post-epoch ids absent from SQL, while its own authoritative full-history set comparison
+  # (engine trades vs SQL rows vs journal provenance, plus a planted orphan probe) was clean in
+  # every run — and it passes standalone on a freshly started process every time.
+  #
+  # Restarting the process zeroes the counters. This weakens no assertion: it removes inherited
+  # state the assertion was never measuring, which is the same reason the baseline block above
+  # refuses to let a proof inherit an engine build from the run before it.
+  if [[ "${p}" == yu05-recon ]]; then
+    ${K} rollout restart deployment/trade-processor >/dev/null 2>&1
+    ${K} rollout status deployment/trade-processor --timeout=300s >/dev/null 2>&1
+    sleep 20   # let the first scheduled sweep run against a settled projection
+  fi
+
   # yu08 is the only proof that needs the algo engine; everything else is better off without its
   # traffic moving the counters.
   if [[ "${p}" == yu08-* ]]; then
