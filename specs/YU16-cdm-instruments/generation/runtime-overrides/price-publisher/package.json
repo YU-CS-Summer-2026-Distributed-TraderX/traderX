@@ -1,0 +1,27 @@
+{
+  "name": "price-publisher-specfirst",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "TraderX synthetic market price publisher for state 011",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "node src/main.js",
+    "test": "node --test test/option-quotes.test.js test/treasury-pricing.test.js"
+  },
+  "dependencies": {
+    "express": "5.2.1",
+    "nats": "2.29.3",
+    "yahoo-finance2": "2.13.3"
+  },
+  "overrides": {
+    "qs": "6.15.2",
+    "engine.io": "6.6.9",
+    "postcss": "^8.5.13",
+    "serialize-javascript": "^7.0.5",
+    "tar": "^7.5.13",
+    "multer": "2.2.0",
+    "uuid": "^14.0.0",
+    "ws": "8.21.0"
+  }
+}

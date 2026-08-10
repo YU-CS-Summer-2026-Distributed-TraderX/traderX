@@ -1,0 +1,142 @@
+{
+  "AAPL": {
+    "openPrice": 240.1,
+    "closePrice": 241.8
+  },
+  "MSFT": {
+    "openPrice": 386.9,
+    "closePrice": 388.5
+  },
+  "AMZN": {
+    "openPrice": 184.1,
+    "closePrice": 185.5
+  },
+  "GOOGL": {
+    "openPrice": 165.9,
+    "closePrice": 167.1
+  },
+  "META": {
+    "openPrice": 499.7,
+    "closePrice": 503.2
+  },
+  "NVDA": {
+    "openPrice": 901.4,
+    "closePrice": 910.8
+  },
+  "TSLA": {
+    "openPrice": 169.2,
+    "closePrice": 172.0
+  },
+  "IBM": {
+    "openPrice": 186.0,
+    "closePrice": 187.4
+  },
+  "BAC": {
+    "openPrice": 41.1,
+    "closePrice": 41.7
+  },
+  "C": {
+    "openPrice": 59.2,
+    "closePrice": 58.6
+  },
+  "JPM": {
+    "openPrice": 194.1,
+    "closePrice": 195.8
+  },
+  "GS": {
+    "openPrice": 401.7,
+    "closePrice": 404.2
+  },
+  "MS": {
+    "openPrice": 90.5,
+    "closePrice": 91.1
+  },
+  "UBS": {
+    "openPrice": 29.4,
+    "closePrice": 29.9
+  },
+  "DB": {
+    "openPrice": 16.8,
+    "closePrice": 17.05
+  },
+  "COF": {
+    "openPrice": 149.2,
+    "closePrice": 150.3
+  },
+  "DFS": {
+    "openPrice": 126.4,
+    "closePrice": 127.65
+  },
+  "FNMA": {
+    "openPrice": 1.12,
+    "closePrice": 1.145
+  },
+  "FIS": {
+    "openPrice": 74.7,
+    "closePrice": 75.2
+  },
+  "FNF": {
+    "openPrice": 49.5,
+    "closePrice": 49.95
+  },
+  "SPY": {
+    "openPrice": 521.3,
+    "closePrice": 524.1
+  },
+  "QQQ": {
+    "openPrice": 444.8,
+    "closePrice": 447.6
+  },
+  "IWM": {
+    "openPrice": 201.4,
+    "closePrice": 202.35
+  },
+  "VTI": {
+    "openPrice": 258.9,
+    "closePrice": 260.15
+  },
+  "GLD": {
+    "openPrice": 215.6,
+    "closePrice": 216.75
+  },
+  "UST-20280630": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.878432,
+    "runtimeSeedCleanPrice": 99.878,
+    "couponRatePercent": 4.125,
+    "originalTermYears": 2,
+    "maturityDate": "2028-06-30"
+  },
+  "UST-20310630": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.664909,
+    "runtimeSeedCleanPrice": 99.665,
+    "couponRatePercent": 4.125,
+    "originalTermYears": 5,
+    "maturityDate": "2031-06-30"
+  },
+  "UST-20360515": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.256552,
+    "runtimeSeedCleanPrice": 99.257,
+    "couponRatePercent": 4.375,
+    "originalTermYears": 10,
+    "maturityDate": "2036-05-15"
+  },
+  "UST-20460515": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 98.481099,
+    "runtimeSeedCleanPrice": 98.481,
+    "couponRatePercent": 5.0,
+    "originalTermYears": 20,
+    "maturityDate": "2046-05-15"
+  },
+  "UST-20560515": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.292811,
+    "runtimeSeedCleanPrice": 99.293,
+    "couponRatePercent": 5.0,
+    "originalTermYears": 30,
+    "maturityDate": "2056-05-15"
+  }
+}
