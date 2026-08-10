@@ -124,7 +124,7 @@ $K logs -f deploy/risk-extract
 The log prints the announcement, which carries everything needed to fetch and verify the result:
 
 ```
-RISK-EXTRACT-READY {"schema":1,"uri":"file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+RISK-EXTRACT-READY {"schema":2,"uri":"file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
   "consensusSequence":43607,"quiesceWitnessSequence":43608,"rows":29,
   "cutSha256":"236992a8...","sha256":"..."}
 ```
@@ -236,7 +236,7 @@ The file documents itself. Everything before the column header is a `#` comment 
 contract:
 
 ```
-# traderx-risk-extract schema=1
+# traderx-risk-extract schema=2
 # consensusSequence=396
 # sessionDate=2026-07-23
 # priceSnapshotVersion=2
@@ -244,29 +244,40 @@ contract:
 # rows=8
 # cutConsistency=every row is the replicated state machine's state at consensusSequence ...
 # netting=none; rows are un-netted at (accountId, security) grain
-# quantityConvention=signed net position in contracts (options) or shares (equity)
+# quantityConvention=signed net position in contracts (options), shares (equity) or USD face amount (treasuries)
 # costBasisConvention=weighted average trade price per contract or share, excludes fees and
 #   excludes the contract multiplier
 # marketValueConvention=quantity * closingMark * contractMultiplier
 # unrealizedPnlConvention=(closingMark - costBasis) * quantity * contractMultiplier
 # markSourceLegend=EOD_SNAPSHOT=... ; CLUSTER_LAST_TRADE_AT_N=...
 # optionIdentity=OCC symbol; underlying, expiry, call/put and strike are derivable from the security
+# treasuryPriceConvention=costBasis and closingMark for instrumentType=TREASURY are clean prices as a
+#   FRACTION of par (0.998780 = 99.878%), six decimals; the contract multiplier is 1
+# treasuryStatic=coupon (annual %, fixed, semiannual) and maturityDate are joined from instrument
+#   reference data; empty for non-treasury rows
 accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,markSource,...
 ```
 
 Parse the `#` lines. `rows` and `cutSha256` in particular are how you detect a truncated download
 without trusting the transport.
 
+**Schema history.** Schema 2 (YU16) appends `coupon` and `maturityDate` after `nettingSetId`,
+adds `TREASURY` to `instrumentType`, and states the bond price convention in the header. Every
+schema-1 column keeps its name, position and meaning, so a schema-1 reader that indexes columns
+by header name reads a schema-2 file unchanged; a reader that hardcoded 14 columns must widen.
+The `.cut` sidecar is unchanged (`#cut schema=1`) — it is engine state and the engine did not
+change.
+
 ### Columns
 
 | Column | Type | Notes |
 |---|---|---|
 | `accountId` | int | Opaque. Join key to `counterpartyId` / `nettingSetId` is already denormalised onto every row. |
-| `security` | string | Ticker for equities; **OCC symbol** for options (`AAPL260918C00220000`). |
-| `instrumentType` | `EQUITY` \| `OPTION` | Derived from the symbol shape, not stored separately. |
-| `quantity` | signed int | **Negative means short.** Contracts for options, shares for equities. |
-| `contractMultiplier` | int | `1` for equities, `100` for listed options. Already applied to `marketValue`/`unrealizedPnl`, **not** to `costBasis`. |
-| `costBasis` | decimal(6dp) | Weighted average trade price **per contract or share**. Excludes fees. Excludes the multiplier. |
+| `security` | string | Ticker for equities/ETFs; **OCC symbol** for options (`AAPL260918C00220000`); maturity-keyed instrument key for Treasuries (`UST-20280630`). |
+| `instrumentType` | `EQUITY` \| `OPTION` \| `TREASURY` | Options by OCC symbol shape; **`TREASURY` by join against instrument reference data** (schema 2), never by prefix-parsing. ETFs report `EQUITY` — arithmetically they are. |
+| `quantity` | signed int | **Negative means short.** Contracts for options, shares for equities/ETFs, **USD face amount for Treasuries**. |
+| `contractMultiplier` | int | `1` for equities and Treasuries, `100` for listed options. Already applied to `marketValue`/`unrealizedPnl`, **not** to `costBasis`. |
+| `costBasis` | decimal(6dp) | Weighted average trade price **per contract or share**; for a Treasury, the average clean price as a **fraction of par** (`0.998780` = 99.878%). Excludes fees. Excludes the multiplier. |
 | `closingMark` | decimal(6dp) | The mark used. Per contract or share, same basis as `costBasis`. |
 | `markSource` | enum | `EOD_SNAPSHOT` or `CLUSTER_LAST_TRADE_AT_N` — see below. |
 | `markQuality` | enum | `OK`, `OVERRIDDEN`, `STALE`, or `LAST_TRADE` — see below. |
@@ -275,6 +286,8 @@ without trusting the transport.
 | `currency` | string | `USD` throughout today. Do not hardcode it. |
 | `counterpartyId` | string | e.g. `CPTY-ALPHA-CAP`. From reference data. |
 | `nettingSetId` | string | e.g. `NS-ALPHA-ISDA-01`. From reference data. |
+| `coupon` | decimal or empty | **Schema 2.** Annual coupon %, fixed, semiannual — Treasury rows only, joined from instrument reference data. Empty otherwise. |
+| `maturityDate` | ISO date or empty | **Schema 2.** Treasury rows only, same join. Empty otherwise. |
 
 All decimals are exact to 6 places. They are computed in `BigDecimal` with rounding mode
 `UNNECESSARY`, which means the producer **throws rather than round** — if a value ever needed
@@ -419,7 +432,7 @@ the day someone changes a convention on our side without telling you.
 subject `risk.extract.ready`:
 
 ```json
-{ "schema": 1, "uri": "file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+{ "schema": 2, "uri": "file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
   "consensusSequence": 43607, "sessionDate": "2026-08-06", "priceSnapshotVersion": 8,
   "rows": 29, "sha256": "...", "cutSha256": "236992a8...",
   "quiesceWitnessSequence": 43608 }

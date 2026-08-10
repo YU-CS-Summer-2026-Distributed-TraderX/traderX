@@ -79,6 +79,10 @@ through order → position → extract).
   the bootstrap repoints by configuration at this state's layer. Supersedes source FR-01602.
 - **ADR-059** — Instrument static reaches the risk extract by join; the CSV schema bumps to 2;
   the cut format does not change.
+- **ADR-060** — The YU13 book rejects off-grid limits and its 0.001 grid cannot hold a
+  six-decimal bond fraction, so a Treasury's book grid is one Px tick — derived from the
+  committed ticker (the ADR-052 pattern), stored nowhere, rolled before any `UST-` symbol
+  exists.
 
 ## Exit Criteria
 

@@ -64,7 +64,7 @@ retention requirement holds. The durable stream and subject (`TRADERX_CONTROL_SE
 `traderx.control.security.deltas`) are not renamed: a consumer's position is keyed to the
 stream, so that rename is a real flag day and is recorded as TD-CDM02, not fixed here.
 
-## Why the deterministic engine does not change
+## Why the deterministic engine changes by exactly one derived function
 
 Matching is price-time priority over integers. The core has a symbol table, per-security book
 geometry, and a per-security `contractMultiplier` that YU14 added for options — it has no concept
@@ -75,6 +75,19 @@ model, which is where the source pack already put them. With prices as fractions
 instruments enter the engine the way every instrument does — as securities registered through
 the existing `SECURITY_CONTROL` feed — well inside `MAX_SECURITIES` (1024), with face amounts of
 100,000 well inside `MAX_ORDER_QUANTITY` (1,000,000).
+
+One thing the no-change premise missed, found by the first end-to-end bond cross: the YU13 book
+prices levels on a fixed 0.001 grid and **rejects off-grid limits**, and a six-decimal fraction
+of par is off that grid — `0.998860` is 998,860 ticks, not a multiple of 1,000. Three decimals
+in price space is one decimal of percentage for a bond, so the grid quantization is the same
+100×-class precision problem as the multiplier, one layer down. The alternatives were worse:
+re-quantizing bond prices to 0.1% of par breaks the auction-price fidelity the seeds carry, and
+redefining quantity as $100-face units with percent prices forces unit/face conversions at two
+trust boundaries — the exact silent-×100 hazard ADR-057 exists to prevent. The fix is ADR-060:
+a per-security book grid of one Px tick for `UST-` tickers, derived from the committed ticker at
+registration and restore exactly as the YU14 multiplier is (ADR-052), stored nowhere. The apply
+hot path, the snapshot format, and every non-`UST-` behavior are unchanged; the roll is safe
+because no `UST-` symbol exists on a rig until this state seeds one, after the roll.
 
 ## Why the extract joins instrument static rather than carrying it
 

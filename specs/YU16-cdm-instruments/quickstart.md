@@ -22,8 +22,9 @@ bash scripts/yu15/run-proofs.sh
 ```
 
 On a rig that is already running this state's services, step 2 is a rolling deployment update —
-the deterministic core is unchanged (NFR-CDM01), so no scale-to-zero, no PVC wipe and no fresh
-epoch is needed or performed (NFR-CDM03).
+no scale-to-zero, no PVC wipe and no fresh epoch is needed or performed (NFR-CDM03). The one
+ordering rule (ADR-060): every member runs this state's image BEFORE any `UST-` security is
+registered — which the scripts guarantee, since seeding (step 4) follows the roll (step 2).
 
 ## The instrument model, by hand
 

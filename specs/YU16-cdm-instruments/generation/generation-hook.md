@@ -39,6 +39,14 @@ against the shadowed-layer trap. "new" = no ancestor carries the path.
 | `order-matcher/src/main/resources/application.properties` | YU11 | bootstrap default → `/instruments/control-snapshot`; ticker-list defaults |
 | `order-matcher/src/main/java/.../cluster/ClusterGatewayMain.java` | YU13 | `UST-` face validation pre-submission |
 | `order-matcher/src/main/java/.../cluster/RiskExtractCsv.java` | YU15 | schema 2, static join, coupon/maturity columns |
+| `order-matcher/src/main/java/.../cluster/RiskExtractMain.java` | YU15 | instrument-static loader (header-name parsing), both render sites |
+| `order-matcher/src/main/java/.../cluster/MatchingEngineClusteredService.java` | YU15 | ADR-060 grid derivation at registration + T_SYMBOL restore |
+| `order-matcher/src/main/java/.../lmax/MatchingEngine.java` | YU13 | per-security book-grid override consulted at cold book creation |
+| `order-matcher/src/test/java/.../cluster/RiskExtractTest.java` | YU15 | schema-2 signature, trailing columns, bond cross + restore proof |
+| `trade-processor/src/main/java/.../model/Position.java` | composed base | 6-dp average (its setter silently rounded to 3dp) |
+| `trade-processor/src/test/java/.../service/TradeServiceBookingTest.java` | YU02 | the price-scale invariant moves to 6 |
+| `trade-processor/src/test/java/.../service/TradeServiceIdempotencyTest.java` | YU05 | widened constructor |
+| `trade-service/src/test/java/.../controller/TradeOrderControllerTest.java` | YU02 | instruments URLs + Treasury validation cases |
 | `trade-processor/src/main/java/.../service/TradeService.java` | YU05 | face-weighted Treasury average cost, Rejected landing, metadata-before-transaction |
 | `trade-processor` models/config (`Trade`, `TradeOrder`, `TradeState`, `InstrumentMetadata`, `InstrumentMetadataClient`, `RuntimeConfig`) | mixed (see phase notes) | rejection fields, metadata client, clock/HTTP beans |
 | `position-service/src/main/java/.../model/Trade.java` + `TradeRepository` | YU06-era baseline | rejection columns in reads |

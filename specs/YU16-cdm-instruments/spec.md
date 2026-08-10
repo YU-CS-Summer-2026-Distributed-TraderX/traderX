@@ -12,9 +12,10 @@
   maturity, approximate YTM) — so I trade the wider universe without learning a second workflow.
 - As a risk-engine consumer, I want the instrument's type and its bond static (coupon, maturity)
   on every extract row, so I can price a Treasury position without a second lookup.
-- As the platform owner, I want the CDM instrument model added without any change to the
-  deterministic core, because a matching engine that is price-time priority over integers has no
-  business knowing what a coupon is — and because rolling the core cannot be done gradually.
+- As the platform owner, I want the CDM instrument model added with the deterministic core's
+  stored state, snapshot format and contracts untouched, because a matching engine that is
+  price-time priority over integers has no business knowing what a coupon is — and because
+  rolling core state cannot be done gradually.
 - As the operator of the YU04 durable control feed, I want `/stocks/control-snapshot` to keep
   serving exactly what it serves today, because a replica bootstrap that fails on a renamed route
   is an outage bought for a tidier name.
@@ -141,14 +142,19 @@
 
 ## Non-Functional Requirements
 
-- NFR-CDM01: The deterministic core SHALL NOT change: no snapshot field, no new command type, no
-  risk-gate change, no matching change. Instrument semantics live in reference-data, pricing,
-  post-trade and display layers. `MatchingEngineClusteredService`, `BlpRiskState` and the codecs
-  are byte-identical to YU15's layers.
+- NFR-CDM01: The deterministic core SHALL NOT change its stored state or contracts: no snapshot
+  field or format change, no new command type, no risk-gate change, no matching-policy change.
+  The one core change this state makes is a derived per-security book grid for `UST-` tickers
+  (ADR-060) — a pure function of the committed ticker, stored nowhere, consulted only at cold
+  book creation — because the inherited 0.001 book grid rejects six-decimal bond limits as
+  off-grid. Instrument semantics otherwise live in reference-data, pricing, post-trade and
+  display layers.
 - NFR-CDM02: `SNAPSHOT_FORMAT` SHALL remain 4 and `MIN_READABLE_SNAPSHOT_FORMAT` SHALL remain 3.
 - NFR-CDM03: The state SHALL NOT require a fresh epoch or a PVC wipe; the running cluster's disks
-  and epoch stay valid, and no mixed-version divergence window exists because the replicated
-  state machine is unchanged.
+  and epoch stay valid. The image rolls member by member because old and new code behave
+  identically for every input that references no `UST-` symbol, and Treasury securities SHALL be
+  registered only after every member runs this state's image (ADR-060) — the bring-up seeds
+  fixtures after the roll, which makes the mixed window benign by construction.
 - NFR-CDM04: Every inherited proof SHALL remain green — the full `scripts/yu15/run-proofs.sh`
   suite, the order-matcher suite, and all allocation and no-GC gates.
 - NFR-CDM05: The adopted CDM subset SHALL be documented in `data-model.md` with enum literals

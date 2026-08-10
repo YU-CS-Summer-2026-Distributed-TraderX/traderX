@@ -37,12 +37,13 @@ Core artifacts:
 - `generation/runtime-overrides/price-publisher/...` — `treasury-pricing.js` + seeds + hooks
 - `generation/runtime-overrides/trade-processor|position-service|trade-service/...` — the
   post-trade merge onto the operative ancestor copies
-- `generation/runtime-overrides/order-matcher/...` — gateway face validation +
-  `application.properties` bootstrap repoint + extract join (engine files untouched)
+- `generation/runtime-overrides/order-matcher/...` — gateway face validation,
+  `application.properties` bootstrap repoint, extract join, and the ADR-060 derived bond book
+  grid (the state's one deterministic-core change; nothing stored, format 4 intact)
 - `generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml`
   — the MariaDB schema at this layer
 - `reference-data/instruments.csv` — seed + extract-join static
-- `system/adr-057 … adr-059`, `system/architecture.model.json`
+- `system/adr-057 … adr-060`, `system/architecture.model.json`
 
 Target runtime behavior:
 
