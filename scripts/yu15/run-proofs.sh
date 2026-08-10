@@ -193,6 +193,28 @@ if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
 fi
 
+# The EXTRACT PRODUCER runs the same cluster-node image and was pinned by nothing. Its tag never
+# changes, so `kubectl apply` leaves a pod running whatever bits that tag meant when it started --
+# observed on 2026-08-10 with a producer six days stale while the members ran a fresh build. The
+# tag comparison above cannot see it (the tag matches; the CONTENT does not), so compare the
+# resolved image ID against the local daemon's and restart when they differ. risk-extract is a
+# stateless batch producer: a restart costs nothing, no PVC, no epoch.
+# Compare TIMES, not ids: kind re-imports the image under its own digest, so the pod's imageID
+# never equals the local daemon's Id and an id comparison would fire on every single run -- a
+# guard that always fires is as useless as one that never does. A producer older than the image
+# it claims to run is the actual condition, and it is satisfiable.
+producer_started() { ${K} get pod -l app=risk-extract -o jsonpath='{.items[0].status.startTime}' 2>/dev/null; }
+local_image_built() { docker image inspect "${BASELINE_IMAGE}" --format '{{.Created}}' 2>/dev/null; }
+epoch_of() { python3 -c "import sys,datetime;print(int(datetime.datetime.fromisoformat(sys.argv[1].replace('Z','+00:00')).timestamp()))" "$1" 2>/dev/null || echo 0; }
+PRODUCER_AT="$(producer_started)"; IMAGE_AT="$(local_image_built)"
+if [[ -n "${PRODUCER_AT}" && -n "${IMAGE_AT}" ]]; then
+  if (( $(epoch_of "${IMAGE_AT}") > $(epoch_of "${PRODUCER_AT}") )); then
+    echo "[baseline] risk-extract started ${PRODUCER_AT}, older than ${BASELINE_IMAGE} built ${IMAGE_AT}; restarting it"
+    ${K} rollout restart deployment/risk-extract >/dev/null
+    ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
+  fi
+fi
+
 # Members that share an applied sequence but DISAGREE on the book have diverged -- permanently, on
 # a deterministic core -- and every digest-agreement proof after this point would fail while
 # reporting the divergence as its own bug. Different sequences are mere lag and converge on their
