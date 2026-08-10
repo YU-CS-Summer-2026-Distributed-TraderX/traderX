@@ -20,7 +20,10 @@
 > the identical position cut at it, and the leader's cut is joined with the published closing prices
 > and the counterparty mapping into one immutable, byte-reproducible CSV fixture announced on
 > `risk.extract.ready`. Positions come from the replicated state machine rather than the SQL read
-> model, so every account is frozen at the same instant. The
+> model, so every account is frozen at the same instant. YU16 is parented on YU15 and folds the
+> FINOS CDM instrument model onto the line — CDM security types (Equity/Fund/Debt) with FIGI
+> identifiers, five ETFs and five U.S. Treasuries — keeping `/stocks` and the YU04 control feed
+> intact; bond prices are stored as a fraction of par so the deterministic core is unchanged. The
 > historical GKE branch/runbook below remains useful operational background; use the selected
 > YU state pack and its generated artifacts as the source for state-specific work.
 

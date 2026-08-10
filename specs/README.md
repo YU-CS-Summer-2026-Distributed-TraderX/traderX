@@ -40,6 +40,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU13-limit-order-book`
 - `YU14-listed-equity-options`
 - `YU15-eod-risk-extract`
+- `YU16-cdm-instruments`
 
 ## References
 
