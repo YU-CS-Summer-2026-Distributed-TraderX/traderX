@@ -36,8 +36,8 @@ TK=${1:-Z$(date +%s | tail -c 5)}
 # MAX_SECURITIES = 64 -- replaying the stream fills the table, and a consumer that refuses to
 # silently drop securities (ADR-021) then cannot make progress past the 64th ticker. The blocker
 # is a replicated-state CAPACITY decision, not missing plumbing.
-if ! curl -sf -m8 -o /dev/null "${REF}/stocks/control-snapshot" 2>/dev/null; then
-  echo "   ✘ ${REF}/stocks/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
+if ! curl -sf -m8 -o /dev/null "${REF}/instruments/control-snapshot" 2>/dev/null; then
+  echo "   ✘ ${REF}/instruments/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
   exit 2
 fi
 K="kubectl -n $NS --context $CTX"
@@ -74,7 +74,7 @@ WL=$($K get "$CONSUMER_WL" -o name 2>/dev/null)
 [ -z "$WL" ] && WL=$($K get deploy order-matcher -o name 2>/dev/null || $K get statefulset order-matcher -o name 2>/dev/null)
 [ -z "$WL" ] && { echo "feed-consumer workload not found in ns/$NS (tried $CONSUMER_WL, order-matcher)"; exit 1; }
 
-wm(){ vlog "      GET ${REF}/stocks/control-snapshot"; curl -s -m8 "$REF/stocks/control-snapshot" \
+wm(){ vlog "      GET ${REF}/instruments/control-snapshot"; curl -s -m8 "$REF/instruments/control-snapshot" \
   | python3 -c "import sys,json;d=json.load(sys.stdin);print('epoch=%s watermark=%s count=%s'%(d.get('sourceEpoch'),d.get('watermark'),d.get('count')))" 2>/dev/null; }
 # Read the replica FROM INSIDE the cluster. This proof scales the gateway to zero and back, which
 # kills any port-forward attached to its pod — so a localhost read here polls a dead socket forever

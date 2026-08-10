@@ -42,6 +42,8 @@ PROOFS=(
   yu13-readmodel-effect-end
   yu15-option-persistence
   yu15-risk-extract
+  yu16-treasury-pricing
+  yu16-bond-position
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
@@ -68,6 +70,10 @@ FORWARDS=(
   # as a statement about the tier rather than about a missing tunnel. The runner owns its forwards;
   # this is one of them.
   "svc/reference-data 18085:18085"
+  # YU16: yu16-treasury-pricing reads the Treasury quote directly. Owned here for the same reason
+  # the reference-data forward is: a proof whose result depends on whether a human is holding a
+  # tunnel in another terminal reports on the tunnel, not on the system.
+  "svc/price-publisher 18100:18100"
   "svc/tempo 3200:3200"
   "svc/loki 3100:3100"
   "svc/grafana 3000:3000"
@@ -106,7 +112,11 @@ start_forwards() {
     ready=1
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || ready=0
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || ready=0
+    # YU16 (FR-CDM12, ADR-058): deliberately still /stocks. The yu04 proofs moved to the general
+    # /instruments route; this gate stays on the retained one, which makes "/stocks is retained"
+    # a standing regression check rather than a claim in a spec.
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18085/stocks/control-snapshot 2>/dev/null)" == "200" ]] || ready=0
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18100/prices/UST-20280630 2>/dev/null)" == "200" ]] || ready=0
     # Only when the observability stack is expected to be up. stp deliberately scales it to zero
     # for a quiet box, and waiting on a service we just switched off is an unsatisfiable condition
     # -- it aborted the whole stp wrap with "forwards never all became reachable".

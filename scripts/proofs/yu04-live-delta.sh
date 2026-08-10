@@ -39,8 +39,8 @@ TK=$(printf '%s' "${1:-Z$(date +%s | tail -c 5)}" | tr '[:lower:]' '[:upper:]')
 # MAX_SECURITIES = 64 -- replaying the stream fills the table, and a consumer that refuses to
 # silently drop securities (ADR-021) then cannot make progress past the 64th ticker. The blocker
 # is a replicated-state CAPACITY decision, not missing plumbing.
-if ! curl -sf -m8 -o /dev/null "${REF}/stocks/control-snapshot" 2>/dev/null; then
-  echo "   ✘ ${REF}/stocks/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
+if ! curl -sf -m8 -o /dev/null "${REF}/instruments/control-snapshot" 2>/dev/null; then
+  echo "   ✘ ${REF}/instruments/control-snapshot unreachable — is reference-data deployed and forwarded (18085)?"
   exit 2
 fi
 if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/null     | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(0 if d.get('count',0) > 64 else 1)" 2>/dev/null; then
@@ -54,8 +54,8 @@ if ! curl -sf -m8 "${OM:-http://localhost:18110}/risk/control/snapshot" 2>/dev/n
 fi
 
 wm(){ # source watermark line
-  vlog "      GET ${REF}/stocks/control-snapshot"
-  curl -s -m8 "$REF/stocks/control-snapshot" \
+  vlog "      GET ${REF}/instruments/control-snapshot"
+  curl -s -m8 "$REF/instruments/control-snapshot" \
     | python3 -c "import sys,json;d=json.load(sys.stdin);print('epoch=%s watermark=%s count=%s'%(d.get('sourceEpoch'),d.get('watermark'),d.get('count')))" 2>/dev/null
 }
 replica_has(){ # -> the replica's securities entry for <TK> (array of {ticker,...}), or 'null'
