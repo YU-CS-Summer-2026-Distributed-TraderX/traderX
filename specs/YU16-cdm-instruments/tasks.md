@@ -26,15 +26,18 @@
       derived bond book grid on the YU13-operative `MatchingEngine` and YU15-operative
       `MatchingEngineClusteredService` (registration + `T_SYMBOL` restore), after the 0.001
       grid rejected every six-decimal bond limit as off-grid. Gates green.
-- [ ] T-CDM08 — Frontend: asset-class filter, grouped selectors, Treasury labels/validation,
+- [x] T-CDM08 — Frontend: asset-class filter, grouped selectors, Treasury labels/validation,
       clean-value estimation, coupon/maturity/YTM, percent display off the stored fraction,
       rejected-trade display — rebased onto the operative frontend copies (YU03/014).
 - [x] T-CDM09 — Extract: static-join classification (`TREASURY`), coupon/maturity columns, CSV
       schema 2, `risk.extract.ready` schema field, consumer guide updated; bond position math
       proven end to end through the engine in `RiskExtractTest` (fraction survival, restore
       identity with a bond book, face × fraction valuation).
-- [ ] T-CDM10 — Proofs: migrate `yu04-live-delta` + `yu04-offline-catchup` to the general
-      snapshot route; add the Treasury pricing proof and the bond position-math proof; full
-      suite green on the standing rig (no fresh epoch, no PVC wipe); `SNAPSHOT_FORMAT` still 4.
-- [ ] T-CDM11 — implementation-status.md written with verification evidence; state docs synced
-      (root CLAUDE.md worktree map, specs/README.md, catalog).
+- [x] T-CDM10 — Proofs: `yu04-live-delta` + `yu04-offline-catchup` migrated to the general
+      snapshot route (the suite readiness gate deliberately stays on `/stocks`); the Treasury
+      pricing and bond position-math proofs written and passing on the standing rig; the image
+      rolled with PVCs and epoch intact and `SNAPSHOT_FORMAT` still 4. The first suite run
+      caught the additive-payload bug — a typed `pricing.*` consumer was dropping every
+      Treasury tick — which is now fixed and guarded by the pricing proof's step 6.
+- [x] T-CDM11 — implementation-status.md written with verification evidence; state docs synced
+      (root CLAUDE.md worktree map, specs/README.md, catalog, HANDOFF-FOR-TEAMMATE.md).
