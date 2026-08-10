@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-KDIR="${ROOT}/specs/YU15-eod-risk-extract/generation/kubernetes/cluster"
+KDIR="${ROOT}/specs/YU16-cdm-instruments/generation/kubernetes/cluster"
 CLUSTER="traderx-yu12-cluster"
 CTX="kind-${CLUSTER}"
 IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
@@ -55,7 +55,7 @@ kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
 # kustomization lets eod-price-db initialize against the narrow pre-YU15 schema (the OCC blocker).
 echo "[apply] database schema configmap"
 kubectl --context "${CTX}" -n traderx apply \
-  -f "${ROOT}/specs/YU15-eod-risk-extract/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
+  -f "${ROOT}/specs/YU16-cdm-instruments/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
 
 echo "[apply] cluster kustomization"
 kubectl --context "${CTX}" apply -k "${KDIR}"
