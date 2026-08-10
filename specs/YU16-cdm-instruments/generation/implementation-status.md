@@ -78,9 +78,17 @@ including the five Treasuries.
 
 ### Proof suite
 
-`scripts/yu15/run-proofs.sh`: **21 passed, 0 failed, 0 skipped**, including the two new YU16
-proofs and the migrated YU04 pair. The first run of the suite was 19/2 and is what found the
-additive-payload bug; both failures are described in "Notes for the next lane" below.
+`scripts/yu15/run-proofs.sh`: **21 passed, 0 skipped, 0 failed** on a final untouched run,
+including the two new YU16 proofs and the migrated YU04 pair.
+
+Four runs, each failure understood before it was addressed:
+
+| Run | Result | What it found |
+|---|---|---|
+| 1 | 19 / 2 | `yu15-risk-extract` — the additive-payload bug (typed consumer dropping every Treasury tick); `yu05-recon` — inherited lifetime counters |
+| 2 | 21 / 0 | both fixes confirmed, but **not a valid artifact**: `run-proofs.sh` was edited while bash was executing it |
+| 3 | 20 / 1 | `yu05-recon` again — traced to trade-id reuse across the fresh epochs the suite itself mints |
+| 4 | **21 / 0** | clean, untouched, with the recon counter hygiene in place |
 
 ## Notes for the next lane
 
@@ -105,6 +113,12 @@ additive-payload bug; both failures are described in "Notes for the next lane" b
   not tell, and YU16's renderer had never executed on the rig. The runner now pins the producer
   by comparing the pod's start time against the local image's build time (an image-id comparison
   cannot work: kind re-imports under its own digest, so it would fire every run).
+- **`yu05-recon` reads LIFETIME counters, not per-run ones.** Its forward-sweep
+  matched/missing/field_mismatch are LongAdders counting classification *events* since
+  trade-processor started, so its verdict depends on everything that ran before it — and a suite
+  that mints fresh epochs restarts trade ids from 1, which collide with projection rows the
+  previous epoch left behind. Its authoritative full-history sweep was clean in every run,
+  including the failing ones. The runner now restarts trade-processor before it.
 - **Do not edit a script while bash is executing it.** Editing `run-proofs.sh` mid-suite made
   bash re-read from a shifted offset and die with a syntax error during teardown, after all 21
   proofs had already reported. Harmless here, but it makes the run a non-artifact.
