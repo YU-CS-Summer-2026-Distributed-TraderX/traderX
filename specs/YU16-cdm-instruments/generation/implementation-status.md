@@ -52,6 +52,21 @@ Status: implemented and verified on kind.
 | 4. YTM | `4.202%`, publisher-computed, plausible for a 4.125% note near par |
 | 5. no fabrication | unknown `UST-` → 404 **and** unknown equity → 200, so the 404 is the bond rule rather than a dead endpoint |
 
+### Live kind proof (`scripts/proofs/yu15-risk-extract.sh` with a bond held, schema 2)
+
+The delivered fixture's bond row, verbatim from the rig:
+
+```
+22214,UST-20360515,TREASURY,100000,1,0.992570,0.992620,EOD_SNAPSHOT,OK,99262.000000,5.000000,USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01,4.375,2036-05-15
+```
+
+`TREASURY` by static join, 100,000 USD face, multiplier 1, cost and mark as fractions of par at
+six decimals, `marketValue = face x fraction = 99,262.00` exactly, coupon and maturity joined,
+and `markSource=EOD_SNAPSHOT` — the bond received a published close, which is the payload fix
+working end to end. The header reads `# traderx-risk-extract schema=2` and carries the bond
+convention lines. The proof's own byte-reproducibility and post-recovery re-render steps pass
+with the row present.
+
 ### The roll
 
 Images rebuilt from the YU16 tree and rolled onto the standing rig: `eod-price-db`,
@@ -60,6 +75,12 @@ then `order-matcher-cluster` (3/3, partitioned rollout). **PVCs intact, epoch un
 scale-to-zero** — the members came back carrying their prior state (`applied=5004`, 8 trades,
 snapshots restored). `/stocks` returned 200 throughout; `/instruments` serves 519 records
 including the five Treasuries.
+
+### Proof suite
+
+`scripts/yu15/run-proofs.sh`: **21 passed, 0 failed, 0 skipped**, including the two new YU16
+proofs and the migrated YU04 pair. The first run of the suite was 19/2 and is what found the
+additive-payload bug; both failures are described in "Notes for the next lane" below.
 
 ## Notes for the next lane
 
@@ -78,7 +99,15 @@ including the five Treasuries.
   proof asking it for `applied` gets a JSON body with no such field. The first version of
   `yu16-bond-position` did exactly that and refused loudly rather than passing — which is the
   behaviour the vacuous-pass rules are for.
-- **The YU04 pair still SKIPs on this tier** (exit 2) because `CONTROL_FEED_SUBSCRIBER` is off by
-  default; that is inherited, not caused by the route migration. What YU16 changes is *which*
-  route they probe when they do run, and the suite readiness gate deliberately still probes
-  `/stocks/control-snapshot` so retention is a standing check.
+- **A proof can pass against the wrong build and never say so.** `yu15-risk-extract` passed
+  while `risk-extract` ran a six-day-old image, and the fixture it delivered read `schema=1`
+  with the old 14-column header — the proof asserts reproducibility, not a version, so it could
+  not tell, and YU16's renderer had never executed on the rig. The runner now pins the producer
+  by comparing the pod's start time against the local image's build time (an image-id comparison
+  cannot work: kind re-imports under its own digest, so it would fire every run).
+- **Do not edit a script while bash is executing it.** Editing `run-proofs.sh` mid-suite made
+  bash re-read from a shifted offset and die with a syntax error during teardown, after all 21
+  proofs had already reported. Harmless here, but it makes the run a non-artifact.
+- **The YU04 pair passes on the general route** (`/instruments/control-snapshot`) on this rig.
+  The suite readiness gate deliberately still probes `/stocks/control-snapshot`, which is what
+  makes retention a standing regression check rather than a claim in a spec.
