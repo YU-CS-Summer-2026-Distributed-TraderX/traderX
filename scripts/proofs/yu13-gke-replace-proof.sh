@@ -64,10 +64,21 @@ digest_consensus() {
   local b0 b1 b2 i
   for i in $(seq 1 40); do
     b0="$(book 0)"; b1="$(book 1)"; b2="$(book 2)"
-    if [[ "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then echo "${b0}"; return 0; fi
+    # SHAPE, not equality alone. book()'s awk ends in END{print d, h}, which fires on NO INPUT with
+    # both variables unset and prints a single space; " " == " " == " " is agreement, so three
+    # unreachable members were reported as an agreed book digest — and the agreed digest is this
+    # proof's primary assertion.
+    #
+    # This file already knew the answer: uniq_one() below is used correctly at the refs, trades and
+    # STP counter checks. It was simply never applied to the digest, which is the one that matters
+    # most. A shape test is used rather than uniq_one here because the digest is two fields and the
+    # hash is routinely NEGATIVE, so the shape carries information uniq_one cannot.
+    if [[ "${b0}" =~ ^[0-9]+\ -?[0-9]+$ \
+       && "${b0}" == "${b1}" && "${b1}" == "${b2}" ]]; then echo "${b0}"; return 0; fi
     sleep 1
   done
-  fail "members never agreed on the book: [${b0}] [${b1}] [${b2}]"
+  fail "members never agreed on the book: [${b0}] [${b1}] [${b2}]
+  (all-blank readings mean the members were UNREACHABLE, not that they disagreed)"
 }
 trades_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_trades)"; done; }
 stp_all()    { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_stp_cancels)"; done; }
