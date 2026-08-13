@@ -61,7 +61,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-forward() {
+forward_once() { # (re)establish both forwards against the current gateway pod, then poll briefly
   kill_pf
   ${K} port-forward "pod/${GW}" "${PROBE_PORT}:18111" >/dev/null 2>&1 & PF_PIDS+=($!)
   ${K} port-forward "pod/${GW}" "${ORDER_PORT}:18110" >/dev/null 2>&1 & PF_PIDS+=($!)
@@ -69,9 +69,27 @@ forward() {
   # most recent job, so the other still reports "Terminated: 15" when cleanup reaps it.
   disown -a 2>/dev/null || true
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 40); do
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 "http://localhost:${PROBE_PORT}/live" 2>/dev/null)" != "000" ]] && return 0
     sleep 1
+  done
+  return 1
+}
+
+forward() {
+  # `kubectl port-forward` is a PROCESS, and it dies with the container it targets. Polling a dead
+  # forward can never recover, so each attempt RE-SPAWNS rather than waiting longer — measured in
+  # the sibling liveness proof (yu16-liveness-restarts-wedge.sh), where a four-minute poll watched
+  # a gateway that had been serving happily for three of them, and where widening the budget only
+  # made the same failure slower.
+  #
+  # Exposure is lower here — this forwards to a settled pod after a completed rollout, not into a
+  # container the kubelet just killed — so it is latent rather than active. Carried anyway: it is
+  # the same shape, and one implementation of it per directory beats two that drift.
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    forward_once && return 0
+    echo "  [forward] attempt ${attempt} saw no answer on ${PROBE_PORT}; re-establishing" >&2
   done
   return 1
 }
