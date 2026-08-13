@@ -175,6 +175,11 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
      bash scripts/proofs/yu12-gke-failover-transparency.sh
    ```
 
+   **For §1's divergence specifically, do NOT use this route.** Quorum loss produces the same
+   booked-but-denied orders deterministically in ~90 seconds with no leader kill and no race — 159
+   resting orders for 160 clients told 504, measured 2026-08-13. See the drain experiment in §5.
+   The wedge is only needed for §5's hang.
+
    with the gateway at `replicas: 1` and `execution-algo-engine` at 0. The whole fix-and-prove
    cycle is therefore local and free; the GKE rig is not needed for this at all. The proof's own
    header says "WHY GKE — election behaviour on kind's starved CPUs is not the system's behaviour",
@@ -221,7 +226,45 @@ answering: why a bounded 12s wait per request never clears in eight minutes.
 **And the liveness proof does not answer it — do not read it as if it did.** Its step 4 commits an
 order after a 160-order drive, which looks like evidence the backlog drains; it is not, because the
 restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
-reasoning and the experiment that would actually measure it.
+reasoning.
+
+### The drain experiment, run 2026-08-13 — and what it does and does not settle
+
+Run on kind with `LIVE_NO_ACK_STREAK=100000` so no restart could intervene: lose quorum, drive
+2 × 80 concurrent orders (streak reached exactly 160), restore quorum, then stop **all** load and
+watch. Result:
+
+> **First committed order at +0s after quorum returned, `restarts=0`, streak already back to 0.**
+
+So on the pipelined tier, under quorum loss, **the abandoned-task backlog is not self-sustaining**.
+160 abandoned tasks did not cost 160 × `ACK_TIMEOUT_MS` of owner-thread time, because the per-task
+10s is spent only while the cluster refuses the offer — once quorum is back each queued task offers
+in microseconds and the queue evaporates. The "queue that cannot drain" hypothesis is dead for this
+shape.
+
+**It is NOT an answer to §5, and must not be read as one.** §5's hang was the leader-kill WEDGE
+under a sustained generator, in which the gateway stopped answering *all* HTTP and had not
+recovered after eight minutes with zero load offered. Quorum loss induces the same *property*
+(nothing can commit) but evidently not the same *mechanism* — this run recovered instantly where
+that one never did. §5's mechanism remains unreproduced and unexplained. What is now known is
+narrower and still worth having: whatever §5 is, it is **not** simply a deep owner queue.
+
+### The side finding, which is worth more than the drain answer: §1 has a DETERMINISTIC repro
+
+The same run reproduced the invisible-orders defect exactly, in about 90 seconds, with no leader
+kill and no race:
+
+| witness | reading |
+|---|---|
+| submits that got no committed ack | **160** (the gateway's own `noAckStreak`, so every one of those clients was answered 504) |
+| `traderx_book_open_orders` | 51 → **211** |
+| `traderx_cluster_next_order_ref` | **212** |
+| member agreement | all three identical: `applied=7568 open=211 nextRef=212 hash=-734721819140448701` |
+
+**159 of the 160 orders every client was told had failed are resting in the book.** (One did not
+consume a ref — its offer never cleared before the deadline.) That is §1, on demand, without the
+1-in-4 wedge race the rest of this document is built around. Anyone working on §1 should use quorum
+loss to produce the divergence and stop hunting the wedge for it; the wedge is only needed for §5.
 
 ## §6. Where the fix has actually run, and where it still has not
 
