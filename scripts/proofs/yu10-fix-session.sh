@@ -78,10 +78,32 @@ BEFORE="$(db_orders)"; BEFORE="${BEFORE:-0}"
 step "orderbook rows before" "${BEFORE}"
 
 # 3. port-forward the FIX acceptor and run a short completed-lifecycle burst
-kubectl port-forward -n "${NS}" svc/order-matcher "${FIX_LOCAL_PORT}:18130" >/dev/null 2>&1 &
+#
+# --context, for the same reason db_orders() above carries one. This was the last kubectl call in
+# the repo without it, so the tunnel went wherever the operator's ambient context happened to
+# point -- and this project keeps TWO rigs in kubeconfig. Observed 2026-08-12: current-context was
+# the GKE bench cluster, which has no svc/order-matcher (it is order-matcher-gw there), the
+# forward died on arrival, and the proof reported "0 completed" and "no projection growth" against
+# a kind rig that was fine. A proof must not be able to report on the wrong cluster.
+kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS}" \
+  port-forward svc/order-matcher "${FIX_LOCAL_PORT}:18130" >/dev/null 2>&1 &
 PF=$!
 trap 'kill "${PF}" 2>/dev/null' EXIT
-sleep 3
+
+# Refuse on a dead tunnel instead of blaming FIX. Without this gate the sender's ECONNREFUSED
+# becomes completed=0, which prints as "✘ FIX completed lifecycles" -- a verdict about the
+# system, produced by a script that never reached it.
+for _ in $(seq 1 20); do
+  (exec 3<>"/dev/tcp/127.0.0.1/${FIX_LOCAL_PORT}") 2>/dev/null && { exec 3<&- 3>&-; FIX_UP=1; break; }
+  sleep 1
+done
+if [ "${FIX_UP:-0}" != 1 ]; then
+  echo "   ✘ the FIX acceptor tunnel never came up on localhost:${FIX_LOCAL_PORT}"
+  echo "     context=${CTX:-kind-traderx-yu12-cluster} ns=${NS} svc/order-matcher:18130"
+  echo "     This says nothing about FIX ingress — the proof could not reach it. Check that the"
+  echo "     rig named by CTX is the one that is up."
+  exit 1
+fi
 
 vlog "   running: SIDES=alternate QTY=1 PX=${FIX_PX:-200} TICKERS=${FIX_TICKERS:-IBM} ACCOUNT=${ACCOUNT} fix-load.mjs --secs ${SECS}"
 OUT="$(FIX_JWT="${FIX_JWT}" FIX_COMP_ID="${COMP_ID}" FIX_PORT="${FIX_LOCAL_PORT}" \
