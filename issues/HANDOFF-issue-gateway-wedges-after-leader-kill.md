@@ -306,7 +306,15 @@ owner thread, and on this tier each can burn a full ack timeout. The recovered o
 committed fine — but the restart under test kills the container, and the owner queue with it, so
 step 4 always meets a fresh JVM by construction. Measuring the drain needs a drive with no restart
 (`LIVE_NO_ACK_STREAK` raised above the reachable streak, then watch whether an order commits after
-load stops). That is the same unanswered question as §5, on the synchronous tier.
+load stops).
+
+**That experiment has since been run — see the drain subsection at the end of §5, which is the
+canonical result.** The backlog drains instantly: the ack timeout is only spent while the cluster
+refuses the offer, so a restored quorum empties the queue in microseconds. Two consequences for
+this section. The narrower one: nothing above needs revising, the caveat was correct that the
+proof could not speak to drain, and the answer simply arrived from elsewhere. The one that
+matters more: it did not answer §5 either, and it retired §5's own proposed mechanism — whatever
+that hang is, it is not merely a deep owner queue.
 
 ### The GKE tier — the manifests still have never met a kubelet
 
