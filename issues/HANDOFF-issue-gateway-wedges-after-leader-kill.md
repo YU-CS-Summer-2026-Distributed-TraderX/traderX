@@ -1,24 +1,54 @@
 # Issue: the gateway silently stops committing after a leader kill, and every probe says it is fine
 
-**Status:** OPEN. Reproduced twice on GKE, on two different builds, 2026-08-12 (YU15 `:bench`) and
-2026-08-13 (YU16 `:yu16`). Not diagnosed to a line of code — this document records the observation,
-the falsification steps already taken, and the reason it is worse than an ordinary crash.
+**Status:** OPEN. Reproduced on GKE twice (YU15 `:bench` 2026-08-12, YU16 `:yu16` 2026-08-13) and
+**on kind 2026-08-13**, which makes it locally reproducible in about two minutes and removes any
+need for cloud spend to fix it. Not diagnosed to a line of code.
 **Related:** `HANDOFF-issue-yu-vacuous-pipeline-guards.md` (the proof that found it reported the
 wrong cause, §4 below).
 
-## What happens
+> **The first version of this document called this an outage. That was wrong, and wrong in the
+> direction that matters.** The gateway does not stop working. It keeps committing orders to the
+> cluster and tells every client they failed. See §1.
+
+## §1. What actually happens
 
 Kill the cluster leader while a single gateway is serving traffic. The cluster does everything it
 is supposed to: a new leader is elected, all three members stay in lockstep, the applied sequence
-keeps advancing. The **gateway** never recovers its cluster session. From that moment every order
-returns
+keeps advancing. Every subsequent order returns
 
 ```
 HTTP 504 {"error":"no committed ack"}
 ```
 
-and it does not stop. There is no timeout after which it heals. A `kubectl rollout restart` of the
-gateway Deployment clears it instantly and nothing else has to change.
+and it does not stop. But the order **was not refused** — the gateway's ingress path is intact and
+the cluster sequences and books it. Only the ack path back to the gateway is gone.
+
+Measured on kind, 2026-08-13, with the cluster's own `next_order_ref` as the witness:
+
+| test | client saw | `next_order_ref` delta | resting orders created |
+|---|---|---:|---:|
+| 5 orders, 5 distinct `clientOrderId`s | **5 × 504 failed** | +5 | **5** |
+| 3 orders, the SAME `clientOrderId` | **3 × 504 failed** | +3 | **1** |
+
+Ten orders sat in the read model in status `NEW` for an account whose client had been told every
+single one of them failed:
+
+```
+1-876  IBM  1  200.000000  NEW
+1-875  IBM  1  200.000000  NEW
+...    (ten rows, all reported to the client as 504 no committed ack)
+```
+
+So the failure mode is **not lost orders, it is invisible orders**: the client's view and the
+book's view diverge silently and permanently, in the direction of the client under-counting its own
+exposure. For an OMS that is worse than refusing the order outright, which is at least honest.
+
+**The ClOrdId ledger still protects a retrying client from duplication** — three sends of one key
+produced one resting order — so a correctly-implemented client does not double up. It does still
+burn a `next_order_ref` per attempt, which matters for §4.
+
+A `kubectl rollout restart` of the gateway clears it instantly with nothing else changed. Same
+order, kind, immediately after: `{"orderRef":879,"kind":1}`.
 
 ## The evidence, 2026-08-13 (YU16 build, project traderx-505400)
 
@@ -42,6 +72,9 @@ Same order, immediately after `rollout restart deploy/cluster-gateway` and no ot
 
 ## Why this is worse than a crash
 
+0. **It is not a refusal.** Every 504 is a lie: the order is on the log and in the book. A crash
+   loses nothing (the client retries into a healthy replica); this creates state the client does
+   not know it owns. Position, exposure and risk all drift silently from what the client believes.
 1. **The readiness probe cannot see it.** `/ready` reports `connected:true` throughout, so
    Kubernetes never takes the pod out of the Service and never restarts it. A crash would have
    self-healed; this does not.
@@ -87,8 +120,18 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
 2. Then find the session. `submitOrder` returning null means no egress ack arrived for the
    request. Worth checking whether the gateway's egress subscription is re-established on a leader
    change, or whether it stays bound to the old leader's publication.
-3. Reproduce on kind if possible — it would make this a committed proof rather than a GKE-only
-   observation. `yu12-gke-failover-transparency.sh` is the driver; it kills the leader mid-stream.
+3. ~~Reproduce on kind if possible~~ — **done, 2026-08-13.** It reproduces reliably:
+
+   ```bash
+   CTX=kind-traderx-yu12-cluster GW_SVC=order-matcher-gw \
+     bash scripts/proofs/yu12-gke-failover-transparency.sh
+   ```
+
+   with the gateway at `replicas: 1` and `execution-algo-engine` at 0. The whole fix-and-prove
+   cycle is therefore local and free; the GKE rig is not needed for this at all. The proof's own
+   header says "WHY GKE — election behaviour on kind's starved CPUs is not the system's behaviour",
+   which is a fair caution about *timing* — but this defect is not a timing claim, and it shows up
+   on both rigs identically.
 
 ## §4. The proof reported the wrong cause
 
@@ -106,3 +149,25 @@ have been impossible to read as a failover result at all.
 
 The finding was real; the attribution was not. This is rule 7 of the vacuous-pass audit and the
 script has not yet been fixed.
+
+**And its central accounting is unsound.** On the kind run it reported
+
+```
+stream done: 783 acked, 1 needed retries, 0 gave up
+next_order_ref: 30 -> 868 (delta 838)
+[FAIL] cluster booked 838 orders for 783 acks: 55 DUPLICATED
+```
+
+"55 DUPLICATED" is not a duplication count. The proof equates `next_order_ref` delta with orders
+booked, and §1 shows a ref is consumed by orders that never rest — a same-key retry burns a ref and
+is then suppressed. So the counter measures *ref allocations*, not *bookings*, and the two differ
+by exactly the traffic this defect generates.
+
+Note also that only **1** order needed a retry across the whole stream, so those 55 refs cannot be
+retry-caused. Something allocated ~55 refs for one client request each without the client seeing a
+failure — most likely the gateway resubmitting internally when an ack does not arrive, which would
+be the same root cause as §1. **Unverified**: that hypothesis has not been checked against
+`ClusterGatewayMain.submitOrder`, and it is the most promising next thread.
+
+Whoever fixes the proof should assert against a booking-grained quantity (open-order count, or the
+read model) rather than the ref counter.
