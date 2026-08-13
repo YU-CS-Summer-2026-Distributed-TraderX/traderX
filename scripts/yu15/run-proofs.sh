@@ -46,6 +46,14 @@ PROOFS=(
   yu13-otel-reject-trace-log-join
   yu10-fix-session
   yu08-algo-slicing          # needs the algo engine up; scaled in below
+  # The gateway probe pair. Named for the state that authored them (YU16), carried here because
+  # this branch runs the same gateway and carries the same defect, and because this is the only
+  # branch with a proof harness to run them from. Both scale the members to 1 and back (no PVC
+  # wipe, no epoch change); the liveness one additionally gets the gateway container killed by the
+  # kubelet, so it must follow the readiness one — whose step 3 asserts /ready stays 503 across a
+  # restored quorum, which a restart would clear.
+  yu16-ready-tracks-commit
+  yu16-liveness-restarts-wedge
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
