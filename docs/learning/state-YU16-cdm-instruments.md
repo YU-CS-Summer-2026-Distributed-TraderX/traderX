@@ -36,7 +36,7 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 - **Added:** Face-amount order validation for `UST-` keys at the cluster gateway REST boundary and in the
 - **Added:** Treasury booking semantics in trade-processor: face-weighted average cost, `Rejected` trade
 - **Added:** Extract enrichment by join: `instrumentType` gains `TREASURY`, Treasury rows carry `coupon`
-- **Added:** Frontend: asset-class filter, grouped selectors, Treasury labels and validation, clean-value
+- **Added:** Extract accrued interest by derivation (ADR-061): Treasury rows additionally carry
 
 ## Run This State
 

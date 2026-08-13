@@ -29,6 +29,7 @@ Primary intent:
 - Treasury pricing: term-profiled correlated walk, approximate YTM, maturity handling.
 - Face-weighted average cost and a fail-closed `Rejected` trade landing in post-trade.
 - Extract schema 2: `TREASURY` classification, coupon and maturity by join (ADR-059).
+- Extract schema 3: `lastCouponDate` and `accruedInterestFraction` by derivation (ADR-061).
 
 Core artifacts:
 
@@ -43,7 +44,7 @@ Core artifacts:
 - `generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml`
   — the MariaDB schema at this layer
 - `reference-data/instruments.csv` — seed + extract-join static
-- `system/adr-057 … adr-060`, `system/architecture.model.json`
+- `system/adr-057 … adr-061`, `system/architecture.model.json`
 
 Target runtime behavior:
 
@@ -53,7 +54,8 @@ Target runtime behavior:
   as 99.886% in the blotter.
 - `pricing.UST-*` carries `cleanPrice` as a fraction with `CLEAN_FRACTION_OF_PAR` semantics and
   a publisher-computed YTM; the binary tick preserves all six decimals.
-- The extract classifies the bond row `TREASURY` with coupon and maturity, at `schema=2`,
+- The extract classifies the bond row `TREASURY` with coupon, maturity, last coupon date and
+  accrued interest as a fraction of par, at `schema=3`,
   byte-reproducible as before.
 - The full inherited proof suite stays green on a rig rolled without an epoch change or a PVC
   wipe.

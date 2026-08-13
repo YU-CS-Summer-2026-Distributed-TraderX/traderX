@@ -128,20 +128,31 @@ lockstep. Approximate YTM (percent space, per 100 par):
 - No new tables. No `OrderBook` `Pending*` columns (dropped machinery). `Security` columns
   already hold OCC-width strings (YU15 FR-RXT16), which covers `UST-<yyyymmdd>` at 12 chars.
 
-## Extract fixture (schema 2)
+## Extract fixture (schema 3)
 
-Header comment gains the bond convention; column list becomes:
+Header comment gains the bond and accrual conventions; column list becomes:
 
 ```
 accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,markSource,
-markQuality,marketValue,unrealizedPnl,currency,counterpartyId,nettingSetId,coupon,maturityDate
+markQuality,marketValue,unrealizedPnl,currency,counterpartyId,nettingSetId,coupon,maturityDate,
+lastCouponDate,accruedInterestFraction
 ```
 
 - `instrumentType`: `EQUITY` \| `OPTION` \| `TREASURY` — options by OCC shape as before;
   `TREASURY` by join against the instrument static (never by prefix-parsing inside the cut).
-- `coupon`, `maturityDate`: populated for Treasury rows from the joined static; empty for
-  equities and options.
+- `coupon`, `maturityDate` (schema 2): populated for Treasury rows from the joined static; empty
+  for equities and options.
+- `lastCouponDate`, `accruedInterestFraction` (schema 3, ADR-061): Treasury rows only, **derived**
+  from the joined static plus `sessionDate` rather than joined — the static is unchanged by this
+  bump. Schedule is generated backwards from `maturityDate` in 6-month steps measured from the
+  maturity anchor (so no issue date is needed, and no short/long first coupon is modelled);
+  day count is ACT/ACT (ICMA); accrual runs to `sessionDate`, not to a settlement date.
 - Bond `costBasis`/`closingMark`/`marketValue` are fractions of par at 6 dp; `quantity` is face.
+  `accruedInterestFraction` is in that same unit, so `closingMark + accruedInterestFraction` is
+  the dirty price. `marketValue`/`unrealizedPnl` remain **clean**.
+- `accruedInterestFraction` is the only value in the fixture that rounds (HALF_EVEN at 6 dp) —
+  `elapsed/period` does not terminate, so the exact-or-abort rule cannot cover it. Deterministic,
+  so byte-identical-across-members is unaffected.
 - The `.cut` sidecar is unchanged at `#cut schema=1` — the cut is engine state and the engine
   did not change; only the rendered CSV (a join product) bumps.
 

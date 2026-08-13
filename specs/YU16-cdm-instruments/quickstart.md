@@ -70,7 +70,7 @@ kubectl -n traderx exec deploy/price-publisher -- wget -qO- localhost:18100/pric
 ## Verifying the extract (schema 2)
 
 Run a session with a Treasury fill, publish EOD, and inspect the delivered fixture: the header
-reads `# traderx-risk-extract schema=2`, the bond row carries `TREASURY` with its coupon and
+reads `# traderx-risk-extract schema=3`, the bond row carries `TREASURY` with its coupon and
 maturity, and `costBasis`/`closingMark` are fractions of par at scale 6. Rebuilding from the
 stored cut reproduces identical bytes (inherited FR-RXT10; the cut format is unchanged).
 

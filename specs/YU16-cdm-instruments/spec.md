@@ -131,6 +131,19 @@
 - FR-CDM26: The extract CSV schema SHALL bump to 2, `risk.extract.ready` SHALL announce
   `schema: 2`, and `docs/engineering/risk-extract-consumer-guide.md` SHALL document the new
   columns and the bond-price convention.
+- FR-CDM27: Treasury rows SHALL additionally carry `lastCouponDate` and
+  `accruedInterestFraction`, **derived** from the joined static plus the session date rather than
+  joined from new reference data, bumping the CSV schema to 3 and `risk.extract.ready` to
+  `schema: 3`. The coupon schedule SHALL be generated backwards from `maturityDate` in six-month
+  steps measured from the maturity anchor; day count SHALL be ACT/ACT (ICMA); accrual SHALL run
+  to `sessionDate`, not to a settlement date; and the value SHALL be a fraction of par in the same
+  unit as `closingMark`, so `closingMark + accruedInterestFraction` is the dirty price.
+  `marketValue` and `unrealizedPnl` SHALL remain clean. The `.cut` format SHALL NOT change.
+- FR-CDM28: `accruedInterestFraction` SHALL round HALF_EVEN at six decimals — the single
+  exception to the extract's exact-or-abort rule, because `elapsed/period` does not terminate in
+  decimal — and rounding SHALL be deterministic so byte-identical rendering across members and
+  rebuild-from-stored-cut both continue to hold. Every convention above SHALL be stated in the
+  fixture's own `#` header, not only in the consumer guide.
 
 ### Frontend
 
@@ -204,9 +217,13 @@
   `round(fraction × 1e6)` with all six decimals intact.
 - SC-CDM08: A Treasury order at face 50 is rejected with the minimum message; at face 150 with
   the multiple message — at the gateway REST boundary, before the engine sees either.
-- SC-CDM09: An extract cut from a session holding a Treasury position carries `schema=2`, an
-  `instrumentType` of `TREASURY` on the bond row with its coupon and maturity, and rebuilding the
-  fixture from the stored cut reproduces identical bytes.
+- SC-CDM09: An extract cut from a session holding a Treasury position carries `schema=3`, an
+  `instrumentType` of `TREASURY` on the bond row with its coupon, maturity, last coupon date and
+  accrued interest, and rebuilding the fixture from the stored cut reproduces identical bytes.
+- SC-CDM09a: For a 4.125% bond maturing 2028-06-30 in a session dated 2026-07-21, the row reads
+  `lastCouponDate=2026-06-30` and `accruedInterestFraction=0.002367` (21/183 of the 2.0625%
+  semiannual coupon); on 2026-06-30 itself the accrual is `0.000000`, and at or past maturity the
+  last coupon date is the maturity with a `0.000000` accrual.
 - SC-CDM10: The full proof suite passes on a rig rolled to this state's image with its PVCs and
   epoch intact; `SNAPSHOT_FORMAT` still reads 4.
 - SC-CDM11: The order-matcher, trade-processor and position-service suites pass, including this

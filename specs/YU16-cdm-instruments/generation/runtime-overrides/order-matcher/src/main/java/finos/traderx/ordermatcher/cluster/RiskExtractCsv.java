@@ -5,6 +5,7 @@ import finos.traderx.ordermatcher.lmax.OccSymbol;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -28,13 +29,15 @@ final class RiskExtractCsv {
 
     /** Bumped only on an incompatible column change. Schema 2 (YU16, ADR-059): instrumentType
      * gains TREASURY and two columns append — coupon and maturityDate, populated for Treasury
-     * rows by join against the instrument static. Every schema-1 column keeps its name,
-     * position and meaning. */
-    static final int SCHEMA = 2;
+     * rows by join against the instrument static. Schema 3 (YU16, ADR-061): two more append —
+     * lastCouponDate and accruedInterestFraction, DERIVED from that same static rather than
+     * joined, so the consumer and the extract agree on one accrued number instead of computing
+     * it twice. Every earlier column keeps its name, position and meaning. */
+    static final int SCHEMA = 3;
 
     static final String HEADER = "accountId,security,instrumentType,quantity,contractMultiplier,"
         + "costBasis,closingMark,markSource,markQuality,marketValue,unrealizedPnl,currency,"
-        + "counterpartyId,nettingSetId,coupon,maturityDate";
+        + "counterpartyId,nettingSetId,coupon,maturityDate,lastCouponDate,accruedInterestFraction";
 
     private static final int TICK_SCALE = 6;
 
@@ -51,6 +54,50 @@ final class RiskExtractCsv {
      * fractions of par (ADR-057) — the same integer ticks as every other instrument.
      */
     record BondStatic(String couponRatePercent, String maturityDate) { }
+
+    /** Accrued interest as of the session date, and the coupon date it accrued from. */
+    private record Accrual(LocalDate lastCouponDate, BigDecimal fraction) { }
+
+    /**
+     * Accrued interest on a fixed-rate Treasury as of the session date (ADR-061).
+     *
+     * <p>The coupon schedule is generated BACKWARDS from {@code maturityDate} in six-month steps,
+     * each step measured from the maturity anchor rather than from the step before it, so
+     * end-of-month clamping cannot walk the schedule off its day (Aug 31 → Feb 29 → Aug 29 under
+     * repeated subtraction). That makes the whole schedule a function of the maturity alone,
+     * which is why no issue date is needed in the reference data — and it is also the standing
+     * assumption: a short or long FIRST coupon is not modelled.
+     *
+     * <p>Day count is ACT/ACT (ICMA), the US Treasury convention — the elapsed fraction of the
+     * current coupon period times half the annual coupon — and the result is a fraction of par,
+     * the same unit as {@code closingMark} (ADR-057), so {@code closingMark + accrued} is the
+     * dirty price with no scaling in between.
+     *
+     * <p>This is the ONE value in the extract that rounds: {@code elapsed/period} does not
+     * terminate in decimal, so it cannot be exact the way a position value is. It rounds
+     * HALF_EVEN at the tick scale, which is deterministic, rather than aborting the extract the
+     * way {@code RoundingMode.UNNECESSARY} does everywhere else.
+     */
+    private static Accrual accrual(final BondStatic bond, final LocalDate sessionDate) {
+        final LocalDate maturity = LocalDate.parse(bond.maturityDate());
+        if (!sessionDate.isBefore(maturity)) {
+            // At or past maturity the final coupon has paid; nothing has accrued since.
+            return new Accrual(maturity, BigDecimal.ZERO.setScale(TICK_SCALE));
+        }
+        int periodsBack = 0;
+        LocalDate last = maturity;
+        while (last.isAfter(sessionDate)) {
+            last = maturity.minusMonths(6L * ++periodsBack);
+        }
+        final LocalDate next = maturity.minusMonths(6L * (periodsBack - 1));
+        final BigDecimal semiAnnualCoupon = new BigDecimal(bond.couponRatePercent())
+            .movePointLeft(2).multiply(new BigDecimal("0.5"));
+        final BigDecimal fraction = semiAnnualCoupon
+            .multiply(BigDecimal.valueOf(ChronoUnit.DAYS.between(last, sessionDate)))
+            .divide(BigDecimal.valueOf(ChronoUnit.DAYS.between(last, next)),
+                TICK_SCALE, RoundingMode.HALF_EVEN);
+        return new Accrual(last, fraction);
+    }
 
     /**
      * The immutable name of one extract. Every field is derivable from the cut itself, which is
@@ -145,6 +192,20 @@ final class RiskExtractCsv {
             + " contract multiplier is 1, so marketValue = face * fraction\n");
         sb.append("# treasuryStatic=coupon (annual %, fixed, semiannual) and maturityDate are"
             + " joined from instrument reference data; empty for non-treasury rows\n");
+        sb.append("# treasuryAccrualUnit=accruedInterestFraction is a FRACTION OF PAR in the same"
+            + " unit as closingMark, so dirtyPrice = closingMark + accruedInterestFraction and"
+            + " settlementValue = quantity * dirtyPrice; marketValue above stays CLEAN\n");
+        sb.append("# treasuryAccrualConvention=ACT/ACT (ICMA) semiannual: (days from"
+            + " lastCouponDate to sessionDate / days in that coupon period) * coupon/2. Accrual"
+            + " runs to sessionDate ITSELF, not to a T+1 settlement date, because every other"
+            + " column here is as-of sessionDate and this system carries no holiday calendar. A"
+            + " consumer wanting settlement-date accrual has lastCouponDate and coupon to roll"
+            + " it forward\n");
+        sb.append("# treasuryCouponSchedule=generated backwards from maturityDate in 6-month"
+            + " steps measured from maturity, so nextCouponDate = lastCouponDate + 6 months; a"
+            + " short or long first coupon is NOT modelled\n");
+        sb.append("# treasuryAccrualRounding=the only rounded value in this file (elapsed/period"
+            + " does not terminate); HALF_EVEN at 6 decimals. Every other value is exact\n");
     }
 
     private static String row(final String cutLine, final Map<String, Mark> marks,
@@ -196,6 +257,7 @@ final class RiskExtractCsv {
         final BondStatic bond = bonds.get(security);
         final String instrumentType =
             bond != null ? "TREASURY" : (OccSymbol.isOption(security) ? "OPTION" : "EQUITY");
+        final Accrual accrual = bond == null ? null : accrual(bond, stamp.sessionDate());
         return accountId + "," + security + ","
             + instrumentType + ","
             + quantity + "," + multiplier + ","
@@ -204,7 +266,9 @@ final class RiskExtractCsv {
             + marketValue.toPlainString() + "," + unrealised.toPlainString() + ","
             + cp.currency() + "," + cp.counterpartyId() + "," + cp.nettingSetId() + ","
             + (bond == null ? "" : bond.couponRatePercent()) + ","
-            + (bond == null ? "" : bond.maturityDate());
+            + (bond == null ? "" : bond.maturityDate()) + ","
+            + (accrual == null ? "" : accrual.lastCouponDate().toString()) + ","
+            + (accrual == null ? "" : accrual.fraction().toPlainString());
     }
 
     private static BigDecimal ticks(final long value) {

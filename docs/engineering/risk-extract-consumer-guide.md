@@ -7,6 +7,12 @@ Everything here was verified against the real artifact
 `gs://traderx-501015-risk-extracts/2026-07-23/v2/seq-396.csv` on 2026-08-06. Where a number appears
 in this document it was recomputed from that file, not copied from a design doc.
 
+**One exception, stated up front.** That artifact is a **schema 2** file. The two schema-3 columns
+(`lastCouponDate`, `accruedInterestFraction`, added 2026-08-12) are therefore not in it — they are
+verified by unit test against hand-computed values, not yet against a delivered artifact. Produce
+one locally (§2A) if you want to see them; everything else in this guide is unchanged and still
+recomputed from the real file.
+
 ---
 
 ## 1. What this is, in one paragraph
@@ -124,7 +130,7 @@ $K logs -f deploy/risk-extract
 The log prints the announcement, which carries everything needed to fetch and verify the result:
 
 ```
-RISK-EXTRACT-READY {"schema":2,"uri":"file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+RISK-EXTRACT-READY {"schema":3,"uri":"file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
   "consensusSequence":43607,"quiesceWitnessSequence":43608,"rows":29,
   "cutSha256":"236992a8...","sha256":"..."}
 ```
@@ -236,7 +242,7 @@ The file documents itself. Everything before the column header is a `#` comment 
 contract:
 
 ```
-# traderx-risk-extract schema=2
+# traderx-risk-extract schema=3
 # consensusSequence=396
 # sessionDate=2026-07-23
 # priceSnapshotVersion=2
@@ -255,18 +261,35 @@ contract:
 #   FRACTION of par (0.998780 = 99.878%), six decimals; the contract multiplier is 1
 # treasuryStatic=coupon (annual %, fixed, semiannual) and maturityDate are joined from instrument
 #   reference data; empty for non-treasury rows
+# treasuryAccrualUnit=accruedInterestFraction is a FRACTION OF PAR in the same unit as closingMark,
+#   so dirtyPrice = closingMark + accruedInterestFraction and settlementValue = quantity *
+#   dirtyPrice; marketValue above stays CLEAN
+# treasuryAccrualConvention=ACT/ACT (ICMA) semiannual: (days from lastCouponDate to sessionDate /
+#   days in that coupon period) * coupon/2. Accrual runs to sessionDate ITSELF, not to a T+1
+#   settlement date ...
+# treasuryCouponSchedule=generated backwards from maturityDate in 6-month steps measured from
+#   maturity, so nextCouponDate = lastCouponDate + 6 months; a short or long first coupon is NOT
+#   modelled
+# treasuryAccrualRounding=the only rounded value in this file (elapsed/period does not terminate);
+#   HALF_EVEN at 6 decimals. Every other value is exact
 accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,markSource,...
 ```
 
 Parse the `#` lines. `rows` and `cutSha256` in particular are how you detect a truncated download
 without trusting the transport.
 
-**Schema history.** Schema 2 (YU16) appends `coupon` and `maturityDate` after `nettingSetId`,
-adds `TREASURY` to `instrumentType`, and states the bond price convention in the header. Every
-schema-1 column keeps its name, position and meaning, so a schema-1 reader that indexes columns
-by header name reads a schema-2 file unchanged; a reader that hardcoded 14 columns must widen.
-The `.cut` sidecar is unchanged (`#cut schema=1`) — it is engine state and the engine did not
-change.
+**Schema history.**
+
+- **Schema 2** (YU16) appends `coupon` and `maturityDate` after `nettingSetId`, adds `TREASURY` to
+  `instrumentType`, and states the bond price convention in the header.
+- **Schema 3** (YU16, 2026-08-12) appends `lastCouponDate` and `accruedInterestFraction` after
+  `maturityDate`, and states the accrual convention in the header.
+
+Every earlier column keeps its name, position and meaning at every bump, so a reader that indexes
+columns **by header name** reads any later file unchanged; a reader that hardcoded a column count
+must widen. The `.cut` sidecar is unchanged across both bumps (`#cut schema=1`) — it is engine
+state, and neither bump touched the engine. Both new columns are derived at render time from
+static the extract already had.
 
 ### Columns
 
@@ -288,10 +311,17 @@ change.
 | `nettingSetId` | string | e.g. `NS-ALPHA-ISDA-01`. From reference data. |
 | `coupon` | decimal or empty | **Schema 2.** Annual coupon %, fixed, semiannual — Treasury rows only, joined from instrument reference data. Empty otherwise. |
 | `maturityDate` | ISO date or empty | **Schema 2.** Treasury rows only, same join. Empty otherwise. |
+| `lastCouponDate` | ISO date or empty | **Schema 3.** The coupon date `accruedInterestFraction` accrued from. Treasury rows only. `nextCouponDate` is this + 6 months. |
+| `accruedInterestFraction` | decimal(6dp) or empty | **Schema 3.** Accrued interest as a **fraction of par**, same unit as `closingMark`. Treasury rows only. |
 
 All decimals are exact to 6 places. They are computed in `BigDecimal` with rounding mode
 `UNNECESSARY`, which means the producer **throws rather than round** — if a value ever needed
 rounding you would get no file at all, not a quietly rounded one.
+
+`accruedInterestFraction` is the one deliberate exception, and it has to be: `elapsed days / days
+in period` does not terminate in decimal, so no amount of care makes it exact. It rounds
+`HALF_EVEN` at 6 decimals, deterministically, so the byte-identical-across-members guarantee is
+untouched. Everything else in the file is still exact-or-nothing.
 
 ### The two derived columns are redundant on purpose
 
@@ -309,7 +339,7 @@ applied to the value columns but not to `costBasis`.
 
 ---
 
-## 4. The five things most likely to bite you
+## 4. The six things most likely to bite you
 
 **1. Rows are un-netted, at `(accountId, security)` grain.** `netting=none` in the header is a
 statement, not a placeholder. There is one row per account per security, and nothing has been
@@ -340,13 +370,52 @@ do not assume that is always true.)
 | `LAST_TRADE` | No published close; the cluster's own last trade at sequence N was used. |
 
 A row is never emitted with *no* mark — if the producer can find neither a published price nor a
-last trade it aborts the whole extract. Which leads to:
+last trade it aborts the whole extract.
+
+**These two columns are instrument-agnostic.** `markSource` and `markQuality` mean exactly the same
+thing on a `TREASURY` row as on an `EQUITY` or `OPTION` row — same enum values, same semantics, same
+fallback rule. A Treasury with a published close reports `EOD_SNAPSHOT`/`OK`; one without reports
+`CLUSTER_LAST_TRADE_AT_N`/`LAST_TRADE`, meaning the mark is the cluster's own last trade at sequence
+N. There is no bond-specific mark path and no bond-specific quality code. Whatever gate you apply to
+`markQuality` today applies unchanged to bonds.
+
+Which leads to:
 
 **5. The extract fails closed, so a file that exists is complete.** There is no partial output. A
 missing mark, an account with no counterparty mapping, a value that would need rounding — each
 throws and nothing is written. You will never see a half-file, and you never need to
 defensively skip malformed rows. If the file is there, all `rows` rows are there and they are all
 well-formed. Assert on `rows` and move on.
+
+**6. Bond prices and `marketValue` are CLEAN. Accrued is a separate column, and it is a fraction.**
+This is the bond equivalent of mistake 2, and it is the same shape: two numbers that look like they
+are in the same unit until you multiply one of them by the wrong thing.
+
+```
+UST-20280630, qty 100000 (USD face), closingMark 0.998780, accruedInterestFraction 0.002367
+  dirtyPrice      = 0.998780 + 0.002367                = 1.001147
+  marketValue     = 100000 * 0.998780                  =  99,878.00   <- the file's column, CLEAN
+  settlementValue = 100000 * 1.001147                  = 100,114.70   <- yours to compute
+  accrued cash    = 100000 * 0.002367                  =     236.70
+```
+
+Three things to hold on to:
+
+- **Accrued is a fraction of par, not a cash amount and not a percentage.** Same unit as
+  `closingMark` on purpose, so `clean + accrued` is the dirty price with no scaling step in between
+  — that missing step is where a 100× goes.
+- **`marketValue` and `unrealizedPnl` exclude accrued.** They are clean-price columns. If your
+  engine wants dirty market value, add `quantity * accruedInterestFraction` yourself. We do not fold
+  it in because a clean-price P&L and a dirty-price P&L are different numbers and you should pick
+  deliberately rather than inherit ours.
+- **Accrual runs to `sessionDate`, not to a settlement date.** Every other column in the file is
+  as-of `sessionDate`; making one column as-of T+1 would make the row internally inconsistent, and
+  we carry no holiday calendar to roll it with honestly. `lastCouponDate` is emitted precisely so
+  you can roll it forward yourself under whatever calendar you use.
+
+The schedule is generated backwards from `maturityDate` in six-month steps, so `nextCouponDate =
+lastCouponDate + 6 months` and a short or long **first** coupon is not modelled. For bonds years
+from issue that never bites; it is written down because it is an assumption, not a fact.
 
 ---
 
@@ -406,6 +475,8 @@ def load_extract(csv_path, cut_path=None):
         r["contractMultiplier"] = int(r["contractMultiplier"])
         for k in ("costBasis", "closingMark", "marketValue", "unrealizedPnl"):
             r[k] = float(r[k])           # use Decimal if you need exactness downstream
+        # schema 3, treasury rows only — empty on every other instrument type
+        r["accruedInterestFraction"] = float(r["accruedInterestFraction"] or 0.0)
         rows.append(r)
 
     # fail closed, the same way the producer does
@@ -432,7 +503,7 @@ the day someone changes a convention on our side without telling you.
 subject `risk.extract.ready`:
 
 ```json
-{ "schema": 2, "uri": "file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
+{ "schema": 3, "uri": "file:///data/risk-extracts/2026-08-06/v8/seq-43607.csv",
   "consensusSequence": 43607, "sessionDate": "2026-08-06", "priceSnapshotVersion": 8,
   "rows": 29, "sha256": "...", "cutSha256": "236992a8...",
   "quiesceWitnessSequence": 43608 }
@@ -465,7 +536,12 @@ are to change later:
 2. **Is `markQuality` actionable for you?** If an `OVERRIDDEN` or `STALE` mark should block a risk
    run rather than flow through, say so — we can fail the extract instead of labelling the row.
 3. **Do you need anything that is not in the schema?** Trade-level detail, greeks, FX rates for
-   non-USD, accrued interest. The engine has more state than it currently renders; adding a column
-   is cheap, and adding one after you have built against the current shape is not.
-4. **CSV, or something else?** Parquet or JSON-lines are both easy from here. CSV was chosen for
+   non-USD. The engine has more state than it currently renders; adding a column is cheap, and
+   adding one after you have built against the current shape is not. (Accrued interest **was** on
+   this list — it shipped as schema 3, which is what the two new columns in §3 are.)
+4. **Is accrual-to-`sessionDate` the right call for you?** We deliberately do not roll to a T+1
+   settlement date (§4.6). If your engine wants settlement-date accrual as the delivered number
+   rather than something you compute from `lastCouponDate`, that is a convention change we can make
+   — but it needs a holiday calendar, which neither system has today.
+5. **CSV, or something else?** Parquet or JSON-lines are both easy from here. CSV was chosen for
    inspectability, not because anything depends on it.

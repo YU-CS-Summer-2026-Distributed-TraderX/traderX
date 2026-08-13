@@ -215,10 +215,10 @@ class RiskExtractTest {
         final String csv = render(markAndCapture(portfolio()));
         final List<String> sellerRows = csv.lines().filter(l -> l.startsWith(SELLER + ",")).toList();
         assertEquals(2, sellerRows.size(), "rows stay at (account, security) grain — never netted");
-        assertTrue(sellerRows.stream().allMatch(r -> r.endsWith("USD,CPTY-DELTA-PRIME,NS-DELT-ISDA-01,,")),
-            "non-treasury rows carry empty coupon/maturity columns (schema 2)");
+        assertTrue(sellerRows.stream().allMatch(r -> r.endsWith("USD,CPTY-DELTA-PRIME,NS-DELT-ISDA-01,,,,")),
+            "non-treasury rows carry empty bond columns: coupon, maturity, lastCoupon, accrued (schema 3)");
         assertTrue(csv.lines().filter(l -> l.startsWith(BUYER + ","))
-            .allMatch(r -> r.endsWith("USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01,,")));
+            .allMatch(r -> r.endsWith("USD,CPTY-CASCADE-AM,NS-CASC-ISDA-01,,,,")));
     }
 
     // ----- fail closed -------------------------------------------------------------------------
@@ -297,8 +297,8 @@ class RiskExtractTest {
         final String csv = RiskExtractCsv.render(cut, marks(), counterparties(), bonds(),
             stamp(cut, seqOf(cut)));
 
-        assertTrue(csv.startsWith("# traderx-risk-extract schema=2\n"),
-            "schema 2 announces the widened column set");
+        assertTrue(csv.startsWith("# traderx-risk-extract schema=3\n"),
+            "schema 3 announces the widened column set");
         final String[] row = csv.lines()
             .filter(l -> l.startsWith(BUYER + ",UST-20280630,")).findFirst().orElseThrow()
             .split(",", -1);
@@ -311,6 +311,93 @@ class RiskExtractTest {
         assertEquals("0.000000", row[10]);
         assertEquals("4.125", row[14], "coupon joined from the static");
         assertEquals("2028-06-30", row[15], "maturity joined from the static");
+        assertEquals("2026-06-30", row[16], "the coupon date the session accrued from");
+        assertEquals("0.002367", row[17], "21/183 of the 2.0625% semiannual coupon");
+    }
+
+    // ----- YU16 schema 3 (ADR-061): accrued interest ------------------------------------------
+    //
+    // Every expected value below is computed BY HAND from the convention, never by calling the
+    // production helper — a test that re-derives the answer the way the code does would pass
+    // against a broken day count.
+
+    @Test
+    void accruedInterestAndItsCouponDateComeFromTheMaturityAlone() {
+        // 2026-06-30 -> 2026-12-30 is 183 days; 21 have elapsed at the session date.
+        // 4.125% / 2 = 0.020625 of par per period, x 21/183 = 0.0023668... -> 0.002367.
+        final String[] jun = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2028-06-30"),
+            "UST-20280630", LocalDate.of(2026, 7, 21));
+        assertEquals("2026-06-30", jun[16]);
+        assertEquals("0.002367", jun[17]);
+
+        // A different maturity DAY OF MONTH must move the whole schedule with it: this bond's
+        // periods run 15th-to-15th, not 30th-to-30th. 2026-05-15 -> 2026-11-15 is 184 days, 67
+        // elapsed; 4.375% / 2 = 0.021875 x 67/184 = 0.0079653... -> 0.007965.
+        final String[] may = treasuryRow(new RiskExtractCsv.BondStatic("4.375", "2036-05-15"),
+            "UST-20360515", LocalDate.of(2026, 7, 21));
+        assertEquals("2026-05-15", may[16], "the schedule anchors on the maturity's day of month");
+        assertEquals("0.007965", may[17]);
+    }
+
+    @Test
+    void accrualIsZeroOnACouponDateAndFullTheDayBeforeTheNextOne() {
+        final RiskExtractCsv.BondStatic bond = new RiskExtractCsv.BondStatic("4.125", "2028-06-30");
+
+        // On the coupon date itself the coupon has just paid: zero has accrued since.
+        final String[] on = treasuryRow(bond, "UST-20280630", LocalDate.of(2026, 6, 30));
+        assertEquals("2026-06-30", on[16]);
+        assertEquals("0.000000", on[17], "the coupon paid today; nothing has accrued since");
+
+        // One day short of the next coupon: 182/183 of the period, and the coupon date must NOT
+        // have rolled forward yet.
+        final String[] eve = treasuryRow(bond, "UST-20280630", LocalDate.of(2026, 12, 29));
+        assertEquals("2026-06-30", eve[16], "the schedule rolls on the coupon date, not before it");
+        assertEquals("0.020512", eve[17], "0.020625 x 182/183");
+    }
+
+    @Test
+    void aMaturedBondAccruesNothing() {
+        final RiskExtractCsv.BondStatic bond = new RiskExtractCsv.BondStatic("4.125", "2028-06-30");
+        for (final LocalDate session : List.of(LocalDate.of(2028, 6, 30), LocalDate.of(2029, 1, 15))) {
+            final String[] row = treasuryRow(bond, "UST-20280630", session);
+            assertEquals("2028-06-30", row[16], "at or past maturity the last coupon IS maturity");
+            assertEquals("0.000000", row[17], "session " + session);
+        }
+    }
+
+    @Test
+    void accruedIsInTheSameUnitAsTheMarkSoDirtyIsCleanPlusAccrued() {
+        // The whole point of emitting a FRACTION rather than a cash amount: no scaling step
+        // between the mark and the accrual, so a consumer cannot apply a 100x by accident.
+        final String[] row = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2028-06-30"),
+            "UST-20280630", LocalDate.of(2026, 7, 21));
+        final BigDecimal clean = new BigDecimal(row[6]);
+        final BigDecimal accrued = new BigDecimal(row[17]);
+        assertEquals(new BigDecimal("0.998780"), clean);
+        assertEquals(new BigDecimal("1.001147"), clean.add(accrued), "dirty = clean + accrued");
+
+        // marketValue stays CLEAN, so settlement value is the consumer's own multiplication.
+        assertEquals("99878.000000", row[9], "marketValue excludes accrued interest");
+        assertEquals(new BigDecimal("100114.700000"),
+            clean.add(accrued).multiply(new BigDecimal(row[3])).setScale(6),
+            "face x dirty is the settlement value the consumer can build from these columns");
+    }
+
+    /**
+     * One Treasury row rendered at a chosen session date, split into columns. A literal cut keeps
+     * the accrual cases cheap: the arithmetic under test is a pure function of the bond static
+     * and the session date, so standing up a fresh portfolio per date would prove nothing extra.
+     */
+    private String[] treasuryRow(final RiskExtractCsv.BondStatic bond, final String security,
+                                 final LocalDate session) {
+        final String cut = "#cut schema=1 seq=9 sessionDateEpochDay=" + session.toEpochDay()
+            + " priceVersion=1 rows=1\n" + RiskExtractCut.HEADER + "\n"
+            + SELLER + "," + security + ",100000,998780,1,998780\n";
+        final String csv = RiskExtractCsv.render(cut, Map.of(), counterparties(),
+            Map.of(security, bond),
+            new RiskExtractCsv.Stamp(9, session, PRICE_VERSION, RiskExtractCut.sha256(cut)));
+        return csv.lines().filter(l -> l.startsWith(SELLER + "," + security + ","))
+            .findFirst().orElseThrow().split(",", -1);
     }
 
     // ----- helpers ------------------------------------------------------------------------------

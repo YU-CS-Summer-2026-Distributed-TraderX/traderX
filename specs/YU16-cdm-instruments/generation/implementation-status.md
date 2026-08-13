@@ -13,7 +13,7 @@ Status: implemented and verified on kind.
 | Post-trade | metadata client (fail closed, bounded timeouts), face-weighted Treasury average cost, `Rejected` landing with no position message, 6-dp price discipline through `Trade`/`TradeOrder`/`Position` |
 | Order entry | gateway `UST-` face validation pre-consensus; trade-service `fetchInstrument` + Treasury order validation with `{detail}` errors |
 | Engine | ADR-060 derived per-security book grid for `UST-` tickers (registration + `T_SYMBOL` restore); nothing stored, `SNAPSHOT_FORMAT` unchanged |
-| Extract | schema 2 — `TREASURY` by static join, `coupon`/`maturityDate` columns, `risk.extract.ready` schema field, consumer guide updated |
+| Extract | schema 3 — `TREASURY` by static join, `coupon`/`maturityDate` columns (ADR-059), `lastCouponDate`/`accruedInterestFraction` by derivation (ADR-061), `risk.extract.ready` schema field, consumer guide updated |
 | Frontend | asset-class filter, Treasury tickets (face/clean-price labels, client-side validation, clean value, coupon/maturity/YTM), percent display off the stored fraction, rejection column |
 | Proofs | `yu16-treasury-pricing.sh`, `yu16-bond-position.sh`; the YU04 pair migrated to `/instruments/control-snapshot`; suite runner owns the price-publisher forward |
 
@@ -63,7 +63,7 @@ The delivered fixture's bond row, verbatim from the rig:
 `TREASURY` by static join, 100,000 USD face, multiplier 1, cost and mark as fractions of par at
 six decimals, `marketValue = face x fraction = 99,262.00` exactly, coupon and maturity joined,
 and `markSource=EOD_SNAPSHOT` — the bond received a published close, which is the payload fix
-working end to end. The header reads `# traderx-risk-extract schema=2` and carries the bond
+working end to end. The header reads `# traderx-risk-extract schema=3` and carries the bond
 convention lines. The proof's own byte-reproducibility and post-recovery re-render steps pass
 with the row present.
 

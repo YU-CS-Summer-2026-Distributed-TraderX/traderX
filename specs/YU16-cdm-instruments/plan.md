@@ -60,7 +60,8 @@ coupon/maturity/YTM display, percent formatting off the stored fraction, rejecte
 
 ### 7. Extract
 
-`instrumentType: TREASURY` plus `coupon`/`maturityDate` by join against the extended
+`instrumentType: TREASURY` plus `coupon`/`maturityDate` by join, and `lastCouponDate`/
+`accruedInterestFraction` by derivation from the same static, against the extended
 `instruments.csv`; CSV schema 2; `risk.extract.ready` announces `schema: 2`; the consumer guide
 documents the new columns and the bond convention. The `.cut` is untouched.
 

@@ -25,6 +25,9 @@ Everything inherited from YU15 and its ancestry is carried forward unchanged unl
   transaction with configurable timeouts.
 - Extract enrichment by join: `instrumentType` gains `TREASURY`, Treasury rows carry `coupon`
   and `maturityDate`, the CSV schema bumps to 2, and the consumer guide documents it.
+- Extract accrued interest by derivation (ADR-061): Treasury rows additionally carry
+  `lastCouponDate` and `accruedInterestFraction`, computed from the joined static plus the session
+  date with no new reference data, bumping the CSV schema to 3.
 - Frontend: asset-class filter, grouped selectors, Treasury labels and validation, clean-value
   estimation, coupon/maturity/YTM display, percent formatting, rejected-trade display.
 

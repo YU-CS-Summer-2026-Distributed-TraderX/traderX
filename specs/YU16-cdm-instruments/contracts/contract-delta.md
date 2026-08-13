@@ -66,14 +66,25 @@ follows it. Treasury trade `quantity` is face; `price` is fraction of par at 6 d
 `AverageCostBasis DECIMAL(18,3) → DECIMAL(18,6)`. Seeds add account 17017, its three users,
 five settled Treasury trades and positions (fraction-of-par prices). No new tables.
 
-## 7. Risk extract (schema 2)
+## 7. Risk extract (schema 3)
 
-The delivered CSV bumps `# traderx-risk-extract schema=2`; `risk.extract.ready` announces
-`schema: 2`. Two columns append after `nettingSetId`: `coupon`, `maturityDate` (populated for
-Treasury rows, empty otherwise). `instrumentType` gains the value `TREASURY`, derived by join
-against the state's instrument static. Every schema-1 column keeps its name, position and
-meaning; bond `costBasis`/`closingMark` are fractions of par. The `.cut` sidecar stays
-`#cut schema=1` — engine state, unchanged engine.
+The delivered CSV bumps `# traderx-risk-extract schema=3`; `risk.extract.ready` announces
+`schema: 3`. Four columns append after `nettingSetId`, all populated for Treasury rows and empty
+otherwise:
+
+- `coupon`, `maturityDate` (schema 2, ADR-059) — joined from the state's instrument static.
+- `lastCouponDate`, `accruedInterestFraction` (schema 3, ADR-061) — **derived** from that same
+  static plus the session date, not joined; `instruments.csv` is unchanged by the schema-3 bump.
+
+`instrumentType` gains the value `TREASURY`, derived by join against the state's instrument
+static. Every schema-1 and schema-2 column keeps its name, position and meaning; bond
+`costBasis`/`closingMark` are fractions of par, and so is `accruedInterestFraction`, so
+`closingMark + accruedInterestFraction` is the dirty price. `marketValue`/`unrealizedPnl` stay
+clean. The `.cut` sidecar stays `#cut schema=1` — engine state, unchanged engine.
+
+`accruedInterestFraction` is the one value in the fixture that rounds (HALF_EVEN at 6 dp);
+`elapsed/period` does not terminate, so the exact-or-abort rule cannot apply to it. Rounding is
+deterministic, so byte-identical-across-members is unaffected.
 
 ## 8. UI (extended)
 

@@ -1,6 +1,6 @@
 # TraderX ↔ JAX Risk Engine: current state and integration points
 
-**Status as of 2026-08-12.** Supersedes the instrument-mismatch framing in
+**Status as of 2026-08-12** (extract at schema 3). Supersedes the instrument-mismatch framing in
 [`risk-engine-integration-fit.md`](risk-engine-integration-fit.md), which was written before YU16
 landed and states that we trade nothing his engine prices. That is no longer true.
 
@@ -37,7 +37,11 @@ public repository and docs, not run.
   ticks at the 1e6 scale
 - Value is `face × fraction`, with no `÷100` anywhere, so the integer contract multiplier stays 1
   and the deterministic core needs no divisor
-- Accrued interest and dirty settlement value are **deliberately excluded**; clean prices only
+- Prices and `marketValue` are **clean**. Accrued interest is no longer excluded: schema 3
+  (ADR-061) emits `lastCouponDate` and `accruedInterestFraction` alongside, as a fraction of par,
+  so `closingMark + accruedInterestFraction` is the dirty price. Accrual runs to `sessionDate`,
+  not to a settlement date — we carry no holiday calendar, and `lastCouponDate` is there so the
+  consumer can roll it forward under its own calendar
 
 ### JAX Risk Engine (`github.com/AlexNeugroschl/JAX_Risk_Engine`)
 
@@ -102,33 +106,36 @@ operation with no branching — the ideal JAX workload.
 |---|---|---|
 | 1 | **Shared risk factor** — our Treasuries and his pricers both live on the zero curve | **Open now.** The single biggest change |
 | 2 | **Shared math** — his swap fixed leg ≈ a bond, plus principal | Needs a bond pricer; bounded work |
-| 3 | **Position transport** — our EOD risk extract, schema 2 | **Ready.** Carries face, coupon, maturity, clean price |
+| 3 | **Position transport** — our EOD risk extract, schema 3 | **Ready.** Carries face, coupon, maturity, clean price, last coupon date and accrued interest |
 | 4 | **Sensitivities** — his per-pillar AD delta is key-rate DV01, the number a bond book needs | **Ready on his side**, once a bond NPV exists to differentiate |
 | 5 | **Curve construction** — five bonds at spread maturities imply a bootstrappable zero curve | **Partially closes a gap that belonged to neither system** |
 | 6 | **XVA** — `counterpartyId` and `nettingSetId` are on every extract row | Ready whenever he gets there |
 | 7 | **Return path** — risk verdicts tightening pre-trade limits via the YU04 durable control feed | Mechanism exists, unused for this purpose |
 
-### The extract contract (schema 2)
+### The extract contract (schema 3)
 
 ```
 accountId,security,instrumentType,quantity,contractMultiplier,costBasis,closingMark,
 markSource,markQuality,marketValue,unrealizedPnl,currency,counterpartyId,nettingSetId,
-coupon,maturityDate
+coupon,maturityDate,lastCouponDate,accruedInterestFraction
 ```
 
 `instrumentType` is `EQUITY | OPTION | TREASURY`. `TREASURY` is set **by join against instrument
 reference data**, never by prefix-parsing the ticker. `coupon` and `maturityDate` populate for
 Treasury rows only. ETFs report `EQUITY`, which is arithmetically what they are.
 
-Full detail, including the guarantees and the five conventions most likely to trip a consumer, is in
-[`risk-extract-consumer-guide.md`](risk-extract-consumer-guide.md), which is current for schema 2.
+`lastCouponDate` and `accruedInterestFraction` are **derived** rather than joined: the coupon
+schedule of a fixed-rate Treasury is a function of its maturity, so no new reference data was
+needed and the extract stays a pure function of cut plus static.
+
+Full detail, including the guarantees and the six conventions most likely to trip a consumer, is in
+[`risk-extract-consumer-guide.md`](risk-extract-consumer-guide.md), which is current for schema 3.
 
 ---
 
 ## 4. What is still missing
 
 - **No bond pricer on his side.** Related math, real work, but bounded.
-- **Accrued interest.** We exclude it by design; real risk needs dirty prices. Somebody owns this.
 - **Our prices are simulated.** Maturity-sensitive but synthetic, so a curve bootstrapped from them
   is a simulated curve.
 - **No swaps or floating-rate instruments on our side.** The overlap is factor-and-math, not
