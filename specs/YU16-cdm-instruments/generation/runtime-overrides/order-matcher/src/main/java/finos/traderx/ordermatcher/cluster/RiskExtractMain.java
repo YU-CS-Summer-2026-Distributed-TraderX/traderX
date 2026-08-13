@@ -127,6 +127,22 @@ public final class RiskExtractMain {
         // only once it notices the dead client's disconnect, and a rolling replacement overlaps
         // pods outright. That is a self-healing condition, not an error — wait it out
         // ([SUB-90012] "Consumer is already bound to a subscription"). Anything else still throws.
+        // BOUNDED. Waiting out a lingering binding is right; waiting forever is the bug this class
+        // was just fixed for, reached by a different road. Nothing throws while the loop spins, so
+        // the halt() above never fires, and this Deployment carries no readiness probe — so an
+        // unbounded retry leaves the pod Running and Ready with the producer permanently absent
+        // and the EOD extract silently never running. That is exactly the state the halt() exists
+        // to prevent.
+        //
+        // The ordinary case clears in seconds (the server drops the dead client's interest, and
+        // strategy: Recreate means a rollout no longer overlaps pods at all), so this deadline is
+        // only reached when the durable is genuinely stuck — a ghost consumer, or a second replica
+        // someone scaled up by hand. Falling through to the outer catch turns "retrying silently
+        // forever" into a container exit, and a persistent one into CrashLoopBackOff, which is
+        // visible in `kubectl get pods` and alertable. Loud and dead beats quiet and dead.
+        final long bindDeadline = System.currentTimeMillis()
+            + 1000L * Long.parseLong(env("RISK_EXTRACT_BIND_TIMEOUT_S", "300"));
+        int bindAttempts = 0;
         while (true) {
             try {
                 js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
@@ -136,8 +152,17 @@ public final class RiskExtractMain {
                 if (!String.valueOf(e.getMessage()).contains("[SUB-90012]")) {
                     throw e;
                 }
+                if (System.currentTimeMillis() >= bindDeadline) {
+                    throw new IllegalStateException("durable '" + durable + "' was still bound after "
+                        + bindAttempts + " attempts; giving up so this pod dies visibly rather than"
+                        + " sitting Ready with no producer. Something else is holding it — check for"
+                        + " a second risk-extract replica or a ghost consumer on the stream.", e);
+                }
+                bindAttempts++;
                 System.out.println("RISK-EXTRACT durable '" + durable
-                    + "' still bound to the previous pod; retrying: " + e.getMessage());
+                    + "' still bound to the previous pod; retrying (attempt " + bindAttempts
+                    + ", giving up in " + ((bindDeadline - System.currentTimeMillis()) / 1000) + "s): "
+                    + e.getMessage());
                 Thread.sleep(2000);
             }
         }
