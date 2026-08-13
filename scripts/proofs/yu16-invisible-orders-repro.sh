@@ -61,7 +61,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-forward() {
+forward_once() { # (re)establish both forwards against the current gateway pod, then poll briefly
   kill_pf
   ${K} port-forward "pod/${GW}" "${PROBE_PORT}:18111" >/dev/null 2>&1 & PF_PIDS+=($!)
   ${K} port-forward "pod/${GW}" "${ORDER_PORT}:18110" >/dev/null 2>&1 & PF_PIDS+=($!)
@@ -69,9 +69,27 @@ forward() {
   # most recent job, so the other still reports "Terminated: 15" when cleanup reaps it.
   disown -a 2>/dev/null || true
   local i
-  for i in $(seq 1 30); do
+  for i in $(seq 1 40); do
     [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 "http://localhost:${PROBE_PORT}/live" 2>/dev/null)" != "000" ]] && return 0
     sleep 1
+  done
+  return 1
+}
+
+forward() {
+  # `kubectl port-forward` is a PROCESS, and it dies with the container it targets. Polling a dead
+  # forward can never recover, so each attempt RE-SPAWNS rather than waiting longer — measured in
+  # the sibling liveness proof (yu16-liveness-restarts-wedge.sh), where a four-minute poll watched
+  # a gateway that had been serving happily for three of them, and where widening the budget only
+  # made the same failure slower.
+  #
+  # Exposure is lower here — this forwards to a settled pod after a completed rollout, not into a
+  # container the kubelet just killed — so it is latent rather than active. Carried anyway: it is
+  # the same shape, and one implementation of it per directory beats two that drift.
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    forward_once && return 0
+    echo "  [forward] attempt ${attempt} saw no answer on ${PROBE_PORT}; re-establishing" >&2
   done
   return 1
 }
@@ -121,7 +139,26 @@ SEED="$(curl -s -m 20 -X POST "http://localhost:${ORDER_PORT}/seed" -H 'Content-
 
 step "1. remove quorum — the gateway can no longer commit anything"
 ${K} scale sts order-matcher-cluster --replicas=1 >/dev/null
-sleep 25
+# Wait for the CONDITION, not for a guessed interval. A bare `sleep 25` assumes members 1 and 2 are
+# gone by then, which is an assumption about pod termination speed on whichever rig you happen to be
+# on — and "holds in practice on kind" is exactly what three separate bugs in the sibling liveness
+# proof looked like right up until GKE ran them.
+#
+# This one is load-bearing in a nastier way than a flaky timeout: if quorum is NOT actually lost the
+# drive below simply succeeds, every client is told the truth, and the script reports NO DIVERGENCE
+# — which reads as "§1 has been fixed". A vacuous pass that delivers good news is the worst kind, so
+# this refuses rather than proceeds.
+DOWN=0
+for _ in $(seq 1 60); do
+  READY="$(${K} get sts order-matcher-cluster -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+  [[ "${READY:-0}" -le 1 ]] && { DOWN=1; break; }
+  sleep 2
+done
+[[ ${DOWN} -eq 1 ]] || die "members never scaled down to 1 (readyReplicas=${READY:-unknown}) after 120s.
+  Quorum was never lost, so the drive below would just succeed and this run would report NO
+  DIVERGENCE — which reads as '§1 is fixed'. Refusing to produce that."
+# Members are down; give the gateway's cluster session a moment to notice before driving.
+sleep 10
 
 step "2. ${DRIVE} orders, each answered by the gateway, each outcome recorded CLIENT-SIDE"
 # Client-side truth, not the gateway's own streak counter. The claim being reproduced is about what

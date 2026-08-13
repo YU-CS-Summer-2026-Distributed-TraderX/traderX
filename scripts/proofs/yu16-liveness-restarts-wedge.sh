@@ -20,8 +20,10 @@
 #     answering ALL HTTP on 18110. If the probe port answers there, the verdict below is the
 #     signal and not a timeout, which is the difference between a diagnosable restart and an
 #     indiscriminate one;
-#   * the restart is attributed — the kubelet's own "Liveness probe failed" event, and not
-#     OOMKilled — so a pod that died for any other reason cannot be read as a pass.
+#   * the restart is attributed — a kubelet event naming the liveness probe, and not OOMKilled —
+#     so a pod that died for any other reason cannot be read as a pass. Either of the kubelet's
+#     two phrasings counts; see step 3 for why demanding the Unhealthy one fails on a real
+#     cluster against a perfectly correct restart.
 #
 # WHY QUORUM LOSS AND NOT THE WEDGE: the wedge is a race (~1 run in 4). Quorum loss induces the
 # same PROPERTY deterministically — the gateway cannot commit anything — which is all the probe
@@ -67,7 +69,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-forward() { # (re)establish both forwards against the current gateway pod
+forward_once() { # (re)establish both forwards against the current gateway pod, then poll briefly
   for p in "${PF_PIDS[@]:-}"; do [[ -n "${p}" ]] && kill "${p}" 2>/dev/null || true; done
   PF_PIDS=()
   ${K} port-forward "pod/${GW}" "${PROBE_PORT}:18111" >/dev/null 2>&1 & PF_PIDS+=($!)
@@ -77,8 +79,34 @@ forward() { # (re)establish both forwards against the current gateway pod
   # -a, not bare `disown`: there are TWO forwards and bare disown only detaches the
   # most recent job, so the other still reports "Terminated: 15" when cleanup reaps it.
   disown -a 2>/dev/null || true
+  # 40s per attempt, six attempts = ~240s overall, which covers the ~60s GKE cold start several
+  # times over. Per-attempt rather than one long wait is the whole point: a dead forward has to be
+  # noticed and re-spawned, and a budget that never returns control cannot do that.
   local i
-  for i in $(seq 1 60); do [[ "$(live_code)" != "000" ]] && return 0; sleep 1; done
+  for i in $(seq 1 40); do [[ "$(live_code)" != "000" ]] && return 0; sleep 1; done
+  return 1
+}
+
+# RETRY THE FORWARD ITSELF, not just the request through it. `kubectl port-forward` is a process,
+# and it DIES when the container it targets restarts — which is precisely when step 4 calls this.
+# Spawning it once and then polling curl for a while cannot recover from that: the listener is
+# gone, so every poll returns 000 no matter how long the budget, and the proof reports "the
+# gateway probe port never came back after the restart" about a gateway that is serving fine.
+#
+# Measured on GKE 2026-08-13, three consecutive runs. The last one is the unambiguous one:
+# container started 21:33:21, forwarding polled 21:33:30 -> 21:37:30 and saw 000 throughout, and a
+# hand-made forward answered 200 immediately afterwards. The gateway was up for three of those
+# four minutes. Widening the poll budget 60 -> 240 did NOT fix it and was the wrong diagnosis;
+# only re-spawning does.
+#
+# kind hid this the same way it hid the other two: its restart is fast enough that the single
+# spawn usually lands after the container is back.
+forward() {
+  local attempt
+  for attempt in 1 2 3 4 5 6; do
+    forward_once && return 0
+    echo "  [forward] attempt ${attempt} saw no answer on ${PROBE_PORT}; re-establishing" >&2
+  done
   return 1
 }
 
@@ -152,7 +180,13 @@ CODE="$(live_code)"; BODY="$(live_body)"
 echo "  after ${DRIVE} healthy orders: [${CODE}] ${BODY}"
 [[ "${CODE}" == "200" ]] || fail "/live went ${CODE} on a HEALTHY cluster under ordinary load — this
   probe would restart every gateway in the fleet at peak"
-sleep 20   # long enough for a livenessProbe that was going to fire to have fired
+# 70s, and the number is load-bearing: livenessProbe is periodSeconds 10 x failureThreshold 6, so
+# a probe that was going to fire takes 60s to do it. This used to wait 20s and claim exactly the
+# sentence below — which only an INSTANT restart could have falsified, so the assertion was
+# decorative for the other 40 seconds. It matters more than the other timing constants in this
+# file: a restart storm under healthy load is the single risk the whole liveness decision was held
+# for, and this is the only step that defends against it.
+sleep 70
 [[ "$(restarts)" == "${R0}" ]] || fail "the gateway restarted ($(restarts) vs ${R0}) with the cluster
   healthy: the probe is not measuring the ability to commit"
 
@@ -201,11 +235,33 @@ R1="$(restarts)"
 TERM_REASON="$(${K} get pod "${GW}" -o jsonpath='{.status.containerStatuses[0].lastState.terminated.reason}' 2>/dev/null)"
 [[ "${TERM_REASON}" != "OOMKilled" ]] || fail "the container was OOMKilled, not killed by the probe —
   this run proves nothing about liveness"
-${K} get events --field-selector "involvedObject.name=${GW}" -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' \
-  2>/dev/null | grep -q 'Liveness probe failed' \
-  || fail "restartCount moved ${R0} -> ${R1} but no 'Liveness probe failed' event names the probe as
-  the cause. The restart is not attributable, and an unattributable restart is not a pass."
-echo "  restarts ${R0} -> ${R1}, lastState.terminated.reason=${TERM_REASON:-none}, kubelet event: Liveness probe failed"
+# TWO ACCEPTABLE ATTRIBUTIONS, and the second one is the reliable one. The kubelet emits both an
+# Unhealthy/"Liveness probe failed" per failed check AND a single Killing/"failed liveness probe,
+# will be restarted" when it acts. This used to demand the first, which passed on kind and FAILED
+# ON GKE on 2026-08-13 against a restart that was entirely correct: streak 144, /live 503,
+# exitCode 143, and the Killing event naming the liveness probe — with no Unhealthy/Liveness event
+# recorded at all.
+#
+# Not a GKE quirk, and not flake. The kubelet's event recorder rate-limits per (object, reason),
+# and readiness had already spent that budget under the SAME reason=Unhealthy: 150 recorded
+# "Readiness probe failed" events on that pod. By construction readiness fails long before
+# liveness here (limit 20 vs 100), so whenever liveness fires, the Unhealthy budget is already
+# saturated — the crowding is guaranteed, not incidental. kind only survived it by recording
+# fewer events first.
+#
+# The Killing event is emitted once per kill, so it is not subject to that pressure, and it names
+# the cause just as explicitly. Accept either.
+EVENT_MSGS="$(${K} get events --field-selector "involvedObject.name=${GW}" \
+  -o jsonpath='{range .items[*]}{.message}{"\n"}{end}' 2>/dev/null)"
+ATTRIB="$(printf '%s' "${EVENT_MSGS}" | grep -m1 -E 'Liveness probe failed|failed liveness probe')" \
+  || fail "restartCount moved ${R0} -> ${R1} but no event names the liveness probe as the cause
+  (looked for 'Liveness probe failed' and 'failed liveness probe'). The restart is not
+  attributable, and an unattributable restart is not a pass.
+  The events this pod DID record — read them before believing the restart was unattributed, since
+  a rate-limited Unhealthy budget looks identical here to a restart nobody can explain:
+$(${K} get events --field-selector "involvedObject.name=${GW}" \
+    -o custom-columns=COUNT:.count,REASON:.reason,MESSAGE:.message 2>&1 | sed 's/^/    /')"
+echo "  restarts ${R0} -> ${R1}, lastState.terminated.reason=${TERM_REASON:-none}, kubelet event: ${ATTRIB}"
 
 step "4. the restarted gateway serves again once quorum is back"
 ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
