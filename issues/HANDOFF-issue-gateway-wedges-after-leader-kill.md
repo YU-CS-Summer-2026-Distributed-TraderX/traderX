@@ -377,6 +377,22 @@ the detail is in that commit. The pattern is the durable part and it is not "tes
 That is a different class from the vacuous-pass audit's existing rules, which are about assertions
 being too *weak*. These assertions were strong; they were about the wrong universe.
 
+**The event half of that has a consequence in PRODUCTION, not just in the proof.** The saturation is
+structural: readiness fails at 20 and liveness at 100, so by the time liveness fires, readiness has
+been failing for ~80 further no-ack submits and has long since spent the shared `reason=Unhealthy`
+budget. Measured on GKE: `Unhealthy count=150` for readiness, and **no liveness `Unhealthy` event at
+all**. So when this probe restarts a real gateway, the `Liveness probe failed` event will usually be
+missing there too — anyone who builds alerting on that string for this gateway gets silence while
+the restart is happening. The reliable signals are the `Killing` event (`Container gateway failed
+liveness probe, will be restarted`), emitted once per kill and so not subject to that pressure, and
+the container's own `restartCount`. This is a consequence of choosing `LIVE_NO_ACK_STREAK` well
+above `READY_NO_ACK_STREAK`, which is deliberate for every other reason (§1b) — it is worth the
+trade, but the alerting has to key off the right event.
+
+Recorded here rather than as a comment in the five `gateway.yaml` copies on purpose: this document
+already exists on every branch that carries the defect, so it reaches the same readers, and a
+comment maintained in five places is exactly the divergence surface the lineage rule punishes.
+
 **The rig itself.** Two facts about the cloud that cost most of an hour and are not about this
 issue at all, kept because the next person will meet them: `us-east1-b` had no `c2d-standard-8`
 capacity (`ZONE_RESOURCE_POOL_EXHAUSTED` / `GCE_STOCKOUT`), and a `CREATE_NODE_POOL` operation
