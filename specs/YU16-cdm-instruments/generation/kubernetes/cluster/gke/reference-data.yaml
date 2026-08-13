@@ -1,0 +1,93 @@
+# reference-data on the GKE tier — added at YU16, because from this state on the tier cannot book
+# the asset class the state exists for without it.
+#
+# WHY IT WAS ABSENT BEFORE AND WHY IT CANNOT BE NOW. Through YU15 the GKE tier was a throughput and
+# consensus rig: equities and listed options carry everything the engine needs in the ticker itself
+# (the OCC symbol yields the multiplier by derivation, ADR-052), so nothing on the write path ever
+# had to ask a service what an instrument WAS. YU16 breaks that. A Treasury's coupon and maturity
+# are not derivable from "UST-20360515" — they are reference data — and trade-processor resolves
+# them through InstrumentMetadataClient against http://reference-data:18085/instruments/{key}.
+#
+# That client FAILS CLOSED (TradeService: "Treasury booking rejected (fail closed)"), which is the
+# right call for a booking path — booking a bond whose coupon you could not read is worse than not
+# booking it. But it means a GKE tier without this Deployment rejects every Treasury at post-trade
+# while the engine accepts it, the members agree on it, and the gateway returns 200. The order is
+# committed to the consensus log and simply never reaches the read model. Nothing in the rig looks
+# broken; the bond just never appears in a position.
+#
+# Ported from this state's cluster-tier reference-data.yaml with only the address and image changes
+# GKE needs. The outbox poller stays on for the same reason it is on there: the YU04 control feed
+# is what makes a security registered here exist at a definite consensus position on every member.
+apiVersion: v1
+kind: Service
+metadata:
+  name: reference-data
+  namespace: traderx
+  labels:
+    app: reference-data
+spec:
+  type: ClusterIP
+  selector:
+    app: reference-data
+  ports:
+    - name: http
+      protocol: TCP
+      port: 18085
+      targetPort: 18085
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reference-data
+  namespace: traderx
+  labels:
+    app: reference-data
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reference-data
+  template:
+    metadata:
+      labels:
+        app: reference-data
+    spec:
+      containers:
+        - name: reference-data
+          image: us-east1-docker.pkg.dev/traderx-501015/traderx/reference-data:yu16
+          ports:
+            - name: http
+              containerPort: 18085
+              protocol: TCP
+          env:
+            - name: REFERENCE_DATA_SERVICE_PORT
+              value: "18085"
+            - name: DATABASE_PG_HOST
+              value: "eod-price-db"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              value: "traderx"
+            - name: DATABASE_DBPASS
+              value: "traderx"
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            - name: SECURITY_OUTBOX_ENABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /stocks/control-snapshot
+              port: 18085
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          # Deliberately probing /stocks and not /instruments (ADR-058): retention of the original
+          # route is a standing claim of this state, and a readiness probe is the cheapest place to
+          # keep checking it. If /stocks is ever dropped, this pod stops going Ready.

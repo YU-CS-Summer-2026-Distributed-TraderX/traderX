@@ -33,3 +33,7 @@ resources:
   - trade-processor.yaml
   - eod-chain.yaml
   - risk-extract.yaml
+  # YU16: new to this tier. trade-processor's Treasury path resolves coupon and maturity through
+  # this service and fails closed without it — see the header of reference-data.yaml for what that
+  # looks like on a rig that appears entirely healthy.
+  - reference-data.yaml

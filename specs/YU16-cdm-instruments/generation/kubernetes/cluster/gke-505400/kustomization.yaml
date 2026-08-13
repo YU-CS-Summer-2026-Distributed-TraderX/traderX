@@ -1,0 +1,150 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+
+# Project overlay: the YU16 GKE tier, re-pointed at project traderx-505400.
+#
+# WHY THIS EXISTS SEPARATELY FROM THE YU15 ONE. Kubernetes manifests do NOT inherit across states
+# — render-state is a plain cp -R, so every state's kubernetes/ directory is its own complete copy,
+# not an overlay on its parent's. specs/YU15-.../gke-505400 therefore resolves `../gke` to YU15's
+# tier, which prices twenty equities and no bonds. Deploying it here would bring up a rig that
+# cannot exercise a single YU16 claim while looking entirely healthy.
+#
+# The one difference that matters is in eod-chain.yaml: this state's EOD_UNIVERSE carries the five
+# ETFs and the five Treasuries as well as the twenty equities. A Treasury absent from the universe
+# is never priced, so it never gets a published close, so the extract row for a held bond falls
+# back to the cut's own last-trade price — an EOD_SNAPSHOT/LAST_TRADE difference in markSource that
+# is easy to read as a pricing bug and is really a universe that was never asked for the bond.
+#
+# Everything below mirrors the YU15 overlay for the same reasons documented there: the four image
+# references live inline across seven manifests, traderx-501015 still owns the delivered
+# risk-extract bucket and the journal archive, and kustomize will not reference individual files
+# outside its own root — so this takes ../gke whole and subtracts what a correctness rig does not
+# want.
+#
+# NOT COVERED HERE, AND DELIBERATELY. The member StatefulSet's restore init container still names
+# gs://traderx-501015-order-matcher-journal-archive. It is inert while RESTORE_FROM_GCS is unset
+# (the container's first line exits before any GCS call), which is every boot on this rig. Setting
+# RESTORE_FROM_GCS=1 on THIS project reaches into the OLD project's bucket and fails on
+# credentials, not on anything wrong with the cluster.
+#
+# THE DATABASE SCHEMA IS NOT IN THIS KUSTOMIZATION. eod-price-db initialises from
+# ../../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml, which
+# lives outside this root and is applied separately by the deploy. On this state it is the widened
+# one — DECIMAL(18,6) prices and the Rejected state. Applying the kustomization without it, into a
+# namespace carrying an older configmap, initialises the read model at DECIMAL(18,3): every bond
+# price then rounds from 0.996650 to 0.997 on the way in, which still books, still shows a
+# position, and is wrong by a tenth of a point of par with no error anywhere. Apply the configmap
+# FIRST — mariadb runs init SQL once, at first boot on an empty datadir, against whatever configmap
+# exists at that moment, and eod-price-db has no PVC, so a restart is a first boot.
+
+resources:
+  - ../gke
+
+images:
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node
+    newTag: yu16
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/trade-processor
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/trade-processor
+    newTag: yu16
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/position-service
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/position-service
+    newTag: yu16
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/price-publisher
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher
+    newTag: yu16
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/reference-data
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/reference-data
+    newTag: yu16
+
+# TAG yu16, NOT bench. The 505400 registry already holds :bench, built from the YU15 tree on
+# 2026-08-12. Reusing that tag would make it impossible to tell from a pod spec which state a
+# running rig is — and the failure it produces is the quiet one: a YU15 image serves every YU16
+# request that does not touch a bond, so the rig looks fine until an assertion about instrument
+# type or accrued interest reads a column that build never emitted. This project has already lost
+# a day to a proof passing against a stale producer whose tag had not moved.
+
+patches:
+  # ONE PUBLIC IP IN FRONT OF THE GATEWAYS. type: LoadBalancer gives an L4 address that follows
+  # whatever gateway pods are Ready. A LoadBalancer Service keeps its ClusterIP, so in-cluster
+  # clients go on addressing order-matcher-gw:18110 directly and never traverse the LB.
+  #
+  # externalTrafficPolicy: Local keeps the request on the node that received it — no extra hop, no
+  # SNAT. The cost is that a node with no gateway pod fails the LB health check and drops out of
+  # rotation, so the gateway replica count and the untainted node count have to line up.
+  - target: { kind: Service, name: order-matcher-gw }
+    patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: order-matcher-gw
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+
+  # ONE GATEWAY, because this is a correctness rig and the anti-affinity is one gateway per node.
+  # With CPUS_ALL_REGIONS at 32 (3 x c2d-standard-8 members = 24) there is one untainted node, so
+  # four replicas leave three Pending on "didn't match pod anti-affinity rules". Relaxing the
+  # anti-affinity would be the wrong fix: it exists so a gateway-count experiment measures gateways
+  # rather than co-tenancy. Every proof here asserts behaviour, not throughput.
+  #
+  # NOTE FOR THE FAILOVER PROOF. A single gateway is also the configuration in which a leader kill
+  # wedges ingress: observed 2026-08-12 on the YU15 rig, the gateway survived with restarts=0 and
+  # no log line while every order returned 504 "no committed ack", and a rollout restart cleared it
+  # instantly. That is a real defect in session recovery, not an artifact of the count — but with
+  # more than one gateway the survivors mask it. Read a failover failure here with that in mind.
+  - target: { kind: Deployment, name: cluster-gateway }
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cluster-gateway
+      spec:
+        replicas: 1
+
+  # The two removed pieces both need GCS buckets in traderx-501015. Left in place with the old
+  # bucket names they fail at runtime with a 403 that reads like a code fault rather than a wiring
+  # one. To run the EOD extract on this project: create the buckets and the HMAC secret under
+  # traderx-505400, drop the risk-extract delete patch, and repoint the bucket env.
+  #
+  # KEEPING risk-extract WOULD BE THE OTHER WAY ROUND ON A YU16 RIG. The accrued-interest and
+  # schema-3 claims are assertions about the fixture that pod produces, so proving them on GKE
+  # means giving this project its own bucket rather than deleting the producer. Left deleted here
+  # because the bond arithmetic those proofs check is identical on kind, where the sink is a local
+  # file and needs no IAM at all — GKE is where the CONSENSUS claims earn their keep.
+  - target: { kind: Deployment, name: risk-extract }
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: risk-extract
+  - target: { kind: CronJob, name: yu12-snapshot-backup }
+    patch: |
+      $patch: delete
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: yu12-snapshot-backup
+  - target: { kind: ServiceAccount, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: yu12-backup
+  - target: { kind: Role, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: yu12-backup
+  - target: { kind: RoleBinding, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: yu12-backup
