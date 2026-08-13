@@ -119,13 +119,51 @@ spec:
               containerPort: 18110
             - name: fix
               containerPort: 18130
+            - name: probe
+              containerPort: 18111
+          # PROBES READ 18111, NOT THE ORDER PORT. The order path's HTTP pool is exhaustible by
+          # construction — every in-flight order parks a thread for the full ack timeout — and a
+          # wedged gateway measurably stopped answering ALL HTTP on 18110 for eight minutes with
+          # zero load offered. A probe the server cannot answer is not a signal: Kubernetes acts on
+          # the timeout instead, which is indiscriminate and says nothing about what is wrong.
+          # 18111 is a separate HttpServer with a single-thread executor that only reads two
+          # volatiles. /ready and /live stay registered on 18110 too, so anything that curls the
+          # old address still works.
+          #
+          # THIS TIER NEEDS IT MOST. The wedge was first observed here, not on kind: one gateway
+          # behind a LoadBalancer with a single public IP, at replicas: 1 because the anti-affinity
+          # is one gateway per node. Readiness alone cannot heal that — there is nowhere else to
+          # route — so liveness is what ends the outage without a human.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 24
+          # Deliberately /live and not /ready: /live is 200 as soon as the process serves, so a
+          # cluster that is DOWN while this pod boots cannot hold startup open until the kubelet
+          # kills it. Its real job is to let the two below run at sane thresholds — without it,
+          # readiness needed failureThreshold 24 purely to tolerate a slow start, i.e. two minutes
+          # in which an unready gateway stayed in the Service.
           readinessProbe:
             httpGet:
               path: /ready
-              port: 18110
-            initialDelaySeconds: 5
+              port: 18111
             periodSeconds: 5
-            failureThreshold: 24
+            failureThreshold: 3
+          # LIVENESS: ask for a restart once this gateway has told LIVE_NO_ACK_STREAK consecutive
+          # clients their orders failed (default 5x the readiness limit), sustained for 60s. The
+          # restart is the known cure, verified on both rigs, and the gateway is stateless so it
+          # costs only the in-flight orders. failureThreshold 6 x 10s is the storm guard: an
+          # election or a member roll clears long before it, and an IDLE gateway can never trip it
+          # because the streak only advances on a submit that got no ack.
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 250m
