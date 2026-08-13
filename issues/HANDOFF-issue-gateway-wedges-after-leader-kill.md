@@ -308,19 +308,85 @@ step 4 always meets a fresh JVM by construction. Measuring the drain needs a dri
 (`LIVE_NO_ACK_STREAK` raised above the reachable streak, then watch whether an order commits after
 load stops).
 
-**That experiment has since been run — see the drain subsection at the end of §5, which is the
-canonical result.** The backlog drains instantly: the ack timeout is only spent while the cluster
-refuses the offer, so a restored quorum empties the queue in microseconds. Two consequences for
-this section. The narrower one: nothing above needs revising, the caveat was correct that the
-proof could not speak to drain, and the answer simply arrived from elsewhere. The one that
-matters more: it did not answer §5 either, and it retired §5's own proposed mechanism — whatever
-that hang is, it is not merely a deep owner queue.
+**That experiment has since been run, ON THE PIPELINED TIER — see the drain subsection at the end
+of §5, which is the canonical result.** There the backlog drains instantly: the ack timeout is only
+spent while the cluster refuses the offer, so a restored quorum empties the queue in microseconds.
 
-### The GKE tier — the manifests still have never met a kubelet
+**It does not close the question this section asked**, which was about the SYNCHRONOUS gateway. The
+mechanism measured is `offerPipelined`'s retry loop — offer, pollEgress, check deadline — and YU12
+does not have it: `submitOrder0` → `onOwner` → `offerAndAwait` waits on an ack condition, not on the
+offer clearing. The same fast drain is plausible there and is not measured. Left explicitly
+unmeasured rather than inferred; it is the same script with the rig on `:yu12`.
+
+What the pipelined result does settle reaches further than drain, and is the reason it is
+cross-referenced here at all: it retired §5's own proposed mechanism. Whatever that hang is, it is
+not merely a deep owner queue.
+
+### The GKE tier — VERIFIED on a live cluster, 2026-08-13
 
 `15e758df`/`f40d110e`/`9bb7b5dc`/`0d7fab5c`/`86552494` wired startup + readiness + liveness at 18111
-into each branch's `gke/gateway.yaml`. They render, and they point at a port the code serves. **No
-kubelet has exercised them.** An attempt on 2026-08-13 did not get as far as a node — see below.
+into each branch's `gke/gateway.yaml`. Those had rendered and had never met a kubelet. They have now:
+cluster `traderx-bench` in `traderx-505400`, YU16 build at `:yu16`, three members and one gateway at
+`replicas: 1` behind the LoadBalancer — the configuration the wedge was first observed in.
+
+**The probes behaved correctly in every respect checked, and the change did not destabilise a
+healthy tier** — which was its main risk:
+
+| what | reading |
+|---|---|
+| pods Ready, `containerPort: 18111` present | yes; gateway `restarts=0` through the whole healthy period |
+| probe failures during normal operation | none. The only `Unhealthy` events were startup during JVM boot and readiness while quorum was genuinely absent |
+| `GATEWAY_PROBE_PORT` on the serving pod | `18111` — `a2781db7`'s pin, exercised by a kubelet for the first time |
+| `yu16-ready-tracks-commit.sh` | **PASS** — 503 at streak 25, discriminator window held, cleared by `orderRef 51` |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — `/live` 503 at streak 144, `restarts 4 -> 5`, `exitCode 143`, recovered with `orderRef 452` |
+
+Three GKE-specific readings worth keeping, because none of them could have been taken on kind:
+
+- **The 120s startup budget has about 2x headroom on real hardware, not a lucky fit.** The
+  startupProbe recorded 12 `connection refused` failures at `periodSeconds: 5` — ~60s from container
+  start to first answer on 18111 — against a budget of 24 x 5s. GKE's JVM+Aeron boot is the slow
+  case this constant exists for, and it clears it twice over.
+- **Liveness did not fire on an idle gateway that genuinely could not commit.** Before the members
+  were scheduled, the gateway sat ~10 minutes unable to commit anything with zero traffic offered,
+  and was never restarted. That is the anti-storm property (§1b) confirmed on the tier where a
+  restart storm would actually cost something, rather than argued from the code.
+- **`/ready` and `/live` disagreeing is visible and correct.** With quorum gone and no traffic,
+  `/ready` was 503 (it counts `connected`) while `/live` stayed 200 (it deliberately ignores
+  `connected`). The distinction that keeps an election from restarting every gateway is observable,
+  not just intended.
+
+**THE LANDMINE HAS A TAIL, and `apply -k` does not clear it.** Fixing the manifest and recreating the
+pool got the *StatefulSet spec* right, and members 0 and 1 still would not schedule: the existing
+pods carried the hand-patched `nodeSelector: blp-compact` from the deleted pool, and a pod's node
+selector is immutable. `apply -k` updated the spec and left two pods Pending against it —
+`0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector` — while the third,
+which the apply had recreated, ran fine. **Deleting the stale pods is part of the fix**; without it
+the tier comes up one-third scheduled and looks like a quota problem.
+
+**What the run cost, and what it says about the proofs rather than the gateway.** The gateway
+behaved correctly in every run; `yu16-liveness-restarts-wedge.sh` failed three of them, on four
+separate assumptions that were true on kind and false here. All four are fixed in `8634eb01` and
+the detail is in that commit. The pattern is the durable part and it is not "test on GKE":
+
+> A proof's timing constants and its string matching are claims about the ENVIRONMENT, and a
+> passing run does not falsify them. Every one of the four was green on kind for a reason unrelated
+> to the property it asserted — an event string the kubelet's rate limiter structurally cannot
+> deliver on this path, a reconnect budget sized for kind's boot, a `port-forward` never re-spawned
+> after the restart it exists to watch, and a 20s wait defending against a 60s failure mode.
+
+That is a different class from the vacuous-pass audit's existing rules, which are about assertions
+being too *weak*. These assertions were strong; they were about the wrong universe.
+
+**The rig itself.** Two facts about the cloud that cost most of an hour and are not about this
+issue at all, kept because the next person will meet them: `us-east1-b` had no `c2d-standard-8`
+capacity (`ZONE_RESOURCE_POOL_EXHAUSTED` / `GCE_STOCKOUT`), and a `CREATE_NODE_POOL` operation
+**cannot be cancelled and blocks every other operation on the cluster while it retries** — 35
+minutes, with `node-pools delete` returning `Cluster is running incompatible operation` throughout.
+So a stockout is not a fast failure to retry around. Check
+`gcloud compute instance-groups managed list-errors <mig>` early rather than reading a long
+`PROVISIONING` as slow provisioning. The pool that eventually came up is `n2-standard-8` without
+`--placement-type COMPACT`; compact placement narrows eligible hosts and `76c45bbb` already found
+it is not the latency lever, so a correctness rig should not ask for it.
 
 **The `blp-c4d-tuned-pool` landmine is now fixed at the source.** `gke/statefulset-emptydir.yaml`
 pinned a pool that a compact-placement experiment had deleted; the live StatefulSet only worked
@@ -329,19 +395,6 @@ members Pending on "didn't match Pod's node affinity/selector". Fixed by recreat
 the name the manifests expect, which repairs every branch at once rather than baking an
 experiment's pool name into the tier. The machine-type divergence that comes with it (c2d, not c4d,
 because CPUS_ALL_REGIONS is 32) is recorded at the `nodeSelector` itself.
-
-**What stopped the run: `ZONE_RESOURCE_POOL_EXHAUSTED`.** us-east1-b had no c2d-standard-8 capacity;
-the MIG sat at `creating: 3`, size 0, retrying. Two things worth knowing before the next attempt:
-
-- `--placement-type COMPACT` narrows the eligible hosts further, and this rig does not need it —
-  `76c45bbb` already found compact placement is not the latency lever, and a probe verification is
-  not a timing claim. Drop it and, if the zone is still short, take `n2-standard-8` (widest
-  availability, same 24 vCPU for three members).
-- **A `CREATE_NODE_POOL` operation cannot be cancelled, and it blocks every other operation on the
-  cluster while it retries** — `node-pools delete` returns `Cluster is running incompatible
-  operation`. So a stockout is not a fast failure you retry around; it locks the cluster for the
-  full timeout. Check `gcloud compute instance-groups managed list-errors <mig>` early rather than
-  reading a long `PROVISIONING` as slow provisioning.
 
 ## §4. The proof reported the wrong cause
 
