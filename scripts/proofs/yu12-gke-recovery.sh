@@ -54,10 +54,20 @@ identity_consensus() {
   local s0 s1 s2 i
   for i in $(seq 1 60); do
     s0="$(state 0 2>/dev/null)"; s1="$(state 1 2>/dev/null)"; s2="$(state 2 2>/dev/null)"
-    if [[ -n "${s0}" && "${s0}" == "${s1}" && "${s1}" == "${s2}" ]]; then echo "${s0}"; return 0; fi
+    # SHAPE, not emptiness. state()'s awk ends in END{print o,p,t,r}, which fires on NO INPUT AT
+    # ALL with all four variables unset and prints three spaces. `-n "   "` is true, and
+    # "   " == "   " == "   " is agreement — so the previous `-n "${s0}"` guard reported three
+    # UNREACHABLE members as byte-identical, and this proof's whole claim is byte-identity.
+    # Verified: with an empty metrics read the old condition returned 0.
+    # Requiring the real answer's shape (two hashes, which are routinely NEGATIVE, then two
+    # counters) makes "no answer" impossible to confuse with "the answer is identical".
+    if [[ "${s0}" =~ ^-?[0-9]+\ -?[0-9]+\ [0-9]+\ [0-9]+$ \
+       && "${s0}" == "${s1}" && "${s1}" == "${s2}" ]]; then echo "${s0}"; return 0; fi
     sleep 2
   done
-  fail "members never reached byte-identity: [${s0}] [${s1}] [${s2}]"
+  fail "members never reached byte-identity: [${s0}] [${s1}] [${s2}]
+  (all-blank readings mean the members were UNREACHABLE, not that they disagreed — check the pod
+  and container name before reading this as a determinism failure)"
 }
 
 PF_PID=""

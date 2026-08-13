@@ -54,10 +54,19 @@ identity_consensus() { # retried: one early sample looks like divergence and is 
   local s0 s1 s2 i
   for i in $(seq 1 90); do
     s0="$(state 0 2>/dev/null)"; s1="$(state 1 2>/dev/null)"; s2="$(state 2 2>/dev/null)"
-    if [[ -n "${s0}" && "${s0}" == "${s1}" && "${s1}" == "${s2}" ]]; then echo "${s0}"; return 0; fi
+    # SHAPE, not emptiness — same defect as yu12-gke-recovery.sh carried, and it is worse here.
+    # state()'s awk ends in END{print o,p,t,r}, which fires on NO INPUT with all four variables
+    # unset and prints three spaces; `-n "   "` is true and all three "agree". This proof captures
+    # state S from a QUIESCED cluster, destroys the cluster, restores from GCS and asserts the
+    # restored state equals S exactly. Under the old guard a run where the members were
+    # unreachable at BOTH ends captured S = "   " and then confirmed "   " == "   " — a DR proof
+    # that passes without either reading having happened.
+    if [[ "${s0}" =~ ^-?[0-9]+\ -?[0-9]+\ [0-9]+\ [0-9]+$ \
+       && "${s0}" == "${s1}" && "${s1}" == "${s2}" ]]; then echo "${s0}"; return 0; fi
     sleep 2
   done
-  fail "members never reached byte-identity: [${s0}] [${s1}] [${s2}]"
+  fail "members never reached byte-identity: [${s0}] [${s1}] [${s2}]
+  (all-blank readings mean the members were UNREACHABLE, not that they disagreed)"
 }
 leader() { for m in 0 1 2; do [[ "$(member_metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 
