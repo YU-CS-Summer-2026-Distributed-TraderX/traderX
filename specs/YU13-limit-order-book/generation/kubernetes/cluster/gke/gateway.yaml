@@ -96,6 +96,16 @@ spec:
               value: "18110"
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
+            # PINNED, not left to the code default, even though the two agree today. Every probe on
+            # this tier reads 18111 and nothing here told the gateway that: the port was
+            # load-bearing on env("GATEWAY_PROBE_PORT", "18111") in ClusterGatewayMain alone, with
+            # no manifest backstop. The kind manifests already pin it — so a change to that default
+            # would keep every kind proof green while all five GKE tiers crashloop, because a
+            # failing startupProbe restarts the container rather than merely marking it NotReady.
+            # Local rig green while the cloud rig is dark is the divergence this project keeps
+            # paying for. Pinned for the same reason GATEWAY_HTTP_PORT above is.
+            - name: GATEWAY_PROBE_PORT
+              value: "18111"
             - name: FIX_ACCEPTOR_PORT
               value: "18130"
             - name: FIX_SESSION_COMPIDS
