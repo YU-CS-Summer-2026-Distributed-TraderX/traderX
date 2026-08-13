@@ -91,6 +91,29 @@ except Exception: print("")' "$1"; }
 streak() { live_body | jnum noAckStreak; }
 restarts() { ${K} get pod "${GW}" -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null; }
 
+# Seed, and say WHY when it does not work — see the same helper in yu16-ready-tracks-commit.sh. A
+# curl rc of 7/28 is the forward, an HTTP code is the gateway answering, and a 200 carrying
+# {"seeded":false} is the engine's symbol table exhausted, which `curl -f` does not treat as an
+# error at all. This proof makes its own forwards, so rc=7 here means forward() lost the pod.
+seed() {
+  local out rc code body
+  # `&& rc=0 || rc=$?`, not a bare assignment then `rc=$?`: under `set -e` a failing command
+  # substitution takes the whole script down on the assignment line, so the diagnostic below would
+  # never print and the proof would die silently with curl's exit code.
+  out="$(curl -s -m 20 -w '\n%{http_code}' -X POST "${ORDER_URL}/seed" \
+    -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" 2>&1)" && rc=0 || rc=$?
+  code="$(printf '%s' "${out}" | tail -1)"
+  body="$(printf '%s' "${out}" | sed '$d')"
+  [[ ${rc} -eq 0 ]] || fail "seed could not reach ${ORDER_URL} (curl rc=${rc}).
+  rc=7 is nothing listening and rc=28 a timeout — this proof owns its own forwards, so that means
+  forward() lost pod/${GW}, not that the cluster is unwell."
+  [[ "${code}" == "200" ]] || fail "seed got HTTP ${code} from ${ORDER_URL}: ${body:-empty body}"
+  [[ "${body}" == *'"seeded":true'* ]] || fail "seed returned 200 but did not seed: ${body:-empty}.
+  {\"seeded\":false} is the engine's symbol table exhausted (MAX_SECURITIES) — a fresh epoch is the
+  only cure, and every assertion below would otherwise run against an unregistered ticker."
+}
+
 order() { curl -s -m 20 "${ORDER_URL}/orders" -X POST -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE}${1:+,\"clientOrderId\":\"$1\"}}" 2>/dev/null; }
 drive() { # DRIVE orders at once; every one parks a gateway HTTP thread for the ack timeout
@@ -118,8 +141,7 @@ LIMIT="$(printf '%s' "${BODY}" | jnum noAckLimit)"
 [[ "$(live_code)" == "200" ]] || fail "gateway is not live before the proof starts: ${BODY}"
 R0="$(restarts)"
 [[ "${R0}" =~ ^[0-9]+$ ]] || fail "could not read restartCount for ${GW}"
-curl -sf -m 20 -X POST "${ORDER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null || fail "seed failed"
+seed
 echo "  ${GW} restarts=${R0} ${BODY}"
 
 step "1. NEGATIVE CONTROL — ${DRIVE} concurrent orders (> the 64-thread pool) on a HEALTHY cluster"

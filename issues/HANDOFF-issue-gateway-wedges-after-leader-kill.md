@@ -218,6 +218,11 @@ liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the
 the container, which is the only known cure. The open question is unchanged and still worth
 answering: why a bounded 12s wait per request never clears in eight minutes.
 
+**And the liveness proof does not answer it — do not read it as if it did.** Its step 4 commits an
+order after a 160-order drive, which looks like evidence the backlog drains; it is not, because the
+restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
+reasoning and the experiment that would actually measure it.
+
 ## §6. Where the fix has actually run, and where it still has not
 
 The probe work was written once and back-ported to YU12–YU15 and the GKE tier. "Back-ported and

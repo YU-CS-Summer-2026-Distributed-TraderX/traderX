@@ -60,6 +60,32 @@ jnum() { python3 -c 'import sys,json
 try: print(json.loads(sys.stdin.read()).get(sys.argv[1], ""))
 except Exception: print("")' "$1"; }
 
+# Seed, and say WHY when it does not work. This used to be `curl -sf … || fail "seed failed"`, which
+# discards all three things that tell the causes apart — and they are genuinely different: a curl rc
+# of 7/28 is a dead or missing port-forward (nothing to do with the cluster), an HTTP code is the
+# gateway answering, and a 200 carrying {"seeded":false} is the engine's symbol table exhausted,
+# which -f does not even treat as an error. Two people hit the bare message from two different
+# causes on 2026-08-13, which is one more than a message like that is worth.
+seed() {
+  local out rc code body
+  # `&& rc=0 || rc=$?`, not a bare assignment then `rc=$?`: under `set -e` a failing command
+  # substitution takes the whole script down on the assignment line, so the diagnostic below would
+  # never print and the proof would die silently with curl's exit code — which is worse than the
+  # bare "seed failed" this replaced.
+  out="$(curl -s -m 20 -w '\n%{http_code}' -X POST "${MATCHER_URL}/seed" \
+    -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" 2>&1)" && rc=0 || rc=$?
+  code="$(printf '%s' "${out}" | tail -1)"
+  body="$(printf '%s' "${out}" | sed '$d')"
+  [[ ${rc} -eq 0 ]] || fail "seed could not reach ${MATCHER_URL} (curl rc=${rc}).
+  rc=7 is nothing listening and rc=28 is a timeout — both mean the port-forward, not the cluster:
+  kubectl -n ${NS} port-forward svc/order-matcher 18110:18110"
+  [[ "${code}" == "200" ]] || fail "seed got HTTP ${code} from ${MATCHER_URL}: ${body:-empty body}"
+  [[ "${body}" == *'"seeded":true'* ]] || fail "seed returned 200 but did not seed: ${body:-empty}.
+  {\"seeded\":false} is the engine's symbol table exhausted (MAX_SECURITIES) — a fresh epoch is the
+  only cure, and every assertion below would otherwise run against an unregistered ticker."
+}
+
 order() { curl -s -m 20 "${MATCHER_URL}/orders" -X POST -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${PRICE}${1:+,\"clientOrderId\":\"$1\"}}" 2>/dev/null; }
 # Bounded concurrency, deliberately well under the gateway's 64-thread HTTP pool. An unbounded
@@ -93,8 +119,7 @@ LIMIT="$(printf '%s' "${BODY}" | jnum noAckLimit)"
   It predates the readiness fix, so the 200s below would be the OLD probe and mean nothing."
 [[ "${DRIVE}" -gt "${LIMIT}" ]] || fail "DRIVE=${DRIVE} does not exceed noAckLimit=${LIMIT}"
 [[ "$(ready_code)" == "200" ]] || fail "gateway is not ready before the proof starts: ${BODY}"
-curl -sf -m 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null || fail "seed failed"
+seed
 echo "  ${BODY}"
 
 step "1. NEGATIVE CONTROL — ${DRIVE} orders on a HEALTHY cluster leave /ready at 200"
