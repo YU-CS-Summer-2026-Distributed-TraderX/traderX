@@ -89,6 +89,32 @@ patches:
         type: LoadBalancer
         externalTrafficPolicy: Local
 
+  # FOUR GATEWAYS DO NOT FIT ON A CORRECTNESS RIG, AND SHOULD NOT BE MADE TO.
+  #
+  # The gateway Deployment carries requiredDuringSchedulingIgnoredDuringExecution pod anti-affinity
+  # on kubernetes.io/hostname: one gateway per node, no exceptions. That is correct for the bench —
+  # four gateways sharing a node would not measure four gateways. It means the replica count is a
+  # statement about how many untainted nodes exist, and with CPUS_ALL_REGIONS capped at 32 this rig
+  # has one (3 x c2d-standard-8 members = 24, leaving 4 vCPU).
+  #
+  # So three of four sat Pending with "didn't match pod anti-affinity rules". Relaxing the
+  # anti-affinity would be the wrong fix: it exists so a gateway-count experiment means something,
+  # and quietly co-locating them would silently invalidate the throughput numbers this rig is
+  # eventually for.
+  #
+  # One gateway is right for correctness. Every proof asserts behaviour, not throughput, and the
+  # per-gateway scaling result (3 gw = 149.6k/s, 4 gw = 190.3k/s, linear) is already measured.
+  # When the 64-vCPU quota lands: add untainted nodes FIRST, then raise this to match the node
+  # count. Raising replicas without nodes just recreates the Pending state.
+  - target: { kind: Deployment, name: cluster-gateway }
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: cluster-gateway
+      spec:
+        replicas: 1
+
   - target: { kind: Deployment, name: risk-extract }
     patch: |
       $patch: delete
