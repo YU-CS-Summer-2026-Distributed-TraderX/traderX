@@ -30,6 +30,16 @@ spec:
       labels:
         app: order-matcher-cluster
     spec:
+      # THE POOL NAME IS THE CONTRACT; THE MACHINE TYPE BEHIND IT IS NOT GUARANTEED. A compact-
+      # placement experiment deleted blp-c4d-tuned-pool and stood up `blp-compact` instead, which
+      # left every branch's manifest pinning a pool that did not exist — `apply -k` then leaves all
+      # three members Pending on "didn't match Pod's node affinity/selector", and the live rig only
+      # worked because someone had hand-patched the selector. Recreated under THIS name 2026-08-13
+      # so the manifest is true again, but as c2d-standard-8, not c4d: CPUS_ALL_REGIONS is 32, and
+      # 3 members + one untainted node is the only shape that fits. Correctness proofs do not care;
+      # a BENCHMARK taken here is NOT comparable to the banked C4D numbers — recreate the pool as
+      # c4d-standard-8 (with --system-config-from-file c4d-node-system-config.yaml) before timing
+      # anything.
       nodeSelector:
         cloud.google.com/gke-nodepool: blp-c4d-tuned-pool
       tolerations:

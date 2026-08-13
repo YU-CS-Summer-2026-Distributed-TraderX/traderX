@@ -218,6 +218,75 @@ liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the
 the container, which is the only known cure. The open question is unchanged and still worth
 answering: why a bounded 12s wait per request never clears in eight minutes.
 
+## §6. Where the fix has actually run, and where it still has not
+
+The probe work was written once and back-ported to YU12–YU15 and the GKE tier. "Back-ported and
+renders correctly" is not "has run", and the two are recorded separately here on purpose — a
+manifest that renders and a funnel that compiles are the two failure modes this project keeps
+paying for. Ticked off 2026-08-13.
+
+### YU12's gateway — VERIFIED on the kind rig, 2026-08-13
+
+`646b1e1d` was generate + `compileJava` clean and nothing more. It matters separately from YU13's
+back-port (which is operative for YU13–YU15 and had run) because **YU12 is a different program**:
+it has no `submitPipelined`, so the no-ack streak is hooked into `submitOrder` instead — a
+synchronous funnel with no in-flight window, where every submit round-trips through the owner
+thread. That funnel had never been exercised anywhere.
+
+Run on `kind-traderx-yu12-cluster` on YU12's own image (`traderx/cluster-node:yu12`, built from
+`traderX-YU12-aeron-cluster`), members and gateway both on that build, fresh epoch. Both YU16 proof
+scripts, run directly from the YU16 worktree — YU12 carries no `scripts/proofs`, and
+`scripts/yu15/run-proofs.sh` must NOT be used for this because it pins `BASELINE_IMAGE` and would
+silently rebuild the rig onto the baseline before reporting.
+
+| | reading |
+|---|---|
+| pod comes up | Ready, kubelet driving all three probes at 18111 |
+| `yu16-ready-tracks-commit.sh` | **PASS** — control 25 orders/streak 0/200; quorum gone 503 at streak 25; discriminator held (`connected:true` with /ready still 503); one committed order (`orderRef 50`) cleared it |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — control 80 concurrent (> the 64 pool) left /live 200 and the pod untouched; probe port answered 200 under saturation both rounds; /live 503 at streak 144; `restarts 0 -> 1`, `reason=Error` not OOMKilled, kubelet event `Container gateway failed liveness probe, will be restarted`; recovered order `orderRef 131` |
+
+**The synchronous tier accumulates the streak at the same rate as the pipelined one**, which was the
+open question and the reason the run was worth doing. 80 concurrent orders produced streak 80 in one
+round and 144 in two — the YU16 shape exactly. Each submitter's own `ft.get()` expires at
+`ACK_TIMEOUT_MS + 2s` regardless of where its task sits in the owner queue, so queue position does
+not slow accumulation, and the `LIVE_NO_ACK_STREAK` env knob was not needed. The readiness run makes
+it exactly 1:1: 25 orders, streak 25.
+
+**What this run does NOT establish**, and should not be read as establishing: whether a synchronous
+gateway drains its abandoned-task backlog. Every timed-out submitter leaves a task queued on the
+owner thread, and on this tier each can burn a full ack timeout. The recovered order in step 4
+committed fine — but the restart under test kills the container, and the owner queue with it, so
+step 4 always meets a fresh JVM by construction. Measuring the drain needs a drive with no restart
+(`LIVE_NO_ACK_STREAK` raised above the reachable streak, then watch whether an order commits after
+load stops). That is the same unanswered question as §5, on the synchronous tier.
+
+### The GKE tier — the manifests still have never met a kubelet
+
+`15e758df`/`f40d110e`/`9bb7b5dc`/`0d7fab5c`/`86552494` wired startup + readiness + liveness at 18111
+into each branch's `gke/gateway.yaml`. They render, and they point at a port the code serves. **No
+kubelet has exercised them.** An attempt on 2026-08-13 did not get as far as a node — see below.
+
+**The `blp-c4d-tuned-pool` landmine is now fixed at the source.** `gke/statefulset-emptydir.yaml`
+pinned a pool that a compact-placement experiment had deleted; the live StatefulSet only worked
+because someone had hand-patched the selector, and any fresh `apply -k` would have left all three
+members Pending on "didn't match Pod's node affinity/selector". Fixed by recreating the pool under
+the name the manifests expect, which repairs every branch at once rather than baking an
+experiment's pool name into the tier. The machine-type divergence that comes with it (c2d, not c4d,
+because CPUS_ALL_REGIONS is 32) is recorded at the `nodeSelector` itself.
+
+**What stopped the run: `ZONE_RESOURCE_POOL_EXHAUSTED`.** us-east1-b had no c2d-standard-8 capacity;
+the MIG sat at `creating: 3`, size 0, retrying. Two things worth knowing before the next attempt:
+
+- `--placement-type COMPACT` narrows the eligible hosts further, and this rig does not need it —
+  `76c45bbb` already found compact placement is not the latency lever, and a probe verification is
+  not a timing claim. Drop it and, if the zone is still short, take `n2-standard-8` (widest
+  availability, same 24 vCPU for three members).
+- **A `CREATE_NODE_POOL` operation cannot be cancelled, and it blocks every other operation on the
+  cluster while it retries** — `node-pools delete` returns `Cluster is running incompatible
+  operation`. So a stockout is not a fast failure you retry around; it locks the cluster for the
+  full timeout. Check `gcloud compute instance-groups managed list-errors <mig>` early rather than
+  reading a long `PROVISIONING` as slow provisioning.
+
 ## §4. The proof reported the wrong cause
 
 `yu12-gke-failover-transparency.sh` announced:
