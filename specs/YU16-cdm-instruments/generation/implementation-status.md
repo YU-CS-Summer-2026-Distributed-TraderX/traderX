@@ -90,6 +90,81 @@ Four runs, each failure understood before it was addressed:
 | 3 | 20 / 1 | `yu05-recon` again — traced to trade-id reuse across the fresh epochs the suite itself mints |
 | 4 | **21 / 0** | clean, untouched, with the recon counter hygiene in place |
 
+## Independent re-verification, 2026-08-13 (kind + GKE)
+
+Re-run from a clean session rather than trusted from the record above. Three things the first pass
+could not have seen, and a second rig.
+
+### The rig was a build behind its own tree
+
+The images the suite above was green against were built 2026-08-10 20:53. The extract's schema-3
+accrual commit (`216a6b78`) landed 2026-08-12 20:43 and had **never been built or deployed**. Read
+straight out of the running image's `RiskExtractCsv.class`, the header string ended at
+
+```
+...,counterpartyId,nettingSetId,coupon,maturityDate
+```
+
+— sixteen columns, schema 2. `yu15-risk-extract` passed anyway, exactly as this document's own note
+predicts: it asserts reproducibility, not a version.
+
+Rebuilt `cluster-node` from the tip (the only commit since touching buildable source), rolled it on
+a **fresh epoch**, and re-ran everything. The extract now renders `schema=3` with the four bond
+columns and the accrual convention header.
+
+| run | build | result |
+|---|---|---|
+| 1 | 2026-08-10 images | 20 passed, 0 skipped, **1 failed** |
+| 2 | tip, fresh epoch | **21 passed, 0 skipped, 0 failed** |
+| 2 + new proofs | tip | 23 of 23 |
+
+### The one failure was a proof reporting on the wrong cluster
+
+`yu10-fix-session` failed with `ECONNREFUSED 127.0.0.1:18130` and printed *"0 completed"* and *"no
+projection growth"* — verdicts about FIX ingress — against a kind rig that was fine. Its
+`kubectl port-forward` was the last one in the repo with no `--context`, so it followed the
+operator's ambient kubectl context, which was the GKE cluster (no `svc/order-matcher` there; it is
+`order-matcher-gw`). Fixed, plus a TCP gate that refuses on a dead tunnel instead of blaming the
+system. Same rig, same session, after the fix: **1147 completed lifecycles, 0 rejected, projection
+grew by 1176**.
+
+This is the same fault `db_orders()` in that file already carried a comment about — a kubectl call
+without `--context` returning empty and the script reporting "no projection growth" regardless. The
+port-forward was missed when that one was fixed.
+
+### ETF and Treasury, end to end
+
+Five ETFs quoted live (SPY 532.099, QQQ 444.884, IWM 204.829, VTI 264.184, GLD 217.957). SPY
+crossed 50 at 532.100 through the engine into positions, and lands in the extract as `EQUITY` with
+`EOD_SNAPSHOT` and four empty bond columns beside a `TREASURY` row carrying
+`4.125, 2031-06-30, 2026-06-30, 0.004959`.
+
+### On GKE (project traderx-505400, real hardware, one public IP)
+
+All four images rebuilt `--platform linux/amd64` at tag `yu16`, plus **reference-data, which was
+never on that tier** — trade-processor's Treasury path fails closed without it, so the tier as it
+stood would have rejected every bond at post-trade while the engine accepted it and the gateway
+returned 200.
+
+| proof | result |
+|---|---|
+| `yu16-bond-position` | PASS |
+| `yu16-book-grid` | PASS (incl. the T_SYMBOL restore path) |
+| `yu16-treasury-pricing` | PASS |
+| `yu12-gke-cross-epoch-idreuse` | PASS |
+| `yu12-gke-recovery` | PASS |
+| `yu13-gke-replace-proof` | PASS |
+| `yu12-gke-failover-transparency` | **FAIL — a real defect**, see below |
+
+A six-decimal Treasury limit was accepted through the public load balancer with all three members
+agreeing, which is ADR-060 on hardware rather than on a laptop.
+
+The failover failure is `issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md`: after a leader
+kill the single gateway never recovers its cluster session and returns 504 forever, while `/ready`
+and `/health` both report `connected:true`, `restarts=0`, and the log says nothing. Reproduced on
+YU15 `:bench` the day before, so it is not YU16's. The proof that found it blamed consensus
+transparency, which was fine — right finding, wrong subsystem.
+
 ## Notes for the next lane
 
 - **The book grid was the trap, not the multiplier.** The fraction-of-par convention solves the
