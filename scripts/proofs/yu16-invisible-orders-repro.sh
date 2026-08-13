@@ -121,7 +121,26 @@ SEED="$(curl -s -m 20 -X POST "http://localhost:${ORDER_PORT}/seed" -H 'Content-
 
 step "1. remove quorum — the gateway can no longer commit anything"
 ${K} scale sts order-matcher-cluster --replicas=1 >/dev/null
-sleep 25
+# Wait for the CONDITION, not for a guessed interval. A bare `sleep 25` assumes members 1 and 2 are
+# gone by then, which is an assumption about pod termination speed on whichever rig you happen to be
+# on — and "holds in practice on kind" is exactly what three separate bugs in the sibling liveness
+# proof looked like right up until GKE ran them.
+#
+# This one is load-bearing in a nastier way than a flaky timeout: if quorum is NOT actually lost the
+# drive below simply succeeds, every client is told the truth, and the script reports NO DIVERGENCE
+# — which reads as "§1 has been fixed". A vacuous pass that delivers good news is the worst kind, so
+# this refuses rather than proceeds.
+DOWN=0
+for _ in $(seq 1 60); do
+  READY="$(${K} get sts order-matcher-cluster -o jsonpath='{.status.readyReplicas}' 2>/dev/null)"
+  [[ "${READY:-0}" -le 1 ]] && { DOWN=1; break; }
+  sleep 2
+done
+[[ ${DOWN} -eq 1 ]] || die "members never scaled down to 1 (readyReplicas=${READY:-unknown}) after 120s.
+  Quorum was never lost, so the drive below would just succeed and this run would report NO
+  DIVERGENCE — which reads as '§1 is fixed'. Refusing to produce that."
+# Members are down; give the gateway's cluster session a moment to notice before driving.
+sleep 10
 
 step "2. ${DRIVE} orders, each answered by the gateway, each outcome recorded CLIENT-SIDE"
 # Client-side truth, not the gateway's own streak counter. The claim being reproduced is about what
