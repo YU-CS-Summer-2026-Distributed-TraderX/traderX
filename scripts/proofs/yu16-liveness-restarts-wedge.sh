@@ -74,7 +74,9 @@ forward() { # (re)establish both forwards against the current gateway pod
   ${K} port-forward "pod/${GW}" "${ORDER_PORT}:18110" >/dev/null 2>&1 & PF_PIDS+=($!)
   # Or bash reports each forward as "Terminated: 15" when the next forward() reaps it — noise in
   # the middle of the step a human reads to decide what the restart proved.
-  disown 2>/dev/null || true
+  # -a, not bare `disown`: there are TWO forwards and bare disown only detaches the
+  # most recent job, so the other still reports "Terminated: 15" when cleanup reaps it.
+  disown -a 2>/dev/null || true
   local i
   for i in $(seq 1 60); do [[ "$(live_code)" != "000" ]] && return 0; sleep 1; done
   return 1
