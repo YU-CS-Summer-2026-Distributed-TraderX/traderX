@@ -44,10 +44,16 @@ PROOFS=(
   yu15-risk-extract
   yu16-treasury-pricing
   yu16-bond-position
+  # Deliberately straight after yu16-bond-position, which leaves a held Treasury behind. The
+  # accrual proof REFUSES on an extract with no TREASURY row rather than passing having checked
+  # nothing, so this ordering is what keeps it from reporting SKIP-shaped success on a rig whose
+  # positions were just wiped by a fresh epoch.
+  yu16-accrued-interest
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
   yu08-algo-slicing          # needs the algo engine up; scaled in below
+  yu16-book-grid             # rebuilds a member from an empty disk
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
