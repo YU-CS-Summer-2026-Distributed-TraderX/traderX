@@ -1,0 +1,99 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+
+# Project overlay: the YU15 GKE tier, re-pointed at project traderx-505400 for the throughput and
+# latency campaign. Deploy THIS directory instead of ../gke; ../gke is not modified.
+#
+# WHY AN OVERLAY AND NOT AN EDIT. The four image references live inline across seven manifests in
+# ../gke, and traderx-501015 still owns the delivered risk-extract bucket and the journal archive.
+# Editing the base in place would make the committed tier describe a project some of its own
+# artifacts do not live in, and would need reverting to deploy the old rig again.
+#
+# Kustomize will not reference individual files outside its own root, so this takes ../gke whole and
+# subtracts what a bench does not want. That is also why the deletes below are explicit rather than
+# a shorter resources list.
+#
+# WHAT IS SUBTRACTED, AND WHY. Both removed pieces need GCS in traderx-501015:
+#
+#   backup-cronjob.yaml   journal archive to gs://traderx-501015-order-matcher-journal-archive
+#   risk-extract.yaml     EOD extract to gs://traderx-501015-risk-extracts
+#
+# Left in place with the old buckets they would fail at runtime with a 403 that reads like a code
+# fault rather than a wiring one. A bench needs neither. To run the EOD extract on this project
+# later: create the buckets and the HMAC secret under traderx-505400, drop the corresponding delete
+# patch, and repoint the bucket env.
+#
+# TAGS. `bench`, not the previous campaign's yu15-idempfix / yu15-extract. Reusing a tag on a fresh
+# registry makes it impossible to tell from a pod spec which build is running, and that exact
+# ambiguity already cost a day here when a proof passed against a six-day-old image because its tag
+# had not moved.
+#
+# ONE OLD-PROJECT REFERENCE SURVIVES ON PURPOSE. The member StatefulSet's restore init container
+# still names gs://traderx-501015-order-matcher-journal-archive. It is inert here: the container's
+# first line is
+#
+#     [ "${RESTORE_FROM_GCS:-0}" = "1" ] || { echo "restore disabled — normal boot"; exit 0; }
+#
+# so an unset env exits before any GCS call, which is every boot on this rig. It is not patched
+# because the bucket name lives inside a Python one-liner inside a shell script inside a YAML
+# string, and a kustomize patch on that is more likely to break the restore path than to fix it.
+#
+# The consequence to know: setting RESTORE_FROM_GCS=1 on THIS project reaches into the OLD
+# project's bucket and fails on credentials, not on anything wrong with the cluster. If a
+# restore-from-GCS run is ever wanted here, change the bucket in the base manifest deliberately
+# rather than expecting this overlay to have covered it.
+
+resources:
+  - ../gke
+
+images:
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node
+    newTag: bench
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/trade-processor
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/trade-processor
+    newTag: bench
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/position-service
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/position-service
+    newTag: bench
+  - name: us-east1-docker.pkg.dev/traderx-501015/traderx/price-publisher
+    newName: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher
+    newTag: bench
+
+patches:
+  - target: { kind: Deployment, name: risk-extract }
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: risk-extract
+  - target: { kind: CronJob, name: yu12-snapshot-backup }
+    patch: |
+      $patch: delete
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: yu12-snapshot-backup
+  - target: { kind: ServiceAccount, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: yu12-backup
+  - target: { kind: Role, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: yu12-backup
+  - target: { kind: RoleBinding, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: yu12-backup
