@@ -120,10 +120,39 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
    **Correction to what this section used to say:** readiness alone does *not* convert this into a
    pod restart. It removes the pod from the Service — which stops the LoadBalancer feeding a
    gateway that lies, and that is the substantive win — but with a single replica there is nowhere
-   else to route, so the outage persists until something restarts the pod. A **liveness** probe on
-   the same signal is what would make it self-heal, and is deliberately NOT wired yet: liveness on
-   a business-logic signal risks restart storms and wants a much higher threshold. That is an open
-   decision, not an oversight.
+   else to route, so the outage persists until something restarts the pod.
+
+   **1b. The other half — DONE 2026-08-13.** The liveness probe is now wired, and the decision it
+   was waiting on is recorded here. `/live` fails at `LIVE_NO_ACK_STREAK` (default 5× the readiness
+   limit = 100) and the manifest demands `failureThreshold: 6 × 10s` on top, so the kubelet
+   restarts the container only after ~60s of continuous inability to commit. Proof:
+   `scripts/proofs/yu16-liveness-restarts-wedge.sh` (passes; `restarts 0 -> 1` at streak 144, the
+   kubelet's own `Liveness probe failed` event naming the cause).
+
+   Why this is not the restart storm the decision was worried about, in three properties:
+
+   - **It ignores `connected`.** A closed session is not a restart reason — an election or a member
+     roll closes it and the owner thread reconnects on its own. Restarting on that would restart
+     every gateway on every failover.
+   - **It cannot fire on an idle gateway.** The streak only advances on a submit that got no ack, so
+     a cluster-wide outage with no traffic offered restarts nothing.
+   - **It is reached by volume, not by elapsed time,** and then has to persist for a minute.
+
+   The residual risk is real and accepted: a cluster-wide outage *under live load* will restart
+   gateways, because from the gateway's side that is indistinguishable from its own wedge. It costs
+   the in-flight orders of a tier that was not committing anything anyway, and the kubelet's restart
+   backoff caps the flap rate — against a single public IP routing every order into a gateway that
+   books what it denies.
+
+   A **startupProbe** landed with it (`/live`, 120s), which is what let the readiness
+   `failureThreshold` drop 24 → 3: the old 24 existed purely to tolerate a slow JVM+Aeron start,
+   i.e. two minutes in which an unready gateway stayed in the Service. It reads `/live` and not
+   `/ready` deliberately — `/live` is 200 as soon as the process serves, so a cluster that is down
+   while this pod boots cannot hold startup open until the kubelet kills it.
+
+   **What liveness still does not catch:** the same partial-degradation blind spot as readiness
+   (any ack resets the streak), and an idle wedged gateway — which is correct but means the first
+   ~100 clients after a quiet wedge are still lied to before the restart is asked for.
 
    Two measured limits on the fix:
 
@@ -131,9 +160,11 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
      never builds a streak, because any ack resets it. Observed live oscillating at 8–12 during a
      partial wedge. That is the intended trade — a rate-based signal would trip under legitimate
      saturation — but it means partial degradation stays invisible.
-   - **Under heavy load the probe cannot be served at all** (§5), so the streak never gets read.
+   - ~~**Under heavy load the probe cannot be served at all** (§5), so the streak never gets
+     read.~~ — **fixed 2026-08-13**, see §5.
 
-2. **§5 first, arguably.** The hang below is more severe than the wedge it hides inside.
+2. ~~**§5 first, arguably.**~~ Its *probe* half is done (separate probe server). The hang itself is
+   still undiagnosed and is still more severe than the wedge it hides inside.
 2. Then find the session. `submitOrder` returning null means no egress ack arrived for the
    request. Worth checking whether the gateway's egress subscription is re-established on a leader
    change, or whether it stays bound to the old leader's publication.
@@ -173,9 +204,19 @@ server cannot serve is not a signal — the pod does go NotReady, but by probe *
 what the old build did too, so nothing is gained and nothing is diagnosable. Under load the honest
 503 from §1's fix never gets sent.
 
-Worth considering: serving `/ready` and `/health` from a separate tiny HTTP server with its own
-single-thread executor, so the probe path cannot be starved by the order path no matter what the
-order path is doing.
+**The probe half is fixed, 2026-08-13.** `/ready`, `/health` and `/live` are now also served by a
+separate `HttpServer` on `GATEWAY_PROBE_PORT` (18111) with its own single-thread executor, and every
+probe in `gateway.yaml` reads that port. They stay registered on 18110 too, so the proofs and
+benches that curl it are untouched. Asserted directly rather than assumed: step 2 of
+`yu16-liveness-restarts-wedge.sh` takes the reading *while* 80 concurrent orders (the pool is 64)
+are parked on acks that will never arrive, and the probe port answered 200/503 throughout. So the
+verdict Kubernetes now acts on is the gateway's own, not a timeout.
+
+**The hang itself is NOT fixed and is still not diagnosed** — the order path still fills up and
+still does not drain after load stops. What changed is that it is now survivable without a human:
+liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the kubelet restarts
+the container, which is the only known cure. The open question is unchanged and still worth
+answering: why a bounded 12s wait per request never clears in eight minutes.
 
 ## §4. The proof reported the wrong cause
 

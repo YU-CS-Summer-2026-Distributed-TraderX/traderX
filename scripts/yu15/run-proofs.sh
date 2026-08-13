@@ -55,6 +55,11 @@ PROOFS=(
   yu08-algo-slicing          # needs the algo engine up; scaled in below
   yu16-book-grid             # rebuilds a member from an empty disk
   yu16-ready-tracks-commit   # scales the members to 1 and back (no PVC wipe, no epoch change)
+  # Same quorum-loss trick, taken further: it drives the no-ack streak past the LIVENESS limit and
+  # lets the kubelet restart the gateway. Deliberately AFTER the readiness proof, whose step 3
+  # asserts /ready stays 503 across a restored quorum — a liveness restart would clear the streak
+  # and hand it a fresh, ready gateway to measure.
+  yu16-liveness-restarts-wedge
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
