@@ -54,6 +54,7 @@ PROOFS=(
   yu10-fix-session
   yu08-algo-slicing          # needs the algo engine up; scaled in below
   yu16-book-grid             # rebuilds a member from an empty disk
+  yu16-ready-tracks-commit   # scales the members to 1 and back (no PVC wipe, no epoch change)
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
