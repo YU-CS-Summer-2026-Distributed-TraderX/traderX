@@ -62,6 +62,33 @@ images:
     newTag: bench
 
 patches:
+  # ONE PUBLIC IP IN FRONT OF THE FOUR GATEWAYS.
+  #
+  # The base leaves order-matcher-gw as a ClusterIP: the previous campaign drove load from inside
+  # the cluster, so nothing external ever needed to reach it. type: LoadBalancer makes GCP
+  # provision an L4 network load balancer with a single external address that distributes across
+  # whatever gateway pods are Ready — add or remove replicas and the LB follows, no config change.
+  #
+  # A LoadBalancer Service KEEPS its ClusterIP. That matters more than it looks: in-cluster clients
+  # go on addressing order-matcher-gw:18110 directly and never traverse the LB, so this can be
+  # added without disturbing how the benchmark is driven. See the warning below.
+  #
+  # externalTrafficPolicy: Local, deliberately. The default (Cluster) SNATs and may bounce a
+  # request to a pod on a different node, which adds a hop to a number this project measures in
+  # microseconds and destroys the client IP. Local keeps the request on the node that received it.
+  # The cost is that a node with no gateway pod fails the LB health check and is taken out of
+  # rotation, so the gateway Deployment and the gateway node pool need to line up; with 4 replicas
+  # on a 2-node pool that is satisfied, but it is a real constraint if either number changes.
+  - target: { kind: Service, name: order-matcher-gw }
+    patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: order-matcher-gw
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+
   - target: { kind: Deployment, name: risk-extract }
     patch: |
       $patch: delete
