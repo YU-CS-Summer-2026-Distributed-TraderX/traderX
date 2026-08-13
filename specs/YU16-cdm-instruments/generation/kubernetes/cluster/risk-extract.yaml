@@ -4,6 +4,10 @@ metadata:
   name: risk-extract
 spec:
   replicas: 1
+  # Singleton bound to one JetStream durable: a rolling update overlaps old and new pods on the
+  # same durable and the new one is refused the bind ([SUB-90012]). Never run two at once.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: risk-extract
