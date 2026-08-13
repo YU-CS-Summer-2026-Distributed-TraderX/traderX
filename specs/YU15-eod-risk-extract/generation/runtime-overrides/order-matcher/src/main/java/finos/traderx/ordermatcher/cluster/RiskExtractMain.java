@@ -72,7 +72,19 @@ public final class RiskExtractMain {
             rebuild(Path.of(args[1]), Path.of(args[2]));
             return;
         }
-        new RiskExtractMain().run();
+        try {
+            new RiskExtractMain().run();
+        } catch (final Throwable t) {
+            // The media-driver and NATS threads are non-daemon, so main dying does NOT end the
+            // JVM: PID 1 stays alive and the pod reports Ready while the producer no longer
+            // exists — the silent-death defect of 2026-08-13. PID 1 is java itself (no wrapper),
+            // so process exit IS the liveness signal Kubernetes watches; make death loud here.
+            // halt, not exit: a shutdown hook blocked on the same broken dependency that killed
+            // us would reproduce exactly the wedge this exists to prevent.
+            System.err.println("RISK-EXTRACT-DEAD producer failed; exiting so Kubernetes sees it");
+            t.printStackTrace();
+            Runtime.getRuntime().halt(1);
+        }
     }
 
     // ----- rebuild ----------------------------------------------------------------------------
@@ -111,8 +123,24 @@ public final class RiskExtractMain {
         ensureStream(nats, stream, pricesReady, pnlDone);
         final JetStream js = nats.jetStream();
         final Dispatcher dispatcher = nats.createDispatcher();
-        js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
-            false, PushSubscribeOptions.builder().stream(stream).durable(durable).build());
+        // The previous pod's binding to the durable can outlive it: the server clears interest
+        // only once it notices the dead client's disconnect, and a rolling replacement overlaps
+        // pods outright. That is a self-healing condition, not an error — wait it out
+        // ([SUB-90012] "Consumer is already bound to a subscription"). Anything else still throws.
+        while (true) {
+            try {
+                js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
+                    false, PushSubscribeOptions.builder().stream(stream).durable(durable).build());
+                break;
+            } catch (final IllegalArgumentException e) {
+                if (!String.valueOf(e.getMessage()).contains("[SUB-90012]")) {
+                    throw e;
+                }
+                System.out.println("RISK-EXTRACT durable '" + durable
+                    + "' still bound to the previous pod; retrying: " + e.getMessage());
+                Thread.sleep(2000);
+            }
+        }
 
         System.out.println("RISK-EXTRACT up: nats=" + natsUrl + " trigger=" + pnlDone
             + " durable=" + durable + " sink=" + env("RISK_EXTRACT_SINK_URI", "<unset>"));
