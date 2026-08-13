@@ -30,6 +30,15 @@ spec:
       labels:
         app: order-matcher-cluster
     spec:
+      # THIS POOL DOES NOT EXIST ON THE CURRENT BENCH PROJECT. This state pins blp-c3-pool, which
+      # is not one of traderx-505400's pools (default-pool and blp-c4d-tuned-pool). The 2026-08-13
+      # repair that recreated blp-c4d-tuned-pool fixed the OTHER four states and does nothing here —
+      # `apply -k` on this tier leaves all three members Pending on "didn't match Pod's node
+      # affinity/selector", which reads exactly like a quota problem and is not one.
+      #
+      # Before deploying this state to a bench project, either create blp-c3-pool there or change
+      # this selector deliberately. And note a running pod's nodeSelector is immutable: correcting
+      # the spec leaves surviving pods Pending against a spec that is already right — delete them.
       nodeSelector:
         cloud.google.com/gke-nodepool: blp-c3-pool
       tolerations:
