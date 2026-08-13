@@ -112,11 +112,28 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
 
 ## Next steps for whoever picks this up
 
-1. **Make the probe honest first**, before diagnosing the session. `/ready` returning
-   `connected:true` while no order can commit is a bug on its own and it is the reason nothing
-   self-heals. A readiness signal for an ingress process should reflect its ability to commit, not
-   the liveness of a socket — e.g. fail readiness after N consecutive `no committed ack`s. That
-   alone converts a silent permanent outage into a pod restart.
+1. ~~**Make the probe honest first**~~ — **DONE 2026-08-13**, `gateway readiness: report the ability
+   to COMMIT, not the state of a socket`. `/ready` now fails after 20 consecutive submits that got
+   no committed ack, counted in `submitPipelined` where every ingress path funnels. Proof:
+   `scripts/proofs/yu16-ready-tracks-commit.sh`.
+
+   **Correction to what this section used to say:** readiness alone does *not* convert this into a
+   pod restart. It removes the pod from the Service — which stops the LoadBalancer feeding a
+   gateway that lies, and that is the substantive win — but with a single replica there is nowhere
+   else to route, so the outage persists until something restarts the pod. A **liveness** probe on
+   the same signal is what would make it self-heal, and is deliberately NOT wired yet: liveness on
+   a business-logic signal risks restart storms and wants a much higher threshold. That is an open
+   decision, not an oversight.
+
+   Two measured limits on the fix:
+
+   - **It only catches a TOTAL wedge.** A gateway that fails most orders but succeeds occasionally
+     never builds a streak, because any ack resets it. Observed live oscillating at 8–12 during a
+     partial wedge. That is the intended trade — a rate-based signal would trip under legitimate
+     saturation — but it means partial degradation stays invisible.
+   - **Under heavy load the probe cannot be served at all** (§5), so the streak never gets read.
+
+2. **§5 first, arguably.** The hang below is more severe than the wedge it hides inside.
 2. Then find the session. `submitOrder` returning null means no egress ack arrived for the
    request. Worth checking whether the gateway's egress subscription is re-established on a leader
    change, or whether it stays bound to the old leader's publication.
@@ -132,6 +149,33 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
    header says "WHY GKE — election behaviour on kind's starved CPUs is not the system's behaviour",
    which is a fair caution about *timing* — but this defect is not a timing claim, and it shows up
    on both rigs identically.
+
+## §5. A worse failure hiding inside it: the gateway stops serving HTTP entirely
+
+Found 2026-08-13 while building the readiness proof. Drive a wedged gateway hard enough — an
+unbounded generator, roughly 20 orders/sec — and it stops answering **any** HTTP request, `/ready`
+and `/health` included. Not 503. No response at all, connection accepted and never served.
+
+**It does not recover.** Measured: eight minutes with zero load offered, polling every 30 seconds,
+still 000 every time. The JVM was alive (PID 1, 23 minutes uptime), the Aeron side was alive (the
+control feed kept applying and logging), and TCP kept accepting. Only a restart cleared it.
+
+The mechanism is almost certainly the HTTP executor: every in-flight order parks one of the 64 pool
+threads for the full `ACK_TIMEOUT_MS` (10s) plus slack, and under a wedge none of them complete
+early. `gateway.yaml` already carries a comment about exactly this shape — the pool was raised from
+8 to 64 because "the readiness probe starved behind them and k8s pulled the gateway out of the
+Service mid-bench". 64 only moves the cliff; it does not remove it. What is NOT explained is why it
+never drains after load stops, which is the part worth investigating: a bounded 12s wait per request
+should clear thousands of queued requests in minutes, and it did not clear in eight.
+
+**Why this matters more than the wedge.** It defeats any probe-based fix. A readiness signal the
+server cannot serve is not a signal — the pod does go NotReady, but by probe *timeout*, which is
+what the old build did too, so nothing is gained and nothing is diagnosable. Under load the honest
+503 from §1's fix never gets sent.
+
+Worth considering: serving `/ready` and `/health` from a separate tiny HTTP server with its own
+single-thread executor, so the probe path cannot be starved by the order path no matter what the
+order path is doing.
 
 ## §4. The proof reported the wrong cause
 
