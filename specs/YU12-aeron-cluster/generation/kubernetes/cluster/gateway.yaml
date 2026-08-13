@@ -49,6 +49,13 @@ spec:
               value: "18110"
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
+            # Probe port. /ready, /health and /live are served here by their OWN single-thread
+            # server, so a saturated order path cannot leave a probe unanswered — measured: a
+            # wedged gateway under ~20 orders/s stopped answering all HTTP on 18110, permanently,
+            # which turns every probe verdict below into an indiscriminate timeout. They are still
+            # served on 18110 too, for the proofs and benches that curl it.
+            - name: GATEWAY_PROBE_PORT
+              value: "18111"
             - name: FIX_ACCEPTOR_PORT
               value: "18130"
             - name: FIX_SESSION_COMPIDS
@@ -60,13 +67,42 @@ spec:
               containerPort: 18110
             - name: fix
               containerPort: 18130
+            - name: probe
+              containerPort: 18111
+          # STARTUP: "is the HTTP surface up at all". Deliberately /live and not /ready — /live is
+          # 200 as soon as the process serves, so a cluster that is DOWN while this pod boots
+          # cannot hold startup open until the kubelet kills it. 120s covers JVM + media driver +
+          # the up-to-60s awaitConnected. Its real job is to let readiness and liveness below run
+          # at sane thresholds: without it, readiness needed failureThreshold 24 purely to tolerate
+          # a slow start, i.e. two minutes in which an unready gateway was still in the Service.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 24
           readinessProbe:
             httpGet:
               path: /ready
-              port: 18110
-            initialDelaySeconds: 5
+              port: 18111
             periodSeconds: 5
-            failureThreshold: 24
+            failureThreshold: 3
+          # LIVENESS: ask for a restart when this gateway has told 100+ consecutive clients their
+          # orders failed, sustained for 60s. The restart is the known cure (verified on kind and
+          # GKE) and the gateway is stateless, so it costs only the in-flight orders — and on this
+          # rig, at replicas: 1, readiness alone cannot heal anything because there is nowhere else
+          # to route. failureThreshold 6 x 10s is the storm guard: an election, a member roll or a
+          # brief burst of ambiguous timeouts clears long before it, and an IDLE gateway can never
+          # trip it at all because the streak only advances on a submit that got no ack. See
+          # LIVE_NO_ACK_STREAK in ClusterGatewayMain for the full judgement, and note the tuning
+          # knob: LIVE_NO_ACK_STREAK env, default 5x READY_NO_ACK_STREAK.
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 3
           resources:
             requests:
               cpu: 200m

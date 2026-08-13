@@ -3,6 +3,7 @@ package finos.traderx.ordermatcher.cluster;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpServer;
 import finos.traderx.ordermatcher.lmax.AeronReplicationCodec;
 import finos.traderx.ordermatcher.lmax.InputEvent;
@@ -26,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Stateless-forward order gateway (ADR-047): terminates REST and (optionally) FIX, screens
@@ -40,7 +42,10 @@ import java.util.concurrent.TimeUnit;
  * side of that seam, a leader-change reconnect on the owner thread never disturbs a FIX session
  * (ADR-047 failover transparency; proven by {@code FixGatewaySurvivalTest}).
  *
- * Split readiness (ADR-045): {@code /ready} is 200 only while the cluster session is live.
+ * Split readiness (ADR-045), corrected: {@code /ready} reports the ability to COMMIT, not the state
+ * of a socket, and {@code /live} is the same signal at a much higher bar — the point at which a
+ * restart (the only known cure for the wedge) is the right answer. Both are served from a separate
+ * single-thread HTTP server on {@code GATEWAY_PROBE_PORT} so the order path cannot starve them.
  */
 public final class ClusterGatewayMain implements OrderSubmitter {
     private static final ObjectMapper JSON = new ObjectMapper();
@@ -60,6 +65,75 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     private AeronCluster client;
     private volatile boolean connected;
     private volatile boolean running = true;
+
+    /**
+     * Consecutive submits that produced NO committed ack, across every ingress path. Reset by any
+     * submit that gets one.
+     *
+     * <p>This exists because {@code connected} is not a readiness signal. After a leader kill the
+     * gateway can hold a socket it believes is good while its session is useless: measured on both
+     * kind and GKE (2026-08-12/13), {@code /ready} answered {@code connected:true} with
+     * {@code restarts=0} and no log line while every order came back 504. Kubernetes therefore
+     * never took the pod out of the Service and the LoadBalancer kept routing a single public IP
+     * into it — and the orders were not refused, they were committed and booked while the client
+     * was told they failed. See issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md.
+     *
+     * <p>A readiness signal for an ingress process has to mean "I can commit", not "my socket is
+     * open".
+     */
+    private final AtomicInteger noAckStreak = new AtomicInteger();
+
+    /**
+     * Consecutive no-ack submits before {@code /ready} starts failing.
+     *
+     * <p>Why a STREAK and not a rate or a window: any single submit that gets a committed ack
+     * resets it, and the counter is global across submitter threads. On this tier every submitter
+     * blocks on the owner thread for its own commit, so a gateway that is merely BUSY still
+     * completes orders continuously and the streak sits near zero however deep the backlog gets —
+     * a queue is not a wedge. It only runs away when nothing is completing anywhere, and a
+     * readiness signal that tripped under legitimate saturation would take the ingress down to
+     * protect it.
+     *
+     * <p>20 rather than 3 for margin — a wedge produces an unbounded streak in seconds, so the
+     * threshold costs nothing against the real signal and buys room against a burst of ambiguous
+     * timeouts during an election, which IS recoverable and must not unready anything.
+     */
+    private static final int READY_NO_ACK_STREAK = Integer.parseInt(env("READY_NO_ACK_STREAK", "20"));
+
+    /**
+     * Consecutive no-ack submits before {@code /live} starts failing — i.e. before Kubernetes is
+     * asked to RESTART this gateway rather than merely stop routing to it.
+     *
+     * <p>Readiness was only half the fix. It removes the pod from the Service, which is the
+     * substantive win on a multi-replica tier; but the correctness rig runs {@code replicas: 1}
+     * (hostname anti-affinity, one untainted node), so there is nowhere else to route and the
+     * outage persists until a human runs {@code kubectl rollout restart}. That restart is the
+     * known, reliable cure on both kind and GKE, and the gateway is stateless — it costs the
+     * in-flight orders and nothing else. A probe can ask for it.
+     *
+     * <p>The reason it is deliberately NOT the readiness signal with a bigger number:
+     *
+     * <ul>
+     *   <li><b>It ignores {@code connected}.</b> A closed session is not a reason to restart —
+     *       an election or a member roll closes it and the owner thread reconnects on its own.
+     *       Restarting on that would restart every gateway on every failover.</li>
+     *   <li><b>It cannot fire on an idle gateway.</b> The streak only advances when a submit
+     *       returns no committed ack, so a cluster-wide outage with no traffic offered restarts
+     *       nothing. The condition is precisely "clients are being told their orders failed",
+     *       which is the only state a restart is known to fix.</li>
+     *   <li><b>It is reached by volume, not by time.</b> 5x the readiness limit at the default,
+     *       and the manifest's {@code failureThreshold} then demands ~60s of continuous failure
+     *       on top. A burst of ambiguous timeouts during an election clears long before that.</li>
+     * </ul>
+     *
+     * <p>The residual risk is honest: a genuine cluster-wide outage under live load WILL restart
+     * gateways, because from the gateway's side that is indistinguishable from its own wedge. The
+     * cost is bounded — during such an outage nothing is committing anyway, and the kubelet's
+     * restart backoff caps the flap rate — whereas the cost of not restarting is a single public
+     * IP routing every order into a gateway that books what it denies.
+     */
+    private static final int LIVE_NO_ACK_STREAK = Integer.parseInt(
+        env("LIVE_NO_ACK_STREAK", Integer.toString(READY_NO_ACK_STREAK * 5)));
 
     // Owner-thread-only ack scratch (set by the egress listener between poll calls).
     private long[] lastOrderAck;   // {appliedSeq, orderRef, kind, tradeSeq}
@@ -117,11 +191,52 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         server.createContext("/trades", this::handleTrade);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/seed", this::handleSeed);
-        server.createContext("/ready", exchange ->
-            respond(exchange, connected ? 200 : 503, "{\"connected\":" + connected + "}"));
-        server.createContext("/health", exchange ->
-            respond(exchange, 200, "{\"connected\":" + connected + "}"));
+        // READY MEANS "I CAN COMMIT", not "my socket is open". `connected` alone reported healthy
+        // through a wedge in which every order was answered 504 while being committed and booked
+        // (issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md), so Kubernetes never pulled
+        // the pod and the LoadBalancer kept feeding it. The streak is reported in the body either
+        // way: the first thing anyone does with a failing probe is curl it by hand, and a bare
+        // `connected:false` would send them to the network when the session is the problem.
+        final HttpHandler readyHandler = exchange -> {
+            final int streak = noAckStreak.get();
+            final boolean ready = connected && streak < READY_NO_ACK_STREAK;
+            respond(exchange, ready ? 200 : 503, "{\"connected\":" + connected
+                + ",\"noAckStreak\":" + streak + ",\"noAckLimit\":" + READY_NO_ACK_STREAK + "}");
+        };
+        // /health stays 200 whenever the process is serving — it answers "am I up", and nothing
+        // probes it. It carries the streak so a human looking here first is not misled.
+        final HttpHandler healthHandler = exchange ->
+            respond(exchange, 200, "{\"connected\":" + connected
+                + ",\"noAckStreak\":" + noAckStreak.get() + "}");
+        // LIVE MEANS "RESTART ME": the same streak, a much higher bar, and no `connected` term —
+        // see LIVE_NO_ACK_STREAK for why each of those three is deliberate.
+        final HttpHandler liveHandler = exchange -> {
+            final int streak = noAckStreak.get();
+            respond(exchange, streak < LIVE_NO_ACK_STREAK ? 200 : 503,
+                "{\"noAckStreak\":" + streak + ",\"noAckLimit\":" + LIVE_NO_ACK_STREAK + "}");
+        };
+        // PROBES GET THEIR OWN SERVER AND THEIR OWN THREAD (§5 of the wedge issue). The order
+        // path's 64-thread pool is exhaustible by construction — every in-flight order parks a
+        // thread for the full ACK_TIMEOUT, and under a wedge none of them complete early. Measured
+        // 2026-08-13: at ~20 orders/s a wedged gateway stopped answering ANY HTTP, /ready included,
+        // and never drained — eight minutes with zero load offered, still nothing. A probe the
+        // server cannot answer is not a signal: Kubernetes then acts on the TIMEOUT, which is
+        // indiscriminate and says nothing about what is wrong. One thread that only ever reads two
+        // volatiles cannot be starved by the order path no matter what the order path is doing.
+        //
+        // Registered on the main port as well, because every existing proof and bench script curls
+        // :18110/ready and there is no reason to break them — but the manifest's probes read the
+        // probe port, which is the whole point.
+        final HttpServer probes = HttpServer.create(
+            new InetSocketAddress(Integer.parseInt(env("GATEWAY_PROBE_PORT", "18111"))), 16);
+        probes.setExecutor(Executors.newSingleThreadExecutor());
+        for (final HttpServer s : new HttpServer[] {server, probes}) {
+            s.createContext("/ready", readyHandler);
+            s.createContext("/health", healthHandler);
+            s.createContext("/live", liveHandler);
+        }
         server.start();
+        probes.start();
 
         final String fixPortEnv = env("FIX_ACCEPTOR_PORT", "");
         if (!fixPortEnv.isEmpty()) {
@@ -138,6 +253,7 @@ public final class ClusterGatewayMain implements OrderSubmitter {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             running = false;
             server.stop(0);
+            probes.stop(0);
             CloseHelper.quietCloseAll(client, driver);
         }));
         Thread.currentThread().join();
@@ -278,6 +394,21 @@ public final class ClusterGatewayMain implements OrderSubmitter {
     @Override
     public ExecResult submitOrder(final String clOrdId, final int accountId, final String ticker,
                                   final char side, final int qty, final long limitPxTicks) {
+        final ExecResult r = submitOrder0(clOrdId, accountId, ticker, side, qty, limitPxTicks);
+        // The wedge detector, in the ONE place every ingress path funnels through — REST and the
+        // FIX acceptor both reach consensus here, so one update covers them and none can be added
+        // later that bypasses it. A null is exactly "no committed decision", which is what /ready
+        // now has to know about.
+        if (r == null) {
+            noAckStreak.incrementAndGet();
+        } else {
+            noAckStreak.set(0);
+        }
+        return r;
+    }
+
+    private ExecResult submitOrder0(final String clOrdId, final int accountId, final String ticker,
+                                    final char side, final int qty, final long limitPxTicks) {
         try {
             return onOwner(() -> {
                 final int securityId = resolveSecurityId(ticker);
