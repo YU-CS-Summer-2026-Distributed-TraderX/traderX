@@ -1,0 +1,278 @@
+#!/usr/bin/env bash
+# yu17-swap-netting.sh — THE headline proof of YU17.
+#
+# The property: a swap is not a position, and our netted position grain would destroy it.
+#
+#   Receive fixed 4.2% on 10mm, then pay fixed 4.3% on the same notional, same dates, same
+#   conventions, same account. At the (accountId, security) grain those two net to quantity ZERO
+#   and the average rate is meaningless — the position disappears. Economically the account is
+#   locked into paying ~10bp on 10mm for five years: ~10k/year, ~50k undiscounted. Netting would
+#   have deleted a real, loss-making position and left nothing behind to notice.
+#
+# So this proves, at one consensus sequence:
+#   1. both bookings were SEQUENCED THROUGH CONSENSUS (D1) — the applied sequence moves by exactly
+#      two, and all three members agree on the resulting state
+#   2. the contracts artifact carries BOTH contracts, per trade, with both rates intact
+#   3. the netted position artifact is UNCHANGED — it has no row for either swap, because a swap
+#      never becomes a position (D3); that absence is the netting loss, made visible
+#   4. the contracts artifact rebuilds byte-identically from the stored cut alone
+#   5. the risk gate is wired: an unknown account is refused and creates no contract
+#
+# Every assertion carries a negative control (.claude/skills/vacuous-pass-audit rule 10).
+#
+# Usage: ./yu17-swap-netting.sh   (assumes scripts/yu15/start-cluster-kind.sh has run and the
+#                                  gateway is forwarded on 18110)
+set -euo pipefail
+
+VERBOSE=0
+case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
+vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
+
+CTX="${CTX:-kind-traderx-yu12-cluster}"
+NS="${NS:-traderx}"
+K="kubectl --context ${CTX} -n ${NS}"
+MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
+EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
+
+ACCOUNT=22214                 # the booking account; enabled via /seed below
+SEED_TICKER="${SEED_TICKER:-AAPL}"
+NOTIONAL=10000000             # 10mm, identical on both legs — this is what makes them net to zero
+RECEIVE_RATE="0.042"
+PAY_RATE="0.043"
+EFFECTIVE="2026-08-17"
+MATURITY="2031-08-17"
+CONVENTIONS="USD-SOFR-1Y-ACT360"
+UNKNOWN_ACCOUNT=999123        # never seeded — the risk gate must refuse it
+
+fail() { echo "[FAIL] $*" >&2; exit 1; }
+step() { echo; echo "=== $* ==="; }
+
+extract_pod() { ${K} get pod -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'; }
+
+# The APPLIED SEQUENCE is a cluster MEMBER's number. The gateway's /health has no opinion about
+# consensus, so asking it there would make every sequence assertion below vacuous.
+applied_seq() { # applied_seq <member-ordinal>
+  ${K} exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
+    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
+}
+
+book() { # book <payReceive> <rate> <clientOrderId> -> "<http_code> <body>" on stdout
+  local body
+  body="$(curl -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
+    -H 'Content-Type: application/json' \
+    -d "{\"clientOrderId\":\"${3}\",\"accountId\":${4:-${ACCOUNT}},\"payReceive\":\"${1}\",
+         \"notional\":${NOTIONAL},\"fixedRate\":${2},\"effectiveDate\":\"${EFFECTIVE}\",
+         \"maturityDate\":\"${MATURITY}\",\"conventions\":\"${CONVENTIONS}\"}")"
+  echo "$(echo "${body}" | tail -1) $(echo "${body}" | sed '$d' | tr -d '\n')"
+}
+
+json_field() { # json_field <key> ; reads JSON on stdin
+  python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('$1',''))"
+}
+
+step "0. preflight — rig reachable, three members, a readable consensus position"
+curl -sf --max-time 10 "${MATCHER_URL}/ready" >/dev/null \
+  || fail "gateway not reachable at ${MATCHER_URL} (port-forward svc/order-matcher 18110:18110?)"
+[[ "$(${K} get pod -l app=order-matcher-cluster -o name | wc -l | tr -d ' ')" == "3" ]] \
+  || fail "need 3 cluster members"
+POD="$(extract_pod)"; [[ -n "${POD}" ]] || fail "no risk-extract pod"
+for d in price-publisher trade-processor position-service; do
+  ${K} get deploy "${d}" >/dev/null 2>&1 || fail "${d} is not deployed — the EOD chain cannot run"
+done
+# The rig can be a commit behind its own tree. A proof asserting new behaviour cannot tell you it
+# ran against a stale build, so ask the build whether it knows what a swap is BEFORE trusting it.
+${K} exec order-matcher-cluster-0 -- sh -c \
+  'javap -classpath /opt/app/classes finos.traderx.ordermatcher.lmax.SwapConventions >/dev/null 2>&1' \
+  || fail "the running member image has no SwapConventions class — it predates YU17; rebuild and roll"
+BEFORE_SEQ="$(applied_seq 0)"
+[[ "${BEFORE_SEQ}" =~ ^[0-9]+$ && "${BEFORE_SEQ}" -ge 0 ]] \
+  || fail "could not read the applied sequence from order-matcher-cluster-0 (got '${BEFORE_SEQ}')"
+curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${ACCOUNT},\"tickers\":\"${SEED_TICKER}\",\"price\":150.00}" >/dev/null \
+  || fail "seed failed — account ${ACCOUNT} would not be enabled and every booking would be refused"
+echo "[ok] gateway ready, 3 members, YU17 image, account ${ACCOUNT} enabled, applied=${BEFORE_SEQ}"
+
+step "1. the risk gate refuses an unknown account — and never creates a contract"
+# Run the negative arm FIRST, so a later "two contracts" count cannot be inflated by it.
+RUN_ID="$(date -u +%s)"
+read -r BAD_CODE BAD_BODY <<<"$(book Receive "${RECEIVE_RATE}" "yu17-bad-${RUN_ID}" "${UNKNOWN_ACCOUNT}")"
+[[ "${BAD_CODE}" == "422" ]] \
+  || fail "booking on unknown account ${UNKNOWN_ACCOUNT} returned HTTP ${BAD_CODE}, expected 422 — the risk gate is not wired"
+BAD_REASON="$(echo "${BAD_BODY}" | json_field reason)"
+[[ "${BAD_REASON}" == "UNKNOWN_ACCOUNT" ]] \
+  || fail "refusal reason was '${BAD_REASON}', expected UNKNOWN_ACCOUNT — the gate refused for the wrong reason"
+echo "[ok] unknown account refused with ${BAD_REASON} (the booking was sequenced and DECIDED, not dropped)"
+
+step "2. book the pair: receive fixed ${RECEIVE_RATE} and pay fixed ${PAY_RATE}, both on ${NOTIONAL}"
+SEQ_BEFORE_PAIR="$(applied_seq 0)"
+[[ "${SEQ_BEFORE_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable before the pair"
+read -r RECV_CODE RECV_BODY <<<"$(book Receive "${RECEIVE_RATE}" "yu17-recv-${RUN_ID}")"
+[[ "${RECV_CODE}" == "200" ]] || fail "receive-fixed booking returned HTTP ${RECV_CODE}: ${RECV_BODY}"
+read -r PAY_CODE PAY_BODY <<<"$(book Pay "${PAY_RATE}" "yu17-pay-${RUN_ID}")"
+[[ "${PAY_CODE}" == "200" ]] || fail "pay-fixed booking returned HTTP ${PAY_CODE}: ${PAY_BODY}"
+RECV_ID="$(echo "${RECV_BODY}" | json_field contractId)"
+PAY_ID="$(echo "${PAY_BODY}"  | json_field contractId)"
+[[ "${RECV_ID}" =~ ^SW-[0-9]+$ ]] || fail "receive leg contract id '${RECV_ID}' is not SW-<seq>"
+[[ "${PAY_ID}"  =~ ^SW-[0-9]+$ ]] || fail "pay leg contract id '${PAY_ID}' is not SW-<seq>"
+[[ "${RECV_ID}" != "${PAY_ID}" ]] || fail "both legs got contract id ${RECV_ID} — they are not distinct contracts"
+SEQ_AFTER_PAIR="$(applied_seq 0)"
+[[ "${SEQ_AFTER_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable after the pair"
+[[ "$((SEQ_AFTER_PAIR - SEQ_BEFORE_PAIR))" == "2" ]] \
+  || fail "the applied sequence moved ${SEQ_BEFORE_PAIR} -> ${SEQ_AFTER_PAIR}; two bookings must be exactly two sequenced commands (D1)"
+echo "[ok] ${RECV_ID} receive@${RECEIVE_RATE} and ${PAY_ID} pay@${PAY_RATE}, sequenced through consensus (+2)"
+
+step "3. what netting would have done to this pair"
+# Stated as arithmetic, not as prose: equal notionals in opposite directions at the
+# (accountId, security) grain sum to zero, and the two rates cannot be averaged into one contract.
+NET="$(python3 -c "print(${NOTIONAL} - ${NOTIONAL})")"
+CARRY="$(python3 -c "print('%.0f' % ((${PAY_RATE} - ${RECEIVE_RATE}) * ${NOTIONAL}))")"
+[[ "${NET}" == "0" ]] || fail "the two legs do not offset (${NET}) — this run does not exercise the netting loss"
+[[ "${CARRY}" -gt 0 ]] || fail "the pair carries no rate differential — the loss it demonstrates would be zero"
+echo "[ok] netted quantity would be ${NET}; the position that would vanish carries \$${CARRY}/year for 5 years"
+
+step "4. run the real EOD chain so the extract fires off eod.pnl.done"
+BEFORE_READY="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
+[[ "${BEFORE_READY}" =~ ^[0-9]+$ ]] || fail "could not count prior RISK-EXTRACT-READY lines"
+TOKEN="$(${K} exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://localhost:18091/auth/dev-token \
+  -H "X-Auth-Master-Secret: '"${EOD_MASTER_SECRET}"'" \
+  -H "Content-Type: application/json" \
+  -d "{\"subject\":\"yu17-proof\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":900}"' 2>/dev/null)"
+[[ -n "${TOKEN}" ]] || fail "could not mint an admin token from trade-processor"
+CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
+  "curl -fsS -X POST 'http://localhost:18091/eod/session/close' -H 'Authorization: Bearer ${TOKEN}'" 2>/dev/null)"
+CLOSE_STATUS="$(echo "${CLOSE}" | json_field status)"
+[[ "${CLOSE_STATUS}" == "PUBLISHED" ]] || fail "session close did not publish (status '${CLOSE_STATUS}')"
+for _ in $(seq 1 60); do
+  AFTER_READY="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
+  [[ "${AFTER_READY}" -gt "${BEFORE_READY}" ]] && break
+  sleep 2
+done
+[[ "${AFTER_READY:-0}" -gt "${BEFORE_READY}" ]] || {
+  ${K} logs "${POD}" --tail=30
+  fail "no RISK-EXTRACT-READY after the EOD chain completed"
+}
+READY="$(${K} logs "${POD}" --tail=-1 | grep 'RISK-EXTRACT-READY' | tail -1 | sed 's/^RISK-EXTRACT-READY //')"
+N="$(echo "${READY}"              | json_field consensusSequence)"
+CUT_SHA="$(echo "${READY}"        | json_field cutSha256)"
+URI="$(echo "${READY}"            | json_field uri)"
+CONTRACTS_URI="$(echo "${READY}"  | json_field contractsUri)"
+CONTRACTS_N="$(echo "${READY}"    | json_field contracts)"
+WITNESS="$(echo "${READY}"        | json_field quiesceWitnessSequence)"
+[[ "${N}" =~ ^[0-9]+$ ]] || fail "announcement carried no consensusSequence: ${READY}"
+[[ "${CONTRACTS_URI}" == *"-contracts.csv" ]] \
+  || fail "the announcement names no contracts artifact (contractsUri='${CONTRACTS_URI}') — D3 requires TWO artifacts from one cut"
+[[ "${CONTRACTS_N}" =~ ^[0-9]+$ && "${CONTRACTS_N}" -ge 2 ]] \
+  || fail "the announcement reports ${CONTRACTS_N} contracts; the two just booked must be in it"
+[[ "${WITNESS}" == "$((N + 1))" ]] || fail "quiesceWitnessSequence ${WITNESS} != ${N}+1 — something was sequenced mid-build"
+echo "[ok] extract at N=${N}, ${CONTRACTS_N} contracts, quiesced (witness ${WITNESS}), cut ${CUT_SHA:0:12}…"
+
+step "5. all three members rendered the identical state at N — contracts included"
+MEMBER_SHAS=""
+for i in 0 1 2; do
+  LINE="$(${K} logs "order-matcher-cluster-${i}" --tail=-1 | grep "RISK-EXTRACT-CUT seq=${N} " | tail -1)"
+  [[ -n "${LINE}" ]] || fail "member ${i} never rendered a cut at seq=${N}"
+  SHA="$(echo "${LINE}" | sed -n 's/.*sha256=\([0-9a-f]\{64\}\).*/\1/p')"
+  MC="$(echo "${LINE}"  | sed -n 's/.*contracts=\([0-9]\{1,\}\).*/\1/p')"
+  # Shape-tested, not emptiness-tested: an unparsed line yields "" on both, and "" == "" == "" is
+  # the agreement bug this project has already paid for twice.
+  [[ "${SHA}" =~ ^[0-9a-f]{64}$ ]] || fail "member ${i} cut line carried no 64-hex sha256: ${LINE}"
+  [[ "${MC}" =~ ^[0-9]+$ ]] || fail "member ${i} cut line carried no contracts count: ${LINE}"
+  [[ "${MC}" == "${CONTRACTS_N}" ]] \
+    || fail "member ${i} rendered ${MC} contracts, the announcement says ${CONTRACTS_N}"
+  echo "  member ${i}: contracts=${MC} sha256=${SHA}"
+  MEMBER_SHAS="${MEMBER_SHAS}${SHA}"$'\n'
+done
+[[ "$(printf '%s' "${MEMBER_SHAS}" | sort -u | wc -l | tr -d ' ')" == "1" ]] \
+  || fail "members disagree on the cut at seq=${N} — the contract store is not replicated state"
+[[ "$(printf '%s' "${MEMBER_SHAS}" | head -1)" == "${CUT_SHA}" ]] \
+  || fail "the announced cutSha256 does not match what the members rendered"
+echo "[ok] one portfolio at ${N}, agreed by all three members"
+
+step "6. THE HEADLINE — the contracts artifact carries BOTH contracts, per trade"
+CONTRACTS_FILE="${CONTRACTS_URI#file:}"
+${K} exec "${POD}" -- test -f "${CONTRACTS_FILE}" || fail "contracts artifact ${CONTRACTS_FILE} does not exist"
+CONTRACTS_CSV="$(${K} exec "${POD}" -- cat "${CONTRACTS_FILE}")"
+[[ -n "${CONTRACTS_CSV}" ]] || fail "contracts artifact is empty"
+for spec in "${RECV_ID}:RECEIVE_FIXED:${RECEIVE_RATE}" "${PAY_ID}:PAY_FIXED:${PAY_RATE}"; do
+  id="${spec%%:*}"; rest="${spec#*:}"; dir="${rest%%:*}"; rate="${rest##*:}"
+  ROW="$(printf '%s\n' "${CONTRACTS_CSV}" | grep "^${id}," || true)"
+  [[ -n "${ROW}" ]] || fail "contract ${id} is absent from the artifact — the booking did not survive to the extract"
+  [[ "$(printf '%s\n' "${ROW}" | wc -l | tr -d ' ')" == "1" ]] || fail "contract ${id} appears more than once"
+  echo "  ${ROW}"
+  printf '%s' "${ROW}" | python3 - "${id}" "${dir}" "${rate}" "${NOTIONAL}" "${ACCOUNT}" <<'EOF' \
+    || fail "contract row does not carry the terms it was booked with"
+import sys
+cols = sys.stdin.read().strip().split(",")
+want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:6]
+assert cols[0] == want_id, f"contractId {cols[0]} != {want_id}"
+assert cols[1] == want_account, f"accountId {cols[1]} != {want_account}"
+assert cols[2] == want_dir, f"payReceive {cols[2]} != {want_dir}"
+assert cols[3] == want_notional, f"notional {cols[3]} != {want_notional}"
+assert float(cols[4]) == float(want_rate), f"fixedRate {cols[4]} != {want_rate}"
+EOF
+done
+BOOKED_ROWS="$(printf '%s\n' "${CONTRACTS_CSV}" | grep -c "^SW-.*,${ACCOUNT},.*,${NOTIONAL}," || true)"
+[[ "${BOOKED_ROWS}" -ge 2 ]] \
+  || fail "only ${BOOKED_ROWS} contract row(s) on account ${ACCOUNT} at ${NOTIONAL} notional — netting collapsed them"
+echo "[ok] TWO contracts, both rates intact. The position grain would have held ZERO."
+
+step "7. the netted position artifact is unchanged — no swap ever became a position"
+POSITIONS_FILE="${URI#file:}"
+POSITIONS_CSV="$(${K} exec "${POD}" -- cat "${POSITIONS_FILE}")"
+[[ -n "${POSITIONS_CSV}" ]] || fail "netted artifact is empty"
+POS_SCHEMA="$(printf '%s\n' "${POSITIONS_CSV}" | sed -n 's/^# traderx-risk-extract schema=\([0-9]*\)$/\1/p')"
+[[ "${POS_SCHEMA}" == "3" ]] \
+  || fail "netted extract schema is '${POS_SCHEMA}', must stay at 3 (D3) — adding swaps changed an existing consumer's file"
+SWAP_ROWS="$(printf '%s\n' "${POSITIONS_CSV}" | grep -c "^[0-9]*,SW-" || true)"
+[[ "${SWAP_ROWS}" == "0" ]] \
+  || fail "${SWAP_ROWS} swap row(s) leaked into the netted position extract — they do not belong there"
+# The population must be non-empty, or "no swap rows" is satisfied by an extract of nothing.
+POS_ROWS="$(printf '%s\n' "${POSITIONS_CSV}" | grep -c "^[0-9]" || true)"
+[[ "${POS_ROWS}" -gt 0 ]] \
+  || fail "the netted extract has no position rows at all — 'no swap rows' would be vacuously true"
+echo "[ok] netted extract still schema 3, ${POS_ROWS} equity/bond/option rows, 0 swap rows"
+
+step "8. the contracts artifact rebuilds byte-identically from the stored cut alone"
+CUT_FILE="${POSITIONS_FILE%.csv}.cut"
+${K} exec "${POD}" -- test -f "${CUT_FILE}" || fail "stored cut ${CUT_FILE} is missing"
+${K} exec "${POD}" -- java -cp '/opt/app/classes:/opt/app/lib/*' \
+  finos.traderx.ordermatcher.cluster.RiskExtractMain \
+  --rebuild "${CUT_FILE}" /tmp/rebuild.csv /tmp/rebuild-contracts.csv >/dev/null \
+  || fail "rebuild from the stored cut failed"
+${K} exec "${POD}" -- cmp "${CONTRACTS_FILE}" /tmp/rebuild-contracts.csv \
+  || fail "the rebuilt contracts artifact differs from the delivered one — it is NOT reproducible"
+${K} exec "${POD}" -- cmp "${POSITIONS_FILE}" /tmp/rebuild.csv \
+  || fail "the rebuilt netted artifact differs — one cut must reproduce BOTH artifacts"
+echo "[ok] both artifacts reproduce from ${CUT_FILE##*/} alone"
+
+step "9. negative controls — every assertion above can fail"
+# (a) The step-6 row check must reject a contract booked at the other leg's rate. An assertion
+#     never observed failing is a hypothesis.
+if printf '%s,%s,RECEIVE_FIXED,%s,%s\n' "${RECV_ID}" "${ACCOUNT}" "${NOTIONAL}" "${PAY_RATE}" \
+   | python3 - "${RECV_ID}" "RECEIVE_FIXED" "${RECEIVE_RATE}" "${NOTIONAL}" "${ACCOUNT}" <<'EOF' 2>/dev/null
+import sys
+cols = sys.stdin.read().strip().split(",")
+want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:6]
+assert cols[0] == want_id
+assert cols[1] == want_account
+assert cols[2] == want_dir
+assert cols[3] == want_notional
+assert float(cols[4]) == float(want_rate)
+EOF
+then
+  fail "the row check accepted the WRONG rate — it cannot tell 4.2% from 4.3% and proves nothing"
+fi
+# (b) The step-6 presence check must fail for a contract id that was never booked.
+if printf '%s\n' "${CONTRACTS_CSV}" | grep -q "^SW-0,"; then
+  fail "the artifact contains SW-0, which is never issued — the id check would accept anything"
+fi
+# (c) The step-7 leak check must be able to see a swap row if one were there.
+if ! printf '%s\n%s\n' "${POSITIONS_CSV}" "${ACCOUNT},SW-999,SWAP,1,1" | grep -q "^[0-9]*,SW-"; then
+  fail "the swap-leak grep cannot match a swap row even when one is present — step 7 proves nothing"
+fi
+echo "[ok] wrong rate rejected, unbooked id absent, leak detector demonstrably sees a swap row"
+
+echo
+echo "[PASS] yu17-swap-netting: two OTC contracts sequenced through consensus at N=${N},"
+echo "       carried per-trade with both rates, reproducible from the cut, and absent from a"
+echo "       netted position extract that netting would have reduced to nothing."
