@@ -107,7 +107,7 @@ check_row() {
 import sys
 row, want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:7]
 cols = row.strip().split(",")
-assert len(cols) == 13, f"row has {len(cols)} columns, want 13: {row}"
+assert len(cols) == 16, f"row has {len(cols)} columns, want 16: {row}"
 assert cols[0] == want_id, f"contractId {cols[0]} != {want_id}"
 assert cols[1] == want_account, f"accountId {cols[1]} != {want_account}"
 assert cols[2] == want_dir, f"payReceive {cols[2]} != {want_dir}"
@@ -115,6 +115,11 @@ assert cols[3] == want_notional, f"notional {cols[3]} != {want_notional}"
 assert float(cols[4]) == float(want_rate), f"fixedRate {cols[4]} != {want_rate}"
 assert cols[10] == "USD", f"currency {cols[10]} != USD"
 assert cols[11] and cols[12], f"counterparty/netting set missing: {row}"
+# A SWAP carries the product and leaves the option wrapper empty. Asserted here rather than only
+# in the swaption proof, so widening the artifact for a later product cannot quietly start
+# filling a swap's columns.
+assert cols[13] == "SWAP", f"productType {cols[13]} != SWAP"
+assert cols[14] == "" and cols[15] == "", f"a swap must have no expiry or exercise style: {row}"
 PY
 }
 
