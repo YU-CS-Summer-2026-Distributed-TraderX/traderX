@@ -41,6 +41,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU14-listed-equity-options`
 - `YU15-eod-risk-extract`
 - `YU16-cdm-instruments`
+- `YU17-otc-rates`
 
 ## References
 

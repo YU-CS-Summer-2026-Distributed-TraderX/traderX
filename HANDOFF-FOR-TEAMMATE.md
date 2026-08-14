@@ -23,7 +23,12 @@
 > model, so every account is frozen at the same instant. YU16 is parented on YU15 and folds the
 > FINOS CDM instrument model onto the line — CDM security types (Equity/Fund/Debt) with FIGI
 > identifiers, five ETFs and five U.S. Treasuries — keeping `/stocks` and the YU04 control feed
-> intact; bond prices are stored as a fraction of par so the deterministic core is unchanged. The
+> intact; bond prices are stored as a fraction of par so the deterministic core is unchanged. YU17 is
+> parented on YU16 and adds OTC interest-rate swaps — the first class that neither matches nor
+> nets. A booking is a sequenced consensus command that creates a contract and never reaches
+> the matching engine; the risk gate gets a swap path because a fixed rate is not a price; and
+> one EOD cut renders two artifacts at one consensus sequence, the netted position extract
+> unchanged and a per-trade contract file carrying terms with no valuation. The
 > historical GKE branch/runbook below remains useful operational background; use the selected
 > YU state pack and its generated artifacts as the source for state-specific work.
 
