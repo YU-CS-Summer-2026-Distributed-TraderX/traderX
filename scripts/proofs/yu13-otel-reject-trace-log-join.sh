@@ -186,8 +186,22 @@ ok "chose two ClOrdIDs the head sample rejects: ${REJECT_CLORDID} / ${ACCEPT_CLO
 TICKER="${TICKER:-RJT$(date +%H%M%S)}"
 PX="${PX:-150.0}"
 echo "[seed] ${TICKER} @ ${PX} for account ${SEEDED_ACCOUNT} (fresh ticker: no trade has printed, so the tick IS the mark)"
-curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" >/dev/null
+# CHECK THE SEED. This used to discard the result into /dev/null, so a seed that did not take was
+# invisible and the proof carried on to report UNKNOWN_ACCOUNT / UNKNOWN_SECURITY -- reading as a
+# verdict about the order path when it is a statement about this line. The guard further down
+# ("the negative case would be vacuous") does catch it, so nothing passes wrongly, but it names the
+# wrong suspect and costs a diagnosis. Observed 2026-08-14 on YU16 in exactly that shape.
+SEED_CODE="$(curl -s -m20 -o /tmp/yu13-otel-seed -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+  -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" || echo 000)"
+if [[ "${SEED_CODE}" != 2* ]]; then
+  echo "[FAIL] the seed did not take: HTTP ${SEED_CODE} $(cat /tmp/yu13-otel-seed 2>/dev/null)" >&2
+  echo "       Everything below asserts on an account and a security this was supposed to create," >&2
+  echo "       so it would report UNKNOWN_ACCOUNT / UNKNOWN_SECURITY as if the order path were at" >&2
+  echo "       fault. 000 = no answer at all (a dead port-forward or a gateway not yet serving)," >&2
+  echo "       which is a different fault from a gateway that answered with an error." >&2
+  exit 1
+fi
 
 submit() { # clOrdId account -> response body
   curl -s --max-time 15 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
