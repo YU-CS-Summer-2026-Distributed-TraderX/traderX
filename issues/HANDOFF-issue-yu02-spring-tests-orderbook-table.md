@@ -1,6 +1,24 @@
 # Issue: generated YU02's Spring tests fail — `Table "ORDERBOOK" not found`
 
-**Found:** 2026-08-03. **Status:** open, diagnosed only — two fixes attempted and both were wrong.
+**Found:** 2026-08-03. **Status: RESOLVED 2026-08-14**, and verified on a real YU02 tree as this
+file demanded. The YU01 fix — pin `PhysicalNamingStrategyStandardImpl` in the `@SpringBootTest`
+property block so the entity's `@Table`/`@Column` names are used verbatim — was backported to the
+YU02 layer's two `@SpringBootTest` classes, `OrderMatcherApplicationTests` and
+`LmaxHotPathParityTest`. Both already carried it on YU01 and neither carried it on YU02, which is
+exactly the 1 + 12 = 13 failures reported below.
+
+Measured after: `bash pipeline/generate-state.sh YU02-lmax-kubernetes` then
+`./gradlew test --offline --rerun-tasks` on the generated order-matcher →
+**38 tests, 0 failed, 4 skipped**, against this file's original
+`38 tests, 21 passed, 13 failed, 4 skipped`. Same total, same skips, the thirteen gone.
+
+Note it was NOT a `.sql` file, which the note below predicted ("YU01's layer now ships 1 `.sql`
+file; the YU02 layer ships 0"). YU01's single `.sql` is the production `mariadb-init` schema, not a
+test resource; the actual fix lives in the test property blocks.
+
+Original report follows.
+
+**Status when filed:** open, diagnosed only — two fixes attempted and both were wrong.
 **Scope:** generated `YU02-lmax-kubernetes` test suite. **Not a production defect.**
 
 ## Symptom
