@@ -151,7 +151,17 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # old engine and some under the new, and the state machines diverge PERMANENTLY. Not theoretical:
 # pinning by bare `set image` produced [61 ...] [62 ...] [62 ...], member 0 a full order behind and
 # STILL behind after 180s, plus a risk-extract cut the members could not agree on.
-rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin, up
+# THE MEMBERS ONLY. The gateway is deliberately left on whatever build it is already running.
+#
+# It used to be repinned here alongside the StatefulSet, and that is what made the stp prep block
+# below take the GATEWAY historical too -- which nothing wanted. The gateway is stateless and holds
+# no epoch, so it has no reason to share the members' build; the baseline block above already pins
+# it to ${BASELINE_IMAGE} and this function has no business undoing that. It cost two proofs:
+# yu15-pre/yu15-stp predate the gateway's probe server (18111, /live) that the manifest's three
+# probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
+# defect was being older than the manifest. See
+# issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
   ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
@@ -159,8 +169,6 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optiona
   if [[ -n "${image}" ]]; then
     ${K} set image statefulset/order-matcher-cluster \
       "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
-    ${K} set image deployment/cluster-gateway \
-      "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   fi
   ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
   ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
