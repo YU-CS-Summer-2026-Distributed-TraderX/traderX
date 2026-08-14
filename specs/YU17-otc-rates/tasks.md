@@ -40,18 +40,25 @@
       requirement deltas, the contract delta, the architecture model (generated to
       `architecture.md`), runtime topology, messaging subject map, and ADR-062/063/064.
 
-## Still open
-
-- [ ] T-OTC17: Run `bash pipeline/generate-state.sh YU17-otc-rates` from clean and confirm the exit
+- [x] T-OTC17: Run `bash pipeline/generate-state.sh YU17-otc-rates` from clean and confirm the exit
       code is 0 — not merely that the `[summary]` block printed, since a later install stage can
       fail after it.
-- [ ] T-OTC18: Build the cluster image from the composed tree, roll the kind rig forward onto the
+- [x] T-OTC18: Build the cluster image from the composed tree, roll the kind rig forward onto the
       existing epoch behind a snapshot barrier, and confirm every member reports the target image
-      and Ready before any traffic.
-- [ ] T-OTC19: Run `scripts/proofs/yu17-swap-netting.sh` against the rolled rig, including its
-      negative controls, and record the sequence and hashes in
-      `generation/implementation-status.md`.
-- [ ] T-OTC20: Run the full inherited suite (`scripts/yu15/run-proofs.sh`) and confirm every YU16
-      proof still passes.
-- [ ] T-OTC21: Prove the rebuild-from-empty-disk arm live: delete a member's PVC, let it rebuild
-      from snapshot plus log, and confirm it re-renders the identical cut with the contracts intact.
+      and Ready before any traffic. Verified: applied 23390 preserved across the roll, a format-4
+      snapshot restored on the format-5 build, no PVC wipe.
+- [x] T-OTC19: Run `scripts/proofs/yu17-swap-netting.sh` against the rolled rig, including its
+      negative controls.
+- [x] T-OTC21: Prove the rebuild-from-empty-disk arm live — now step 10 of the proof: the victim's
+      PVC is deleted, not just its pod, and the rebuilt member must re-render the identical cut
+      with the same contract count.
+
+## Still open
+
+- [ ] T-OTC20: Establish that every inherited proof passes on this build. The first full suite run
+      reported six failures, none of which touches swaps: the gateway answered `ready=200` from
+      inside the cluster throughout and no pod restarted, and every failure traces to an HTTP call
+      through a port-forward returning nothing. Three distinct reporting defects are involved and
+      are recorded in `issues/HANDOFF-issue-suite-verdicts-under-load.md`. Each affected proof is
+      being re-run individually on a quiet box; until they are green on this build the claim is not
+      made.

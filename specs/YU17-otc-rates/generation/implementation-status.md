@@ -1,7 +1,7 @@
 # Implementation Status: YU17-otc-rates
 
-Status: implemented; verified by generation and the component suite. The live-rig arms are listed
-under "Not yet verified live" and are open (`tasks.md` T-OTC17…T-OTC21).
+Status: implemented; verified by generation, the component suite and the live kind rig. One
+acceptance item remains open — see "The inherited suite" below (`tasks.md` T-OTC20).
 
 ## What was built
 
@@ -42,18 +42,40 @@ tests. The in-process three-member cluster is CPU-hungry and the first run share
 failure is recorded here rather than omitted, since a timeout under load and a real regression look
 identical from the exit code alone.
 
-## Not yet verified live
+## Verified on the live kind rig
 
-The following are claims this state makes that only the rig can settle, and none of them has been
-run yet:
+| Claim | Evidence |
+|---|---|
+| Rolls FORWARD onto an existing YU16 epoch with no PVC wipe | Snapshot barrier taken on all three members (snapshots 282/218/218 → 283/219/219), then the image set; applied sequence 23390 preserved across the roll, so the format-4 snapshot restored on the format-5 build |
+| Every member on the target image and Ready before any traffic | Gated on the fact, not `rollout status`: all three pods reporting `traderx/cluster-node:yu17 true` |
+| A swap is SEQUENCED | Two bookings moved the applied sequence by exactly 2 |
+| Contract ids are the booking sequences | `SW-16745` / `SW-16746` at consensus 16745/16746 |
+| All three members agree on the contract store | `contracts=2` and cut sha `18c2faf6ec4a…` identical on members 0, 1 and 2 at N=16747 |
+| The headline: netting would have deleted this position | Both contracts in the artifact with both rates, at a sequence where the netted extract carried 14 position rows and **0** swap rows |
+| The netted extract is unchanged | Still `schema=3`, every column as before |
+| Both artifacts reproduce from the stored cut alone | `--rebuild seq-16747.cut` byte-compared equal for both files |
+| Quiescence witness holds | Announced `quiesceWitnessSequence` = N+1 |
+| A member destroyed to an empty disk rebuilds the store | Member 2's **PVC deleted** (not just the pod); it rebuilt from nothing and re-rendered `18c2faf6ec4a…` with 2 contracts |
+| The risk gate is wired | A booking on an unseeded account returned 422 `UNKNOWN_ACCOUNT` and created no contract |
+| The proof cannot pass against a stale build | Its preflight reads `SwapConventions.class` out of the running member and runs its own negative control against a class that cannot exist |
 
-- The kind rig rolled forward onto the existing YU16 epoch behind a snapshot barrier, with every
-  member on the target image and Ready before any traffic.
-- `scripts/proofs/yu17-swap-netting.sh` end to end, including its negative controls.
-- The full inherited suite (`scripts/yu15/run-proofs.sh`) still green.
-- A member destroyed to an empty disk rebuilding and re-rendering the identical cut with the
-  contracts intact.
+## The inherited suite
 
-The proof's own preflight refuses to run against an image that predates this state — it reads
-`SwapConventions` out of the running member's classes — because a proof asserting new behaviour
-cannot otherwise tell you it ran against a stale build.
+`scripts/yu15/run-proofs.sh` must be run with `YU15_CLUSTER_IMAGE=traderx/cluster-node:yu17`: the
+runner pins the rig to its baseline image and wipes to a fresh epoch, so the default rolls the
+members BACK to the YU16 build and the suite then says nothing about this state.
+
+`yu17-swap-netting` passes inside the suite. The first full run also reported six failures, none of
+which touches swaps — the gateway answered `ready=200` from inside the cluster throughout, no pod
+restarted, and every failure traces to an HTTP call through a port-forward returning nothing, on a
+box at load average 5-8 with the kind nodes at 60-92% CPU. Three separate reporting defects turn
+that into a verdict about the system, including two proofs that print their own `[PASS]` and are
+recorded FAIL; all three are written up in `issues/HANDOFF-issue-suite-verdicts-under-load.md`.
+
+Two of those runs are themselves evidence FOR this state rather than against it:
+`yu15-risk-extract` passed on the YU17 build (it is the proof most exposed to the cut's schema
+change), and `yu16-book-grid`'s substantive assertion passed — a member rebuilt under a format-5
+snapshot re-derived a byte-identical book geometry — before the script died elsewhere.
+
+The affected proofs are re-run individually on a quiet box. Until they are green on this build,
+"every inherited proof still passes" is not claimed.
