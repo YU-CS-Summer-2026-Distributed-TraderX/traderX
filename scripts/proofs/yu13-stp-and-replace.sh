@@ -178,7 +178,13 @@ GW_CONTAINER="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spe
 GW_ORIGINAL_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
 GW_ORIGINAL_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' 2>/dev/null \
   | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
-GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"periodSeconds":5,"failureThreshold":24}'
+# initialDelaySeconds MATTERS HERE AND IS NOT DECORATION. YU15's own gateway manifest -- the one
+# these historical builds were actually deployed against -- carried `initialDelaySeconds: 5` on this
+# probe. Dropping it lets the kubelet probe from t=0 and mark the pod Ready the moment the socket
+# answers, which on these builds is `connected:true` -- "my session opened", not "I can commit".
+# That is the shallow readiness YU16 replaced for exactly this reason, and reinstating a build that
+# predates the fix means reinstating the delay it shipped with.
+GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"initialDelaySeconds":5,"periodSeconds":5,"failureThreshold":24}'
 # The manifest's own form (specs/*/generation/kubernetes/cluster/gateway.yaml). Used ONLY when the
 # live capture above is degenerate -- the floor a restore can always reach, never the source of
 # truth, which is why the live capture is preferred whenever it is intact.
