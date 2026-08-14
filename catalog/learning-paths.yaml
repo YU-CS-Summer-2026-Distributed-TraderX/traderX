@@ -47,6 +47,7 @@ tracks:
       - YU14-listed-equity-options
       - YU15-eod-risk-extract
       - YU16-cdm-instruments
+      - YU17-otc-rates
   nonfunctional:
     description: "Non-functional overlays (observability, resilience, operations)."
     states:
@@ -73,6 +74,7 @@ tracks:
       - YU14-listed-equity-options
       - YU15-eod-risk-extract
       - YU16-cdm-instruments
+      - YU17-otc-rates
   convergence:
     description: "Named convergence milestones (C0/C1/C2/C3)."
     states:
@@ -291,3 +293,10 @@ stateCatalog:
     isConvergence: false
     lineageRole: optional
     spec: specs/YU16-cdm-instruments/spec.md
+  - id: YU17-otc-rates
+    previous:
+      - YU16-cdm-instruments
+    convergenceLevel: none
+    isConvergence: false
+    lineageRole: optional
+    spec: specs/YU17-otc-rates/spec.md

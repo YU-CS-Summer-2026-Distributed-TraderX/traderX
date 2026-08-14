@@ -8,7 +8,7 @@ title: "State YU16-cdm-instruments: CDM Instruments"
 
 - Previous state(s): [YU15-eod-risk-extract](/docs/learning/state-YU15-eod-risk-extract)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU17-otc-rates](/docs/learning/state-YU17-otc-rates)
 
 ## Convergence Metadata
 
