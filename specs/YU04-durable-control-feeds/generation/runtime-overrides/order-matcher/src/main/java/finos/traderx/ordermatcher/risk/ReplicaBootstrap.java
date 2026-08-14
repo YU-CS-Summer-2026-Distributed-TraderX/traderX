@@ -27,6 +27,12 @@ public final class ReplicaBootstrap {
     private static final long RETRY_BACKOFF_MS = 5_000L;
     private static final long MONITOR_INTERVAL_MS = 1_000L;
 
+    // Last state actually LOGGED, so the steady-state repeat can be suppressed. -1 and false mean
+    // "nothing logged yet", so the first success after start or after a re-bootstrap always prints.
+    private boolean loggedReady = false;
+    private long loggedAccountWatermark = -1L;
+    private long loggedSecurityWatermark = -1L;
+
     private final GatewayReplicaStore replicas;
     private final LmaxEngine engine;
     private final ReplicationRole replicationRole;
@@ -198,11 +204,35 @@ public final class ReplicaBootstrap {
         boolean bothReady = accountFeed.isReady() && securityFeed.isReady();
         if (bothReady) {
             replicas.markReady();
-            log.info("Risk replica bootstrap complete: accounts={} securities={} "
-                    + "(account watermark={}, security watermark={})",
-                replicas.accountCount(), replicas.securityCount(), accountFeed.watermark(), securityFeed.watermark());
+            // ON A CHANGE, NOT ON A TICK. updateReadiness() runs from the ~1s monitor loop, so an
+            // unconditional INFO here is one identical line per second per pod -- 86,400 a day,
+            // enough to bury the warn lines beside it in `kubectl logs` and in Loki.
+            //
+            // Suppressing the repeat loses nothing, because the steady state is genuinely
+            // uneventful: the snapshot leg runs once per (re)bootstrap, not per tick.
+            // bootstrapPendingFeeds() is guarded by the bootstrapped flags and the monitor loop
+            // never calls it, so a repeated line carries no fact the previous one did not.
+            // (That was the second half of the issue -- whether the poll re-fetches or re-verifies
+            // the snapshot. Read 2026-08-14: it does not.)
+            //
+            // What still prints: the first success after start or after a re-bootstrap, and any
+            // watermark movement -- i.e. every moment the line would tell a reader something.
+            long accountWatermark = accountFeed.watermark();
+            long securityWatermark = securityFeed.watermark();
+            if (!loggedReady || accountWatermark != loggedAccountWatermark
+                    || securityWatermark != loggedSecurityWatermark) {
+                log.info("Risk replica bootstrap complete: accounts={} securities={} "
+                        + "(account watermark={}, security watermark={})",
+                    replicas.accountCount(), replicas.securityCount(), accountWatermark, securityWatermark);
+                loggedReady = true;
+                loggedAccountWatermark = accountWatermark;
+                loggedSecurityWatermark = securityWatermark;
+            }
         } else {
             replicas.markNotReady();
+            // Re-arm: the next success is a real transition and must print, even at the same
+            // watermarks -- that is exactly the recovery-after-quarantine line an operator wants.
+            loggedReady = false;
         }
     }
 

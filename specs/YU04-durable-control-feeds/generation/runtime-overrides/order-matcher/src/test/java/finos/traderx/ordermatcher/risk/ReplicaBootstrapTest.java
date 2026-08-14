@@ -1,5 +1,7 @@
 package finos.traderx.ordermatcher.risk;
 
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import finos.traderx.ordermatcher.lmax.LmaxEngine;
 import finos.traderx.ordermatcher.lmax.ReplicationRole;
 import org.junit.jupiter.api.BeforeEach;
@@ -94,4 +96,58 @@ class ReplicaBootstrapTest {
         assertEquals(202L, snapshot.securities().stream()
             .filter(security -> security.ticker().equals("MSFT")).findFirst().orElseThrow().sourceVersion());
     }
+
+    /**
+     * The "bootstrap complete" line is logged on a CHANGE, not on a tick. updateReadiness() runs
+     * from the ~1s monitor loop, so an unconditional INFO there was one identical line per second
+     * per pod -- 86,400 a day, burying the warn lines beside it.
+     *
+     * Asserted on the real appender rather than on a flag, because the thing that matters is what
+     * an operator sees. The re-arm is the half worth guarding: get it wrong and the RECOVERY line
+     * -- the one someone is actually waiting for after a quarantine -- never prints again.
+     */
+    @Test
+    void bootstrapCompleteLogsOnChangeNotOnEveryTick() {
+        final ch.qos.logback.classic.Logger logger =
+            (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(ReplicaBootstrap.class);
+        final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            when(accountFeed.isReady()).thenReturn(true);
+            when(securityFeed.isReady()).thenReturn(true);
+            when(accountFeed.watermark()).thenReturn(17L);
+            when(securityFeed.watermark()).thenReturn(29L);
+
+            bootstrap.updateReadiness();
+            bootstrap.updateReadiness();
+            bootstrap.updateReadiness();
+            assertEquals(1, completeLines(appender),
+                "three ticks at an unchanged watermark must log once, not three times");
+
+            // A watermark moved: that is a new fact, so it prints.
+            when(securityFeed.watermark()).thenReturn(30L);
+            bootstrap.updateReadiness();
+            assertEquals(2, completeLines(appender), "a watermark change must re-log");
+
+            // Quarantine, then recovery at the SAME watermarks. The recovery line must print --
+            // this is the case a naive "log once ever" throttle silently loses.
+            when(accountFeed.isReady()).thenReturn(false);
+            bootstrap.updateReadiness();
+            assertEquals(2, completeLines(appender), "losing readiness logs no completion line");
+            when(accountFeed.isReady()).thenReturn(true);
+            bootstrap.updateReadiness();
+            assertEquals(3, completeLines(appender),
+                "recovery after a quarantine must log even at unchanged watermarks");
+        } finally {
+            logger.detachAppender(appender);
+        }
+    }
+
+    private static long completeLines(final ListAppender<ILoggingEvent> appender) {
+        return appender.list.stream()
+            .filter(e -> e.getFormattedMessage().startsWith("Risk replica bootstrap complete"))
+            .count();
+    }
+
 }
