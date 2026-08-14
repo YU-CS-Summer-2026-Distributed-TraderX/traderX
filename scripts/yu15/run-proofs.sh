@@ -49,6 +49,10 @@ PROOFS=(
   # nothing, so this ordering is what keeps it from reporting SKIP-shaped success on a rig whose
   # positions were just wiped by a fresh epoch.
   yu16-accrued-interest
+  # After the extract proofs, not before: it books swaps that then appear in every later cut, and
+  # it crosses an equity so its own "no swap rows in the netted extract" assertion has a non-empty
+  # population to be true of.
+  yu17-swap-netting
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
