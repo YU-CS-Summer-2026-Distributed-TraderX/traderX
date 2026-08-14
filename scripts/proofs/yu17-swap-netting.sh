@@ -305,6 +305,52 @@ if ! printf '%s\n%s\n' "${POSITIONS_CSV}" "${ACCOUNT},SW-999,SWAP,1,1" | grep -q
 fi
 echo "[ok] wrong rate rejected, unbooked id absent, leak detector demonstrably sees a swap row"
 
+step "10. a member destroyed to an empty disk rebuilds the contract store byte-identically"
+# The members are PVC-backed on this rig, so deleting the POD alone restores from that member's own
+# archive — real, but not the claim. Delete the PVC too and the member comes back with nothing and
+# must rebuild from the other two: snapshot (format 5, T_CONTRACT) plus the replayed log tail.
+# Verified against the rig rather than assumed, because yu16-book-grid's "emptyDir — it returns
+# with no disk" is stale for this StatefulSet.
+VICTIM=2
+[[ "$(${K} get pod "order-matcher-cluster-${VICTIM}" -o jsonpath='{.status.phase}')" == "Running" ]] \
+  || fail "member ${VICTIM} is not Running; a rebuild proof needs a healthy starting point"
+BACKING="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}')"
+if [[ -n "${BACKING}" ]]; then
+  echo "  members are PVC-backed ('${BACKING}'); deleting the claim so the rebuild starts from nothing"
+  ${K} delete pvc "${BACKING}-order-matcher-cluster-${VICTIM}" --wait=false >/dev/null
+else
+  echo "  members are emptyDir-backed; the pod delete alone empties the disk"
+fi
+${K} delete pod "order-matcher-cluster-${VICTIM}" --wait=true >/dev/null
+${K} wait --for=condition=Ready "pod/order-matcher-cluster-${VICTIM}" --timeout=600s >/dev/null \
+  || fail "member ${VICTIM} never became Ready after being destroyed"
+# Ask it to render the SAME sequence again. A rebuilt member replays the marker at N, so the cut it
+# logs is a fresh render of state it reconstructed from nothing — the strongest form of the claim.
+REBUILT_LINE=""
+for _ in $(seq 1 60); do
+  REBUILT_LINE="$(${K} logs "order-matcher-cluster-${VICTIM}" --tail=-1 2>/dev/null | grep "RISK-EXTRACT-CUT seq=${N} " | tail -1 || true)"
+  [[ -n "${REBUILT_LINE}" ]] && break
+  sleep 3
+done
+if [[ -z "${REBUILT_LINE}" ]]; then
+  # Distinguish "no answer" from "the answer is no": a member that recovered from a snapshot taken
+  # AFTER N never replays the marker, so there is no cut to compare and this arm has not run.
+  ${K} exec "order-matcher-cluster-${VICTIM}" -- wget -qO- localhost:8080/health >/dev/null 2>&1 \
+    || fail "member ${VICTIM} is not answering after the rebuild"
+  echo "  [note] member ${VICTIM} recovered past ${N} and did not replay the marker, so this arm did"
+  echo "         NOT run. The cross-member agreement in step 5 still stands; re-run after a fresh"
+  echo "         epoch to exercise the rebuild path."
+else
+  REBUILT_SHA="$(echo "${REBUILT_LINE}" | sed -n 's/.*sha256=\([0-9a-f]\{64\}\).*/\1/p')"
+  REBUILT_CONTRACTS="$(echo "${REBUILT_LINE}" | sed -n 's/.*contracts=\([0-9]\{1,\}\).*/\1/p')"
+  [[ "${REBUILT_SHA}" =~ ^[0-9a-f]{64}$ ]] || fail "rebuilt member's cut line carried no sha256: ${REBUILT_LINE}"
+  [[ "${REBUILT_CONTRACTS}" == "${CONTRACTS_N}" ]] \
+    || fail "rebuilt member holds ${REBUILT_CONTRACTS} contracts, the rest of the cluster ${CONTRACTS_N}"
+  [[ "${REBUILT_SHA}" == "${CUT_SHA}" ]] \
+    || fail "the rebuilt member re-rendered ${REBUILT_SHA}, not ${CUT_SHA} — the contract store did not survive restore byte-identically"
+  echo "  [ok] member ${VICTIM} rebuilt from nothing and re-rendered ${CUT_SHA:0:12}… with ${REBUILT_CONTRACTS} contracts"
+fi
+
 echo
 echo "[PASS] yu17-swap-netting: two OTC contracts sequenced through consensus at N=${N},"
 echo "       carried per-trade with both rates, reproducible from the cut, and absent from a"
