@@ -1,8 +1,71 @@
 # Issue: the gateway silently stops committing after a leader kill, and every probe says it is fine
 
-**Status:** OPEN. Reproduced on GKE twice (YU15 `:bench` 2026-08-12, YU16 `:yu16` 2026-08-13) and
-**on kind 2026-08-13**, which makes it locally reproducible in about two minutes and removes any
-need for cloud spend to fix it. Not diagnosed to a line of code.
+**Status: THE WEDGE NOW SELF-HEALS (2026-08-14).** Diagnosed to a line of code, fixed, and the cure
+verified end to end on kind. §5's HTTP-serving hang is a separate defect and remains open — see the
+bottom of this file.
+
+**The line of code.** `AeronCluster.Context.egressListener(this::onEgress)` was a METHOD REFERENCE.
+It satisfies `EgressListener`'s single abstract method and leaves `onSessionEvent` and `onNewLeader`
+on their **default no-op bodies** (verified with `javap` against aeron-cluster-1.51.0). That is all
+of §3's "no exception, no reconnect attempt, no log line at any level": the events that would name
+the cause were being discarded by the interface's own defaults, and the owner loop's only reconnect
+trigger was `client.isClosed()` — which the wedge never reaches, because **the wedge does not close
+the session** (measured: non-OK session events across a reproduced wedge = 0).
+
+**The cure: the gateway rebuilds its own session.** A `rollout restart` was already known to clear
+the wedge instantly, and a fresh session is the only thing it changes — so the gateway now reaches
+for one itself. The trigger is a streak of orders whose offer **cleared into the log** and whose
+committed ack then never arrived (`offeredUnackedStreak`, default 20 = `READY_NO_ACK_STREAK`).
+
+**Why that trigger and not `noAckStreak`** — this is the safety argument, and it is measured rather
+than assumed, because firing during a QUORUM LOSS would park the owner thread inside
+`connectCycling()`'s `while (running)` loop and turn a recoverable outage into a permanent one:
+
+| regime | `offer_attempt` | `offer_success` |
+|---|---|---|
+| healthy cluster | +10 | **+10** |
+| quorum loss | +1 | **+0** |
+
+During quorum loss the offer never clears, so the streak physically cannot advance and the self-heal
+cannot fire there. During the wedge the offer DOES clear — the cluster consumes a ref for every
+order it then never acks, measured 1:1 — so it does.
+
+**Verified end to end**, `traderx/cluster-node:yu17heal`, members and gateway on that build:
+
+1. Wedge reproduced via `yu12-gke-failover-transparency.sh` on kind with the gateway at
+   `replicas: 1` (leader kill under a live stream). Gateway left at `/ready connected:true` with
+   every order `504 no committed ack` — §1's signature.
+2. Drove 25 orders. The first 13 were denied while the streak climbed, then:
+
+   ```
+   GATEWAY-WEDGE-SUSPECTED offeredUnacked>=20 noAckStreak=20 — rebuilding the cluster session
+       #14 COMMITTED: {"orderRef":1044,"kind":1}
+       #15 COMMITTED: {"orderRef":1045,"kind":1}
+   ```
+3. Afterwards `/ready` = `noAckStreak 0`, and orders commit normally.
+4. **No pod restart.** One `GATEWAY up` line in the log — a single container lifetime from
+   `21:30:59Z`, continuous through the leader kill at `21:32:41Z`, the wedge and the cure. The
+   gateway healed in-process; the kubelet was not involved.
+
+**Non-regression:** `yu16-ready-tracks-commit` and `yu16-liveness-restarts-wedge` both PASS on the
+fix build, and `GATEWAY-WEDGE-SUSPECTED` fired **zero** times during them — so the new trigger does
+not launder either proof's verdict, which was the specific risk since both drive the streak
+deliberately.
+
+**The residual limitation, stated plainly:** the threshold means the first ~20 clients after a wedge
+are still told their orders failed while the book takes them (13 in the verified run). That is
+inherent to a streak trigger and is the same shape §1's liveness note already records. It converts
+an unbounded outage into a bounded one; it does not make the wedge free.
+
+**Carried to the YU16 layer as well as YU17's** (`ClusterGatewayMain` has four carriers — YU12,
+YU13, YU16, YU17 — and a descendant's fix reaches no ancestor). YU12's and YU13's layers are
+deliberately not carried: no rig here for those tiers, and YU12 is a different program (no
+`submitPipelined`, so the funnel this hooks into does not exist there in the same shape).
+
+Original report follows.
+
+**Status when filed:** OPEN. Reproduced on GKE twice (YU15 `:bench` 2026-08-12, YU16 `:yu16`
+2026-08-13) and **on kind 2026-08-13**. Not diagnosed to a line of code.
 **Related:** `HANDOFF-issue-yu-vacuous-pipeline-guards.md` (the proof that found it reported the
 wrong cause, §4 below).
 

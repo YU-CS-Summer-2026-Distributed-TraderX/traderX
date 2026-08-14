@@ -521,10 +521,31 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     };
 
     /**
-     * Set by onSessionEvent above; read and cleared by the owner loop. Not volatile on purpose --
-     * pollEgress() runs on the owner thread, so both the write and the read are that one thread.
+     * Set by onSessionEvent above AND by the wedge detector in submitPipelined (submitter threads),
+     * read and cleared by the owner loop. Volatile because those writers are not the owner thread.
      */
-    private boolean sessionLost = false;
+    private volatile boolean sessionLost = false;
+
+    /**
+     * THE WEDGE SIGNAL: consecutive orders whose offer CLEARED INTO THE LOG and whose committed ack
+     * then never arrived.
+     *
+     * Deliberately not `noAckStreak`, which also counts orders that never cleared the ingress at
+     * all. That distinction is the whole safety argument, and it is measured rather than assumed
+     * (2026-08-14, gateway's own counters):
+     *
+     *   healthy cluster   offer_attempt +10   offer_success +10
+     *   quorum loss       offer_attempt  +1   offer_success  +0
+     *
+     * During quorum loss the offer never clears, so this streak cannot advance and the self-heal
+     * cannot fire during a recoverable outage — which matters because a fresh session is useless
+     * there and `connectCycling()` would park the owner thread trying to get one. During the wedge
+     * the offer DOES clear (the cluster consumes a ref for every order it then never acks —
+     * measured 1:1), so the streak advances and a fresh session is exactly the known cure.
+     */
+    private final AtomicInteger offeredUnackedStreak = new AtomicInteger();
+    private static final int WEDGE_RECONNECT_STREAK = Integer.parseInt(
+        env("WEDGE_RECONNECT_STREAK", String.valueOf(READY_NO_ACK_STREAK)));
 
     private void connectCycling() {
         // A fresh cluster session will not deliver the old session's outstanding egress, so complete
@@ -884,8 +905,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // "no committed decision", which is what /ready now has to know about.
         if (r == null) {
             noAckStreak.incrementAndGet();
+            // THE SELF-HEAL. Only orders that actually cleared the ingress count: those are the ones
+            // whose ack the cluster owes us, so their silence is OUR session's problem and a fresh
+            // session is the known cure. Orders that never cleared say the cluster will not take
+            // traffic, which no reconnect fixes.
+            if (p.offered && offeredUnackedStreak.incrementAndGet() >= WEDGE_RECONNECT_STREAK) {
+                offeredUnackedStreak.set(0);
+                System.out.println("GATEWAY-WEDGE-SUSPECTED offeredUnacked>=" + WEDGE_RECONNECT_STREAK
+                    + " noAckStreak=" + noAckStreak.get() + " — rebuilding the cluster session");
+                sessionLost = true; // the owner loop reconnects; see ownerLoop
+            }
         } else {
             noAckStreak.set(0);
+            offeredUnackedStreak.set(0);
         }
         return r;
     }
@@ -985,6 +1017,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
             }
             pipelineOffersSucceeded++;
+            p.offered = true; // cleared the ingress: from here, silence means a missing ACK, not a
+                              // cluster that would not take the order. See offeredUnackedStreak.
             // LATENCY-01 Phase A: t_offer — offer cleared into the log. queue = owner-thread wait, and
             // the cluster black box starts now. Single owner thread, single clock: valid subtraction.
             if (p.tSubmitNanos != 0) {
@@ -2038,6 +2072,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
         final int securityId;    // binary NEW only: pre-resolved id (ticker == null); -1 = resolve via ticker
         final CompletableFuture<ExecResult> future = new CompletableFuture<>();
+        // Set by the owner thread once client.offer() clears; read by the submitting thread when
+        // its wait expires. Volatile: those are different threads and the future never completed.
+        volatile boolean offered;
         // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
         // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
         // the owner's single-threaded run give the happens-before, so no volatile needed.
