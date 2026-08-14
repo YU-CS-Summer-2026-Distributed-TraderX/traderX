@@ -134,12 +134,63 @@ stop_pf() {
   PF_PID=""
   return 0
 }
-trap stop_pf EXIT
+# THE PROBES BELONG TO THE CURRENT BUILD, AND THIS PROOF DEPLOYS OLDER ONES.
+#
+# The manifest points three probes -- startup and liveness at /live, readiness at /ready -- at the
+# gateway's probe port 18111, served by a dedicated single-thread server so a saturated order path
+# cannot leave a probe unanswered. Every image this proof rolls to PREDATES that server: verified
+# 2026-08-14, ClusterGatewayMain.class in yu15-pre, yu15-cancel and yu15-stp contains no /live and
+# no GATEWAY_PROBE_PORT at all, and serves 18110 only. The kubelet therefore fails the STARTUP
+# probe and crash-loops a gateway whose only defect is being older than the manifest -- and the
+# symptom is `rollout status` timing out, which reads as "slow" rather than "incompatible", above a
+# completely clean pod log.
+#
+# So for as long as this proof owns the deployment it probes the one endpoint every build has
+# served: /ready on 18110, which is exactly what the manifest declared before the probe server
+# existed. Startup and liveness are dropped, because on these builds they have no endpoint to ask;
+# readiness carries failureThreshold 24 for the same reason the manifest's own comment gives -- a
+# gateway with no startup probe needs two minutes of slack to boot a JVM, a media driver and an
+# awaitConnected. Nothing here is under proof: this proof asserts on /cancel and on the replicated
+# book, never on a probe verdict.
+#
+# Restored on EXIT together with the image, in ONE patch, so an abort part-way cannot leave the
+# deployment describing a build it is not running. Rebuilding the historical tags with a probe
+# server grafted on is the other option and is worse -- it reconstructs old builds and muddies what
+# "historical" means.
+GW_CONTAINER="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')"
+GW_ORIGINAL_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
+GW_ORIGINAL_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' \
+  | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
+GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"periodSeconds":5,"failureThreshold":24}'
+GW_PATCHED=0
+
+patch_gateway() { # patch_gateway <image> <probe-json-fragment>  -- image and probes in one rollout
+  ${K} patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${GW_CONTAINER}\",\"image\":\"$1\",$2}]}}}}" >/dev/null
+}
+
+# A proof that changes the cluster owes it back. This one used to leave the gateway on IMAGE_FIX
+# and rely on the next suite's baseline block to repin it -- which runs BEFORE the proof loop, so
+# every proof after this one in the same suite talked to yu15-cancel. (It survived only because
+# yu13-stp-and-replace ran next and repinned the gateway as a side effect of rolling the members,
+# which it no longer does.)
+restore_gateway() {
+  [[ "${GW_PATCHED}" == "1" ]] || return 0
+  GW_PATCHED=0
+  echo "[restore] returning the gateway to ${GW_ORIGINAL_IMAGE} and its manifest probes"
+  patch_gateway "${GW_ORIGINAL_IMAGE}" "${GW_ORIGINAL_PROBES}" \
+    || { echo "[warn] could not restore the gateway -- repin it before running other proofs"; return 0; }
+  ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null \
+    || echo "[warn] gateway did not settle on ${GW_ORIGINAL_IMAGE} -- check it before running other proofs"
+  return 0
+}
+trap 'stop_pf; restore_gateway' EXIT
 
 roll_gateway() { # roll_gateway <image>
   stop_pf
-  vlog "      set image deploy/cluster-gateway gateway=$1"
-  ${K} set image deploy/cluster-gateway "gateway=$1" >/dev/null
+  vlog "      patch deploy/cluster-gateway ${GW_CONTAINER}=$1 + pre-probe-server probes"
+  GW_PATCHED=1
+  patch_gateway "$1" "${GW_HISTORICAL_PROBES}"
   ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null \
     || fail "gateway rollout to $1 did not complete"
   # Every replica must be serving the new image before any request is attributed to it — otherwise
