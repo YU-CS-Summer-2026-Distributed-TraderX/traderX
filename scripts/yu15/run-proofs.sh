@@ -213,6 +213,27 @@ if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
 fi
 
+# THE EXTRACT PRODUCER NEEDS BOTH HALVES OF THE TREATMENT THE GATEWAY GETS ABOVE: a repin, for a
+# tag that is simply wrong, and a restart, for a tag that is right while the content behind it is
+# not. Only the second existed, and the staleness check below CANNOT cover the first -- it asks
+# whether the pod is OLDER than the image, and a producer left behind by a DESCENDANT branch is
+# newer. Restarting it just brings the same wrong build back.
+#
+# Measured 2026-08-14: the YU16 suite ran with the members and the gateway on
+# traderx/cluster-node:yu16 and the producer still on yu17p2, whose SwapContractCsv requires a
+# `contracts=` field that a YU16 cut does not carry. The EOD batch aborted with "cut header missing
+# contracts=", and yu15-risk-extract and yu16-accrued-interest both failed reporting "no
+# RISK-EXTRACT-READY" -- true, and silent about the cause. Same shape as the gateway lesson above,
+# one deployment further along: check every Deployment that runs the cluster-node image, not the
+# StatefulSet alone.
+producer_image() { ${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+if [[ -n "$(producer_image)" && "$(producer_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] risk-extract is on $(producer_image); repinning to ${BASELINE_IMAGE}"
+  ${K} set image deployment/risk-extract \
+    "$(${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
+fi
+
 # The EXTRACT PRODUCER runs the same cluster-node image and was pinned by nothing. Its tag never
 # changes, so `kubectl apply` leaves a pod running whatever bits that tag meant when it started --
 # observed on 2026-08-10 with a producer six days stale while the members ran a fresh build. The
