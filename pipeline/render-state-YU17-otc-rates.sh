@@ -37,15 +37,9 @@ overlay_dir() {
 
 overlay_dir "${RUNTIME_OVERRIDES_DIR}" "${TARGET_ROOT}" "runtime"
 
-# The extract producer joins instrument static at render time (ADR-059). YU16's instruments.csv
-# supersedes YU15's copy in order-matcher resources; counterparties.csv is inherited from the
-# YU15 render untouched. The spec pack stays the single source of truth.
-if [[ -d "${STATE_SPEC_DIR}/reference-data" ]]; then
-  REFDATA_DIR="${TARGET_ROOT}/order-matcher/src/main/resources/reference-data"
-  mkdir -p "${REFDATA_DIR}"
-  cp "${STATE_SPEC_DIR}/reference-data/"*.csv "${REFDATA_DIR}/"
-  echo "[render] overlaid reference-data from ${STATE_SPEC_DIR}/reference-data"
-fi
+# YU17 carries no reference-data of its own. instruments.csv is inherited from YU16 and
+# counterparties.csv from YU15, both operative; copying either here would shadow them for no
+# delta. The contracts artifact reads counterparties.csv exactly as the netted extract does.
 
 rm -rf "${STATE_DIR}"
 mkdir -p "${STATE_DIR}" "${SPEC_SOURCE_DIR}"
@@ -73,9 +67,9 @@ for source in \
   system/architecture.model.json \
   system/runtime-topology.md \
   system/messaging-subject-map.md \
-  system/adr-057-bond-prices-fraction-of-par.md \
-  system/adr-058-stocks-retained-instruments-alongside.md \
-  system/adr-059-extract-instrument-static-by-join.md \
+  system/adr-062-swap-booking-through-consensus.md \
+  system/adr-063-swap-risk-gate.md \
+  system/adr-064-two-artifacts-one-cut.md \
   tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do
@@ -88,22 +82,24 @@ done
 cat > "${STATE_DIR}/README.md" <<'EOF'
 # YU17-otc-rates Generated Artifacts
 
-The CDM instrument model on the cluster tier: reference-data serves CDM-shaped instruments
-(Equity, Fund, Debt with FIGI identifiers — five ETFs and five U.S. Treasuries) while `/stocks`
-and the YU04 durable control feed keep serving unchanged. Bond prices are stored as a fraction
-of par on every internal surface, so the deterministic core is byte-identical to YU15's: no
-snapshot field, no format bump, no fresh epoch. Post-trade booking gains face-weighted average
-cost and a fail-closed Rejected landing; the risk extract classifies TREASURY rows by join and
-delivers CSV schema 2.
+OTC interest-rate swaps on the cluster tier: the first instrument class that neither matches nor
+nets. A swap booking is a sequenced consensus command (`TYPE_SWAP_BOOK` on the existing SBE
+template 1) that creates a contract in replicated state and is never handed to the matching
+engine — no order, no book, no crossing, no position. The risk gate gets a swap path, because
+`quantity x price x multiplier` values a 10mm swap at 420,000. One EOD cut at one consensus
+sequence renders two artifacts: the netted position extract unchanged at CSV schema 3, and a
+per-contract swap artifact carrying terms and no valuation. Snapshot format 4 -> 5 for the new
+contract record, with `MIN_READABLE_SNAPSHOT_FORMAT` held at 3 so an existing epoch rolls
+forward without a wipe.
 
 Parent lineage:
 
-- parent state: `YU16-cdm-instruments` (which renders onto `YU14-listed-equity-options` ->
-  `YU13-limit-order-book` -> `YU12-aeron-cluster` -> `YU11-aeron-replication` ->
-  `YU10-fix-ingress` -> `YU09-ops-hardening` -> `YU08-execution-algo-engine` ->
-  `YU07-historical-tick-store` -> `YU06-eod-price-production` ->
-  `YU05-post-trade-compliance` -> `YU04-durable-control-feeds` ->
-  `YU03-in-memory-risk-gateway` -> `YU02-lmax-kubernetes` ->
+- parent state: `YU16-cdm-instruments` (which renders onto `YU15-eod-risk-extract` ->
+  `YU14-listed-equity-options` -> `YU13-limit-order-book` -> `YU12-aeron-cluster` ->
+  `YU11-aeron-replication` -> `YU10-fix-ingress` -> `YU09-ops-hardening` ->
+  `YU08-execution-algo-engine` -> `YU07-historical-tick-store` ->
+  `YU06-eod-price-production` -> `YU05-post-trade-compliance` ->
+  `YU04-durable-control-feeds` -> `YU03-in-memory-risk-gateway` -> `YU02-lmax-kubernetes` ->
   `014-fdc3-intent-interoperability`)
 
 See `spec-source/spec.md` and `spec-source/system__runtime-topology.md` for the complete
