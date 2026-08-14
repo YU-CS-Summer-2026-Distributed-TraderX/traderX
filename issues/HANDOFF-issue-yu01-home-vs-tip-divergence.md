@@ -96,7 +96,19 @@ makes the duplicate-Feature-Pack-number bookkeeping work: on `main` that check n
 states, against 13 of 28 on the YU branches. Normalising YU02–YU15's headings on the YU branches to
 match is the remaining follow-up, and is a propagation pass rather than new authoring.
 
-## YU01 generation is currently broken on the tip
+## YU01 generation is currently broken on the tip — RESOLVED, verified 2026-08-14
+
+**This section is stale and the sub-issue is closed.** `bash pipeline/generate-state.sh
+YU01-lmax-sequencer` run from `YU17-otc-rates` exits **0**, and the log shows
+`[done] applied 1 patch(es) for YU01-lmax-sequencer`. Home's `20a3d52c` reached every tip branch:
+`specs/YU01-lmax-sequencer/generation/patches/0001-state-overlay.patch` is byte-identical
+(`51a649ba8a95…`) on `YU01-lmax-sequencer`, `YU15-eod-risk-extract`, `YU16-cdm-instruments` and
+`YU17-otc-rates`.
+
+So the "one file settles itself and matters immediately" below is already settled in the tree, and
+the merge no longer has to carry it. The rest of this section is kept for the history of why.
+
+## YU01 generation was broken on the tip (history)
 
 Independent of the merge question, one file settles itself and matters immediately:
 `generation/patches/0001-state-overlay.patch`.
