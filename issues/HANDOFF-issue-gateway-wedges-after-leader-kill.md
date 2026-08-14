@@ -269,6 +269,110 @@ order after a 160-order drive, which looks like evidence the backlog drains; it 
 restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
 reasoning.
 
+### THE WEDGE REPRODUCED ON KIND, 2026-08-14 — and it is NOT a session close
+
+Run on `traderx/cluster-node:yu17wedge`, the build carrying the full `EgressListener`, so a session
+event would now be visible if one arrived. Route: `scripts/proofs/yu12-gke-failover-transparency.sh`
+against kind with the gateway at `replicas: 1` — i.e. a leader kill UNDER a live order stream, which
+is the one condition neither of the other two scenarios covers.
+
+The proof failed at its own assertion, which is the wedge arriving:
+
+```
+stream done: 739 acked, 0 needed retries, 1 gave up
+[FAIL] 1 orders were never acknowledged even after retries — the outage was not transparent
+```
+
+and the gateway was left in §1's signature exactly — all three members `1/1`, a new leader elected,
+and:
+
+```
+/ready : {"connected":true,"noAckStreak":1,"noAckLimit":20}
+POST /orders -> {"error":"no committed ack"}
+```
+
+**The session was never closed.** The full listener logged only:
+
+```
+CLUSTER-SESSION-EVENT code=OK session=3 leader=2 term=12
+CLUSTER-NEW-LEADER leader=2 term=12 session=3
+```
+
+**non-OK session event count: 0**, across the kill and after it.
+
+#### What this settles
+
+1. **The wedge is not a closed or errored session.** With the events now visible, none arrived. So
+   the `sessionLost` reconnect trigger added above **cannot cure this wedge** — it is wired for a
+   condition that does not occur here. The logging half of that change is what earned its keep: it
+   is how this was measurable at all.
+2. **§1's divergence, confirmed at 1:1 with the cluster's own witness.** One HTTP request, measured
+   cleanly:
+
+   ```
+   code 504, body 28 bytes {"error":"no committed ack"}
+   traderx_cluster_next_order_ref 881 -> 882   (delta 1)
+   ```
+
+   One request, one ref consumed, one client told its order failed. The book moves while the client
+   is told nothing happened.
+3. **It does NOT support §4's internal-resubmission hypothesis** — at least not under a full wedge.
+   §4 speculated that "the gateway resubmits internally when an ack does not arrive", from 55
+   unexplained refs. Under a total wedge the ratio is exactly one ref per client request. (Caveat:
+   §4's reading was taken during a *transparent-failover* run, not a wedge, so this measures a
+   different regime rather than refuting it.)
+4. **The remaining direction is §2, narrowed.** Ingress still works — the cluster sequences and
+   consumes a ref for every order. The session is open and `code=OK`. Aeron's `onNewLeader` fires
+   and recreates the ingress publication. So the break is specifically the EGRESS path to this
+   client after a leader change, which is precisely what §1 describes and what §2 asked about.
+
+#### The cure, and why it was not attempted here
+
+A `rollout restart` still clears it instantly, which means a fresh session is sufficient. The
+obvious next move is to trigger `connectCycling()` from the no-ack STREAK rather than from a session
+event — the streak is already computed for readiness and liveness.
+
+**That was deliberately not done, and the reason is a real hazard rather than caution.**
+`connectCycling()` loops `while (running)` until it connects. Firing it on streak during a QUORUM
+LOSS — where the streak also climbs, and where the cluster is unreachable by construction — would
+park the owner thread inside the reconnect loop and make a recoverable outage permanently worse.
+Any streak-triggered reconnect needs a bounded attempt count and a way to distinguish "my session is
+bad" from "the cluster is down", and it must be re-proven against `yu16-ready-tracks-commit` (whose
+step 3 asserts `/ready` stays 503 across a RESTORED quorum) and `yu16-liveness-restarts-wedge`.
+
+### Quorum loss does NOT close the session — measured 2026-08-14, and it narrows §5
+
+Run on `traderx/cluster-node:yu17wedge` (the build carrying the full `EgressListener`, so a session
+event would now be visible if one arrived). Members 3 → 1, 40 concurrent orders driven into a
+cluster that cannot commit, then quorum restored.
+
+| | reading |
+|---|---|
+| `/ready` under quorum loss | `{"connected":true,"noAckStreak":30,"noAckLimit":20}` — correctly failing |
+| `/live` under quorum loss | `{"noAckStreak":30,"noAckLimit":100}` — correctly not yet restarting |
+| **session events, during** | **none. non-OK count 0** |
+| **session events, after** | **none. non-OK count 0** |
+| commit after quorum returned | `{"orderRef":69,"kind":1}` — recovered unaided |
+
+**The session stays OPEN through quorum loss.** Nothing closes, nothing errors, and the gateway
+recovers on its own once quorum returns — so `sessionLost` correctly never fires here, and this
+route cannot be used to exercise the reconnect trigger.
+
+**What that rules out for §5.** Three scenarios now measured on this build:
+
+| scenario | session event | outcome |
+|---|---|---|
+| plain leader kill, no load | `CLUSTER-NEW-LEADER` + `code=OK` | recovers, commits normally |
+| quorum loss under load | none at all | recovers when quorum returns |
+| leader kill UNDER SUSTAINED LOAD | — | §5's wedge |
+
+The wedge is therefore **not** a closed or errored session, and not merely "the cluster cannot
+commit" — both of those recover unaided. That leaves §2's hypothesis as the live one: the egress
+subscription after a leader change. The gateway follows the new leader for INGRESS (Aeron's
+`onNewLeader` recreates the ingress publication, and orders demonstrably still commit), so the
+asymmetry is on the EGRESS side — which is exactly what §1 describes: "the cluster sequences and
+books it. Only the ack path back to the gateway is gone."
+
 ### The drain experiment, run 2026-08-13 — and what it does and does not settle
 
 Run on kind with `LIVE_NO_ACK_STREAK=100000` so no restart could intervene: lose quorum, drive
