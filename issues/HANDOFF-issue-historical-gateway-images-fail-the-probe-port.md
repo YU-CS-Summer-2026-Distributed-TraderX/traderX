@@ -134,7 +134,49 @@ gateway onto historical images, and the one this issue is about — PASSES.
 
 The three failures, and which of them this fix owns:
 
-- **`yu13-stp-and-replace` — INTERMITTENT in-suite, and two of my own hypotheses are dead.**
+- **`yu13-stp-and-replace` — ROOT-CAUSED AND FIXED 2026-08-14.** See the resolution note directly
+  below; the investigation that got there is kept because two of my hypotheses were wrong and the
+  way they were wrong is the reusable part.
+
+### RESOLVED: the control feed leaked 510 securities into the epoch stp mints
+
+`scripts/yu15/run-proofs.sh` did this:
+
+```bash
+${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0   # starts a rollout, NOT waited on
+rebuild_fresh_epoch "${STP_IMAGE_PRE}"                          # wipes PVCs, brings members up
+```
+
+`set env` *starts* a rollout; it does not finish one. Nothing waited, so the **old** gateway pod —
+still `CONTROL_FEED_SUBSCRIBER=1` — was alive while `rebuild_fresh_epoch` wiped the PVCs and brought
+the members back, and it replayed the YU04 control feed's **510-security universe** into the
+brand-new epoch. `MAX_SECURITIES` is **64** on the historical builds this prep exists to serve, so
+the table is exhausted in the first 13% of that replay and every registration after it is refused
+with `id = -1`.
+
+**Measured**, by evidence the proof now captures on its own final failed attempt:
+
+```
+[evidence] applied sequence at failure: m0=655 m1=655 m2=655
+[evidence] members=yu15-pre  gateway=yu15-pre  CONTROL_FEED_SUBSCRIBER=0
+```
+
+655 against ~130 for `seed-proof-fixtures` alone — the ~510 excess is the universe.
+
+**The fix is ordering, not a constant**: one `rollout status deploy/cluster-gateway` after the
+`set env`, before minting the epoch. Verified — the pair passes with no seed retries, and the full
+YU17 suite is **27 passed, 0 skipped, 0 failed** on the branch where this failed roughly one run in
+three.
+
+**Why it resisted diagnosis, which is the part worth keeping.** `id = -1` has exactly ONE producer
+in `MatchingEngineClusteredService` (the `nextSymbolId >= MAX_SECURITIES` branch), so a *fast* 422 is
+capacity refused by construction — and I had ruled capacity out on a standalone reproduction that
+**structurally could not contain the feed**, then spent the investigation chasing timing. The general
+form: *when a standalone reproduction disagrees with an in-suite failure, enumerate what the suite
+has that the reproduction does not.* Here it was a second registrant. The `id = -1` observation is
+OSFF chat's, from reading the service rather than guessing at it.
+
+#### The investigation, kept for the two dead hypotheses
   Observed failing at step 1 with five `422 {"seeded":false}` seed attempts on some suite runs, and
   passing all nine steps on others — including the same `cancel-ingress`→`stp` pairing that failed
   twice. So it is a flake whose frequency `initialDelaySeconds` reduced, **not** a deterministic
