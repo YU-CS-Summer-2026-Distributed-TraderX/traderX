@@ -1,8 +1,23 @@
 # Issue: YU02's trade-processor `test` task discovers zero tests and fails the build
 
-**Status:** open, not fixed. Blocks `publish-generated-state-branch.sh YU02-lmax-kubernetes` at the
-compile preflight. Pre-existing; first reachable 2026-08-03, when the YU publish wiring let the
-publisher get that far for the first time.
+**Status: RESOLVED.** Fixed by `eb1144f0` — *"YU02 trade-processor: a real unit test, so the unit
+tier has something to discover"* — and `3e4f8979`, which took the third and recommended option
+below. Verified 2026-08-14 on a generated YU02 tree: `./gradlew test --offline --rerun-tasks` on
+trade-processor runs **5 tests, 0 failed**, where this file recorded
+`No tests found for given includes`. `TradeServiceBookingTest` carries no `@Tag`, so the
+`excludeTags 'integration'` filter leaves it in scope, and both signals the issue wanted preserved
+are intact: `failOnNoDiscoveredTests` was not disabled and the integration tag still excludes
+`TradeProcessorContextIT`.
+
+**Still unverified:** the original symptom was a publish-walk stop, and the publish walk has not
+been re-run. See `HANDOFF-issue-yu-vacuous-pipeline-guards.md` for the separate reason the publisher
+still refuses YU states upstream of this point.
+
+Original report follows.
+
+**Status when filed:** open, not fixed. Blocks `publish-generated-state-branch.sh
+YU02-lmax-kubernetes` at the compile preflight. Pre-existing; first reachable 2026-08-03, when the
+YU publish wiring let the publisher get that far for the first time.
 **Related:** `HANDOFF-issue-yu-vacuous-pipeline-guards.md` — same family, opposite sign. That file is
 about checks that pass without running; this is a check that *correctly refuses* to pass without
 running, and is therefore load-bearing.
