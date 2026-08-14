@@ -199,6 +199,25 @@ if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
 fi
 
+# THE EXTRACT PRODUCER RUNS THE SAME cluster-node IMAGE AND WAS PINNED BY NOTHING. Same lesson as
+# the gateway above, one Deployment further along: check every Deployment that runs this image, not
+# the StatefulSet alone. It is a stateless batch producer, so a repin costs nothing -- no PVC, no
+# epoch, no projection clear.
+#
+# Measured 2026-08-14 on the YU16 rig: the suite ran with the members and the gateway on
+# traderx/cluster-node:yu16 while the producer was still on a YU17 build, whose renderer requires a
+# `contracts=` field that a YU16 cut does not carry. The EOD batch aborted with "cut header missing
+# contracts=", and two proofs failed reporting "no RISK-EXTRACT-READY" -- true, and silent about
+# the cause. A producer left behind by a DESCENDANT branch is NEWER than the image, so no
+# staleness test can see it; only a tag comparison can.
+producer_image() { ${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+if [[ -n "$(producer_image)" && "$(producer_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] risk-extract is on $(producer_image); repinning to ${BASELINE_IMAGE}"
+  ${K} set image deployment/risk-extract \
+    "$(${K} get deploy risk-extract -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
+fi
+
 # Members that share an applied sequence but DISAGREE on the book have diverged -- permanently, on
 # a deterministic core -- and every digest-agreement proof after this point would fail while
 # reporting the divergence as its own bug. Different sequences are mere lag and converge on their
