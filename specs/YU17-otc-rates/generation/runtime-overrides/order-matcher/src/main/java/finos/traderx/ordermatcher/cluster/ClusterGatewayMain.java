@@ -11,6 +11,9 @@ import finos.traderx.ordermatcher.lmax.OutputEvent;
 import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.risk.RiskReason;
 import io.aeron.cluster.client.AeronCluster;
+import io.aeron.cluster.client.EgressListener;
+import io.aeron.cluster.codecs.EventCode;
+import io.aeron.logbuffer.Header;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import org.agrona.CloseHelper;
@@ -432,7 +435,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         client.sendKeepAlive();
                     }
                 }
-                if (client != null && client.isClosed()) {
+                // sessionLost, not just isClosed(): a session the cluster closed or errored does not
+                // always reach isClosed(), and that gap is the wedge -- ingress kept committing while
+                // every ack was gone. See the listener above.
+                if (client != null && (client.isClosed() || sessionLost)) {
                     final long now = System.currentTimeMillis();
                     // 100ms, not 1000: connectCycling() already blocks until a live endpoint accepts,
                     // so this gate only bounds retry churn — at 1s it was the largest avoidable term
@@ -465,6 +471,65 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * distribution (~85-180ms fast mode vs ~670-850ms slow mode). Single-endpoint cycling is kept
      * as the fallback, with a rotating start so a dead endpoint is not retried first every time.
      */
+    /**
+     * A FULL EgressListener, not a method reference.
+     *
+     * `.egressListener(this::onEgress)` satisfies the interface's single abstract method and leaves
+     * onSessionEvent and onNewLeader on their DEFAULT NO-OP bodies (verified against
+     * aeron-cluster 1.51.0). That is why a gateway that stops committing after a leader change says
+     * nothing at any log level: the two events that would name the cause were being discarded by
+     * the interface's own defaults. See
+     * issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md, whose §3 is exactly this ("no
+     * exception, no reconnect attempt, no log line at any level") and whose §2 asks whether the
+     * egress subscription survives a leader change.
+     *
+     * Both are logged rather than counted, because the failure they explain is diagnosed by a human
+     * reading `kubectl logs` after the fact, and neither fires often enough to be noise: a session
+     * event means the cluster changed its mind about this session, and a new-leader event means an
+     * election happened.
+     */
+    private final EgressListener egressListener = new EgressListener() {
+        @Override
+        public void onMessage(final long clusterSessionId, final long timestamp,
+                              final DirectBuffer buffer, final int offset, final int length,
+                              final Header header) {
+            onEgress(clusterSessionId, timestamp, buffer, offset, length, header);
+        }
+
+        /**
+         * Anything other than OK means this session is no longer usable for acks. The owner loop's
+         * only reconnect trigger was {@code client.isClosed()}, which a cluster-side close does not
+         * always reach -- so the session could be dead for acks while the gateway kept offering
+         * orders that committed and were never acknowledged, answering every client 504. Record it
+         * and let the owner loop rebuild the session, which is the known cure (a `rollout restart`
+         * clears the wedge instantly, and a fresh session is the only thing that changes).
+         */
+        @Override
+        public void onSessionEvent(final long correlationId, final long clusterSessionId,
+                                   final long leadershipTermId, final int leaderMemberId,
+                                   final EventCode code, final String detail) {
+            System.out.println("CLUSTER-SESSION-EVENT code=" + code + " session=" + clusterSessionId
+                + " leader=" + leaderMemberId + " term=" + leadershipTermId
+                + " detail=" + (detail == null ? "-" : detail));
+            if (code != EventCode.OK) {
+                sessionLost = true;
+            }
+        }
+
+        @Override
+        public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
+                                final int leaderMemberId, final String ingressEndpoints) {
+            System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
+                + " term=" + leadershipTermId + " session=" + clusterSessionId);
+        }
+    };
+
+    /**
+     * Set by onSessionEvent above; read and cleared by the owner loop. Not volatile on purpose --
+     * pollEgress() runs on the owner thread, so both the write and the read are that one thread.
+     */
+    private boolean sessionLost = false;
+
     private void connectCycling() {
         // A fresh cluster session will not deliver the old session's outstanding egress, so complete
         // every in-flight pending as ambiguous (post-publish ambiguity: the order may have committed,
@@ -487,8 +552,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     .egressChannel("aeron:udp?term-length=1m|endpoint="
                         + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                         + env("GATEWAY_EGRESS_PORT", "0"))
-                    .egressListener(this::onEgress));
+                    .egressListener(egressListener));
                 connectRotation = (connectRotation + 1) % endpointEntries.length;
+                sessionLost = false;   // a fresh session: whatever killed the last one is behind us
                 connected = true;
                 return;
             } catch (final Exception e) {
