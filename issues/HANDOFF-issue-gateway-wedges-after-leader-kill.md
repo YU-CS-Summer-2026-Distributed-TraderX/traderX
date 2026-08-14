@@ -216,6 +216,11 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
      bash scripts/proofs/yu12-gke-failover-transparency.sh
    ```
 
+   **For §1's divergence specifically, do NOT use this route.** Quorum loss produces the same
+   booked-but-denied orders deterministically in ~90 seconds with no leader kill and no race — 159
+   resting orders for 160 clients told 504, measured 2026-08-13. See the drain experiment in §5.
+   The wedge is only needed for §5's hang.
+
    with the gateway at `replicas: 1` and `execution-algo-engine` at 0. The whole fix-and-prove
    cycle is therefore local and free; the GKE rig is not needed for this at all. The proof's own
    header says "WHY GKE — election behaviour on kind's starved CPUs is not the system's behaviour",
@@ -258,6 +263,299 @@ still does not drain after load stops. What changed is that it is now survivable
 liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the kubelet restarts
 the container, which is the only known cure. The open question is unchanged and still worth
 answering: why a bounded 12s wait per request never clears in eight minutes.
+
+**And the liveness proof does not answer it — do not read it as if it did.** Its step 4 commits an
+order after a 160-order drive, which looks like evidence the backlog drains; it is not, because the
+restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
+reasoning.
+
+### THE WEDGE REPRODUCED ON KIND, 2026-08-14 — and it is NOT a session close
+
+Run on `traderx/cluster-node:yu17wedge`, the build carrying the full `EgressListener`, so a session
+event would now be visible if one arrived. Route: `scripts/proofs/yu12-gke-failover-transparency.sh`
+against kind with the gateway at `replicas: 1` — i.e. a leader kill UNDER a live order stream, which
+is the one condition neither of the other two scenarios covers.
+
+The proof failed at its own assertion, which is the wedge arriving:
+
+```
+stream done: 739 acked, 0 needed retries, 1 gave up
+[FAIL] 1 orders were never acknowledged even after retries — the outage was not transparent
+```
+
+and the gateway was left in §1's signature exactly — all three members `1/1`, a new leader elected,
+and:
+
+```
+/ready : {"connected":true,"noAckStreak":1,"noAckLimit":20}
+POST /orders -> {"error":"no committed ack"}
+```
+
+**The session was never closed.** The full listener logged only:
+
+```
+CLUSTER-SESSION-EVENT code=OK session=3 leader=2 term=12
+CLUSTER-NEW-LEADER leader=2 term=12 session=3
+```
+
+**non-OK session event count: 0**, across the kill and after it.
+
+#### What this settles
+
+1. **The wedge is not a closed or errored session.** With the events now visible, none arrived. So
+   the `sessionLost` reconnect trigger added above **cannot cure this wedge** — it is wired for a
+   condition that does not occur here. The logging half of that change is what earned its keep: it
+   is how this was measurable at all.
+2. **§1's divergence, confirmed at 1:1 with the cluster's own witness.** One HTTP request, measured
+   cleanly:
+
+   ```
+   code 504, body 28 bytes {"error":"no committed ack"}
+   traderx_cluster_next_order_ref 881 -> 882   (delta 1)
+   ```
+
+   One request, one ref consumed, one client told its order failed. The book moves while the client
+   is told nothing happened.
+3. **It does NOT support §4's internal-resubmission hypothesis** — at least not under a full wedge.
+   §4 speculated that "the gateway resubmits internally when an ack does not arrive", from 55
+   unexplained refs. Under a total wedge the ratio is exactly one ref per client request. (Caveat:
+   §4's reading was taken during a *transparent-failover* run, not a wedge, so this measures a
+   different regime rather than refuting it.)
+4. **The remaining direction is §2, narrowed.** Ingress still works — the cluster sequences and
+   consumes a ref for every order. The session is open and `code=OK`. Aeron's `onNewLeader` fires
+   and recreates the ingress publication. So the break is specifically the EGRESS path to this
+   client after a leader change, which is precisely what §1 describes and what §2 asked about.
+
+#### The cure, and why it was not attempted here
+
+A `rollout restart` still clears it instantly, which means a fresh session is sufficient. The
+obvious next move is to trigger `connectCycling()` from the no-ack STREAK rather than from a session
+event — the streak is already computed for readiness and liveness.
+
+**That was deliberately not done, and the reason is a real hazard rather than caution.**
+`connectCycling()` loops `while (running)` until it connects. Firing it on streak during a QUORUM
+LOSS — where the streak also climbs, and where the cluster is unreachable by construction — would
+park the owner thread inside the reconnect loop and make a recoverable outage permanently worse.
+Any streak-triggered reconnect needs a bounded attempt count and a way to distinguish "my session is
+bad" from "the cluster is down", and it must be re-proven against `yu16-ready-tracks-commit` (whose
+step 3 asserts `/ready` stays 503 across a RESTORED quorum) and `yu16-liveness-restarts-wedge`.
+
+### Quorum loss does NOT close the session — measured 2026-08-14, and it narrows §5
+
+Run on `traderx/cluster-node:yu17wedge` (the build carrying the full `EgressListener`, so a session
+event would now be visible if one arrived). Members 3 → 1, 40 concurrent orders driven into a
+cluster that cannot commit, then quorum restored.
+
+| | reading |
+|---|---|
+| `/ready` under quorum loss | `{"connected":true,"noAckStreak":30,"noAckLimit":20}` — correctly failing |
+| `/live` under quorum loss | `{"noAckStreak":30,"noAckLimit":100}` — correctly not yet restarting |
+| **session events, during** | **none. non-OK count 0** |
+| **session events, after** | **none. non-OK count 0** |
+| commit after quorum returned | `{"orderRef":69,"kind":1}` — recovered unaided |
+
+**The session stays OPEN through quorum loss.** Nothing closes, nothing errors, and the gateway
+recovers on its own once quorum returns — so `sessionLost` correctly never fires here, and this
+route cannot be used to exercise the reconnect trigger.
+
+**What that rules out for §5.** Three scenarios now measured on this build:
+
+| scenario | session event | outcome |
+|---|---|---|
+| plain leader kill, no load | `CLUSTER-NEW-LEADER` + `code=OK` | recovers, commits normally |
+| quorum loss under load | none at all | recovers when quorum returns |
+| leader kill UNDER SUSTAINED LOAD | — | §5's wedge |
+
+The wedge is therefore **not** a closed or errored session, and not merely "the cluster cannot
+commit" — both of those recover unaided. That leaves §2's hypothesis as the live one: the egress
+subscription after a leader change. The gateway follows the new leader for INGRESS (Aeron's
+`onNewLeader` recreates the ingress publication, and orders demonstrably still commit), so the
+asymmetry is on the EGRESS side — which is exactly what §1 describes: "the cluster sequences and
+books it. Only the ack path back to the gateway is gone."
+
+### The drain experiment, run 2026-08-13 — and what it does and does not settle
+
+Run on kind with `LIVE_NO_ACK_STREAK=100000` so no restart could intervene: lose quorum, drive
+2 × 80 concurrent orders (streak reached exactly 160), restore quorum, then stop **all** load and
+watch. Result:
+
+> **First committed order at +0s after quorum returned, `restarts=0`, streak already back to 0.**
+
+So on the pipelined tier, under quorum loss, **the abandoned-task backlog is not self-sustaining**.
+160 abandoned tasks did not cost 160 × `ACK_TIMEOUT_MS` of owner-thread time, because the per-task
+10s is spent only while the cluster refuses the offer — once quorum is back each queued task offers
+in microseconds and the queue evaporates. The "queue that cannot drain" hypothesis is dead for this
+shape.
+
+**It is NOT an answer to §5, and must not be read as one.** §5's hang was the leader-kill WEDGE
+under a sustained generator, in which the gateway stopped answering *all* HTTP and had not
+recovered after eight minutes with zero load offered. Quorum loss induces the same *property*
+(nothing can commit) but evidently not the same *mechanism* — this run recovered instantly where
+that one never did. §5's mechanism remains unreproduced and unexplained. What is now known is
+narrower and still worth having: whatever §5 is, it is **not** simply a deep owner queue.
+
+### The side finding, which is worth more than the drain answer: §1 has a DETERMINISTIC repro
+
+The same run reproduced the invisible-orders defect exactly, in about 90 seconds, with no leader
+kill and no race:
+
+| witness | reading |
+|---|---|
+| submits that got no committed ack | **160** (the gateway's own `noAckStreak`, so every one of those clients was answered 504) |
+| `traderx_book_open_orders` | 51 → **211** |
+| `traderx_cluster_next_order_ref` | **212** |
+| member agreement | all three identical: `applied=7568 open=211 nextRef=212 hash=-734721819140448701` |
+
+**159 of the 160 orders every client was told had failed are resting in the book.** (One did not
+consume a ref — its offer never cleared before the deadline.) That is §1, on demand, without the
+1-in-4 wedge race the rest of this document is built around. Anyone working on §1 should use quorum
+loss to produce the divergence and stop hunting the wedge for it; the wedge is only needed for §5.
+
+## §6. Where the fix has actually run, and where it still has not
+
+The probe work was written once and back-ported to YU12–YU15 and the GKE tier. "Back-ported and
+renders correctly" is not "has run", and the two are recorded separately here on purpose — a
+manifest that renders and a funnel that compiles are the two failure modes this project keeps
+paying for. Ticked off 2026-08-13.
+
+### YU12's gateway — VERIFIED on the kind rig, 2026-08-13
+
+`646b1e1d` was generate + `compileJava` clean and nothing more. It matters separately from YU13's
+back-port (which is operative for YU13–YU15 and had run) because **YU12 is a different program**:
+it has no `submitPipelined`, so the no-ack streak is hooked into `submitOrder` instead — a
+synchronous funnel with no in-flight window, where every submit round-trips through the owner
+thread. That funnel had never been exercised anywhere.
+
+Run on `kind-traderx-yu12-cluster` on YU12's own image (`traderx/cluster-node:yu12`, built from
+`traderX-YU12-aeron-cluster`), members and gateway both on that build, fresh epoch. Both YU16 proof
+scripts, run directly from the YU16 worktree — YU12 carries no `scripts/proofs`, and
+`scripts/yu15/run-proofs.sh` must NOT be used for this because it pins `BASELINE_IMAGE` and would
+silently rebuild the rig onto the baseline before reporting.
+
+| | reading |
+|---|---|
+| pod comes up | Ready, kubelet driving all three probes at 18111 |
+| `yu16-ready-tracks-commit.sh` | **PASS** — control 25 orders/streak 0/200; quorum gone 503 at streak 25; discriminator held (`connected:true` with /ready still 503); one committed order (`orderRef 50`) cleared it |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — control 80 concurrent (> the 64 pool) left /live 200 and the pod untouched; probe port answered 200 under saturation both rounds; /live 503 at streak 144; `restarts 0 -> 1`, `reason=Error` not OOMKilled, kubelet event `Container gateway failed liveness probe, will be restarted`; recovered order `orderRef 131` |
+
+**The synchronous tier accumulates the streak at the same rate as the pipelined one**, which was the
+open question and the reason the run was worth doing. 80 concurrent orders produced streak 80 in one
+round and 144 in two — the YU16 shape exactly. Each submitter's own `ft.get()` expires at
+`ACK_TIMEOUT_MS + 2s` regardless of where its task sits in the owner queue, so queue position does
+not slow accumulation, and the `LIVE_NO_ACK_STREAK` env knob was not needed. The readiness run makes
+it exactly 1:1: 25 orders, streak 25.
+
+**What this run does NOT establish**, and should not be read as establishing: whether a synchronous
+gateway drains its abandoned-task backlog. Every timed-out submitter leaves a task queued on the
+owner thread, and on this tier each can burn a full ack timeout. The recovered order in step 4
+committed fine — but the restart under test kills the container, and the owner queue with it, so
+step 4 always meets a fresh JVM by construction. Measuring the drain needs a drive with no restart
+(`LIVE_NO_ACK_STREAK` raised above the reachable streak, then watch whether an order commits after
+load stops).
+
+**That experiment has since been run, ON THE PIPELINED TIER — see the drain subsection at the end
+of §5, which is the canonical result.** There the backlog drains instantly: the ack timeout is only
+spent while the cluster refuses the offer, so a restored quorum empties the queue in microseconds.
+
+**It does not close the question this section asked**, which was about the SYNCHRONOUS gateway. The
+mechanism measured is `offerPipelined`'s retry loop — offer, pollEgress, check deadline — and YU12
+does not have it: `submitOrder0` → `onOwner` → `offerAndAwait` waits on an ack condition, not on the
+offer clearing. The same fast drain is plausible there and is not measured. Left explicitly
+unmeasured rather than inferred; it is the same script with the rig on `:yu12`.
+
+What the pipelined result does settle reaches further than drain, and is the reason it is
+cross-referenced here at all: it retired §5's own proposed mechanism. Whatever that hang is, it is
+not merely a deep owner queue.
+
+### The GKE tier — VERIFIED on a live cluster, 2026-08-13
+
+`15e758df`/`f40d110e`/`9bb7b5dc`/`0d7fab5c`/`86552494` wired startup + readiness + liveness at 18111
+into each branch's `gke/gateway.yaml`. Those had rendered and had never met a kubelet. They have now:
+cluster `traderx-bench` in `traderx-505400`, YU16 build at `:yu16`, three members and one gateway at
+`replicas: 1` behind the LoadBalancer — the configuration the wedge was first observed in.
+
+**The probes behaved correctly in every respect checked, and the change did not destabilise a
+healthy tier** — which was its main risk:
+
+| what | reading |
+|---|---|
+| pods Ready, `containerPort: 18111` present | yes; gateway `restarts=0` through the whole healthy period |
+| probe failures during normal operation | none. The only `Unhealthy` events were startup during JVM boot and readiness while quorum was genuinely absent |
+| `GATEWAY_PROBE_PORT` on the serving pod | `18111` — `a2781db7`'s pin, exercised by a kubelet for the first time |
+| `yu16-ready-tracks-commit.sh` | **PASS** — 503 at streak 25, discriminator window held, cleared by `orderRef 51` |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — `/live` 503 at streak 144, `restarts 4 -> 5`, `exitCode 143`, recovered with `orderRef 452` |
+
+Three GKE-specific readings worth keeping, because none of them could have been taken on kind:
+
+- **The 120s startup budget has about 2x headroom on real hardware, not a lucky fit.** The
+  startupProbe recorded 12 `connection refused` failures at `periodSeconds: 5` — ~60s from container
+  start to first answer on 18111 — against a budget of 24 x 5s. GKE's JVM+Aeron boot is the slow
+  case this constant exists for, and it clears it twice over.
+- **Liveness did not fire on an idle gateway that genuinely could not commit.** Before the members
+  were scheduled, the gateway sat ~10 minutes unable to commit anything with zero traffic offered,
+  and was never restarted. That is the anti-storm property (§1b) confirmed on the tier where a
+  restart storm would actually cost something, rather than argued from the code.
+- **`/ready` and `/live` disagreeing is visible and correct.** With quorum gone and no traffic,
+  `/ready` was 503 (it counts `connected`) while `/live` stayed 200 (it deliberately ignores
+  `connected`). The distinction that keeps an election from restarting every gateway is observable,
+  not just intended.
+
+**THE LANDMINE HAS A TAIL, and `apply -k` does not clear it.** Fixing the manifest and recreating the
+pool got the *StatefulSet spec* right, and members 0 and 1 still would not schedule: the existing
+pods carried the hand-patched `nodeSelector: blp-compact` from the deleted pool, and a pod's node
+selector is immutable. `apply -k` updated the spec and left two pods Pending against it —
+`0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector` — while the third,
+which the apply had recreated, ran fine. **Deleting the stale pods is part of the fix**; without it
+the tier comes up one-third scheduled and looks like a quota problem.
+
+**What the run cost, and what it says about the proofs rather than the gateway.** The gateway
+behaved correctly in every run; `yu16-liveness-restarts-wedge.sh` failed three of them, on four
+separate assumptions that were true on kind and false here. All four are fixed in `8634eb01` and
+the detail is in that commit. The pattern is the durable part and it is not "test on GKE":
+
+> A proof's timing constants and its string matching are claims about the ENVIRONMENT, and a
+> passing run does not falsify them. Every one of the four was green on kind for a reason unrelated
+> to the property it asserted — an event string the kubelet's rate limiter structurally cannot
+> deliver on this path, a reconnect budget sized for kind's boot, a `port-forward` never re-spawned
+> after the restart it exists to watch, and a 20s wait defending against a 60s failure mode.
+
+That is a different class from the vacuous-pass audit's existing rules, which are about assertions
+being too *weak*. These assertions were strong; they were about the wrong universe.
+
+**The event half of that has a consequence in PRODUCTION, not just in the proof.** The saturation is
+structural: readiness fails at 20 and liveness at 100, so by the time liveness fires, readiness has
+been failing for ~80 further no-ack submits and has long since spent the shared `reason=Unhealthy`
+budget. Measured on GKE: `Unhealthy count=150` for readiness, and **no liveness `Unhealthy` event at
+all**. So when this probe restarts a real gateway, the `Liveness probe failed` event will usually be
+missing there too — anyone who builds alerting on that string for this gateway gets silence while
+the restart is happening. The reliable signals are the `Killing` event (`Container gateway failed
+liveness probe, will be restarted`), emitted once per kill and so not subject to that pressure, and
+the container's own `restartCount`. This is a consequence of choosing `LIVE_NO_ACK_STREAK` well
+above `READY_NO_ACK_STREAK`, which is deliberate for every other reason (§1b) — it is worth the
+trade, but the alerting has to key off the right event.
+
+Recorded here rather than as a comment in the five `gateway.yaml` copies on purpose: this document
+already exists on every branch that carries the defect, so it reaches the same readers, and a
+comment maintained in five places is exactly the divergence surface the lineage rule punishes.
+
+**The rig itself.** Two facts about the cloud that cost most of an hour and are not about this
+issue at all, kept because the next person will meet them: `us-east1-b` had no `c2d-standard-8`
+capacity (`ZONE_RESOURCE_POOL_EXHAUSTED` / `GCE_STOCKOUT`), and a `CREATE_NODE_POOL` operation
+**cannot be cancelled and blocks every other operation on the cluster while it retries** — 35
+minutes, with `node-pools delete` returning `Cluster is running incompatible operation` throughout.
+So a stockout is not a fast failure to retry around. Check
+`gcloud compute instance-groups managed list-errors <mig>` early rather than reading a long
+`PROVISIONING` as slow provisioning. The pool that eventually came up is `n2-standard-8` without
+`--placement-type COMPACT`; compact placement narrows eligible hosts and `76c45bbb` already found
+it is not the latency lever, so a correctness rig should not ask for it.
+
+**The `blp-c4d-tuned-pool` landmine is now fixed at the source.** `gke/statefulset-emptydir.yaml`
+pinned a pool that a compact-placement experiment had deleted; the live StatefulSet only worked
+because someone had hand-patched the selector, and any fresh `apply -k` would have left all three
+members Pending on "didn't match Pod's node affinity/selector". Fixed by recreating the pool under
+the name the manifests expect, which repairs every branch at once rather than baking an
+experiment's pool name into the tier. The machine-type divergence that comes with it (c2d, not c4d,
+because CPUS_ALL_REGIONS is 32) is recorded at the `nodeSelector` itself.
 
 ## §4. The proof reported the wrong cause
 
