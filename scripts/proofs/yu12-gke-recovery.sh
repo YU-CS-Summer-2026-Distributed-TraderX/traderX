@@ -124,6 +124,16 @@ for m in 0 1 2; do [[ "${m}" != "${LDR}" ]] && { VICTIM="${m}"; break; }; done
 VICTIM_POD="order-matcher-cluster-${VICTIM}"
 echo "  leader is member ${LDR}; destroying follower ${VICTIM_POD}"
 ${K} delete pod "${VICTIM_POD}" --wait=true >/dev/null
+# `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
+# does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line
+# above just deleted the pod, so there is ALWAYS a window before the controller recreates it, and
+# how wide that window is depends on how busy the box is -- so this passes until it does not, then
+# reports "never became Ready" about a pod that had not yet been asked to exist. Caught in
+# yu17-swap-netting on 2026-08-14; the same shape is here. Wait for EXISTENCE first.
+for _ in $(seq 1 150); do
+  ${K} get pod "${VICTIM_POD}" >/dev/null 2>&1 && break
+  sleep 2
+done
 ${K} wait --for=condition=Ready "pod/${VICTIM_POD}" --timeout=600s >/dev/null
 echo "  ${VICTIM_POD} is back (fresh pod, empty disk) — rebuilding from snapshot + log"
 

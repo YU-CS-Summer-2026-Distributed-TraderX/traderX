@@ -211,6 +211,16 @@ VICTIM="$(${K} get pods -l app=order-matcher-cluster \
 echo "  DESTROYING ${VICTIM} — emptyDir, so it comes back with an EMPTY disk and rebuilds from"
 echo "  the snapshot plus the log tail. This is the restore boundary."
 ${K} delete pod "${VICTIM}" --wait=true >/dev/null
+# `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
+# does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line
+# above just deleted the pod, so there is ALWAYS a window before the controller recreates it, and
+# how wide that window is depends on how busy the box is -- so this passes until it does not, then
+# reports "never became Ready" about a pod that had not yet been asked to exist. Caught in
+# yu17-swap-netting on 2026-08-14; the same shape is here. Wait for EXISTENCE first.
+for _ in $(seq 1 150); do
+  ${K} get pod "${VICTIM}" >/dev/null 2>&1 && break
+  sleep 2
+done
 ${K} wait --for=condition=Ready "pod/${VICTIM}" --timeout=600s >/dev/null
 POST_KILL="$(digest_consensus)"
 echo "  book: [${PRE_KILL}] -> [${POST_KILL}] after the rebuild"

@@ -358,6 +358,17 @@ else
   echo "  members are emptyDir-backed; the pod delete alone empties the disk"
 fi
 ${K} delete pod "order-matcher-cluster-${VICTIM}" --wait=true >/dev/null
+# `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
+# does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line
+# above just deleted the pod, so there is ALWAYS a window before the StatefulSet controller
+# recreates it, and how wide that window is depends on how busy the box is -- which is why this
+# passed every run until it did not, then reported "member 2 never became Ready after being
+# destroyed" about a member that had not yet been asked to exist. The 600s budget was real; it was
+# never spent. Wait for EXISTENCE first, then for readiness.
+for _ in $(seq 1 150); do
+  ${K} get pod "order-matcher-cluster-${VICTIM}" >/dev/null 2>&1 && break
+  sleep 2
+done
 ${K} wait --for=condition=Ready "pod/order-matcher-cluster-${VICTIM}" --timeout=600s >/dev/null \
   || fail "member ${VICTIM} never became Ready after being destroyed"
 # Ask it to render the SAME sequence again. A rebuilt member replays the marker at N, so the cut it
