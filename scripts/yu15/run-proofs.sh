@@ -412,6 +412,21 @@ for p in "${PROOFS[@]}"; do
 
     echo "[stp-prep] control feed off + fresh epoch minted ON ${STP_IMAGE_PRE}"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
+    # WAIT FOR THE SUBSCRIBER TO ACTUALLY BE GONE BEFORE MINTING THE EPOCH. `set env` starts a
+    # rollout; it does not finish one. Without this wait the OLD gateway pod -- still
+    # CONTROL_FEED_SUBSCRIBER=1 -- is alive while rebuild_fresh_epoch below wipes the PVCs and
+    # brings the members up, and it replays the YU04 control feed's 510-security universe straight
+    # into the brand-new epoch.
+    #
+    # That is fatal on the historical builds this prep exists to serve: MAX_SECURITIES is 64 there
+    # against 1024 today, so the table is exhausted in the first 13% of the replay and every symbol
+    # registration after that is refused with id = -1 -- which surfaces as
+    # yu13-stp-and-replace failing its seed with a FAST `422 {"seeded":false}`.
+    #
+    # Measured 2026-08-14. At failure the epoch carried applied=655 on all three members, against
+    # ~130 for seed-proof-fixtures alone; the ~510 excess is the universe. Intermittent precisely
+    # because it is a race on whether the old pod is still up when the members return.
+    ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
     rebuild_fresh_epoch "${STP_IMAGE_PRE}"
     # A fresh epoch needs a fresh projection — the engine's counters restart below the trade ids
     # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
