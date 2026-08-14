@@ -165,7 +165,48 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
 
 2. ~~**§5 first, arguably.**~~ Its *probe* half is done (separate probe server). The hang itself is
    still undiagnosed and is still more severe than the wedge it hides inside.
-2. Then find the session. `submitOrder` returning null means no egress ack arrived for the
+2. **PARTLY ANSWERED 2026-08-14 — the gateway was throwing both session events away.**
+   `AeronCluster.Context.egressListener(this::onEgress)` was a METHOD REFERENCE. It satisfies
+   `EgressListener`'s single abstract method and leaves `onSessionEvent` and `onNewLeader` on their
+   **default no-op bodies** (verified against `aeron-cluster-1.51.0` with `javap`, not from memory).
+   So §3's "no exception, no reconnect attempt, no log line at any level" was not a mystery: the two
+   events that would name the cause were being discarded by the interface's own defaults, and the
+   owner loop's ONLY reconnect trigger was `client.isClosed()`.
+
+   Fixed by registering a full `EgressListener`: both events are logged, and a session event whose
+   code is anything other than `OK` sets `sessionLost`, which the owner loop now treats as a
+   reconnect trigger alongside `isClosed()`. A fresh session is the known cure — a `rollout restart`
+   clears the wedge instantly and a new session is the only thing that changes — so the gateway can
+   now reach for it without needing the kubelet to kill the pod.
+
+   **Verified on the kind rig** (`traderx/cluster-node:yu17wedge`, gateway and members on that
+   build). Leader `order-matcher-cluster-0` killed; the gateway's own log, which previously said
+   nothing at all about a leader change:
+
+   ```
+   CLUSTER-SESSION-EVENT code=OK session=4 leader=2 term=11
+   CLUSTER-NEW-LEADER leader=2 term=11 session=4
+   ```
+
+   and it committed normally straight after (`{"orderRef":150,"kind":1}`, `/ready` 200, streak 0).
+   `yu16-ready-tracks-commit` and `yu16-liveness-restarts-wedge` both still PASS on that build, which
+   matters because they assert on the same session machinery. Checked before building: a reconnect
+   cannot reset `noAckStreak` — it is touched only in the submit path, never by `drain()` or
+   `connectCycling()` — so neither proof's verdict can be laundered by the new trigger.
+
+   **What is NOT yet proven.** The event observed was `code=OK`, which correctly does *not* set
+   `sessionLost`. So this run demonstrates the flag is not set spuriously; it does **not** demonstrate
+   the reconnect path firing, because the wedge did not reproduce in this run. The logging half is
+   proven, the self-heal half is wired and unobserved. Catching a non-OK session event during a real
+   wedge is the next step, and the new log line is now what makes that identifiable.
+
+   **Carried to the YU16 layer as well as YU17's** — `ClusterGatewayMain.java` has FOUR carriers
+   (YU12, YU13, YU16, YU17), and a descendant's fix reaches no ancestor. YU12's and YU13's layers are
+   deliberately NOT carried: they are operative for YU12 and YU13-YU15, tiers with no rig available
+   here, and shipping an unexercised change to a different program (YU12 has no `submitPipelined`) is
+   the trap §6 of this file already records.
+
+3. Then find the remaining session question. `submitOrder` returning null means no egress ack arrived for the
    request. Worth checking whether the gateway's egress subscription is re-established on a leader
    change, or whether it stays bound to the old leader's publication.
 3. ~~Reproduce on kind if possible~~ — **done, 2026-08-13.** It reproduces reliably:
