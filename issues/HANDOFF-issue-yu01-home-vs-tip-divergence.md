@@ -1,6 +1,44 @@
 # Issue: the YU01-lmax-sequencer pack is two unmerged development threads
 
-**Status:** open. Adjudicated 2026-08-03; not yet resolved. Blocks carrying YU01 into `main`.
+**Status: RESOLVED.** Verified 2026-08-14 against this file's own three criteria. The merge was
+carried out after this document was written and the status line was never updated.
+
+**The pack is reconciled.** `specs/YU01-lmax-sequencer` is byte-identical on the home branch and the
+tip — same git tree hash `6d3c1e3d3aa6283da2704f52ab15661eebb18459` on `YU01-lmax-sequencer` and
+`YU17-otc-rates`, 96 files each, zero content-differs, zero home-only, zero tip-only.
+
+**And it is a genuine merge, not a wholesale pick** — which is what this file warned would silently
+lose a thread. Both sides survived:
+
+| thread | evidence |
+|---|---|
+| home's no-GC output path | `OutputValueCache`, `AccountTopicCache`, `OutputHandlerAllocationGateTest`, `OutputHandlerAllocationAttributionTest` all present |
+| tip's recovery/snapshot | `JournalReader`, `SnapshotStore`, `CpuAffinity`, `AsyncPublisher` all present |
+
+`OrderSnapshot` took **home's mutable flyweight**, as the spec required and as this file argued:
+`public final int orderRef`, `volatile int` quantities, `volatile long limitPx` / `lastExecPx` in
+fixed-point ticks, `updateFromEvent` mutating in place, and `fromRecord`/`toRecord` retained as the
+serialisation seam `SnapshotStore` and `JournalReader` need. `BigDecimal`/`Instant` survive only in
+that edge conversion — exactly the spec's "computed in `long` fixed-point on the hot path … rendered
+at the edge".
+
+**Verification, the three steps this file demanded:**
+
+1. `bash pipeline/generate-state.sh YU01-lmax-sequencer` from `YU17-otc-rates` → **exit 0**,
+   `[done] applied 1 patch(es) for YU01-lmax-sequencer`.
+2. `compileJava` and `compileTestJava` → **BUILD SUCCESSFUL**.
+3. The allocation gates ran, and were confirmed to have actually run rather than filtering to
+   nothing: `noGcTest` → **3 tests, 0 failed**, from `AllocationGateTest` AND
+   `OutputHandlerAllocationGateTest` (both classes the gate names). Full `test` → **37 tests,
+   0 failed, 4 skipped**, including `HotPathBannedApiTest`,
+   `OutputHandlerAllocationAttributionTest` and both latency benchmarks.
+
+**`main` carries it**: 15 YU packs and 15 catalog entries. `main`'s YU01 differs from the tip only in
+`gradlew.bat` line endings (93/93), and its README heading is the canonical
+`# Feature Pack YU01: …` on both — the tip-wins resolution this file prescribed.
+
+**Read the rest of this document as the record of a completed adjudication**, not as open work. It
+remains the best explanation of *why* the merge is shaped the way it is.
 **Related:** `HANDOFF-issue-spec-layer-propagation-gaps.md` — same family, different shape.
 
 ---
