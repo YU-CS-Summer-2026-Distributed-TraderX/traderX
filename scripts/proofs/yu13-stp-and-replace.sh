@@ -374,9 +374,35 @@ seed() {
       # and the code alone cannot tell them apart -- measuring this is what identified the readiness
       # race behind the 422s on 2026-08-14.
       echo "  seed ${acct} attempt ${try}/5 t+${SECONDS}s -> ${code} $(cat /tmp/yu13-seed-body 2>/dev/null)"
-      [[ ${try} -lt 5 ]] || fail "seed failed for ${acct} after 5 attempts; last: HTTP ${code} \
+      if [[ ${try} -ge 5 ]]; then
+        # CAPTURE THE EVIDENCE THIS FAILURE NEEDS, because it is intermittent and hand-sampling it
+        # has failed repeatedly: by the time a human reaches the rig the gateway has been rolled and
+        # the window is gone. A fast 422 means the ack arrived carrying id = -1, and id = -1 has
+        # exactly ONE producer -- MatchingEngineClusteredService's `nextSymbolId >= MAX_SECURITIES`
+        # capacity branch. MAX_SECURITIES is 64 on these historical builds against 1024 today, so
+        # the live question is whether something filled the table before this seed ran.
+        #
+        # The applied sequence is the available proxy: this epoch is minted fresh with the control
+        # feed off and should carry only seed-proof-fixtures (~130). A reading in the hundreds or
+        # thousands means the YU04 feed's 510-security universe reached the log anyway, which is
+        # what run-proofs.sh disables the subscriber to prevent and what its own line about
+        # "a 510-security replay lands on a 64-capacity engine" warns about.
+        local seq_report=""
+        for _m in 0 1 2; do
+          seq_report+="m${_m}=$(${K} exec "order-matcher-cluster-${_m}" -- \
+            sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' 2>/dev/null \
+            | awk '/^traderx_cluster_applied/{print $2}') "
+        done
+        echo "  [evidence] applied sequence at failure: ${seq_report}"
+        echo "  [evidence] members=$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
+        echo "  [evidence] gateway=$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
+        echo "  [evidence] CONTROL_FEED_SUBSCRIBER=$(${K} get deploy cluster-gateway -o jsonpath='{range .spec.template.spec.containers[0].env[?(@.name=="CONTROL_FEED_SUBSCRIBER")]}{.value}{end}' 2>/dev/null)"
+        echo "  [evidence] a fast 422 (attempts ~5s apart, i.e. only the sleep) means the engine"
+        echo "             ANSWERED with id=-1, which is the capacity branch and nothing else."
+        fail "seed failed for ${acct} after 5 attempts; last: HTTP ${code} \
 $(cat /tmp/yu13-seed-body 2>/dev/null) (000 = no answer at all: the gateway never replied, which is
 a different fault from a gateway that replied with an error)"
+      fi
       sleep 5
     done
   done
