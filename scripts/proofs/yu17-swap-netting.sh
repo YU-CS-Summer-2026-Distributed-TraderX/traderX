@@ -57,13 +57,22 @@ applied_seq() { # applied_seq <member-ordinal>
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
 }
 
-book() { # book <payReceive> <rate> <clientOrderId> -> "<http_code> <body>" on stdout
+# `|| true` on every curl-in-a-substitution below is load-bearing, not defensive noise. Under
+# `set -e` a curl that fails to CONNECT aborts the script at the assignment, before the guard that
+# reads the status code ever runs — so the guard covers "answered something other than 200", the
+# case that almost never happens, and is bypassed in the case that does. The script then dies with
+# no message and the suite records a bare FAIL. (This exact defect is live in
+# yu16-bond-position.sh; see issues/HANDOFF-issue-suite-verdicts-under-load.md.) With the `|| true`
+# a connection failure surfaces as code 000, which the guards below treat as its own verdict:
+# 000 means NO ANSWER, and no answer is not a refusal.
+book() { # book <payReceive> <rate> <clientOrderId> [account] -> "<http_code> <body>" on stdout
   local body
   body="$(curl -s -w '\n%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
     -H 'Content-Type: application/json' \
     -d "{\"clientOrderId\":\"${3}\",\"accountId\":${4:-${ACCOUNT}},\"payReceive\":\"${1}\",
          \"notional\":${NOTIONAL},\"fixedRate\":${2},\"effectiveDate\":\"${EFFECTIVE}\",
-         \"maturityDate\":\"${MATURITY}\",\"conventions\":\"${CONVENTIONS}\"}")"
+         \"maturityDate\":\"${MATURITY}\",\"conventions\":\"${CONVENTIONS}\"}" || true)"
+  [[ -n "${body}" ]] || { echo "000 {}"; return 0; }
   echo "$(echo "${body}" | tail -1) $(echo "${body}" | sed '$d' | tr -d '\n')"
 }
 
@@ -131,7 +140,8 @@ for side_account in "Sell:${COUNTERPARTY}" "Buy:${ACCOUNT}"; do
   side="${side_account%%:*}"; acct="${side_account##*:}"
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${acct},\"ticker\":\"${SEED_TICKER}\",\"side\":\"${side}\",\"quantity\":10,\"limitPrice\":150.00}")"
+    -d "{\"accountId\":${acct},\"ticker\":\"${SEED_TICKER}\",\"side\":\"${side}\",\"quantity\":10,\"limitPrice\":150.00}" || true)"
+  [[ "${code}" == "000" ]] && fail "${side} ${SEED_TICKER} order got NO answer (curl 000) — the gateway or the forward is down; that is not a refusal"
   [[ "${code}" == "200" ]] || fail "${side} ${SEED_TICKER} order returned HTTP ${code} — the equity path is broken, before any swap is involved"
 done
 echo "[ok] 10 ${SEED_TICKER} crossed between ${COUNTERPARTY} and ${ACCOUNT}"
@@ -140,6 +150,7 @@ step "1. the risk gate refuses an unknown account — and never creates a contra
 # Run the negative arm FIRST, so a later "two contracts" count cannot be inflated by it.
 RUN_ID="$(date -u +%s)"
 read -r BAD_CODE BAD_BODY <<<"$(book Receive "${RECEIVE_RATE}" "yu17-bad-${RUN_ID}" "${UNKNOWN_ACCOUNT}")"
+[[ "${BAD_CODE}" == "000" ]] && fail "the booking got NO answer (curl 000) — the gateway or the forward is down, which says nothing about the risk gate"
 [[ "${BAD_CODE}" == "422" ]] \
   || fail "booking on unknown account ${UNKNOWN_ACCOUNT} returned HTTP ${BAD_CODE}, expected 422 — the risk gate is not wired"
 BAD_REASON="$(echo "${BAD_BODY}" | json_field reason)"
@@ -151,8 +162,10 @@ step "2. book the pair: receive fixed ${RECEIVE_RATE} and pay fixed ${PAY_RATE},
 SEQ_BEFORE_PAIR="$(applied_seq 0)"
 [[ "${SEQ_BEFORE_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable before the pair"
 read -r RECV_CODE RECV_BODY <<<"$(book Receive "${RECEIVE_RATE}" "yu17-recv-${RUN_ID}")"
+[[ "${RECV_CODE}" == "000" ]] && fail "receive-fixed booking got NO answer (curl 000) — no committed decision was observed, which is not a rejection"
 [[ "${RECV_CODE}" == "200" ]] || fail "receive-fixed booking returned HTTP ${RECV_CODE}: ${RECV_BODY}"
 read -r PAY_CODE PAY_BODY <<<"$(book Pay "${PAY_RATE}" "yu17-pay-${RUN_ID}")"
+[[ "${PAY_CODE}" == "000" ]] && fail "pay-fixed booking got NO answer (curl 000) — no committed decision was observed, which is not a rejection"
 [[ "${PAY_CODE}" == "200" ]] || fail "pay-fixed booking returned HTTP ${PAY_CODE}: ${PAY_BODY}"
 RECV_ID="$(echo "${RECV_BODY}" | json_field contractId)"
 PAY_ID="$(echo "${PAY_BODY}"  | json_field contractId)"
