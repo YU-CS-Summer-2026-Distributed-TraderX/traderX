@@ -35,6 +35,7 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EOD_MASTER_SECRET="${EOD_MASTER_SECRET:-kind-local-dev-token-secret-not-a-real-credential}"
 
 ACCOUNT=22214                 # the booking account; enabled via /seed below
+COUNTERPARTY=42422            # the other side of the equity cross in step 0b
 SEED_TICKER="${SEED_TICKER:-AAPL}"
 NOTIONAL=10000000             # 10mm, identical on both legs — this is what makes them net to zero
 RECEIVE_RATE="0.042"
@@ -70,6 +71,26 @@ json_field() { # json_field <key> ; reads JSON on stdin
   python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('$1',''))"
 }
 
+# check_row <csvRow> <contractId> <payReceive> <fixedRate> <notional> <accountId>
+# Every argument arrives on argv, deliberately: a heredoc-supplied program already owns stdin, so a
+# row piped in would read as empty and each column would compare against "" — the emptiness bug
+# this project has paid for repeatedly, wearing a different hat.
+check_row() {
+  python3 - "$@" <<'PY'
+import sys
+row, want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:7]
+cols = row.strip().split(",")
+assert len(cols) == 13, f"row has {len(cols)} columns, want 13: {row}"
+assert cols[0] == want_id, f"contractId {cols[0]} != {want_id}"
+assert cols[1] == want_account, f"accountId {cols[1]} != {want_account}"
+assert cols[2] == want_dir, f"payReceive {cols[2]} != {want_dir}"
+assert cols[3] == want_notional, f"notional {cols[3]} != {want_notional}"
+assert float(cols[4]) == float(want_rate), f"fixedRate {cols[4]} != {want_rate}"
+assert cols[10] == "USD", f"currency {cols[10]} != USD"
+assert cols[11] and cols[12], f"counterparty/netting set missing: {row}"
+PY
+}
+
 step "0. preflight — rig reachable, three members, a readable consensus position"
 curl -sf --max-time 10 "${MATCHER_URL}/ready" >/dev/null \
   || fail "gateway not reachable at ${MATCHER_URL} (port-forward svc/order-matcher 18110:18110?)"
@@ -81,16 +102,39 @@ for d in price-publisher trade-processor position-service; do
 done
 # The rig can be a commit behind its own tree. A proof asserting new behaviour cannot tell you it
 # ran against a stale build, so ask the build whether it knows what a swap is BEFORE trusting it.
-${K} exec order-matcher-cluster-0 -- sh -c \
-  'javap -classpath /opt/app/classes finos.traderx.ordermatcher.lmax.SwapConventions >/dev/null 2>&1' \
-  || fail "the running member image has no SwapConventions class — it predates YU17; rebuild and roll"
+# A file test, not `javap`: the runtime image carries no JDK tools (no javap, no jar, no unzip), so
+# a javap-based probe answers "absent" for every build — a refusal that says nothing about the
+# image. /opt/app/classes is an exploded class tree, so the class file itself is the marker, and
+# `test -f` returns a real exit code rather than a pipeline's.
+MARKER=/opt/app/classes/finos/traderx/ordermatcher/lmax/SwapConventions.class
+${K} exec order-matcher-cluster-0 -- test -f "${MARKER}" \
+  || fail "the running member image has no ${MARKER##*/} — it predates YU17; rebuild and roll"
+# The same probe must be able to say NO, or it is not a probe.
+if ${K} exec order-matcher-cluster-0 -- test -f "${MARKER%SwapConventions.class}NoSuchClass.class" 2>/dev/null; then
+  fail "the stale-build check reports a class that cannot exist — it would pass against any image"
+fi
 BEFORE_SEQ="$(applied_seq 0)"
 [[ "${BEFORE_SEQ}" =~ ^[0-9]+$ && "${BEFORE_SEQ}" -ge 0 ]] \
   || fail "could not read the applied sequence from order-matcher-cluster-0 (got '${BEFORE_SEQ}')"
-curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${ACCOUNT},\"tickers\":\"${SEED_TICKER}\",\"price\":150.00}" >/dev/null \
-  || fail "seed failed — account ${ACCOUNT} would not be enabled and every booking would be refused"
-echo "[ok] gateway ready, 3 members, YU17 image, account ${ACCOUNT} enabled, applied=${BEFORE_SEQ}"
+for acct in "${ACCOUNT}" "${COUNTERPARTY}"; do
+  curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${acct},\"tickers\":\"${SEED_TICKER}\",\"price\":150.00}" >/dev/null \
+    || fail "seed failed for account ${acct} — every booking would be refused for the wrong reason"
+done
+echo "[ok] gateway ready, 3 members, YU17 image, accounts ${ACCOUNT}/${COUNTERPARTY} enabled, applied=${BEFORE_SEQ}"
+
+step "0b. cross an ordinary equity trade, so step 7 has a real population to be evidence about"
+# Step 7 asserts the netted extract carries NO swap row. Against an extract with no rows at all
+# that is vacuously true, so give it something to be true OF: an equity position, which is exactly
+# the instrument class netting is correct for.
+for side_account in "Sell:${COUNTERPARTY}" "Buy:${ACCOUNT}"; do
+  side="${side_account%%:*}"; acct="${side_account##*:}"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
+    -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${acct},\"ticker\":\"${SEED_TICKER}\",\"side\":\"${side}\",\"quantity\":10,\"limitPrice\":150.00}")"
+  [[ "${code}" == "200" ]] || fail "${side} ${SEED_TICKER} order returned HTTP ${code} — the equity path is broken, before any swap is involved"
+done
+echo "[ok] 10 ${SEED_TICKER} crossed between ${COUNTERPARTY} and ${ACCOUNT}"
 
 step "1. the risk gate refuses an unknown account — and never creates a contract"
 # Run the negative arm FIRST, so a later "two contracts" count cannot be inflated by it.
@@ -199,17 +243,10 @@ for spec in "${RECV_ID}:RECEIVE_FIXED:${RECEIVE_RATE}" "${PAY_ID}:PAY_FIXED:${PA
   [[ -n "${ROW}" ]] || fail "contract ${id} is absent from the artifact — the booking did not survive to the extract"
   [[ "$(printf '%s\n' "${ROW}" | wc -l | tr -d ' ')" == "1" ]] || fail "contract ${id} appears more than once"
   echo "  ${ROW}"
-  printf '%s' "${ROW}" | python3 - "${id}" "${dir}" "${rate}" "${NOTIONAL}" "${ACCOUNT}" <<'EOF' \
+  # The row rides argv, not stdin: `python3 - <<EOF` already claims stdin for the program text, so
+  # a piped row would be silently empty and every column would compare against "".
+  check_row "${ROW}" "${id}" "${dir}" "${rate}" "${NOTIONAL}" "${ACCOUNT}" \
     || fail "contract row does not carry the terms it was booked with"
-import sys
-cols = sys.stdin.read().strip().split(",")
-want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:6]
-assert cols[0] == want_id, f"contractId {cols[0]} != {want_id}"
-assert cols[1] == want_account, f"accountId {cols[1]} != {want_account}"
-assert cols[2] == want_dir, f"payReceive {cols[2]} != {want_dir}"
-assert cols[3] == want_notional, f"notional {cols[3]} != {want_notional}"
-assert float(cols[4]) == float(want_rate), f"fixedRate {cols[4]} != {want_rate}"
-EOF
 done
 BOOKED_ROWS="$(printf '%s\n' "${CONTRACTS_CSV}" | grep -c "^SW-.*,${ACCOUNT},.*,${NOTIONAL}," || true)"
 [[ "${BOOKED_ROWS}" -ge 2 ]] \
@@ -246,22 +283,18 @@ ${K} exec "${POD}" -- cmp "${POSITIONS_FILE}" /tmp/rebuild.csv \
 echo "[ok] both artifacts reproduce from ${CUT_FILE##*/} alone"
 
 step "9. negative controls — every assertion above can fail"
-# (a) The step-6 row check must reject a contract booked at the other leg's rate. An assertion
-#     never observed failing is a hypothesis.
-if printf '%s,%s,RECEIVE_FIXED,%s,%s\n' "${RECV_ID}" "${ACCOUNT}" "${NOTIONAL}" "${PAY_RATE}" \
-   | python3 - "${RECV_ID}" "RECEIVE_FIXED" "${RECEIVE_RATE}" "${NOTIONAL}" "${ACCOUNT}" <<'EOF' 2>/dev/null
-import sys
-cols = sys.stdin.read().strip().split(",")
-want_id, want_dir, want_rate, want_notional, want_account = sys.argv[1:6]
-assert cols[0] == want_id
-assert cols[1] == want_account
-assert cols[2] == want_dir
-assert cols[3] == want_notional
-assert float(cols[4]) == float(want_rate)
-EOF
-then
+# (a) The step-6 row check, handed the SAME row it just accepted but with the other leg's rate,
+#     must reject it. An assertion never observed failing is a hypothesis.
+RECV_ROW="$(printf '%s\n' "${CONTRACTS_CSV}" | grep "^${RECV_ID}," )"
+TAMPERED="$(printf '%s' "${RECV_ROW}" | awk -F, -v OFS=, '{$5="0.043000"; print}')"
+[[ "${TAMPERED}" != "${RECV_ROW}" ]] || fail "could not construct a wrong-rate row; the control is inert"
+if check_row "${TAMPERED}" "${RECV_ID}" "RECEIVE_FIXED" "${RECEIVE_RATE}" "${NOTIONAL}" "${ACCOUNT}" 2>/dev/null; then
   fail "the row check accepted the WRONG rate — it cannot tell 4.2% from 4.3% and proves nothing"
 fi
+# …and must still accept the untampered row, so the control above is not passing because the check
+# rejects everything.
+check_row "${RECV_ROW}" "${RECV_ID}" "RECEIVE_FIXED" "${RECEIVE_RATE}" "${NOTIONAL}" "${ACCOUNT}" \
+  || fail "the row check now rejects the row it accepted in step 6 — it rejects everything"
 # (b) The step-6 presence check must fail for a contract id that was never booked.
 if printf '%s\n' "${CONTRACTS_CSV}" | grep -q "^SW-0,"; then
   fail "the artifact contains SW-0, which is never issued — the id check would accept anything"
