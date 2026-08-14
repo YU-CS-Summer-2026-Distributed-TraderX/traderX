@@ -141,6 +141,20 @@ yu_allowed_roots() {
   local prefix="${state_id%%-*}"
   printf '%s\n' "${C2_COMPONENT_DIRS[@]}" "kubernetes-runtime" "tilt-kubernetes-dev-loop" \
     "fdc3-intent-interoperability"
+  # THE COMPOSE-ERA FEATURE-PACK DIRECTORIES, which a YU tree carries and a bare 014 allowlist does
+  # not name. Measured against a real YU16 tree 2026-08-14: without these the check never reaches a
+  # verdict, it fails at "includes out-of-policy snapshot roots" listing five directories that the
+  # generation hook is supposed to produce — a false accusation, and the *second* reason (after the
+  # missing YU case, since fixed) that the decommission invariant has never actually run for a YU
+  # state. `api-explorer` enters via the 004/006 overlays; the other four are the 005–009 packs'
+  # own bundles.
+  #
+  # This does not weaken the invariant this file exists for. `trade-feed` is deliberately NOT here,
+  # so "trade-feed must not reappear after 006" is still asserted — and now, for the first time,
+  # actually evaluated for YU states. Verified against the YU16 tree: trade-feed absent, invariant
+  # holds.
+  printf '%s\n' "api-explorer" "observability-lgtm-compose" "order-management-matcher" \
+    "postgres-database-replacement" "pricing-awareness-market-data"
 
   local id id_prefix
   while IFS= read -r id; do
@@ -213,7 +227,7 @@ is_ignored_entry() {
     .github|.traderx-state|catalog|ci|docs|generated|runtime|scripts)
       return 0
       ;;
-    AGENTS.md|ARCHITECTURE.md|CONTRIBUTING.md|FUNCTIONAL_TESTING.md|LEARNING.md|README.md|RUN_FROM_CLONE.md|RUN_FROM_GENERATED.md|STATE.md|.gitignore)
+    AGENTS.md|ARCHITECTURE.md|CONTRIBUTING.md|FUNCTIONAL_TESTING.md|LEARNING.md|README.md|RUN_FROM_CLONE.md|RUN_FROM_GENERATED.md|STATE.md|.gitignore|.gitkeep)
       return 0
       ;;
     start-env.sh|stop-env.sh|status-env.sh|test-env.sh|start-env.bat|stop-env.bat|status-env.bat|test-env.bat)
