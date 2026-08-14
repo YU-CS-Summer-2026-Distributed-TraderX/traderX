@@ -34,9 +34,9 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 - **Added:** A replicated OTC contract store: `{contractId, accountId, payFixed, notional, fixedRateTicks,
 - **Added:** `SwapConventions`: a compile-time table of five market conventions (float index, payment
 - **Added:** `BlpRiskState.decideSwapBooking`: the ordered admission pipeline with the swap's notional
-- **Added:** `T_CONTRACT` (12) snapshot records at `SNAPSHOT_FORMAT` 5, restoring in booking order and
-- **Added:** Cut schema 2: a `#contracts` section after the position rows, with the count declared in the cut
-- **Added:** A second EOD artifact, `seq-<N>-contracts.csv` at schema 1: one row per contract carrying
+- **Added:** `T_CONTRACT` (12) snapshot records, restoring in booking order and
+- **Added:** A `#contracts` section in the cut after the position rows, with the count declared in the cut
+- **Added:** A second EOD artifact, `seq-<N>-contracts.csv`: one row per contract carrying
 
 ## Run This State
 

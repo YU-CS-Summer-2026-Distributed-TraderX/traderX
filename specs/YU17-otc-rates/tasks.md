@@ -61,6 +61,31 @@
       `issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md`. Neither is a
       property of this state.
 
+## Phase 2 — swaptions
+
+- [x] T-OTC44: Add the exercise-style table beside the convention table, under the same
+      index-addressed, append-only, knowing-refusal rule.
+- [x] T-OTC45: Add `TYPE_SWAPTION_BOOK` (13) and the option-terms word on `securityId`. A distinct
+      command type, so the product is never "is a field set".
+- [x] T-OTC46: Grow the contract record 8 -> 11 columns and `SNAPSHOT_FORMAT` 5 -> 6, reading
+      `T_CONTRACT` at the width the RESTORED format declares — the record carries no length.
+- [x] T-OTC47: Widen the cut's contracts section (schema 3) and the contracts artifact (schema 2);
+      a swap carries `SWAP` with both option columns empty.
+- [x] T-OTC48: Add `POST /swaptions` behind one shared validator with `POST /swaps`, refusing an
+      unknown style and an expiry after the underlying's effective date before sequencing.
+- [x] T-OTC49: Extend `SwapBookingTest` — the European/Bermudan headline, the underlying's terms,
+      the empty wrapper on a swap, one artifact two products, an unknown style, the terms word, and
+      a format-5 snapshot restoring as swaps.
+- [x] T-OTC50: Add `bothArtifactsAreUsAsciiEncodable`. Artifacts are written with `US_ASCII`, so one
+      non-ASCII character aborts the EOD batch after the cut is hashed — and every other test
+      renders to a String without ever encoding it. Found live, by an em-dash in a preamble.
+- [x] T-OTC51: Write `scripts/proofs/yu17-swaption-terms.sh` and register it in the suite runner.
+- [x] T-OTC52: Prove the format-5 forward roll LIVE: book a swap on the phase-1 build, take a
+      snapshot barrier so a format-5 `T_CONTRACT` exists on disk, roll to phase 2, and confirm the
+      contract returns with its terms intact and `productType` `SWAP`.
+- [x] T-OTC53: Read the applied sequence only when all three members agree (`quiesced_seq`) — a
+      single-member read races with catch-up and turns replication lag into a sequencing verdict.
+
 ## Still open
 
 Nothing in this state's own scope. Two cross-cutting items surfaced while proving it and are

@@ -7,15 +7,15 @@ inherited proof suite run against this build.
 
 | Area | Artifact |
 |---|---|
-| Spec pack | spec, plan, research, data model, contract delta, functional/non-functional deltas, subject map, topology, ADR-062 … ADR-064, generated architecture |
-| Command | `TYPE_SWAP_BOOK` (12) on the inherited SBE template 1; the slot map and the packed date pair on `InputEvent` |
-| Conventions | `SwapConventions` — five market standards, compiled in, addressed by index, append-only, with a knowing refusal for an unknown index |
+| Spec pack | spec, plan, research, data model, contract delta, functional/non-functional deltas, subject map, topology, ADR-062 … ADR-065, generated architecture |
+| Command | `TYPE_SWAP_BOOK` (12) and `TYPE_SWAPTION_BOOK` (13) on the inherited SBE template 1; the slot map, the packed date pair and the option-terms word on `InputEvent` |
+| Conventions | `SwapConventions` — five market standards and three exercise styles, compiled in, addressed by index, append-only, each with a knowing refusal for an unknown index |
 | Risk gate | `BlpRiskState.decideSwapBooking` — the notional measured directly, the four instrument-shaped checks dropped for cause, accrual on acceptance |
-| Engine | contract store, `onSwapBook`, `T_CONTRACT` (12), `MAX_CONTRACTS` 4096, `SNAPSHOT_FORMAT` 5, `MIN_READABLE_SNAPSHOT_FORMAT` held at 3, `KIND_SWAP_BOOKED` (102). `MatchingEngine` is NOT overridden — a swap never reaches it |
+| Engine | contract store, `onSwapBook` (both products), `T_CONTRACT` (12) at 11 columns, `MAX_CONTRACTS` 4096, `SNAPSHOT_FORMAT` 6 with by-format restore width, `MIN_READABLE_SNAPSHOT_FORMAT` held at 3, `KIND_SWAP_BOOKED` (102). `MatchingEngine` is NOT overridden — an OTC contract never reaches it |
 | Cut | schema 2 with a `#contracts` section, emitted even when empty, ascending ids asserted at render, `contracts=` on the `RISK-EXTRACT-CUT` log line |
 | Extract | `SwapContractCsv` (terms only, no valuation), `RiskExtractCsv` stopping at the section marker with schema 3 and every column unchanged, both artifacts rendered/written/announced from one cut under one stamp, optional fourth `--rebuild` argument, GCS sink delivering both in one call |
-| Ingress | `POST /swaps` with every unrepresentable term refused before sequencing |
-| Proofs | `scripts/proofs/yu17-swap-netting.sh` (live headline, with negative controls); `SwapBookingTest` (the same claim without a cluster) |
+| Ingress | `POST /swaps` and `POST /swaptions` behind one shared validator, with every unrepresentable term refused before sequencing |
+| Proofs | `scripts/proofs/yu17-swap-netting.sh` and `scripts/proofs/yu17-swaption-terms.sh` (live headlines, each with negative controls); `SwapBookingTest` (the same claims without a cluster) |
 
 ## Verification
 
@@ -24,11 +24,13 @@ inherited proof suite run against this build.
 | `bash pipeline/generate-state.sh YU17-otc-rates` from clean | **EXIT=0** |
 | YU17 overlay present in the generated tree | `TYPE_SWAP_BOOK` in `InputEvent`/`MatchingEngineClusteredService`; `SwapConventions` and `SwapContractCsv` present |
 | Ancestor markers survive the overlay (shadowed-layer check) | YU16 `TREASURY_BOOK_TICK_PX`, YU15 `KIND_RISK_EXTRACT_MARKED`, YU14 `OccSymbol.multiplierFor`, YU13 `TYPE_ORDER_REPLACE` all still present |
-| order-matcher suite | **364 / 0 failures / 4 skipped** (YU16 carried 344; +20) |
-| `SwapBookingTest` executed, not merely compiled | `tests="16" failures="0" skipped="0"` in the JUnit XML |
+| order-matcher suite | **371 / 0 failures / 4 skipped** (YU16 carried 344; +27) |
+| `SwapBookingTest` executed, not merely compiled | `tests="23" failures="0" skipped="0"` in the JUnit XML |
 | `RiskExtractTest` unchanged in count | **21 / 0** |
-| Snapshot format compat | `ClusterSnapshotFormatCompatTest` 3/0; `SwapBookingTest.aFormatFourSnapshotStillRestores` and `aSnapshotFromThisBuildDeclaresFormatFive` both pass |
-| Negative control on the headline | Splicing contract netting into `onSwapBook` makes `twoOffsettingSwapsSurviveAsTwoContracts` FAIL at the contract-count assertion; restoring makes it pass. The assertion has been observed failing |
+| Snapshot format compat | `ClusterSnapshotFormatCompatTest` 3/0; `aFormatFourSnapshotStillRestores`, `aFormatFiveSnapshotRestoresItsSwapsAsSwaps` and `aSnapshotFromThisBuildDeclaresFormatSix` all pass |
+| Negative control, phase-1 headline | Splicing contract netting into `onSwapBook` makes `twoOffsettingSwapsSurviveAsTwoContracts` FAIL at the contract-count assertion; restoring makes it pass |
+| Negative control, phase-2 headline | Publishing every swaption as EUROPEAN makes `aEuropeanAndABermudanOnIdenticalTermsAreTwoContracts` FAIL; restoring makes it pass |
+| Negative control, the ASCII gate | Putting the em-dash back makes `bothArtifactsAreUsAsciiEncodable` FAIL — the test that would have caught the live bug |
 
 `RiskExtractGcsSinkLiveProofTest` reports 1 test, 1 skipped: it is gated on
 `RISK_EXTRACT_GCS_HMAC_KEY_ID` and does not run without live GCS credentials. That is a declared
@@ -57,7 +59,34 @@ identical from the exit code alone.
 | Quiescence witness holds | Announced `quiesceWitnessSequence` = N+1 |
 | A member destroyed to an empty disk rebuilds the store | Member 2's **PVC deleted** (not just the pod); it rebuilt from nothing and re-rendered `18c2faf6ec4a…` with 2 contracts |
 | The risk gate is wired | A booking on an unseeded account returned 422 `UNKNOWN_ACCOUNT` and created no contract |
-| The proof cannot pass against a stale build | Its preflight reads `SwapConventions.class` out of the running member and runs its own negative control against a class that cannot exist |
+| The proof cannot pass against a stale build | Its preflight reads `SwapConventions.class` out of the running member and runs its own negative control against a class that cannot exist. The phase-2 proof greps the class for `BERMUDAN`, so a PHASE-1 image is rejected too |
+
+## Phase 2, verified on the live rig
+
+| Claim | Evidence |
+|---|---|
+| A swaption is sequenced and gets its own id space | `SWPT-22938` and `SWPT-22939` at consensus 22938/22939, applied sequence +2 |
+| The style is the whole instrument | A European and a Bermudan payer swaption identical in fourteen columns render as two rows differing in exactly `exerciseStyle` |
+| One artifact, two products | `SW-22940,…,SWAP,,` beside `SWPT-22939,…,SWAPTION,2027-02-15,BERMUDAN` in the same file at schema 2 |
+| Neither product becomes a position | Netted extract still `schema=3`, 6 position rows, **0** OTC rows |
+| **A format-5 epoch rolls forward** | A swap booked on the PHASE-1 build, snapshot barrier taken so a format-5 `T_CONTRACT` existed on disk, then the members rolled to phase 2. `SW-18645,22214,RECEIVE_FIXED,7000000,0.039700,USD-SOFR,2026-09-01,2033-09-01,1Y,ACT/360,USD,…,SWAP,,` — terms intact, read at the old width |
+| The boundary refuses an unknown style pre-consensus | `"Asian"` → 400, applied sequence unmoved at 22927 |
+| All three members agree | `91e0a3f47351…` identical on members 0, 1 and 2 at N=22941 |
+| Both artifacts still reproduce from the cut | `--rebuild seq-22941.cut` byte-compared equal |
+
+### Two bugs the live run found that the unit tests could not
+
+1. **An em-dash in the artifact preamble.** Artifacts are written with `US_ASCII`, so one non-ASCII
+   character threw `UnmappableCharacterException` and aborted the whole EOD batch — after the cut
+   had already been rendered and hashed. Every existing test renders to a `String` and never
+   encodes it, so none of them could see it. `bothArtifactsAreUsAsciiEncodable` now covers all
+   three artifacts and is verified to go red when the em-dash is put back.
+
+2. **Reading the applied sequence from one member.** Both proofs sampled member 0, which races with
+   catch-up: a member that has just restored reports the position it restored to while the others
+   are past it (observed: member 0 at 22927 with `engineApplied -1` while 1 and 2 were at 22929), so
+   a "+2" measured across that gap is a statement about replication lag. `quiesced_seq()` now waits
+   for all three to agree first — the rule the cross-member digest already followed.
 
 ## The inherited suite
 

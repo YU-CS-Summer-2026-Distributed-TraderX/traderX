@@ -3,7 +3,7 @@
 **Feature Branch**: `YU17-otc-rates`
 **Created**: 2026-08-13
 **Status**: In implementation
-**Input**: OTC fixed-float interest-rate swaps on the cluster tier, parented on `YU16-cdm-instruments`
+**Input**: OTC fixed-float interest-rate swaps and swaptions on the cluster tier, parented on `YU16-cdm-instruments`
 
 ## User Stories
 
@@ -30,6 +30,11 @@
 - As a maintainer, I want the netted position extract untouched, because netting is correct for
   equities, ETFs, Treasuries and listed options, and giving it up to accommodate the one class it
   cannot serve would be a worse file for every consumer.
+- As a rates trader, I want a swaption's exercise style on its row, because a European and a
+  Bermudan on identical underlying terms are different instruments and I hold both.
+- As a risk-engine consumer, I want swaptions in the same file as swaps, because they are the same
+  desk's exposure and a row that shares every column but three should not cost me a second file and
+  a join.
 
 ## Functional Requirements
 
@@ -57,10 +62,11 @@
 
 - FR-OTC07: An accepted booking SHALL create a contract in replicated state holding
   `{contractId, accountId, payFixed, notional, fixedRateTicks, conventionIndex,
-  effectiveEpochDay, maturityEpochDay}`.
+  effectiveEpochDay, maturityEpochDay, productType, expiryEpochDay, exerciseStyle}`. The first
+  eight columns mean the same thing for both products; the last three are the option wrapper.
 - FR-OTC08: `contractId` SHALL be the consensus sequence the booking landed at, rendered
-  externally as `SW-<sequence>`; it is unique within the cluster epoch by construction and
-  derivable from the log alone.
+  externally as `SW-<sequence>` for a swap and `SWPT-<sequence>` for a swaption; it is unique within
+  the cluster epoch by construction and derivable from the log alone.
 - FR-OTC09: The store SHALL hold at most `MAX_CONTRACTS` (4096) contracts and SHALL refuse a
   booking at capacity with `RiskReason.CAPACITY`, deterministically and identically on every
   member. Capacity SHALL be checked before the risk gate, so a refused booking consumes no credit.
@@ -94,10 +100,10 @@
 
 ### Snapshot and recovery
 
-- FR-OTC19: `SNAPSHOT_FORMAT` SHALL be 5 and the contract store SHALL be persisted as
+- FR-OTC19: `SNAPSHOT_FORMAT` SHALL be 6 and the contract store SHALL be persisted as
   `T_CONTRACT` records.
-- FR-OTC20: `MIN_READABLE_SNAPSHOT_FORMAT` SHALL remain 3, so a format-3 or format-4 snapshot
-  restores unchanged on this build and an existing epoch rolls forward without a wipe.
+- FR-OTC20: `MIN_READABLE_SNAPSHOT_FORMAT` SHALL remain 3, so a format-3, format-4 or format-5
+  snapshot restores on this build and an existing epoch rolls forward without a wipe.
 - FR-OTC21: Snapshot restore SHALL fail closed on a contract id that is not a sequence at or below
   the restored applied sequence, and on contract records that are not in ascending id order.
 - FR-OTC22: A member restored from a snapshot SHALL render a cut byte-identical to the member that
@@ -105,7 +111,7 @@
 
 ### The cut and the two artifacts
 
-- FR-OTC23: The rendered cut SHALL be at schema 2 and SHALL carry a `#contracts` section after the
+- FR-OTC23: The rendered cut SHALL be at schema 3 and SHALL carry a `#contracts` section after the
   position rows, introduced by a marker line and its own column header, with the contract count
   declared in the cut header as `contracts=`.
 - FR-OTC24: The `#contracts` section SHALL be emitted even when the store is empty, so an absent
@@ -114,7 +120,8 @@
   SHALL stop reading at the section marker, and SHALL never carry a swap row.
 - FR-OTC26: A second artifact SHALL be rendered from the same cut under the same stamp, carrying
   one row per contract with `contractId, accountId, payReceive, notional, fixedRate, floatIndex,
-  effectiveDate, maturityDate, paymentFrequency, dayCount, currency, counterpartyId, nettingSetId`.
+  effectiveDate, maturityDate, paymentFrequency, dayCount, currency, counterpartyId, nettingSetId,
+  productType, expiryDate, exerciseStyle`.
 - FR-OTC27: The contracts artifact SHALL contain no valuation of any kind — no NPV, no mark, no
   discount factor, no curve, no par rate, no sensitivity — and SHALL say so in its preamble.
 - FR-OTC28: Both artifacts SHALL be written write-once under the same session date, price version
@@ -125,6 +132,36 @@
   files byte-identically from the stored cut and immutable reference data alone.
 - FR-OTC31: A cut declaring a contract count that disagrees with the rows it carries SHALL abort
   the render.
+
+### Swaptions
+
+- FR-OTC32: The gateway SHALL expose `POST /swaptions`, accepting the swap body plus `expiryDate`
+  and `exerciseStyle`; every other field describes the UNDERLYING swap, so `fixedRate` is the strike
+  and `payReceive` is the direction of the underlying's fixed leg.
+- FR-OTC33: A swaption booking SHALL be sequenced as `TYPE_SWAPTION_BOOK` on the existing SBE
+  template 1. The product SHALL be the command type, never the presence or value of a field.
+- FR-OTC34: `TYPE_SWAPTION_BOOK` SHALL carry the option wrapper in `securityId`: convention index in
+  bits 0-7, exercise style in bits 8-15, expiry epoch-day in bits 16-31. Every other slot SHALL keep
+  the meaning it has for `TYPE_SWAP_BOOK`.
+- FR-OTC35: Exercise style SHALL be resolved from a compile-time, append-only table
+  (`EUROPEAN`, `BERMUDAN`, `AMERICAN`), and a style index this build does not know SHALL abort the
+  render rather than resolve to another style.
+- FR-OTC36: The gateway SHALL refuse before sequencing an unknown `exerciseStyle`, an `expiryDate`
+  outside the representable range, and an `expiryDate` after the underlying's `effectiveDate`.
+- FR-OTC37: A contract record SHALL carry `productType`, `expiryEpochDay` and `exerciseStyle`; a
+  swap SHALL carry zeros in all three.
+- FR-OTC38: `SNAPSHOT_FORMAT` SHALL be 6. Snapshot restore SHALL read a `T_CONTRACT` record at the
+  width its format declares — eight columns for format 5, eleven for format 6 — because the record
+  carries no length and reading a format-5 record at the new width would consume the next record's
+  bytes.
+- FR-OTC39: A format-5 contract SHALL restore as a SWAP with an empty option wrapper.
+- FR-OTC40: The contracts artifact SHALL be schema 2, carrying `productType`, `expiryDate` and
+  `exerciseStyle`; a SWAP row SHALL carry `SWAP` and leave the two option columns empty.
+- FR-OTC41: A swaption's contract id SHALL be `SWPT-<consensusSequence>`.
+- FR-OTC42: A swaption SHALL be admitted through the same risk path as a swap, measuring the
+  UNDERLYING notional.
+- FR-OTC43: No exercise SHALL be modelled. A swaption past its expiry date is listed exactly as
+  booked.
 
 ## Non-Functional Requirements
 
@@ -173,3 +210,7 @@
 - SC-OTC08: A booking on an unknown or disabled account returns 422 with the reason and creates no
   contract; a booking with an unrepresentable term returns 400 and does not advance the sequence.
 - SC-OTC09: Every inherited proof passes unchanged.
+- SC-OTC10: A European and a Bermudan payer swaption identical in every other term appear as two
+  rows differing in exactly one column, in the same artifact as a plain swap.
+- SC-OTC11: A contract booked on a format-5 build restores on a format-6 build with its terms
+  intact and `productType` `SWAP`.

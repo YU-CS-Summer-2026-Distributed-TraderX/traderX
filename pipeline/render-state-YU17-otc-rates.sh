@@ -70,6 +70,7 @@ for source in \
   system/adr-062-swap-booking-through-consensus.md \
   system/adr-063-swap-risk-gate.md \
   system/adr-064-two-artifacts-one-cut.md \
+  system/adr-065-swaptions-as-contract-records.md \
   tasks.md \
   generation/generation-hook.md \
   generation/implementation-status.md; do

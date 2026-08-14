@@ -1,4 +1,4 @@
-# Quickstart: OTC Interest-Rate Swaps
+# Quickstart: OTC Interest-Rate Swaps and Swaptions
 
 ## Local (kind)
 
@@ -20,13 +20,16 @@ bash scripts/yu15/start-frontend-kind.sh
 bash scripts/yu15/seed-proof-fixtures.sh
 bash scripts/yu15/run-proofs.sh
 bash scripts/proofs/yu17-swap-netting.sh
+bash scripts/proofs/yu17-swaption-terms.sh
 ```
 
 On a rig already running `YU16-cdm-instruments`, step 2 is a roll FORWARD onto the existing epoch:
 `MIN_READABLE_SNAPSHOT_FORMAT` stays at 3, so the format-4 snapshot on disk restores here
-untouched. No scale-to-zero, no PVC wipe, no fresh epoch (NFR-OTC05).
+untouched. The same holds for a format-5 snapshot from this state's first phase — its eight-column
+contract records are read at their own width and restore as swaps. No scale-to-zero, no PVC wipe,
+no fresh epoch (NFR-OTC05).
 
-Rolling BACK is the direction that costs an epoch. A format-5 snapshot is unreadable by a
+Rolling BACK is the direction that costs an epoch. A format-6 snapshot is unreadable by a
 `YU16-cdm-instruments` build, which refuses it at the header naming the direction of the mismatch.
 The remedy is to roll forward again; wiping the PVCs is not required to recover the snapshot, only
 to run the older build.
@@ -35,7 +38,7 @@ to run the older build.
 a deterministic-core change cannot be rolled gradually, and the log tail is itself a mixed-version
 window. Take a snapshot barrier on all three members before rolling.
 
-## Booking a swap by hand
+## Booking a swap and a swaption by hand
 
 With the gateway forwarded (`svc/order-matcher` fronts `cluster-gateway` on this rig):
 
@@ -79,6 +82,27 @@ Each returns `{"contractId":"SW-<N>","sequence":N,"booked":true}` where N is the
 the booking landed at. Re-sending either body verbatim returns the SAME contract id — the
 idempotency key makes a retried confirmation safe.
 
+A swaption on the same underlying — the swap body plus an expiry and a style:
+
+```bash
+curl -s -X POST localhost:18110/swaptions -H 'Content-Type: application/json' -d '{
+  "clientOrderId":"demo-swpt-1",
+  "accountId":22214,
+  "payReceive":"Pay",
+  "notional":25000000,
+  "fixedRate":0.0415,
+  "effectiveDate":"2027-02-15",
+  "maturityDate":"2032-02-15",
+  "conventions":"USD-SOFR-1Y-ACT360",
+  "expiryDate":"2027-02-15",
+  "exerciseStyle":"Bermudan"}'
+```
+
+Returns `{"contractId":"SWPT-<N>",…}`. Every field except the last two describes the UNDERLYING
+swap: `fixedRate` is the strike, and `"Pay"` makes it a payer swaption. Send the same body with
+`"exerciseStyle":"European"` and you have two contracts that differ in exactly one column — and are
+worth materially different amounts.
+
 Refusals, to see both boundaries:
 
 ```bash
@@ -86,6 +110,14 @@ Refusals, to see both boundaries:
 curl -s -X POST localhost:18110/swaps -H 'Content-Type: application/json' \
   -d '{"accountId":999123,"payReceive":"Pay","notional":10000000,"fixedRate":0.043,
        "effectiveDate":"2026-08-17","maturityDate":"2031-08-17","conventions":"USD-SOFR-1Y-ACT360"}'
+```
+
+```bash
+# 400 from the boundary: an option cannot expire after the swap it is an option on. Never sequenced.
+curl -s -X POST localhost:18110/swaptions -H 'Content-Type: application/json' \
+  -d '{"accountId":22214,"payReceive":"Pay","notional":25000000,"fixedRate":0.0415,
+       "effectiveDate":"2027-02-15","maturityDate":"2032-02-15","conventions":"USD-SOFR-1Y-ACT360",
+       "expiryDate":"2027-06-15","exerciseStyle":"European"}'
 ```
 
 ```bash
@@ -115,7 +147,7 @@ for i in 0 1 2; do kubectl -n traderx logs "order-matcher-cluster-$i" | grep RIS
 ```
 
 ```bash
-# The two contracts, with both rates
+# The contracts, swaps and swaptions in one file
 POD=$(kubectl -n traderx get pod -l app=risk-extract -o jsonpath='{.items[0].metadata.name}')
 kubectl -n traderx exec "$POD" -- sh -c 'cat $(ls -t /data/risk-extracts/*/*/seq-*-contracts.csv | head -1)'
 ```

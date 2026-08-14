@@ -29,14 +29,14 @@ file below was copied from the ancestor named and then edited.
 
 | File | Ancestor | YU17 delta |
 |---|---|---|
-| `order-matcher/.../lmax/SwapConventions.java` | new | the compile-time convention table |
-| `order-matcher/.../lmax/InputEvent.java` | YU03 | `TYPE_SWAP_BOOK` (12), the direction aliases, the packed date accessors, the slot map |
+| `order-matcher/.../lmax/SwapConventions.java` | new | the compile-time convention table, and the exercise-style table beside it |
+| `order-matcher/.../lmax/InputEvent.java` | YU03 | `TYPE_SWAP_BOOK` (12) and `TYPE_SWAPTION_BOOK` (13), the direction aliases, the packed date pair and the option-terms word |
 | `order-matcher/.../risk/BlpRiskState.java` | YU14 | `decideSwapBooking` |
-| `order-matcher/.../cluster/MatchingEngineClusteredService.java` | YU16 | contract store, `onSwapBook`, `T_CONTRACT`, `MAX_CONTRACTS`, `SNAPSHOT_FORMAT` 5, `KIND_SWAP_BOOKED`, `contracts=` on the cut log line |
-| `order-matcher/.../cluster/ClusterGatewayMain.java` | YU16 | `POST /swaps`, pre-consensus term validation, swap ack correlation |
-| `order-matcher/.../cluster/RiskExtractCut.java` | YU15 | cut schema 2, the `#contracts` section |
+| `order-matcher/.../cluster/MatchingEngineClusteredService.java` | YU16 | contract store, `onSwapBook` (both products), `T_CONTRACT`, `MAX_CONTRACTS`, `SNAPSHOT_FORMAT` 6 with by-format restore width, `KIND_SWAP_BOOKED`, `contracts=` on the cut log line |
+| `order-matcher/.../cluster/ClusterGatewayMain.java` | YU16 | `POST /swaps` and `POST /swaptions` over one shared validator, pre-consensus term validation, ack correlation |
+| `order-matcher/.../cluster/RiskExtractCut.java` | YU15 | cut schema 3, the `#contracts` section and its option columns |
 | `order-matcher/.../cluster/RiskExtractCsv.java` | YU16 | stop at the section marker; schema 3 and every column unchanged |
-| `order-matcher/.../cluster/SwapContractCsv.java` | new | the per-trade artifact |
+| `order-matcher/.../cluster/SwapContractCsv.java` | new | the per-trade artifact, schema 2, both products |
 | `order-matcher/.../cluster/RiskExtractMain.java` | YU16 | render/write/announce both artifacts; optional fourth `--rebuild` argument |
 | `order-matcher/.../cluster/RiskExtractGcsSink.java` | YU15 | deliver both fixtures in one call, return both URIs |
 | `order-matcher/.../test/.../SwapBookingTest.java` | new | this state's acceptance proofs without a cluster |
