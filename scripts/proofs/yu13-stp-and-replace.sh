@@ -151,7 +151,57 @@ restore_image() {
   echo "[restore] returning the cluster to ${ORIGINAL_IMAGE}"
   roll_to "${ORIGINAL_IMAGE}" || echo "[warn] could not restore ${ORIGINAL_IMAGE} -- do it before running other proofs"
 }
-trap restore_image EXIT
+
+# THE PROBES BELONG TO THE CURRENT BUILD, AND THIS PROOF DEPLOYS OLDER ONES.
+#
+# The manifest points three probes -- startup and liveness at /live, readiness at /ready -- at the
+# gateway's probe port 18111, served by a dedicated single-thread server. Both bundles this proof
+# rolls to PREDATE that server: verified 2026-08-14, ClusterGatewayMain.class in yu15-pre and
+# yu15-stp contains no /live and no GATEWAY_PROBE_PORT at all, and serves 18110 only. The kubelet
+# therefore fails the STARTUP probe and crash-loops a gateway whose only defect is being older than
+# the manifest -- and the symptom is `rollout status` timing out, which reads as "slow" rather than
+# "incompatible", above a completely clean pod log.
+#
+# So for as long as this proof owns the deployment it probes the one endpoint every build has
+# served: /ready on 18110, exactly what the manifest declared before the probe server existed.
+# Startup and liveness are dropped, because on these builds they have no endpoint to ask; readiness
+# carries failureThreshold 24 for the reason the manifest's own comment gives -- with no startup
+# probe a gateway needs ~2 minutes of slack for JVM + media driver + awaitConnected. Nothing here is
+# under proof: this proof asserts on the engine's trade counter, the replicated book digest, and the
+# gateway's /replace STATUS CODE, never on a probe verdict.
+#
+# The same accommodation, for the same reason, is in scripts/proofs/yu13-cancel-ingress.sh -- both
+# proofs deliberately deploy a gateway older than the manifest that describes it. Kept as two local
+# copies rather than a shared lib because every proof in this directory is standalone and readable
+# on its own; if a third one needs it, extract then.
+GW_CONTAINER="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null)"
+GW_ORIGINAL_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
+GW_ORIGINAL_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' 2>/dev/null \
+  | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
+GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"periodSeconds":5,"failureThreshold":24}'
+GW_PATCHED=0
+
+patch_gateway() { # patch_gateway <image> <probe-json-fragment>  -- image and probes in one rollout
+  GW_PATCHED=1
+  ${K} patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${GW_CONTAINER}\",\"image\":\"$1\",$2}]}}}}" >/dev/null
+}
+
+# The gateway is restored to what the GATEWAY was, not to ORIGINAL_IMAGE -- those are different now
+# that the runner mints this proof's epoch on IMAGE_PRE without repinning the gateway. Returning it
+# to the StatefulSet's original image would leave the rig on a historical gateway and quietly hand
+# it to whatever runs next.
+restore_gateway() {
+  [[ "${GW_PATCHED}" == "1" && -n "${GW_ORIGINAL_IMAGE}" ]] || return 0
+  echo "[restore] returning the gateway to ${GW_ORIGINAL_IMAGE} and its manifest probes"
+  patch_gateway "${GW_ORIGINAL_IMAGE}" "${GW_ORIGINAL_PROBES}" \
+    || { echo "[warn] could not restore the gateway -- repin it before running other proofs"; return 0; }
+  GW_PATCHED=0
+  ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null \
+    || echo "[warn] gateway did not settle on ${GW_ORIGINAL_IMAGE} -- check it before running other proofs"
+  return 0
+}
+trap 'restore_image; restore_gateway' EXIT
 
 # A SNAPSHOT BARRIER IS PART OF THE ROLLING PROCEDURE, not a convenience.
 #
@@ -240,8 +290,16 @@ roll_to() { # roll_to <image>   — PVCs intact: the epoch survives, format 3 is
   fi
   ${K} set image statefulset/order-matcher-cluster \
     "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
-  ${K} set image deployment/cluster-gateway \
-    "$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
+  # THE GATEWAY GOES WITH THEM, and NOT because the members moved -- this proof is about a BUNDLE.
+  # Step 3 asserts that `POST /replace` 404s on the PRE-CHANGE GATEWAY, which is a statement about
+  # the gateway's build, not the engine's; step 7 needs the new gateway's /replace route. Measured
+  # 2026-08-14 by decoupling them: with historical members under a current gateway, step 3 got
+  # `504 {"error":"no committed ack"}` -- the route exists, offers the command, and no old member
+  # ever acks it. A timeout is NO ANSWER, and no answer is not the refusal the step asserts.
+  #
+  # Unconditional, deliberately: the runner mints the stp epoch on IMAGE_PRE with the gateway left
+  # on the baseline build, so at step 1 the members do not move and the gateway still must.
+  patch_gateway "${image}" "${GW_HISTORICAL_PROBES}"
   ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
   # kubectl's StatefulSet rollout status returned here while member 0 was STILL ON THE OLD IMAGE.
@@ -270,12 +328,22 @@ seed() {
   # not the behaviour under proof; run 1 of the suite died exactly here ("seed failed for 42422")
   # and the failure-path restore then diverged the members. Seeding is idempotent, so retrying is
   # safe.
-  local acct try
+  # Report what it SAW, not only that it wanted something else. "seed failed for 42422 after 5
+  # attempts" is true and useless: 000 (no answer -- a dead tunnel or a gateway that is not
+  # listening) and 500 (an answer, from a gateway that could not resolve the symbol) are completely
+  # different faults and this line could not tell them apart. `-o /dev/null` threw away the only
+  # evidence, and `-sf`'s exit code collapsed both into "nonzero".
+  local acct try code
   for acct in "${SELF}" "${OTHER}"; do
     for try in 1 2 3 4 5; do
-      curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-        -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null && break
-      [[ ${try} -lt 5 ]] || fail "seed failed for ${acct} after 5 attempts"
+      code="$(curl -s --max-time 20 -o /tmp/yu13-seed-body -w '%{http_code}' \
+        -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+        -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" || echo 000)"
+      [[ "${code}" == 2* ]] && break
+      echo "  seed ${acct} attempt ${try}/5 -> ${code} $(cat /tmp/yu13-seed-body 2>/dev/null)"
+      [[ ${try} -lt 5 ]] || fail "seed failed for ${acct} after 5 attempts; last: HTTP ${code} \
+$(cat /tmp/yu13-seed-body 2>/dev/null) (000 = no answer at all: the gateway never replied, which is
+a different fault from a gateway that replied with an error)"
       sleep 5
     done
   done
