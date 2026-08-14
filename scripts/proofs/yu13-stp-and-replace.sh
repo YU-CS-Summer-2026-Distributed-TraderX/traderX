@@ -368,7 +368,12 @@ seed() {
         -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
         -d "{\"accountId\":${acct},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" || echo 000)"
       [[ "${code}" == 2* ]] && break
-      echo "  seed ${acct} attempt ${try}/5 -> ${code} $(cat /tmp/yu13-seed-body 2>/dev/null)"
+      # Elapsed time is the discriminator and costs nothing to print. A FAST 422 means the ack
+      # arrived carrying id=-1 (the engine refused, e.g. MAX_SECURITIES=64 on these builds); a SLOW
+      # one means offerAndAwait hit ACK_TIMEOUT_MS with no ack at all. Those are different faults
+      # and the code alone cannot tell them apart -- measuring this is what identified the readiness
+      # race behind the 422s on 2026-08-14.
+      echo "  seed ${acct} attempt ${try}/5 t+${SECONDS}s -> ${code} $(cat /tmp/yu13-seed-body 2>/dev/null)"
       [[ ${try} -lt 5 ]] || fail "seed failed for ${acct} after 5 attempts; last: HTTP ${code} \
 $(cat /tmp/yu13-seed-body 2>/dev/null) (000 = no answer at all: the gateway never replied, which is
 a different fault from a gateway that replied with an error)"
