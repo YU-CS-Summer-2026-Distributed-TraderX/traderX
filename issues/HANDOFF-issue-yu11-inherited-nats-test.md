@@ -1,8 +1,22 @@
 # Issue: YU02's NATS replication test does not compile from YU11 up
 
-**Status:** open, not fixed. Stops the YU publish walk at `YU11-aeron-replication`; YU01–YU10 all
-publish clean. Pre-existing; first reachable 2026-08-03 once the publish wiring let a compile
-preflight run against a YU11 tree.
+**Status: RESOLVED.** Fixed by `a7bd36f2` — *"YU11: retire the inherited NATS phase-0 test, and
+make prune actually run for YU states"* — which took the first option below. Confirmed 2026-08-14:
+`specs/YU11-aeron-replication/generation/prune-manifest.json` carries the artifact
+`nats-replication-phase0-test` targeting exactly this file with `appliesToDescendants: true`;
+`pipeline/generate-state.sh:137` invokes the prune step; and the file is absent from a generated
+YU16 tree. The concern below that a YU prune manifest "is a new pattern that deserves a deliberate
+decision" is therefore stale — the decision was taken.
+
+**Still unverified:** the original symptom was a publish-walk stop, and the publish walk itself has
+not been re-run since. `publish-generated-state-branch.sh` also refuses YU states upstream for a
+separate reason — see `HANDOFF-issue-yu-vacuous-pipeline-guards.md`.
+
+Original report follows.
+
+**Status when filed:** open, not fixed. Stops the YU publish walk at `YU11-aeron-replication`;
+YU01–YU10 all publish clean. Pre-existing; first reachable 2026-08-03 once the publish wiring let a
+compile preflight run against a YU11 tree.
 **Related:** `HANDOFF-issue-yu02-trade-processor-zero-tests.md` — same layer boundary, and the
 `propagate-spec-fix` skill's multiple-carriers rule is exactly what this violates.
 

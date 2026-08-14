@@ -1,7 +1,8 @@
 # Issue: the YU states silently skipped three pipeline guards, and one of them is still unreachable
 
-**Status:** three guards fixed 2026-08-03 (`^[0-9]+$` → YU rank). One of the three, the
-decommission invariant, remains unreachable for YU states for a *second*, independent reason.
+**Status: RESOLVED 2026-08-14.** The three rank guards were fixed 2026-08-03 (`^[0-9]+$` → YU
+rank). The decommission invariant, which remained unreachable for a *second*, independent reason,
+now runs — see *The part that is still unreachable* below, and its resolution note.
 **Related:** `HANDOFF-issue-spec-layer-propagation-gaps.md` — same "reported success, checked
 nothing" family. Same bug class as the prune step that has never run for YU02–YU15.
 
@@ -73,6 +74,38 @@ appear (`tick-store` at YU07, `execution-algo-engine` at YU08, `aeron-replicatio
 demands a `code/generated-state-*` ref for every implemented state and so cannot be satisfied by the
 first publish of a new lineage. The invariant itself is already known to hold (see above), so that
 work is expected to land green.
+
+### RESOLVED 2026-08-14
+
+Two things were missing, not one.
+
+1. **`allowed_roots_for_state()` had no YU case.** Added as `YU[0-9][0-9]-*) yu_allowed_roots`, plus
+   a separate `YU01-lmax-sequencer` arm because YU01 forks from 009 rather than 014. This part had
+   already landed on YU15/YU16/YU17; the other fourteen branches still carried the pre-fix file and
+   still failed exactly as documented above — measured on the YU07 worktree 2026-08-14.
+2. **The allowlist was incomplete even with the YU case.** The analysis above says "across the whole
+   lineage only three new component directories appear". That is true of *component* directories and
+   not of the tree: a YU snapshot also carries the compose-era feature-pack directories
+   (`api-explorer` from the 004/006 overlays, and the `005`–`009` bundles
+   `postgres-database-replacement`, `observability-lgtm-compose`, `pricing-awareness-market-data`,
+   `order-management-matcher`). Without them the check still never reached a verdict — it failed at
+   "includes out-of-policy snapshot roots" naming five directories the generation hook is supposed
+   to produce, which is a false accusation rather than a finding. `.gitkeep` joins `.gitignore` in
+   `is_ignored_entry`.
+
+**The invariant holds, and is now actually asserted.** `trade-feed` is deliberately still not in the
+allowlist. Verified on a real YU16 generated tree: `[ok] lineage invariants validated` with
+`trade-feed` absent, and the negative control — plant a `trade-feed` directory — fails naming it,
+then passes again once removed. YU07, YU11 and YU14 each validate their own state and generated tree
+at exit 0.
+
+Carried to all sixteen non-`main` branches. `main` deliberately not carried: it is the default
+branch and wants a PR rather than a direct commit.
+
+**Still open, and separate:** `publish-generated-state-branch.sh` refuses YU states upstream of these
+validators (`generation.mode=specified`), so the publisher still does not reach them. That is the
+bounded wiring work described above and in `ae0a9399`, and it is unchanged by this fix — run the
+validators directly.
 
 ## The same gap from the other side: a validator that loudly rejects a YU state
 
