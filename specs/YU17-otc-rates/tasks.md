@@ -53,12 +53,21 @@
       PVC is deleted, not just its pod, and the rebuilt member must re-render the identical cut
       with the same contract count.
 
+- [x] T-OTC20: Run the inherited suite against this build. **23 passed, 0 skipped, 3 failed**, and
+      all three failures were then run individually and resolved: `yu13-otel-trace-join` passes
+      once the rig's drifted `OTEL_SAMPLE_MASK` is restored to the manifest's `0`, and
+      `yu13-cancel-ingress` / `yu13-stp-and-replace` cannot roll a pre-YU16 gateway image at all
+      because the probes moved to port 18111 — diagnosed to the kubelet event and written up in
+      `issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md`. Neither is a
+      property of this state.
+
 ## Still open
 
-- [ ] T-OTC20: Establish that every inherited proof passes on this build. The first full suite run
-      reported six failures, none of which touches swaps: the gateway answered `ready=200` from
-      inside the cluster throughout and no pod restarted, and every failure traces to an HTTP call
-      through a port-forward returning nothing. Three distinct reporting defects are involved and
-      are recorded in `issues/HANDOFF-issue-suite-verdicts-under-load.md`. Each affected proof is
-      being re-run individually on a quiet box; until they are green on this build the claim is not
-      made.
+Nothing in this state's own scope. Two cross-cutting items surfaced while proving it and are
+carried in `issues/`:
+
+- `issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md` — until the historical
+  gateway tags are rebuilt (or the two proofs pin the probe port), `yu13-cancel-ingress` and
+  `yu13-stp-and-replace` cannot run on any state from YU16 onward.
+- `RiskExtractGcsSinkLiveProofTest` is gated on `RISK_EXTRACT_GCS_HMAC_KEY_ID` and skips without
+  credentials, so the contracts artifact's delivery to the GCS sink is asserted but unverified.
