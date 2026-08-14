@@ -34,12 +34,15 @@ import java.util.function.IntToLongFunction;
 final class RiskExtractCut {
 
     /**
-     * Bumped only on an incompatible column change; the reader refuses anything else. Schema 2
-     * (YU17, ADR-064): a second SECTION appends, introduced by the {@code #contracts} marker line,
-     * carrying the OTC contracts booked as of N. No position column changed — the netted section
-     * above the marker is byte-identical to what schema 1 rendered for the same state.
+     * Bumped only on an incompatible column change; the reader refuses anything else. Schema 3
+     * (YU17 phase 2, ADR-065): the contracts section gains the option wrapper — {@code productType},
+     * {@code expiryEpochDay}, {@code exerciseStyle} — so a swaption rides beside a swap. A swap
+     * carries {@code 0,0,0} there. Schema 2 (YU17, ADR-064): a second SECTION appends, introduced
+     * by the {@code #contracts} marker line, carrying the OTC contracts booked as of N. No position
+     * column has ever changed — the netted section above the marker is byte-identical to what
+     * schema 1 rendered for the same state.
      */
-    static final int SCHEMA = 2;
+    static final int SCHEMA = 3;
 
     static final String HEADER = "accountId,security,quantity,avgCostTicks,contractMultiplier,lastTradePxTicks";
 
@@ -52,7 +55,7 @@ final class RiskExtractCut {
     static final String CONTRACTS_MARKER = "#contracts";
 
     static final String CONTRACTS_HEADER = "contractId,accountId,payFixed,notional,fixedRateTicks,"
-        + "conventionIndex,effectiveEpochDay,maturityEpochDay";
+        + "conventionIndex,effectiveEpochDay,maturityEpochDay,productType,expiryEpochDay,exerciseStyle";
 
     private RiskExtractCut() {
     }
@@ -116,23 +119,18 @@ final class RiskExtractCut {
         // being wrong about which contract is which.
         long previousId = 0L;
         for (final long[] contract : contractTuples) {
-            if (contract.length != 8) {
+            if (contract.length != 11) {
                 throw new IllegalStateException(
-                    "risk extract: contract tuple has " + contract.length + " columns, want 8");
+                    "risk extract: contract tuple has " + contract.length + " columns, want 11");
             }
             if (contract[0] <= previousId) {
                 throw new IllegalStateException("risk extract: contract ids are not ascending ("
                     + contract[0] + " after " + previousId + ")");
             }
             previousId = contract[0];
-            sb.append(contract[0]).append(',')
-                .append(contract[1]).append(',')
-                .append(contract[2]).append(',')
-                .append(contract[3]).append(',')
-                .append(contract[4]).append(',')
-                .append(contract[5]).append(',')
-                .append(contract[6]).append(',')
-                .append(contract[7]).append('\n');
+            for (int i = 0; i < contract.length; i++) {
+                sb.append(contract[i]).append(i == contract.length - 1 ? '\n' : ',');
+            }
         }
         return sb.toString();
     }

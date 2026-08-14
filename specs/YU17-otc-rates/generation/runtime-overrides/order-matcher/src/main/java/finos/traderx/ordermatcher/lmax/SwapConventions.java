@@ -72,4 +72,47 @@ public final class SwapConventions {
     public static boolean knows(final int index) {
         return index >= 0 && index < TABLE.length;
     }
+
+    // ----- exercise style (YU17 phase 2, ADR-065) ----------------------------------------------
+    //
+    // The second index-addressed table in this class, under the same rules and for the same
+    // reason: a swaption's exercise style is a small enum, it is committed to the log as an index,
+    // and an index that has been journaled must keep its meaning forever.
+    //
+    // It is a TERM, not lifecycle. This state models no exercise EVENT — nobody exercises anything
+    // (D6) — but a European and a Bermudan swaption on identical underlying terms are different
+    // instruments with materially different value, and a risk file that could not tell them apart
+    // would be describing one of them wrongly. So the style is published and the exercise is not.
+
+    private static final String[] EXERCISE_STYLES = { "EUROPEAN", "BERMUDAN", "AMERICAN" };
+
+    public static int exerciseStyleCount() {
+        return EXERCISE_STYLES.length;
+    }
+
+    /** Index for an exercise style name, or -1. Used at the boundary, before anything is sequenced. */
+    public static int exerciseStyleIndexOf(final String name) {
+        for (int i = 0; i < EXERCISE_STYLES.length; i++) {
+            if (EXERCISE_STYLES[i].equalsIgnoreCase(name)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The exercise style at {@code index}.
+     *
+     * @throws IllegalStateException for an index this build does not know — for the same reason
+     *     {@link #at(int)} refuses: publishing a Bermudan swaption as European is worse than
+     *     refusing to publish it.
+     */
+    public static String exerciseStyleAt(final int index) {
+        if (index < 0 || index >= EXERCISE_STYLES.length) {
+            throw new IllegalStateException("unknown exercise style index " + index
+                + " (this build knows 0.." + (EXERCISE_STYLES.length - 1) + "): the contract was"
+                + " booked by a later build. Roll forward; do not reinterpret it.");
+        }
+        return EXERCISE_STYLES[index];
+    }
 }

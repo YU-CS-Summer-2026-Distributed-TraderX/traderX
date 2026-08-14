@@ -37,6 +37,9 @@ class SwapBookingTest {
     private static final long PAY_RATE_TICKS = 43_000L;       // 4.3%
     private static final LocalDate EFFECTIVE = LocalDate.of(2026, 8, 17);
     private static final LocalDate MATURITY = LocalDate.of(2031, 8, 17);
+    private static final LocalDate EXPIRY = LocalDate.of(2026, 8, 17);   // on the effective date
+    private static final int EUROPEAN = 0;
+    private static final int BERMUDAN = 1;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
@@ -159,11 +162,11 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatFive() {
+    void aSnapshotFromThisBuildDeclaresFormatSix() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
-        assertEquals(5, header.getInt(4), "the contract record is a new type; the format must say so");
+        assertEquals(6, header.getInt(4), "T_CONTRACT changed shape; the format must say so");
         assertEquals(3, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
             "adding a record type does not stop older snapshots restoring — do not raise this");
     }
@@ -287,6 +290,177 @@ class SwapBookingTest {
         assertThrows(IllegalStateException.class, () -> SwapConventions.at(SwapConventions.count()));
     }
 
+    // ----- swaptions (phase 2) ---------------------------------------------------------------
+
+    @Test
+    void aEuropeanAndABermudanOnIdenticalTermsAreTwoContracts() {
+        // The phase-2 headline, and a sharper version of the swap one. These two are identical in
+        // EVERY column a position model could see and in every column a swap record carries — same
+        // account, direction, notional, strike, dates, conventions. Only the exercise style differs,
+        // and a Bermudan is worth materially more than a European. If the style were not a
+        // published term these would be indistinguishable in the risk file.
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, swaption(BUYER, InputEvent.SWAP_PAY_FIXED, RECEIVE_RATE_TICKS, EUROPEAN, 1L));
+        apply(service, swaption(BUYER, InputEvent.SWAP_PAY_FIXED, RECEIVE_RATE_TICKS, BERMUDAN, 2L));
+
+        assertEquals(2, service.contractCount());
+        final List<long[]> c = service.contractTuples();
+        for (int col : new int[] {1, 2, 3, 4, 5, 6, 7, 8, 9}) {
+            assertEquals(c.get(0)[col], c.get(1)[col], "column " + col + " must be identical");
+        }
+        assertNotEquals(c.get(0)[10], c.get(1)[10], "only the exercise style distinguishes them");
+
+        final String cut = markAndCapture(service);
+        final String artifact = SwapContractCsv.render(cut, counterparties(), stamp(cut));
+        final List<String> rows = dataRows(artifact);
+        assertEquals(2, rows.size(), artifact);
+        assertTrue(rows.get(0).endsWith(",SWAPTION," + EXPIRY + ",EUROPEAN"), rows.get(0));
+        assertTrue(rows.get(1).endsWith(",SWAPTION," + EXPIRY + ",BERMUDAN"), rows.get(1));
+    }
+
+    @Test
+    void aSwaptionCarriesItsUnderlyingSwapsTermsUnchanged() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, swaption(BUYER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, EUROPEAN, 1L));
+        final long[] c = service.contractTuples().get(0);
+        assertEquals(BUYER, c[1]);
+        assertEquals(1L, c[2], "PAY_FIXED on the underlying = a payer swaption");
+        assertEquals(NOTIONAL, c[3], "the notional is the UNDERLYING's, not a premium");
+        assertEquals(PAY_RATE_TICKS, c[4], "the underlying's fixed rate IS the strike");
+        assertEquals(EFFECTIVE.toEpochDay(), c[6]);
+        assertEquals(MATURITY.toEpochDay(), c[7]);
+        assertEquals(1L, c[8], "productType SWAPTION");
+        assertEquals(EXPIRY.toEpochDay(), c[9]);
+        assertEquals(EUROPEAN, c[10]);
+    }
+
+    @Test
+    void aSwapCarriesAnEmptyOptionWrapper() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L));
+        final long[] c = service.contractTuples().get(0);
+        assertEquals(0L, c[8], "productType SWAP");
+        assertEquals(0L, c[9], "a swap has no expiry");
+        assertEquals(0L, c[10], "a swap has no exercise style");
+        final String cut = markAndCapture(service);
+        final String row = dataRows(SwapContractCsv.render(cut, counterparties(), stamp(cut))).get(0);
+        assertTrue(row.startsWith("SW-"), row);
+        assertTrue(row.endsWith(",SWAP,,"), "a swap leaves the two option columns empty: " + row);
+    }
+
+    @Test
+    void swapsAndSwaptionsShareOneArtifactAndOneIdSpace() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L));
+        apply(service, swaption(SELLER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, BERMUDAN, 2L));
+        final String cut = markAndCapture(service);
+        final String artifact = SwapContractCsv.render(cut, counterparties(), stamp(cut));
+        final List<String> rows = dataRows(artifact);
+        assertEquals(2, rows.size());
+        assertTrue(rows.get(0).startsWith("SW-"), rows.get(0));
+        assertTrue(rows.get(1).startsWith("SWPT-"), rows.get(1));
+        // The ids are the booking sequences, so they are distinct across products by construction.
+        assertNotEquals(rows.get(0).split(",")[0].substring(3),
+            rows.get(1).split(",")[0].substring(5));
+        assertTrue(service.engine().positionTuples().isEmpty(), "neither product becomes a position");
+    }
+
+    @Test
+    void anUnknownExerciseStyleIsRefusedNotGuessed() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        final InputEvent booking = swaption(BUYER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, EUROPEAN, 1L);
+        booking.setSwaptionTerms(0, SwapConventions.exerciseStyleCount() + 3, (int) EXPIRY.toEpochDay());
+        apply(service, booking);
+        assertEquals(1, service.contractCount(), "the engine stores what the log committed");
+        final String cut = markAndCapture(service);
+        final RiskExtractCsv.Stamp stamp = stamp(cut);
+        assertThrows(IllegalStateException.class,
+            () -> SwapContractCsv.render(cut, counterparties(), stamp),
+            "a Bermudan published as European is a different instrument; refuse instead");
+    }
+
+    @Test
+    void theSwaptionTermsWordRoundTrips() {
+        final InputEvent e = new InputEvent();
+        for (final int day : new int[] {0, 1, 20_684, InputEvent.MAX_SWAP_EPOCH_DAY}) {
+            e.setSwaptionTerms(4, 2, day);
+            assertEquals(4, e.swapConventionIndex(), "the convention index is the low byte");
+            assertEquals(2, e.swaptionExerciseStyle());
+            assertEquals(day, e.swaptionExpiryEpochDay());
+        }
+        // A swap sets the slot directly and must read back the same convention index, with no
+        // wrapper — this is what lets both products share swapConventionIndex() without a branch.
+        e.securityId = 3;
+        assertEquals(3, e.swapConventionIndex());
+        assertEquals(0, e.swaptionExpiryEpochDay());
+    }
+
+    @Test
+    void aFormatFiveSnapshotRestoresItsSwapsAsSwaps() {
+        // The phase-1 forward-roll path: a format-5 T_CONTRACT carries eight columns and no option
+        // wrapper. Reading it at the new width would take the next record's bytes as an expiry.
+        final MatchingEngineClusteredService source = enabledAccounts();
+        apply(source, swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L));
+        apply(source, swap(SELLER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, 2L));
+
+        // Rewrite this build's snapshot as a format-5 one: header says 5, and every T_CONTRACT is
+        // truncated to its first eight columns.
+        final List<byte[]> records = new ArrayList<>();
+        for (final byte[] record : snapshotRecords(source)) {
+            final UnsafeBuffer view = new UnsafeBuffer(record);
+            if (view.getInt(0) == MatchingEngineClusteredService.T_HEADER) {
+                view.putInt(4, 5);
+            } else if (view.getInt(0) == MatchingEngineClusteredService.T_CONTRACT) {
+                records.add(java.util.Arrays.copyOf(record, 4 + 8 * 8));
+                continue;
+            }
+            records.add(record);
+        }
+
+        final MatchingEngineClusteredService restored = new MatchingEngineClusteredService();
+        restored.initEngine();
+        boolean done = false;
+        for (final byte[] record : records) {
+            done = restored.onSnapshotRecord(new UnsafeBuffer(record), 0);
+        }
+        assertTrue(done, "a format-5 snapshot must still restore here");
+        assertEquals(2, restored.contractCount());
+        for (int i = 0; i < 2; i++) {
+            final long[] before = source.contractTuples().get(i);
+            final long[] after = restored.contractTuples().get(i);
+            for (int col = 0; col < 8; col++) {
+                assertEquals(before[col], after[col], "column " + col);
+            }
+            assertEquals(0L, after[8], "a format-5 contract is a SWAP");
+            assertEquals(0L, after[9]);
+            assertEquals(0L, after[10]);
+        }
+    }
+
+    @Test
+    void bothArtifactsAreUsAsciiEncodable() {
+        // Not a style rule. RiskExtractMain writes every artifact with US_ASCII, so ONE non-ASCII
+        // character — an em-dash in a preamble sentence, say — throws UnmappableCharacterException
+        // and aborts the whole EOD batch, after the cut has already been rendered and hashed. The
+        // other tests here render to a String and never encode it, so none of them can see it.
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L));
+        apply(service, swaption(SELLER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, BERMUDAN, 2L));
+        final String cut = markAndCapture(service);
+        final RiskExtractCsv.Stamp stamp = stamp(cut);
+
+        for (final String artifact : new String[] {
+                cut,
+                SwapContractCsv.render(cut, counterparties(), stamp),
+                RiskExtractCsv.render(cut, Map.of(), counterparties(), Map.of(), stamp)}) {
+            for (int i = 0; i < artifact.length(); i++) {
+                final char c = artifact.charAt(i);
+                assertTrue(c < 128, "non-ASCII U+" + Integer.toHexString(c) + " at " + i
+                    + ", in: " + artifact.substring(Math.max(0, i - 60), Math.min(artifact.length(), i + 20)));
+            }
+        }
+    }
+
     // ----- harness -------------------------------------------------------------------------------
 
     private MatchingEngineClusteredService enabledAccounts() {
@@ -309,6 +483,14 @@ class SwapBookingTest {
         e.setClientOrderKey(clientKey);
         e.setSwapDates((int) EFFECTIVE.toEpochDay(), (int) MATURITY.toEpochDay());
         e.eventTimeMillis = timestamp;
+        return e;
+    }
+
+    private InputEvent swaption(final int accountId, final byte direction, final long strikeTicks,
+                                final int exerciseStyle, final long clientKey) {
+        final InputEvent e = swap(accountId, direction, strikeTicks, clientKey);
+        e.type = InputEvent.TYPE_SWAPTION_BOOK;
+        e.setSwaptionTerms(0, exerciseStyle, (int) EXPIRY.toEpochDay());
         return e;
     }
 

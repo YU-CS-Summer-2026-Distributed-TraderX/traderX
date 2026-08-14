@@ -302,6 +302,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/swaps", this::handleSwapBook);
+        server.createContext("/swaptions", this::handleSwaptionBook);
         server.createContext("/metrics", this::handleMetrics);
         server.createContext("/latency", this::handleLatency);
         server.createContext("/seed", this::handleSeed);
@@ -1326,27 +1327,59 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * claims every row is the replicated state machine's state at a consensus sequence "not a
      * read-model query", and booking swaps into the database directly would quietly make that
      * sentence false.
+     */
+    private void handleSwapBook(final HttpExchange exchange) {
+        handleOtcBooking(exchange, false);
+    }
+
+    /**
+     * OTC swaption booking ingress (YU17 phase 2, ADR-065).
+     *
+     * <p>POST /swaptions — the swap body plus {@code "expiryDate"} and {@code "exerciseStyle"}
+     * ("European" | "Bermudan" | "American"). Every other field describes the UNDERLYING swap, so
+     * {@code fixedRate} is the strike and {@code payReceive} is the direction of the underlying's
+     * fixed leg: {@code "Pay"} is a payer swaption. Returns
+     * 200 {"contractId":"SWPT-N","sequence":N,"booked":true}.
+     *
+     * <p>Its own route rather than a {@code product} field on /swaps, for the same reason the
+     * engine gets its own command type: a swaption is not a swap, and a client that posts a swap
+     * body should never be able to receive an option by accident of which fields it happened to
+     * include.
+     */
+    private void handleSwaptionBook(final HttpExchange exchange) {
+        handleOtcBooking(exchange, true);
+    }
+
+    /**
+     * The shared body of both OTC routes. A swaption's underlying IS a swap, so every term except
+     * the option wrapper is validated by exactly the same code — which is the point: the two routes
+     * cannot drift into disagreeing about what a notional or a date is.
      *
      * <p><b>Every term the record cannot represent is refused HERE, before anything is
      * sequenced</b>, following the boundary-owns-instrument-semantics rule the Treasury face
      * validation established (FR-CDM16). A notional past {@code int} range would wrap into a small
-     * one and book silently; a maturity past 2149 would wrap into a past date; an unknown
-     * conventions name would resolve to index 0 and publish a contract under the wrong day count.
-     * Each of those is a plausible-looking wrong number in a risk file, which is the failure mode
-     * this whole state exists to prevent.
+     * one and book silently; a date past 2149 would wrap into a past date; an unknown conventions
+     * or exercise-style name would resolve to index 0 and publish a contract under the wrong day
+     * count or the wrong style. Each of those is a plausible-looking wrong number in a risk file,
+     * which is the failure mode this whole state exists to prevent.
      */
-    private void handleSwapBook(final HttpExchange exchange) {
+    private void handleOtcBooking(final HttpExchange exchange, final boolean swaption) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
                 respond(exchange, 405, "{\"error\":\"POST only\"}");
                 return;
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
-            for (final String required : new String[] {
-                    "accountId", "payReceive", "notional", "fixedRate", "effectiveDate",
-                    "maturityDate", "conventions"}) {
-                if (!body.hasNonNull(required)) {
-                    respond(exchange, 400, "{\"error\":\"" + required + " required\"}");
+            final List<String> required = new ArrayList<>(List.of(
+                "accountId", "payReceive", "notional", "fixedRate", "effectiveDate",
+                "maturityDate", "conventions"));
+            if (swaption) {
+                required.add("expiryDate");
+                required.add("exerciseStyle");
+            }
+            for (final String field : required) {
+                if (!body.hasNonNull(field)) {
+                    respond(exchange, 400, "{\"error\":\"" + field + " required\"}");
                     return;
                 }
             }
@@ -1382,15 +1415,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
             final long effective;
             final long maturity;
+            final long expiry;
             try {
                 effective = java.time.LocalDate.parse(body.get("effectiveDate").asText()).toEpochDay();
                 maturity = java.time.LocalDate.parse(body.get("maturityDate").asText()).toEpochDay();
+                expiry = swaption
+                    ? java.time.LocalDate.parse(body.get("expiryDate").asText()).toEpochDay() : 0L;
             } catch (final java.time.format.DateTimeParseException e) {
                 respond(exchange, 400, "{\"error\":\"dates must be ISO yyyy-MM-dd\"}");
                 return;
             }
-            if (effective < 0 || maturity < 0
-                || effective > InputEvent.MAX_SWAP_EPOCH_DAY || maturity > InputEvent.MAX_SWAP_EPOCH_DAY) {
+            if (effective < 0 || maturity < 0 || expiry < 0
+                || effective > InputEvent.MAX_SWAP_EPOCH_DAY || maturity > InputEvent.MAX_SWAP_EPOCH_DAY
+                || expiry > InputEvent.MAX_SWAP_EPOCH_DAY) {
                 respond(exchange, 400, "{\"error\":\"dates must fall between 1970-01-01 and 2149-06-06\"}");
                 return;
             }
@@ -1398,17 +1435,38 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 respond(exchange, 400, "{\"error\":\"maturityDate must be after effectiveDate\"}");
                 return;
             }
+            int exerciseStyle = 0;
+            if (swaption) {
+                exerciseStyle = SwapConventions.exerciseStyleIndexOf(body.get("exerciseStyle").asText(""));
+                if (exerciseStyle < 0) {
+                    respond(exchange, 400, "{\"error\":\"unknown exerciseStyle '"
+                        + body.get("exerciseStyle").asText("") + "'\"}");
+                    return;
+                }
+                // An option that expires after the swap it is an option ON has nothing to be
+                // exercised into. Refused here rather than published as a term nobody can act on.
+                if (expiry > effective) {
+                    respond(exchange, 400,
+                        "{\"error\":\"expiryDate must be on or before the underlying effectiveDate\"}");
+                    return;
+                }
+            }
 
             final String clOrdId = body.path("clientOrderId").asText("");
             final long clientKey = clientOrderKey(clOrdId);
             final int accountId = body.get("accountId").asInt();
+            final int styleIndex = exerciseStyle;
             final long[] ack = onOwner(() -> {
-                event.type = InputEvent.TYPE_SWAP_BOOK;
+                event.type = swaption ? InputEvent.TYPE_SWAPTION_BOOK : InputEvent.TYPE_SWAP_BOOK;
                 event.side = side;
                 event.accountId = accountId;
                 event.qty = (int) notional;
                 event.limitPx = rateTicks;
-                event.securityId = conventionIndex;
+                if (swaption) {
+                    event.setSwaptionTerms(conventionIndex, styleIndex, (int) expiry);
+                } else {
+                    event.securityId = conventionIndex;
+                }
                 event.setClientOrderKey(clientKey);
                 event.setSwapDates((int) effective, (int) maturity);
                 event.eventTimeMillis = 0;
@@ -1425,8 +1483,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             if (ack[1] != 0) {
-                respond(exchange, 200, "{\"contractId\":\"SW-" + ack[0] + "\",\"sequence\":" + ack[0]
-                    + ",\"booked\":true}");
+                respond(exchange, 200, "{\"contractId\":\"" + (swaption ? "SWPT-" : "SW-") + ack[0]
+                    + "\",\"sequence\":" + ack[0] + ",\"booked\":true}");
             } else {
                 respond(exchange, 422, "{\"booked\":false,\"reason\":\""
                     + RiskReason.values()[(int) ack[2]] + "\"}");

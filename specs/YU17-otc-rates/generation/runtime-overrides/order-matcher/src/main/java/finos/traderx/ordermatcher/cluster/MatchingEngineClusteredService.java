@@ -130,13 +130,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int MAX_CONTRACTS = 4096;
 
     /**
-     * Format 5 (YU17): the T_CONTRACT record joins the snapshot for the OTC contract store. It is a
-     * new record TYPE, not a changed one — every format-4 record keeps its shape and meaning here,
-     * which is why {@link #MIN_READABLE_SNAPSHOT_FORMAT} stays at 3 and a format-4 epoch rolls
-     * forward onto this build untouched. The bump exists for the other direction: a format-5
-     * snapshot handed to a YU16 build would hit T_CONTRACT at `default ->` and abort with "unknown
-     * snapshot record type: 12", and the version number makes that legible at the header instead of
-     * deep in record parsing.
+     * Format 6 (YU17 phase 2): T_CONTRACT gains the three option-wrapper columns so a swaption can
+     * be carried beside a swap. This is the first change to a record's SHAPE rather than an
+     * addition of a new type, so the reader dispatches on the restored format — see
+     * {@link #restoredFormat} — and a format-5 record is read as its eight columns with the wrapper
+     * defaulted to a swap. That is what keeps a phase-1 epoch rolling forward untouched.
+     *
+     * <p>Format 5 (YU17 phase 1): the T_CONTRACT record joins the snapshot for the OTC contract
+     * store. It is a new record TYPE, not a changed one — every format-4 record keeps its shape and
+     * meaning here, which is why {@link #MIN_READABLE_SNAPSHOT_FORMAT} stays at 3 and a format-4
+     * epoch rolls forward onto this build untouched. The bump exists for the other direction: a
+     * format-5 snapshot handed to a YU16 build would hit T_CONTRACT at `default ->` and abort with
+     * "unknown snapshot record type: 12", and the version number makes that legible at the header
+     * instead of deep in record parsing.
      *
      * <p>Format 4 (YU15): MAX_SECURITIES 64 -> 1024 widened the symbol-id domain. Format 3 (YU14):
      * the security record carries the contract multiplier (6 columns); format 2 (YU13) added book
@@ -155,13 +161,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * A version number makes that hazard unconditional and legible at the header instead of latent.
      * Bump this for any change to what the records can CONTAIN, not merely to their shape.
      */
-    static final int SNAPSHOT_FORMAT = 5;
+    static final int SNAPSHOT_FORMAT = 6;
     /**
-     * Oldest format this build can still restore. 3 -> 4 changed no record's shape and only
-     * WIDENED the symbol-id domain, and 4 -> 5 only ADDED a record type, so every format-3 and
-     * format-4 record still means here exactly what it meant there and both restore exactly. That
-     * is what lets this build roll onto an existing epoch without wiping it. Raise this only for a
-     * change that genuinely cannot read the older records.
+     * Oldest format this build can still restore. 3 -> 4 only WIDENED the symbol-id domain, 4 -> 5
+     * only ADDED a record type, and 5 -> 6 changed T_CONTRACT's shape in a way this reader handles
+     * explicitly by format. So every format-3, -4 and -5 record still means here exactly what it
+     * meant there, and all three restore exactly — which is what lets this build roll onto an
+     * existing epoch without wiping it. Raise this only for a change that genuinely cannot read
+     * the older records.
      */
     static final int MIN_READABLE_SNAPSHOT_FORMAT = 3;
     static final int T_HEADER = 1;
@@ -180,12 +187,24 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
     /**
      * {contractId, accountId, payFixed, notional, fixedRateTicks, conventionIndex,
-     * effectiveEpochDay, maturityEpochDay} — the complete economics of a vanilla fixed-float IRS
-     * as this state models it (D5: terms only, no valuation; D6: no lifecycle, so no accrual or
-     * schedule state to carry). {@code contractId} is the consensus sequence the booking landed
-     * at, which is unique within the epoch by construction and needs no generator of its own.
+     * effectiveEpochDay, maturityEpochDay, productType, expiryEpochDay, exerciseStyle} — the
+     * complete economics of a vanilla fixed-float IRS, or of a swaption on one, as this state
+     * models them (D5: terms only, no valuation; D6: no lifecycle, so no accrual, no schedule and
+     * no exercise). {@code contractId} is the consensus sequence the booking landed at, which is
+     * unique within the epoch by construction and needs no generator of its own.
+     *
+     * <p>The first eight columns mean the same thing for both products, because a swaption's
+     * underlying IS a swap: for a swaption, {@code fixedRateTicks} is the strike and
+     * {@code payFixed} is the direction of the underlying's fixed leg. The last three are the
+     * option wrapper and are zero for a swap.
      */
-    static final int CONTRACT_TUPLE_LENGTH = 8;
+    static final int CONTRACT_TUPLE_LENGTH = 11;
+
+    /** Columns a format-5 (phase 1, swaps only) T_CONTRACT record carries. */
+    static final int CONTRACT_TUPLE_LENGTH_V5 = 8;
+
+    static final int PRODUCT_SWAP = 0;
+    static final int PRODUCT_SWAPTION = 1;
 
     /**
      * YU16 (ADR-060): a Treasury's book grid is ONE Px tick, derived from the committed ticker
@@ -252,6 +271,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long highestIssuedRef;
     private long appliedSeq;
     private boolean snapshotHeaderSeen;
+    // The format of the snapshot being restored, so a record whose SHAPE changed between formats
+    // can be read at its own width. Defaults to the current format, which is what a member that
+    // restored nothing is writing.
+    private int restoredFormat = SNAPSHOT_FORMAT;
     // Symbol identity as replicated state (matrix F2): ids assigned in committed-log order,
     // never evicted, so the generator derives from the mapping itself on restore.
     private final String[] tickerById = new String[MAX_SECURITIES];
@@ -380,6 +403,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
         this.snapshotHeaderSeen = false;
+        this.restoredFormat = SNAPSHOT_FORMAT;
         java.util.Arrays.fill(tickerById, null);
         this.nextSymbolId = 0;
         this.contracts.clear();
@@ -409,7 +433,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
         }
-        if (event.type == InputEvent.TYPE_SWAP_BOOK) {
+        if (event.type == InputEvent.TYPE_SWAP_BOOK || event.type == InputEvent.TYPE_SWAPTION_BOOK) {
             // YU17 (ADR-062): an OTC swap is sequenced like every other command — it is a committed
             // log entry, so replay and every member reach the same contract store — but it is
             // applied HERE and never handed to the engine. There is nothing for the engine to do
@@ -591,6 +615,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             reason = (byte) decision.ordinal();
             if (decision == RiskReason.ACCEPTED) {
                 contractId = appliedSeq;
+                final boolean swaption = event.type == InputEvent.TYPE_SWAPTION_BOOK;
                 contracts.add(new long[] {
                     contractId,
                     event.accountId,
@@ -599,7 +624,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     event.swapFixedRateTicks(),
                     event.swapConventionIndex(),
                     event.swapEffectiveEpochDay(),
-                    event.swapMaturityEpochDay() });
+                    event.swapMaturityEpochDay(),
+                    swaption ? PRODUCT_SWAPTION : PRODUCT_SWAP,
+                    swaption ? event.swaptionExpiryEpochDay() : 0L,
+                    swaption ? event.swaptionExerciseStyle() : 0L });
                 booked = true;
             }
         }
@@ -843,6 +871,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                         + " is older than this build can restore (minimum "
                         + MIN_READABLE_SNAPSHOT_FORMAT + ", current " + SNAPSHOT_FORMAT + ")");
                 }
+                restoredFormat = format;
                 nextOrderRef = buffer.getLong(offset + 8);
                 highestIssuedRef = buffer.getLong(offset + 16);
                 appliedSeq = buffer.getLong(offset + 24);
@@ -880,8 +909,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 (int) buffer.getLong(offset + 4),
                 buffer.getLong(offset + 12));
             case T_CONTRACT -> {
+                // Dispatch on the RESTORED format, not on the record: onSnapshotRecord is handed an
+                // offset and no length, so a record cannot tell the reader how wide it is. The
+                // header has already been seen (the first-record check guarantees that), so the
+                // format is known by the time any T_CONTRACT arrives. A format-5 record carries the
+                // eight swap columns and nothing more; its wrapper defaults to PRODUCT_SWAP with a
+                // zero expiry, which is exactly what it was.
+                final int columns =
+                    restoredFormat >= 6 ? CONTRACT_TUPLE_LENGTH : CONTRACT_TUPLE_LENGTH_V5;
                 final long[] contract = new long[CONTRACT_TUPLE_LENGTH];
-                for (int i = 0; i < CONTRACT_TUPLE_LENGTH; i++) {
+                for (int i = 0; i < columns; i++) {
                     contract[i] = buffer.getLong(offset + 4 + 8 * i);
                 }
                 final long contractId = contract[0];

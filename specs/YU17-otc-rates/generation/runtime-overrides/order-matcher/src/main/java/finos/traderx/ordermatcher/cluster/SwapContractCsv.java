@@ -32,17 +32,37 @@ import java.util.Map;
  * worth. A number here that looked like a valuation would be duplicating their half of the
  * boundary, and doing it worse.
  *
+ * <p><b>Two products, one file (YU17 phase 2).</b> A swaption is an option on a swap, so its row
+ * shares almost every column with a swap's — the columns describe the UNDERLYING — and differs in
+ * three: {@code productType}, {@code expiryDate}, {@code exerciseStyle}. That is the case the
+ * "empty columns for the rows they do not apply to" convention exists for, and it is the opposite
+ * of the swap-versus-position case above, which shared only {@code accountId} and therefore had to
+ * split into its own artifact.
+ *
  * <p>Like {@link RiskExtractCsv} this is a pure function of the cut plus immutable reference data
  * — no clocks, no map iteration order, no floating point — so it rebuilds byte-identically from
  * the stored cut alone, forever.
  */
 final class SwapContractCsv {
 
-    /** Bumped only on an incompatible column change. */
-    static final int SCHEMA = 1;
+    /**
+     * Bumped only on an incompatible column change. Schema 2 (YU17 phase 2, ADR-065): three columns
+     * append — {@code productType}, {@code expiryDate}, {@code exerciseStyle} — carrying swaptions
+     * beside swaps. Every earlier column keeps its name, position and meaning, and a SWAP row
+     * carries {@code SWAP} with the two option columns empty.
+     *
+     * <p>One file rather than a third artifact, and the reasoning is the mirror of ADR-064's. A
+     * swaption row shares almost EVERY column with a swap row — notional, strike (which is the
+     * underlying's fixed rate), float index, both underlying dates, frequency, day count, currency,
+     * counterparty, netting set — and differs in three. That is the shape the "non-bond rows carry
+     * empty bond columns" convention was built for. A swap row versus a POSITION row was the
+     * opposite case, sharing only {@code accountId}, which is why that one had to split.
+     */
+    static final int SCHEMA = 2;
 
     static final String HEADER = "contractId,accountId,payReceive,notional,fixedRate,floatIndex,"
-        + "effectiveDate,maturityDate,paymentFrequency,dayCount,currency,counterpartyId,nettingSetId";
+        + "effectiveDate,maturityDate,paymentFrequency,dayCount,currency,counterpartyId,nettingSetId,"
+        + "productType,expiryDate,exerciseStyle";
 
     private static final int RATE_SCALE = 6;
 
@@ -141,8 +161,19 @@ final class SwapContractCsv {
         sb.append("# lifecycle=NOT MODELLED. Terms are as booked: no resets, no coupon payments,"
             + " no accrual, no amortisation, no unwinds or terminations. A contract past its"
             + " maturityDate is still listed here exactly as booked\n");
-        sb.append("# contractIdentity=SW-<consensusSequence of the booking>, unique within the"
-            + " cluster epoch by construction and reproducible from the log alone\n");
+        sb.append("# contractIdentity=SW-<consensusSequence> for a swap, SWPT-<consensusSequence>"
+            + " for a swaption; unique within the cluster epoch by construction and reproducible"
+            + " from the log alone\n");
+        sb.append("# productType=SWAP or SWAPTION. A SWAPTION is an option on a swap: every column"
+            + " to the left of productType describes its UNDERLYING swap, so fixedRate is the"
+            + " STRIKE and payReceive is the direction of the underlying's fixed leg (PAY_FIXED ="
+            + " a payer swaption). expiryDate and exerciseStyle are empty for a SWAP\n");
+        sb.append("# exerciseStyle=EUROPEAN, BERMUDAN or AMERICAN. A TERM, published because two"
+            + " swaptions identical in every other column are different instruments if their"
+            + " styles differ. No exercise EVENT is modelled (see lifecycle above): a swaption"
+            + " past its expiryDate is still listed here exactly as booked\n");
+        sb.append("# swaptionNotionalConvention=notional is the UNDERLYING swap's notional, not a"
+            + " premium. This file states no premium and no valuation\n");
         sb.append("# conventionSource=floatIndex, paymentFrequency and dayCount are resolved from"
             + " the committed convention index by a table compiled into the engine, so every"
             + " member and every replay resolves them identically\n");
@@ -151,7 +182,7 @@ final class SwapContractCsv {
     private static String row(final String cutLine,
                               final Map<Integer, RiskExtractCsv.Counterparty> accounts) {
         final String[] c = cutLine.split(",", -1);
-        if (c.length != 8) {
+        if (c.length != 11) {
             throw new IllegalStateException("swap contracts: malformed cut row: " + cutLine);
         }
         final long contractId = Long.parseLong(c[0]);
@@ -162,6 +193,12 @@ final class SwapContractCsv {
         final SwapConventions.Convention convention = SwapConventions.at(Integer.parseInt(c[5]));
         final LocalDate effective = LocalDate.ofEpochDay(Long.parseLong(c[6]));
         final LocalDate maturity = LocalDate.ofEpochDay(Long.parseLong(c[7]));
+        final boolean swaption = Long.parseLong(c[8]) == 1L;
+        // Resolved through the same knowing-refusal table the conventions use: a style index this
+        // build does not have aborts rather than resolving to EUROPEAN, because a Bermudan
+        // published as European is a materially different instrument.
+        final String exerciseStyle = swaption ? SwapConventions.exerciseStyleAt(Integer.parseInt(c[10])) : "";
+        final String expiry = swaption ? LocalDate.ofEpochDay(Long.parseLong(c[9])).toString() : "";
 
         final RiskExtractCsv.Counterparty cp = accounts.get(accountId);
         if (cp == null) {
@@ -171,14 +208,18 @@ final class SwapContractCsv {
         // The currency column is the CONTRACT's, from its conventions — not the account's base
         // currency from reference data. A USD-based account trading a GBP swap is ordinary, so
         // those two disagreeing is not an error; taking the account's would misstate the trade.
-        return "SW-" + contractId + "," + accountId + ","
+        // The id says what the row is. A reader scanning a risk file should not have to reach the
+        // productType column to know a SWPT- row is an option, and the ids stay unique either way
+        // because both are the booking's consensus sequence.
+        return (swaption ? "SWPT-" : "SW-") + contractId + "," + accountId + ","
             + (paysFixed ? "PAY_FIXED" : "RECEIVE_FIXED") + ","
             + notional + "," + fixedRate.toPlainString() + ","
             + convention.floatIndex() + ","
             + effective + "," + maturity + ","
             + convention.paymentFrequency() + "," + convention.dayCount() + ","
             + convention.currency() + ","
-            + cp.counterpartyId() + "," + cp.nettingSetId();
+            + cp.counterpartyId() + "," + cp.nettingSetId() + ","
+            + (swaption ? "SWAPTION" : "SWAP") + "," + expiry + "," + exerciseStyle;
     }
 
     private static String field(final String header, final String key) {

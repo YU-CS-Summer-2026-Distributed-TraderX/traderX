@@ -87,6 +87,25 @@ public final class InputEvent {
      */
     public static final byte TYPE_SWAP_BOOK = 12;
 
+    /**
+     * Book an OTC swaption — an option on a swap (YU17 phase 2, ADR-065). A separate command type
+     * rather than a flag on {@link #TYPE_SWAP_BOOK}, so the product is the COMMAND rather than a
+     * field that has to be non-zero: deriving "this is a swaption" from a date being set would make
+     * 1970-01-01 a load-bearing sentinel, and this line has paid for that shape before.
+     *
+     * <p>A swaption's underlying is a swap, so every slot {@code TYPE_SWAP_BOOK} uses keeps its
+     * exact meaning here — {@code accountId}, {@code side} (the direction of the UNDERLYING's fixed
+     * leg: payer swaption = the right to pay fixed), {@code qty} (the underlying notional),
+     * {@code limitPx} (the strike, which IS the underlying's fixed rate), {@code priceTicks} (the
+     * {@code clientOrderKey}) and {@code orderRef} (the underlying's effective and maturity dates).
+     *
+     * <p>What is new is the option wrapper, and it rides {@code securityId} as one word — see
+     * {@link #setSwaptionTerms(int, int, int)}. Grouping convention index, exercise style and
+     * expiry into a single slot is deliberate: they are exactly the fields that distinguish the
+     * OPTION from the swap underneath it.
+     */
+    public static final byte TYPE_SWAPTION_BOOK = 13;
+
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;
     /** TYPE_SWAP_BOOK direction: the booking account receives / pays the FIXED leg. */
@@ -173,7 +192,36 @@ public final class InputEvent {
 
     /** Convention-table index (see {@code SwapConventions}); rides the free securityId slot. */
     public int swapConventionIndex() {
-        return securityId;
+        return securityId & 0xFF;
+    }
+
+    // ----- TYPE_SWAPTION_BOOK (YU17 phase 2) --------------------------------------------------
+    //
+    // The option wrapper, as one word in `securityId`:
+    //   bits  0-7   convention index   (0..255; the table is five entries)
+    //   bits  8-15  exercise style     (0..255; the table is three entries)
+    //   bits 16-31  expiry epoch day   (0..65535, i.e. through 2149-06-06 — the same ceiling the
+    //                                   underlying's date pair carries, and refused at the
+    //                                   gateway for the same reason: this masks, so an
+    //                                   out-of-range day would wrap into a plausible date)
+    //
+    // A swap sets only the low byte, so `swapConventionIndex()` reads the same value for both
+    // products and needs no branch. Expiry 0 is therefore what a SWAP has, which is precisely why
+    // the product is the command type and never "is the expiry set".
+
+    public void setSwaptionTerms(final int conventionIndex, final int exerciseStyle,
+                                 final int expiryEpochDay) {
+        this.securityId = (conventionIndex & 0xFF)
+            | ((exerciseStyle & 0xFF) << 8)
+            | ((expiryEpochDay & 0xFFFF) << 16);
+    }
+
+    public int swaptionExerciseStyle() {
+        return (securityId >>> 8) & 0xFF;
+    }
+
+    public int swaptionExpiryEpochDay() {
+        return (securityId >>> 16) & 0xFFFF;
     }
 
     /** Notional in whole currency units. */

@@ -76,6 +76,24 @@ book() { # book <payReceive> <rate> <clientOrderId> [account] -> "<http_code> <b
   echo "$(echo "${body}" | tail -1) $(echo "${body}" | sed '$d' | tr -d '\n')"
 }
 
+# The applied sequence, read only once ALL THREE members agree on it. Sampling one member races
+# with catch-up: a member that has just restored from a snapshot reports the position it restored
+# to while the others are already past it, and a "+2" delta measured across that gap is a statement
+# about replication lag, not about how many commands were sequenced. (Observed here: member 0 at
+# 22927 with engineApplied -1 while 1 and 2 were at 22929.) This is the same quiesce rule the
+# cross-member digest follows.
+quiesced_seq() {
+  local tries=0 a b c
+  while (( tries < 60 )); do
+    a="$(applied_seq 0)"; b="$(applied_seq 1)"; c="$(applied_seq 2)"
+    if [[ "${a}" =~ ^[0-9]+$ && "${a}" == "${b}" && "${b}" == "${c}" ]]; then
+      printf '%s' "${a}"; return 0
+    fi
+    tries=$((tries + 1)); sleep 2
+  done
+  fail "the three members never agreed on an applied sequence (last: ${a:-?} ${b:-?} ${c:-?})"
+}
+
 json_field() { # json_field <key> ; reads JSON on stdin
   python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('$1',''))"
 }
@@ -122,7 +140,7 @@ ${K} exec order-matcher-cluster-0 -- test -f "${MARKER}" \
 if ${K} exec order-matcher-cluster-0 -- test -f "${MARKER%SwapConventions.class}NoSuchClass.class" 2>/dev/null; then
   fail "the stale-build check reports a class that cannot exist — it would pass against any image"
 fi
-BEFORE_SEQ="$(applied_seq 0)"
+BEFORE_SEQ="$(quiesced_seq)"
 [[ "${BEFORE_SEQ}" =~ ^[0-9]+$ && "${BEFORE_SEQ}" -ge 0 ]] \
   || fail "could not read the applied sequence from order-matcher-cluster-0 (got '${BEFORE_SEQ}')"
 for acct in "${ACCOUNT}" "${COUNTERPARTY}"; do
@@ -159,7 +177,7 @@ BAD_REASON="$(echo "${BAD_BODY}" | json_field reason)"
 echo "[ok] unknown account refused with ${BAD_REASON} (the booking was sequenced and DECIDED, not dropped)"
 
 step "2. book the pair: receive fixed ${RECEIVE_RATE} and pay fixed ${PAY_RATE}, both on ${NOTIONAL}"
-SEQ_BEFORE_PAIR="$(applied_seq 0)"
+SEQ_BEFORE_PAIR="$(quiesced_seq)"
 [[ "${SEQ_BEFORE_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable before the pair"
 read -r RECV_CODE RECV_BODY <<<"$(book Receive "${RECEIVE_RATE}" "yu17-recv-${RUN_ID}")"
 [[ "${RECV_CODE}" == "000" ]] && fail "receive-fixed booking got NO answer (curl 000) — no committed decision was observed, which is not a rejection"
@@ -172,7 +190,7 @@ PAY_ID="$(echo "${PAY_BODY}"  | json_field contractId)"
 [[ "${RECV_ID}" =~ ^SW-[0-9]+$ ]] || fail "receive leg contract id '${RECV_ID}' is not SW-<seq>"
 [[ "${PAY_ID}"  =~ ^SW-[0-9]+$ ]] || fail "pay leg contract id '${PAY_ID}' is not SW-<seq>"
 [[ "${RECV_ID}" != "${PAY_ID}" ]] || fail "both legs got contract id ${RECV_ID} — they are not distinct contracts"
-SEQ_AFTER_PAIR="$(applied_seq 0)"
+SEQ_AFTER_PAIR="$(quiesced_seq)"
 [[ "${SEQ_AFTER_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable after the pair"
 [[ "$((SEQ_AFTER_PAIR - SEQ_BEFORE_PAIR))" == "2" ]] \
   || fail "the applied sequence moved ${SEQ_BEFORE_PAIR} -> ${SEQ_AFTER_PAIR}; two bookings must be exactly two sequenced commands (D1)"
