@@ -107,6 +107,23 @@ retry loop now prints each attempt's HTTP code and body.
 old builds, and it muddies what "historical" means — the tag would no longer be the artifact it
 claims to be.
 
+**5. `initialDelaySeconds: 5` belongs in the historical probe form, and leaving it out broke a
+proof.** The first version of this fix omitted it. YU15's own gateway manifest — the one these
+builds were actually deployed against — carries it, and it is load-bearing rather than decoration:
+on a pre-YU16 build `/ready` reports `connected:true`, which means "my session opened", not "I can
+commit". Without the delay the kubelet marks the pod Ready at t≈0, `rollout status` returns, and
+`roll_to` seeds immediately into a session that cannot yet resolve a symbol.
+
+Measured: `yu13-stp-and-replace` then failed all five seed attempts with `422 {"seeded":false}`
+whenever `yu13-cancel-ingress` ran before it, and passed standalone. **The isolation experiment run
+to exonerate the gateway build could not reproduce it, because that script slept ~7s between the
+rollout and the seed — accidentally supplying the very delay the patch had removed.** A control that
+silently controls for the variable under test proves nothing; the giveaway was that it disagreed
+with a reproducible in-suite failure.
+
+Reinstating a build that predates a fix means reinstating the settings it shipped with, not just its
+image tag.
+
 ## The general lesson
 
 Two, and the second is the expensive one.
