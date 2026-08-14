@@ -158,6 +158,11 @@ start_forwards() {
 # reporting a different engine's behaviour truthfully; neither was a bug in what it tested.
 #
 # An engine build is the one variable no proof should inherit from the run before it.
+#
+# COROLLARY FOR A NEW STATE: this cuts both ways. Run the suite from a descendant state's worktree
+# without repinning and it rolls the rig BACK to the default baseline and wipes to a fresh epoch —
+# so the suite runs green against the PARENT's engine and says nothing about the state you are
+# trying to prove. Pin it: YU15_CLUSTER_IMAGE=traderx/cluster-node:yuNN bash run-proofs.sh.
 BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
 # Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh.
 STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre}"
