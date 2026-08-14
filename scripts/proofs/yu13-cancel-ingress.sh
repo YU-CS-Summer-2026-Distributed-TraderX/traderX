@@ -162,6 +162,28 @@ GW_ORIGINAL_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.templat
 GW_ORIGINAL_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' \
   | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
 GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"periodSeconds":5,"failureThreshold":24}'
+# The manifest's own form (specs/*/generation/kubernetes/cluster/gateway.yaml). Used ONLY when the
+# live capture above is degenerate -- the floor a restore can always reach, never the source of
+# truth, which is why the live capture is preferred whenever it is intact.
+GW_MANIFEST_PROBES='"startupProbe":{"httpGet":{"path":"/live","port":18111},"periodSeconds":5,"failureThreshold":24},"readinessProbe":{"httpGet":{"path":"/ready","port":18111},"periodSeconds":5,"failureThreshold":3},"livenessProbe":{"httpGet":{"path":"/live","port":18111},"periodSeconds":10,"failureThreshold":6,"timeoutSeconds":3}'
+# A CAPTURE OF AN ALREADY-BROKEN DEPLOYMENT IS NOT THE THING TO RESTORE.
+#
+# A run that dies between the patch and its EXIT trap leaves the probes stripped. Capture THAT as
+# "original" and the damage LATCHES: every later run faithfully restores a deployment with no
+# startup and no liveness probe, and yu16-liveness-restarts-wedge -- which runs three proofs
+# earlier and cannot see who did it -- then fails its preflight with "the gateway Deployment
+# carries no livenessProbe on /live". A true statement about a rig the proofs themselves broke.
+# Measured 2026-08-14: one aborted hand-run stripped them, and the two full suites after it
+# restored them stripped, each one reporting a successful restore.
+#
+# So a capture missing either probe is read as evidence of that abort rather than as intent. Same
+# instinct as a negative control on an assertion: a degenerate reading is not an answer.
+if [[ "${GW_ORIGINAL_PROBES}" == *'"startupProbe":null'* \
+   || "${GW_ORIGINAL_PROBES}" == *'"livenessProbe":null'* ]]; then
+  echo "[warn] the gateway Deployment is already missing a startup or liveness probe, so an earlier"
+  echo "[warn] run died before its restore. Restoring the MANIFEST form on exit, not this one."
+  GW_ORIGINAL_PROBES="${GW_MANIFEST_PROBES}"
+fi
 GW_PATCHED=0
 
 patch_gateway() { # patch_gateway <image> <probe-json-fragment>  -- image and probes in one rollout
