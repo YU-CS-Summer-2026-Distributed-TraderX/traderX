@@ -94,8 +94,17 @@ identical from the exit code alone.
 runner pins the rig to its baseline image and wipes to a fresh epoch, so the default rolls the
 members BACK to the YU16 build and the suite then says nothing about this state.
 
-**Result on the YU17 build: 23 passed, 0 skipped, 3 failed.** The three failures were then run
-individually and resolved:
+**Result on the phase-2 build: 24 passed, 0 skipped, 3 failed** (`yu17-swap-netting`,
+`yu13-cancel-ingress`, `yu13-stp-and-replace`), and on the phase-1 build before it: 23 passed,
+3 failed. Every failure was then run individually and resolved:
+
+`yu17-swap-netting` failed on the phase-2 build because its own row check still asserted the 13
+columns the artifact had before swaptions widened it to 16. The row was correct; the proof was
+describing an older artifact. Fixed, and the check now asserts a SWAP row's option columns are
+EMPTY rather than just counting — so widening the file again cannot quietly start filling them.
+Re-run green at N=2433.
+
+The other two are the same pre-existing blocker in both runs:
 
 | Proof | Outcome |
 |---|---|
