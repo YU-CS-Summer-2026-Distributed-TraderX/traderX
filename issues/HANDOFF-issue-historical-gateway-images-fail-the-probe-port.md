@@ -124,6 +124,42 @@ with a reproducible in-suite failure.
 Reinstating a build that predates a fix means reinstating the settings it shipped with, not just its
 image tag.
 
+## YU15 suite result, 2026-08-14 — and one failure that is narrowed, not closed
+
+Run on `traderx/cluster-node:yu15real`, a genuine YU15 build (checked: no YU17 `SwapConventions`,
+no YU16 bond grid, probe server present): **18 passed, 3 failed**.
+
+**The probe-port fix is verified on this branch.** `yu13-cancel-ingress` — the proof that rolls the
+gateway onto historical images, and the one this issue is about — PASSES.
+
+The three failures, and which of them this fix owns:
+
+- **`yu13-stp-and-replace` — narrowed, not closed, and it is ours.** Fails in-suite at step 1 with
+  five `422 {"seeded":false}` seed attempts; passes standalone, all nine steps, with no retry at all.
+  The proof file is byte-identical to YU16's, which passes in-suite, and `seed-proof-fixtures.sh` is
+  identical too — so it is neither the fix nor the fixtures, it is the readiness race that
+  `initialDelaySeconds` narrowed on YU16 without eliminating everywhere.
+
+  Do NOT reach for a larger retry budget first. `port-proofs-to-another-tier` §6: when a fix does
+  not fix it, suspect the diagnosis rather than the size of the constant. The next run's timing is
+  now printed per attempt (`t+Ns`), and that number is the discriminator: a FAST 422 means the ack
+  arrived carrying `id=-1` (an engine refusal — `MAX_SECURITIES` is 64 on these historical builds,
+  against 1024 today), a SLOW one means `offerAndAwait` reached `ACK_TIMEOUT_MS` with no ack. Those
+  are different faults and the status code alone cannot separate them. Measured on YU16, the first
+  422 landed ~9s after the pod started, i.e. FAST — which points at the refusal branch, and at a
+  session that answers `/ready` before it can resolve a symbol.
+
+- **`yu10-fix-session` — unrelated.** `connect ECONNREFUSED 127.0.0.1:18130`, the FIX acceptor port.
+  Neither YU15's nor YU16's runner forwards 18130, yet it passes on YU16 and YU17, so this is a
+  YU15 rig or build difference and not a proof-harness one.
+
+- **`yu05-recon` — unrelated.** Its orphan probes behaved correctly (planted row named, baseline 0)
+  and the verdict still failed. The runner's own comment records this proof reading LIFETIME
+  counters that the suite's fresh epochs disturb.
+
+Neither of the last two is touched by anything in this file; they are recorded here only so the
+YU15 number is not mistaken for a probe-port regression.
+
 ## The general lesson
 
 Two, and the second is the expensive one.
