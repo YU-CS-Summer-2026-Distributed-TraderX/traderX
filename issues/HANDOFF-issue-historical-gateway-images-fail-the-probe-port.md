@@ -134,11 +134,28 @@ gateway onto historical images, and the one this issue is about — PASSES.
 
 The three failures, and which of them this fix owns:
 
-- **`yu13-stp-and-replace` — narrowed, not closed, and it is ours.** Fails in-suite at step 1 with
-  five `422 {"seeded":false}` seed attempts; passes standalone, all nine steps, with no retry at all.
-  The proof file is byte-identical to YU16's, which passes in-suite, and `seed-proof-fixtures.sh` is
-  identical too — so it is neither the fix nor the fixtures, it is the readiness race that
-  `initialDelaySeconds` narrowed on YU16 without eliminating everywhere.
+- **`yu13-stp-and-replace` — INTERMITTENT in-suite, and two of my own hypotheses are dead.**
+  Observed failing at step 1 with five `422 {"seeded":false}` seed attempts on some suite runs, and
+  passing all nine steps on others — including the same `cancel-ingress`→`stp` pairing that failed
+  twice. So it is a flake whose frequency `initialDelaySeconds` reduced, **not** a deterministic
+  consequence of the pairing; an earlier note here saying "fails in-suite, passes standalone" was
+  too strong.
+
+  **What the added timing settled.** The five attempts land 5s apart, which is exactly the retry
+  `sleep` — so each 422 returns in well under a second. That **rules out `ACK_TIMEOUT`**, and with it
+  the shallow-readiness race this was assumed to be: a fast 422 means the engine *answered* and its
+  answer was a refusal (`resolveSecurityId` got an ack carrying `id = -1`).
+
+  **And capacity is ruled out too.** `MAX_SECURITIES` is 64 on these builds, but a faithful
+  standalone reproduction of the stp-prep state — feed off, fresh epoch on `yu15-pre`,
+  `seed-proof-fixtures` twice, gateway rolled to `yu15-pre` with the historical probes — resolves a
+  fresh ticker at **`securityId 21`** and seeds the stp-shaped ticker `200 {"seeded":true}` in 0s,
+  repeatedly. Both of the fast-refusal explanations are therefore gone.
+
+  What remains: an engine-side refusal of a symbol registration, in-suite only, intermittently. The
+  next person should capture the symbol-table high-water *at the moment of failure* through the
+  BASELINE gateway before `roll_to` swaps it — the historical build has no `/resolve` route (it
+  404s), which is why an attempt to sample it after the roll produces nothing.
 
   Do NOT reach for a larger retry budget first. `port-proofs-to-another-tier` §6: when a fix does
   not fix it, suspect the diagnosis rather than the size of the constant. The next run's timing is
