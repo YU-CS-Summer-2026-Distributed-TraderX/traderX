@@ -1,7 +1,33 @@
 # Issue: back YU05 TCA with YU07's tick store (arrival-price + VWAP gaps)
 
-**Status: open (identified 2026-07-15). A cross-state integration gap — best delivered as a NEW
-state on the tip, NOT by editing YU05 or YU08. Sequencing analysis below.**
+**Status: OPEN — verified against the tree 2026-08-14, not merely inherited from this line.**
+Every claim below was re-checked rather than assumed:
+
+- `TcaService.java` exists in the **YU05 layer only** and is overridden by no later state, exactly as
+  the table below says.
+- **No** state's `trade-processor` references the tick store — `grep` across every
+  `specs/*/generation/runtime-overrides/trade-processor` finds nothing.
+- The two symptoms are still in the code: `fromMillis = execMillis - windowMillis` read from
+  `PriceHistoryStore` (so `arrivalPrice` is null whenever history does not reach back that far), and
+  the class javadoc still reads *"VWAP is deferred (FR-PTC32)"*.
+- The raw material is still there: YU08's `DuckDbVolumeProfileSource` is present as the reference
+  pattern.
+
+**This is a FEATURE, not a defect, and that is why it stays open while the other ten issues closed.**
+Nothing here is broken. `TcaService` does correctly what it was built to do; the gap is a capability
+that was foreseen and never built, and this file's own recommendation is to deliver it as a NEW
+STATE rather than by editing YU05 or YU08. Authoring a state is commissioned work in this project
+(spec pack, branch, worktree, proofs, lineage registration) — the same shape and scale as YU16 or
+YU17 — so it needs to be asked for, not inferred from a backlog sweep.
+
+**One part of the recommendation below is stale.** It proposes "a NEW state on the tip (≈ YU10)".
+The tip is now **YU17-otc-rates**, so a state commissioned today would parent on YU17 and inherit
+YU07's tick store and YU08's DuckDB pattern through the whole chain. The constraint that gives the
+recommendation its force is unchanged and still correct: YU05 is an ancestor of YU07, so a YU05
+generation cannot see the tick store, and the retrofit must live at YU07-or-later.
+
+Original status: open (identified 2026-07-15). A cross-state integration gap — best delivered as a
+NEW state on the tip, NOT by editing YU05 or YU08. Sequencing analysis below.
 
 ## The gap
 
