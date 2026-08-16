@@ -592,9 +592,28 @@ final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) 
 So a client whose request is popped by a foreign ack receives **another order's `orderRef` with HTTP
 200** — not a timeout, a confident wrong answer cross-wired between clients. If that holds, the 200s
 observed during a wedge are not successes, and it is worse than §1: there a client under-counts its
-own exposure, here it records someone else's. **Unmeasured.** Test: burst with distinct
-`clientOrderId`s during a wedge, keep every 200, and check each returned `orderRef` against what the
-cluster assigned for that key; mismatches should track K.
+own exposure, here it records someone else's.
+
+**UNMEASURED on both rigs, and the obvious test does not work.** A concurrent burst with distinct
+`clientOrderId`s, checking returned refs against the assigned block, **cannot discriminate** — an
+all-at-once burst destroys offer order, so "the first K got nothing and the rest got their own refs"
+and "every 200 carried the ref of the order K later" predict the *same* split, the *same* contiguous
+block and the *same* K missing. The GKE arm measured exactly that at K=13 (37×200 over a contiguous
+ref block, 13×504) and correctly retracted it as ambiguous. Two ways to break the tie:
+
+- **Stagger the burst ~60 ms** so offer order equals launch order while all requests still land
+  inside the 12s window. The models then split cleanly: under the offset the **last** K clients are
+  the ones answered 504; under the innocent reading the **first** K are.
+- **Better — use the engine's own idempotency table as an oracle, which needs no offer-order control
+  and works on a single order.** `BlpRiskState` holds `clientOrderKey -> (decision, orderRef)`
+  *inside the replicated state machine*, and `MatchingEngine.onNewOrder` answers a repeat key by
+  **re-emitting the ORIGINAL order** rather than creating a second one. So: send one order during
+  the wedge with a unique key and record the ref the client is given; then resend **the same key**
+  once the wedge has cleared, and the engine returns the authoritative ref for that key. Mismatch =
+  the wedge response was cross-wired. The table is replicated and survives a gateway restart and a
+  reconnect onto a different replica, so clearing the wedge between the two sends is safe. Two
+  constraints: the table is bounded and LRU-evicted, so resend before eviction; and a blank or
+  absent `clientOrderId` hashes to 0, the engine's "no key" sentinel, so the test must set a real one.
 
 `GATEWAY_MAX_INFLIGHT` was deliberately **not** shrunk to force exhaustion: with depth provably
 flat, a smaller window changes the number and not the mechanism, and forcing saturation would
