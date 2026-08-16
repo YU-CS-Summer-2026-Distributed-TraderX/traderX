@@ -224,12 +224,24 @@ Measured 2026-08-16 by grepping a marker in each branch's **operative** layer, n
 
 | | probe 18111 (`GATEWAY_PROBE_PORT`) | `EgressListener` (`onSessionEvent`) | wedge self-heal (`GATEWAY-WEDGE-SUSPECTED`) | `scripts/proofs/` `--context` |
 |---|---|---|---|---|
-| YU12 | ✓ | **✗** | ✗ | no proofs dir |
-| YU13 | ✓ | **✗** | ✗ | no proofs dir |
-| YU14 | ✓ | **✗** | ✗ | no proofs dir |
-| YU15 | ✓ | **✗** | ✗ | ✓ as of 2026-08-16 (carried back) |
+| YU12 | ✓ | **✗** | **✗** | no proofs dir |
+| YU13 | ✓ | ✓ *(2026-08-16)* | ✓ *(2026-08-16)* | no proofs dir |
+| YU14 | ✓ | ✓ *(2026-08-16)* | ✓ *(2026-08-16)* | no proofs dir |
+| YU15 | ✓ | ✓ *(2026-08-16)* | ✓ *(2026-08-16)* | ✓ *(2026-08-16)* |
 | YU16 | ✓ | ✓ | ✓ | ✓ |
 | YU17 | ✓ | ✓ | ✓ | ✓ |
+
+The YU13/YU14/YU15 row changed on 2026-08-16: one edit to the **YU13 layer**, which all three run,
+carried both mechanisms and was verified before-and-after on the kind rig. **YU12 alone still books
+what it denies** — its `offerAndAwait` collapses *offer-cleared* and *ack-arrived* into one boolean,
+so the signal the self-heal's safety argument depends on does not exist there; fixing it is a
+contract change across four call sites, scoped in the wedge issue rather than deferred.
+
+**A method warning that came out of that carry**, because it is the same family as everything else in
+this section: the YU12 layer was first measured at 610 lines with no `submitPipelined` — in a
+*descendant* worktree, where that layer is shadowed and never runs. YU12's own branch carries 741.
+The YU13 layer shows it too: 2173 lines on YU13/YU14/YU15 against **1941** on YU16/YU17. Measure a
+layer in a worktree where it is **operative**, or you are reading a copy that never executes.
 
 > **Correction to the relayed review.** It recorded `EgressListener` as ✓ on YU12–YU15. It is **✗**
 > on all four. `e76603fd`'s own commit body says so — "YU12's and YU13's layers are deliberately not
@@ -239,8 +251,9 @@ Measured 2026-08-16 by grepping a marker in each branch's **operative** layer, n
 
 **State this plainly, because it is the sentence that matters to anyone deploying:**
 
-> **"The wedge self-heals" is true of YU16 and YU17 and false of the four branches below them.**
-> On YU12–YU15 the gateway still books what it denies, and the only cure is a `rollout restart`.
+> ~~**"The wedge self-heals" is true of YU16 and YU17 and false of the four branches below them.**~~
+> **Closed for three of the four on 2026-08-16.** It is now true of YU13, YU14, YU15, YU16 and YU17.
+> **On YU12 the gateway still books what it denies**, and the only cure there is a `rollout restart`.
 
 The probe-port work is the counter-example that shows propagation *can* be done: it was written once
 and carried to YU12–YU15 and the GKE tier, and — the part that is usually skipped — the carry was

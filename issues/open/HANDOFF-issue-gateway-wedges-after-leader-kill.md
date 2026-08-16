@@ -58,9 +58,11 @@ inherent to a streak trigger and is the same shape §1's liveness note already r
 an unbounded outage into a bounded one; it does not make the wedge free.
 
 **Carried to the YU16 layer as well as YU17's** (`ClusterGatewayMain` has four carriers — YU12,
-YU13, YU16, YU17 — and a descendant's fix reaches no ancestor). YU12's and YU13's layers are
-deliberately not carried: no rig here for those tiers, and YU12 is a different program (no
-`submitPipelined`, so the funnel this hooks into does not exist there in the same shape).
+YU13, YU16, YU17 — and a descendant's fix reaches no ancestor).
+
+**And, 2026-08-16, to the YU13 layer — which is what YU13, YU14 and YU15 actually run.** Verified
+before and after on the kind rig; see *The YU13 layer* in §6. **YU12 remains uncarried**, and the
+reason is narrower than this file used to say — see the same section.
 
 Original report follows.
 
@@ -529,6 +531,99 @@ unmeasured rather than inferred; it is the same script with the rig on `:yu12`.
 What the pipelined result does settle reaches further than drain, and is the reason it is
 cross-referenced here at all: it retired §5's own proposed mechanism. Whatever that hang is, it is
 not merely a deep owner queue.
+
+### The YU13 layer — VERIFIED before and after on the kind rig, 2026-08-16
+
+The listener and the self-heal were carried to the **YU13** layer, which is the operative
+`ClusterGatewayMain` for **three** branches — YU13, YU14 and YU15. Until this landed, those three
+had the wedge both **unmitigated and silent**: no self-heal, and a method-reference `EgressListener`
+whose two events sat on the interface's default no-op bodies.
+
+**Ported the two mechanisms, not the file.** YU16's copy is 2188 lines against YU13's 1941 and the
+delta is YU16's own instrument work, so a file copy would have dragged descendant features backwards
+into three ancestor branches. Six sites, +105/−2.
+
+**The wire contract was checked before the rig was borrowed**, because a YU15-layer gateway was being
+rolled at members running `:yu16`. `InputEvent`, `AeronReplicationCodec` and `OutputEvent` are
+identical between the YU15 and YU16 operative layers (YU17 is what changed `InputEvent`), and that
+code reading was then confirmed empirically — the gateway seeded and committed `orderRef 957` before
+any wedge was induced. So no member roll, no PVC wipe, no fresh epoch: the borrow was one field.
+
+| | BEFORE (`:yu15prewedge`) | AFTER (`:yu15heal`) |
+|---|---|---|
+| 5 orders during the wedge | **5 × 504** `no committed ack` | — |
+| `traderx_cluster_next_order_ref` | 1843 → 1848 (**+5**) | — |
+| `traderx_book_open_orders` | 839 → 844 (**+5**) | — |
+| `/ready` | `connected:true, noAckStreak:10` | streak back to **0** after the cure |
+| session / leader / wedge log lines | **none at all** | all three, below |
+| pod restarts | 0 | **0** |
+
+Before, on the unpatched build, five orders sat resting for an account whose client had been told
+every one of them failed — §1 reproduced on this tier. After, the same repro wedged the gateway
+again and then 25 orders were driven in:
+
+```
+CLUSTER-SESSION-EVENT code=OK session=7 leader=2 term=3
+CLUSTER-NEW-LEADER leader=2 term=3 session=7
+GATEWAY-WEDGE-SUSPECTED offeredUnacked>=20 noAckStreak=20 — rebuilding the cluster session
+    #17 COMMITTED: {"orderRef":2774,"kind":1}
+    ...
+    #25 COMMITTED: {"orderRef":2782,"kind":1}
+```
+
+**No pod restart** — `restarts=0`, one container lifetime from `19:46:10Z` continuous through the
+leader kill at `19:46:53Z`, the wedge and the cure. The kubelet was not involved.
+
+**The two halves earn their keep separately here, which the YU16 run could not show.** The before
+build printed **nothing whatsoever** across the same leader kill, so the first two lines are the
+listener; the third is the self-heal. 16 orders were denied before it fired rather than YU16's 13,
+because the streak had been partly advanced by earlier probing.
+
+**Non-regression — and this is the safety argument MEASURED on this layer, not inherited.**
+`yu16-ready-tracks-commit` PASSES on the fix build. During its quorum-loss step `noAckStreak`
+reached **25**, past the threshold of 20, while `GATEWAY-WEDGE-SUSPECTED` stayed at its pre-proof
+count of **1**. The offers never cleared, so `offeredUnackedStreak` could not advance and the
+self-heal could not fire in the one regime where a reconnect is useless and `connectCycling()` would
+park the owner thread. The discriminator window (`connected:true` with `/ready` still 503) held, so
+the new trigger does not launder that proof's verdict. Unit suite 344 tests, 0 failures, 4 skipped.
+
+### YU12 — still uncarried, and the reason is not the one this file gave
+
+This file used to say YU12 "is a different program (no `submitPipelined`, so the funnel this hooks
+into does not exist there in the same shape)". That is true of the copy of the YU12 layer carried in
+the **descendant** worktrees — which is a 610-line, pre-probe-work copy that **is shadowed and never
+runs**. YU12's own branch carries **741 lines**, with `noAckStreak` already hooked into
+`submitOrder`.
+
+The real blocker is finer. `offerAndAwait` collapses *offer-cleared* and *ack-arrived* into a single
+returned boolean:
+
+```java
+boolean offered = false;
+while (System.currentTimeMillis() < deadline) {
+    client.pollEgress();
+    if (!offered && client.offer(buffer, 0, length) > 0) { offered = true; }
+    if (offered && ackArrived.getAsBoolean()) { return true; }
+    Thread.yield();
+}
+return false;   // "never cleared" and "cleared, no ack" are indistinguishable here
+```
+
+The offer-cleared fact exists as a local and is **discarded**, so there is nothing for `p.offered`
+to read — and that distinction is the entire safety argument. A YU12-shaped fix therefore means
+changing `offerAndAwait`'s contract to report which of the two failures occurred, across its **four**
+call sites (orders, trades, symbols, batch).
+
+**That is its own change with its own blast radius, not this patch recompiled**, and it should be
+scoped as one rather than logged as "deferred".
+
+> **The method error worth keeping, because it nearly set the scope wrong.** The 610-line
+> measurement was taken in a descendant worktree, where that layer is dead. Measured across
+> worktrees, the YU13 layer shows the same trap and worse: YU13/YU14/YU15 carry 2173 lines
+> (`6d40c428`, including this change) while YU16/YU17 carry **1941** (`6c653951`) — the probe work
+> landed on the operative copies and never on the shadowed ones. Nothing is broken, because the
+> shadowed copies never run. But **a layer measured in a descendant worktree can be a copy that
+> never runs**: measure the layer in a worktree where it is *operative*, or you are reading a corpse.
 
 ### The GKE tier — VERIFIED on a live cluster, 2026-08-13
 
