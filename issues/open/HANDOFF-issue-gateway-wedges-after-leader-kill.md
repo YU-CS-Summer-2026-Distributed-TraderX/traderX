@@ -676,25 +676,222 @@ threads to stdout, where `kubectl logs` picks them up — the JVM serves that, n
 **Take a healthy-load baseline dump first**: on this build it read 0 `tryAcquire` frames and 2
 `future.get` frames across 66 pool threads, and the wedged dump is uninterpretable without it.
 
-### The FIFO correlation offset — GKE arm, 2026-08-16, WRITE-UP PENDING
+### The FIFO correlation offset — GKE arm, 2026-08-16. §5 IS DIAGNOSED
 
-**Placeholder, deliberately not written by the kind arm.** The mechanism was established on GKE and
-belongs in its author's words; this stub exists so the pointers above resolve rather than dangle.
+**The ack correlation is positional. Nothing names the order an ack completes.**
 
-The finding in one line, as relayed and code-verified: `Inflight.onDirectAck` pops the FIFO head
-**positionally, with no id matching**, so a leader change strands N offers whose acks never arrive
-and the FIFO is thereafter permanently N ahead. Every later ack pops a head belonging to an
-abandoned request — one pop per push, so nothing drains and nothing accumulates. Measured on GKE at
-`depth=51 off_ok=3744 ack=3693 gap=51`, frozen, with an ack counter incrementing while `gap` stayed
-pinned; the offset grew 21 → 36 → 51 across three leader kills. `drain()` cures it because it empties
-the FIFO and resets `lastInputSeq`.
+```java
+PendingOrder onDirectAck(final long inputSeq) {
+    if (inputSeq == lastInputSeq) return null;   // continuation fill of the already-answered order
+    lastInputSeq = inputSeq;
+    return fifo.pollFirst();                     // ← pops the HEAD. Unconditionally.
+}
+```
 
-The comment above the pop guards the *continuation-fill* case and leaves the *stranded-offer* case
-unguarded, which is why the bug survived review.
+The invariant this needs is "one direct ack per cleared offer, in offer order". **A leader change
+breaks it**: the offers the dying leader had already sequenced never produce egress to this session,
+those entries stay in the FIFO forever, and the FIFO is thereafter permanently **K** ahead. Every
+later ack pops a head belonging to an abandoned request. One pop per push, so **K is exactly
+conserved — nothing accumulates and nothing drains.** The comment above the pop reasons about
+precisely this failure for the *continuation-fill* case and guards it; the stranded-offer case is
+unguarded, which is how it survived review.
 
-**Open when this stub was written:** whether §5's cliff is `K > pool size` (which would give
-`gateway.yaml`'s "64 only moves the cliff" a specific meaning), and the cross-wired `orderRef`
-prediction recorded above. Whoever writes this up should replace this stub entirely.
+**Everything below was measured on the GKE rig** (`traderx-bench`, `us-east1-b`, gateway
+`replicas: 1`) on gateway image `cluster-node:yu15prewedge-amd64` @ `sha256:f28b8cfa…`, built from
+`YU15-eod-risk-extract@9caab079^` — pre-self-heal, so nothing could rebuild the session mid-run.
+Members and producers untouched on `:yu16`. Build identity confirmed *on the rig*: zero
+`CLUSTER-SESSION-EVENT` / `CLUSTER-NEW-LEADER` / `GATEWAY-WEDGE-SUSPECTED` lines all run, `restarts=0`.
+The mixed-version window was checked first — `InputEvent` (YU03), `OutputEvent` (YU13) and
+`AeronReplicationCodec` (YU15) are byte-identical operative layers across YU15 and YU16 — then
+confirmed empirically with `{"orderRef":2,"kind":1}` on a verified-quiet rig.
+
+**K is a ratchet.** Sustained ~20 orders/s, leader killed repeatedly: `0 → 21 → 36 → 51` over three
+kills, and **two further kills stranded nothing** — the strand is probabilistic, which is the
+"~1 run in 4" folklore seen from the other side. K never went down. It survived member catch-up, a
+new leader, and thousands of subsequent healthy orders.
+
+**K is an offset, not a queue.** Raising the offered rate from ~20/s to **~95/s left `depth` at
+exactly 51**. A queue grows with offered load; an offset cannot.
+
+**The acks are not absent and not late — they arrive and answer the wrong request.** Zero load, 30 s,
+every field frozen: `depth=51 off_ok=3744 ack=3693 gap=51 refs=3695/3695/3695`, `/ready` 503 with
+`connected:true`. Then **one** order, distinct `clientOrderId`:
+
+| | before | after |
+|---|---|---|
+| client | — | `504 no committed ack` at **12.000 s** |
+| member `next_order_ref` | 3695 | **3696** (+1) |
+| `offer_success` | 3744 | **3745** (+1) |
+| `ack_completed` | 3693 | **3694** (+1) ← **an ack arrived and was consumed** |
+| `gap` / `depth` | 51 / 51 | **51 / 51** |
+
+Repeated twice more, identical. **`ack_completed` incrementing while the requesting client gets
+nothing is the reading that separates "late" from "misaligned"**, and it is the one the kind arm
+did not take — it inferred an arriving ack from a released permit, which the positional pop
+invalidates. Its own retracted "late acks" numbers fit this model once that step is removed.
+
+#### §5's cliff is at K = HTTP pool size
+
+A client's answer needs **K more acks** to pop through, so its latency ≈ `K / offered-rate` and the
+threads occupied at equilibrium ≈ **K**. Three regimes, all measured:
+
+| regime | what the client gets |
+|---|---|
+| rate < K/12 | **every request 504s** — at rest, all 504 |
+| rate > K/12 | **200 again**, inside the deadline. At ~20/s `noAckStreak` fell back to 0 while `gap` stayed pinned at 51 |
+| **K ≥ 64** | **§5. Total HTTP collapse** |
+
+That is what `gateway.yaml`'s own *"64 only moves the cliff; it does not remove it"* has always been
+describing. **Raising the pool raises the K at which collapse begins and changes nothing else.**
+
+#### The positive arm, reproduced twice, and the discriminator read
+
+Drive ~95–300 orders/s, kill the leader, push K past 64:
+
+```
+22:25:44  mrc=28  ready=503 {"connected":true,"noAckStreak":64}   refs=10360/x/10360
+22:25:54  mrc=28  ready=503 {"connected":true,"noAckStreak":128}  refs=10424/x/10424
+22:26:05  mrc=28  ready=503 {"connected":true,"noAckStreak":192}  refs=10488/10488/10488
+```
+
+`mrc=28` is `/metrics` on **18110 timing out** — §5's "no response at all". `/ready` on **18111
+answered 503 throughout** (the probe-port split earning its keep), members kept committing, and
+`noAckStreak` climbed in **exact steps of 64** — the pool retiring one full batch at a time, which
+is pool saturation measured rather than inferred.
+
+`kill -3` to PID 1 during a live hang (no `jcmd`/`jstack` in `eclipse-temurin:21-jre`; SIGQUIT dumps
+to stdout where `kubectl logs` picks it up). All **64** order-pool threads, one identical stack:
+
+```
+"pool-1-thread-N"  TIMED_WAITING (parking)
+    java.util.concurrent.CompletableFuture.timedGet / .get
+    ClusterGatewayMain.submitPipelined0(:855) → submitPipelined(:814) → submitOrder(:728) → handleOrder(:1100)
+```
+
+Threads anywhere in `Inflight.acquire` / `Semaphore.tryAcquire`: **0**. Two further frames matter as
+much: **`cluster-client-owner` was RUNNABLE inside `ownerLoop`, not blocked** — so this is not a deep
+owner queue either; and **`HTTP-Dispatcher` was RUNNABLE in `EPoll.wait`** — still accepting.
+Connections are accepted, handed to the fixed pool's *unbounded* queue, and never served. That is
+§5's "connection accepted and never served", mechanically.
+
+#### The open question is answered: the backlog always drained, at 5 requests per second
+
+With `LIVE_NO_ACK_STREAK=100000` so the kubelet could not intervene, all load stopped, member refs
+frozen, `restarts=0`:
+
+| time | `noAckStreak` |
+|---|---|
+| 22:35:52 | 448 |
+| 22:36:04 | 512 (+64 in 12 s) |
+| 22:36:17 | 576 (+64 in 13 s) |
+| 22:36:31 | 640 (+64 in 13 s) |
+
+**+64 every ~12.5 s** — one pool batch per `ACK_TIMEOUT_MS + 2s`. 18110 recovered at **+69 s**,
+`restarts=0`, a genuine drain. Service rate under the wedge is **64 / 12.5 ≈ 5.1 requests/second**.
+Eight minutes of that is ~2,450 requests, and an unbounded ~20/s generator queues more than that in
+under three minutes. **"It never drains" was a finite drain nobody had measured the rate of.**
+
+> **This supersedes the "~22s worst case, so halve every drain estimate" note earlier in this
+> section.** The two waits are serial only when the semaphore is *exhausted*: `inflight.acquire`
+> blocks solely when no permit is free, and under this wedge `depth` sat at 51–64 against a
+> `MAX_INFLIGHT` of 4096 (read off the running pod — no overlay sets it). So `acquire` returned
+> immediately and only `future.get` was ever paid. The thread dump is the proof: **0 threads in
+> `Semaphore.tryAcquire`, 64 in `CompletableFuture.get`.** The measured 12.5 s per batch matches 12 s,
+> not 22 s. The ~22 s figure is a true statement about the code's worst case and a false one about
+> this failure.
+
+#### Negative control — quorum loss, same image
+
+| phase | reading |
+|---|---|
+| quorum lost (3→1), under load | `connected:false`, `offer_success` frozen, **`depth` climbed 256 → 288** |
+| quorum restored | **`depth` back to 0**, `/ready` 200, orders commit normally |
+
+Permits climbed and **returned**; they did not pin. And it explains the cure: `connectCycling()`
+calls `inflight.drain()`, which empties the FIFO and resets `lastInputSeq = -1` — i.e. **sets K back
+to 0**. That is why a `rollout restart` and the self-heal both work, and why quorum loss (which
+forces a reconnect) leaves no standing offset while a leader kill (which does not) leaves one
+forever. **The whole difference between a recoverable outage and the permanent wedge is whether the
+gateway reconnects and therefore drains.**
+
+**Instrument trap:** `drain()` releases permits and completes futures but **never increments
+`ack_completed`**, so after any reconnect `gap` over-reports by the number drained (the control sat
+at `gap=64` with `depth=0`). **`depth` is the live offset; `gap` equals it only when nothing has
+drained** — and the two agreeing exactly (51/51) through the wedge runs is itself the evidence that
+no reconnect occurred.
+
+#### The liveness probe does cure §5 — measured, and it is not a diagnosis
+
+On the first hang (default `LIVE_NO_ACK_STREAK=100`), streak reached 192, `/live` failed, and the
+kubelet restarted the container: `restartCount 0 → 1`, event `Container gateway failed liveness
+probe, will be restarted`, serving again **26 s** later. §1b's mitigation converts an unbounded
+outage into a ~26 s one on the tier where it matters. It neither prevents the wedge nor explains it,
+and the offset rebuilds on the next leader kill.
+
+#### The cross-wired `orderRef` — PLAUSIBLE, UNESTABLISHED, and the trap in testing it
+
+`completePipelinedHead` reads a NEW order's ref out of the **ack buffer**, not the pending request:
+
+```java
+final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) : p.orderRef;
+```
+
+So under the offset a client would receive **another order's `orderRef` with an HTTP 200** — worse
+than §1, which at least errs toward the client under-counting. **This is a code-read prediction. It
+is not established, and an earlier write-up of the GKE arm wrongly claimed it as measured.**
+
+The measurement taken: at K=13, 50 concurrent orders over refs 20955–21004 gave **37 × 200 carrying
+refs 20968–21004 (contiguous), 13 × 504, and refs 20955–20967 reported to nobody.** That fits the
+offset — and fits **equally well** an innocent reading in which the first 13 orders in offer order
+simply went unanswered and the other 37 received their *own* correct refs, which are exactly
+20968–21004. Same split, same block, same 13 missing. **An all-at-once burst destroys offer order,
+and without offer order the aggregate has two causes.**
+
+> **The lesson worth more than the finding.** The underspecified experiment produced the most
+> alarming claim in this document, and produced it *because* it was underspecified. A test whose
+> failure mode manufactures its own worst result is more dangerous than no test, because someone
+> will report it and be believed. Before believing a number that matches a prediction, enumerate
+> what *else* produces that exact number. Both arms of this investigation failed this on the same
+> day — the kind arm measured against its own background load, the GKE arm read a specific
+> correlation out of an aggregate that did not license it.
+
+**Two methods that would settle it, neither yet run** (both rigs stood down):
+
+1. **Preferred — two sends of one order, using the engine's own idempotency table as the oracle.**
+   `BlpRiskState` holds a replicated, snapshot-persisted `clientOrderKey → orderRef` table and
+   `MatchingEngine.onNewOrder` answers a repeat key by re-emitting the **original** order. Send one
+   order during the wedge and record the ref the client is handed; clear the wedge; resend the same
+   key; **mismatch = cross-wired**. Verified present on the layers that actually run — the **YU13**
+   `MatchingEngine` (operative for YU13–YU15) and the **YU14** `BlpRiskState` (operative for
+   YU14–YU15). Three constraints:
+   - the table is **LRU-evicted** — resend before eviction;
+   - a blank/absent `clientOrderId` hashes to **0**, the engine's "no key" sentinel, so a forgetful
+     test is silently vacuous and reads as a clean pass;
+   - **the original must still be RESTING.** The re-emit is guarded by `lookup(originalRef) != null`;
+     if the original filled or was cancelled the guard drops through and the engine mints a
+     **brand-new order with a new ref** — a different ref for an innocent reason, indistinguishable
+     from the defect. **This is the constraint that fails toward confirming the severe claim.** Use a
+     limit that cannot cross and confirm the order is still resting before the second send.
+2. **Gateway-only rigs — stagger the burst ~60 ms** so offer order equals launch order while all
+   orders still land inside the window. Launch index *i* then has true ref `R0+i-1`: under the offset
+   client 1 is told `R0+K`; under the innocent reading client 1 is told nothing and client `K+1` is
+   told `R0+K`, its own.
+
+#### The defect is live on the TIP
+
+`onDirectAck` is **byte-identical on each branch's operative `ClusterGatewayMain` layer** — the YU13
+layer (2173 lines, run by YU13–YU15), the YU16 layer (2221), and the YU17 layer (2403). The
+self-heal **resets K rather than preventing it**. Anything planned on YU17 that assumes this is clean
+is wrong.
+
+**What must NOT be built:** admission control, a bigger HTTP pool, or a shorter `ACK_TIMEOUT_MS`. The
+backlog is not deep, it is **misaligned**; all three move the cliff and leave the misalignment. The
+repair is *correlation* — an ack that names the request it answers — which is a contract change with
+real blast radius and is yaakov's call, not something to slip in behind a diagnosis.
+
+*The GKE arm's raw working record — full timelines, thread dumps and the retraction history — is
+`issues/open/YU15-s5-gke-fifo-correlation-offset.md`, which exists on the `YU15-eod-risk-extract`
+branch only. This section is self-contained and does not depend on it.*
 
 ## §6. Where the fix has actually run, and where it still has not
 
