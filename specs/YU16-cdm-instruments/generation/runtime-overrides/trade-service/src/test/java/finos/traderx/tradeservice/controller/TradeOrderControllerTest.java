@@ -234,6 +234,21 @@ class TradeOrderControllerTest {
     return new TradeOrder("ord-ust", 17017, "UST-20280630", TradeSide.Buy, face);
   }
 
+  private static final String CORPORATE_JSON =
+      "{\"instrumentKey\":\"CORP-GS-20360315\",\"displayName\":\"The Goldman Sachs Group 5.750% due March 15, 2036\","
+      + "\"assetClass\":\"CORPORATE_BOND\",\"securityType\":\"Debt\",\"matured\":false,"
+      + "\"debtEconomics\":{\"maturityDate\":\"2036-03-15\"}}";
+
+  private static TradeOrder corporateOrder(int face) {
+    return new TradeOrder("ord-corp", 17017, "CORP-GS-20360315", TradeSide.Buy, face);
+  }
+
+  private void expectCorporateFound() {
+    http.expect(requestTo(REF_DATA + "/instruments/CORP-GS-20360315"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess(CORPORATE_JSON, MediaType.APPLICATION_JSON));
+  }
+
   private void expectTreasuryFound() {
     http.expect(requestTo(REF_DATA + "/instruments/UST-20280630"))
         .andExpect(method(HttpMethod.GET))
@@ -267,7 +282,7 @@ class TradeOrderControllerTest {
 
     assertThatThrownBy(() -> controller.createTradeOrder(treasuryOrder(50)))
         .isInstanceOf(ResponseStatusException.class)
-        .hasFieldOrPropertyWithValue("reason", "Treasury quantity must be at least 100.");
+        .hasFieldOrPropertyWithValue("reason", "Bond quantity must be at least 100.");
 
     http.verify();
   }
@@ -279,8 +294,79 @@ class TradeOrderControllerTest {
 
     assertThatThrownBy(() -> controller.createTradeOrder(treasuryOrder(150)))
         .isInstanceOf(ResponseStatusException.class)
-        .hasFieldOrPropertyWithValue("reason", "Treasury quantity must be a multiple of 100.");
+        .hasFieldOrPropertyWithValue("reason", "Bond quantity must be a multiple of 100.");
 
+    http.verify();
+  }
+
+  // ----- FR-CDM16 widened from Treasuries to all debt --------------------------------------
+  //
+  // THE GAP THIS CLOSES. The face rule was keyed on isTreasury(), so a corporate order for 50
+  // face was ACCEPTED and forwarded to the sequencer. That is different in kind from the book
+  // grid staying Treasury-only: a coarse grid refuses to do something, this failed to refuse
+  // something the system's own rules call invalid.
+
+  @Test
+  void aCorporateFaceBelowTheMinimumIsNowRejectedAndNeverReachesTheSequencer() {
+    expectCorporateFound();
+    expectTreasuryAccountFound();
+
+    // Before the widening this returned 200 and forwarded. The http.verify() below is the half
+    // that matters: no POST to the sequencer was expected, so a forwarded order fails the test
+    // rather than merely returning the wrong status.
+    assertThatThrownBy(() -> controller.createTradeOrder(corporateOrder(50)))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasFieldOrPropertyWithValue("reason", "Bond quantity must be at least 100.");
+
+    http.verify();
+  }
+
+  @Test
+  void aCorporateFaceThatIsNotAMultipleOf100IsNowRejected() {
+    expectCorporateFound();
+    expectTreasuryAccountFound();
+
+    assertThatThrownBy(() -> controller.createTradeOrder(corporateOrder(150)))
+        .isInstanceOf(ResponseStatusException.class)
+        .hasFieldOrPropertyWithValue("reason", "Bond quantity must be a multiple of 100.");
+
+    http.verify();
+  }
+
+  @Test
+  void aLegalCorporateFaceStillReachesTheSequencer() {
+    // THE NEGATIVE CONTROL FOR THE TWO ABOVE. A validator that refused every corporate would
+    // satisfy both of them and be catastrophically wrong. This is the case that must still pass.
+    expectCorporateFound();
+    expectTreasuryAccountFound();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess());
+
+    ResponseEntity<TradeOrder> response = controller.createTradeOrder(corporateOrder(100_000));
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    http.verify();
+  }
+
+  @Test
+  void anEquityIsUntouchedByTheBondRule() {
+    // The other direction: widening the predicate must not start applying a FACE rule to shares.
+    // An equity order for 50 shares is perfectly legal and must still book.
+    http.expect(requestTo(REF_DATA + "/instruments/IBM"))
+        .andExpect(method(HttpMethod.GET))
+        .andRespond(withSuccess(
+            "{\"instrumentKey\":\"IBM\",\"displayName\":\"IBM\",\"assetClass\":\"Stock\","
+            + "\"securityType\":\"Equity\",\"matured\":false}", MediaType.APPLICATION_JSON));
+    expectTreasuryAccountFound();
+    http.expect(requestTo(MATCHER + "/trades"))
+        .andExpect(method(HttpMethod.POST))
+        .andRespond(withSuccess());
+
+    ResponseEntity<TradeOrder> response = controller.createTradeOrder(
+        new TradeOrder("ord-eq", 17017, "IBM", TradeSide.Buy, 50));
+
+    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
     http.verify();
   }
 
@@ -310,7 +396,7 @@ class TradeOrderControllerTest {
 
     assertThatThrownBy(() -> controller.createTradeOrder(treasuryOrder(100_000)))
         .isInstanceOf(ResponseStatusException.class)
-        .hasFieldOrPropertyWithValue("reason", "Treasury reference metadata is unavailable");
+        .hasFieldOrPropertyWithValue("reason", "Bond reference metadata is unavailable");
 
     http.verify();
   }

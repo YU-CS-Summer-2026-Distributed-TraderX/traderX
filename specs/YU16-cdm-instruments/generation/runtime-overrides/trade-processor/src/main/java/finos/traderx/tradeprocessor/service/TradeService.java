@@ -41,13 +41,16 @@ public class TradeService {
   // For equities six decimals is a pure widening of the inherited three.
   private static final int PRICE_SCALE = 6;
 
-  // YU16 (FR-CDM23): the canonical Treasury routing discriminator. The prefix routes; the
-  // resolved metadata must still confirm US_TREASURY + Debt before a Treasury booking.
-  private static final String TREASURY_PREFIX = "UST-";
-  static final String MSG_FACE_MIN = "Treasury quantity must be at least 100.";
-  static final String MSG_FACE_MULTIPLE = "Treasury quantity must be a multiple of 100.";
-  static final String MSG_METADATA_UNAVAILABLE = "Treasury reference metadata is unavailable";
-  static final String MSG_MATURED = "Treasury has matured; no new activity is accepted.";
+  // YU16 (FR-CDM23): the canonical BOND routing discriminator. The prefix routes; the resolved
+  // metadata must still confirm Debt before a bond booking. Widened from Treasury-only when
+  // corporates arrived: this one predicate drives face-amount validation, the face-based
+  // averaging rule in newAverage, AND metadata resolution, so leaving it Treasury-only meant a
+  // corporate silently skipped all three - including a stated rule the system did not enforce.
+  private static final String[] BOND_KEY_PREFIXES = { "UST-", "CORP-" };
+  static final String MSG_FACE_MIN = "Bond quantity must be at least 100.";
+  static final String MSG_FACE_MULTIPLE = "Bond quantity must be a multiple of 100.";
+  static final String MSG_METADATA_UNAVAILABLE = "Bond reference metadata is unavailable";
+  static final String MSG_MATURED = "Bond has matured; no new activity is accepted.";
 
   private final TradeRepository tradeRepository;
   private final PositionRepository positionRepository;
@@ -89,7 +92,7 @@ public class TradeService {
   public TradeBookingResult processTrade(TradeOrder order) {
     log.debug("Trade order received: {}", order);
 
-    InstrumentMetadata metadata = resolveIfTreasury(order.getSecurity());
+    InstrumentMetadata metadata = resolveIfBond(order.getSecurity());
     return inTransaction(() -> {
       Optional<Trade> existing = tradeRepository.findById(order.getId());
       if (existing.isPresent()) {
@@ -100,7 +103,7 @@ public class TradeService {
         return new TradeBookingResult(existingTrade, existingPosition);
       }
 
-      String rejection = treasuryRejection(order, metadata);
+      String rejection = bondRejection(order, metadata);
       if (rejection != null) {
         TradeBookingResult rejected = bookRejected(order, rejection);
         publishTradeOnly(order.getAccountId(), rejected);
@@ -142,8 +145,8 @@ public class TradeService {
   public List<TradeBookingResult> processTrades(List<TradeOrder> orders) {
     Map<String, InstrumentMetadata> metadataBySecurity = new HashMap<>();
     for (TradeOrder order : orders) {
-      if (isTreasuryKey(order.getSecurity()) && !metadataBySecurity.containsKey(order.getSecurity())) {
-        metadataBySecurity.put(order.getSecurity(), resolveIfTreasury(order.getSecurity()));
+      if (isBondKey(order.getSecurity()) && !metadataBySecurity.containsKey(order.getSecurity())) {
+        metadataBySecurity.put(order.getSecurity(), resolveIfBond(order.getSecurity()));
       }
     }
 
@@ -164,7 +167,7 @@ public class TradeService {
           continue;
         }
 
-        String rejection = treasuryRejection(order, metadataBySecurity.get(order.getSecurity()));
+        String rejection = bondRejection(order, metadataBySecurity.get(order.getSecurity()));
         if (rejection != null) {
           TradeBookingResult rejected = bookRejected(order, rejection);
           results.add(rejected);
@@ -239,7 +242,7 @@ public class TradeService {
     if (newQuantity == 0) {
       return zero();
     }
-    if (isTreasuryKey(security)) {
+    if (isBondKey(security)) {
       boolean flipped = (oldQuantity > 0 && newQuantity < 0) || (oldQuantity < 0 && newQuantity > 0);
       if (flipped) {
         return executionPrice;
@@ -260,14 +263,14 @@ public class TradeService {
   }
 
   /**
-   * YU16 (FR-CDM23): the fail-closed rejection reason for a Treasury order, or {@code null} for
-   * a bookable one. Non-Treasury securities always pass — they never resolved metadata.
+   * YU16 (FR-CDM23): the fail-closed rejection reason for a BOND order, or {@code null} for a
+   * bookable one. Non-bond securities always pass — they never resolved metadata.
    */
-  private String treasuryRejection(TradeOrder order, @Nullable InstrumentMetadata metadata) {
-    if (!isTreasuryKey(order.getSecurity())) {
+  private String bondRejection(TradeOrder order, @Nullable InstrumentMetadata metadata) {
+    if (!isBondKey(order.getSecurity())) {
       return null;
     }
-    if (metadata == null || !metadata.isTreasury()) {
+    if (metadata == null || !metadata.isBond()) {
       return MSG_METADATA_UNAVAILABLE;
     }
     if (metadataClient != null && metadataClient.isMatured(metadata)) {
@@ -288,7 +291,7 @@ public class TradeService {
     trade.setState(TradeState.Rejected);
     trade.setRejectionReason(reason);
     tradeRepository.save(trade);
-    log.warn("Treasury booking rejected (fail closed): id={} security={} reason={}",
+    log.warn("Bond booking rejected (fail closed): id={} security={} reason={}",
         order.getId(), order.getSecurity(), reason);
     // No position mutation and no position message - the existing (possibly absent) position is
     // returned untouched so callers keep their result shape.
@@ -325,13 +328,21 @@ public class TradeService {
     return BigDecimal.ZERO.setScale(PRICE_SCALE, RoundingMode.HALF_UP);
   }
 
-  private static boolean isTreasuryKey(String security) {
-    return security != null && security.startsWith(TREASURY_PREFIX);
+  private static boolean isBondKey(String security) {
+    if (security == null) {
+      return false;
+    }
+    for (String prefix : BOND_KEY_PREFIXES) {
+      if (security.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @Nullable
-  private InstrumentMetadata resolveIfTreasury(String security) {
-    if (!isTreasuryKey(security) || metadataClient == null) {
+  private InstrumentMetadata resolveIfBond(String security) {
+    if (!isBondKey(security) || metadataClient == null) {
       return null;
     }
     return metadataClient.resolve(security);

@@ -50,7 +50,7 @@ are suppressed. Unknown `UST-` keys: HTTP 404 from the price API, no fallback qu
 `POST /orders` body and response shapes unchanged; the `ticker`→`security` field fallback is
 untouched. For `UST-`-prefixed instruments the gateway rejects, before submission to the
 cluster, a quantity below 100 or not a multiple of 100 — error body carries the exact messages
-"Treasury quantity must be at least 100." / "Treasury quantity must be a multiple of 100.".
+"Bond quantity must be at least 100." / "Bond quantity must be a multiple of 100." (applies to every debt instrument, Treasury and corporate).
 `limitPrice` for a Treasury is the fraction of par (e.g. `0.998860`).
 
 ## 5. Trades (extended)

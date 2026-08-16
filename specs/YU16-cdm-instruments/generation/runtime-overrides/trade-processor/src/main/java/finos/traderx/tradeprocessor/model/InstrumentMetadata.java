@@ -33,6 +33,15 @@ public class InstrumentMetadata {
     return "US_TREASURY".equals(assetClass) && "Debt".equals(securityType);
   }
 
+  /**
+   * Any bond — Treasury or corporate. The FACE-AMOUNT rule keys off THIS, not isTreasury():
+   * quantity is USD face for every debt instrument, so "at least 100 and a multiple of 100"
+   * applies to all of them. Keying it on isTreasury() let a corporate order for 50 face through.
+   */
+  public boolean isBond() {
+    return "Debt".equals(securityType);
+  }
+
   public String getInstrumentKey() {
     return instrumentKey;
   }

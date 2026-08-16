@@ -36,6 +36,16 @@ public class Security {
     return "US_TREASURY".equals(assetClass) && "Debt".equals(securityType);
   }
 
+  /**
+   * Any bond — Treasury or corporate. This, not {@link #isTreasury()}, is what the FACE-AMOUNT
+   * rule keys off: quantity is USD face for every debt instrument here, so the "at least 100 and
+   * a multiple of 100" rule applies to all of them. Keying that rule on isTreasury() meant a
+   * corporate order for 50 face was ACCEPTED — a rule the system states and did not enforce.
+   */
+  public boolean isBond() {
+    return "Debt".equals(securityType);
+  }
+
   public String getInstrumentKey() {
     return instrumentKey;
   }
