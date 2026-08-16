@@ -14,7 +14,7 @@ const PUBLISH_INTERVAL_MAX_MS = Number(process.env.PRICE_PUBLISH_INTERVAL_MAX_MS
 const PUBLISH_BATCH_RATIO = Number(process.env.PRICE_PUBLISH_BATCH_RATIO || '0.25');
 // YU16: the default universe gains the five ETFs and five Treasuries (FR-CDM07); the env name
 // stays literal (source FR-01704) and its values are general instrument keys.
-const TICKERS = (process.env.PRICE_TICKERS || 'AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,SPY,QQQ,IWM,VTI,GLD,UST-20280630,UST-20310630,UST-20360515,UST-20460515,UST-20560515,UST-20290715,UST-20330731,UST-BILL-20260910,UST-BILL-20261112,UST-BILL-20270211,UST-BILL-20270812,UST-STRIP-20280630,UST-STRIP-20310630,UST-STRIP-20360515,UST-STRIP-20560515')
+const TICKERS = (process.env.PRICE_TICKERS || 'AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,SPY,QQQ,IWM,VTI,GLD,UST-20280630,UST-20310630,UST-20360515,UST-20460515,UST-20560515,UST-20290715,UST-20330731,UST-BILL-20260910,UST-BILL-20261112,UST-BILL-20270211,UST-BILL-20270812,UST-STRIP-20280630,UST-STRIP-20310630,UST-STRIP-20360515,UST-STRIP-20560515,CORP-IBM-20330215,CORP-JPM-20310601,CORP-GS-20360315,CORP-F-20320512')
   .split(',')
   .map((ticker) => ticker.trim().toUpperCase())
   .filter(Boolean);
@@ -144,9 +144,17 @@ function normalizeTreasuryQuote(instrumentKey, snapshotEntry) {
     // all — it has no coupon to walk backwards from.
     issueDate: String(snapshotEntry.issueDate),
     maturityDate: String(snapshotEntry.maturityDate),
+    assetClass: String(snapshotEntry.assetClass),
+    // Carried per instrument, never inferred from the asset class here. The extract and this feed
+    // must agree on the convention or a consumer reconciling our accrual against our own mark
+    // sees a break that looks like a pricing bug.
+    dayCount: String(snapshotEntry.dayCount || treasury.DAY_COUNT.ACT_ACT_ICMA),
+    creditRating: snapshotEntry.creditRating,
     officialSeedCleanPrice: Number(snapshotEntry.officialCleanPrice),
     simulated: true,
-    source: 'simulated-us-treasury-auction-seed'
+    source: snapshotEntry.assetClass === 'CORPORATE_BOND'
+      ? 'simulated-corporate-credit-spread'
+      : 'simulated-us-treasury-auction-seed'
   };
 }
 
@@ -220,10 +228,20 @@ function assignStartupVolatilityBands() {
   }
 }
 
+// YU16: which snapshot entries are BONDS — walked in percent space, emitted as a fraction of par
+// at six decimals, never quoted from an external provider. Asking about the asset class rather
+// than testing for US_TREASURY is what stopped corporates from silently falling through to
+// yfinance the moment they were added: three separate branches keyed off that one string, and a
+// corporate would have matched none of them.
+function isBond(snapshotEntry) {
+  return Boolean(snapshotEntry)
+    && (snapshotEntry.assetClass === 'US_TREASURY' || snapshotEntry.assetClass === 'CORPORATE_BOND');
+}
+
 async function loadFromYahoo(ticker, snapshotEntry) {
-  // YU16: a Treasury entry must never reach a symbology/quote provider (NFR-CDM07).
-  if (snapshotEntry && snapshotEntry.assetClass === 'US_TREASURY') {
-    throw new Error(`treasury ${ticker} cannot be loaded from yfinance`);
+  // YU16: a bond entry must never reach a symbology/quote provider (NFR-CDM07).
+  if (isBond(snapshotEntry)) {
+    throw new Error(`bond ${ticker} cannot be loaded from yfinance`);
   }
   const quote = await yahooFinance.quote(ticker);
   const open = Number(quote.regularMarketOpen);
@@ -265,8 +283,8 @@ async function bootstrapPrices() {
   for (const ticker of TICKERS) {
     const snapshotEntry = snapshot[ticker];
 
-    // YU16: Treasuries seed from the snapshot only — never yfinance, never fallback.
-    if (snapshotEntry && snapshotEntry.assetClass === 'US_TREASURY') {
+    // YU16: bonds seed from the snapshot only — never yfinance, never fallback.
+    if (isBond(snapshotEntry)) {
       const quote = normalizeTreasuryQuote(ticker, snapshotEntry);
       state.prices.set(ticker, quote);
       state.treasuries.set(ticker, quote);
@@ -353,7 +371,8 @@ function toPayload(quote) {
       closePrice: quote.closePrice,
       asOf,
       source: quote.source,
-      assetClass: 'US_TREASURY',
+      assetClass: quote.assetClass || 'US_TREASURY',
+      ...(quote.creditRating ? { creditRating: quote.creditRating } : {}),
       cleanPrice: quote.price,
       priceSemantics: 'CLEAN_FRACTION_OF_PAR',
       // A real price->yield solve off a real coupon schedule, not the old one-line approximation.
@@ -361,9 +380,9 @@ function toPayload(quote) {
       // points are comparable and a consumer can bootstrap a curve across them. The convention is
       // stated on the wire rather than assumed: a price and a yield are only a pair with respect
       // to a day count, and that is the first question any tie-out discrepancy asks.
-      ytmPercent: treasury.ytmPercent(quote, ts, quote.cleanPercent),
+      ytmPercent: treasury.ytmPercent(quote, ts, quote.cleanPercent, quote.dayCount),
       yieldConvention: 'SEMIANNUAL_BOND',
-      dayCount: treasury.DAY_COUNT.ACT_ACT_ICMA,
+      dayCount: quote.dayCount || treasury.DAY_COUNT.ACT_ACT_ICMA,
       quoteTimestamp: asOf,
       maturityDate: quote.maturityDate,
       matured: Boolean(quote.matured),
@@ -464,8 +483,10 @@ function ensureTicker(ticker) {
     return null;
   }
   if (!state.prices.has(normalized)) {
-    // YU16 (FR-CDM21): an unknown UST- key gets no fabricated quote — 404, never fallback.
-    if (normalized.startsWith('UST-')) {
+    // YU16 (FR-CDM21): an unknown bond key gets no fabricated quote — 404, never fallback.
+    // createFallbackQuote invents a price around 100-150, which for an instrument quoted as a
+    // FRACTION of par would be a hundredfold nonsense that still looks like a number.
+    if (normalized.startsWith('UST-') || normalized.startsWith('CORP-')) {
       return null;
     }
     const quote = createFallbackQuote(normalized);
@@ -496,7 +517,8 @@ app.get('/health', (_req, res) => {
       walkSpace: 'percent-of-par',
       tickScale: 1000000,
       yieldConvention: 'SEMIANNUAL_BOND',
-      dayCount: treasury.DAY_COUNT.ACT_ACT_ICMA,
+      // Per instrument, not global: Treasuries ACT/ACT (ICMA), corporates 30/360.
+      dayCounts: [treasury.DAY_COUNT.ACT_ACT_ICMA, treasury.DAY_COUNT.THIRTY_360],
       solver: 'newton-with-bisection-fallback'
     },
     publish: normalizePublishConfig(),

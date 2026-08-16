@@ -125,11 +125,32 @@ def minus_months(d, n):
             continue
     raise AssertionError("unreachable")
 
+def days_30_360(f, t):
+    """US 30/360 bond basis, both end-of-month clamps. Written out here rather than imported,
+    so this script and the Java renderer are two independent statements of the convention."""
+    d1, d2 = f.day, t.day
+    if d1 == 31:
+        d1 = 30
+    if d2 == 31 and d1 == 30:
+        d2 = 30
+    return 360 * (t.year - f.year) + 30 * (t.month - f.month) + (d2 - d1)
+
+# The extract carries no dayCount COLUMN -- adding one would be a schema bump, and the convention
+# is a function of instrumentType, which the preamble states outright:
+#   TREASURY -> ACT/ACT (ICMA)   CORPORATE -> 30/360
+# So the row's own type selects the convention here, exactly as it does in the renderer.
+def elapsed_and_period(row_type, last, nxt, session):
+    if row_type == "CORPORATE":
+        # Under 30/360 a semiannual period is 180 days BY DEFINITION, not by measurement.
+        return Decimal(days_30_360(last, session)), Decimal(180)
+    return Decimal((session - last).days), Decimal((nxt - last).days)
+
 rows = [r for r in csv.reader(l for l in open(path) if not l.startswith("#"))]
 hdr, rows = rows[0], rows[1:]
 i = {n: k for k, n in enumerate(hdr)}
-treasuries = [r for r in rows if r[i["instrumentType"]] == "TREASURY"]
-others = [r for r in rows if r[i["instrumentType"]] != "TREASURY"]
+BOND_TYPES = ("TREASURY", "CORPORATE")
+treasuries = [r for r in rows if r[i["instrumentType"]] in BOND_TYPES]
+others = [r for r in rows if r[i["instrumentType"]] not in BOND_TYPES]
 
 # Split by the coupon column, which is the reference data's own statement about the instrument.
 # A zero-coupon Treasury has no coupon schedule at all and must be asserted differently — running
@@ -192,19 +213,31 @@ for r in bonds:
         continue
 
     semi   = coupon / Decimal(200)              # annual % -> fraction, halved
-    period = Decimal((nxt - last).days)
-    fwd = (semi * Decimal((session - last).days) / period).quantize(TICK, ROUND_HALF_EVEN)
+    kind   = r[i["instrumentType"]]
+    elapsed, period = elapsed_and_period(kind, last, nxt, session)
+    fwd = (semi * elapsed / period).quantize(TICK, ROUND_HALF_EVEN)
     # The same quantity reached from the other end. An error in either elapsed term shows up as a
     # disagreement between these two, which a single transcribed formula could never reveal.
-    bwd = (semi * (Decimal(1) - Decimal((nxt - session).days) / period)).quantize(TICK, ROUND_HALF_EVEN)
+    remaining = (period - elapsed) if kind == "CORPORATE" else Decimal((nxt - session).days)
+    bwd = (semi * (Decimal(1) - remaining / period)).quantize(TICK, ROUND_HALF_EVEN)
 
     if fwd != bwd:
         problems.append(f"{sec}: this script's own two routes disagree ({fwd} vs {bwd}) — the check is unsound")
         continue
+    convention = "30/360" if kind == "CORPORATE" else "ACT/ACT(ICMA)"
     if accrued != fwd:
-        problems.append(f"{sec}: extract says {accrued}, ACT/ACT(ICMA) from {last} to {session} "
+        problems.append(f"{sec}: extract says {accrued}, {convention} from {last} to {session} "
                         f"over {period} days at coupon {coupon}% is {fwd}")
         continue
+    # THE CONVENTION IS LOAD-BEARING, not a label. Recompute this same row under the OTHER
+    # convention and require a different answer; if the two agree, this row cannot distinguish a
+    # renderer that honours dayCount from one that ignores it, and every assertion above is
+    # satisfied by both. (They can legitimately agree by coincidence on a particular date, so a
+    # row that ties is reported rather than failed.)
+    other = "TREASURY" if kind == "CORPORATE" else "CORPORATE"
+    o_elapsed, o_period = elapsed_and_period(other, last, nxt, session)
+    o_fwd = (semi * o_elapsed / o_period).quantize(TICK, ROUND_HALF_EVEN)
+    convention_bites = o_fwd != fwd
     # The unit, as a bound: one semiannual coupon is the most that can ever have accrued. The same
     # number in percentage units is 100x this and cannot pass.
     if not (Decimal(0) <= accrued < semi):
@@ -221,9 +254,13 @@ for r in bonds:
     if mv != Decimal(r[i["marketValue"]]):
         problems.append(f"{sec}: marketValue {r[i['marketValue']]} != face x fraction x multiplier = {mv}")
         continue
-    print(f"  {sec:<14} coupon {coupon}%  period [{last} .. {nxt})  {(session-last).days}/{period} elapsed")
-    print(f"  {'':<14} accrued {accrued} == {fwd} (forward) == {bwd} (backward),  "
-          f"ceiling {semi},  dirty {dirty}")
+    print(f"  {sec:<20} {kind:<9} {convention:<13} coupon {coupon}%  period [{last} .. {nxt})  "
+          f"{elapsed}/{period} elapsed")
+    print(f"  {'':<20} accrued {accrued} == {fwd} (forward) == {bwd} (backward),  "
+          f"ceiling {semi},  dirty {dirty}"
+          + ("" if convention_bites
+             else "   [note] both conventions agree on this date, so this row alone does not"
+                  " discriminate between them"))
 
 # --- zero-coupon Treasuries: a bill or a STRIP has NO coupon schedule. -------------------------
 # The failure this refuses is the quiet one. The coupon-schedule walk is a function of the

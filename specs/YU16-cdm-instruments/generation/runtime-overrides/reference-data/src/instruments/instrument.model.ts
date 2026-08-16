@@ -19,7 +19,20 @@ export type DepositaryReceiptType = 'ADR' | 'GDR' | 'IDR' | 'EDR';
 export type FundProductType =
   | 'MoneyMarketFund' | 'ExchangeTradedFund' | 'MutualFund' | 'OtherFund';
 
-export type AssetClass = 'Stock' | 'ETF' | 'US_TREASURY';
+export type AssetClass = 'Stock' | 'ETF' | 'US_TREASURY' | 'CORPORATE_BOND';
+
+/**
+ * The accrual convention, NAMED on the instrument rather than inferred from its type. It is a
+ * field because the two genuinely disagree: on the seeded GS 5.750% of 2036 the same position
+ * accrues 0.004514 of par more under 30/360 than under ACT/ACT — $4,514 on $1m face. A bond
+ * price and its accrued interest mean nothing without it.
+ */
+export type DayCount = 'ACT/ACT ICMA' | '30/360';
+
+/** S&P-style long-term issuer credit rating. Investment grade is BBB- and above. */
+export type CreditRating =
+  | 'AAA' | 'AA+' | 'AA' | 'AA-' | 'A+' | 'A' | 'A-'
+  | 'BBB+' | 'BBB' | 'BBB-' | 'BB+' | 'BB' | 'BB-' | 'B+' | 'B' | 'B-';
 
 export interface AssetIdentifier {
   identifier: string;
@@ -65,7 +78,14 @@ export interface PrincipalRepaymentTerms {
  * `assertCdmConditions` enforces that split so the two can never be confused downstream.
  */
 export interface PriceProvenance {
-  sourceType: 'US_TREASURY_AUCTION_RESULT' | 'SIMULATED_CURVE_POINT';
+  /**
+   * SIMULATED_CREDIT_POINT is a corporate priced as a stated spread over the simulated Treasury
+   * curve. Kept distinct from SIMULATED_CURVE_POINT because the two are simulated in different
+   * ways — a curve point is a discount factor we invented, a credit point is a spread we invented
+   * ON TOP of one — and a consumer decomposing a corporate yield into rates and credit needs to
+   * know that both halves are synthetic.
+   */
+  sourceType: 'US_TREASURY_AUCTION_RESULT' | 'SIMULATED_CURVE_POINT' | 'SIMULATED_CREDIT_POINT';
   sourceUrl: string;
   /** Quoted clean percent-of-par, as the auction PDF states it (display space, ADR-057). */
   officialCleanPrice: number;
@@ -74,8 +94,18 @@ export interface PriceProvenance {
 }
 
 export interface DebtEconomics {
-  debtType: 'US_TREASURY_NOTE' | 'US_TREASURY_BOND' | 'US_TREASURY_BILL' | 'US_TREASURY_STRIP';
-  issuer: 'United States Department of the Treasury';
+  debtType:
+    | 'US_TREASURY_NOTE' | 'US_TREASURY_BOND' | 'US_TREASURY_BILL' | 'US_TREASURY_STRIP'
+    | 'CORPORATE_BOND';
+  issuer: string;
+  /**
+   * Present only on a corporate. Its absence is what makes a Treasury's credit risk implicit
+   * rather than unknown — the US Treasury is the curve, not a spread over it — so this is
+   * deliberately not defaulted to AAA.
+   */
+  creditRating?: CreditRating;
+  /** Stated on every debt instrument. Never inferred from debtType by a consumer. */
+  dayCount: DayCount;
   /** Present for a coupon-bearing bond; absent for a bill or a STRIP. */
   fixedInterest?: FixedInterestTerms;
   /** Present for a zero-coupon instrument; absent for a coupon-bearing bond. */

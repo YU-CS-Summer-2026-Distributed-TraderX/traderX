@@ -179,6 +179,16 @@ data:
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-BILL-20270812', NOW(), 100000, 0.959560);
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-STRIP-20360515', NOW(), 100000, 0.644570);
 
+    -- Corporates, so the blotter and read model show a credit book beside the rates book. These
+    -- accrue on 30/360, not the Treasury convention. NOTE: a row here does NOT reach the EOD
+    -- extract -- that renders the ENGINE's cut, not a read-model query -- so yu16-bond-position
+    -- step 7 crosses one through the gateway for the extract's benefit.
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-CIBM33', NOW(), NOW(), 'CORP-IBM-20330215', 'Buy', 100000, 0.957520, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-CJPM31', NOW(), NOW(), 'CORP-JPM-20310601', 'Buy', 100000, 1.010470, 'Settled', 17017);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'CORP-IBM-20330215', NOW(), 100000, 0.957520);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'CORP-JPM-20310601', NOW(), 100000, 1.010470);
+
     -- YU04 durable control feeds: account-service and reference-data outbox/epoch tables + the
     -- reference-data stocks table (previously CSV-only). Inherited from YU04; needed here so the
     -- control feeds bootstrap on kind. Both *_source_epoch tables self-seed to epoch=1 on first boot.

@@ -63,6 +63,14 @@ export interface TreasurySeed {
   debtType: DebtEconomics['debtType'];
   sourceType: PriceProvenance['sourceType'];
   sourceUrl: string;
+  /** Defaults to the US Treasury when absent — every seed below states it anyway. */
+  issuer?: string;
+  /** Corporates only. Its absence on a Treasury is meaningful, not missing data. */
+  creditRating?: DebtEconomics['creditRating'];
+  /** ACT/ACT (ICMA) when absent. Corporates state 30/360. */
+  dayCount?: DebtEconomics['dayCount'];
+  /** Corporates only: the spread over the Treasury curve their price was struck at, in bp. */
+  creditSpreadBp?: number;
 }
 
 const AUCTION = 'https://www.treasurydirect.gov/instit/annceresult/press/preanre/2026';
@@ -227,6 +235,71 @@ export const TREASURY_SEEDS: readonly TreasurySeed[] = Object.freeze([
     debtType: 'US_TREASURY_STRIP',
     sourceType: 'SIMULATED_CURVE_POINT', sourceUrl: CURVE,
   },
+
+  // --- fixed-rate bullet corporates: a CREDIT SPREAD as a second risk factor -------------------
+  //
+  // Everything above moves with one thing, the rates curve. These move with two, which is the
+  // point of adding them: a portfolio holding both can be decomposed into rates risk and credit
+  // risk, and the ratings ladder below (A / A- / BBB+ / BB+, 80bp to 310bp) is wide enough that
+  // the second factor is not noise. All four issuers already trade here as equities, so the same
+  // name's credit and equity can be looked at side by side.
+  //
+  // They are 30/360, and that is the reason the handoff wanted the real bond model FIRST: on the
+  // GS bond the two conventions differ by 0.004514 of par, $4,514 on $1m face. Before day counts
+  // were real, a corporate would have been accrued on the Treasury convention and been quietly
+  // wrong by that much.
+  //
+  // Prices are the ACT/ACT-solved Treasury curve at the 2026-08-13 settle plus the stated spread,
+  // repriced on 30/360. Simulated, like the curve points, and marked SIMULATED_CREDIT_POINT
+  // because BOTH halves are invented — the base curve and the spread over it.
+  {
+    instrumentKey: 'CORP-IBM-20330215', shortDisplayName: 'IBM 4.5% 33',
+    displayName: 'International Business Machines 4.500% due February 15, 2033',
+    figi: '', couponRatePercent: 4.5,
+    issueDate: '2026-02-15', maturityDate: '2033-02-15', originalTermYears: 7,
+    officialCleanPrice: 95.751864, runtimeSeedCleanPrice: 95.752,
+    debtType: 'CORPORATE_BOND',
+    sourceType: 'SIMULATED_CREDIT_POINT', sourceUrl: CURVE,
+    issuer: 'International Business Machines Corporation',
+    creditRating: 'A-', dayCount: '30/360', creditSpreadBp: 95,
+  },
+  {
+    instrumentKey: 'CORP-JPM-20310601', shortDisplayName: 'JPM 5.25% 31',
+    displayName: 'JPMorgan Chase & Co. 5.250% due June 1, 2031',
+    figi: '', couponRatePercent: 5.25,
+    issueDate: '2026-06-01', maturityDate: '2031-06-01', originalTermYears: 5,
+    // The one seeded bond trading ABOVE par, deliberately: a premium bond exercises the price
+    // path from the other side, where a discount-only set would leave a sign error invisible.
+    officialCleanPrice: 101.047466, runtimeSeedCleanPrice: 101.047,
+    debtType: 'CORPORATE_BOND',
+    sourceType: 'SIMULATED_CREDIT_POINT', sourceUrl: CURVE,
+    issuer: 'JPMorgan Chase & Co.',
+    creditRating: 'A', dayCount: '30/360', creditSpreadBp: 80,
+  },
+  {
+    instrumentKey: 'CORP-GS-20360315', shortDisplayName: 'GS 5.75% 36',
+    displayName: 'The Goldman Sachs Group 5.750% due March 15, 2036',
+    figi: '', couponRatePercent: 5.75,
+    issueDate: '2026-03-15', maturityDate: '2036-03-15', originalTermYears: 10,
+    officialCleanPrice: 99.123457, runtimeSeedCleanPrice: 99.123,
+    debtType: 'CORPORATE_BOND',
+    sourceType: 'SIMULATED_CREDIT_POINT', sourceUrl: CURVE,
+    issuer: 'The Goldman Sachs Group Inc.',
+    creditRating: 'BBB+', dayCount: '30/360', creditSpreadBp: 140,
+  },
+  {
+    instrumentKey: 'CORP-F-20320512', shortDisplayName: 'F 6.8% 32',
+    displayName: 'Ford Motor Credit Company 6.800% due May 12, 2032',
+    figi: '', couponRatePercent: 6.8,
+    // The only sub-investment-grade name: without one, "credit spread" spans 80-140bp and a
+    // model could fit it with a constant.
+    issueDate: '2026-05-12', maturityDate: '2032-05-12', originalTermYears: 7,
+    officialCleanPrice: 97.398274, runtimeSeedCleanPrice: 97.398,
+    debtType: 'CORPORATE_BOND',
+    sourceType: 'SIMULATED_CREDIT_POINT', sourceUrl: CURVE,
+    issuer: 'Ford Motor Credit Company LLC',
+    creditRating: 'BB+', dayCount: '30/360', creditSpreadBp: 310,
+  },
 ]);
 
 const TREASURY_BY_KEY = new Map(TREASURY_SEEDS.map((seed) => [seed.instrumentKey, seed]));
@@ -273,12 +346,30 @@ export function assertCdmConditions(instrument: Instrument): Instrument {
     // matters: a curve point we invented must not be able to acquire a FIGI-shaped identifier
     // later and quietly start reading as a real security. Asserting the absence is what makes
     // "no verified FIGI" a checked property rather than an omission nobody notices.
-    const simulated = instrument.debtEconomics?.priceProvenance.sourceType === 'SIMULATED_CURVE_POINT';
+    const sourceType = instrument.debtEconomics?.priceProvenance.sourceType;
+    const simulated = sourceType === 'SIMULATED_CURVE_POINT' || sourceType === 'SIMULATED_CREDIT_POINT';
     if (simulated && hasFigi) {
-      throw new Error(`${instrument.instrumentKey}: a SIMULATED_CURVE_POINT must not claim a FIGI`);
+      throw new Error(`${instrument.instrumentKey}: a ${sourceType} must not claim a FIGI`);
     }
     if (!simulated && !hasFigi) {
       throw new Error(`${instrument.instrumentKey}: an auction-sourced Debt instrument requires a FIGI`);
+    }
+    // A credit rating is the corporate's second risk factor and a Treasury has no such thing —
+    // the US Treasury IS the curve, not a spread over it. Enforcing BOTH directions stops a
+    // Treasury from acquiring a decorative AAA (which would invite a consumer to treat the
+    // government curve as one credit among many) and stops a corporate from arriving unrated
+    // (where a consumer bucketing by rating would silently drop it).
+    const corporateDebt = instrument.debtEconomics?.debtType === 'CORPORATE_BOND';
+    if (corporateDebt && instrument.debtEconomics?.creditRating === undefined) {
+      throw new Error(`${instrument.instrumentKey}: a corporate bond requires a creditRating`);
+    }
+    if (!corporateDebt && instrument.debtEconomics?.creditRating !== undefined) {
+      throw new Error(`${instrument.instrumentKey}: only a corporate bond carries a creditRating`);
+    }
+    // 30/360 and ACT/ACT disagree by real money, so an unstated convention is a refusal, never
+    // a default (RiskExtractMain.loadBondStatics refuses the same way for the same reason).
+    if (!instrument.debtEconomics?.dayCount) {
+      throw new Error(`${instrument.instrumentKey}: a Debt instrument must state its dayCount`);
     }
     // Exactly one interest discriminator: a bill has no coupon schedule, a note has one, and
     // neither is allowed to be silent about which it is.
@@ -321,9 +412,12 @@ function classify(instrumentKey: string): { securityType: SecurityType; equityTy
 
 function buildTreasury(seed: TreasurySeed, ts: number): Instrument {
   const zero = seed.couponRatePercent === 0;
+  const corporate = seed.debtType === 'CORPORATE_BOND';
   const debtEconomics: DebtEconomics = {
     debtType: seed.debtType,
-    issuer: 'United States Department of the Treasury',
+    issuer: seed.issuer ?? 'United States Department of the Treasury',
+    ...(seed.creditRating ? { creditRating: seed.creditRating } : {}),
+    dayCount: seed.dayCount ?? 'ACT/ACT ICMA',
     ...(zero
       ? { zeroCoupon: { rateType: 'Zero', couponRatePercent: 0 } as const }
       : {
@@ -347,7 +441,7 @@ function buildTreasury(seed: TreasurySeed, ts: number): Instrument {
     instrumentKey: seed.instrumentKey,
     displayName: seed.displayName,
     shortDisplayName: seed.shortDisplayName,
-    assetClass: 'US_TREASURY',
+    assetClass: corporate ? 'CORPORATE_BOND' : 'US_TREASURY',
     currency: 'USD',
     securityType: 'Debt',
     debtEconomics,

@@ -92,13 +92,31 @@ describe('cdm-catalog (YU16)', () => {
     }
   });
 
-  it('gives every instrument key exactly one seed, and every seed a UST- key (ADR-060 grid)', () => {
+  it('gives every instrument key exactly one seed, and records which keys get the fine book grid', () => {
     const keys = TREASURY_SEEDS.map((s) => s.instrumentKey);
     expect(new Set(keys).size).toBe(keys.length);
-    // ADR-060 derives the fine book grid from the ticker prefix alone, so a bond whose key does
-    // not start with UST- silently gets the 0.001 equity grid and its six-decimal limits bounce.
-    for (const key of keys) {
-      expect(key.startsWith('UST-')).toBe(true);
+
+    // ADR-060 derives the fine book grid from the TICKER PREFIX alone —
+    // `ticker.startsWith("UST-") ? 1 : 0` in MatchingEngineClusteredService. So this is not a
+    // naming convention, it is a functional gate, and it splits the seeded universe in two:
+    //
+    //   * UST-*  -> grid 1, six-decimal limits rest;
+    //   * CORP-* -> grid 0.001, and a six-decimal limit is REFUSED as off-grid (422).
+    //
+    // Corporates are therefore markable, holdable and extractable at full precision but can only
+    // be LIMIT-ORDERED at 0.001 of par (0.1 point). Extending the grid is a deterministic-core
+    // change — it cannot be rolled gradually and needs its own epoch — so it is deliberately not
+    // done here. This assertion exists to make that split explicit and to fail loudly if someone
+    // adds a bond class expecting six-decimal order entry to just work.
+    const fineGrid = keys.filter((k) => k.startsWith('UST-'));
+    const coarseGrid = keys.filter((k) => !k.startsWith('UST-'));
+    expect(fineGrid).toHaveLength(15);
+    expect(coarseGrid).toEqual([
+      'CORP-IBM-20330215', 'CORP-JPM-20310601', 'CORP-GS-20360315', 'CORP-F-20320512',
+    ]);
+    // Every coarse-grid instrument is a corporate; no Treasury may drift off the fine grid.
+    for (const key of coarseGrid) {
+      expect(TREASURY_SEEDS.find((s) => s.instrumentKey === key)!.debtType).toBe('CORPORATE_BOND');
     }
   });
 
@@ -114,6 +132,66 @@ describe('cdm-catalog (YU16)', () => {
     const note = toInstrument('UST-20330731', 'U.S. Treasury Note 4.250% due July 31, 2033');
     expect(note.debtEconomics?.zeroCoupon).toBeUndefined();
     expect(note.debtEconomics?.fixedInterest?.couponFrequency).toBe('Semiannual');
+  });
+
+  it('builds a corporate with its issuer, rating and 30/360 day count', () => {
+    const gs = toInstrument('CORP-GS-20360315', 'The Goldman Sachs Group 5.750% due March 15, 2036');
+    expect(gs.securityType).toBe('Debt');
+    expect(gs.assetClass).toBe('CORPORATE_BOND');
+    expect(gs.debtEconomics?.debtType).toBe('CORPORATE_BOND');
+    expect(gs.debtEconomics?.issuer).toBe('The Goldman Sachs Group Inc.');
+    expect(gs.debtEconomics?.creditRating).toBe('BBB+');
+    expect(gs.debtEconomics?.dayCount).toBe('30/360');
+    expect(gs.debtEconomics?.fixedInterest?.couponRatePercent).toBe(5.75);
+    expect(gs.identifiers.some((id) => id.identifierType === 'FIGI')).toBe(false);
+
+    // A Treasury is the curve, not a credit — it carries NO rating, and ACT/ACT.
+    const ust = toInstrument('UST-20360515', 'whatever');
+    expect(ust.debtEconomics?.creditRating).toBeUndefined();
+    expect(ust.debtEconomics?.dayCount).toBe('ACT/ACT ICMA');
+    expect(ust.debtEconomics?.issuer).toBe('United States Department of the Treasury');
+  });
+
+  it('spans a real ratings ladder, so a credit spread is a second factor and not a constant', () => {
+    const corps = TREASURY_SEEDS.filter((s) => s.debtType === 'CORPORATE_BOND');
+    expect(corps).toHaveLength(4);
+    expect(corps.map((s) => s.creditRating)).toEqual(['A-', 'A', 'BBB+', 'BB+']);
+    // Investment grade AND high yield: 80bp to 310bp. A set clustered inside 60bp could be fitted
+    // with a constant, which would make "credit" indistinguishable from a parallel curve shift.
+    const spreads = corps.map((s) => s.creditSpreadBp!);
+    expect(Math.min(...spreads)).toBe(80);
+    expect(Math.max(...spreads)).toBe(310);
+    for (const seed of corps) {
+      expect(seed.dayCount).toBe('30/360');
+      expect(seed.figi).toBe('');
+      expect(seed.instrumentKey.startsWith('CORP-')).toBe(true);
+    }
+    // One bond above par, so the price path is exercised from both sides.
+    expect(corps.some((s) => s.officialCleanPrice > 100)).toBe(true);
+    expect(corps.some((s) => s.officialCleanPrice < 100)).toBe(true);
+  });
+
+  it('refuses a Treasury that acquires a rating, and a corporate that loses one (FR-CDM04)', () => {
+    // Both directions. A decorative AAA on a Treasury would invite a consumer to treat the
+    // government curve as one credit among many; an unrated corporate would be silently dropped
+    // by anything bucketing on rating.
+    const ust = toInstrument('UST-20360515', 'whatever');
+    expect(() => assertCdmConditions({
+      ...ust,
+      debtEconomics: { ...ust.debtEconomics!, creditRating: 'AAA' },
+    })).toThrow(/only a corporate bond carries a creditRating/);
+
+    const gs = toInstrument('CORP-GS-20360315', 'whatever');
+    const { creditRating, ...unrated } = gs.debtEconomics!;
+    expect(() => assertCdmConditions({ ...gs, debtEconomics: unrated }))
+      .toThrow(/requires a creditRating/);
+  });
+
+  it('refuses a Debt instrument with no stated day count (FR-CDM04)', () => {
+    const gs = toInstrument('CORP-GS-20360315', 'whatever');
+    const { dayCount, ...noConvention } = gs.debtEconomics!;
+    expect(() => assertCdmConditions({ ...gs, debtEconomics: noConvention as never }))
+      .toThrow(/must state its dayCount/);
   });
 
   it('refuses a simulated curve point that acquires a FIGI (FR-CDM04)', () => {
