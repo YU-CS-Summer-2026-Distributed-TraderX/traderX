@@ -92,6 +92,28 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // not the window; also caps how hard the ingress term / egress ring is filled.
     private static final int MAX_INFLIGHT = Integer.parseInt(env("GATEWAY_MAX_INFLIGHT", "4096"));
 
+    /**
+     * Key prefixes whose quantity is a USD FACE amount and therefore carries the FR-CDM16
+     * minimum/increment rule. Allocation-free to test, because this runs on the order-entry path.
+     * Adding an asset class is one edit here rather than a hunt through string literals — which
+     * is exactly what the corporate rollout needed and did not have.
+     */
+    private static final String[] BOND_KEY_PREFIXES = { "UST-", "CORP-" };
+
+    static boolean isBondKey(final String ticker) {
+        if (ticker == null) {
+            return false;
+        }
+        for (final String prefix : BOND_KEY_PREFIXES) {
+            if (ticker.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+
     // Off-hot-path client for FIX order-status (H/AF) reads against the trade-processor read model.
     // Status queries are low-volume and never touch the order-entry path, so a blocking JDK client is
     // fine; created once, not per request.
@@ -1210,13 +1232,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // across asset classes (NFR-CDM01); the boundary owns instrument semantics. limitPrice
             // for a bond is the FRACTION of par (ADR-057), which the 1e6 conversion below carries
             // at full six-decimal precision.
-            if (ticker.startsWith("UST-")) {
+            if (isBondKey(ticker)) {
                 if (qty < 100) {
-                    respond(exchange, 422, "{\"error\":\"Treasury quantity must be at least 100.\"}");
+                    respond(exchange, 422, "{\"error\":\"Bond quantity must be at least 100.\"}");
                     return;
                 }
                 if (qty % 100 != 0) {
-                    respond(exchange, 422, "{\"error\":\"Treasury quantity must be a multiple of 100.\"}");
+                    respond(exchange, 422, "{\"error\":\"Bond quantity must be a multiple of 100.\"}");
                     return;
                 }
             }

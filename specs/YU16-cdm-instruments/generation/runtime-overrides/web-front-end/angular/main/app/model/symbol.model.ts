@@ -15,7 +15,7 @@ export interface DebtEconomicsView {
 export interface Stock {
     ticker: string;
     companyName: string;
-    assetClass?: 'Stock' | 'ETF' | 'US_TREASURY';
+    assetClass?: 'Stock' | 'ETF' | 'US_TREASURY' | 'CORPORATE_BOND';
     securityType?: string;
     shortDisplayName?: string;
     matured?: boolean;
@@ -24,4 +24,15 @@ export interface Stock {
 
 export function isTreasury(stock: Stock | undefined | null): boolean {
     return stock?.assetClass === 'US_TREASURY';
+}
+
+/**
+ * Any bond — Treasury or corporate. The ticket's FACE-AMOUNT semantics key off this: quantity is
+ * USD face and the price is a fraction of par for every debt instrument, so the labels, the value
+ * estimate and the minimum/increment rule all apply to both. isTreasury() stays for the places
+ * that genuinely mean "government", which is not the same question.
+ */
+export function isBond(stock: Stock | undefined | null): boolean {
+    return stock?.securityType === 'Debt'
+        || stock?.assetClass === 'US_TREASURY' || stock?.assetClass === 'CORPORATE_BOND';
 }

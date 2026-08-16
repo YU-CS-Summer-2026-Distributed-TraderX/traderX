@@ -42,10 +42,30 @@ public class TradeOrderController {
 
   private static final Logger log = LoggerFactory.getLogger(TradeOrderController.class);
 
-  static final String MSG_FACE_MIN = "Treasury quantity must be at least 100.";
-  static final String MSG_FACE_MULTIPLE = "Treasury quantity must be a multiple of 100.";
-  static final String MSG_MATURED = "Treasury has matured; no new activity is accepted.";
-  static final String MSG_METADATA_UNAVAILABLE = "Treasury reference metadata is unavailable";
+  static final String MSG_FACE_MIN = "Bond quantity must be at least 100.";
+  static final String MSG_FACE_MULTIPLE = "Bond quantity must be a multiple of 100.";
+  static final String MSG_MATURED = "Bond has matured; no new activity is accepted.";
+  static final String MSG_METADATA_UNAVAILABLE = "Bond reference metadata is unavailable";
+
+  /**
+   * Key prefixes that ROUTE an order into bond validation. Syntactic and deliberately cheap — the
+   * authoritative answer is {@link Security#isBond()} on the resolved record, checked immediately
+   * below, so a key that merely looks like a bond is refused rather than trusted. Declared here
+   * so adding an asset class is one edit rather than a hunt through string literals.
+   */
+  private static final String[] BOND_KEY_PREFIXES = { "UST-", "CORP-" };
+
+  private static boolean isBondKey(String security) {
+    if (security == null) {
+      return false;
+    }
+    for (String prefix : BOND_KEY_PREFIXES) {
+      if (security.startsWith(prefix)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   // Retained for bean compatibility; the /trades publish is gone in 009b (booking moved to
   // the sequencer), so this publisher is intentionally unused on the create path.
@@ -77,7 +97,7 @@ public class TradeOrderController {
     } else if (!validateAccount(tradeOrder.getAccountId())) {
       throw new ResourceNotFoundException(tradeOrder.getAccountId() + " not found in Account service.");
     } else {
-      validateTreasuryOrder(tradeOrder, instrument);
+      validateBondOrder(tradeOrder, instrument);
       log.info("Trade is valid. Forwarding to sequencer {}", tradeOrder);
       forwardToSequencer(tradeOrder);
       return ResponseEntity.ok(tradeOrder);
@@ -122,18 +142,24 @@ public class TradeOrderController {
   }
 
   /**
-   * YU16 (FR-CDM16/21/23): order-content validation for Treasuries, fail closed. The
-   * {@code UST-} prefix routes an order here; the resolved record must confirm it is a
-   * Treasury — a prefix-shaped key whose metadata says otherwise is refused, never forwarded on
-   * the strength of its name. Face must be a positive multiple of 100, at least 100; a matured
-   * Treasury takes no new activity. Non-Treasury instruments pass through untouched.
+   * YU16 (FR-CDM16/21/23): order-content validation for BONDS, fail closed. A bond-shaped key
+   * routes an order here; the resolved record must confirm it really is debt — a prefix-shaped
+   * key whose metadata says otherwise is refused, never forwarded on the strength of its name.
+   * Face must be a positive multiple of 100, at least 100; a matured bond takes no new activity.
+   * Non-bond instruments pass through untouched.
+   *
+   * <p>Widened from Treasuries to ALL debt when corporates arrived. The face-amount rule was
+   * keyed on {@code isTreasury()}, so a corporate order for 50 face was ACCEPTED — the system
+   * stated a rule and did not enforce it. Note the asymmetry with the book grid, which is
+   * deliberately still Treasury-only: a coarse grid is a capability limit and honest, whereas
+   * this was a validation gap.
    */
-  private void validateTreasuryOrder(TradeOrder tradeOrder, Security instrument) {
-    boolean routedAsTreasury = tradeOrder.getSecurity() != null && tradeOrder.getSecurity().startsWith("UST-");
-    if (!routedAsTreasury && !instrument.isTreasury()) {
+  private void validateBondOrder(TradeOrder tradeOrder, Security instrument) {
+    boolean routedAsBond = isBondKey(tradeOrder.getSecurity());
+    if (!routedAsBond && !instrument.isBond()) {
       return;
     }
-    if (!instrument.isTreasury()) {
+    if (!instrument.isBond()) {
       throw new ResponseStatusException(HttpStatus.UNPROCESSABLE_ENTITY, MSG_METADATA_UNAVAILABLE);
     }
     if (instrument.isMatured()) {

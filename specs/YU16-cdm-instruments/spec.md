@@ -82,10 +82,23 @@
   tick for a Treasury SHALL equal `round(fraction × 1e6)` (the inherited 3-decimal equity
   rounding SHALL NOT apply to Treasury payloads), and every SQL column that carries a bond price
   SHALL hold six decimals.
-- FR-CDM16: Treasury order quantity SHALL be a positive integer USD face amount, at least 100 and
+- FR-CDM16: **Bond** order quantity SHALL be a positive integer USD face amount, at least 100 and
   a multiple of 100, validated at the order-entry boundary (the gateway REST validation and the
-  UI tickets) with the exact messages "Treasury quantity must be at least 100." and "Treasury
+  UI tickets) with the exact messages "Bond quantity must be at least 100." and "Bond
   quantity must be a multiple of 100.". Trade and position quantity columns carry face.
+  This applies to **every debt instrument**, Treasury and corporate alike, because quantity is
+  USD face for all of them. It was originally scoped to Treasuries by a `startsWith("UST-")`
+  test, which meant a corporate order for 50 face was ACCEPTED — a rule this document stated and
+  the system did not enforce. The routing predicate is now a declared set of bond key prefixes,
+  and the AUTHORITATIVE check is the reference-data join (`securityType == "Debt"`) in
+  trade-service and trade-processor: a bond-shaped key whose metadata disagrees is refused, never
+  forwarded on the strength of its name. The gateway keeps a prefix test deliberately — it is the
+  pre-consensus hot path and an HTTP join there would put a network dependency on every order.
+  The messages were widened from "Treasury quantity ..." at the same time: the old wording named
+  the wrong instrument class on a corporate rejection.
+  NOTE the deliberate asymmetry with ADR-060's book grid, which stays Treasury-only. The two are
+  the same-shaped predicate and different in kind: a coarse grid is a capability limit and honest,
+  whereas this was a validation gap.
 - FR-CDM17: Percent-of-par SHALL be display only: the UI multiplies the stored fraction by 100
   and appends the sign; nothing downstream of a display ever converts back.
 

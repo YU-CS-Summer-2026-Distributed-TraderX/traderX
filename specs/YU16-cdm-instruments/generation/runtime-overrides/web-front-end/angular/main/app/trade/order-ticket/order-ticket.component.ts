@@ -1,6 +1,6 @@
 import { Component, Input, Output, EventEmitter, OnChanges, OnInit, OnDestroy, SimpleChanges } from '@angular/core';
 import { PriceTick } from 'main/app/model/trade.model';
-import { Stock, isTreasury } from 'main/app/model/symbol.model';
+import { Stock, isBond, isTreasury } from 'main/app/model/symbol.model';
 import { Account } from 'main/app/model/account.model';
 import { TypeaheadMatch } from 'ngx-bootstrap/typeahead';
 import { TradeFeedService } from 'main/app/service/trade-feed.service';
@@ -86,33 +86,51 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
 
   // ---- YU16 Treasury semantics (FR-CDM16/17/21/27) ----
 
-  get isTreasurySelected(): boolean {
-    return isTreasury(this.selectedStock) || this.ticket.security.toUpperCase().startsWith('UST-');
+  // Renamed from isTreasurySelected when corporates arrived. Every use of it was really asking
+  // "is this quoted in face and fractions of par?", which is true of all debt — the ticket
+  // labels, the value estimate and the FR-CDM16 face rule alike.
+  get isBondSelected(): boolean {
+    const key = this.ticket.security.toUpperCase();
+    return isBond(this.selectedStock) || key.startsWith('UST-') || key.startsWith('CORP-');
+  }
+
+  /**
+   * The limit-price step the BOOK will actually accept. ADR-060 derives the fine grid from the
+   * ticker prefix, so only UST- gets six decimals; a corporate limit at six decimals is refused
+   * as off-grid. Offering 0.000001 on a corporate ticket would let a trader type a price the
+   * gateway then rejects with no explanation — the UI must not promise precision the engine
+   * does not honour.
+   */
+  get limitPriceStep(): string {
+    if (!this.isBondSelected) {
+      return '0.001';
+    }
+    return this.ticket.security.toUpperCase().startsWith('UST-') ? '0.000001' : '0.001';
   }
 
   get isMaturedSelected(): boolean {
-    return this.isTreasurySelected && this.selectedStock?.matured === true;
+    return this.isBondSelected && this.selectedStock?.matured === true;
   }
 
   get quantityLabel(): string {
-    return this.isTreasurySelected ? 'Face Amount (USD)' : 'Quantity';
+    return this.isBondSelected ? 'Face Amount (USD)' : 'Quantity';
   }
 
   get limitPriceLabel(): string {
     // The wire and the model carry the FRACTION of par (ADR-057); the percent alongside is
     // display only (FR-CDM17) - nothing ever converts back.
-    return this.isTreasurySelected ? 'Limit Clean Price (fraction of par)' : 'Strike Price';
+    return this.isBondSelected ? 'Limit Clean Price (fraction of par)' : 'Strike Price';
   }
 
   get limitPriceAsPercent(): string {
-    if (!this.isTreasurySelected || !this.ticket.limitPrice || this.ticket.limitPrice <= 0) {
+    if (!this.isBondSelected || !this.ticket.limitPrice || this.ticket.limitPrice <= 0) {
       return '';
     }
     return `= ${(this.ticket.limitPrice * 100).toFixed(4)}% of par`;
   }
 
   get estimatedCleanValue(): number | null {
-    if (!this.isTreasurySelected || !this.ticket.quantity || !this.ticket.limitPrice) {
+    if (!this.isBondSelected || !this.ticket.quantity || !this.ticket.limitPrice) {
       return null;
     }
     // face x fraction = dollars, with the contract multiplier at 1 (ADR-057). No /100 anywhere.
@@ -128,19 +146,19 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
     return this.selectedStock?.debtEconomics?.maturityDate ?? '';
   }
 
-  private treasuryValidationError(): string | null {
-    if (!this.isTreasurySelected) {
+  private bondValidationError(): string | null {
+    if (!this.isBondSelected) {
       return null;
     }
     if (this.isMaturedSelected) {
-      return 'Treasury has matured; no new activity is accepted.';
+      return 'Bond has matured; no new activity is accepted.';
     }
     const face = this.ticket.quantity;
     if (face < 100) {
-      return 'Treasury quantity must be at least 100.';
+      return 'Bond quantity must be at least 100.';
     }
     if (face % 100 !== 0) {
-      return 'Treasury quantity must be a multiple of 100.';
+      return 'Bond quantity must be a multiple of 100.';
     }
     return null;
   }
@@ -163,7 +181,7 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
       console.warn('Order ticket is incomplete');
       return;
     }
-    this.validationMessage = this.treasuryValidationError();
+    this.validationMessage = this.bondValidationError();
     if (this.validationMessage) {
       return;
     }
@@ -184,7 +202,7 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
     if (this.selectedPrice == null) {
       return 'Streaming...';
     }
-    if (this.isTreasurySelected) {
+    if (this.isBondSelected) {
       // Display is fraction x 100 with the sign - never a stored percentage (FR-CDM17).
       return `${(this.selectedPrice * 100).toFixed(3)}% of par`;
     }

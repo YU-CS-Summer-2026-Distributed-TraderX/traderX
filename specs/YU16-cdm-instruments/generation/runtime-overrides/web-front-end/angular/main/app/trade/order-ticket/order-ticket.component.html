@@ -39,7 +39,7 @@
         </div>
     </div>
 
-    <div class="mb-3 row" *ngIf="isTreasurySelected">
+    <div class="mb-3 row" *ngIf="isBondSelected">
         <label class="col-sm-2 col-form-label me-3">Bond</label>
         <div class="col-sm-8 d-flex align-items-center">
             <small class="text-muted">
@@ -66,15 +66,15 @@
         <label class="col-sm-2 col-form-label me-3">{{ quantityLabel }}</label>
         <div class="col-sm-8">
             <input class="form-control d-inline-block" id="orderQuantityField" type="number" [(ngModel)]="ticket.quantity" />
-            <small *ngIf="isTreasurySelected" class="text-muted">USD face; minimum 100, multiples of 100.</small>
+            <small *ngIf="isBondSelected" class="text-muted">USD face; minimum 100, multiples of 100.</small>
         </div>
     </div>
 
     <div class="mb-3 row">
         <label class="col-sm-2 col-form-label me-3">{{ limitPriceLabel }}</label>
         <div class="col-sm-8">
-            <input class="form-control d-inline-block" id="orderStrikeField" type="number" [attr.step]="isTreasurySelected ? '0.000001' : '0.001'" [(ngModel)]="ticket.limitPrice" />
-            <small *ngIf="isTreasurySelected" class="text-muted">{{ limitPriceAsPercent }}</small>
+            <input class="form-control d-inline-block" id="orderStrikeField" type="number" [attr.step]="limitPriceStep" [(ngModel)]="ticket.limitPrice" />
+            <small *ngIf="isBondSelected" class="text-muted">{{ limitPriceAsPercent }}</small>
         </div>
     </div>
 
