@@ -326,7 +326,7 @@ class RiskExtractTest {
     void accruedInterestAndItsCouponDateComeFromTheMaturityAlone() {
         // 2026-06-30 -> 2026-12-30 is 183 days; 21 have elapsed at the session date.
         // 4.125% / 2 = 0.020625 of par per period, x 21/183 = 0.0023668... -> 0.002367.
-        final String[] jun = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2028-06-30"),
+        final String[] jun = bondRow(RiskExtractCsv.BondStatic.treasury("4.125", "2028-06-30"),
             "UST-20280630", LocalDate.of(2026, 7, 21));
         assertEquals("2026-06-30", jun[16]);
         assertEquals("0.002367", jun[17]);
@@ -334,7 +334,7 @@ class RiskExtractTest {
         // A different maturity DAY OF MONTH must move the whole schedule with it: this bond's
         // periods run 15th-to-15th, not 30th-to-30th. 2026-05-15 -> 2026-11-15 is 184 days, 67
         // elapsed; 4.375% / 2 = 0.021875 x 67/184 = 0.0079653... -> 0.007965.
-        final String[] may = treasuryRow(new RiskExtractCsv.BondStatic("4.375", "2036-05-15"),
+        final String[] may = bondRow(RiskExtractCsv.BondStatic.treasury("4.375", "2036-05-15"),
             "UST-20360515", LocalDate.of(2026, 7, 21));
         assertEquals("2026-05-15", may[16], "the schedule anchors on the maturity's day of month");
         assertEquals("0.007965", may[17]);
@@ -342,25 +342,25 @@ class RiskExtractTest {
 
     @Test
     void accrualIsZeroOnACouponDateAndFullTheDayBeforeTheNextOne() {
-        final RiskExtractCsv.BondStatic bond = new RiskExtractCsv.BondStatic("4.125", "2028-06-30");
+        final RiskExtractCsv.BondStatic bond = RiskExtractCsv.BondStatic.treasury("4.125", "2028-06-30");
 
         // On the coupon date itself the coupon has just paid: zero has accrued since.
-        final String[] on = treasuryRow(bond, "UST-20280630", LocalDate.of(2026, 6, 30));
+        final String[] on = bondRow(bond, "UST-20280630", LocalDate.of(2026, 6, 30));
         assertEquals("2026-06-30", on[16]);
         assertEquals("0.000000", on[17], "the coupon paid today; nothing has accrued since");
 
         // One day short of the next coupon: 182/183 of the period, and the coupon date must NOT
         // have rolled forward yet.
-        final String[] eve = treasuryRow(bond, "UST-20280630", LocalDate.of(2026, 12, 29));
+        final String[] eve = bondRow(bond, "UST-20280630", LocalDate.of(2026, 12, 29));
         assertEquals("2026-06-30", eve[16], "the schedule rolls on the coupon date, not before it");
         assertEquals("0.020512", eve[17], "0.020625 x 182/183");
     }
 
     @Test
     void aMaturedBondAccruesNothing() {
-        final RiskExtractCsv.BondStatic bond = new RiskExtractCsv.BondStatic("4.125", "2028-06-30");
+        final RiskExtractCsv.BondStatic bond = RiskExtractCsv.BondStatic.treasury("4.125", "2028-06-30");
         for (final LocalDate session : List.of(LocalDate.of(2028, 6, 30), LocalDate.of(2029, 1, 15))) {
-            final String[] row = treasuryRow(bond, "UST-20280630", session);
+            final String[] row = bondRow(bond, "UST-20280630", session);
             assertEquals("2028-06-30", row[16], "at or past maturity the last coupon IS maturity");
             assertEquals("0.000000", row[17], "session " + session);
         }
@@ -375,7 +375,7 @@ class RiskExtractTest {
         // consumer rolling accrual forward from that date to a settlement date would compute
         // interest on an instrument that pays none.
         for (final String zero : List.of("0", "0.000", "0.0")) {
-            final String[] bill = treasuryRow(new RiskExtractCsv.BondStatic(zero, "2027-08-12"),
+            final String[] bill = bondRow(RiskExtractCsv.BondStatic.treasury(zero, "2027-08-12"),
                 "UST-BILL-20270812", LocalDate.of(2026, 12, 1));
             assertEquals("TREASURY", bill[2], "a bill is still a Treasury row");
             assertEquals(zero, bill[14], "the coupon is a fact about the instrument: it is zero");
@@ -385,7 +385,7 @@ class RiskExtractTest {
         }
 
         // A STRIP is the same story at a maturity that would otherwise generate a long schedule.
-        final String[] strip = treasuryRow(new RiskExtractCsv.BondStatic("0.000", "2056-05-15"),
+        final String[] strip = bondRow(RiskExtractCsv.BondStatic.treasury("0.000", "2056-05-15"),
             "UST-STRIP-20560515", LocalDate.of(2026, 12, 1));
         assertEquals("", strip[16]);
         assertEquals("", strip[17]);
@@ -394,7 +394,7 @@ class RiskExtractTest {
         // coupon differs — and the coupon columns fill in. Without this, "empty" could be an
         // artefact of the fixture rather than of the zero-coupon branch, and the assertions above
         // would pass against a renderer that emitted empty for every bond.
-        final String[] note = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2027-08-12"),
+        final String[] note = bondRow(RiskExtractCsv.BondStatic.treasury("4.125", "2027-08-12"),
             "UST-20270812", LocalDate.of(2026, 12, 1));
         assertEquals("2026-08-12", note[16], "a coupon-bearing bond at the SAME maturity does get a schedule");
         assertFalse(note[17].isEmpty(), "and a non-empty accrual");
@@ -402,10 +402,39 @@ class RiskExtractTest {
     }
 
     @Test
+    void aCorporateAccruesOn30360AndSaysSoInItsInstrumentType() {
+        // GS 5.750% of 2036-03-15 at the 2026-07-21 session. Under 30/360 the elapsed term is
+        // computed BY THE CONVENTION, not by the calendar: 2026-03-15 -> 2026-07-21 is
+        // 30*(7-3) + (21-15) = 126 days over a period that is 180 days BY DEFINITION.
+        // 5.750/200 * 126/180 = 0.0201250 exactly.
+        final String[] gs = bondRow(RiskExtractCsv.BondStatic.corporate("5.750", "2036-03-15"),
+            "CORP-GS-20360315", LocalDate.of(2026, 7, 21));
+        assertEquals("CORPORATE", gs[2], "a corporate is not a Treasury, and the join says which");
+        assertEquals("5.750", gs[14]);
+        assertEquals("2036-03-15", gs[15]);
+        assertEquals("2026-03-15", gs[16]);
+        assertEquals("0.020125", gs[17], "30/360: 126/180 of the 2.875% semiannual coupon");
+
+        // NEGATIVE CONTROL, and the reason the day count is a field rather than a constant. The
+        // SAME bond on the SAME date under ACT/ACT: 2026-03-15 -> 2026-07-21 is 128 actual days
+        // over an actual 184-day period, giving 0.020000. If the two conventions produced the same
+        // number, naming the convention would be decoration and the assertion above would be
+        // proving nothing.
+        final String[] asTreasury = bondRow(
+            RiskExtractCsv.BondStatic.treasury("5.750", "2036-03-15"),
+            "CORP-GS-20360315", LocalDate.of(2026, 7, 21));
+        assertEquals("0.020000", asTreasury[17], "ACT/ACT: 128/184 of the same coupon");
+        assertNotEquals(gs[17], asTreasury[17],
+            "30/360 and ACT/ACT must not collapse to the same accrual — on $1m face this row is"
+                + " a $125 difference, and on the real seeded GS position it is $4,514");
+        assertEquals("TREASURY", asTreasury[2], "and the instrumentType follows the same join");
+    }
+
+    @Test
     void accruedIsInTheSameUnitAsTheMarkSoDirtyIsCleanPlusAccrued() {
         // The whole point of emitting a FRACTION rather than a cash amount: no scaling step
         // between the mark and the accrual, so a consumer cannot apply a 100x by accident.
-        final String[] row = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2028-06-30"),
+        final String[] row = bondRow(RiskExtractCsv.BondStatic.treasury("4.125", "2028-06-30"),
             "UST-20280630", LocalDate.of(2026, 7, 21));
         final BigDecimal clean = new BigDecimal(row[6]);
         final BigDecimal accrued = new BigDecimal(row[17]);
@@ -420,11 +449,12 @@ class RiskExtractTest {
     }
 
     /**
-     * One Treasury row rendered at a chosen session date, split into columns. A literal cut keeps
+     * One bond row — Treasury or corporate — rendered at a chosen session date, split into
+     * columns. Which one it is comes from the BondStatic, exactly as it does in production. A literal cut keeps
      * the accrual cases cheap: the arithmetic under test is a pure function of the bond static
      * and the session date, so standing up a fresh portfolio per date would prove nothing extra.
      */
-    private String[] treasuryRow(final RiskExtractCsv.BondStatic bond, final String security,
+    private String[] bondRow(final RiskExtractCsv.BondStatic bond, final String security,
                                  final LocalDate session) {
         final String cut = "#cut schema=1 seq=9 sessionDateEpochDay=" + session.toEpochDay()
             + " priceVersion=1 rows=1\n" + RiskExtractCut.HEADER + "\n"
@@ -500,7 +530,7 @@ class RiskExtractTest {
 
     /** YU16 (ADR-059): the extract join's bond static, as loaded from instruments.csv. */
     private Map<String, RiskExtractCsv.BondStatic> bonds() {
-        return Map.of("UST-20280630", new RiskExtractCsv.BondStatic("4.125", "2028-06-30"));
+        return Map.of("UST-20280630", RiskExtractCsv.BondStatic.treasury("4.125", "2028-06-30"));
     }
 
     /** The YU06 published close for the equity only — options are absent from that chain. */

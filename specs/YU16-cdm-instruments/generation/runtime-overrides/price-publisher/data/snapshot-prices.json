@@ -106,7 +106,8 @@
     "couponRatePercent": 4.125,
     "originalTermYears": 2,
     "issueDate": "2026-06-30",
-    "maturityDate": "2028-06-30"
+    "maturityDate": "2028-06-30",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20310630": {
     "assetClass": "US_TREASURY",
@@ -115,7 +116,8 @@
     "couponRatePercent": 4.125,
     "originalTermYears": 5,
     "issueDate": "2026-06-30",
-    "maturityDate": "2031-06-30"
+    "maturityDate": "2031-06-30",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20360515": {
     "assetClass": "US_TREASURY",
@@ -124,7 +126,8 @@
     "couponRatePercent": 4.375,
     "originalTermYears": 10,
     "issueDate": "2026-05-15",
-    "maturityDate": "2036-05-15"
+    "maturityDate": "2036-05-15",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20460515": {
     "assetClass": "US_TREASURY",
@@ -133,7 +136,8 @@
     "couponRatePercent": 5.0,
     "originalTermYears": 20,
     "issueDate": "2026-06-01",
-    "maturityDate": "2046-05-15"
+    "maturityDate": "2046-05-15",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20560515": {
     "assetClass": "US_TREASURY",
@@ -142,7 +146,8 @@
     "couponRatePercent": 5.0,
     "originalTermYears": 30,
     "issueDate": "2026-05-15",
-    "maturityDate": "2056-05-15"
+    "maturityDate": "2056-05-15",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20290715": {
     "assetClass": "US_TREASURY",
@@ -151,7 +156,8 @@
     "couponRatePercent": 4.125,
     "originalTermYears": 3,
     "issueDate": "2026-07-15",
-    "maturityDate": "2029-07-15"
+    "maturityDate": "2029-07-15",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-20330731": {
     "assetClass": "US_TREASURY",
@@ -160,7 +166,8 @@
     "couponRatePercent": 4.25,
     "originalTermYears": 7,
     "issueDate": "2026-07-31",
-    "maturityDate": "2033-07-31"
+    "maturityDate": "2033-07-31",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-BILL-20260910": {
     "assetClass": "US_TREASURY",
@@ -169,7 +176,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 0.08,
     "issueDate": "2026-08-13",
-    "maturityDate": "2026-09-10"
+    "maturityDate": "2026-09-10",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-BILL-20261112": {
     "assetClass": "US_TREASURY",
@@ -178,7 +186,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 0.25,
     "issueDate": "2026-08-13",
-    "maturityDate": "2026-11-12"
+    "maturityDate": "2026-11-12",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-BILL-20270211": {
     "assetClass": "US_TREASURY",
@@ -187,7 +196,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 0.5,
     "issueDate": "2026-08-13",
-    "maturityDate": "2027-02-11"
+    "maturityDate": "2027-02-11",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-BILL-20270812": {
     "assetClass": "US_TREASURY",
@@ -196,7 +206,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 1,
     "issueDate": "2026-08-13",
-    "maturityDate": "2027-08-12"
+    "maturityDate": "2027-08-12",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-STRIP-20280630": {
     "assetClass": "US_TREASURY",
@@ -205,7 +216,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 2,
     "issueDate": "2026-08-13",
-    "maturityDate": "2028-06-30"
+    "maturityDate": "2028-06-30",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-STRIP-20310630": {
     "assetClass": "US_TREASURY",
@@ -214,7 +226,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 5,
     "issueDate": "2026-08-13",
-    "maturityDate": "2031-06-30"
+    "maturityDate": "2031-06-30",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-STRIP-20360515": {
     "assetClass": "US_TREASURY",
@@ -223,7 +236,8 @@
     "couponRatePercent": 0,
     "originalTermYears": 10,
     "issueDate": "2026-08-13",
-    "maturityDate": "2036-05-15"
+    "maturityDate": "2036-05-15",
+    "dayCount": "ACT/ACT ICMA"
   },
   "UST-STRIP-20560515": {
     "assetClass": "US_TREASURY",
@@ -232,6 +246,51 @@
     "couponRatePercent": 0,
     "originalTermYears": 30,
     "issueDate": "2026-08-13",
-    "maturityDate": "2056-05-15"
+    "maturityDate": "2056-05-15",
+    "dayCount": "ACT/ACT ICMA"
+  },
+  "CORP-IBM-20330215": {
+    "assetClass": "CORPORATE_BOND",
+    "officialCleanPrice": 95.751864,
+    "runtimeSeedCleanPrice": 95.752,
+    "couponRatePercent": 4.5,
+    "originalTermYears": 7,
+    "issueDate": "2026-02-15",
+    "maturityDate": "2033-02-15",
+    "dayCount": "30/360",
+    "creditRating": "A-"
+  },
+  "CORP-JPM-20310601": {
+    "assetClass": "CORPORATE_BOND",
+    "officialCleanPrice": 101.047466,
+    "runtimeSeedCleanPrice": 101.047,
+    "couponRatePercent": 5.25,
+    "originalTermYears": 5,
+    "issueDate": "2026-06-01",
+    "maturityDate": "2031-06-01",
+    "dayCount": "30/360",
+    "creditRating": "A"
+  },
+  "CORP-GS-20360315": {
+    "assetClass": "CORPORATE_BOND",
+    "officialCleanPrice": 99.123457,
+    "runtimeSeedCleanPrice": 99.123,
+    "couponRatePercent": 5.75,
+    "originalTermYears": 10,
+    "issueDate": "2026-03-15",
+    "maturityDate": "2036-03-15",
+    "dayCount": "30/360",
+    "creditRating": "BBB+"
+  },
+  "CORP-F-20320512": {
+    "assetClass": "CORPORATE_BOND",
+    "officialCleanPrice": 97.398274,
+    "runtimeSeedCleanPrice": 97.398,
+    "couponRatePercent": 6.8,
+    "originalTermYears": 7,
+    "issueDate": "2026-05-12",
+    "maturityDate": "2032-05-12",
+    "dayCount": "30/360",
+    "creditRating": "BB+"
   }
 }

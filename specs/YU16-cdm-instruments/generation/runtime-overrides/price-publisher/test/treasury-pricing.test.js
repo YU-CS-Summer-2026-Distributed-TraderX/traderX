@@ -341,6 +341,41 @@ test('main.js: unknown UST- keys get no fallback quote; treasuries emit fraction
   assert.equal(buf.readBigInt64BE(0), 992930n); // six decimals preserved, not 993000n
 });
 
+test('main.js: a corporate quotes on 30/360, carries its rating, and never reaches yfinance', () => {
+  const main = require('../src/main');
+  const corp = {
+    ticker: 'CORP-GS-20360315', price: 0.991230, openPrice: 0.991230, closePrice: 0.991230,
+    cleanPercent: 99.123, seedCleanPercent: 99.123, couponRatePercent: 5.75,
+    originalTermYears: 10, issueDate: '2026-03-15', maturityDate: '2036-03-15',
+    assetClass: 'CORPORATE_BOND', dayCount: '30/360', creditRating: 'BBB+',
+    officialSeedCleanPrice: 99.123457, simulated: true,
+    source: 'simulated-corporate-credit-spread'
+  };
+  main.state.prices.set(corp.ticker, corp);
+  main.state.treasuries.set(corp.ticker, corp);
+
+  const payload = main.toPayload(corp);
+  assert.equal(payload.assetClass, 'CORPORATE_BOND', 'a corporate is not a Treasury on the wire');
+  assert.equal(payload.dayCount, '30/360', 'and it is quoted on its OWN convention, not the default');
+  assert.equal(payload.creditRating, 'BBB+', 'the second risk factor rides on the tick');
+  assert.equal(payload.yieldConvention, 'SEMIANNUAL_BOND', 'one yield basis across the whole book');
+  assert.ok(payload.ytmPercent > 5 && payload.ytmPercent < 7, `got ${payload.ytmPercent}`);
+  // Six decimals survive for a corporate exactly as for a Treasury (FR-CDM15).
+  assert.equal(main.encodeBinaryTick(corp).readBigInt64BE(0), 991230n);
+
+  // The yield really is convention-dependent: solving the same price as ACT/ACT gives a different
+  // number, so `dayCount` on the payload is load-bearing rather than decorative.
+  const asActAct = treasury.ytmPercent(corp, Date.parse('2026-08-13T00:00:00.000Z'), 99.123,
+    treasury.DAY_COUNT.ACT_ACT_ICMA);
+  const as30360 = treasury.ytmPercent(corp, Date.parse('2026-08-13T00:00:00.000Z'), 99.123,
+    treasury.DAY_COUNT.THIRTY_360);
+  assert.notEqual(asActAct, as30360, 'the two conventions must not collapse to one yield');
+
+  // An unknown CORP- key gets a 404, never a fabricated quote — createFallbackQuote would invent
+  // a price near 100, which for a fraction of par is a 100x nonsense that still looks numeric.
+  assert.equal(main.ensureTicker('CORP-NOPE-20990101'), null);
+});
+
 test('main.js: a zero-coupon bill quotes on the same basis, with no coupon anywhere in its payload', () => {
   const main = require('../src/main');
   const bill = {

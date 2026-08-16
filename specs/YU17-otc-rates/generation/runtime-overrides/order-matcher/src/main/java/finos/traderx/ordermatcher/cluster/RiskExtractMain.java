@@ -494,6 +494,7 @@ public final class RiskExtractMain {
         final int typeAt = header.indexOf("type");
         final int couponAt = header.indexOf("couponRatePercent");
         final int maturityAt = header.indexOf("maturityDate");
+        final int dayCountAt = header.indexOf("dayCount");
         if (tickerAt < 0 || typeAt < 0) {
             throw new IllegalStateException("instruments.csv: header missing ticker/type columns");
         }
@@ -503,14 +504,24 @@ public final class RiskExtractMain {
                 continue;
             }
             final String[] c = line.split(",", -1);
-            if (!"treasury".equals(c[typeAt])) {
+            final boolean corporate = "corporate".equals(c[typeAt]);
+            if (!"treasury".equals(c[typeAt]) && !corporate) {
                 continue;
             }
             if (couponAt < 0 || maturityAt < 0
                 || c[couponAt].isEmpty() || c[maturityAt].isEmpty()) {
-                throw new IllegalStateException("instruments.csv: treasury row missing coupon/maturity: " + line);
+                throw new IllegalStateException("instruments.csv: bond row missing coupon/maturity: " + line);
             }
-            out.put(c[tickerAt], new RiskExtractCsv.BondStatic(c[couponAt], c[maturityAt]));
+            // The day count is REQUIRED, not defaulted. Defaulting it would silently accrue a
+            // corporate on ACT/ACT the day someone forgets the column — a wrong number that looks
+            // exactly like a right one, which is the failure mode this whole state is built to
+            // refuse. An unmappable row aborts the extract; so does an unstated convention.
+            if (dayCountAt < 0 || c[dayCountAt].isEmpty()) {
+                throw new IllegalStateException("instruments.csv: bond row has no dayCount, and a"
+                    + " bond price without its convention is not a number we will publish: " + line);
+            }
+            out.put(c[tickerAt], new RiskExtractCsv.BondStatic(
+                c[couponAt], c[maturityAt], c[dayCountAt], corporate));
         }
         return out;
     }

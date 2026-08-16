@@ -53,7 +53,39 @@ final class RiskExtractCsv {
      * a Treasury, and its coupon/maturity ride onto the row. Prices in a Treasury row are
      * fractions of par (ADR-057) — the same integer ticks as every other instrument.
      */
-    record BondStatic(String couponRatePercent, String maturityDate) { }
+    /**
+     * @param dayCount the accrual convention, NAMED rather than assumed: {@code ACT/ACT ICMA} for
+     *     Treasuries, {@code 30/360} for corporates. It is a field and not a constant because the
+     *     two genuinely disagree — on the seeded GS 5.750% of 2036 the same position accrues
+     *     0.004514 of par more under 30/360 than under ACT/ACT, which is $4,514 on $1m face. A
+     *     bond's price and its accrued interest are only meaningful with respect to a convention,
+     *     so the extract carries the convention it used rather than leaving the consumer to guess.
+     * @param corporate true for a corporate issuer, which is what separates {@code CORPORATE} from
+     *     {@code TREASURY} in the instrumentType column. Taken from the reference-data join, never
+     *     from prefix-parsing the security (ADR-059).
+     */
+    record BondStatic(String couponRatePercent, String maturityDate, String dayCount,
+                      boolean corporate) {
+
+        /**
+         * A US Treasury: ACT/ACT (ICMA), government issuer. A named factory rather than a
+         * defaulting constructor, deliberately — a two-argument {@code new BondStatic(...)} that
+         * quietly meant ACT/ACT is exactly how a corporate ends up accrued on the wrong
+         * convention, and {@link RiskExtractMain} refuses to default the day count for the same
+         * reason. Here the caller has to say "treasury" out loud.
+         */
+        static BondStatic treasury(final String couponRatePercent, final String maturityDate) {
+            return new BondStatic(couponRatePercent, maturityDate, DAY_COUNT_ACT_ACT, false);
+        }
+
+        /** A fixed-rate bullet corporate: 30/360, and a credit spread over the curve. */
+        static BondStatic corporate(final String couponRatePercent, final String maturityDate) {
+            return new BondStatic(couponRatePercent, maturityDate, DAY_COUNT_30_360, true);
+        }
+    }
+
+    static final String DAY_COUNT_30_360 = "30/360";
+    static final String DAY_COUNT_ACT_ACT = "ACT/ACT ICMA";
 
     /**
      * A zero-coupon instrument — a Treasury bill or a STRIP — carries a coupon of exactly zero in
@@ -120,11 +152,38 @@ final class RiskExtractCsv {
         final LocalDate next = maturity.minusMonths(6L * (periodsBack - 1));
         final BigDecimal semiAnnualCoupon = new BigDecimal(bond.couponRatePercent())
             .movePointLeft(2).multiply(new BigDecimal("0.5"));
-        final BigDecimal fraction = semiAnnualCoupon
-            .multiply(BigDecimal.valueOf(ChronoUnit.DAYS.between(last, sessionDate)))
-            .divide(BigDecimal.valueOf(ChronoUnit.DAYS.between(last, next)),
-                TICK_SCALE, RoundingMode.HALF_EVEN);
+        final boolean thirty360 = DAY_COUNT_30_360.equals(bond.dayCount());
+        final BigDecimal elapsed = BigDecimal.valueOf(
+            thirty360 ? days30360(last, sessionDate) : ChronoUnit.DAYS.between(last, sessionDate));
+        // Under 30/360 a semiannual period is 180 days BY DEFINITION, not by measurement — that is
+        // the whole content of the convention. Measuring the real period here and calling it
+        // 30/360 would give a number that is neither convention.
+        final BigDecimal periodDays = thirty360
+            ? BigDecimal.valueOf(180L)
+            : BigDecimal.valueOf(ChronoUnit.DAYS.between(last, next));
+        final BigDecimal fraction = semiAnnualCoupon.multiply(elapsed)
+            .divide(periodDays, TICK_SCALE, RoundingMode.HALF_EVEN);
         return new Accrual(last, fraction);
+    }
+
+    /**
+     * US 30/360 (bond basis) day count. Both end-of-month clamps matter: without the second, a
+     * period ending on the 31st is a day longer than one ending on the 30th, which is precisely
+     * what 30/360 exists to deny. Mirrors the publisher's days30360 in treasury-pricing.js — the
+     * two must agree or a consumer reconciling our accrual against our own feed sees a break.
+     */
+    private static long days30360(final LocalDate from, final LocalDate to) {
+        int d1 = from.getDayOfMonth();
+        int d2 = to.getDayOfMonth();
+        if (d1 == 31) {
+            d1 = 30;
+        }
+        if (d2 == 31 && d1 == 30) {
+            d2 = 30;
+        }
+        return 360L * (to.getYear() - from.getYear())
+            + 30L * (to.getMonthValue() - from.getMonthValue())
+            + (d2 - d1);
     }
 
     /**
@@ -223,6 +282,16 @@ final class RiskExtractCsv {
         sb.append("# treasuryAccrualUnit=accruedInterestFraction is a FRACTION OF PAR in the same"
             + " unit as closingMark, so dirtyPrice = closingMark + accruedInterestFraction and"
             + " settlementValue = quantity * dirtyPrice; marketValue above stays CLEAN\n");
+        sb.append("# instrumentTypeLegend=EQUITY | OPTION | TREASURY | CORPORATE. CORPORATE and"
+            + " TREASURY are both fixed-rate bullet debt and share every bond column; they are"
+            + " separated because they carry DIFFERENT DAY COUNTS and different credit risk. The"
+            + " split comes from the reference-data join, never from prefix-parsing the security"
+            + " (ADR-059) - a consumer that does not care may treat both as debt\n");
+        sb.append("# bondDayCount=the accrual convention this file USED, per row, stated rather"
+            + " than assumed: ACT/ACT (ICMA) for TREASURY, 30/360 for CORPORATE. They disagree by"
+            + " real money - on the seeded GS 5.750% of 2036 the same position accrues 0.004514 of"
+            + " par more under 30/360, which is $4,514 on $1m face - so a consumer reconciling"
+            + " against its own model must use the convention named here, not a default\n");
         sb.append("# treasuryAccrualConvention=ACT/ACT (ICMA) semiannual: (days from"
             + " lastCouponDate to sessionDate / days in that coupon period) * coupon/2. Accrual"
             + " runs to sessionDate ITSELF, not to a T+1 settlement date, because every other"
@@ -289,8 +358,9 @@ final class RiskExtractCsv {
             .setScale(TICK_SCALE, RoundingMode.UNNECESSARY);
 
         final BondStatic bond = bonds.get(security);
-        final String instrumentType =
-            bond != null ? "TREASURY" : (OccSymbol.isOption(security) ? "OPTION" : "EQUITY");
+        final String instrumentType = bond != null
+            ? (bond.corporate() ? "CORPORATE" : "TREASURY")
+            : (OccSymbol.isOption(security) ? "OPTION" : "EQUITY");
         final Accrual accrual = bond == null ? null : accrual(bond, stamp.sessionDate());
         return accountId + "," + security + ","
             + instrumentType + ","

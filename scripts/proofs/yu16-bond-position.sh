@@ -170,5 +170,51 @@ BILL_ACTUAL="$(python3 -c "print('%.6f' % (${BILL_QTY} * float('${BILL_BASIS}'))
 echo "[ok] ${BILL} crossed at ${BILL_FRACTION}: ${BILL_QTY} face @ ${BILL_BASIS} = \$${BILL_ACTUAL}"
 echo "[ok] a zero-coupon position is now held, so yu16-accrued-interest has something to check"
 
+step "7. a CORPORATE trades on the coarse grid — and the fine grid provably does NOT reach it"
+# This step exists to pin a LIMITATION as a fact rather than leave it as a comment someone will
+# eventually disbelieve. ADR-060 derives the book grid from the ticker prefix alone:
+#
+#     derivedBookTickPxFor(t) = t.startsWith("UST-") ? 1 : 0        (0 => the 0.001 default)
+#
+# so a CORP- bond gets the 0.001 equity grid, and a six-decimal corporate limit is REFUSED. That
+# is a real constraint on what a corporate can be quoted at, and it cannot be lifted from here:
+# the predicate lives in MatchingEngineClusteredService, i.e. the deterministic core, which cannot
+# be rolled gradually. Asserting BOTH halves means the day someone extends the grid, this step
+# fails and tells them the constraint moved rather than silently passing.
+CORP="${CORP:-CORP-GS-20360315}"
+CORP_ON_GRID="0.991"           # 3dp of par: a multiple of the 0.001 default grid
+CORP_OFF_GRID="0.991230"       # the bond's actual 6dp mark — must be refused as off-grid
+CORP_VALUE="99100.000000"
+
+sql "DELETE FROM trades WHERE security='${CORP}'; DELETE FROM positions WHERE security='${CORP}';"
+curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${SELLER},\"tickers\":\"${CORP}\",\"price\":${CORP_ON_GRID}}" >/dev/null \
+  || fail "seed failed for ${CORP}"
+
+# (a) the six-decimal limit is refused. Deliberately checked BEFORE the good order, while the book
+#     is empty and anchored at the seed, so an out-of-band rejection cannot be confused for it.
+OFF="$(order Buy ${BUYER} ${FACE} "${CORP}" "${CORP_OFF_GRID}")"
+[[ "${OFF}" == "422" ]] || fail "a six-decimal corporate limit returned HTTP ${OFF}, expected 422.
+  If this is now 200, ADR-060's grid has been extended beyond UST- and the LIMITATION this step
+  documents no longer holds — update the comment above, the consumer guide and cdm-catalog.spec.ts"
+echo "[ok] ${CORP} at ${CORP_OFF_GRID} refused 422 — the fine grid is UST- only (ADR-060)"
+
+# (b) the same bond on the coarse grid crosses normally.
+for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
+  side="${side_account%%:*}"; acct="${side_account##*:}"
+  code="$(order "${side}" "${acct}" "${FACE}" "${CORP}" "${CORP_ON_GRID}")"
+  vlog "      POST /orders ${side} acct=${acct} face=${FACE} px=${CORP_ON_GRID} ticker=${CORP} -> HTTP ${code}"
+  [[ "${code}" == "200" ]] || fail "${side} order for ${CORP} at ${CORP_ON_GRID} returned HTTP ${code}"
+done
+sleep 6
+CORP_QTY="$(sql "SELECT quantity FROM positions WHERE security='${CORP}' AND accountid=${BUYER};")"
+[[ "${CORP_QTY}" == "${FACE}" ]] || fail "buyer holds '${CORP_QTY}' of ${CORP}, expected ${FACE}"
+CORP_BASIS="$(sql "SELECT averagecostbasis FROM positions WHERE security='${CORP}' AND accountid=${BUYER};")"
+CORP_ACTUAL="$(python3 -c "print('%.6f' % (${CORP_QTY} * float('${CORP_BASIS}')))")"
+[[ "${CORP_ACTUAL}" == "${CORP_VALUE}" ]] \
+  || fail "corporate position value ${CORP_ACTUAL} != ${CORP_VALUE} (face x fraction)"
+echo "[ok] ${CORP} crossed at ${CORP_ON_GRID}: ${CORP_QTY} face @ ${CORP_BASIS} = \$${CORP_ACTUAL}"
+echo "[ok] a corporate position is now held, so yu16-accrued-interest can check a 30/360 row"
+
 echo
-echo "[PASS] yu16-bond-position: face x fraction through the unchanged engine, boundary rejection pre-consensus, 100x error detectable, and a zero-coupon bill crossing on the same ticker-derived grid"
+echo "[PASS] yu16-bond-position: face x fraction through the unchanged engine, boundary rejection pre-consensus, 100x error detectable, a zero-coupon bill crossing on the ticker-derived grid, and a corporate held with the fine grid proven NOT to extend to it"
