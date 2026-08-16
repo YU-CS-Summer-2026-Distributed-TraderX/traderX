@@ -231,20 +231,51 @@ block, and the same 13 missing refs. **An aggregate ref-gap cannot distinguish t
 
 ### The test that would settle it, which has not been run
 
-The two models disagree about *which* clients fail:
+**Preferred method: two sends of ONE order, using the engine's own idempotency table as the
+oracle.** No burst, no stagger, no offer-order control, no read-model schema. Verified present on
+the layers this build actually runs — `MatchingEngine.onNewOrder` in the **YU13** layer (operative
+for YU13–YU15) and `BlpRiskState.existingOrderRef` in the **YU14** layer (operative for YU14–YU15):
 
-| model | clients answered `504` |
-|---|---|
-| offset (misattribution) | the **last** K in offer order |
-| innocent | the **first** K in offer order |
+```java
+if (risk != null && e.clientOrderKey() != 0L) {
+    int originalRef = risk.existingOrderRef(e.clientOrderKey());
+    if (originalRef >= 0) {
+        RestingOrder original = lookup(originalRef);
+        if (original != null) {
+            out.emitOrderUpdate(original, e.seq, 0, false, …);   // re-emits the ORIGINAL ref
+            return;
+        }
+    }
+}
+```
 
-So fire the burst **staggered ~60 ms** rather than all at once, so offer order equals launch order
-and stays recoverable, while all of them still land inside the 12 s window. Launch index *i* then
-has true ref `R0+i-1`, and each specific client's answer can be compared against it: under the
-offset, client 1 is told `R0+K`; under the innocent reading client 1 is told nothing and client
-`K+1` is told `R0+K`, its own. The peer's equivalent formulation — match each `clientOrderId`
-against the read model's actual ref for it — settles the same question and needs no control of
-offer order.
+1. During the wedge, send **one** order with a unique `clientOrderId`; record the ref the client is
+   handed.
+2. Clear the wedge (`rollout restart`), resend **the same key**; the engine re-emits the original
+   and the now-correctly-correlated gateway returns the authoritative ref.
+3. **Mismatch = cross-wired.** Match = the offset is real but benign for live clients.
+
+The table lives inside the replicated state machine and is written to every snapshot, so the two
+sends can straddle the cure — which is what makes one order enough.
+
+**Three constraints, and the third is the one that can manufacture a false positive:**
+
+- the table is **bounded and LRU-evicted** — resend before eviction;
+- a blank or absent `clientOrderId` hashes to **0**, the engine's "no key" sentinel
+  (`clientOrderKey` returns 0 only for null/empty, and maps a real hash of 0 to 1 so it can never
+  collide with it). A test that forgets to set a real key measures nothing and looks like a clean
+  pass;
+- **the original must still be RESTING at resend time.** `lookup(originalRef)` returning null —
+  because the original filled or was cancelled — drops through the guard and the engine creates a
+  **brand-new order with a new ref**. The resend then returns a different ref for a completely
+  innocent reason, which is indistinguishable from the defect. Use a limit that cannot cross (a
+  far-off-market resting buy) and check `traderx_book_open_orders` still holds it.
+
+**Alternative, for a gateway-only rig where the resend path is unavailable:** fire the burst
+**staggered ~60 ms** rather than all at once, so offer order equals launch order and stays
+recoverable while all orders still land inside the 12 s window. Launch index *i* then has true ref
+`R0+i-1`: under the offset client 1 is told `R0+K`, under the innocent reading client 1 is told
+nothing and client `K+1` is told `R0+K`, its own.
 
 **Until one of those runs, treat this as a code-read prediction with suggestive but non-decisive
 supporting data.** It is the most severe claim in this file and it deserves the strictest evidence,
