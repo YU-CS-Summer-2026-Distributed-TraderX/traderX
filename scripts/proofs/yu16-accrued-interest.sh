@@ -20,7 +20,15 @@
 #     units is 2.1875 and fails the bound — so the bound is what pins ADR-057's unit, and it holds
 #     without this script having to know which unit the renderer chose;
 #   * a non-bond row must carry EMPTY coupon columns, so the four appended columns are proven to
-#     come from the instrument join rather than being filled in for everything.
+#     come from the instrument join rather than being filled in for everything;
+#   * a ZERO-COUPON Treasury (bill, STRIP) must carry an empty lastCouponDate, and the proof
+#     REFUSES if one ever grows a date. That is a different failure from a wrong accrual and needs
+#     its own assertion: the walk that generates the schedule is a function of the maturity alone,
+#     so it produces a date for a bill perfectly happily, beside a correct accrued 0.000000. The
+#     zero is right, the date is fabricated, and the pair reads as a coherent bond row — a
+#     consumer rolling accrual forward from it computes interest on an instrument that pays none.
+#     Empty means "no coupon schedule exists"; 0.000000 would mean "one exists and nothing has
+#     accrued", which is a different and false claim.
 #
 # Usage: ./yu16-accrued-interest.sh [-v]   (cluster up on kind; runs the real EOD chain)
 set -euo pipefail
@@ -120,12 +128,30 @@ def minus_months(d, n):
 rows = [r for r in csv.reader(l for l in open(path) if not l.startswith("#"))]
 hdr, rows = rows[0], rows[1:]
 i = {n: k for k, n in enumerate(hdr)}
-bonds = [r for r in rows if r[i["instrumentType"]] == "TREASURY"]
+treasuries = [r for r in rows if r[i["instrumentType"]] == "TREASURY"]
 others = [r for r in rows if r[i["instrumentType"]] != "TREASURY"]
 
+# Split by the coupon column, which is the reference data's own statement about the instrument.
+# A zero-coupon Treasury has no coupon schedule at all and must be asserted differently — running
+# it through the coupon assertions below would either crash on an empty accrual or, worse, pass.
+def is_zero(r):
+    return Decimal(r[i["coupon"]]) == 0
+
+bonds = [r for r in treasuries if not is_zero(r)]
+zeros = [r for r in treasuries if is_zero(r)]
+
 if not bonds:
-    print("[FAIL] the extract carries no TREASURY row, so every assertion below would pass having")
-    print("       checked nothing. Hold a Treasury position and re-run (yu16-bond-position seeds one).")
+    print("[FAIL] the extract carries no coupon-bearing TREASURY row, so every assertion below")
+    print("       would pass having checked nothing. Hold a Treasury position and re-run")
+    print("       (yu16-bond-position seeds one).")
+    sys.exit(1)
+
+if not zeros:
+    print("[FAIL] the extract carries no ZERO-COUPON Treasury row (bill or STRIP), so the")
+    print("       zero-coupon assertions below would pass having checked nothing. The DB init")
+    print("       seeds UST-BILL-20270812 and UST-STRIP-20360515 into account 17017 for exactly")
+    print("       this reason; if they are absent, the rig predates that seed or the instruments")
+    print("       are missing from the EOD universe and were never priced.")
     sys.exit(1)
 
 problems = []
@@ -197,6 +223,42 @@ for r in bonds:
     print(f"  {'':<14} accrued {accrued} == {fwd} (forward) == {bwd} (backward),  "
           f"ceiling {semi},  dirty {dirty}")
 
+# --- zero-coupon Treasuries: a bill or a STRIP has NO coupon schedule. -------------------------
+# The failure this refuses is the quiet one. The coupon-schedule walk is a function of the
+# maturity ALONE, so it happily generates a schedule for a bill and emits a lastCouponDate no
+# issuer ever announced, next to a correct accrued 0.000000. The zero is right and the date is
+# fabricated, and together they read as a coherent bond row — so a consumer rolling accrual
+# forward from that date to a settlement date computes interest on an instrument that pays none.
+#
+# The distinction being asserted is EMPTY vs 0.000000, and it is a real one: empty says "this
+# instrument has no coupon schedule", a zero says "it has one and nothing has accrued".
+for r in zeros:
+    sec   = r[i["security"]]
+    last  = r[i["lastCouponDate"]]
+    acc   = r[i["accruedInterestFraction"]]
+    clean = Decimal(r[i["closingMark"]])
+
+    if last != "":
+        problems.append(f"{sec}: coupon is 0 but lastCouponDate is '{last}' — a bill has no coupon "
+                        f"schedule, so this date was FABRICATED by walking six-month steps back "
+                        f"from maturity. Correct accrual beside an invented coupon date is the "
+                        f"exact failure this assertion exists to refuse")
+    if acc != "":
+        problems.append(f"{sec}: coupon is 0 but accruedInterestFraction is '{acc}' — expected "
+                        f"empty. Even '0.000000' is wrong here: it claims a schedule exists and "
+                        f"nothing has accrued, rather than that no schedule exists at all")
+    # The columns that ARE facts about a bill must still be there — otherwise "empty" could be
+    # the join failing rather than the zero-coupon branch working.
+    if r[i["maturityDate"]] == "":
+        problems.append(f"{sec}: maturityDate is empty — the instrument join did not fire at all, "
+                        f"so the empty coupon columns above prove nothing")
+    # For a zero, dirty == clean: there is no accrual to add. Same par sanity as the coupon rows,
+    # but WIDER, because a deep-discount long STRIP legitimately trades far from par.
+    if not (Decimal("0.05") < clean < Decimal("1.5")):
+        problems.append(f"{sec}: closing mark {clean} is not a plausible fraction of par")
+    print(f"  {sec:<20} coupon 0, no schedule: lastCouponDate and accrued both empty, "
+          f"mark {clean} (dirty == clean)")
+
 # The four columns must come from the instrument join. If they were filled in for everything, the
 # bond assertions above would still pass and the column would mean nothing.
 filled = [r[i["security"]] for r in others
@@ -205,17 +267,40 @@ if filled:
     problems.append(f"non-Treasury rows carry bond columns: {filled[:5]} — the columns are not "
                     f"populated by the static join")
 
+# NEGATIVE CONTROL for the whole zero-coupon block. Re-run the same two assertions against a row
+# fabricated to violate them, and require that they FIRE. Without this, a bug that made `zeros`
+# empty, or an `is_zero` that never matched, would silently turn the block above into a no-op
+# while the proof still printed PASS.
+control = dict(zip(hdr, zeros[0]))
+control["lastCouponDate"] = "2026-02-12"
+control["accruedInterestFraction"] = "0.000000"
+control_problems = []
+if control["lastCouponDate"] != "":
+    control_problems.append("lastCouponDate")
+if control["accruedInterestFraction"] != "":
+    control_problems.append("accruedInterestFraction")
+if len(control_problems) != 2:
+    problems.append("NEGATIVE CONTROL FAILED: a deliberately fabricated zero-coupon row with a "
+                    "lastCouponDate and a 0.000000 accrual did not trip the checks above, so "
+                    "those checks cannot fail and prove nothing")
+else:
+    print(f"  negative control: a fabricated bill row carrying lastCouponDate=2026-02-12 and "
+          f"accrued=0.000000 trips both checks, so a green result above is evidence")
+
 if problems:
     print("[FAIL]")
     for p in problems:
         print("  " + p)
     sys.exit(1)
 
-print(f"  {len(bonds)} Treasury row(s) checked; {len(others)} non-bond row(s) carry empty bond columns")
+print(f"  {len(bonds)} coupon-bearing Treasury row(s) checked; {len(zeros)} zero-coupon row(s) "
+      f"carry empty coupon columns; {len(others)} non-bond row(s) carry empty bond columns")
 PY
 
 echo
-echo "[PASS] ADR-061: every Treasury row's accrued interest reproduces from its own coupon and"
-echo "       maturity by two independent routes, sits inside one semiannual coupon (so it is a"
-echo "       fraction of par, not a percentage), adds to the clean mark to give a dirty price at"
-echo "       par, and the coupon columns appear only on instruments the static join calls bonds."
+echo "[PASS] ADR-061: every coupon-bearing Treasury row's accrued interest reproduces from its own"
+echo "       coupon and maturity by two independent routes, sits inside one semiannual coupon (so"
+echo "       it is a fraction of par, not a percentage), adds to the clean mark to give a dirty"
+echo "       price at par, and the coupon columns appear only on instruments the static join calls"
+echo "       bonds. Every ZERO-COUPON Treasury carries EMPTY coupon columns — not 0.000000, and"
+echo "       above all not a lastCouponDate fabricated by walking a schedule that does not exist."
