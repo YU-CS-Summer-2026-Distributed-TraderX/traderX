@@ -34,9 +34,29 @@ test('the walk never escapes seed +/- maxDistance (FR-CDM18)', () => {
 });
 
 test('an unsupported term throws rather than walks', () => {
+  // 7 became a real bucket when the 7Y note was seeded; 4 is still not one. A term with no
+  // bucket must never fall back to a neighbour's band.
   assert.throws(
-    () => treasury.updateTreasuryCleanPrice({ seedCleanPercent: 100, cleanPercent: 100, originalTermYears: 7 }, 0, 0),
+    () => treasury.updateTreasuryCleanPrice({ seedCleanPercent: 100, cleanPercent: 100, originalTermYears: 4 }, 0, 0),
     /unsupported treasury term/);
+  assert.ok(treasury.TREASURY_PROFILE_BY_TERM[7], '7Y must have its own bucket');
+});
+
+test('every bill and STRIP tenor has a walk bucket (an added instrument that throws is worse than one that is absent)', () => {
+  for (const term of [0.08, 0.25, 0.5, 1, 2, 3, 5, 7, 10, 20, 30]) {
+    const profile = treasury.TREASURY_PROFILE_BY_TERM[term];
+    assert.ok(profile, `no walk bucket for tenor ${term}`);
+    assert.ok(profile.maxStep > 0 && profile.maxDistance > profile.maxStep,
+      `tenor ${term}: a band narrower than one step would pin the price`);
+  }
+  // Monotone in tenor: a longer bond must not move less than a shorter one.
+  const terms = [0.08, 0.25, 0.5, 1, 2, 3, 5, 7, 10, 20, 30];
+  for (let i = 1; i < terms.length; i += 1) {
+    const prev = treasury.TREASURY_PROFILE_BY_TERM[terms[i - 1]];
+    const cur = treasury.TREASURY_PROFILE_BY_TERM[terms[i]];
+    assert.ok(cur.maxStep > prev.maxStep && cur.maxDistance > prev.maxDistance,
+      `tenor ${terms[i]} is not more volatile than ${terms[i - 1]}`);
+  }
 });
 
 test('maturity is the UTC midnight boundary, inclusive (FR-CDM21)', () => {

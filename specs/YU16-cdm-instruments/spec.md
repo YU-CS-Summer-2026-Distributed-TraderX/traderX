@@ -183,6 +183,47 @@
   reference-data's `matured` flag and price-publisher's Treasury clock, so maturity behavior is
   testable at a chosen instant.
 
+## Simulated curve points
+
+The five Treasuries this state started with are auction-sourced: real FIGIs, TreasuryDirect
+provenance, prices quoted from the auction PDF. They are also a **sparse long end with nothing
+under two years**, which is why the risk engine has no zero curve to bootstrap — a curve needs
+short-dated discount factors and there were none.
+
+Ten instruments were added to close that gap. They are **not** real securities and carry
+`priceProvenance.sourceType: SIMULATED_CURVE_POINT` and **no FIGI**, because a FIGI-shaped string
+we invented is worse than an absent one: it would look up-able. `assertCdmConditions` enforces
+both halves — an auction-sourced Debt instrument *requires* a FIGI, a simulated one is *refused*
+if it ever grows one, so the two can never be confused by a downstream consumer.
+
+| Added | Why |
+|---|---|
+| 4 bills — 4/13/26/52-week, all issued 2026-08-13 | The short end, which did not exist |
+| 4 principal STRIPS — 2028, 2031, 2036, 2056 | Zero-coupon Treasuries **are** discount factors |
+| 2 coupon points — 3Y (2029-07-15), 7Y (2033-07-31) | Density between the existing 2Y/5Y/10Y |
+
+All ten are keyed `UST-…` so ADR-060's ticker-derived book grid covers them with no engine change.
+
+### How the prices were derived
+
+One settle date, 2026-08-13, and one curve. The five auction prices back out at that settle to
+4.190749 / 4.200770 / 4.469089 / 5.122502 / 5.045654 percent (2Y/5Y/10Y/20Y/30Y), and every added
+point was chosen to sit **on** that curve rather than beside it:
+
+- **Bills**, bank-discount basis: `price% = 100 x (1 - d x days/360)`, at d = 4.10 / 4.08 / 4.05 /
+  4.00%. Those imply bond-equivalent yields of 4.170 / 4.180 / 4.192 / 4.227% — a flat-to-slightly-
+  upward short end running into the 2Y at 4.191%.
+- **STRIPS**, semiannual compounding: `price% = 100 / (1 + y/2)^(2t)` with `t` in ACT/365 years to
+  maturity, at y = 4.20 / 4.25 / 4.55 / 5.15%.
+- **3Y and 7Y notes**: the standard ACT/ACT (ICMA) semiannual PV at 4.19% and 4.32%, coupons on the
+  usual 1/8 grid (4.125% and 4.250%).
+
+A zero-coupon instrument carries `couponRatePercent: 0` in `instruments.csv` and
+`debtEconomics.zeroCoupon` (never `fixedInterest`) in the CDM record. That is the discriminator the
+extract's zero-coupon branch keys off: a bill has **no coupon schedule**, which is a different
+statement from a schedule that pays zero, and emitting a fabricated `lastCouponDate` for one is the
+bug ADR-061's branch exists to prevent.
+
 ## Technical Debt Register
 
 - TD-CDM01: One display-name attribute has two wire names: `companyName` on `/stocks` and both

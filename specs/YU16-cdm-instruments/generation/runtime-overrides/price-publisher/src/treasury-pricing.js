@@ -5,9 +5,24 @@
 // conversion is pctToFraction and it is the only place the two spaces meet.
 
 // Longer original term => larger per-step move and wider total band: duration, as a profile.
+// The key is a TENOR BUCKET in years, not a day-count term — a 4-week bill buckets at 0.08. A
+// term with no bucket throws rather than walking on a borrowed profile (see updateTreasuryClean-
+// Price): silently pricing a 30Y off the 2Y band is exactly the kind of plausible-looking wrong
+// number this state exists to keep out of the feed.
+//
+// ponytail: STRIPS reuse the coupon-bond bucket for their tenor, so a 30Y STRIP at ~22% of par
+// moves the same ABSOLUTE points as the 30Y bond at ~99 — i.e. ~4.5x the relative move. That is
+// directionally right (a zero has the higher duration) and wrong in magnitude. Give zeros their
+// own bucket table if anyone ever calibrates this feed against real STRIP vol.
 const TREASURY_PROFILE_BY_TERM = Object.freeze({
+  0.08: { maxStep: 0.001, maxDistance: 0.02 },
+  0.25: { maxStep: 0.002, maxDistance: 0.05 },
+  0.5: { maxStep: 0.003, maxDistance: 0.08 },
+  1: { maxStep: 0.004, maxDistance: 0.12 },
   2: { maxStep: 0.005, maxDistance: 0.15 },
+  3: { maxStep: 0.007, maxDistance: 0.20 },
   5: { maxStep: 0.010, maxDistance: 0.30 },
+  7: { maxStep: 0.015, maxDistance: 0.40 },
   10: { maxStep: 0.020, maxDistance: 0.50 },
   20: { maxStep: 0.035, maxDistance: 0.75 },
   30: { maxStep: 0.050, maxDistance: 1.00 }

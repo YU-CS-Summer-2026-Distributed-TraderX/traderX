@@ -169,6 +169,16 @@ data:
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20460515', NOW(), 100000, 0.984810);
     INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20560515', NOW(), 100000, 0.992930);
 
+    -- A bill and a STRIP, held so the EOD extract carries ZERO-COUPON rows and not only coupon
+    -- ones. Without a held zero the extract's zero-coupon branch is never exercised on the rig and
+    -- yu16-accrued-interest passes having checked nothing about it. Same convention as above:
+    -- quantity is USD face, price is a fraction of par.
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-B20270812', NOW(), NOW(), 'UST-BILL-20270812', 'Buy', 100000, 0.959560, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-S20360515', NOW(), NOW(), 'UST-STRIP-20360515', 'Buy', 100000, 0.644570, 'Settled', 17017);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-BILL-20270812', NOW(), 100000, 0.959560);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-STRIP-20360515', NOW(), 100000, 0.644570);
+
     -- YU04 durable control feeds: account-service and reference-data outbox/epoch tables + the
     -- reference-data stocks table (previously CSV-only). Inherited from YU04; needed here so the
     -- control feeds bootstrap on kind. Both *_source_epoch tables self-seed to epoch=1 on first boot.

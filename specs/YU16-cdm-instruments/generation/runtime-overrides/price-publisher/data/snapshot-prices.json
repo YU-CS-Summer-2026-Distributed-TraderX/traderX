@@ -138,5 +138,85 @@
     "couponRatePercent": 5.0,
     "originalTermYears": 30,
     "maturityDate": "2056-05-15"
+  },
+  "UST-20290715": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.820187,
+    "runtimeSeedCleanPrice": 99.82,
+    "couponRatePercent": 4.125,
+    "originalTermYears": 3,
+    "maturityDate": "2029-07-15"
+  },
+  "UST-20330731": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.581343,
+    "runtimeSeedCleanPrice": 99.581,
+    "couponRatePercent": 4.25,
+    "originalTermYears": 7,
+    "maturityDate": "2033-07-31"
+  },
+  "UST-BILL-20260910": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 99.681111,
+    "runtimeSeedCleanPrice": 99.681,
+    "couponRatePercent": 0,
+    "originalTermYears": 0.08,
+    "maturityDate": "2026-09-10"
+  },
+  "UST-BILL-20261112": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 98.968667,
+    "runtimeSeedCleanPrice": 98.969,
+    "couponRatePercent": 0,
+    "originalTermYears": 0.25,
+    "maturityDate": "2026-11-12"
+  },
+  "UST-BILL-20270211": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 97.9525,
+    "runtimeSeedCleanPrice": 97.953,
+    "couponRatePercent": 0,
+    "originalTermYears": 0.5,
+    "maturityDate": "2027-02-11"
+  },
+  "UST-BILL-20270812": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 95.955556,
+    "runtimeSeedCleanPrice": 95.956,
+    "couponRatePercent": 0,
+    "originalTermYears": 1,
+    "maturityDate": "2027-08-12"
+  },
+  "UST-STRIP-20280630": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 92.474852,
+    "runtimeSeedCleanPrice": 92.475,
+    "couponRatePercent": 0,
+    "originalTermYears": 2,
+    "maturityDate": "2028-06-30"
+  },
+  "UST-STRIP-20310630": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 81.438726,
+    "runtimeSeedCleanPrice": 81.439,
+    "couponRatePercent": 0,
+    "originalTermYears": 5,
+    "maturityDate": "2031-06-30"
+  },
+  "UST-STRIP-20360515": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 64.456612,
+    "runtimeSeedCleanPrice": 64.457,
+    "couponRatePercent": 0,
+    "originalTermYears": 10,
+    "maturityDate": "2036-05-15"
+  },
+  "UST-STRIP-20560515": {
+    "assetClass": "US_TREASURY",
+    "officialCleanPrice": 22.002376,
+    "runtimeSeedCleanPrice": 22.002,
+    "couponRatePercent": 0,
+    "originalTermYears": 30,
+    "maturityDate": "2056-05-15"
   }
 }
