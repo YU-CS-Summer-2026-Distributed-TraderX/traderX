@@ -69,7 +69,7 @@ $(printf '%s' "${QUOTE}" | python3 -c '
 import json, sys
 d = json.load(sys.stdin)
 print(d.get("price"), d.get("cleanPrice"), d.get("priceSemantics"),
-      d.get("approximateYtmPercent"), str(d.get("matured")).lower())
+      d.get("ytmPercent"), str(d.get("matured")).lower())
 ')
 EOF
 [[ "${PRICE}" =~ ^[0-9]+\.[0-9]+$ ]] || fail "price '${PRICE}' is not a decimal number"
@@ -99,13 +99,13 @@ DECIMALS="${PRICE#*.}"
 echo "[ok] ${PRICE} -> ${TICKS} ticks at 1e6, ${#DECIMALS} decimals intact (a 3dp-rounded bond would end in 000)"
 
 step "4. the publisher owns the YTM, and it is plausible for this bond"
-[[ "${YTM}" != "None" && "${YTM}" != "null" ]] || fail "approximateYtmPercent is absent — the UI must never compute it (FR-CDM20)"
-python3 - "$YTM" <<'EOF' || fail "approximateYtmPercent ${YTM} is outside any plausible range for a 4.125% note near par"
+[[ "${YTM}" != "None" && "${YTM}" != "null" ]] || fail "ytmPercent is absent — the UI must never compute it (FR-CDM20)"
+python3 - "$YTM" <<'EOF' || fail "ytmPercent ${YTM} is outside any plausible range for a 4.125% note near par"
 import sys
 ytm = float(sys.argv[1])
 sys.exit(0 if 1.0 < ytm < 15.0 else 1)
 EOF
-echo "[ok] approximate YTM ${YTM}% is publisher-computed and plausible"
+echo "[ok] solved YTM ${YTM}% is publisher-computed and plausible"
 
 step "5. an unknown UST- key gets no fabricated quote"
 # The inherited lazy fallback invents a price for an unknown equity. For a bond that would be a

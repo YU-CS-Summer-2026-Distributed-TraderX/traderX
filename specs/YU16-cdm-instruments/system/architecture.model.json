@@ -29,7 +29,7 @@
       "id": "price_publisher",
       "kind": "service",
       "label": "price-publisher (+treasury-pricing)",
-      "description": "Inherited equity/option quoting plus the Treasury walk: per-batch shared roll (0.8) against a local roll (0.2), mean reversion toward the auction seed, a hard band clamp, and term profiles where longer maturity means larger steps and wider bands. Emits clean prices as fractions of par; Treasury binary ticks scale at six decimals, bypassing the 3-dp equity rounding. Computes approximate YTM; suppresses matured quotes; unknown UST- keys get 404, never a fallback."
+      "description": "Inherited equity/option quoting plus the Treasury walk: per-batch shared roll (0.8) against a local roll (0.2), mean reversion toward the auction seed, a hard band clamp, and term profiles where longer maturity means larger steps and wider bands. Emits clean prices as fractions of par; Treasury binary ticks scale at six decimals, bypassing the 3-dp equity rounding. Solves YTM (safeguarded Newton, ACT/ACT ICMA); suppresses matured quotes; unknown UST- keys get 404, never a fallback."
     },
     {
       "id": "gateway",
@@ -59,7 +59,7 @@
       "id": "frontend",
       "kind": "service",
       "label": "web-front-end (asset-class aware)",
-      "description": "Asset-class filter and grouped selectors; Treasury tickets labeled Face Amount and Limit Clean Price (% of par); clean value estimated as face × fraction; bond prices displayed as fraction × 100 with a % sign; coupon, maturity and publisher-computed approximate YTM shown; rejected trades surface their reason."
+      "description": "Asset-class filter and grouped selectors; Treasury tickets labeled Face Amount and Limit Clean Price (% of par); clean value estimated as face × fraction; bond prices displayed as fraction × 100 with a % sign; coupon, maturity and publisher-solved YTM shown; rejected trades surface their reason."
     },
     {
       "id": "risk_extract",

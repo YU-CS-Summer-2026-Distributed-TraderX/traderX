@@ -9,7 +9,7 @@
 
 - As a trader, I want ETFs and U.S. Treasuries in the same selectors and blotters as equities —
   with honest labels for what the numbers mean (face amount, clean price as % of par, coupon,
-  maturity, approximate YTM) — so I trade the wider universe without learning a second workflow.
+  maturity, YTM) — so I trade the wider universe without learning a second workflow.
 - As a risk-engine consumer, I want the instrument's type and its bond static (coupon, maturity)
   on every extract row, so I can price a Treasury position without a second lookup.
 - As the platform owner, I want the CDM instrument model added with the deterministic core's
@@ -98,13 +98,25 @@
   `maxDistance` — so long-maturity prices move more, exactly as duration says they should.
 - FR-CDM19: Treasury payloads on `pricing.<instrumentKey>` SHALL extend the inherited tick shape
   additively: `assetClass`, `cleanPrice` (fraction of par, equal to `price`),
-  `priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `approximateYtmPercent`, `quoteTimestamp` (equal to
+  `priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `ytmPercent`, `yieldConvention`, `dayCount`, `quoteTimestamp` (equal to
   `asOf`), `maturityDate`, `matured`, `simulated`, `officialSeedCleanPrice`. Subject names and
   every inherited field are unchanged.
-- FR-CDM20: Approximate YTM SHALL be computed only by the publisher —
-  `((coupon + (par − clean)/yearsRemaining) / ((par + clean)/2)) × 100` in percent space, `null`
-  at or after maturity, carrying the same quote timestamp as the price. The UI parses it and
-  SHALL NOT compute it.
+- FR-CDM20: Yield SHALL be computed only by the publisher, `null` at or after maturity, carrying
+  the same quote timestamp as the price. The UI parses it and SHALL NOT compute it. It SHALL be a
+  real price→yield **solve** — safeguarded Newton with a bisection fallback, so it converges
+  quadratically where Newton behaves and cannot diverge where it does not — over a coupon schedule
+  generated **from the issue date forward**, so a short or long first coupon is modelled rather
+  than assumed away. The day count SHALL be **named on the wire**, never assumed: ACT/ACT (ICMA)
+  for Treasuries, 30/360 for corporates. Every instrument SHALL be quoted on one basis
+  (`SEMIANNUAL_BOND`), coupon-bearing or zero alike, so the points are comparable and a consumer
+  can bootstrap a curve across them. A zero-coupon instrument SHALL be priced on the zero-coupon
+  path — it has no coupon schedule to walk, and accrues nothing, ever.
+  (This supersedes the one-line textbook approximation
+  `((coupon + (par − clean)/yearsRemaining) / ((par + clean)/2)) × 100` this state shipped first.
+  That form has no schedule, no day count and no solve; it is wrong by tens of basis points on a
+  long bond, cannot express a zero at all — a bill has no coupon to put in its numerator — and its
+  error is smooth and plausible, so a curve bootstrapped off it would be wrong everywhere and
+  obviously wrong nowhere.)
 - FR-CDM21: A matured Treasury SHALL stop quoting — its payloads are suppressed, its stored quote
   no longer advances — and SHALL be rejected for new order entry at the validation boundary. An
   unknown `UST-`-prefixed key SHALL return 404 with no fallback quote; unknown equities keep the
@@ -150,7 +162,7 @@
 - FR-CDM27: The UI SHALL offer an asset-class filter (All / Stocks / ETFs / U.S. Treasuries) on
   the instrument selectors and blotters, group the selector typeahead by asset class, label
   Treasury inputs honestly (Face Amount; Limit Clean Price (% of par)), estimate clean value as
-  `face × fraction`, show coupon, maturity and approximate YTM for Treasuries, format bond prices
+  `face × fraction`, show coupon, maturity and YTM for Treasuries, format bond prices
   as percentages with no currency prefix, and surface a rejected trade's reason in the blotter.
 
 ## Non-Functional Requirements

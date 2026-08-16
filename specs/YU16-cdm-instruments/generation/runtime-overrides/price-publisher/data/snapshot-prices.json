@@ -105,6 +105,7 @@
     "runtimeSeedCleanPrice": 99.878,
     "couponRatePercent": 4.125,
     "originalTermYears": 2,
+    "issueDate": "2026-06-30",
     "maturityDate": "2028-06-30"
   },
   "UST-20310630": {
@@ -113,6 +114,7 @@
     "runtimeSeedCleanPrice": 99.665,
     "couponRatePercent": 4.125,
     "originalTermYears": 5,
+    "issueDate": "2026-06-30",
     "maturityDate": "2031-06-30"
   },
   "UST-20360515": {
@@ -121,6 +123,7 @@
     "runtimeSeedCleanPrice": 99.257,
     "couponRatePercent": 4.375,
     "originalTermYears": 10,
+    "issueDate": "2026-05-15",
     "maturityDate": "2036-05-15"
   },
   "UST-20460515": {
@@ -129,6 +132,7 @@
     "runtimeSeedCleanPrice": 98.481,
     "couponRatePercent": 5.0,
     "originalTermYears": 20,
+    "issueDate": "2026-06-01",
     "maturityDate": "2046-05-15"
   },
   "UST-20560515": {
@@ -137,6 +141,7 @@
     "runtimeSeedCleanPrice": 99.293,
     "couponRatePercent": 5.0,
     "originalTermYears": 30,
+    "issueDate": "2026-05-15",
     "maturityDate": "2056-05-15"
   },
   "UST-20290715": {
@@ -145,6 +150,7 @@
     "runtimeSeedCleanPrice": 99.82,
     "couponRatePercent": 4.125,
     "originalTermYears": 3,
+    "issueDate": "2026-07-15",
     "maturityDate": "2029-07-15"
   },
   "UST-20330731": {
@@ -153,6 +159,7 @@
     "runtimeSeedCleanPrice": 99.581,
     "couponRatePercent": 4.25,
     "originalTermYears": 7,
+    "issueDate": "2026-07-31",
     "maturityDate": "2033-07-31"
   },
   "UST-BILL-20260910": {
@@ -161,6 +168,7 @@
     "runtimeSeedCleanPrice": 99.681,
     "couponRatePercent": 0,
     "originalTermYears": 0.08,
+    "issueDate": "2026-08-13",
     "maturityDate": "2026-09-10"
   },
   "UST-BILL-20261112": {
@@ -169,6 +177,7 @@
     "runtimeSeedCleanPrice": 98.969,
     "couponRatePercent": 0,
     "originalTermYears": 0.25,
+    "issueDate": "2026-08-13",
     "maturityDate": "2026-11-12"
   },
   "UST-BILL-20270211": {
@@ -177,6 +186,7 @@
     "runtimeSeedCleanPrice": 97.953,
     "couponRatePercent": 0,
     "originalTermYears": 0.5,
+    "issueDate": "2026-08-13",
     "maturityDate": "2027-02-11"
   },
   "UST-BILL-20270812": {
@@ -185,6 +195,7 @@
     "runtimeSeedCleanPrice": 95.956,
     "couponRatePercent": 0,
     "originalTermYears": 1,
+    "issueDate": "2026-08-13",
     "maturityDate": "2027-08-12"
   },
   "UST-STRIP-20280630": {
@@ -193,6 +204,7 @@
     "runtimeSeedCleanPrice": 92.475,
     "couponRatePercent": 0,
     "originalTermYears": 2,
+    "issueDate": "2026-08-13",
     "maturityDate": "2028-06-30"
   },
   "UST-STRIP-20310630": {
@@ -201,6 +213,7 @@
     "runtimeSeedCleanPrice": 81.439,
     "couponRatePercent": 0,
     "originalTermYears": 5,
+    "issueDate": "2026-08-13",
     "maturityDate": "2031-06-30"
   },
   "UST-STRIP-20360515": {
@@ -209,6 +222,7 @@
     "runtimeSeedCleanPrice": 64.457,
     "couponRatePercent": 0,
     "originalTermYears": 10,
+    "issueDate": "2026-08-13",
     "maturityDate": "2036-05-15"
   },
   "UST-STRIP-20560515": {
@@ -217,6 +231,7 @@
     "runtimeSeedCleanPrice": 22.002,
     "couponRatePercent": 0,
     "originalTermYears": 30,
+    "issueDate": "2026-08-13",
     "maturityDate": "2056-05-15"
   }
 }

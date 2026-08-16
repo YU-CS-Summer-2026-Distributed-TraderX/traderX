@@ -138,6 +138,11 @@ function normalizeTreasuryQuote(instrumentKey, snapshotEntry) {
     seedCleanPercent: seedPercent,
     couponRatePercent: Number(snapshotEntry.couponRatePercent),
     originalTermYears: Number(snapshotEntry.originalTermYears),
+    // The issue date is what makes a real coupon schedule possible: generated from issue forward
+    // it can carry a short or long first coupon, where a schedule derived from maturity alone
+    // silently assumes neither. It is also the only way a zero-coupon bill can be modelled at
+    // all — it has no coupon to walk backwards from.
+    issueDate: String(snapshotEntry.issueDate),
     maturityDate: String(snapshotEntry.maturityDate),
     officialSeedCleanPrice: Number(snapshotEntry.officialCleanPrice),
     simulated: true,
@@ -351,8 +356,14 @@ function toPayload(quote) {
       assetClass: 'US_TREASURY',
       cleanPrice: quote.price,
       priceSemantics: 'CLEAN_FRACTION_OF_PAR',
-      approximateYtmPercent: treasury.approximateYtmPercent(
-        quote.couponRatePercent, quote.cleanPercent, quote.maturityDate, ts),
+      // A real price->yield solve off a real coupon schedule, not the old one-line approximation.
+      // Semiannual bond basis for EVERY instrument — coupon-bearing, bill or STRIP — so the
+      // points are comparable and a consumer can bootstrap a curve across them. The convention is
+      // stated on the wire rather than assumed: a price and a yield are only a pair with respect
+      // to a day count, and that is the first question any tie-out discrepancy asks.
+      ytmPercent: treasury.ytmPercent(quote, ts, quote.cleanPercent),
+      yieldConvention: 'SEMIANNUAL_BOND',
+      dayCount: treasury.DAY_COUNT.ACT_ACT_ICMA,
       quoteTimestamp: asOf,
       maturityDate: quote.maturityDate,
       matured: Boolean(quote.matured),
@@ -478,7 +489,16 @@ app.get('/health', (_req, res) => {
     // Published so a consumer reconciling against our option marks can reproduce them exactly.
     optionModel: { model: 'black-scholes', impliedVolatility: OPTION_IV, riskFreeRate: OPTION_RATE },
     // Published so a consumer of Treasury marks knows the semantics without reading this file.
-    treasuryModel: { priceSemantics: 'CLEAN_FRACTION_OF_PAR', walkSpace: 'percent-of-par', tickScale: 1000000 },
+    // Published so a consumer reconciling our bond marks knows exactly what basis they are on,
+    // without reading treasury-pricing.js. Same reasoning as optionModel above.
+    treasuryModel: {
+      priceSemantics: 'CLEAN_FRACTION_OF_PAR',
+      walkSpace: 'percent-of-par',
+      tickScale: 1000000,
+      yieldConvention: 'SEMIANNUAL_BOND',
+      dayCount: treasury.DAY_COUNT.ACT_ACT_ICMA,
+      solver: 'newton-with-bisection-fallback'
+    },
     publish: normalizePublishConfig(),
     volatilityBands: profileCounts
   });

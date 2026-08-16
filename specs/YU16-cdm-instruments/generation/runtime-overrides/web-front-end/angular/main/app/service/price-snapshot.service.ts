@@ -75,7 +75,7 @@ export class PriceSnapshotService {
       normalized.assetClass = raw.assetClass;
       normalized.cleanPrice = Number.isFinite(Number(raw.cleanPrice)) ? Number(raw.cleanPrice) : normalizedPrice;
       normalized.priceSemantics = typeof raw.priceSemantics === 'string' ? raw.priceSemantics : undefined;
-      normalized.approximateYtmPercent = raw.approximateYtmPercent == null ? null : Number(raw.approximateYtmPercent);
+      normalized.ytmPercent = raw.ytmPercent == null ? null : Number(raw.ytmPercent);
       normalized.maturityDate = typeof raw.maturityDate === 'string' ? raw.maturityDate : undefined;
       normalized.matured = Boolean(raw.matured);
     }
