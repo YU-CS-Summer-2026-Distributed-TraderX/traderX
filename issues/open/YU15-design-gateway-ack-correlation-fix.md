@@ -131,23 +131,84 @@ Then:
 It is correct — misattribution is impossible in both branches, because acks are never applied
 positionally while the set is in doubt.
 
-**Why it is not the recommendation, in one line each:**
+**REJECTED — and the first reason is decisive on evidence already in this file.**
 
-1. **All acks must be held, not just the at-risk ones.** Offers continue during the window, and a
-   new order's ack would otherwise pop an at-risk head. So the buffering sits in the owner thread's
-   hot path — the same path whose 50 ms blocking poll was already measured as a hard 1.2k/s ceiling
-   and deliberately removed. Adding conditional buffering there is the highest-risk place in this
-   program to add state.
-2. **It buys the good case and not the bad one.** In the 3-of-5 elections that stranded, A2 ends up
-   exactly where A does, one window later. It only helps the 2-of-5 that strand nothing.
-3. **A's cost is small and honest.** The in-flight window at ~20 orders/s is ~20–50 orders answered
-   ambiguous per election, and `null` already means "must not claim rejection" — the client contract
-   does not change, only how often it is exercised.
+**1. A2's optimistic branch is unreachable. The at-risk acks never arrive, and it is measured.**
+K went **21 → 36 → 51** across three leader kills and **never decreased** — not during the
+elections, not across full member catch-up, not through thousands of later orders, and not across
+30 s of total idle. If a single at-risk ack could land late, it would pop a stranded head and K
+would drop by one. It never did, on any election. **So the at-risk set is destroyed, not delayed**,
+and A2's "all `N` arrive" branch cannot occur. It is not that A2 helps only the 2-of-5 that stranded
+nothing — **it helps none of them**, because those had nothing at risk in the first place. A2 is
+strictly dominated by A: same outcome, one grace window later, with permits held throughout.
 
-**So the product question is genuinely a question, and it has a price tag:** if the answer is
-"transparent failover is a promise we keep", A2 is the design and its cost is hot-path complexity in
-the owner loop. If the answer is "an election may cost the in-flight window an honest ambiguous
-answer", A is simpler, safer to review, and strictly easier to carry across four layers.
+**The mechanism agrees, and it is verified.** A follower applies the same log the leader does
+(`MatchingEngineClusteredService:168` states it), but its egress `session.offer()` at `:736` is
+suppressed at the framework level rather than in the service — which is why, unlike the trade bridge
+(`:678`), the kdb tap (`:686`) and the order bridge (`:703`), that line carries **no
+`role == LEADER` guard**. A promoted follower does not re-apply entries it already applied, so the
+egress it suppressed while following is never regenerated. **What the dying leader failed to deliver
+is unrecoverable by design.**
+
+**2. Buffering stops permit release, and the window is only 4096.** The binding cost is not the
+conditional branch — it is that no permit is released while acks are held. Orders arriving in a
+150 ms window against 4096 permits: ~3 at §5's 20/s (trivial), but ~28,500 at the 190k/s
+four-gateway ceiling (figure from the reviewer's bench notes, not independently re-measured here) —
+**window exhausted in ~21 ms**, after which every submitter blocks the full 10 s in
+`inflight.acquire()`. On a loaded tier A2 converts a transparent failover into a **full stall**,
+which is the outcome it exists to prevent. This holds even if the branch were free.
+
+**3. The window is unsizable in principle.** A2 must wait for "no further at-risk acks are coming" —
+**the absence of a message, which has no deadline.** No measurement can validate a guess. And the
+bimodal figures I reached for (~85–180 ms fast, ~670–850 ms slow) are the wrong quantity anyway:
+they are the *gateway's session-reconnect gap*, the 31× dead-endpoint penalty the rotating start
+already fixed, not at-risk ack latency.
+
+**4. Hot-path cost, confirmed but no longer the case against it.** All acks must be held, not just
+at-risk ones, so the buffering sits in the owner loop — the path whose 50 ms blocking poll was
+measured as a hard 1.2k/s ceiling and deliberately removed (`ownerLoop:406-411`). Real, and now a
+supporting argument rather than the argument.
+
+> **The falsifier, so this stays rejected for the right reason.** A2 becomes worth reconsidering
+> **if and only if an at-risk ack is ever observed arriving after an election — i.e. K decreasing on
+> its own.** Nothing else revives it. Anyone tempted to revisit A2 should look for that first, and
+> it is cheap to look for: sample `inflight_orders` across an election and watch for a decrease.
+
+**The product question is therefore not what the earlier draft said it was.** It is not "how much
+does transparent failover cost in the owner loop". It is: **transparent failover across an election
+is not purchasable at this layer at all** — the acks are destroyed by the promotion — **and B's
+keyed correlation is the only thing that buys it**, because there a stranded offer harms nothing,
+since no other order depends on its position.
+
+### A second strand trigger, by design — this weakens A's residual and strengthens B
+
+Found while verifying the above, and it is not hypothetical. The egress ack offer is **best-effort
+by design**, with a bounded retry (`MatchingEngineClusteredService:730-740`):
+
+```java
+// Egress is best-effort BY DESIGN — a slow client gets drops, never the state machine's time;
+// the committed log remains the source of truth.
+for (int i = 0; i < 20; i++) {
+    if (session.offer(ackBuffer, 0, EGRESS_ACK_LENGTH) > 0) return;
+    idle.idle();
+}
+// falls through — the ack is DROPPED
+```
+
+**So an ack can be lost with no leader change at all**, whenever a client session is slow enough to
+backpressure egress for ~20 attempts. Every dropped ack strands an offer and increments K exactly as
+an election does.
+
+This is A's residual made concrete: the document says "the only trigger we have seen is not the only
+trigger", and here is a **second one, documented in the source and deliberate**. A does not detect
+or repair it, because there is no `onNewLeader` to hang the drain on.
+
+**What this does and does not establish.** It is a code reading, not a measurement — I have not
+observed a drop-induced strand, and in the §5 hang the owner thread was RUNNABLE in `pollEgress`
+throughout, so gateway HTTP saturation did **not** visibly starve egress. I am deliberately not
+claiming a feedback loop. What it does establish is that A is "repairs one of at least two known
+strand triggers, one of which is by design", not "repairs the only trigger" — and that is a
+materially different case for scheduling B.
 
 ### Dependency worth flagging
 
@@ -331,11 +392,19 @@ consequence, as noted above.
 
 ## Still open, for yaakov rather than for review
 
-1. **Is transparent failover a promise the system keeps?** If yes, A2 is the design and its price is
-   hot-path complexity in the owner loop. If no, A is simpler and safer. This is a product decision,
-   not an engineering one.
-2. **Sizing A2's grace window, if A2 is ever chosen.** It has to come from real election data, and
-   the failover distribution is bimodal (~85–180 ms fast, ~670–850 ms slow). If the slow mode binds,
-   the window approaches a second and A2's case weakens further.
-3. **When to schedule B.** Not whether — A leaves correlation positional, and "the only trigger we
-   have seen" is not "the only trigger".
+1. **Transparent failover across an election is not purchasable at this layer.** This replaces the
+   earlier framing of "how much does it cost". The promoted follower never regenerates the egress it
+   suppressed, so the at-risk acks are destroyed rather than delayed — measured (K never decreased
+   across three elections) and mechanistically verified. A2 was the design that would have bought it
+   and it cannot. **B's keyed correlation is the only thing that buys it**, because there no order
+   depends on another's position. The decision is therefore not *whether to pay for A2* but
+   **whether transparent failover is worth B's price**: eight carrier layers, a gateway↔member wire
+   break, the end of the YU15↔YU16 mixing window, and a fresh epoch on every rig.
+2. **When to schedule B — and the case is stronger than the first draft made it.** A repairs the
+   leader-change trigger. The egress ack is **best-effort by design** and can be dropped after 20
+   attempts, which strands an offer with no election involved. So A repairs one of at least *two*
+   known triggers, one of them deliberate. That is a scheduling input, not an argument against
+   shipping A.
+3. **Whether the drop-induced strand is reachable in practice.** Code-read only. Worth one
+   measurement whenever a rig is next up: drive hard enough to backpressure egress and watch whether
+   K climbs with no leader kill. If it does, B moves up.
