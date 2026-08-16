@@ -159,7 +159,7 @@ returned 200.
 A six-decimal Treasury limit was accepted through the public load balancer with all three members
 agreeing, which is ADR-060 on hardware rather than on a laptop.
 
-The failover failure is `issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md`: after a leader
+The failover failure is `issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md`: after a leader
 kill the single gateway never recovers its cluster session and returns 504 forever, while `/ready`
 and `/health` both report `connected:true`, `restarts=0`, and the log says nothing. Reproduced on
 YU15 `:bench` the day before, so it is not YU16's. The proof that found it blamed consensus

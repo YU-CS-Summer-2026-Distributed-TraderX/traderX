@@ -2,7 +2,7 @@
 # yu16-liveness-restarts-wedge.sh — a gateway that cannot commit is RESTARTED by Kubernetes with no
 # human in the loop, and the probe that says so is answerable while the order path is saturated.
 #
-# THE HALF OF THE FIX THIS GUARDS (issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md).
+# THE HALF OF THE FIX THIS GUARDS (issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md).
 # Readiness (yu16-ready-tracks-commit.sh) made /ready mean "I can commit", which stops the
 # LoadBalancer feeding a gateway that books what it denies. On a multi-replica tier that is the
 # whole cure. On THIS rig — and on the GKE correctness rig, both replicas: 1 — there is nowhere

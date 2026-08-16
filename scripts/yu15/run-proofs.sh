@@ -174,7 +174,7 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # yu15-pre/yu15-stp predate the gateway's probe server (18111, /live) that the manifest's three
 # probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
 # defect was being older than the manifest. See
-# issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+# issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
 rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null

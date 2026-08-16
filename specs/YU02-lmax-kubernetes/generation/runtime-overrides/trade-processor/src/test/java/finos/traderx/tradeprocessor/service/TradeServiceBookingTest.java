@@ -29,7 +29,7 @@ import org.junit.jupiter.api.Test;
  * discoverable test: the {@code test} task excludes the {@code integration} tag, so its filter
  * matched nothing and Gradle failed the build outright with "No tests found for given includes".
  * That was invisible until the YU publish wiring first let a compile preflight run against a YU02
- * tree. See {@code issues/HANDOFF-issue-yu02-trade-processor-zero-tests.md}.
+ * tree. See {@code issues/resolved/HANDOFF-issue-yu02-trade-processor-zero-tests.md}.
  *
  * <p>The assertions below are deliberately about arithmetic that any later layer must preserve —
  * signed quantity and the notional-weighted average — rather than about incidental details, since

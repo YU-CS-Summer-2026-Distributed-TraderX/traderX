@@ -2,7 +2,7 @@
 # yu16-ready-tracks-commit.sh — the gateway's readiness signal means "I can commit", not "my socket
 # is open", and it clears only on a demonstrated commit.
 #
-# THE DEFECT THIS GUARDS (issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md). After a leader
+# THE DEFECT THIS GUARDS (issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md). After a leader
 # kill a single gateway can hold a session it believes is good while every order comes back 504
 # "no committed ack" — and the orders are not refused, they are committed and booked while the
 # client is told they failed. `/ready` answered {"connected":true} throughout, so Kubernetes never
