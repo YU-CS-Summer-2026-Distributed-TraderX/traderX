@@ -332,7 +332,7 @@ if problems:
         print("  " + p)
     sys.exit(1)
 
-print(f"  {len(bonds)} coupon-bearing Treasury row(s) checked; {len(zeros)} zero-coupon row(s) "
+print(f"  {len(bonds)} coupon-bearing bond row(s) checked (Treasury ACT/ACT + corporate 30/360); {len(zeros)} zero-coupon row(s) "
       f"carry empty coupon columns; {len(others)} non-bond row(s) carry empty bond columns")
 PY
 
