@@ -611,9 +611,38 @@ ref block, 13×504) and correctly retracted it as ambiguous. Two ways to break t
   the wedge with a unique key and record the ref the client is given; then resend **the same key**
   once the wedge has cleared, and the engine returns the authoritative ref for that key. Mismatch =
   the wedge response was cross-wired. The table is replicated and survives a gateway restart and a
-  reconnect onto a different replica, so clearing the wedge between the two sends is safe. Two
-  constraints: the table is bounded and LRU-evicted, so resend before eviction; and a blank or
-  absent `clientOrderId` hashes to 0, the engine's "no key" sentinel, so the test must set a real one.
+  reconnect onto a different replica, so clearing the wedge between the two sends is safe.
+
+  **Three constraints, and the third fails in the dangerous direction.**
+  1. The table is bounded and LRU-evicted — resend before eviction.
+  2. A blank or absent `clientOrderId` hashes to 0, the engine's "no key" sentinel. (A real hash of
+     0 is remapped to 1 so it can never collide with it.) A test that forgets to set a key measures
+     nothing and **reads as a clean pass**.
+  3. **The re-emit is guarded on the original still being RESTING**, and if it is not, the engine
+     silently creates a new order with a new ref:
+     ```java
+     int originalRef = risk.existingOrderRef(e.clientOrderKey());
+     if (originalRef >= 0) {
+         RestingOrder original = lookup(originalRef);
+         if (original != null) {        // ← original must still be resting
+             out.emitOrderUpdate(original, …);
+             return;
+         }
+     }
+     // falls through: takeFromPool() → a BRAND-NEW order with a NEW ref
+     ```
+     So if the original filled or was cancelled between the sends, the resend returns a different
+     ref **for an entirely innocent reason** — and "the resend returned a different ref" is exactly
+     what this test treats as proof of cross-wiring. **The failure mode manufactures a false
+     positive on the severe claim.** Mitigate in the method, not in the reader's head: use a limit
+     that cannot cross (a far-off-market resting buy), and confirm `traderx_book_open_orders` still
+     holds it immediately before the second send.
+
+  Verified on the **operative** layers rather than the first file that matched, since "the engine
+  already does this" is the shape of claim that gets read off a shadowed copy: `MatchingEngine` is
+  carried by YU01, YU02, YU03, YU12 **and YU13** — so YU13–YU15 run the YU13 copy and the YU12 one
+  is a corpse for them — and `BlpRiskState` is carried by YU03 **and YU14**, so YU15 runs YU14's.
+  Both carry the path.
 
 `GATEWAY_MAX_INFLIGHT` was deliberately **not** shrunk to force exhaustion: with depth provably
 flat, a smaller window changes the number and not the mechanism, and forcing saturation would
