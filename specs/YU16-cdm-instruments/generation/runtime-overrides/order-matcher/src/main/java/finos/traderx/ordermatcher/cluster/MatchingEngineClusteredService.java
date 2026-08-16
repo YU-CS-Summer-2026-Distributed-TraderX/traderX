@@ -156,18 +156,54 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_BOOK = 11;
 
     /**
-     * YU16 (ADR-060): a Treasury's book grid is ONE Px tick, derived from the committed ticker
-     * exactly as the YU14 contract multiplier is (ADR-052) - stored nowhere, identical on every
-     * member, on replay and on restore. The global 0.001 grid is three decimals in price space,
-     * which for a bond price stored as a fraction of par (ADR-057) is one decimal of percentage:
-     * the book would reject every six-decimal bond limit as off-grid. Grid 1 admits the full
-     * fraction; the band at that grid still spans +/-6.5 points of par around the anchor, six
-     * times the widest configured walk.
+     * YU16 (ADR-060): a BOND's book grid is ONE Px tick, derived from the committed ticker exactly
+     * as the YU14 contract multiplier is (ADR-052) - stored nowhere, identical on every member, on
+     * replay and on restore. The global 0.001 grid is three decimals in price space, which for a
+     * bond price stored as a fraction of par (ADR-057) is one decimal of percentage: the book
+     * would reject every six-decimal bond limit as off-grid. Grid 1 admits the full fraction; the
+     * band at that grid still spans +/-6.5 points of par around the anchor, six times the widest
+     * configured walk.
      */
-    static final long TREASURY_BOOK_TICK_PX = 1L;
+    static final long BOND_BOOK_TICK_PX = 1L;
+
+    /**
+     * The ticker prefixes that mean "this instrument is quoted as a FRACTION OF PAR at six
+     * decimals". THE ONE PLACE the grid convention is written down.
+     *
+     * <p>WHY A TICKER CONVENTION AND NOT THE INSTRUMENT JOIN. The grid must be a pure function of
+     * committed state, re-derivable identically on every member, on replay and on restore, with
+     * nothing stored. The committed state for a symbol IS its ticker - that is the whole content
+     * of T_SYMBOL. Deriving the grid from instrument static instead would mean carrying that
+     * static through consensus, which means changing SymbolRegisterMessage, which means the SBE
+     * schema - the artifact that defines wire compatibility between builds. That is far more blast
+     * radius than a price grid is worth, so the convention is encoded in the ticker and enforced
+     * in reference data (cdm-catalog.spec.ts asserts every Debt instrument's key matches these
+     * prefixes, so adding MUNI- or AGCY- without updating this list fails a test rather than
+     * silently handing the new bond the equity grid).
+     *
+     * <p>Extended from Treasury-only to all bonds on 2026-08-16. It is a DETERMINISTIC-CORE change
+     * despite touching no stored format: a member on the old build and one on the new compute
+     * different grids for the same committed CORP- ticker, so the same log entry reaches different
+     * state and the split is permanent. It cannot be rolled gradually - scale to zero, wipe the
+     * PVCs, mint a fresh epoch, all members and the gateway together off one build.
+     */
+    private static final String[] FRACTION_OF_PAR_TICKER_PREFIXES = { "UST-", "CORP-" };
+
+    /** True when the ticker names an instrument quoted as a fraction of par (see the field above). */
+    static boolean isFractionOfParTicker(final String ticker) {
+        if (ticker == null) {
+            return false;
+        }
+        for (final String prefix : FRACTION_OF_PAR_TICKER_PREFIXES) {
+            if (ticker.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
     private static long derivedBookTickPxFor(final String ticker) {
-        return ticker.startsWith("UST-") ? TREASURY_BOOK_TICK_PX : 0L;
+        return isFractionOfParTicker(ticker) ? BOND_BOOK_TICK_PX : 0L;
     }
 
     /** Egress ack kind for symbol registration (outside OutputEvent's 1..8 range). */

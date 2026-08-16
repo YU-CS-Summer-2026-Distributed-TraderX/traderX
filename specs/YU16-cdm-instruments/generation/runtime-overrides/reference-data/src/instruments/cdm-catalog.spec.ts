@@ -92,32 +92,45 @@ describe('cdm-catalog (YU16)', () => {
     }
   });
 
-  it('gives every instrument key exactly one seed, and records which keys get the fine book grid', () => {
+  /**
+   * The ticker prefixes the ENGINE uses to derive the fine book grid, mirrored from
+   * MatchingEngineClusteredService.FRACTION_OF_PAR_TICKER_PREFIXES. Duplicated deliberately: the
+   * engine cannot import this package, and a silent disagreement between the two lists is exactly
+   * the failure the test below exists to catch.
+   */
+  const FRACTION_OF_PAR_PREFIXES = ['UST-', 'CORP-'];
+
+  it('gives every instrument key exactly one seed, and EVERY bond a key the engine grids finely', () => {
     const keys = TREASURY_SEEDS.map((s) => s.instrumentKey);
     expect(new Set(keys).size).toBe(keys.length);
 
-    // ADR-060 derives the fine book grid from the TICKER PREFIX alone —
-    // `ticker.startsWith("UST-") ? 1 : 0` in MatchingEngineClusteredService. So this is not a
-    // naming convention, it is a functional gate, and it splits the seeded universe in two:
+    // ADR-060 derives the fine book grid from the TICKER PREFIX — the grid must be a pure function
+    // of committed state, and a symbol's committed state IS its ticker. So this is not a naming
+    // convention, it is a functional gate: a bond whose key matches none of these prefixes gets
+    // the 0.001 equity grid and every six-decimal limit on it is refused as off-grid.
     //
-    //   * UST-*  -> grid 1, six-decimal limits rest;
-    //   * CORP-* -> grid 0.001, and a six-decimal limit is REFUSED as off-grid (422).
-    //
-    // Corporates are therefore markable, holdable and extractable at full precision but can only
-    // be LIMIT-ORDERED at 0.001 of par (0.1 point). Extending the grid is a deterministic-core
-    // change — it cannot be rolled gradually and needs its own epoch — so it is deliberately not
-    // done here. This assertion exists to make that split explicit and to fail loudly if someone
-    // adds a bond class expecting six-decimal order entry to just work.
-    const fineGrid = keys.filter((k) => k.startsWith('UST-'));
-    const coarseGrid = keys.filter((k) => !k.startsWith('UST-'));
-    expect(fineGrid).toHaveLength(15);
-    expect(coarseGrid).toEqual([
-      'CORP-IBM-20330215', 'CORP-JPM-20310601', 'CORP-GS-20360315', 'CORP-F-20320512',
-    ]);
-    // Every coarse-grid instrument is a corporate; no Treasury may drift off the fine grid.
-    for (const key of coarseGrid) {
-      expect(TREASURY_SEEDS.find((s) => s.instrumentKey === key)!.debtType).toBe('CORPORATE_BOND');
+    // THIS IS THE LOOP-CLOSING ASSERTION. The engine's list and this one must agree, and the way
+    // that breaks is by omission: someone adds MUNI- or AGCY- bonds to the reference data, the
+    // engine's predicate does not know about them, and they quietly trade on the wrong grid with
+    // nothing failing. Asserting it HERE — over every Debt seed — turns that silent exclusion into
+    // a test failure naming the instrument.
+    // Every seed here builds to securityType Debt — verified, not assumed, so "every Debt
+    // instrument" below is a claim about what the catalog actually produces.
+    const debt = TREASURY_SEEDS.filter(
+      (s) => toInstrument(s.instrumentKey, s.displayName).securityType === 'Debt');
+    expect(debt).toHaveLength(TREASURY_SEEDS.length);
+
+    const offConvention = debt.filter(
+      (s) => !FRACTION_OF_PAR_PREFIXES.some((p) => s.instrumentKey.startsWith(p)));
+    expect(offConvention.map((s) => s.instrumentKey)).toEqual([]);
+
+    // ...and both prefixes are actually exercised, so the assertion above cannot be satisfied by a
+    // universe that happens to contain only one kind of bond.
+    for (const prefix of FRACTION_OF_PAR_PREFIXES) {
+      expect(keys.some((k) => k.startsWith(prefix))).toBe(true);
     }
+    expect(keys.filter((k) => k.startsWith('UST-'))).toHaveLength(15);
+    expect(keys.filter((k) => k.startsWith('CORP-'))).toHaveLength(4);
   });
 
   it('builds a bill as zero-coupon with no coupon schedule at all (2c depends on this)', () => {
