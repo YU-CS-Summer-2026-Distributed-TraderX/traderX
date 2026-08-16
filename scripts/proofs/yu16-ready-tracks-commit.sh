@@ -79,7 +79,7 @@ seed() {
   body="$(printf '%s' "${out}" | sed '$d')"
   [[ ${rc} -eq 0 ]] || fail "seed could not reach ${MATCHER_URL} (curl rc=${rc}).
   rc=7 is nothing listening and rc=28 is a timeout — both mean the port-forward, not the cluster:
-  kubectl -n ${NS} port-forward svc/order-matcher 18110:18110"
+  kubectl --context ${CTX} -n ${NS} port-forward svc/order-matcher 18110:18110"
   [[ "${code}" == "200" ]] || fail "seed got HTTP ${code} from ${MATCHER_URL}: ${body:-empty body}"
   [[ "${body}" == *'"seeded":true'* ]] || fail "seed returned 200 but did not seed: ${body:-empty}.
   {\"seeded\":false} is the engine's symbol table exhausted (MAX_SECURITIES) — a fresh epoch is the
