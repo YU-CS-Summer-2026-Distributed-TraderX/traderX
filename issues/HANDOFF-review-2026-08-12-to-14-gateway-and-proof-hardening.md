@@ -335,10 +335,14 @@ Two readings that keep the headline honest and belong beside it:
 1. **§5's HTTP hang — undiagnosed.** Why a bounded 12s wait per request never drains in eight
    minutes with zero load offered. Three mitigations, no cause. Proposed fix: refuse at admission.
 2. **The wedge's root cause — undiagnosed.** Live hypothesis: the egress subscription after a leader
-   change. Mitigated on YU16/YU17 by a streak-triggered session rebuild; **not mitigated on
-   YU12–YU15**.
-3. **The `EgressListener` and self-heal gap on YU12–YU15.** Deliberate (no rig for those tiers, and
-   YU12 is a different program) — but it is a gap, and §4's table is where it is now written down.
+   change. Still true: everything shipped for it is a *mitigation*. Now mitigated on YU13–YU17 by
+   the streak-triggered session rebuild; **not mitigated on YU12**.
+3. ~~**The `EgressListener` and self-heal gap on YU12–YU15**~~ — **NARROWED TO YU12 on 2026-08-16.**
+   One edit to the YU13 layer carried both mechanisms to YU13, YU14 and YU15, verified before and
+   after on the kind rig (before: 5 orders → 5×504 with `next_order_ref` +5 and **zero** log lines;
+   after: `GATEWAY-WEDGE-SUSPECTED` at streak 20, orders committing, `restarts=0`) **[rig]**. YU12
+   remains open for a specific, now-understood reason — `offerAndAwait` discards the offer-cleared
+   fact the safety argument needs — and wants scoping as a four-call-site contract change.
 4. ~~**`yu13-otel-trace-join.sh` defaults `KCTX` to empty**~~ — **CLOSED 2026-08-16.** It omitted
    `--context` entirely when neither `KCTX` nor `CTX` was set, falling through to the ambient
    current-context. Fixed by making it **refuse** rather than inherit — deliberately not by
