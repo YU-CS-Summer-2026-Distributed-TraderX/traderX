@@ -36,10 +36,10 @@ step() { echo; echo "=== $* ==="; }
 sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
-order() { # order <side> <account> <quantity> -> HTTP code on stdout
+order() { # order <side> <account> <quantity> [ticker] [price] -> HTTP code on stdout
   curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${2},\"ticker\":\"${UST}\",\"side\":\"${1}\",\"quantity\":${3},\"limitPrice\":${FRACTION}}"
+    -d "{\"accountId\":${2},\"ticker\":\"${4:-${UST}}\",\"side\":\"${1}\",\"quantity\":${3},\"limitPrice\":${5:-${FRACTION}}}"
 }
 
 step "0. preflight — the rig, the schema width, and a clean slate for this bond"
@@ -132,5 +132,43 @@ BAD_VALUE="$(python3 -c "print('%.6f' % (${QTY} * float('${BASIS}') * 100))")"
   || fail "the value check cannot distinguish a fraction from a percentage — it proves nothing"
 echo "[ok] the same position priced as a percentage would be \$${BAD_VALUE}, which the step-4 assertion rejects"
 
+step "6. a ZERO-COUPON bill trades the same way, and stays held for the accrual proof"
+# TWO JOBS, and the second is the non-obvious one.
+#
+# First: a bill is a genuinely different instrument — no coupon, priced at a discount to par — and
+# ADR-060 derives the fine book grid from the ticker prefix alone. UST-BILL-* inherits it for free,
+# which is the claim that let this state add bills with NO engine change. Proving a bill actually
+# crosses is what turns that from a reading of the code into a fact.
+#
+# Second: yu16-accrued-interest runs straight after this proof and REFUSES if the extract carries no
+# zero-coupon row, because its zero-coupon assertions would otherwise pass having checked nothing.
+# The extract's rows come from the ENGINE's cut, not from SQL — so a bill seeded into the positions
+# table by the DB init never appears there. It has to be TRADED, and this is where that happens.
+BILL="${BILL:-UST-BILL-20270812}"
+BILL_FRACTION="0.959560"          # 95.956% of par: a discount instrument, not a near-par one
+BILL_VALUE="95956.000000"         # face x fraction, again with no divisor
+
+sql "DELETE FROM trades WHERE security='${BILL}'; DELETE FROM positions WHERE security='${BILL}';"
+curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${SELLER},\"tickers\":\"${BILL}\",\"price\":${BILL_FRACTION}}" >/dev/null \
+  || fail "seed failed for ${BILL}"
+for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
+  side="${side_account%%:*}"; acct="${side_account##*:}"
+  code="$(order "${side}" "${acct}" "${FACE}" "${BILL}" "${BILL_FRACTION}")"
+  vlog "      POST /orders ${side} acct=${acct} face=${FACE} px=${BILL_FRACTION} ticker=${BILL} -> HTTP ${code}"
+  [[ "${code}" == "200" ]] || fail "${side} order for ${BILL} returned HTTP ${code} — a legal bill order was refused.
+  A six-decimal limit bouncing here means the ADR-060 grid did NOT extend to this ticker, which is
+  the one assumption that let bills be added without an engine change"
+done
+sleep 6
+BILL_QTY="$(sql "SELECT quantity FROM positions WHERE security='${BILL}' AND accountid=${BUYER};")"
+[[ "${BILL_QTY}" == "${FACE}" ]] || fail "buyer holds '${BILL_QTY}' of ${BILL}, expected ${FACE} — the bill did not book"
+BILL_BASIS="$(sql "SELECT averagecostbasis FROM positions WHERE security='${BILL}' AND accountid=${BUYER};")"
+BILL_ACTUAL="$(python3 -c "print('%.6f' % (${BILL_QTY} * float('${BILL_BASIS}')))")"
+[[ "${BILL_ACTUAL}" == "${BILL_VALUE}" ]] \
+  || fail "bill position value ${BILL_ACTUAL} != ${BILL_VALUE} (face x fraction)"
+echo "[ok] ${BILL} crossed at ${BILL_FRACTION}: ${BILL_QTY} face @ ${BILL_BASIS} = \$${BILL_ACTUAL}"
+echo "[ok] a zero-coupon position is now held, so yu16-accrued-interest has something to check"
+
 echo
-echo "[PASS] yu16-bond-position: face x fraction through the unchanged engine, boundary rejection pre-consensus, 100x error detectable"
+echo "[PASS] yu16-bond-position: face x fraction through the unchanged engine, boundary rejection pre-consensus, 100x error detectable, and a zero-coupon bill crossing on the same ticker-derived grid"
