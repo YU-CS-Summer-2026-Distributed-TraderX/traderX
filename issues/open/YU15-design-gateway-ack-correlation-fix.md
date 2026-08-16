@@ -90,6 +90,44 @@ an ack numbered at or below what we had already seen cannot belong to an offer m
   happens today. The difference is that today they are answered ambiguous *and* they corrupt every
   subsequent order.
 
+### A2 — the refinement that preserves transparent failover, considered and NOT recommended
+
+A reviewer will ask why the drain is unconditional, and the failover-transparency question this
+design raises deserves an answer rather than an open end. **If transparent failover turns out to be
+a hard requirement, this is the design that keeps it. It is not the recommendation.**
+
+**A2: hold acks across the election instead of draining immediately.** At `onNewLeader`, record
+`N = fifo.size()` — the at-risk set. For a short grace window (an election is ~150 ms; size it from
+`yu12-gke-failover-transparency`'s own measurements), **buffer arriving acks instead of applying
+them** — a 24-byte copy each, since the egress `DirectBuffer` is only valid inside the callback.
+Then:
+
+- **All `N` arrive before the window expires** → nothing stranded. Apply them in order: every pop is
+  correct, and the in-flight window is answered normally. **Transparent failover preserved.**
+- **Window expires short** → something stranded. Drain the at-risk set as ambiguous and **discard
+  the buffered acks**. Same outcome as A, one grace window later.
+
+It is correct — misattribution is impossible in both branches, because acks are never applied
+positionally while the set is in doubt.
+
+**Why it is not the recommendation, in one line each:**
+
+1. **All acks must be held, not just the at-risk ones.** Offers continue during the window, and a
+   new order's ack would otherwise pop an at-risk head. So the buffering sits in the owner thread's
+   hot path — the same path whose 50 ms blocking poll was already measured as a hard 1.2k/s ceiling
+   and deliberately removed. Adding conditional buffering there is the highest-risk place in this
+   program to add state.
+2. **It buys the good case and not the bad one.** In the 3-of-5 elections that stranded, A2 ends up
+   exactly where A does, one window later. It only helps the 2-of-5 that strand nothing.
+3. **A's cost is small and honest.** The in-flight window at ~20 orders/s is ~20–50 orders answered
+   ambiguous per election, and `null` already means "must not claim rejection" — the client contract
+   does not change, only how often it is exercised.
+
+**So the product question is genuinely a question, and it has a price tag:** if the answer is
+"transparent failover is a promise we keep", A2 is the design and its cost is hot-path complexity in
+the owner loop. If the answer is "an election may cost the in-flight window an honest ambiguous
+answer", A is simpler, safer to review, and strictly easier to carry across four layers.
+
 ### Dependency worth flagging
 
 A **requires the full `EgressListener`**, because `onNewLeader` on a method reference sits on the
