@@ -191,7 +191,7 @@ Code to point at: `ReplicaBootstrap.java:68–69` (identical to `RiskControlCont
   is wrong. (Cost us a false "timeout" in the first proof run.)
 - Minor known issue (won't show unless you tail logs): order-matcher logs
   `Risk replica bootstrap complete` at INFO every ~1s — cosmetic poll-loop noise, tracked in
-  `issues/HANDOFF-issue-replica-bootstrap-log-noise.md`.
+  `issues/resolved/HANDOFF-issue-replica-bootstrap-log-noise.md`.
 
 **Sharp-question defense: "how is this deterministic if gateways are horizontally scalable and
 reject in parallel?"** (a likely mentor question — worth rehearsing.)
@@ -229,7 +229,7 @@ bash scripts/bench/yu04-offline-catchup.sh  # scale order-matcher to 0 → injec
 Both take an optional ticker arg (default is `Z`+timestamp so reruns don't collide).
 **First-run-on-a-fresh-cluster note:** if `account-service`/`reference-data` crashloop, it's the
 DB-init/reference-data-env spec layer — fixed in specs now, but a pre-existing cluster may need the
-hot-patch (see `issues/HANDOFF-issue-spec-layer-propagation-gaps.md`).
+hot-patch (see `issues/resolved/HANDOFF-issue-spec-layer-propagation-gaps.md`).
 
 ---
 
@@ -920,7 +920,7 @@ bash generated/code/target-generated/scripts/start-state-YU04-durable-control-fe
 ```
 First run on a fresh cluster: if `account-service`/`reference-data` crashloop, it's the DB-init/reference-data
 env spec-layer gap — fixed in specs now, but a pre-existing cluster may need the hot-patch
-(`issues/HANDOFF-issue-spec-layer-propagation-gaps.md`).
+(`issues/resolved/HANDOFF-issue-spec-layer-propagation-gaps.md`).
 
 **Demo/proof**
 ```bash
