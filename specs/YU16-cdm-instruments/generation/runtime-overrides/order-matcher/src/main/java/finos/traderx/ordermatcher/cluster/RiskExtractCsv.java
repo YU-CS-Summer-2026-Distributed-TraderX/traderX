@@ -55,6 +55,17 @@ final class RiskExtractCsv {
      */
     record BondStatic(String couponRatePercent, String maturityDate) { }
 
+    /**
+     * A zero-coupon instrument — a Treasury bill or a STRIP — carries a coupon of exactly zero in
+     * the reference data. Compared with {@code compareTo} rather than {@code equals} so every
+     * spelling of zero ("0", "0.000", "0.0") lands in the same branch: a bill that arrived spelled
+     * "0.000" instead of "0" and fell through to the coupon path would grow a fabricated schedule
+     * and give back exactly the bug this branch exists to prevent.
+     */
+    private static boolean isZeroCoupon(final BondStatic bond) {
+        return new BigDecimal(bond.couponRatePercent()).compareTo(BigDecimal.ZERO) == 0;
+    }
+
     /** Accrued interest as of the session date, and the coupon date it accrued from. */
     private record Accrual(LocalDate lastCouponDate, BigDecimal fraction) { }
 
@@ -77,8 +88,25 @@ final class RiskExtractCsv {
      * terminate in decimal, so it cannot be exact the way a position value is. It rounds
      * HALF_EVEN at the tick scale, which is deterministic, rather than aborting the extract the
      * way {@code RoundingMode.UNNECESSARY} does everywhere else.
+     *
+     * @return null for a zero-coupon instrument, which has no coupon schedule to accrue over —
+     *     the caller emits empty for both columns rather than a zero and a fabricated date
      */
     private static Accrual accrual(final BondStatic bond, final LocalDate sessionDate) {
+        if (isZeroCoupon(bond)) {
+            // A bill or a STRIP has NO COUPON SCHEDULE — which is a different statement from a
+            // schedule that pays zero. The walk below would happily generate one anyway (it is a
+            // function of the maturity alone) and emit a lastCouponDate that no issuer ever
+            // announced, alongside a correct accrued 0.000000. The zero is right and the date is
+            // fabricated, and the pair reads as a coherent bond row, so nothing downstream has
+            // any way to notice: a consumer rolling accrual forward from that date to a settlement
+            // date would compute interest on an instrument that pays none.
+            //
+            // Both columns go out EMPTY. Empty means "this instrument has no coupon schedule",
+            // which is the truth; 0.000000 in the accrual column would mean "it has one and
+            // nothing has accrued", which is not.
+            return null;
+        }
         final LocalDate maturity = LocalDate.parse(bond.maturityDate());
         if (!sessionDate.isBefore(maturity)) {
             // At or past maturity the final coupon has paid; nothing has accrued since.
@@ -204,6 +232,12 @@ final class RiskExtractCsv {
         sb.append("# treasuryCouponSchedule=generated backwards from maturityDate in 6-month"
             + " steps measured from maturity, so nextCouponDate = lastCouponDate + 6 months; a"
             + " short or long first coupon is NOT modelled\n");
+        sb.append("# treasuryZeroCoupon=a bill or STRIP (coupon 0) has NO coupon schedule, so"
+            + " lastCouponDate and accruedInterestFraction are both EMPTY, never 0.000000. Empty"
+            + " means no schedule exists; a zero in the accrual column would mean one exists and"
+            + " nothing has accrued, which is a different and false claim. coupon and maturityDate"
+            + " are still populated - 0 and the maturity are facts about the instrument. For these"
+            + " rows dirtyPrice == closingMark, with no accrual to add\n");
         sb.append("# treasuryAccrualRounding=the only rounded value in this file (elapsed/period"
             + " does not terminate); HALF_EVEN at 6 decimals. Every other value is exact\n");
     }

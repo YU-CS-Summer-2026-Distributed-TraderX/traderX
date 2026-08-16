@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -363,6 +364,41 @@ class RiskExtractTest {
             assertEquals("2028-06-30", row[16], "at or past maturity the last coupon IS maturity");
             assertEquals("0.000000", row[17], "session " + session);
         }
+    }
+
+    @Test
+    void aZeroCouponInstrumentEmitsEmptyCouponColumnsRatherThanAFabricatedSchedule() {
+        // A bill has NO coupon schedule. The backward walk would produce one anyway — it is a
+        // function of the maturity alone — giving a correct accrued 0.000000 beside a
+        // lastCouponDate no issuer ever announced. The zero is right, the date is invented, and
+        // the pair reads as a perfectly coherent bond row, which is what makes it dangerous: a
+        // consumer rolling accrual forward from that date to a settlement date would compute
+        // interest on an instrument that pays none.
+        for (final String zero : List.of("0", "0.000", "0.0")) {
+            final String[] bill = treasuryRow(new RiskExtractCsv.BondStatic(zero, "2027-08-12"),
+                "UST-BILL-20270812", LocalDate.of(2026, 12, 1));
+            assertEquals("TREASURY", bill[2], "a bill is still a Treasury row");
+            assertEquals(zero, bill[14], "the coupon is a fact about the instrument: it is zero");
+            assertEquals("2027-08-12", bill[15], "so is the maturity");
+            assertEquals("", bill[16], "coupon " + zero + ": no schedule exists, so no lastCouponDate");
+            assertEquals("", bill[17], "empty, NOT 0.000000 — that would claim a schedule exists");
+        }
+
+        // A STRIP is the same story at a maturity that would otherwise generate a long schedule.
+        final String[] strip = treasuryRow(new RiskExtractCsv.BondStatic("0.000", "2056-05-15"),
+            "UST-STRIP-20560515", LocalDate.of(2026, 12, 1));
+        assertEquals("", strip[16]);
+        assertEquals("", strip[17]);
+
+        // NEGATIVE CONTROL. The same helper, the same session date, the same maturity — only the
+        // coupon differs — and the coupon columns fill in. Without this, "empty" could be an
+        // artefact of the fixture rather than of the zero-coupon branch, and the assertions above
+        // would pass against a renderer that emitted empty for every bond.
+        final String[] note = treasuryRow(new RiskExtractCsv.BondStatic("4.125", "2027-08-12"),
+            "UST-20270812", LocalDate.of(2026, 12, 1));
+        assertEquals("2026-08-12", note[16], "a coupon-bearing bond at the SAME maturity does get a schedule");
+        assertFalse(note[17].isEmpty(), "and a non-empty accrual");
+        assertNotEquals("0.000000", note[17], "which is not zero either, at this session date");
     }
 
     @Test
