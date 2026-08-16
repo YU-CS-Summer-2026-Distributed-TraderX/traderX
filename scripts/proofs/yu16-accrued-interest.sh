@@ -148,10 +148,12 @@ if not bonds:
 
 if not zeros:
     print("[FAIL] the extract carries no ZERO-COUPON Treasury row (bill or STRIP), so the")
-    print("       zero-coupon assertions below would pass having checked nothing. The DB init")
-    print("       seeds UST-BILL-20270812 and UST-STRIP-20360515 into account 17017 for exactly")
-    print("       this reason; if they are absent, the rig predates that seed or the instruments")
-    print("       are missing from the EOD universe and were never priced.")
+    print("       zero-coupon assertions below would pass having checked nothing.")
+    print("       A zero-coupon position must be TRADED to appear here. The extract's rows come")
+    print("       from the ENGINE's cut, not from SQL, so seeding the positions table -- which the")
+    print("       DB init does for UST-BILL-20270812 and UST-STRIP-20360515 -- puts a row in the")
+    print("       read model and NOTHING in the extract. yu16-bond-position step 6 crosses a bill")
+    print("       through the gateway and is why this proof runs straight after it; run that first.")
     sys.exit(1)
 
 problems = []
