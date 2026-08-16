@@ -10,6 +10,9 @@ import finos.traderx.ordermatcher.lmax.InputEvent;
 import finos.traderx.ordermatcher.lmax.OutputEvent;
 import finos.traderx.ordermatcher.risk.RiskReason;
 import io.aeron.cluster.client.AeronCluster;
+import io.aeron.cluster.client.EgressListener;
+import io.aeron.cluster.codecs.EventCode;
+import io.aeron.logbuffer.Header;
 import io.aeron.driver.MediaDriver;
 import io.aeron.driver.ThreadingMode;
 import org.agrona.CloseHelper;
@@ -136,7 +139,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * {@code restarts=0} and no log line while every order came back 504. Kubernetes therefore
      * never took the pod out of the Service and the LoadBalancer kept routing a single public IP
      * into it — and the orders were not refused, they were committed and booked while the client
-     * was told they failed. See issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md.
+     * was told they failed. See issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md.
      *
      * <p>A readiness signal for an ingress process has to mean "I can commit", not "my socket is
      * open".
@@ -315,7 +318,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/regulatory", this::handleMemberProxy);
         // READY MEANS "I CAN COMMIT", not "my socket is open". `connected` alone reported healthy
         // through a wedge in which every order was answered 504 while being committed and booked
-        // (issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md), so Kubernetes never pulled
+        // (issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md), so Kubernetes never pulled
         // the pod and the LoadBalancer kept feeding it. The streak is reported in the body either
         // way: the first thing anyone does with a failing probe is curl it by hand, and a bare
         // `connected:false` would send them to the network when the session is the problem.
@@ -428,7 +431,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         client.sendKeepAlive();
                     }
                 }
-                if (client != null && client.isClosed()) {
+                // sessionLost, not just isClosed(): a session the cluster closed or errored does not
+                // always reach isClosed(), and that gap is the wedge -- ingress kept committing while
+                // every ack was gone. See the listener above.
+                if (client != null && (client.isClosed() || sessionLost)) {
                     final long now = System.currentTimeMillis();
                     // 100ms, not 1000: connectCycling() already blocks until a live endpoint accepts,
                     // so this gate only bounds retry churn — at 1s it was the largest avoidable term
@@ -461,6 +467,86 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * distribution (~85-180ms fast mode vs ~670-850ms slow mode). Single-endpoint cycling is kept
      * as the fallback, with a rotating start so a dead endpoint is not retried first every time.
      */
+    /**
+     * A FULL EgressListener, not a method reference.
+     *
+     * `.egressListener(this::onEgress)` satisfies the interface's single abstract method and leaves
+     * onSessionEvent and onNewLeader on their DEFAULT NO-OP bodies (verified against
+     * aeron-cluster 1.51.0). That is why a gateway that stops committing after a leader change says
+     * nothing at any log level: the two events that would name the cause were being discarded by
+     * the interface's own defaults. See
+     * issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md, whose §3 is exactly this ("no
+     * exception, no reconnect attempt, no log line at any level") and whose §2 asks whether the
+     * egress subscription survives a leader change.
+     *
+     * Both are logged rather than counted, because the failure they explain is diagnosed by a human
+     * reading `kubectl logs` after the fact, and neither fires often enough to be noise: a session
+     * event means the cluster changed its mind about this session, and a new-leader event means an
+     * election happened.
+     */
+    private final EgressListener egressListener = new EgressListener() {
+        @Override
+        public void onMessage(final long clusterSessionId, final long timestamp,
+                              final DirectBuffer buffer, final int offset, final int length,
+                              final Header header) {
+            onEgress(clusterSessionId, timestamp, buffer, offset, length, header);
+        }
+
+        /**
+         * Anything other than OK means this session is no longer usable for acks. The owner loop's
+         * only reconnect trigger was {@code client.isClosed()}, which a cluster-side close does not
+         * always reach -- so the session could be dead for acks while the gateway kept offering
+         * orders that committed and were never acknowledged, answering every client 504. Record it
+         * and let the owner loop rebuild the session, which is the known cure (a `rollout restart`
+         * clears the wedge instantly, and a fresh session is the only thing that changes).
+         */
+        @Override
+        public void onSessionEvent(final long correlationId, final long clusterSessionId,
+                                   final long leadershipTermId, final int leaderMemberId,
+                                   final EventCode code, final String detail) {
+            System.out.println("CLUSTER-SESSION-EVENT code=" + code + " session=" + clusterSessionId
+                + " leader=" + leaderMemberId + " term=" + leadershipTermId
+                + " detail=" + (detail == null ? "-" : detail));
+            if (code != EventCode.OK) {
+                sessionLost = true;
+            }
+        }
+
+        @Override
+        public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
+                                final int leaderMemberId, final String ingressEndpoints) {
+            System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
+                + " term=" + leadershipTermId + " session=" + clusterSessionId);
+        }
+    };
+
+    /**
+     * Set by onSessionEvent above AND by the wedge detector in submitPipelined (submitter threads),
+     * read and cleared by the owner loop. Volatile because those writers are not the owner thread.
+     */
+    private volatile boolean sessionLost = false;
+
+    /**
+     * THE WEDGE SIGNAL: consecutive orders whose offer CLEARED INTO THE LOG and whose committed ack
+     * then never arrived.
+     *
+     * Deliberately not `noAckStreak`, which also counts orders that never cleared the ingress at
+     * all. That distinction is the whole safety argument, and it is measured rather than assumed
+     * (2026-08-14, gateway's own counters):
+     *
+     *   healthy cluster   offer_attempt +10   offer_success +10
+     *   quorum loss       offer_attempt  +1   offer_success  +0
+     *
+     * During quorum loss the offer never clears, so this streak cannot advance and the self-heal
+     * cannot fire during a recoverable outage — which matters because a fresh session is useless
+     * there and `connectCycling()` would park the owner thread trying to get one. During the wedge
+     * the offer DOES clear (the cluster consumes a ref for every order it then never acks —
+     * measured 1:1), so the streak advances and a fresh session is exactly the known cure.
+     */
+    private final AtomicInteger offeredUnackedStreak = new AtomicInteger();
+    private static final int WEDGE_RECONNECT_STREAK = Integer.parseInt(
+        env("WEDGE_RECONNECT_STREAK", String.valueOf(READY_NO_ACK_STREAK)));
+
     private void connectCycling() {
         // A fresh cluster session will not deliver the old session's outstanding egress, so complete
         // every in-flight pending as ambiguous (post-publish ambiguity: the order may have committed,
@@ -483,8 +569,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     .egressChannel("aeron:udp?term-length=1m|endpoint="
                         + env("GATEWAY_EGRESS_HOST", env("POD_IP", "localhost")) + ":"
                         + env("GATEWAY_EGRESS_PORT", "0"))
-                    .egressListener(this::onEgress));
+                    .egressListener(egressListener));
                 connectRotation = (connectRotation + 1) % endpointEntries.length;
+                sessionLost = false;   // a fresh session: whatever killed the last one is behind us
                 connected = true;
                 return;
             } catch (final Exception e) {
@@ -818,8 +905,19 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // "no committed decision", which is what /ready now has to know about.
         if (r == null) {
             noAckStreak.incrementAndGet();
+            // THE SELF-HEAL. Only orders that actually cleared the ingress count: those are the ones
+            // whose ack the cluster owes us, so their silence is OUR session's problem and a fresh
+            // session is the known cure. Orders that never cleared say the cluster will not take
+            // traffic, which no reconnect fixes.
+            if (p.offered && offeredUnackedStreak.incrementAndGet() >= WEDGE_RECONNECT_STREAK) {
+                offeredUnackedStreak.set(0);
+                System.out.println("GATEWAY-WEDGE-SUSPECTED offeredUnacked>=" + WEDGE_RECONNECT_STREAK
+                    + " noAckStreak=" + noAckStreak.get() + " — rebuilding the cluster session");
+                sessionLost = true; // the owner loop reconnects; see ownerLoop
+            }
         } else {
             noAckStreak.set(0);
+            offeredUnackedStreak.set(0);
         }
         return r;
     }
@@ -919,6 +1017,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 }
             }
             pipelineOffersSucceeded++;
+            p.offered = true; // cleared the ingress: from here, silence means a missing ACK, not a
+                              // cluster that would not take the order. See offeredUnackedStreak.
             // LATENCY-01 Phase A: t_offer — offer cleared into the log. queue = owner-thread wait, and
             // the cluster black box starts now. Single owner thread, single clock: valid subtraction.
             if (p.tSubmitNanos != 0) {
@@ -1957,6 +2057,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         final int orderRef;      // CANCEL / REPLACE target; 0 for NEW (engine assigns the ref)
         final int securityId;    // binary NEW only: pre-resolved id (ticker == null); -1 = resolve via ticker
         final CompletableFuture<ExecResult> future = new CompletableFuture<>();
+        // Set by the owner thread once client.offer() clears; read by the submitting thread when
+        // its wait expires. Volatile: those are different threads and the future never completed.
+        volatile boolean offered;
         // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
         // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
         // the owner's single-threaded run give the happens-before, so no volatile needed.
