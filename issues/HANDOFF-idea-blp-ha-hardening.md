@@ -74,7 +74,7 @@ shared cluster.
 | `CLOUD-ARCHITECTURE.md` §2, §4, §7 | HA/single-BLP mode details, throughput table, this backlog's source |
 | `cluster-addons/order-matcher-statefulset.yaml` | Leader-election Lease config, resource/probe tuning |
 | `LMAX-BLP-FAILOVER.md` | Design rationale for the current leader-election/replication scheme |
-| `scripts/bench/run-gke-bench.sh` | In-cluster benchmark harness (see `bench-compare` skill) |
+| `scripts/bench/load/run-gke-bench.sh` | In-cluster benchmark harness (see `bench-compare` skill) |
 
 ## Suggested first steps for next chat
 
