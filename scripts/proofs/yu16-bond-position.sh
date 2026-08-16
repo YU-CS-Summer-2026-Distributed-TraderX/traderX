@@ -170,51 +170,67 @@ BILL_ACTUAL="$(python3 -c "print('%.6f' % (${BILL_QTY} * float('${BILL_BASIS}'))
 echo "[ok] ${BILL} crossed at ${BILL_FRACTION}: ${BILL_QTY} face @ ${BILL_BASIS} = \$${BILL_ACTUAL}"
 echo "[ok] a zero-coupon position is now held, so yu16-accrued-interest has something to check"
 
-step "7. a CORPORATE trades on the coarse grid — and the fine grid provably does NOT reach it"
-# This step exists to pin a LIMITATION as a fact rather than leave it as a comment someone will
-# eventually disbelieve. ADR-060 derives the book grid from the ticker prefix alone:
+step "7. a CORPORATE rests a SIX-DECIMAL limit — the fine grid now reaches every bond"
+# ADR-060 derives the book grid from the committed ticker:
 #
-#     derivedBookTickPxFor(t) = t.startsWith("UST-") ? 1 : 0        (0 => the 0.001 default)
+#     derivedBookTickPxFor(t) = isFractionOfParTicker(t) ? 1 : 0     (0 => the 0.001 default)
 #
-# so a CORP- bond gets the 0.001 equity grid, and a six-decimal corporate limit is REFUSED. That
-# is a real constraint on what a corporate can be quoted at, and it cannot be lifted from here:
-# the predicate lives in MatchingEngineClusteredService, i.e. the deterministic core, which cannot
-# be rolled gradually. Asserting BOTH halves means the day someone extends the grid, this step
-# fails and tells them the constraint moved rather than silently passing.
+# and that predicate was extended from UST- to every fraction-of-par prefix. This step is the
+# assertion that it really reached the engine, because the failure mode is silent: a corporate on
+# the 0.001 grid still trades, still books, still values correctly at a coarse price. Nothing
+# looks broken — you simply cannot quote the bond where it actually trades.
+#
+# It is a DETERMINISTIC-CORE change, so the shape of this proof matters: the rig must be a fresh
+# epoch on one build across all three members and the gateway. Rolling it gradually splits them.
 CORP="${CORP:-CORP-GS-20360315}"
-CORP_ON_GRID="0.991"           # 3dp of par: a multiple of the 0.001 default grid
-CORP_OFF_GRID="0.991230"       # the bond's actual 6dp mark — must be refused as off-grid
-CORP_VALUE="99100.000000"
+CORP_SIX_DP="0.991230"         # the bond's real 6dp mark — the whole point of the change
+CORP_VALUE="99123.000000"      # face x fraction, exactly
+EQUITY_GRID="GRDC$(date +%H%M%S)"   # fresh book: this proof owns its anchor
 
 sql "DELETE FROM trades WHERE security='${CORP}'; DELETE FROM positions WHERE security='${CORP}';"
 curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${SELLER},\"tickers\":\"${CORP}\",\"price\":${CORP_ON_GRID}}" >/dev/null \
+  -d "{\"accountId\":${SELLER},\"tickers\":\"${CORP}\",\"price\":${CORP_SIX_DP}}" >/dev/null \
   || fail "seed failed for ${CORP}"
 
-# (a) the six-decimal limit is refused. Deliberately checked BEFORE the good order, while the book
-#     is empty and anchored at the seed, so an out-of-band rejection cannot be confused for it.
-OFF="$(order Buy ${BUYER} ${FACE} "${CORP}" "${CORP_OFF_GRID}")"
-[[ "${OFF}" == "422" ]] || fail "a six-decimal corporate limit returned HTTP ${OFF}, expected 422.
-  If this is now 200, ADR-060's grid has been extended beyond UST- and the LIMITATION this step
-  documents no longer holds — update the comment above, the consumer guide and cdm-catalog.spec.ts"
-echo "[ok] ${CORP} at ${CORP_OFF_GRID} refused 422 — the fine grid is UST- only (ADR-060)"
-
-# (b) the same bond on the coarse grid crosses normally.
+# (a) the six-decimal corporate limit is ACCEPTED and crosses.
 for side_account in "Sell:${SELLER}" "Buy:${BUYER}"; do
   side="${side_account%%:*}"; acct="${side_account##*:}"
-  code="$(order "${side}" "${acct}" "${FACE}" "${CORP}" "${CORP_ON_GRID}")"
-  vlog "      POST /orders ${side} acct=${acct} face=${FACE} px=${CORP_ON_GRID} ticker=${CORP} -> HTTP ${code}"
-  [[ "${code}" == "200" ]] || fail "${side} order for ${CORP} at ${CORP_ON_GRID} returned HTTP ${code}"
+  code="$(order "${side}" "${acct}" "${FACE}" "${CORP}" "${CORP_SIX_DP}")"
+  vlog "      POST /orders ${side} acct=${acct} face=${FACE} px=${CORP_SIX_DP} ticker=${CORP} -> HTTP ${code}"
+  [[ "${code}" == "200" ]] || fail "a six-decimal corporate limit returned HTTP ${code}, expected 200.
+  A 422 here means the engine is still deriving the 0.001 grid for CORP- — either the members are
+  running a pre-change build, or the roll was not a clean single-build epoch. Check every member's
+  image before believing this is a code fault."
 done
 sleep 6
 CORP_QTY="$(sql "SELECT quantity FROM positions WHERE security='${CORP}' AND accountid=${BUYER};")"
 [[ "${CORP_QTY}" == "${FACE}" ]] || fail "buyer holds '${CORP_QTY}' of ${CORP}, expected ${FACE}"
 CORP_BASIS="$(sql "SELECT averagecostbasis FROM positions WHERE security='${CORP}' AND accountid=${BUYER};")"
+[[ "${CORP_BASIS}" == "${CORP_SIX_DP}" ]] \
+  || fail "cost basis ${CORP_BASIS} lost the six decimals of ${CORP_SIX_DP} — the grid admitted the
+  order but something downstream rounded it, which is the 3dp trap ADR-057 exists to prevent"
 CORP_ACTUAL="$(python3 -c "print('%.6f' % (${CORP_QTY} * float('${CORP_BASIS}')))")"
 [[ "${CORP_ACTUAL}" == "${CORP_VALUE}" ]] \
   || fail "corporate position value ${CORP_ACTUAL} != ${CORP_VALUE} (face x fraction)"
-echo "[ok] ${CORP} crossed at ${CORP_ON_GRID}: ${CORP_QTY} face @ ${CORP_BASIS} = \$${CORP_ACTUAL}"
+echo "[ok] ${CORP} crossed at ${CORP_SIX_DP}: ${CORP_QTY} face @ ${CORP_BASIS} = \$${CORP_ACTUAL}"
+
+# (b) THE NEGATIVE CONTROL, and it is the half that matters. Widening the grid predicate to
+#     "everything" would pass (a) perfectly while multiplying the equity price band by a thousand.
+#     The grid must still be 0.001 for a non-bond, so a six-decimal EQUITY limit must still be
+#     refused. Same pair-of-prices trick as yu16-book-grid: the accepted price anchors the book, so
+#     the refused one 0.000123 away cannot be out of band — the decimals are the only variable.
+curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+  -d "{\"accountId\":${SELLER},\"tickers\":\"${EQUITY_GRID}\",\"price\":120.00}" >/dev/null \
+  || fail "seed failed for ${EQUITY_GRID}"
+EQ_ON="$(order Buy ${BUYER} 10 "${EQUITY_GRID}" "120.001")"
+[[ "${EQ_ON}" == "200" ]] || fail "an on-grid equity limit returned HTTP ${EQ_ON} — the control is unsound"
+EQ_OFF="$(order Buy ${BUYER} 10 "${EQUITY_GRID}" "120.001123")"
+[[ "${EQ_OFF}" == "422" ]] || fail "a SIX-DECIMAL EQUITY limit returned HTTP ${EQ_OFF}, expected 422.
+  The grid was widened globally instead of to bonds only. Every bond assertion above still passes
+  in that state, and the equity price band is now a thousand times wider — this is the exact
+  failure the scope half of ADR-060 exists to prevent."
+echo "[ok] equity ${EQUITY_GRID}: 120.001 rests, 120.001123 refused — the grid widened for BONDS, not globally"
 echo "[ok] a corporate position is now held, so yu16-accrued-interest can check a 30/360 row"
 
 echo
-echo "[PASS] yu16-bond-position: face x fraction through the unchanged engine, boundary rejection pre-consensus, 100x error detectable, a zero-coupon bill crossing on the ticker-derived grid, and a corporate held with the fine grid proven NOT to extend to it"
+echo "[PASS] yu16-bond-position: face x fraction through the engine, boundary rejection pre-consensus, 100x error detectable, a zero-coupon bill crossing, and a corporate resting a SIX-DECIMAL limit while equities keep the 0.001 grid"
