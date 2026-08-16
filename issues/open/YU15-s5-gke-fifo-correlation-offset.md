@@ -202,34 +202,53 @@ probe, will be restarted`, 18110 serving again **26 s** later. §1b's mitigation
 unbounded outage into a ~26 s one on the tier where it matters. It neither prevents the wedge nor
 explains it, and the offset rebuilds on the next leader kill.
 
-## The worst consequence, and it IS measured: a 200 carrying another order's `orderRef`
+## The suspected worst consequence — a 200 carrying another order's `orderRef` — is NOT established
 
 `completePipelinedHead` reads the ref for a NEW order out of the **ack buffer**, not out of the
-pending request — so when the ack popping the head belongs to a different order, the client is
-handed that order's engine reference with an HTTP 200.
+pending request:
 
-Measured directly. Offset rebuilt small (**K = 13**) so answers land inside the deadline, then 50
-concurrent orders with unique `clientOrderId`s fired into a quiet rig. The cluster's next ref was
-**20955**, so this burst's 50 orders took refs **20955–21004**:
+```java
+final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) : p.orderRef;
+//                                                    ^^^^^^ the ACK's ref, not p's
+```
 
-| | predicted from K=13 | measured |
-|---|---|---|
-| clients answered `200` | 50 − 13 = 37 | **37** |
-| clients answered `504` | 13 | **13** |
-| lowest `orderRef` any client received | 20955 + 13 = 20968 | **20968** |
-| refs reported to **nobody** | 20955–20967 (13) | **20955–20967** |
+So if the ack popping the head belongs to a different order, the client is handed **that** order's
+engine reference with an HTTP 200 — a confident wrong answer rather than a timeout. Under the
+offset model that is forced, and it would be materially worse than §1: §1's client under-counts its
+own exposure, this one records an exposure belonging to somebody else, and a client that then
+cancels or replaces "its" ref acts on a stranger's order.
 
-The 37 returned refs were contiguous, `20968 … 21004`. **Every client that got a 200 received the
-`orderRef` of the order 13 positions after its own.** The client whose order actually became ref
-20955 was told 20968.
+**The measurement taken does not establish it, and an earlier version of this file wrongly said it
+did.** Offset rebuilt small (**K = 13**), then 50 concurrent orders with unique `clientOrderId`s
+into a quiet rig; the cluster's next ref was 20955, so the burst took refs 20955–21004. Result:
+**37 × `200` carrying refs 20968–21004 (contiguous), 13 × `504`, and refs 20955–20967 reported to
+nobody.**
 
-So the failure has two faces at once, and the second is worse than §1:
+That is consistent with the offset — and **equally consistent with an innocent reading**: that the
+first 13 orders in offer order simply went unanswered and the other 37 received their *own* correct
+refs, which are exactly 20968–21004. Both models predict the same 37/13 split, the same contiguous
+block, and the same 13 missing refs. **An aggregate ref-gap cannot distinguish them.**
 
-- **K orders per wedge are invisible** — booked by the cluster, reported to no one. §1 exactly, and
-  §1 at least lies in the safe direction.
-- **Every other client is told a stranger's `orderRef`, with a 200.** A client that then cancels or
-  replaces "its" ref is acting on somebody else's order. That is a silent cross-client correctness
-  defect, and it is not visible to any probe, counter or log line the gateway currently has.
+### The test that would settle it, which has not been run
+
+The two models disagree about *which* clients fail:
+
+| model | clients answered `504` |
+|---|---|
+| offset (misattribution) | the **last** K in offer order |
+| innocent | the **first** K in offer order |
+
+So fire the burst **staggered ~60 ms** rather than all at once, so offer order equals launch order
+and stays recoverable, while all of them still land inside the 12 s window. Launch index *i* then
+has true ref `R0+i-1`, and each specific client's answer can be compared against it: under the
+offset, client 1 is told `R0+K`; under the innocent reading client 1 is told nothing and client
+`K+1` is told `R0+K`, its own. The peer's equivalent formulation — match each `clientOrderId`
+against the read model's actual ref for it — settles the same question and needs no control of
+offer order.
+
+**Until one of those runs, treat this as a code-read prediction with suggestive but non-decisive
+supporting data.** It is the most severe claim in this file and it deserves the strictest evidence,
+not the loosest reading of a number that happened to match.
 
 ## What this does NOT establish
 
