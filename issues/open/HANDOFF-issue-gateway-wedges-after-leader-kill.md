@@ -330,9 +330,13 @@ the container, which is the only known cure. The open question is unchanged and 
 answering: why a bounded 12s wait per request never clears in eight minutes.
 
 **One candidate mechanism has since been eliminated by measurement** — the in-flight permit window
-is NOT leaked by the wedge — and the wedge this route reproduces on kind turns out to be *late*
-acks rather than *absent* acks, which is a different state from the total hang described here. See
-*The permit-leak mechanism* at the end of this section before proposing a cause. Note also that the
+is NOT leaked by the wedge, established independently on kind and on GKE. What replaced it is a
+**permanent FIFO correlation offset**: `Inflight.onDirectAck` pops the head positionally with no id
+matching, so a leader change strands N offers and every later ack thereafter pops a head belonging
+to an abandoned request. One pop per push — nothing drains and nothing accumulates. See *The
+permit-leak mechanism* and *The FIFO correlation offset* at the end of this section before proposing
+a cause. (An earlier reading of the kind data as "late acks" was retracted by its author the same
+day; the retraction is kept there because the reasoning error is instructive.) Note also that the
 "bounded 12s wait" in the sentence above is two **serial** bounded waits — up to 10s in
 `inflight.acquire(ACK_TIMEOUT_MS)` and then up to 12s in `future.get(ACK_TIMEOUT_MS + 2_000)` — so
 the worst case per request is ~22s and every drain-time estimate built on 12s is about half what it
@@ -486,6 +490,10 @@ consume a ref — its offer never cleared before the deadline.) That is §1, on 
 loss to produce the divergence and stop hunting the wedge for it; the wedge is only needed for §5.
 
 ### The permit-leak mechanism — PROPOSED, TESTED, AND ELIMINATED, 2026-08-16
+<!-- The elimination stands (both arms, independently). One conclusion drawn from it — "late acks" —
+     was RETRACTED by its author the same day; see the retraction below and the offset model that
+     replaced it. -->
+
 
 A candidate cause for the non-drainage was read out of the code and then killed by measurement. It
 is recorded because it is the most plausible mechanism anyone has produced for §5, and because
@@ -520,9 +528,21 @@ offers demonstrably cleared, so (b) is excluded. No reconnect occurred — `GATE
 `restarts=0` — so (c) is excluded. **Therefore the acks are arriving, just later than the
 submitter's 12-second deadline.**
 
-> **The reproducible wedge is LATE acks, not ABSENT acks.** The client is answered 504 by a timeout
-> while its ack is still in flight; the ack lands shortly after and frees the slot. There is no
-> unbounded resource loss, and §5's failure to drain is **not** permit exhaustion.
+> ~~**The reproducible wedge is LATE acks, not ABSENT acks.**~~ **RETRACTED 2026-08-16, same day,
+> by the author.** The permit-leak elimination above stands. This conclusion drawn from it does not.
+
+**Why it was wrong, precisely.** The argument ran: the offer cleared, no failure path ran, no
+reconnect occurred, therefore the only remaining release is an arriving ack, therefore *this order's*
+ack arrived late. The first three steps hold. The fourth does not follow, because
+`Inflight.onDirectAck` pops the FIFO head **positionally, with no id matching** — so an arriving ack
+releases *a* permit, not *that order's* permit. "A permit was released" is not "this order was
+acknowledged", and collapsing the two is the whole error. The GKE arm measured the distinction
+directly (an ack counter incrementing while the gap stayed pinned); this arm never sampled an ack
+counter at all and inferred the ack from the permit release.
+
+**The correct mechanism is a permanent correlation offset**, established on GKE and written up in
+*The FIFO correlation offset* below. What follows here is the kind-side evidence **for** that model,
+re-filed as supporting data rather than as a competing result.
 
 **And §5's total hang is a DIFFERENT STATE from the wedge this route produces.** Four induction
 attempts via `yu12-gke-failover-transparency` on kind; two produced a wedge, and **both were
@@ -531,19 +551,50 @@ rather than running away, and HTTP never stopped answering. That is the partial-
 §1b already records, not the eight-minute total outage §5 describes. **Do not assume the two are
 reachable by the same route.**
 
-**Scope this result honestly: it is a statement about kind's partial wedge.** If the acks on another
-rig genuinely never arrive rather than arriving late, `completePipelinedHead` never runs, the permits
-are never freed, and the mechanism is live again in exactly the regime §5 describes. "Acks arrive
-late" is also the symptom a CPU-starved box manufactures, and kind's idle starvation is why
-`CLUSTER_IDLE_SLEEP_MS` exists. The wedge was found on GKE first and reproduced on kind second, so
-the GKE arm is the one that can settle it. The discriminator is cheap — wedged gateway, quiet rig,
-send N orders:
+#### The kind evidence FOR the offset, and the reading that settles it
 
-| ref delta | depth | verdict |
-|---|---|---|
-| = N | flat | late acks (the kind result) |
-| = N | climbs ~N and **stays** | the leak is live on that rig |
-| = 0 | flat | offers not clearing — not this wedge at all |
+The single strongest observation from this arm was taken **before** the experiment and was not used
+against its own hypothesis until the GKE result arrived. On the freshly rolled `:yu15prewedge` pod,
+before any induction:
+
+```
+traderx_gateway_inflight_orders 0
+```
+
+Depth was **0**. It became **2** only after leader kills, and then stayed pinned at 2 — through long
+idle stretches with zero load offered.
+
+> **A non-zero depth that persists while the gateway is idle cannot be lateness.** Late acks still
+> arrive, so permits still return, so an idle window empties to 0. A window that idles at 2 requires
+> entries that will *never* be completed — which is the stranded FIFO, at K=2 here against K=51 on
+> GKE. The two arms measured the same curve at different magnitudes: `0 → 21 → 36 → 51` across three
+> leader kills there, `0 → 2` here.
+
+The fast sample `3 2 2 2 2 …` across a single wedged order is the same model seen per-request: the
+order pushes depth to K+1, an arriving ack pops the *stranded head* back to K, and the order itself
+becomes the new tail and times out at 504.
+
+**This also explains why every kind wedge was PARTIAL, which had been recorded as noise.** Under an
+offset, order *i* is completed by the ack of order *i+K*. Sent **serially**, nothing follows within
+the 12-second window, so every order 504s — this arm's 5-for-5 and 9-of-10. Sent in a **burst**, ack
+*i+K* can land inside order *i*'s window, so a fraction return 200. Success is therefore a function
+of in-flight depth against K, not of luck, and it is a second independent signature of the
+`K > pool size` cliff.
+
+**A prediction from the offset that neither arm has measured.** `completePipelinedHead` builds the
+response from the **arriving** ack, not from the popped order:
+
+```java
+final int ref = p.type == InputEvent.TYPE_ORDER_NEW ? buffer.getInt(offset + 8) : p.orderRef;
+//                                                    ^^^^^^ the ACK's ref, not p's
+```
+
+So a client whose request is popped by a foreign ack receives **another order's `orderRef` with HTTP
+200** — not a timeout, a confident wrong answer cross-wired between clients. If that holds, the 200s
+observed during a wedge are not successes, and it is worse than §1: there a client under-counts its
+own exposure, here it records someone else's. **Unmeasured.** Test: burst with distinct
+`clientOrderId`s during a wedge, keep every 200, and check each returned `orderRef` against what the
+cluster assigned for that key; mismatches should track K.
 
 `GATEWAY_MAX_INFLIGHT` was deliberately **not** shrunk to force exhaustion: with depth provably
 flat, a smaller window changes the number and not the mechanism, and forcing saturation would
@@ -576,6 +627,26 @@ runtime image is `eclipse-temurin:21-jre` (no `jcmd`/`jstack`), but `kill -3` ma
 threads to stdout, where `kubectl logs` picks them up — the JVM serves that, not the HTTP server.
 **Take a healthy-load baseline dump first**: on this build it read 0 `tryAcquire` frames and 2
 `future.get` frames across 66 pool threads, and the wedged dump is uninterpretable without it.
+
+### The FIFO correlation offset — GKE arm, 2026-08-16, WRITE-UP PENDING
+
+**Placeholder, deliberately not written by the kind arm.** The mechanism was established on GKE and
+belongs in its author's words; this stub exists so the pointers above resolve rather than dangle.
+
+The finding in one line, as relayed and code-verified: `Inflight.onDirectAck` pops the FIFO head
+**positionally, with no id matching**, so a leader change strands N offers whose acks never arrive
+and the FIFO is thereafter permanently N ahead. Every later ack pops a head belonging to an
+abandoned request — one pop per push, so nothing drains and nothing accumulates. Measured on GKE at
+`depth=51 off_ok=3744 ack=3693 gap=51`, frozen, with an ack counter incrementing while `gap` stayed
+pinned; the offset grew 21 → 36 → 51 across three leader kills. `drain()` cures it because it empties
+the FIFO and resets `lastInputSeq`.
+
+The comment above the pop guards the *continuation-fill* case and leaves the *stranded-offer* case
+unguarded, which is why the bug survived review.
+
+**Open when this stub was written:** whether §5's cliff is `K > pool size` (which would give
+`gateway.yaml`'s "64 only moves the cliff" a specific meaning), and the cross-wired `orderRef`
+prediction recorded above. Whoever writes this up should replace this stub entirely.
 
 ## §6. Where the fix has actually run, and where it still has not
 
