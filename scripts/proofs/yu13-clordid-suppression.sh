@@ -17,7 +17,8 @@
 # working, and the proof would assert nothing.
 #
 # Usage:
-#   ./yu13-clordid-suppression.sh        (needs: kubectl port-forward svc/order-matcher 18110:18110)
+#   ./yu13-clordid-suppression.sh        (needs: kubectl --context "${CTX:-kind-traderx-yu12-cluster}" \
+#                                                  -n traderx port-forward svc/order-matcher 18110:18110)
 #   ./yu13-clordid-suppression.sh -v     verbose: the request bodies, the clientOrderId on each
 #                                        call, every SQL query and the row count after each step
 #

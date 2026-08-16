@@ -32,8 +32,22 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 TEMPO_URL="${TEMPO_URL:-http://localhost:3200}"
 MEMBER_POD="${MEMBER_POD:-order-matcher-cluster-0}"
 NS="${NS:-traderx}"
-KCTX="${KCTX:-${CTX:-}}"   # CTX accepted too, so one env var drives every proof; empty still means "current context"
-K="kubectl ${KCTX:+--context ${KCTX}} -n ${NS}"
+KCTX="${KCTX:-${CTX:-}}"   # CTX accepted too, so one env var drives every proof
+# REFUSE rather than inherit. This used to fall through to the operator's ambient current-context
+# when neither var was set, which is how a proof reports on the wrong cluster: this project keeps
+# TWO rigs in kubeconfig, and on 2026-08-12 current-context was the GKE bench cluster while the
+# subject was kind. Deliberately NOT defaulted to kind either -- that only points the same bug the
+# other way, silently wrong the day someone runs this against GKE. The caller chooses the rig.
+if [ -z "${KCTX}" ]; then
+  AMBIENT="$(kubectl config current-context 2>/dev/null || true)"
+  echo "[FAIL] neither KCTX nor CTX is set, so this proof does not know which rig to assert about." >&2
+  echo "       It will NOT fall back to the ambient current-context (${AMBIENT:-<none>})." >&2
+  echo "       Set one: CTX=kind-traderx-yu12-cluster  (the YU15 Aeron cluster rig)" >&2
+  echo "                CTX=kind-traderx-state-014     (the single-BLP tier)" >&2
+  echo "                CTX=<gke context>              (to assert against GKE)" >&2
+  exit 1
+fi
+K="kubectl --context ${KCTX} -n ${NS}"
 ORDERS="${ORDERS:-3}"
 TAG="otel-$$-$(date +%s)"
 
