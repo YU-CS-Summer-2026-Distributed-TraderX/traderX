@@ -329,6 +329,15 @@ liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the
 the container, which is the only known cure. The open question is unchanged and still worth
 answering: why a bounded 12s wait per request never clears in eight minutes.
 
+**One candidate mechanism has since been eliminated by measurement** — the in-flight permit window
+is NOT leaked by the wedge — and the wedge this route reproduces on kind turns out to be *late*
+acks rather than *absent* acks, which is a different state from the total hang described here. See
+*The permit-leak mechanism* at the end of this section before proposing a cause. Note also that the
+"bounded 12s wait" in the sentence above is two **serial** bounded waits — up to 10s in
+`inflight.acquire(ACK_TIMEOUT_MS)` and then up to 12s in `future.get(ACK_TIMEOUT_MS + 2_000)` — so
+the worst case per request is ~22s and every drain-time estimate built on 12s is about half what it
+should be.
+
 **And the liveness proof does not answer it — do not read it as if it did.** Its step 4 commits an
 order after a 160-order drive, which looks like evidence the backlog drains; it is not, because the
 restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
@@ -475,6 +484,98 @@ kill and no race:
 consume a ref — its offer never cleared before the deadline.) That is §1, on demand, without the
 1-in-4 wedge race the rest of this document is built around. Anyone working on §1 should use quorum
 loss to produce the divergence and stop hunting the wedge for it; the wedge is only needed for §5.
+
+### The permit-leak mechanism — PROPOSED, TESTED, AND ELIMINATED, 2026-08-16
+
+A candidate cause for the non-drainage was read out of the code and then killed by measurement. It
+is recorded because it is the most plausible mechanism anyone has produced for §5, and because
+eliminating it narrows what is left.
+
+**The hypothesis.** `Inflight` is a `Semaphore(GATEWAY_MAX_INFLIGHT)`, default **4096** and set in
+no manifest. `release()` is owner-thread-only. When an offer CLEARS, `offerPipelined` calls
+`inflight.register(p)` and holds the permit until the ack arrives; the submitter's own timeout
+(`submitPipelined0`: `future.get(ACK_TIMEOUT_MS + 2_000)` → `TimeoutException` → `return null`)
+does **not** release it. The wedge is precisely "offer clears, ack never arrives" — so every wedged
+order would burn a permit permanently, the window would be gone in ~205s at 20 orders/sec, and
+every later request would block the full acquire timeout. That would explain non-recovery exactly,
+and it would explain why only a restart cleared it.
+
+**It is wrong.** Measured on `traderx/cluster-node:yu15prewedge` (the pre-self-heal build) against
+`:yu16` members, on a rig verified quiet first — `next_order_ref` stationary at 4023 over 10s, every
+process of the experimenter's killed:
+
+| witness | reading |
+|---|---|
+| 5 serial orders, wedged gateway | **5 × 504** `no committed ack` |
+| `traderx_cluster_next_order_ref` | 4023 → 4028 — **delta exactly 5**, one ref per order |
+| `traderx_gateway_inflight_orders`, sampled every 0.5s for 40s | **3, then 2** for every remaining sample |
+
+The ref delta confirms these are genuine §1 wedge orders: the offers cleared and the cluster booked
+what the client was told had failed. **And the depth is flat — permits are acquired and released,
+order by order.**
+
+**What that leaves, by elimination.** A permit is freed only by (a) an arriving ack in
+`completePipelinedHead`, (b) one of `offerPipelined`'s three failure paths, or (c) `drain()`. The
+offers demonstrably cleared, so (b) is excluded. No reconnect occurred — `GATEWAY up` count 0,
+`restarts=0` — so (c) is excluded. **Therefore the acks are arriving, just later than the
+submitter's 12-second deadline.**
+
+> **The reproducible wedge is LATE acks, not ABSENT acks.** The client is answered 504 by a timeout
+> while its ack is still in flight; the ack lands shortly after and frees the slot. There is no
+> unbounded resource loss, and §5's failure to drain is **not** permit exhaustion.
+
+**And §5's total hang is a DIFFERENT STATE from the wedge this route produces.** Four induction
+attempts via `yu12-gke-failover-transparency` on kind; two produced a wedge, and **both were
+partial** — roughly one order in ten still committed, `noAckStreak` oscillated between 1 and 9
+rather than running away, and HTTP never stopped answering. That is the partial-degradation regime
+§1b already records, not the eight-minute total outage §5 describes. **Do not assume the two are
+reachable by the same route.**
+
+**Scope this result honestly: it is a statement about kind's partial wedge.** If the acks on another
+rig genuinely never arrive rather than arriving late, `completePipelinedHead` never runs, the permits
+are never freed, and the mechanism is live again in exactly the regime §5 describes. "Acks arrive
+late" is also the symptom a CPU-starved box manufactures, and kind's idle starvation is why
+`CLUSTER_IDLE_SLEEP_MS` exists. The wedge was found on GKE first and reproduced on kind second, so
+the GKE arm is the one that can settle it. The discriminator is cheap — wedged gateway, quiet rig,
+send N orders:
+
+| ref delta | depth | verdict |
+|---|---|---|
+| = N | flat | late acks (the kind result) |
+| = N | climbs ~N and **stays** | the leak is live on that rig |
+| = 0 | flat | offers not clearing — not this wedge at all |
+
+`GATEWAY_MAX_INFLIGHT` was deliberately **not** shrunk to force exhaustion: with depth provably
+flat, a smaller window changes the number and not the mechanism, and forcing saturation would
+manufacture a failure that does not occur naturally and then explain it.
+
+#### Two permit-holding states, not one — the second was not previously identified
+
+`inflight.acquire()` runs **before** `tasks.add(new FutureTask<>(() -> offerPipelined(p), null))`,
+so a permit is held from before the owner task is even queued. `drain()` iterates `fifo` only.
+
+| state | in FIFO? | freed by `drain()`? |
+|---|---|---|
+| acquired, task queued, **owner thread blocked in `connectCycling()`** | no | **no** — freed only when the owner resumes and the task runs |
+| offered and `register`ed, ack outstanding | yes | yes |
+
+Measured under quorum loss (40 concurrent orders): depth held at **38** for as long as quorum was
+absent, then **38 → 0 within 10s** of quorum returning, with commits resuming (`orderRef 2417`).
+That is the drain experiment's "+0s recovery" seen from the permit side, and it confirms the
+accounting is sound in the recoverable regime.
+
+#### The instrument for this question is unreadable when the question arises
+
+`traderx_gateway_inflight_orders` and `traderx_gateway_inflight_capacity` are exported on
+`/metrics`, and `/metrics` is registered **only on the order port (18110)** — the port that hangs.
+The probe server on `GATEWAY_PROBE_PORT` carries `/ready`, `/health` and `/live` and nothing else.
+So the gauge needed to confirm or refute a saturation hypothesis is unavailable at the moment of
+saturation, whichever way the answer goes. This is the same shape as a probe served by the pool it
+reports on, which §5 already fixed one port over. Workaround used here, needing no rebuild: the
+runtime image is `eclipse-temurin:21-jre` (no `jcmd`/`jstack`), but `kill -3` makes the JVM dump all
+threads to stdout, where `kubectl logs` picks them up — the JVM serves that, not the HTTP server.
+**Take a healthy-load baseline dump first**: on this build it read 0 `tryAcquire` frames and 2
+`future.get` frames across 66 pool threads, and the wedged dump is uninterpretable without it.
 
 ## §6. Where the fix has actually run, and where it still has not
 
