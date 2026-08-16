@@ -326,10 +326,13 @@ Two readings that keep the headline honest and belong beside it:
    YU12–YU15**.
 3. **The `EgressListener` and self-heal gap on YU12–YU15.** Deliberate (no rig for those tiers, and
    YU12 is a different program) — but it is a gap, and §4's table is where it is now written down.
-4. **`yu13-otel-trace-join.sh` defaults `KCTX` to empty** and therefore omits `--context` entirely,
-   where its sibling `yu13-otel-reject-trace-log-join.sh` defaults to `kind-traderx-yu12-cluster`.
-   Identical on YU15, YU16 and YU17, so it is a repo-wide gap rather than a propagation gap
-   **[tree]**. Not fixed pending a decision.
+4. ~~**`yu13-otel-trace-join.sh` defaults `KCTX` to empty**~~ — **CLOSED 2026-08-16.** It omitted
+   `--context` entirely when neither `KCTX` nor `CTX` was set, falling through to the ambient
+   current-context. Fixed by making it **refuse** rather than inherit — deliberately not by
+   defaulting it to kind, which would only point the same bug the other way and be silently wrong
+   against GKE. Verified on the live kind rig, both arms: unset → exit 1 naming the ambient context
+   it declined to use, `CTX` set → the proof runs to `[PASS]`, exit 0 **[rig]**. The two
+   operator-facing hint strings that omitted `--context` went with it.
 5. **`yu12-gke-failover-transparency.sh` still reports the wrong cause** (issue §4). Its retry loop
    cannot distinguish a dead connection from a cluster refusal, and its "55 DUPLICATED" reads
    `next_order_ref` deltas as bookings when a ref is consumed by orders that never rest. It should
