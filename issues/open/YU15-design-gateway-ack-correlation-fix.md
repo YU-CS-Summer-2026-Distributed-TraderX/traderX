@@ -4,10 +4,17 @@
 §5. The defect is diagnosed in `HANDOFF-issue-gateway-wedges-after-leader-kill.md` §5 and the raw
 evidence is in `YU15-s5-gke-fifo-correlation-offset.md`.
 
-**Recommendation: ship Option A. Option B is the only unconditionally correct fix, and it should be
-scheduled, not rushed.** A removes the known trigger and makes the failure self-limiting with no
-wire change; B removes the *class* of failure and costs a coordinated member+gateway roll. They are
-not alternatives so much as a sequence, and A does not make B harder.
+**Recommendation: ship Option A, and schedule Option B as the only design that closes the class.**
+
+**A is a mitigation with a known uncovered path — not a repair of the invariant.** It removes the
+dominant observed trigger (leader change) for free: gateway-only, rolling restart, no epoch. It does
+**not** reach the second trigger, which is deliberate and load-correlated — the egress ack is
+best-effort by design and can be dropped with no election involved. See *A second strand trigger*
+below. **B is the only design under which a stranded offer harms nothing**, because no order depends
+on another's position.
+
+This wording is deliberately stronger than the first draft's "scheduled, not rushed". That was right
+when leader change was the only known trigger. It is not any more.
 
 ---
 
@@ -205,10 +212,50 @@ or repair it, because there is no `onNewLeader` to hang the drain on.
 
 **What this does and does not establish.** It is a code reading, not a measurement — I have not
 observed a drop-induced strand, and in the §5 hang the owner thread was RUNNABLE in `pollEgress`
-throughout, so gateway HTTP saturation did **not** visibly starve egress. I am deliberately not
-claiming a feedback loop. What it does establish is that A is "repairs one of at least two known
-strand triggers, one of which is by design", not "repairs the only trigger" — and that is a
-materially different case for scheduling B.
+throughout, so gateway HTTP saturation did **not** visibly starve egress. **No feedback loop is
+claimed**, tempting as the shape is.
+
+#### The consequence for A: a sawtooth, and it is weakest where the cluster is healthiest
+
+A's repair fires on `onNewLeader`. Drop-induced strands accumulate **between** elections. So A does
+not eliminate K — it converts a monotonic ratchet into a **sawtooth bounded by
+(drop rate × inter-election interval)**.
+
+**That inverts the usual reliability intuition, and it is the part to not let a reader miss.** A
+stable cluster that never elects never drains, so drop-induced K grows with nothing to reset it.
+**A's repair is triggered by the very event that is otherwise the problem, and a well-behaved
+cluster starves it of repairs.** "A removes the known trigger" reads as though A degrades
+gracefully; on this path it degrades *better on a bad cluster than on a good one*.
+
+**And the self-heal does not cover the gap either.** The obvious objection is that
+`offeredUnackedStreak` will catch drop-induced strands — a dropped ack does qualify (the offer
+cleared, `p.offered` is true, the submitter times out, `r == null`). But the streak **resets on any
+answered order**, verified in the operative layer:
+
+```java
+} else {
+    noAckStreak.set(0);
+    offeredUnackedStreak.set(0);      // ← any answered order clears it
+}
+```
+
+Under an offset, **most orders are answered** — by foreign acks. That is exactly what the kind arm
+measured: streak oscillating **1–9, never approaching 20, at K = 2**. So at small K the self-heal is
+structurally prevented from firing, and it becomes reachable only once enough orders go unanswered —
+which is around **K ≥ pool size, i.e. §5's cliff itself**.
+
+**So both repair paths arrive at the cliff rather than before it.** Neither A's drain nor the
+self-heal's drain is correlated with drop-induced K growth in the range where intervening would
+help.
+
+*Status of that composition: the streak oscillation is measured (kind), the drop-induced
+accumulation is a code reading (above), and the combination of the two is inference. Recorded as
+reasoning, not as a measured claim.*
+
+**What this establishes for the recommendation:** A is not "repairs the only trigger". It is
+"repairs the dominant observed trigger, leaves a deliberate load-correlated one uncovered, and its
+repair engages least often on the healthiest clusters". That is why B's line above moved from
+*desirable* to *the only design that closes the class*.
 
 ### Dependency worth flagging
 
@@ -405,6 +452,18 @@ consequence, as noted above.
    attempts, which strands an offer with no election involved. So A repairs one of at least *two*
    known triggers, one of them deliberate. That is a scheduling input, not an argument against
    shipping A.
-3. **Whether the drop-induced strand is reachable in practice.** Code-read only. Worth one
-   measurement whenever a rig is next up: drive hard enough to backpressure egress and watch whether
-   K climbs with no leader kill. If it does, B moves up.
+3. **Whether the drop-induced strand is reachable in practice.** Code-read only, and it is the one
+   open question that could move B's schedule. **Two readings, and take the cheap one first:**
+
+   - **Passive, rides along on any bench run.** On a healthy cluster under sustained load **with no
+     kills**, watch `traderx_gateway_pipeline_total{stage="ack_completed"}` against `offer_success`.
+     **If the gap opens at all without an election, drops are stranding in the wild** and this
+     question is answered with no rig time of its own. *Caveat from this document's own instrument
+     note: `drain()` never increments `ack_completed`, so the gap over-reports after any reconnect —
+     the run must be reconnect-free for the number to mean anything, and if `gap` and `depth`
+     disagree, **`depth` is the reading to trust**.*
+   - **Active, if the passive reading is ambiguous.** Drive hard enough to backpressure egress and
+     watch whether `depth` climbs with no leader kill.
+
+   Same property that made the engine-resend oracle worth having: it can ride on work that is
+   happening anyway rather than needing its own expedition.
