@@ -2,7 +2,20 @@
 
 **Status: pattern documented 2026-07-14; YU04/YU05 instance FIXED same day; YU02 database-manifests
 instance FIXED same day (committed on all 8 branches); `pipeline/*.sh` instance FIXED 2026-08-03
-(committed on all 15 non-YU15 branches). No open instances.**
+(committed on all 15 non-YU15 branches). **A fourth instance was found and fixed 2026-08-14 —
+see below. No open instances.**
+
+## Fourth instance, 2026-08-14: `pipeline/validate-generated-state-lineage-invariants.sh`
+
+Same shape, found while closing `HANDOFF-issue-yu-vacuous-pipeline-guards.md`. The YU allowlist case
+(`YU[0-9][0-9]-*) yu_allowed_roots`) existed on **YU15, YU16 and YU17 only**; the other fourteen
+branches still carried the pre-fix file and still failed exactly as that issue documents. Measured
+on the YU07 worktree: `[fail] no allowlist entries resolved for state YU07-historical-tick-store`.
+
+Note what makes this instance instructive: the fix was NOT missing, it was *partially propagated*,
+so any check on the tip reported success. "Is it fixed?" is a per-branch question in this repo, and
+a single-worktree answer to it is not an answer. Carried to all sixteen non-`main` branches;
+`main` deliberately excluded as the default branch.
 
 ## The pattern
 
