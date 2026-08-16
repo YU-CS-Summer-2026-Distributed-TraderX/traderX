@@ -62,7 +62,10 @@ applied_seq() { # applied_seq <member-ordinal>
 # reads the status code ever runs — so the guard covers "answered something other than 200", the
 # case that almost never happens, and is bypassed in the case that does. The script then dies with
 # no message and the suite records a bare FAIL. (This exact defect is live in
-# yu16-bond-position.sh; see issues/HANDOFF-issue-suite-verdicts-under-load.md.) With the `|| true`
+# yu16-bond-position.sh. It was written up in issues/HANDOFF-issue-suite-verdicts-under-load.md,
+# which its own author later WITHDREW and deleted — that document's framing was wrong, though this
+# observation in it was right; see issues/HANDOFF-review-2026-08-12-to-14-gateway-and-proof-
+# hardening.md.) With the `|| true`
 # a connection failure surfaces as code 000, which the guards below treat as its own verdict:
 # 000 means NO ANSWER, and no answer is not a refusal.
 book() { # book <payReceive> <rate> <clientOrderId> [account] -> "<http_code> <body>" on stdout

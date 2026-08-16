@@ -109,7 +109,7 @@ The other two are the same pre-existing blocker in both runs:
 | Proof | Outcome |
 |---|---|
 | `yu13-otel-trace-join` | **PASSES** once `OTEL_SAMPLE_MASK` is the manifest's `0` rather than the `127` the rig had drifted to. The pods sample on the mask; the proof's own predicate reads the mask from ITS shell and defaults to 0, so a drifted rig makes it expect traces the engine never sampled |
-| `yu13-cancel-ingress` | Fails at "roll the gateway to `traderx/cluster-node:yu15-cancel`". Not a YU17 regression: pre-YU16 gateway images serve their probes on 18110 only, and the manifest's startup probe points at 18111, so the kubelet crash-loops them. Diagnosed to the kubelet event and written up in `issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md` |
+| `yu13-cancel-ingress` | Fails at "roll the gateway to `traderx/cluster-node:yu15-cancel`". Not a YU17 regression: pre-YU16 gateway images serve their probes on 18110 only, and the manifest's startup probe points at 18111, so the kubelet crash-loops them. Diagnosed to the kubelet event and written up in `issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md` |
 | `yu13-stp-and-replace` | Same cause — the runner's `[stp-prep]` repins the gateway to `traderx/cluster-node:yu15-pre` |
 
 So every inherited proof that CAN run against the current manifest passes on this build, and the

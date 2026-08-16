@@ -140,7 +140,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * {@code restarts=0} and no log line while every order came back 504. Kubernetes therefore
      * never took the pod out of the Service and the LoadBalancer kept routing a single public IP
      * into it — and the orders were not refused, they were committed and booked while the client
-     * was told they failed. See issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md.
+     * was told they failed. See issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md.
      *
      * <p>A readiness signal for an ingress process has to mean "I can commit", not "my socket is
      * open".
@@ -322,7 +322,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/regulatory", this::handleMemberProxy);
         // READY MEANS "I CAN COMMIT", not "my socket is open". `connected` alone reported healthy
         // through a wedge in which every order was answered 504 while being committed and booked
-        // (issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md), so Kubernetes never pulled
+        // (issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md), so Kubernetes never pulled
         // the pod and the LoadBalancer kept feeding it. The streak is reported in the body either
         // way: the first thing anyone does with a failing probe is curl it by hand, and a bare
         // `connected:false` would send them to the network when the session is the problem.
@@ -479,7 +479,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * aeron-cluster 1.51.0). That is why a gateway that stops committing after a leader change says
      * nothing at any log level: the two events that would name the cause were being discarded by
      * the interface's own defaults. See
-     * issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md, whose §3 is exactly this ("no
+     * issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md, whose §3 is exactly this ("no
      * exception, no reconnect attempt, no log line at any level") and whose §2 asks whether the
      * egress subscription survives a leader change.
      *

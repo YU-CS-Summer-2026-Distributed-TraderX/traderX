@@ -7,7 +7,7 @@
 # trains people to skim failures) or assert the bug's continued existence (which inverts the day
 # someone fixes it). Run it by hand when you are working on §1.
 #
-# WHY IT EXISTS. issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md is organised around a
+# WHY IT EXISTS. issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md is organised around a
 # leader-kill WEDGE that reproduces about one run in four, and that framing has already sent one
 # investigation to consensus for an hour. For §1's divergence you do not need the wedge at all:
 # quorum loss produces booked-but-denied orders deterministically, in about ninety seconds. First
@@ -211,7 +211,7 @@ if [[ ${INVISIBLE} -gt 0 ]]; then
   echo "  DIVERGENCE REPRODUCED: ${INVISIBLE} orders are resting in the book that NO client was told"
   echo "  it owns. Every one of those ${DENIED} clients was answered a failure. The client's view and"
   echo "  the book's view have diverged silently and permanently, with the client under-counting its"
-  echo "  own exposure — §1 of issues/HANDOFF-issue-gateway-wedges-after-leader-kill.md."
+  echo "  own exposure — §1 of issues/open/HANDOFF-issue-gateway-wedges-after-leader-kill.md."
 else
   echo "  NO DIVERGENCE: the book gained ${BOOKED} orders and clients were told about ${ACKED}."
   echo "  If §1 has been fixed, this is the outcome to expect and this script has outlived its"
