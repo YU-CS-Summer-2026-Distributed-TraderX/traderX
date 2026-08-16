@@ -68,8 +68,29 @@ egressed to this session. So repair the invariant at that moment.
    `null` already means "post-publish ambiguity, the caller must not claim rejection".
 2. **Set a stale-ack watermark at the same instant:** `ignoreAcksAtOrBelow = highestInputSeqSeen`.
 3. **`onDirectAck` ignores any ack with `inputSeq <= ignoreAcksAtOrBelow`.**
-4. **`drain()` resets the watermark to -1**, because a fresh session may be a fresh epoch in which
-   `appliedSeq` restarts — the same reason it already resets `lastInputSeq`.
+4. **`drain()` resets BOTH `ignoreAcksAtOrBelow` AND `highestInputSeqSeen` to -1.** A fresh session
+   may be a fresh epoch in which `appliedSeq` restarts — the same reason it already resets
+   `lastInputSeq`.
+
+> **Step 4 resets two fields, not one, and review caught that the first draft reset only one.**
+> `MatchingEngineClusteredService:258` does `this.appliedSeq = 0` on a fresh epoch (verified). If
+> `drain()` clears the watermark but leaves `highestInputSeqSeen` at the old epoch's high value —
+> say 5000 — then the *next* `onNewLeader` recomputes `ignoreAcksAtOrBelow = 5000`, every ack in the
+> new epoch carries `inputSeq ≤ 5000` and is ignored, the FIFO never pops, no permit is released,
+> and **every order 504s forever**. It is also **latent**: it does not fire on the reconnect, it
+> fires on the first election *after* the epoch change, so a fresh-epoch smoke test passes and the
+> landmine detonates later.
+>
+> **The invariant, and it belongs in a comment at the declarations:** *every field derived from
+> `appliedSeq` resets together in `drain()`.* There are now three — `lastInputSeq`, the watermark,
+> and the high-water mark — and the next person will add a fourth or, worse, merge them for tidiness.
+> They answer different questions and must not be collapsed.
+>
+> **This also neutralises the `onNewLeader`-during-`connect()` ordering hazard**, which review
+> raised and neither of us could settle from the jar. `connectCycling()` calls `drain()` *before*
+> `AeronCluster.connect(...)`, so with both fields reset, a callback arriving inside `connect()`
+> computes a watermark of -1 — harmless. The threading question is still worth answering, but
+> correctness no longer depends on the answer.
 
 Step 2 is the part that makes this correct rather than merely better, and it is the step an obvious
 implementation would miss. Without it there is a residual race: an ack that was in flight across the
@@ -215,13 +236,25 @@ Under B the watermark does not exist and `drain()` is unchanged except for clear
 - **Batch:** untouched by both. `handleBatch` holds the owner thread for a whole batch and counts
   acks against `batchOutstanding` rather than using the FIFO, so it has no positional correlation to
   break. It does call `drain()`, which is why A's watermark reset must be correct there too.
-- **YU12:** **A does not transfer.** YU12's gateway has no `EgressListener` (so no `onNewLeader`)
-  and `offerAndAwait` collapses offer-cleared and ack-arrived into one boolean, discarding the local
-  `offered` — the same blocker already recorded for the self-heal. A YU12 variant needs the listener
-  carried first, which is its own change across four call sites (orders, trades, symbols, batch).
-  **B transfers to YU12 more cleanly than A does**, because a keyed lookup does not depend on
-  knowing which of the two failures occurred. That is a genuine point in B's favour and the only one
-  where YU12 argues for the bigger change.
+- **YU12: A does not transfer — and, correcting the first draft, YU12 largely does not have this
+  defect.** A needs `onNewLeader`, and YU12's gateway has no `EgressListener`; `offerAndAwait` also
+  collapses offer-cleared and ack-arrived into one boolean, the blocker already recorded for the
+  self-heal. But the reason that matters less than it looks: **YU12 has no FIFO at all.** Verified in
+  the *operative* 741-line gateway on the YU12 branch — not the 610-line shadowed copy the
+  descendants carry — `grep -c 'class Inflight|fifo|pollFirst'` returns **0**. It has a single slot,
+  `lastOrderAck`, cleared immediately before each offer (`:428`) and awaited synchronously (`:429`),
+  with `:347` commenting *"first order-kind ack after the offer wins"*.
+
+  So YU12's failure mode is **one misattributed ack per stranded event, self-correcting on the next
+  request**. There is no K, nothing ratchets, and **§5's `K ≥ pool size` collapse is structurally
+  impossible there** — the synchronous funnel holds one order in flight by construction.
+
+  **The first draft of this document used YU12 as an argument FOR B. That was wrong and the argument
+  is withdrawn.** Paying eight carrier layers, a gateway↔member wire break, the end of the
+  YU15↔YU16 mixing window and a fresh epoch on every rig, partly to fix a bounded, self-correcting,
+  depth-1 misattribution on a tier with no rig, is a *weak* case rather than a strong one. **B's
+  justification is unconditional correctness against unknown second triggers, and that is the only
+  one it needs.**
 
 **6. Rollout.**
 - **A:** four carrier layers of `ClusterGatewayMain` (YU12 excluded — see above; YU13, YU16, YU17
@@ -247,19 +280,62 @@ cross-client wrong answer is not something to leave exposed to an unknown second
 
 ---
 
-## What I want the reviewer to attack
+## Adversarial review — kind arm, 2026-08-16. CONCUR with A, conditional on three fixes
 
-1. **The watermark's monotonicity claim.** I assert `appliedSeq` is monotonic across elections
-   because it is replicated snapshot state. If there is any path where a new leader can *lower* it,
-   A is unsound and I want to know.
-2. **`onNewLeader` timing.** I assume it fires on the owner thread's `pollEgress` before subsequent
-   offers are processed. If Aeron can deliver it on another thread, the drain needs different
-   synchronisation — the FIFO is owner-confined by contract.
-3. **Whether drain-on-new-leader is too aggressive.** Every election now costs the in-flight window
-   an ambiguous answer, including elections that would not have stranded anything (2 of the 5 I
-   induced stranded nothing). That is a deliberate trade — bounded honest ambiguity in place of
-   unbounded silent corruption — but it is a real regression in the transparent-failover case that
-   `yu12-gke-failover-transparency.sh` asserts, and that proof may start failing. **Someone should
-   check that proof against this design before it is written.**
-4. **The YU12 argument.** I claim B transfers to YU12 better than A. If that is wrong, B loses its
-   best non-correctness argument.
+Reviewed against the code rather than this document. Its findings are folded in above; recorded here
+is what it changed, because a design's review history is the evidence that its claims were attacked.
+
+**Verdict: concur with shipping A over B today, conditional on the three conditions below.** It
+independently confirmed the structural finding (`event.seq = ++appliedSeq` and
+`event.orderRef = (int) nextOrderRef++` both member-assigned on apply; the 24-byte ack carries no
+gateway-chosen field) and agreed that A is a resynchronisation design and should be named one.
+
+**Condition 1 — BLOCKING, now fixed above.** `drain()` must reset `highestInputSeqSeen` as well as
+the watermark, or an epoch change re-poisons it and every order 504s forever. **The epoch test must
+assert on an election AFTER a fresh epoch**, not merely on a fresh epoch — a test that wipes,
+reconnects and sends orders passes with the bug present. I verified `appliedSeq = 0` at
+`MatchingEngineClusteredService:258` and confirm the defect was real in the first draft.
+
+**Condition 2 — fix `yu12-gke-failover-transparency.sh` before or with A.** Review's finding, which
+I verified: the proof's `GAVEUP` assertion survives A (drained orders return `null`, the client
+retries the same `clientOrderId`, and the engine re-emits the original) — **but its "ZERO
+DUPLICATED" check will fail**, and for the proof's own reason. The ref is consumed at
+`MatchingEngineClusteredService:301`, *before* the engine's idempotency check, and the code's own
+comment says so: *"A duplicate retry also consumes a value … the engine then answers from
+idempotency."* So an idempotent retry still burns a ref, and every order A drains contributes **+2
+to the `next_order_ref` delta and +1 to the acked count**. The proof reports that difference as
+duplication that did not happen. A converts a latent unsoundness — already recorded in §4 of the
+wedge issue — into a visible failure proportional to the in-flight window at election time. **The
+proof must assert against a booking-grained quantity (open-order count or the read model), not the
+ref counter.** If it is not fixed, A will be blamed for duplication it did not cause, which is worse
+than the proof simply failing.
+
+**Condition 3 — the YU12 argument for B is withdrawn.** See §5 of the constraints above; review was
+right and I verified it in the operative 741-line gateway.
+
+**Attacks that cleared.** `onNewLeader` is owner-confined: every `pollEgress` call site in the YU13
+layer is owner-thread (`ownerLoop:419`, `offerPipelined:1012`, the batch paths, and `:206` states
+the contract), and `AeronCluster.connect()` runs on the owner too. So the drain needs no
+synchronisation. Whether Aeron can invoke `onNewLeader` from *inside* `connect()` remains
+unverified — but with Condition 1 applied it is an ordering question with no correctness
+consequence, as noted above.
+
+**Review also asked for two things to be code-level rather than prose**, and I agree:
+
+- a comment at the three `appliedSeq`-derived declarations saying they answer different questions and
+  must not be merged;
+- the "A's drain must NOT route through `connectCycling()`" constraint as a comment at the call site,
+  with the reasoning — `connectCycling()` loops `while (running)` and would park the owner thread
+  during a quorum loss, the exact hazard the `offeredUnacked` trigger exists to avoid. The next
+  reader will see two drains and be tempted to unify them.
+
+## Still open, for yaakov rather than for review
+
+1. **Is transparent failover a promise the system keeps?** If yes, A2 is the design and its price is
+   hot-path complexity in the owner loop. If no, A is simpler and safer. This is a product decision,
+   not an engineering one.
+2. **Sizing A2's grace window, if A2 is ever chosen.** It has to come from real election data, and
+   the failover distribution is bimodal (~85–180 ms fast, ~670–850 ms slow). If the slow mode binds,
+   the window approaches a second and A2's case weakens further.
+3. **When to schedule B.** Not whether — A leaves correlation positional, and "the only trigger we
+   have seen" is not "the only trigger".
