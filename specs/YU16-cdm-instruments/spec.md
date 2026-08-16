@@ -9,7 +9,7 @@
 
 - As a trader, I want ETFs and U.S. Treasuries in the same selectors and blotters as equities —
   with honest labels for what the numbers mean (face amount, clean price as % of par, coupon,
-  maturity, approximate YTM) — so I trade the wider universe without learning a second workflow.
+  maturity, YTM) — so I trade the wider universe without learning a second workflow.
 - As a risk-engine consumer, I want the instrument's type and its bond static (coupon, maturity)
   on every extract row, so I can price a Treasury position without a second lookup.
 - As the platform owner, I want the CDM instrument model added with the deterministic core's
@@ -98,13 +98,25 @@
   `maxDistance` — so long-maturity prices move more, exactly as duration says they should.
 - FR-CDM19: Treasury payloads on `pricing.<instrumentKey>` SHALL extend the inherited tick shape
   additively: `assetClass`, `cleanPrice` (fraction of par, equal to `price`),
-  `priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `approximateYtmPercent`, `quoteTimestamp` (equal to
+  `priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `ytmPercent`, `yieldConvention`, `dayCount`, `quoteTimestamp` (equal to
   `asOf`), `maturityDate`, `matured`, `simulated`, `officialSeedCleanPrice`. Subject names and
   every inherited field are unchanged.
-- FR-CDM20: Approximate YTM SHALL be computed only by the publisher —
-  `((coupon + (par − clean)/yearsRemaining) / ((par + clean)/2)) × 100` in percent space, `null`
-  at or after maturity, carrying the same quote timestamp as the price. The UI parses it and
-  SHALL NOT compute it.
+- FR-CDM20: Yield SHALL be computed only by the publisher, `null` at or after maturity, carrying
+  the same quote timestamp as the price. The UI parses it and SHALL NOT compute it. It SHALL be a
+  real price→yield **solve** — safeguarded Newton with a bisection fallback, so it converges
+  quadratically where Newton behaves and cannot diverge where it does not — over a coupon schedule
+  generated **from the issue date forward**, so a short or long first coupon is modelled rather
+  than assumed away. The day count SHALL be **named on the wire**, never assumed: ACT/ACT (ICMA)
+  for Treasuries, 30/360 for corporates. Every instrument SHALL be quoted on one basis
+  (`SEMIANNUAL_BOND`), coupon-bearing or zero alike, so the points are comparable and a consumer
+  can bootstrap a curve across them. A zero-coupon instrument SHALL be priced on the zero-coupon
+  path — it has no coupon schedule to walk, and accrues nothing, ever.
+  (This supersedes the one-line textbook approximation
+  `((coupon + (par − clean)/yearsRemaining) / ((par + clean)/2)) × 100` this state shipped first.
+  That form has no schedule, no day count and no solve; it is wrong by tens of basis points on a
+  long bond, cannot express a zero at all — a bill has no coupon to put in its numerator — and its
+  error is smooth and plausible, so a curve bootstrapped off it would be wrong everywhere and
+  obviously wrong nowhere.)
 - FR-CDM21: A matured Treasury SHALL stop quoting — its payloads are suppressed, its stored quote
   no longer advances — and SHALL be rejected for new order entry at the validation boundary. An
   unknown `UST-`-prefixed key SHALL return 404 with no fallback quote; unknown equities keep the
@@ -150,7 +162,7 @@
 - FR-CDM27: The UI SHALL offer an asset-class filter (All / Stocks / ETFs / U.S. Treasuries) on
   the instrument selectors and blotters, group the selector typeahead by asset class, label
   Treasury inputs honestly (Face Amount; Limit Clean Price (% of par)), estimate clean value as
-  `face × fraction`, show coupon, maturity and approximate YTM for Treasuries, format bond prices
+  `face × fraction`, show coupon, maturity and YTM for Treasuries, format bond prices
   as percentages with no currency prefix, and surface a rejected trade's reason in the blotter.
 
 ## Non-Functional Requirements
@@ -182,6 +194,47 @@
 - NFR-CDM09: The fixed-clock contract `TRADERX_FIXED_UTC_INSTANT` SHALL be honored by
   reference-data's `matured` flag and price-publisher's Treasury clock, so maturity behavior is
   testable at a chosen instant.
+
+## Simulated curve points
+
+The five Treasuries this state started with are auction-sourced: real FIGIs, TreasuryDirect
+provenance, prices quoted from the auction PDF. They are also a **sparse long end with nothing
+under two years**, which is why the risk engine has no zero curve to bootstrap — a curve needs
+short-dated discount factors and there were none.
+
+Ten instruments were added to close that gap. They are **not** real securities and carry
+`priceProvenance.sourceType: SIMULATED_CURVE_POINT` and **no FIGI**, because a FIGI-shaped string
+we invented is worse than an absent one: it would look up-able. `assertCdmConditions` enforces
+both halves — an auction-sourced Debt instrument *requires* a FIGI, a simulated one is *refused*
+if it ever grows one, so the two can never be confused by a downstream consumer.
+
+| Added | Why |
+|---|---|
+| 4 bills — 4/13/26/52-week, all issued 2026-08-13 | The short end, which did not exist |
+| 4 principal STRIPS — 2028, 2031, 2036, 2056 | Zero-coupon Treasuries **are** discount factors |
+| 2 coupon points — 3Y (2029-07-15), 7Y (2033-07-31) | Density between the existing 2Y/5Y/10Y |
+
+All ten are keyed `UST-…` so ADR-060's ticker-derived book grid covers them with no engine change.
+
+### How the prices were derived
+
+One settle date, 2026-08-13, and one curve. The five auction prices back out at that settle to
+4.190749 / 4.200770 / 4.469089 / 5.122502 / 5.045654 percent (2Y/5Y/10Y/20Y/30Y), and every added
+point was chosen to sit **on** that curve rather than beside it:
+
+- **Bills**, bank-discount basis: `price% = 100 x (1 - d x days/360)`, at d = 4.10 / 4.08 / 4.05 /
+  4.00%. Those imply bond-equivalent yields of 4.170 / 4.180 / 4.192 / 4.227% — a flat-to-slightly-
+  upward short end running into the 2Y at 4.191%.
+- **STRIPS**, semiannual compounding: `price% = 100 / (1 + y/2)^(2t)` with `t` in ACT/365 years to
+  maturity, at y = 4.20 / 4.25 / 4.55 / 5.15%.
+- **3Y and 7Y notes**: the standard ACT/ACT (ICMA) semiannual PV at 4.19% and 4.32%, coupons on the
+  usual 1/8 grid (4.125% and 4.250%).
+
+A zero-coupon instrument carries `couponRatePercent: 0` in `instruments.csv` and
+`debtEconomics.zeroCoupon` (never `fixedInterest`) in the CDM record. That is the discriminator the
+extract's zero-coupon branch keys off: a bill has **no coupon schedule**, which is a different
+statement from a schedule that pays zero, and emitting a fabricated `lastCouponDate` for one is the
+bug ADR-061's branch exists to prevent.
 
 ## Technical Debt Register
 

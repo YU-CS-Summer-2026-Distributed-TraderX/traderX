@@ -60,7 +60,7 @@ export interface PriceTick {
     assetClass?: string;
     cleanPrice?: number;
     priceSemantics?: string;
-    approximateYtmPercent?: number | null;
+    ytmPercent?: number | null;
     maturityDate?: string;
     matured?: boolean;
 }

@@ -33,7 +33,7 @@ describe('cdm-catalog (YU16)', () => {
     expect(ust.securityType).toBe('Debt');
     expect(ust.assetClass).toBe('US_TREASURY');
     expect(ust.shortDisplayName).toBe('UST 10Y');
-    expect(ust.debtEconomics?.fixedInterest.couponRatePercent).toBe(4.375);
+    expect(ust.debtEconomics?.fixedInterest?.couponRatePercent).toBe(4.375);
     expect(ust.debtEconomics?.maturityDate).toBe('2036-05-15');
     expect(ust.matured).toBe(false);
     expect(ust.identifiers).toEqual(expect.arrayContaining([
@@ -72,13 +72,56 @@ describe('cdm-catalog (YU16)', () => {
     expect(() => assertCdmConditions(bad)).toThrow(/disagrees/);
   });
 
-  it('carries all five Treasury seeds with real FIGIs (FR-CDM07)', () => {
-    expect(TREASURY_SEEDS.map((seed) => seed.instrumentKey)).toEqual([
+  it('carries the five auction seeds with real FIGIs, and every simulated curve point with none (FR-CDM07)', () => {
+    const auction = TREASURY_SEEDS.filter((s) => s.sourceType === 'US_TREASURY_AUCTION_RESULT');
+    expect(auction.map((seed) => seed.instrumentKey)).toEqual([
       'UST-20280630', 'UST-20310630', 'UST-20360515', 'UST-20460515', 'UST-20560515',
     ]);
-    for (const seed of TREASURY_SEEDS) {
+    for (const seed of auction) {
       expect(seed.figi).toMatch(/^BBG[0-9A-Z]{9}$/);
+    }
+    // The load-bearing half: a curve point we invented must carry NO FIGI, so it can never be
+    // mistaken for a security someone could actually look up.
+    for (const seed of TREASURY_SEEDS.filter((s) => s.sourceType === 'SIMULATED_CURVE_POINT')) {
+      expect(seed.figi).toBe('');
+      const built = toInstrument(seed.instrumentKey, seed.displayName);
+      expect(built.identifiers.some((id) => id.identifierType === 'FIGI')).toBe(false);
+    }
+    for (const seed of TREASURY_SEEDS) {
       expect(toInstrument(seed.instrumentKey, seed.displayName).securityType).toBe('Debt');
     }
+  });
+
+  it('gives every instrument key exactly one seed, and every seed a UST- key (ADR-060 grid)', () => {
+    const keys = TREASURY_SEEDS.map((s) => s.instrumentKey);
+    expect(new Set(keys).size).toBe(keys.length);
+    // ADR-060 derives the fine book grid from the ticker prefix alone, so a bond whose key does
+    // not start with UST- silently gets the 0.001 equity grid and its six-decimal limits bounce.
+    for (const key of keys) {
+      expect(key.startsWith('UST-')).toBe(true);
+    }
+  });
+
+  it('builds a bill as zero-coupon with no coupon schedule at all (2c depends on this)', () => {
+    const bill = toInstrument('UST-BILL-20270812', 'U.S. Treasury Bill due August 12, 2027');
+    expect(bill.securityType).toBe('Debt');
+    expect(bill.debtEconomics?.debtType).toBe('US_TREASURY_BILL');
+    expect(bill.debtEconomics?.zeroCoupon).toEqual({ rateType: 'Zero', couponRatePercent: 0 });
+    // Not "a schedule paying 0%" — no schedule. A consumer that reads fixedInterest.couponFrequency
+    // to walk coupons gets undefined here rather than a semiannual schedule that does not exist.
+    expect(bill.debtEconomics?.fixedInterest).toBeUndefined();
+
+    const note = toInstrument('UST-20330731', 'U.S. Treasury Note 4.250% due July 31, 2033');
+    expect(note.debtEconomics?.zeroCoupon).toBeUndefined();
+    expect(note.debtEconomics?.fixedInterest?.couponFrequency).toBe('Semiannual');
+  });
+
+  it('refuses a simulated curve point that acquires a FIGI (FR-CDM04)', () => {
+    const seed = TREASURY_SEEDS.find((s) => s.sourceType === 'SIMULATED_CURVE_POINT')!;
+    const built = toInstrument(seed.instrumentKey, seed.displayName);
+    expect(() => assertCdmConditions({
+      ...built,
+      identifiers: [...built.identifiers, { identifier: 'BBG000000001', identifierType: 'FIGI' }],
+    })).toThrow(/must not claim a FIGI/);
   });
 });

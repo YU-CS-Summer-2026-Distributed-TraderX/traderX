@@ -155,7 +155,7 @@ The acceptor terminates on the gateway tier; the session survives BLP leader cha
 
 The subject, producer, consumers and every inherited field are unchanged; Treasury payloads add
 `assetClass`, `cleanPrice` (fraction of par, equal to `price`),
-`priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `approximateYtmPercent`, `quoteTimestamp` (= `asOf`),
+`priceSemantics: "CLEAN_FRACTION_OF_PAR"`, `ytmPercent`, `yieldConvention`, `dayCount`, `quoteTimestamp` (= `asOf`),
 `maturityDate`, `matured`, `simulated`, `officialSeedCleanPrice`. The binary companion
 `pricing-tick-bin.<instrumentKey>` carries `round(fraction × 1e6)` for a Treasury — six-decimal
 precision; the inherited 3-dp rounding remains the equity/option contract. A matured Treasury's

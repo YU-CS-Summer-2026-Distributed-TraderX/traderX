@@ -38,7 +38,7 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
   // YU16 (FR-CDM16/27): the selected instrument's CDM record and, for a Treasury, the last
   // seen publisher-computed YTM (parsed, never computed here - FR-CDM20).
   selectedStock?: Stock;
-  approximateYtmPercent: number | null = null;
+  ytmPercent: number | null = null;
   validationMessage: string | null = null;
 
   constructor(
@@ -80,7 +80,7 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
     this.selectedCompany = selectedStock.matchLabel || this.toMatchLabel(selectedStock);
     this.selectedStock = selectedStock;
     this.validationMessage = null;
-    this.approximateYtmPercent = null;
+    this.ytmPercent = null;
     this.subscribeToTickerPrice(selectedStock.ticker);
   }
 
@@ -232,8 +232,8 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
       if (!tick || String(tick.ticker || '').trim().toUpperCase() !== normalizedTicker) {
         return;
       }
-      if (tick.approximateYtmPercent !== undefined) {
-        this.approximateYtmPercent = tick.approximateYtmPercent;
+      if (tick.ytmPercent !== undefined) {
+        this.ytmPercent = tick.ytmPercent;
       }
       this.applyPriceCandidate(normalizedTicker, tick.price, tick.asOf ?? null, true);
     });

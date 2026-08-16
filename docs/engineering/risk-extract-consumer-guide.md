@@ -284,6 +284,12 @@ without trusting the transport.
   `instrumentType`, and states the bond price convention in the header.
 - **Schema 3** (YU16, 2026-08-12) appends `lastCouponDate` and `accruedInterestFraction` after
   `maturityDate`, and states the accrual convention in the header.
+- **No bump on 2026-08-16**, when bills and STRIPS arrived. No column was added, removed or
+  renamed, and every previously-emitted row is byte-identical. The only change is that a
+  zero-coupon row now leaves both accrual columns **empty** where it previously emitted
+  `0.000000` beside a `lastCouponDate` fabricated by walking a schedule the instrument does not
+  have. A value that was invented is now absent — see "Zero-coupon Treasuries" below. The header
+  gains a `treasuryZeroCoupon` line stating it.
 
 Every earlier column keeps its name, position and meaning at every bump, so a reader that indexes
 columns **by header name** reads any later file unchanged; a reader that hardcoded a column count
@@ -311,8 +317,54 @@ static the extract already had.
 | `nettingSetId` | string | e.g. `NS-ALPHA-ISDA-01`. From reference data. |
 | `coupon` | decimal or empty | **Schema 2.** Annual coupon %, fixed, semiannual — Treasury rows only, joined from instrument reference data. Empty otherwise. |
 | `maturityDate` | ISO date or empty | **Schema 2.** Treasury rows only, same join. Empty otherwise. |
-| `lastCouponDate` | ISO date or empty | **Schema 3.** The coupon date `accruedInterestFraction` accrued from. Treasury rows only. `nextCouponDate` is this + 6 months. |
-| `accruedInterestFraction` | decimal(6dp) or empty | **Schema 3.** Accrued interest as a **fraction of par**, same unit as `closingMark`. Treasury rows only. |
+| `lastCouponDate` | ISO date or empty | **Schema 3.** The coupon date `accruedInterestFraction` accrued from. Coupon-bearing Treasury rows only. `nextCouponDate` is this + 6 months. **Empty on a zero-coupon row** — see below. |
+| `accruedInterestFraction` | decimal(6dp) or empty | **Schema 3.** Accrued interest as a **fraction of par**, same unit as `closingMark`. Coupon-bearing Treasury rows only. **Empty, never `0.000000`, on a zero-coupon row** — see below. |
+
+### Zero-coupon Treasuries: read the empty, do not coerce it
+
+Since 2026-08-16 the universe carries **bills and STRIPS** as well as coupon bonds. They are
+`instrumentType = TREASURY` like any other, with `coupon = 0` and a real `maturityDate` — those are
+facts about the instrument — but **both accrual columns are empty**:
+
+```
+17017,UST-BILL-20270812,TREASURY,100000,1,0.959560,0.959560,...,0.000,2027-08-12,,
+17017,UST-20280630,TREASURY,100000,1,0.998780,0.998780,...,4.125,2028-06-30,2026-06-30,0.017357
+```
+
+Empty means **this instrument has no coupon schedule**. It is deliberately not `0.000000`, which
+would mean "it has one and nothing has accrued" — a different and false claim. The distinction is
+load-bearing for you: §the accrual note below tells you to roll `lastCouponDate` forward to your own
+settlement date, and a bill would otherwise hand you a date to roll from and let you compute
+interest on an instrument that pays none.
+
+For these rows, **`dirtyPrice == closingMark`**. There is nothing to add.
+
+**A note on the worked example in §6.** The line
+
+```python
+r["accruedInterestFraction"] = float(r["accruedInterestFraction"] or 0.0)
+```
+
+coerces the empty to `0.0`, which happens to give the right dirty price for a zero — but it also
+erases the distinction above, so a downstream bug that dropped accrual on a coupon bond would look
+identical to a bill. If your engine cares which it is, branch on `coupon == 0` (or on the empty
+itself) rather than coercing.
+
+**Identifying them.** Bills are keyed `UST-BILL-<maturity>` and STRIPS `UST-STRIP-<maturity>`, but
+key **off the `coupon` column, not the ticker prefix** — the same rule as `instrumentType`, and for
+the same reason. Note also that a long-dated STRIP legitimately trades far from par (the 2056 STRIP
+marks near `0.22`), so a "is this fraction near 1.0?" sanity check will reject a correct row.
+
+**Why they exist.** Zero-coupon Treasuries *are* discount factors — `closingMark` on a STRIP row is
+literally the discount factor to its maturity — and the bills give a short end that did not exist
+before. That set is there to be bootstrapped; it is the most direct curve input we can hand you.
+Eight of the fifteen Treasuries are now zeros, so this is not an edge case in the data.
+
+**One caveat, stated plainly.** Ten of the fifteen Treasuries are instruments we invented to fill
+out the curve. They carry `sourceType: SIMULATED_CURVE_POINT` and **no FIGI** in the reference data
+(the five auction-sourced ones keep their real FIGIs). Their prices are arithmetic off one settle
+date and one curve, not provenance. They are internally consistent and priced on a coherent curve,
+which is what makes them useful for building and testing a bootstrapper — they are not market data.
 
 All decimals are exact to 6 places. They are computed in `BigDecimal` with rounding mode
 `UNNECESSARY`, which means the producer **throws rather than round** — if a value ever needed

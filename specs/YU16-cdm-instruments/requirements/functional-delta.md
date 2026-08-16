@@ -15,7 +15,7 @@ Everything inherited from YU15 and its ancestry is carried forward unchanged unl
   the same store and watermark as `/stocks/control-snapshot`; the order-matcher risk bootstrap
   default repoints to it at this state's layer, and the two YU04 proofs probe it.
 - Treasury pricing in price-publisher: term-profiled correlated walk with mean reversion and a
-  band clamp, per-batch shared roll, approximate YTM in the payload, maturity quote suppression,
+  band clamp, per-batch shared roll, solved YTM in the payload, maturity quote suppression,
   `UST-` unknown-key 404 with no fallback, fraction-of-par emission at six-decimal tick
   precision.
 - Face-amount order validation for `UST-` keys at the cluster gateway REST boundary and in the

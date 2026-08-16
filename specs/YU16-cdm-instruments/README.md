@@ -26,7 +26,7 @@ Primary intent:
   the risk bootstrap repointed by configuration (ADR-058).
 - Fraction-of-par bond prices at six-decimal precision, publisher → engine → read model →
   extract (ADR-057).
-- Treasury pricing: term-profiled correlated walk, approximate YTM, maturity handling.
+- Treasury pricing: term-profiled correlated walk, solved YTM, maturity handling.
 - Face-weighted average cost and a fail-closed `Rejected` trade landing in post-trade.
 - Extract schema 2: `TREASURY` classification, coupon and maturity by join (ADR-059).
 - Extract schema 3: `lastCouponDate` and `accruedInterestFraction` by derivation (ADR-061).

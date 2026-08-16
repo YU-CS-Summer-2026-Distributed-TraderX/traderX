@@ -64,7 +64,7 @@ curl -s -XPOST localhost:18110/orders -d '{"accountId":17017,"ticker":"UST-20280
 ```bash
 # JSON payload: cleanPrice is a fraction; YTM is publisher-computed (FR-CDM19/20)
 kubectl -n traderx exec deploy/price-publisher -- wget -qO- localhost:18100/prices/UST-20560515 \
-  | jq '{price, cleanPrice, priceSemantics, approximateYtmPercent, maturityDate, matured}'
+  | jq '{price, cleanPrice, priceSemantics, ytmPercent, maturityDate, matured}'
 ```
 
 ## Verifying the extract (schema 2)

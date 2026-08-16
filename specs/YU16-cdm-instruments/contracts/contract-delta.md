@@ -37,7 +37,7 @@ no dot, one token). Treasury JSON payloads extend the inherited tick shape addit
 | `assetClass` | `US_TREASURY` |
 | `cleanPrice` | fraction of par, equal to `price` |
 | `priceSemantics` | `CLEAN_FRACTION_OF_PAR` |
-| `approximateYtmPercent` | publisher-computed, `null` at/after maturity |
+| `ytmPercent` | publisher-computed, `null` at/after maturity |
 | `quoteTimestamp` | equal to `asOf` — one instant per payload |
 | `maturityDate`, `matured`, `simulated`, `officialSeedCleanPrice` | static/provenance echoes |
 
@@ -90,7 +90,7 @@ deterministic, so byte-identical-across-members is unaffected.
 
 Asset-class filter and grouped selectors; Treasury tickets label quantity as Face Amount and
 price as Limit Clean Price (% of par); clean value estimated as `face × fraction`; bond prices
-render as `fraction × 100` with `%` and no `$`; blotters show coupon/maturity/approximate YTM
+render as `fraction × 100` with `%` and no `$`; blotters show coupon/maturity/YTM
 and a rejected trade's reason.
 
 ## Not changed
