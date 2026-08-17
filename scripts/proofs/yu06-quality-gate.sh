@@ -69,14 +69,34 @@ api_code() { # api_code <curl-args-after-api> -> http code, retried past 000
   echo "${code:-000}"
 }
 
+# ONE definition of "the plant", shared by the step-0 pre-clean, the step-6 inline delete and the
+# EXIT trap — so every cleanup path removes every stratum, not just this run's. Keyed on the PRICE
+# sentinel, never the security alone: a security-scoped delete would destroy the controls' REAL
+# prior closes, which is the destructive version of the same statement, and no real close is ever
+# exactly 100000. Dated '< today', not DATE_PREV: a run killed before midnight UTC leaves its plant
+# on a date that is no longer the next run's DATE_PREV — and strata ACCUMULATE, because a
+# version-scoped delete (what the trap used to do) tidies only the run that ran it, so each killed
+# run's leftover becomes the operative prior the moment a later run tidies its own. The second
+# statement sweeps session headers left with no rows at all (a kill between the two INSERTs, or
+# rows this delete just removed); the LEFT JOIN antijoin correlates per (date, version).
+unplant() {
+  db "DELETE FROM eod_price_snapshot
+        WHERE session_date < '${DATE}' AND security IN ('${OPT_CTL}','${EQ_CTL}')
+          AND closing_price = 100000.0;
+      DELETE h FROM eod_price_session h
+        LEFT JOIN eod_price_snapshot s
+          ON s.session_date = h.session_date AND s.version = h.version
+        WHERE h.session_date < '${DATE}' AND s.security IS NULL;" >/dev/null 2>&1
+}
+
 # The induction lever is a live-config change; put it back whatever happens, or every later EOD
 # close on this rig silently runs against the proof's universe. The planted control baseline is a
-# DB mutation with the same obligation: leave it behind and every later close flags the controls
-# against a prior that never existed.
+# DB mutation with the same obligation — and worse, since this morning a leaked plant no longer
+# fails anything loudly: the EOD proofs override a flagged mark at its observed close and publish,
+# so the poisoning would be silent, wearing a green suite.
 cleanup() {
   kx set env deploy/trade-processor EOD_UNIVERSE- >/dev/null 2>&1
-  db "DELETE FROM eod_price_snapshot WHERE session_date='${DATE_PREV}' AND version=${CTL_V:-0};
-      DELETE FROM eod_price_session  WHERE session_date='${DATE_PREV}' AND version=${CTL_V:-0};" >/dev/null 2>&1
+  unplant
   kx rollout status deploy/trade-processor --timeout=180s >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -100,12 +120,9 @@ echo "[ok] universe injected (${UNIVERSE##*,} is priceless by construction)"
 # session, or the box going down — and the object planted below is a PUBLISHED prior of 100000.
 # If one survives a killed run, every later close flags the controls SPIKE against a baseline that
 # never existed, which presents as a product regression, not as this proof's leftovers. The
-# signature delete (control securities at exactly 100000, any earlier date) is the only cleanup
-# that survives the failure modes a trap cannot; the trap and the inline delete keep the tidy
-# path tidy. A stale empty session HEADER can also survive a kill between the two inserts — left
-# alone deliberately: priorPublishedClose joins snapshot rows, so a rowless header matches nothing.
-db "DELETE FROM eod_price_snapshot WHERE session_date < '${DATE}'
-      AND security IN ('${OPT_CTL}','${EQ_CTL}') AND closing_price = 100000.0;" >/dev/null 2>&1
+# pre-clean is the only cleanup that survives the failure modes a trap cannot, and it runs BEFORE
+# CTL_V is computed so the fresh version is derived after the orphan strata are gone.
+unplant
 # Plant the OPTION control's prior now, before the first close — see the OPT_CTL comment above.
 CTL_V="$(( $(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${DATE_PREV}';" | tr -d '[:space:]') + 1 ))"
 db "INSERT INTO eod_price_session (session_date, version, status, instrument_count, flagged_count, created_at)
@@ -208,8 +225,7 @@ echo "   v${BV} against the planted prior 100000: ${EQ_CTL}=${EQ_Q:-absent} ${OP
   || fail "the option band rejected (or lost) a ~99.9% move (${OPT_CTL} quality=${OPT_Q:-absent}) — an OCC symbol is not getting the 200% band"
 # Unplant inline, then prove the next close is clean, so the rig leaves this proof unpoisoned even
 # though the trap would also have deleted the rows.
-db "DELETE FROM eod_price_snapshot WHERE session_date='${DATE_PREV}' AND version=${CTL_V};
-    DELETE FROM eod_price_session  WHERE session_date='${DATE_PREV}' AND version=${CTL_V};"
+unplant
 api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/session/close -H \"Authorization: Bearer \$T\"" >/dev/null
 sleep 3
 CV="$(maxver)"
