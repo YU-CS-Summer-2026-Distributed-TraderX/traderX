@@ -828,6 +828,59 @@ probe, will be restarted`, serving again **26 s** later. §1b's mitigation conve
 outage into a ~26 s one on the tier where it matters. It neither prevents the wedge nor explains it,
 and the offset rebuilds on the next leader kill.
 
+#### BUT THE CURE ONLY WORKS WHEN TRAFFIC BYPASSES THE SERVICE — measured 2026-08-17, kind
+
+**The §1b liveness restart cannot fire for Service-routed traffic, because readiness starves it.**
+Every reading in the paragraph above — and every green run of `yu16-liveness-restarts-wedge` —
+drives the **pod IP**, deliberately (a failing readiness probe evicts the pod from the Service at
+exactly the moment a measurement matters). Production traffic arrives through the LoadBalancer →
+Service. The two paths differ by one hop, and the hop is the defect.
+
+**The chain, each link verified in the operative YU13 layer:** `noAckStreak.set(0)` exists at
+exactly one site — the success branch. Readiness is `connected && streak < 20`; liveness is
+`streak < 100`; **both read the same counter, and the counter advances only on submits.** Readiness
+failing empties the Service endpoints, and at `replicas: 1` that is all of them. So eviction at 20
+stops the very traffic the streak needs to reach 100.
+
+**Measured, both arms on one wedge** — gateway `traderx/cluster-node:yu15prewedge`, members
+`:yu16`, kind rig, K=20 induced by a leader kill, verdict branches written before the run:
+
+| | **Service arm** (`svc/order-matcher`) | **pod-IP arm** (same wedge, same build) |
+|---|---|---|
+| requests | 182 over 6 min, **0 reached the gateway** (`rc=7`, endpoints empty) | serial, every one reached it and 504'd |
+| endpoints | `ready=[]`, pod in `notReadyAddresses`, throughout | n/a — bypassed |
+| streak | **frozen at 80** for the whole hold | climbed 80 → 101 at +1/~14 s |
+| `/live` | **200** (`{"noAckStreak":80,"noAckLimit":100}`) | 503 at 101 |
+| restart | **never** (`restarts=0`, hold > 5 min) | **41 s after crossing 100** — `restarts 0 → 1`, kubelet event `Container gateway failed liveness probe, will be restarted` |
+
+One delta from the prediction, stated rather than smoothed: the streak froze at **80**, not "near
+20" — the induction's own concurrent drivers had pushed it past 20 before eviction landed, and the
+freeze value is simply wherever the counter stood when traffic stopped. What matters is the bracket:
+**any freeze in [20, 100) is permanent**, and eviction at 20 guarantees entry into it.
+
+**The precise claim, and its bounds.** No **automatic, in-band** recovery exists: the mechanism
+designed to provide it cannot engage. Out-of-band recovery still works — a rolling update, node
+drain, or any unrelated restart clears it. A client that addresses the pod directly (as every proof
+does) also un-freezes it, which is exactly why the suite cannot see the defect: **the proofs'
+pod-IP choice is correct** — through the Service they would lose their readings at the moment of
+eviction — so this is a blind spot inherent in the only correct way to measure, and it needs a
+*separate* instrument asserting on **endpoint membership**, not a "fixed" proof.
+
+**§6's anti-storm observation is this same mechanism wearing its good face.** The GKE note that
+liveness did *not* fire on an idle gateway that genuinely could not commit for ~10 minutes was
+recorded as the anti-storm property confirmed. Same coin: no traffic → no streak progress. Whether
+that is a virtue (idle, nothing to restart for) or this defect (evicted, restart impossible) depends
+solely on *why* the traffic stopped — and readiness is what decides that.
+
+**The fix constraint, for whoever designs it** (filed as a design question, not built): **liveness
+must key on a signal the gateway generates itself**, because any counter fed by client submits is
+starvable by the probe that gates client submits. Two tempting wrong answers, named so they stay
+dead: *time-since-last-success* restarts idle gateways and reintroduces the §1b storm; *lowering the
+liveness bar under the readiness bar* does the same. An active self-check (the gateway periodically
+round-trips something it can commit) is the shape that survives both constraints.
+
+This defect predates A, is independent of A, and is not a reason to hold A.
+
 #### The cross-wired `orderRef` — PLAUSIBLE, UNESTABLISHED, and the trap in testing it
 
 `completePipelinedHead` reads a NEW order's ref out of the **ack buffer**, not the pending request:
