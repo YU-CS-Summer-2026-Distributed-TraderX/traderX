@@ -25,6 +25,21 @@ the planted prior's load-bearing property is the **bound** (`|x−P|/P < 1` for 
 magnitude; and the option leg proves band **selection** (wider than ~100%), not the 200 constant —
 pinning the value is `EodQualityCheckerTest`'s job. Re-run green after hardening: v23/v24.
 
+**Unified and kill-tested same day** (YU15 `609286bb`, carries `d9942a6f`/`80fdd45d`, md5
+`742d6b00…`): the trap and inline deletes were still version-scoped to `CTL_V`, so strata from
+killed runs would accumulate — each dead run's leftover surviving every later run's tidy. All three
+cleanup sites now share one `unplant()`. Verified twice, escalating: first against hand-planted
+sentinel strata on two dates plus a rowless header (green, audit 0/0); then — per the coordinator's
+DECIMAL-equality concern, since a hand INSERT proves only that the predicate matches its own literal
+— against a **genuine dead run**: the proof launched, SIGKILLed the moment its own INSERT path
+planted (trap never fired, `EOD_UNIVERSE` left dirty), stored bytes audited as `100000.000000` with
+the equality predicate matching exactly 1 row. The recovery run was green end-to-end (v29–v33), the
+post-audit shows 0 sentinel rows and 0 rowless headers, the controls' **real** prior closes one
+version below the poison (AAPL 246.195, option 11.335 at 2026-08-16 v1) survived untouched — the
+rows a security-scoped delete would have destroyed — and the recovery run's own trap reset the
+universe env the kill had left dirty. Every arm of the failure mode is now exercised, including the
+one a green run on a clean rig cannot reach.
+
 ## What is unasserted
 
 `EodQualityChecker` picks the tolerance band by instrument class:
