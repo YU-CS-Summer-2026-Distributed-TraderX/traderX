@@ -102,6 +102,13 @@ PROOFS=(
   # broken" has it backwards. A skip would read as a pass in the summary line, which is exactly how
   # the "no YU17 proofs in the YU17 suite" gap was born in the first place.
   yu17-swap-netting
+  # YU17 FX-rate fix (7256a33c). Same rolling class as the two above — it deletes member 2's PVC
+  # and pod to prove the sequenced FX rate survives a rebuild from an empty disk — hence the
+  # adjacency, and it must also stay BEFORE yu13-stp-and-replace's yu15-era member roll. Its flip
+  # arm (GBP refused PRICE_MISSING before the rate is sequenced, accepted after) needs GBP to be
+  # rate-less: seed-proof-fixtures deliberately seeds only EUR/JPY, so the arm runs once per
+  # epoch; a second run on the same epoch exits 2 (SKIP) rather than passing without it.
+  yu17-fx-credit
   yu16-ready-tracks-commit   # scales the members to 1 and back (no PVC wipe, no epoch change)
   # Same quorum-loss trick, taken further: it drives the no-ack streak past the LIVENESS limit and
   # lets the kubelet restart the gateway. Deliberately AFTER the readiness proof, whose step 3

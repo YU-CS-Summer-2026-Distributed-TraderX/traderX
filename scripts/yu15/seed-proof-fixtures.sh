@@ -135,4 +135,32 @@ kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
      WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';" 2>/dev/null
 
+# YU17 FX-rate fix: the credit gate values swap notionals in USD off SEQUENCED rates, which are
+# replicated state and die with the epoch. Until rates are re-sequenced, every non-USD swap
+# booking is refused PRICE_MISSING -- deliberate fail-closed, but an operator who has not read the
+# fix will misread it as a regression, so every fresh epoch re-seeds here. USD is identity by
+# construction and not settable.
+#
+# GBP is DELIBERATELY not seeded: yu17-fx-credit.sh's fail-closed arm needs one currency that is
+# still rate-less (refused before the rate, accepted after -- the negative control). Seeding it
+# here would make that arm skip on every suite run. A GBP swap on this rig is refused until that
+# proof runs or an operator sets the rate.
+#
+# A pre-YU17-fix build answers 404 (unknown control) -- declared as a skip, never silently absorbed.
+echo "[seed] fx rates (YU17 credit gate; GBP left for yu17-fx-credit.sh)"
+RISK_CONTROL_TOKEN="${RISK_CONTROL_TOKEN:-dev-risk-control}"
+for pair in EUR:1.0842 JPY:0.0067; do
+  ccy="${pair%%:*}"; rate="${pair##*:}"
+  code="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/risk/control/fxrate" \
+    -H 'Content-Type: application/json' \
+    -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN}" -H 'X-Risk-Operator: seed-proof-fixtures' \
+    -d "{\"currency\":\"${ccy}\",\"rate\":${rate}}")"
+  case "${code}" in
+    200) printf "   %-8s %s USD/unit\n" "${ccy}" "${rate}" ;;
+    404) echo "   [skip] build predates the fxrate control (HTTP 404) -- non-USD swaps refused on this rig"; break ;;
+    *)   echo "[fail] fxrate ${ccy} returned HTTP ${code} -- non-USD swap bookings will be refused PRICE_MISSING"
+         exit 1 ;;
+  esac
+done
+
 echo "[ok] fixtures seeded"
