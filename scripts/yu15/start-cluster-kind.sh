@@ -21,6 +21,27 @@ IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}"
 [[ -n "${IMAGE}" ]] || { echo "[fail] could not determine the cluster image and will not guess one"; exit 1; }
 echo "[state] $(state_pack "${ROOT}") -> manifests ${KDIR#"${ROOT}/"}, image ${IMAGE}"
 
+# IMAGE IS LOAD-ONLY IN THIS SCRIPT, and that is worth refusing over rather than documenting.
+# Everything below uses ${IMAGE} for `kind load`; the workloads come from `apply -k`, which pins
+# whatever the manifests declare. So naming a different CLUSTER_IMAGE here loads a build onto the
+# nodes and then runs a different one — silently, while the [state] line above reads as if you got
+# what you asked for. A lane brought up what it believed was a YU17 tier this way on 2026-08-17:
+# :yu17-ackfix faithfully loaded, members, gateway and risk-extract all running :yu16.
+#
+# run-proofs.sh is the path that honours the override, because it repins the three workloads after
+# applying. This script cannot without turning a bring-up into an engine roll.
+DECLARED="$(declared_cluster_image "${ROOT}" 2>/dev/null || true)"
+if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then
+  cat >&2 <<EOF
+[fail] you named ${IMAGE}, but ${KDIR#"${ROOT}/"} declares ${DECLARED}.
+       This script would load yours onto the nodes and then run theirs. Refusing.
+       To bring the tier up ON the image you named:
+           CLUSTER_IMAGE=${IMAGE} bash scripts/yu15/run-proofs.sh <proof>
+       To bring it up on the declared image, just drop the override.
+EOF
+  exit 1
+fi
+
 if ! kind get clusters | grep -qx "${CLUSTER}"; then
   echo "[kind] creating cluster ${CLUSTER}"
   kind create cluster --config "${KDIR}/kind-cluster.yaml" --wait 120s

@@ -80,8 +80,13 @@ cluster_manifest_dir() {
        nobody is testing. Refusing instead of guessing.
 
        To proceed deliberately, name the build:
-           CLUSTER_IMAGE=traderx/cluster-node:${tag} <this command>
+           CLUSTER_IMAGE=traderx/cluster-node:${tag} bash scripts/yu15/run-proofs.sh <proof>
        (build it first: bash scripts/yu15/build-cluster-image.sh)
+
+       run-proofs.sh, specifically. It REPINS the members, the gateway and risk-extract to the
+       image you name. start-cluster-kind.sh cannot: it only kind-loads the image and then applies
+       the manifests, which pin whatever THEY declare — so naming an image there loads a build the
+       tier does not run. That cost a bring-up on 2026-08-17.
 
        The durable fix is to give ${pack} its own
        specs/${pack}/generation/kubernetes/cluster layer declaring traderx/cluster-node:${tag}.
@@ -89,8 +94,10 @@ EOF
     return 1
   fi
   [[ "${quiet}" == "--quiet" ]] || cat >&2 <<EOF
-[note] ${pack} has no cluster manifest layer; using ${found}'s manifests with the image you named
-       (${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE}}). The manifests are ${found}'s in every other respect.
+[note] ${pack} has no cluster manifest layer; using ${found}'s. You named
+       ${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE}}, which run-proofs.sh will repin the workloads to —
+       but the manifests remain ${found}'s in every other respect, and applying them alone would
+       run the image THEY declare.
 EOF
   printf '%s\n' "${root}/specs/${found}/generation/kubernetes/cluster"
 }

@@ -2,16 +2,32 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=lib-state-image.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
 OM="${ROOT}/generated/code/target-generated/order-matcher"
-IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# DERIVED, like everything else that answers "which build is this". The default used to be a
+# literal traderx/cluster-node:yu15, so running this from the YU16 worktree built YU16 code and
+# stamped it :yu15 — overwriting the YU15 image in the local daemon with something that is not
+# YU15, which is the stale-tag class in its most direct form.
+#
+# state_tag, not declared_cluster_image: the manifests are the authority for what RUNS, but this
+# builds what this worktree IS. On a state with no cluster manifest layer those differ, and tagging
+# YU17 code :yu16 because YU16's manifests are the ones it would apply is exactly the poison.
+IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-traderx/cluster-node:$(state_tag "${ROOT}")}}"
 
 [[ -d "${OM}" ]] || {
-  echo "[fail] generated order-matcher missing; run: bash pipeline/generate-state.sh YU15-eod-risk-extract"
+  echo "[fail] generated order-matcher missing; run: bash pipeline/generate-state-$(state_pack "${ROOT}").sh"
   exit 1
 }
 
-echo "[build] bootJar (host gradle — container gradle builds stall on this host)"
-(cd "${OM}" && ./gradlew -q bootJar)
+# `clean`, and it is load-bearing rather than tidiness. Generation writes sources with mtimes OLDER
+# than the previously compiled output, so gradle's up-to-date check judges compileJava current and
+# bootJar packages classes predating the regeneration. The image is then tagged for a build it does
+# not contain, and every downstream check reads a plausible verdict from the wrong code — one
+# :yu17-ackfix image shipped without the fix it was named for, and without the state's own feature
+# set, so it was not even a YU17 gateway. Nothing about that is visible from the tag.
+echo "[build] clean bootJar (host gradle — container gradle builds stall on this host)"
+(cd "${OM}" && ./gradlew -q clean bootJar)
 
 JAR="$(ls "${OM}"/build/libs/*.jar | grep -v plain | head -1)"
 [[ -n "${JAR}" ]] || { echo "[fail] no boot jar built"; exit 1; }
