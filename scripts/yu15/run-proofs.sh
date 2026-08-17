@@ -51,11 +51,34 @@ PROOFS=(
   # nothing, so this ordering is what keeps it from reporting SKIP-shaped success on a rig whose
   # positions were just wiped by a fresh epoch.
   yu16-accrued-interest
+  # YU17 phase 2. It rolls NOTHING, so it belongs in the stable block rather than beside its
+  # sibling below: it asserts the applied sequence moves by exactly two and that the contracts
+  # artifact rebuilds byte-identically from the stored cut, and both are cheapest to assert on a
+  # rig nothing else is disturbing. It closes an EOD session, so it sits AFTER every proof that
+  # reads an extract (yu15-risk-extract, yu16-accrued-interest) rather than bumping the session
+  # version underneath them. This is the first time it has ever run inside a suite — it has only
+  # been exercised standalone, which is the "passes alone, fails in a suite" shape, so read a
+  # first-run failure as information about suite context before calling it a regression.
+  yu17-swaption-terms
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
   yu08-algo-slicing          # needs the algo engine up; scaled in below
   yu16-book-grid             # rebuilds a member from an empty disk
+  # THE headline YU17 proof, and it lives HERE rather than next to yu17-swaption-terms because it
+  # is a ROLLING proof: it deletes member 2's PVC and then its pod, so the member returns with
+  # nothing and the contracts artifact has to rebuild from the other two (snapshot format 5 plus
+  # the replayed log tail). That is the same class as yu16-book-grid directly above, hence the
+  # adjacency. It must stay BEFORE yu13-stp-and-replace, which rolls the members onto yu15-era
+  # builds that predate the contract record entirely.
+  #
+  # CURRENTLY RED at step 4, deliberately, and NOT as a skip: /eod/session/close returns DRAFT
+  # instead of PUBLISHED because the EOD price-quality gate flags AAPL260918P00220000 as SPIKE
+  # (1.846000 -> 1.430000) and EOD_SESSION_AUTO_PUBLISH will not fire with a flag outstanding.
+  # Steps 0-3 pass, both swaps sequenced through consensus. The defect is real, diagnosed and
+  # owned elsewhere; it is not in the ack path and not in this proof. A skip would read as a pass
+  # in the summary line, which is exactly how the "no YU17 proofs in the YU17 suite" gap was born.
+  yu17-swap-netting
   yu16-ready-tracks-commit   # scales the members to 1 and back (no PVC wipe, no epoch change)
   # Same quorum-loss trick, taken further: it drives the no-ack streak past the LIVENESS limit and
   # lets the kubelet restart the gateway. Deliberately AFTER the readiness proof, whose step 3
