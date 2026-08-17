@@ -96,7 +96,7 @@ spec:
               echo "restoring member-0 /data from GCS latest.tgz ..."
               export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
               python3 -m pip install --break-system-packages --quiet boto3 >/dev/null 2>&1
-              python3 -c "import boto3; from botocore.config import Config; boto3.client('s3',endpoint_url='https://storage.googleapis.com',aws_access_key_id='$GS_ID',aws_secret_access_key='$GS_SECRET',config=Config(signature_version='s3v4',s3={'addressing_style':'path'})).download_file('traderx-501015-order-matcher-journal-archive','yu12-cluster-snapshots/latest.tgz','/tmp/latest.tgz')"
+              python3 -c "import boto3; from botocore.config import Config; boto3.client('s3',endpoint_url='https://storage.googleapis.com',aws_access_key_id='$GS_ID',aws_secret_access_key='$GS_SECRET',config=Config(signature_version='s3v4',s3={'addressing_style':'path'})).download_file('traderx-505400-order-matcher-journal-archive','yu12-cluster-snapshots/latest.tgz','/tmp/latest.tgz')"
               mkdir -p /data && tar -xzSf /tmp/latest.tgz -C /data
               echo "restored member-0: $(ls /data)"
           volumeMounts:
@@ -104,7 +104,7 @@ spec:
               mountPath: /data
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu15-idempfix
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu15-idempfix
           imagePullPolicy: Always
           # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
           # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true

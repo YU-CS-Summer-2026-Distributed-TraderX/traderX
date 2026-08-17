@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/price-publisher:yu15-extract
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu16
           imagePullPolicy: Always
           ports:
             - name: http
@@ -109,7 +109,7 @@ spec:
     spec:
       containers:
         - name: position-service
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/position-service:yu15-extract
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/position-service:yu16
           imagePullPolicy: Always
           ports:
             - name: http

@@ -1,30 +1,47 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: traderx
-# DELIBERATELY STILL ON :yu15-idempfix, 2026-08-17. The KIND manifests beside this dir were
-# corrected from :yu15 to :yu16 (stale copies made at the YU16 cut); these GKE ones were NOT.
-# Changing them would claim that us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu16
-# exists in that registry, which cannot be verified from a local worktree — and a tag that is not
-# there fails as ImagePullBackOff, this project's documented recurring GKE trap (see deploy-gke).
-# Whoever next deploys the YU16 tier to GKE must build+push --platform linux/amd64 and update these
-# six references together. The kind-side derivation in scripts/yu15/lib-state-image.sh covers kind
-# only, for exactly this reason.
+# REGISTRY SETTLED 2026-08-17, and these refs were corrected against it. History, because the note
+# that used to sit here said the opposite and someone will want to know why it flipped:
 #
-# MEASURED AGAINST THE REGISTRY 2026-08-17 (by the coordinator session, which has GAR access; not
-# verifiable from this worktree). The answer is worse than a stale tag and inverts the fix:
+#   * The project was traderx-501015, which the active credentials could not even list. It is a
+#     second account of yaakov's; he confirmed it, granted the active account read, and the images
+#     that were only there were copied across. Every ref below now names traderx-505400.
+#   * The three service tags were :yu15-extract — stale copies made at the YU16 cut, the same class
+#     as the kind-side tags fixed in a84ddaa5, still unrepaired here. :yu16 exists in the registry
+#     for all three, so they are now :yu16. reference-data was already :yu16 (it is new to YU16).
 #
-#   * These manifests name project traderx-501015. The active credentials cannot list that project
-#     at all — permission denied, "or it may not exist".
-#   * The reachable project is traderx-505400, which does hold the `traderx` repo.
-#   * Of the six refs, that project has TWO:  cluster-node:yu16  and  reference-data:yu16.
-#     MISSING:  cluster-node:yu15-idempfix (five of the ten occurrences), position-service:yu15-extract,
-#     price-publisher:yu15-extract, trade-processor:yu15-extract.
-#   * Also present and useful when this tier is next stood up: cluster-node:yu15prewedge-amd64, :bench.
+# Measured by the coordinator session, which has GAR access; NOT verifiable from this worktree, so
+# treat "exists" as its reading rather than mine.
 #
-# So a blanket rewrite to :yu16 would have gotten exactly one ref right, and four of the six are
-# broken under EITHER project. This is a build-and-push campaign plus a project rewrite, not a tag
-# edit — and it is deliberately not started: GKE is not in flight and the bench cluster is scaled
-# down. Settle which project is current BEFORE pushing anything.
+# THE GCS BUCKETS ARE STILL 501015 ON PURPOSE. `gs://traderx-501015-order-matcher-journal-archive`
+# (backup-cronjob) and `gs://traderx-501015-risk-extracts` (risk-extract) share the project id only
+# as a naming convention — they are storage, not the registry, and nothing has been measured about
+# them. A blanket project rewrite renames them to buckets nobody has shown exist, which fails at
+# deploy as a write error rather than an ImagePullBackOff. Note also that the access yaakov granted
+# on 501015 was READ; these two are WRITE paths, so they need their own answer before a GKE deploy:
+# either the buckets move, or the writer keeps a credential that can write to the old project.
+#
+# STILL OPEN, deliberately, and it is the interesting one. The five cluster-node refs remain on
+# :yu15-idempfix. cluster-node:yu16 does exist in 505400, so pinning them is one sed away — but
+# which build the DETERMINISTIC CORE runs is not a tag edit, and it is not mine to make silently:
+#
+#   * A YU16 GKE tier on a YU15 core is missing every YU16 engine change, the fraction-of-par book
+#     grid above all. It would come up healthy and price bonds on the equity grid.
+#   * Against that, :yu15-idempfix is the build carrying the idempotency tombstone fix and the one
+#     this tier has actually been run on.
+#   * And the platform of the pushed :yu16 is unknown from here. GKE nodes are amd64; a local kind
+#     build on this laptop is arm64. The :yu15prewedge-amd64 tag suggests amd64 pushes get marked
+#     explicitly, which means an unmarked :yu16 may well be the arm64 one — verify before pinning.
+#
+# So: whoever deploys the YU16 tier to GKE decides that one, builds+pushes --platform linux/amd64
+# if needed, and moves all five together. A tag that is not there fails as ImagePullBackOff, this
+# project's documented recurring GKE trap (see deploy-gke). execution-algo-engine does not appear in
+# this directory at all — the kind copy pins it to :yu15 with its own note, and the registry holds
+# no images for it under any tag.
+#
+# The kind-side derivation in scripts/yu15/lib-state-image.sh covers kind only, for exactly the
+# reason this whole comment exists: there is nothing here to derive the answer from.
 #
 # YU15 GKE tier = the YU14 cluster set (emptyDir members, 4 gateways, C4D pool, all hardening)
 # plus the risk-extract chain: NATS (JetStream), the EOD price DB, trade-processor, the YU06 EOD
@@ -34,6 +51,10 @@ namespace: traderx
 # --platform linux/amd64 and pushed to GAR at deploy time. `kubectl apply -k .` is the one-shot
 # deploy. Manifests do NOT inherit across states (render-state is a plain cp -R) — this dir is
 # YU15's own, not an overlay on YU14's.
+#
+# ^ That paragraph describes the YU15 tier and is kept as the lineage record. It is no longer what
+# the refs below say: the three Spring services moved to :yu16 today (see the top of this file).
+# The cluster-node half of it is still accurate, and still the open decision.
 #
 # c4d-node-system-config.yaml is deliberately NOT in `resources`: it is a kubelet config passed to
 # `gcloud container node-pools create --system-config-from-file` when creating blp-c4d-tuned-pool,

@@ -54,7 +54,7 @@ spec:
     spec:
       containers:
         - name: reference-data
-          image: us-east1-docker.pkg.dev/traderx-501015/traderx/reference-data:yu16
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/reference-data:yu16
           ports:
             - name: http
               containerPort: 18085
