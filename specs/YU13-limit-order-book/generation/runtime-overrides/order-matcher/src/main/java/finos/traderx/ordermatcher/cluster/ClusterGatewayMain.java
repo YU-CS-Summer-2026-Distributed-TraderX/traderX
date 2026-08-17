@@ -512,11 +512,32 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
         }
 
+        /**
+         * A leader change is the one moment the FIFO's "one direct ack per cleared offer, in offer
+         * order" invariant provably breaks: the dying leader sequenced offers it never egressed to
+         * this session, and the promotion destroys them (a follower applied the same log with its
+         * egress suppressed, and does not re-apply once promoted). Left alone, the FIFO stays
+         * permanently N ahead and every subsequent ack answers an abandoned request — measured
+         * ratcheting 21 -> 36 -> 51 across three kills, and never recovering.
+         *
+         * <p>So resynchronise here, on the owner thread, DIRECTLY — never via connectCycling(),
+         * which loops {@code while (running)} until it reconnects and would park the owner thread
+         * for the duration of a quorum loss. That is the precise hazard the self-heal's
+         * offer-cleared trigger was designed to avoid, and routing this through it would reintroduce
+         * it by the back door.
+         */
         @Override
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
                                 final int leaderMemberId, final String ingressEndpoints) {
+            final int stranded = inflight.depth();
+            inflight.onNewLeaderResync();
+            // The at-risk set was unacked by definition; forgetting it makes the self-heal fire
+            // LESS often, never more, which is the safe direction for a trigger whose hazard is
+            // firing when a reconnect cannot help.
+            offeredUnackedStreak.set(0);
             System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
-                + " term=" + leadershipTermId + " session=" + clusterSessionId);
+                + " term=" + leadershipTermId + " session=" + clusterSessionId
+                + " resynced=" + stranded + " (in-flight answered ambiguous)");
         }
     };
 
@@ -590,6 +611,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private void onEgress(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                           final int offset, final int length, final io.aeron.logbuffer.Header header) {
         final byte kind = buffer.getByte(offset + 12);
+        // Every egress kind carries the member's appliedSeq at offset 0. Record it before dispatch,
+        // for ALL kinds: the leader-change watermark is only as good as the highest sequence we can
+        // prove we saw, and a resting update or symbol ack is evidence just as much as a direct ack.
+        inflight.observeInputSeq(buffer.getLong(offset));
         if (kind == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
             lastSymbolAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
@@ -903,6 +928,17 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // cancel, replace, the binary fast path and the FIX acceptor all reach consensus here, so
         // one update covers them and none can be added later that bypasses it. A null is exactly
         // "no committed decision", which is what /ready now has to know about.
+        if (r == null && p.resyncAmbiguous) {
+            // Answered by the leader-change resync, not by any inability of this gateway. Counting
+            // it would invert the signal the streaks carry: a strand of 20-99 would fail readiness,
+            // remove the only gateway from the Service, and then never clear — nothing resets
+            // noAckStreak but a SUCCESSFUL order, and a pod out of the Service is sent none.
+            // Liveness is 5x readiness, so that bracket has no rescue and needs a human. Neither
+            // incremented nor reset: orders that fail for real still climb the streak below, so
+            // yu16-ready-tracks-commit's quorum-loss assertions are untouched (those fail through
+            // offerPipelined's deadline path and are never resync-marked).
+            return r;
+        }
         if (r == null) {
             noAckStreak.incrementAndGet();
             // THE SELF-HEAL. Only orders that actually cleared the ingress count: those are the ones
@@ -2060,6 +2096,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // Set by the owner thread once client.offer() clears; read by the submitting thread when
         // its wait expires. Volatile: those are different threads and the future never completed.
         volatile boolean offered;
+        // Answered ambiguous by the LEADER-CHANGE RESYNC rather than by any failure of this gateway.
+        // Such an order must not advance the no-ack streaks: it was completed by our own deliberate
+        // repair, and after that repair the gateway is MORE able to commit, not less. Counting it as
+        // ill-health inverts the signal — see submitPipelined. Volatile for the same reason as above.
+        volatile boolean resyncAmbiguous;
         // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
         // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
         // the owner's single-threaded run give the happens-before, so no volatile needed.
@@ -2116,9 +2157,24 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         private final ArrayDeque<PendingOrder> fifo = new ArrayDeque<>();
         private final Semaphore permits;
         private final int max;
-        // inputSeq (member applied-sequence) whose entry ack last popped the head. -1 forces the
-        // first ack to pop. Owner-thread-only, alongside the FIFO.
+        // ---- THE appliedSeq SEQUENCE SPACE. All three fields below are derived from the member's
+        // applied-sequence and belong to ONE numbering. They must therefore be reset TOGETHER, and
+        // resetSequenceSpace() is the only place that does it. A fresh session may be a fresh epoch
+        // in which appliedSeq restarts at 0 (MatchingEngineClusteredService sets appliedSeq = 0 on
+        // start), so a survivor from the previous epoch's numbering is not merely stale, it is
+        // catastrophic: a leftover watermark swallows every ack in the new epoch and the gateway
+        // 504s forever while looking connected. If a fourth appliedSeq-derived field is ever added,
+        // it goes here and into that method. Do NOT collapse these into one comparison — they answer
+        // different questions (see onDirectAck).
+        //
+        // inputSeq whose entry ack last popped the head. -1 forces the first ack to pop.
         private long lastInputSeq = -1;
+        // Highest appliedSeq this session has EVIDENCE of, from any egress message. Feeds the
+        // watermark at a leader change.
+        private long highestInputSeqSeen = -1;
+        // Acks at or below this are stale — sequenced before a leader change we have already
+        // resynchronised past — and must not pop a head that belongs to a later order.
+        private long ignoreAcksAtOrBelow = -1;
 
         Inflight(final int max) {
             this.max = max;
@@ -2143,6 +2199,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
          * every later order onto the wrong request. Returns null too if the window is empty.
          */
         PendingOrder onDirectAck(final long inputSeq) {
+            // STALE-ACK GATE, and it is a DIFFERENT question from the continuation test below.
+            // "<= ignoreAcksAtOrBelow" means "sequenced before a leader change we have already
+            // resynchronised past, so it belongs to an order that is gone"; "== lastInputSeq" means
+            // "a later fill of the input we just answered". Collapsing them loses one meaning.
+            if (inputSeq <= ignoreAcksAtOrBelow) {
+                return null; // stale: its order was completed by the leader-change resync
+            }
             if (inputSeq == lastInputSeq) {
                 return null; // continuation fill of the already-answered order
             }
@@ -2150,19 +2213,75 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             return fifo.pollFirst();
         }
 
+        /** Owner thread: record evidence of the member's applied-sequence from ANY egress message.
+         *  Tracking every kind, not just direct acks, keeps the leader-change watermark as high as
+         *  the evidence allows — a lower watermark would let a stale ack through. */
+        void observeInputSeq(final long inputSeq) {
+            if (inputSeq > highestInputSeqSeen) {
+                highestInputSeqSeen = inputSeq;
+            }
+        }
+
         /** Owner thread: an order completed — return its slot to the window. */
         void release() {
             permits.release();
         }
 
-        /** Owner thread: complete every outstanding order as ambiguous, free its slot, and reset the
-         *  inputSeq boundary (a fresh session may restart appliedSeq). */
-        void drain() {
+        /**
+         * Owner thread: a NEW LEADER was elected on the SAME session. The dying leader sequenced
+         * offers it never egressed to us, and the promotion destroys them — a follower applied the
+         * same log with its egress suppressed and does not re-apply after promotion, so those acks
+         * are never coming. Without this the FIFO stays permanently N ahead and every later ack pops
+         * a head belonging to an abandoned request (the correlation offset).
+         *
+         * <p>Answer the at-risk set honestly and resynchronise. The sequence space is NOT reset:
+         * a new leader continues the same {@code appliedSeq}, so the watermark it sets is meaningful.
+         * That is exactly what distinguishes this from {@link #drain()}.
+         */
+        void onNewLeaderResync() {
+            completeAllAmbiguous(true);
+            ignoreAcksAtOrBelow = highestInputSeqSeen;
+            lastInputSeq = -1;
+        }
+
+        /**
+         * Owner thread: complete every outstanding order as ambiguous and free its slot.
+         *
+         * @param resync true when this is the leader-change repair, which marks each order so the
+         *               submitter does not count it against the no-ack streaks. Not a cosmetic
+         *               distinction: at a strand of 20-99 an uncounted streak would fail readiness,
+         *               remove the only gateway from the Service, and then never clear — the streak
+         *               resets ONLY on a successful order, and a pod out of the Service receives
+         *               none. Liveness sits at 5x readiness, so nothing rescues that bracket.
+         */
+        private void completeAllAmbiguous(final boolean resync) {
             for (PendingOrder p; (p = fifo.pollFirst()) != null; ) {
+                p.resyncAmbiguous = resync;
                 p.future.complete(null);
                 permits.release();
             }
+        }
+
+        /** Owner thread: a NEW SESSION. Complete every outstanding order as ambiguous, free its
+         *  slot, and reset the whole appliedSeq sequence space — the new session may be a new epoch
+         *  in which appliedSeq restarts at 0. */
+        void drain() {
+            // NOT resync-marked: a session-boundary drain answers orders the gateway genuinely
+            // could not complete, and those are honest evidence for the streak. This is what keeps
+            // yu16-ready-tracks-commit's step 3 intact — it asserts /ready STAYS 503 across a
+            // restored quorum, and a blanket reset here (or in the resync) would flip it to 200 and
+            // launder that verdict rather than fail it.
+            completeAllAmbiguous(false);
+            resetSequenceSpace();
+        }
+
+        /** The ONLY place the appliedSeq-derived fields are reset, so they cannot drift apart.
+         *  Carrying any of them across an epoch boundary is silent and total: a stale watermark
+         *  makes every ack in the new epoch look stale, nothing ever pops, and every order 504s. */
+        private void resetSequenceSpace() {
             lastInputSeq = -1;
+            highestInputSeqSeen = -1;
+            ignoreAcksAtOrBelow = -1;
         }
 
         /** Thread-safe (semaphore-based, never touches the FIFO) in-flight depth — for /metrics. */
