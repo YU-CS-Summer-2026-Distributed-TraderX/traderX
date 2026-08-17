@@ -56,9 +56,13 @@ PROOFS=(
   # artifact rebuilds byte-identically from the stored cut, and both are cheapest to assert on a
   # rig nothing else is disturbing. It closes an EOD session, so it sits AFTER every proof that
   # reads an extract (yu15-risk-extract, yu16-accrued-interest) rather than bumping the session
-  # version underneath them. This is the first time it has ever run inside a suite — it has only
-  # been exercised standalone, which is the "passes alone, fails in a suite" shape, so read a
-  # first-run failure as information about suite context before calling it a regression.
+  # version underneath them. Its first suite run was 2026-08-17 on traderx/cluster-node:yu17-ackfix
+  # at a fresh epoch, and it was NOT a "passes alone, fails in a suite" case: it fails at step 4 for
+  # the SAME reason yu17-swap-netting does — /eod/session/close returns DRAFT because the price
+  # quality gate flags AAPL260918P00220000 as SPIKE. Steps 0-3 pass, both swaptions sequenced
+  # through consensus and the unknown exercise style refused without moving the sequence. So this
+  # entry is RED on one shared, already-owned defect in the EOD publish path, not on anything
+  # about suite ordering or about swaptions.
   yu17-swaption-terms
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
