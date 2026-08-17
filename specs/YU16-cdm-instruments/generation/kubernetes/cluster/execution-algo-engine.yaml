@@ -51,6 +51,10 @@ spec:
     spec:
       containers:
         - name: execution-algo-engine
+          # Deliberately still :yu15 while every sibling here moved to :yu16 — no
+          # execution-algo-engine:yu16 has ever been built, and naming a tag that does not exist
+          # fails as ImagePullBackOff. This deployment is scaled to 0 on the kind rig. Build the
+          # image before moving the tag; do not move it to make the file look consistent.
           image: traderx/execution-algo-engine:yu15
           imagePullPolicy: IfNotPresent
           ports:

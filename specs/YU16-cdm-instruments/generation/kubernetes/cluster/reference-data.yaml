@@ -45,7 +45,7 @@ spec:
     spec:
       containers:
         - name: reference-data
-          image: traderx/reference-data:yu15
+          image: traderx/reference-data:yu16
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
