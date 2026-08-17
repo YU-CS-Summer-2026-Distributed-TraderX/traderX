@@ -48,6 +48,13 @@ step() { echo; echo "=== $* ==="; }
 GW=""
 PF_PIDS=()
 OUTDIR="$(mktemp -d)"
+# Restore what we found, not what we assume was there. cleanup used to strip LIVE_NO_ACK_STREAK
+# unconditionally, which is wrong twice over: the EXIT trap fires on the preflight `die` as well, so
+# a run that REFUSED still reverted the deployment — and an operator who pre-sets the value (the way
+# to keep `set env` a no-op, so the gateway pod survives the run and your port-forward with it) had
+# it silently removed by a script that never touched it. Only revert if we were the one who set it.
+STREAK_MUTATED=0
+STREAK_PRE=""
 kill_pf() { for p in "${PF_PIDS[@]:-}"; do [[ -n "${p}" ]] && kill "${p}" 2>/dev/null || true; done; PF_PIDS=(); }
 cleanup() {
   kill_pf
@@ -57,7 +64,13 @@ cleanup() {
   # the rig depends on.
   [[ "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.replicas}' 2>/dev/null)" == "3" ]] \
     || ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null 2>&1
-  ${K} set env deploy/cluster-gateway LIVE_NO_ACK_STREAK- >/dev/null 2>&1
+  if [[ "${STREAK_MUTATED}" == 1 ]]; then
+    if [[ -n "${STREAK_PRE}" ]]; then
+      ${K} set env deploy/cluster-gateway "LIVE_NO_ACK_STREAK=${STREAK_PRE}" >/dev/null 2>&1
+    else
+      ${K} set env deploy/cluster-gateway LIVE_NO_ACK_STREAK- >/dev/null 2>&1
+    fi
+  fi
 }
 trap cleanup EXIT
 
@@ -121,7 +134,14 @@ GW="$(${K} get pods -l app=cluster-gateway -o jsonpath='{.items[0].metadata.name
 # Disable the liveness restart for the duration. Not cosmetic: DRIVE orders build a no-ack streak
 # well past LIVE_NO_ACK_STREAK, the kubelet would restart the gateway mid-run, and a restart clears
 # the owner queue — which changes what gets booked and makes the delta unattributable.
+#
+# Pre-setting it yourself to the same value makes this a no-op, so the gateway pod survives the run
+# and any instrumentation you attached to it survives too — otherwise this is a pod-template edit,
+# the pod you port-forwarded to is deleted here, and your sampler reads nothing for the whole window.
+STREAK_PRE="$(${K} get deploy cluster-gateway \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="LIVE_NO_ACK_STREAK")].value}' 2>/dev/null)"
 ${K} set env deploy/cluster-gateway LIVE_NO_ACK_STREAK=100000 >/dev/null
+STREAK_MUTATED=1
 ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null
 GW="$(${K} get pods -l app=cluster-gateway -o jsonpath='{.items[0].metadata.name}')"
 forward || die "gateway probe port never answered — is this a build with the split probe server?"
