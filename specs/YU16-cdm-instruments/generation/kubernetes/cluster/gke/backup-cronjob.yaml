@@ -51,7 +51,7 @@ spec:
                 - name: GS_SECRET
                   valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: secret-access-key } }
                 - name: BKT
-                  value: "gs://traderx-501015-order-matcher-journal-archive/yu12-cluster-snapshots"
+                  value: "gs://traderx-505400-order-matcher-journal-archive/yu12-cluster-snapshots"
                 - name: KEEP
                   value: "12"
               command: ["/bin/bash", "-c"]
@@ -71,7 +71,7 @@ spec:
                   python3 - "$GS_ID" "$GS_SECRET" "$TS" "$SZ" "$KEEP" <<'PY'
                   import sys, boto3
                   kid, secret, ts, sz, keep = sys.argv[1:6]
-                  BK = "traderx-501015-order-matcher-journal-archive"; PFX = "yu12-cluster-snapshots/"
+                  BK = "traderx-505400-order-matcher-journal-archive"; PFX = "yu12-cluster-snapshots/"
                   from botocore.config import Config
                   s3 = boto3.client("s3", endpoint_url="https://storage.googleapis.com",
                                     aws_access_key_id=kid, aws_secret_access_key=secret,
