@@ -239,6 +239,46 @@ so exactly 50 refs were consumed. Shuffled offer order cannot produce refs monot
 This is worse than §1 in the direction that matters: §1's client under-counts its own exposure,
 which is unsafe but conservative. This client records an exposure **belonging to somebody else**.
 
+### Rig collision during this run — what survives it, and what is withdrawn
+
+**Another session was running `yu12-gke-failover-transparency.sh` on the same rig, unannounced, and
+I rolled the gateway underneath it.** Two valid grants of one rig. The contamination is real and is
+recorded here rather than left for someone to find in two transcripts.
+
+| time | event |
+|---|---|
+| **20:17:18** | the other session kills member 0 (its proof, 865-order stream) |
+| 20:26:16 | its proof writes its final line and exits |
+| 20:24:44 | I capture the gateway spec |
+| ~20:25–20:26 | I roll to `:yu15prewedge` — **this is where I broke its baseline** |
+| ~20:26–20:28 | my K induction (my own kill of member 1) — **overlaps its tail by ~10 s** |
+| **20:28:41** | R0=1445, K=20 locked in, after a 3-sample quiet check |
+| **20:29:07** | burst complete |
+
+**The discriminator is clean, excluded three independent ways — any one suffices:**
+
+1. the 3-sample pre-burst quiet check held `ref=1445` stationary and `depth=20` stable across ~10 s,
+   which an 865-order stream cannot pass through;
+2. `next_order_ref` moved 1445 → 1495, **exactly 50 for 50 orders** — foreign traffic would have
+   consumed extra refs;
+3. returned refs are **contiguous 1465–1494 and strictly +1 monotonic** — interleaved foreign orders
+   would punch holes in that contiguity.
+
+Plus the burst confirms its own parameter: 30 successes = N−K ⇒ K=20, matching the `depth` read
+before it.
+
+**What is withdrawn from this run.** **K's parentage is unknown** — the induction window overlapped
+the other session's tail, so the 20 stranded entries may mix its election with mine. That does not
+touch the verdict, which needs a K *known and measured at burst time*, not a K of known parentage.
+But it does mean **no ratchet claim may be drawn from this run**: not the per-election increment, not
+the 3-of-5 strand rate. Those need clean provenance and this window cannot supply it. The GKE ratchet
+figures (21 → 36 → 51) are unaffected — different rig, different day, uncontaminated.
+
+**An opportunistic reading was available and declined**: the other session's election was itself a
+K-inducing event, so a depth reading would have been a free 3-of-5 data point. Its load profile was
+not mine, and a labelled-but-dirty number in this record invites exactly the aggregation error the
+rest of this file was written to avoid.
+
 *The retracted history below is kept deliberately — the reasoning error that produced a
 non-discriminating experiment is more instructive than the eventual confirmation.*
 
