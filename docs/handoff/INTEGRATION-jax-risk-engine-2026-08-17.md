@@ -3,6 +3,12 @@
 For Alex, on `AlexNeugroschl/JAX_Risk_Engine`. Written against YU17 (`traderX-YU17-otc-rates`), which
 is the tip state and carries every ancestor's work.
 
+> **This document covers what we send you. Its companion,
+> `INTEGRATION-jax-risk-engine-inbound-2026-08-17.md`, covers the reverse: what your engine could
+> produce that we would consume, and the constraints a consensus system imposes on it. The short
+> version of that one is DV01 per contract, because our credit gate currently reserves against notional
+> and is therefore wrong on every swap we book.**
+
 **Read this before writing `engine/ingestion/traderx_extract.py`.** Both TraderX planning documents on
 your side (`docs/planning/traderx-integration.md`, `docs/planning/traderx-bond-integration-roadmap.md`)
 describe a system that has moved. The bond roadmap targets extract **schema 2**; we ship **schema 3**.
@@ -162,6 +168,7 @@ none of it**:
 | `RatesConfig.maturities` (discount pillars) | **No**, and it is a published convention, not a derivation |
 | `SimulationConfig.joint_covariance` | **Not directly**, but derivable from our price history. See §6 |
 | `EquityConfig.dividend_yields` | **No.** Nothing in the system carries a dividend |
+| FX spot rates (for your FX legs / UIP drift) | **Yes, as of 2026-08-17.** New, see below |
 
 This is the real gap and it is on neither project's roadmap. Your bond roadmap's Phase 2 five-point
 Treasury bootstrap is the only bridge currently designed, and you already write that it is "too coarse
@@ -170,6 +177,31 @@ swaps.** So the swap contracts file, which is otherwise nearly a drop-in for you
 curve to be priced against.
 
 §6 is our answer to what it would take to close that.
+
+### One row changed on 2026-08-17: FX spot rates now exist as replicated state
+
+We found that our own credit gate was summing swap notionals across USD, EUR, GBP and JPY into one
+per-account counter as if they were the same unit, and fixed it (`7256a33c`, `e6b56e1b` on YU17). The
+fix required a sequenced FX rate, so the system now carries one:
+
+- ingress `POST /risk/control/fxrate` on the authenticated control plane
+- a `TYPE_FX_RATE` sequenced input event carrying a USD-per-unit rate
+- replicated state, snapshotted as `T_FX_RATE` in snapshot format 7
+- **fail-closed**: with no sequenced rate, a non-USD booking is refused `PRICE_MISSING`. Never valued
+  at par, and never defaulted to 1.0 on the recovery path
+
+**This fills your FX legs**, which was the one input group we had no answer for at all. It is USD-base
+spot only, operator-sequenced rather than market-observed, and it is **not yet exercised on a rig** at
+the time of writing: the unit suite is green (383 to 388, with a detonator run confirming the five new
+tests are the only coverage of the conversion) and `scripts/proofs/yu17-fx-credit.sh` is written and
+registered but has never met a cluster. Treat it as available-in-principle until we tell you a rig has
+run it.
+
+**The general point matters more than the FX rate.** This established the pattern by which *any*
+derived number can enter the cluster as replicated state, which is the channel everything in the
+companion document (`INTEGRATION-jax-risk-engine-inbound-2026-08-17.md`) would travel down. If you were
+wondering how a curve or a valuation from your engine could reach a deterministic replicated state
+machine without diverging it, the answer now exists and is working.
 
 ---
 
