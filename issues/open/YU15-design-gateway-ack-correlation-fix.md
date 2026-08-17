@@ -494,6 +494,13 @@ were 21, 15, 15, so the first bracket is the likely one.
 readiness probe evicts the pod from the Service exactly when measurements matter — so the whole
 suite bypasses the mechanism that breaks.
 
+**Since measured (2026-08-17, kind — see the starvation section of the wedge handoff doc):** the
+[20, 100) bracket is not a theoretical hang. A gateway with the streak frozen in it sat evicted
+behind an empty Service for 5+ minutes with 0 of 182 requests arriving and no restart, while the
+same wedge at the pod IP restarted in 41 s once the streak crossed 100. So this condition was the
+difference between A shipping a repair and A shipping a trap: without it, every election with
+N ≥ 20 in flight would have put a production gateway into exactly that filmed state.
+
 **And resetting the streak in the resync is also wrong**: quorum restoration elects a leader and
 fires `onNewLeader`, so a blanket reset would flip `/ready` to 200 during
 `yu16-ready-tracks-commit`'s step 3, which asserts it stays 503 across a **restored** quorum —
