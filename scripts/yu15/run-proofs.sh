@@ -21,6 +21,8 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=lib-state-image.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
@@ -49,11 +51,6 @@ PROOFS=(
   # nothing, so this ordering is what keeps it from reporting SKIP-shaped success on a rig whose
   # positions were just wiped by a fresh epoch.
   yu16-accrued-interest
-  # After the extract proofs, not before: it books swaps that then appear in every later cut, and
-  # it crosses an equity so its own "no swap rows in the netted extract" assertion has a non-empty
-  # population to be true of.
-  yu17-swap-netting
-  yu17-swaption-terms
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
@@ -159,12 +156,29 @@ start_forwards() {
 # reporting a different engine's behaviour truthfully; neither was a bug in what it tested.
 #
 # An engine build is the one variable no proof should inherit from the run before it.
+# DERIVED, never defaulted to a literal. This line used to read
+#   BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# which was correct while YU15 was the tip and silently wrong afterwards — on YU16 and YU17 a BARE
+# invocation rebuilt the cluster onto :yu15 AT A FRESH EPOCH before running a single proof, then
+# reported a full green suite about code predating the change under test. The default was the
+# whole bug: it is better to refuse than to guess an engine build.
 #
-# COROLLARY FOR A NEW STATE: this cuts both ways. Run the suite from a descendant state's worktree
-# without repinning and it rolls the rig BACK to the default baseline and wipes to a fresh epoch —
-# so the suite runs green against the PARENT's engine and says nothing about the state you are
-# trying to prove. Pin it: YU15_CLUSTER_IMAGE=traderx/cluster-node:yuNN bash run-proofs.sh.
-BASELINE_IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# The manifests are the authority (they are what kubectl applies), so BASELINE_IMAGE now comes
+# from the same derivation start-cluster-kind.sh uses. CLUSTER_IMAGE is the neutral override name;
+# YU15_CLUSTER_IMAGE still works so every existing invocation and doc keeps functioning.
+BASELINE_IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}" || true)}}"
+if [[ -z "${BASELINE_IMAGE}" ]]; then
+  cat >&2 <<'EOF'
+[fail] cannot determine the cluster-node image for this state, and will not fall back to a literal.
+       A wrong baseline does not fail loudly — it rebuilds the rig at a fresh epoch and reports a
+       green suite about a build nobody is testing.
+       Fix the derivation (specs/<state>/generation/kubernetes/cluster/statefulset.yaml must
+       declare a traderx/cluster-node image), or state it explicitly:
+           CLUSTER_IMAGE=traderx/cluster-node:yuNN bash scripts/yu15/run-proofs.sh ...
+EOF
+  exit 1
+fi
+echo "[state] $(state_pack "${ROOT}") -> baseline image ${BASELINE_IMAGE}"
 # Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh.
 STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }

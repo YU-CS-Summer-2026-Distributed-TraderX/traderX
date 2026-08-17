@@ -1,6 +1,17 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: traderx
+# DELIBERATELY STILL ON :yu15-idempfix, 2026-08-17. The KIND manifests beside this dir were
+# corrected from :yu15 to :yu16 (stale copies made at the YU16 cut); these GKE ones were NOT.
+# Changing them would claim that us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu16
+# exists in that registry, which cannot be verified from a local worktree — and a tag that is not
+# there fails as ImagePullBackOff, this project's documented recurring GKE trap (see deploy-gke).
+# Whoever next deploys the YU16 tier to GKE must build+push the YU16 image --platform linux/amd64
+# and update these six references together. Note also that local builds have been seen tagged
+# under project traderx-505400 while these manifests name traderx-501015; confirm which registry
+# is current before pushing. The kind-side derivation in scripts/yu15/lib-state-image.sh covers
+# kind only, for exactly this reason.
+#
 # YU15 GKE tier = the YU14 cluster set (emptyDir members, 4 gateways, C4D pool, all hardening)
 # plus the risk-extract chain: NATS (JetStream), the EOD price DB, trade-processor, the YU06 EOD
 # batch chain, and the risk-extract producer with a gs:// sink. Images: cluster-node:yu15-idempfix
