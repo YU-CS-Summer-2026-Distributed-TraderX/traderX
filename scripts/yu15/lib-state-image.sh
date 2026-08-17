@@ -80,13 +80,13 @@ cluster_manifest_dir() {
        nobody is testing. Refusing instead of guessing.
 
        To proceed deliberately, name the build:
-           CLUSTER_IMAGE=traderx/cluster-node:${tag} bash scripts/yu15/run-proofs.sh <proof>
+           CLUSTER_IMAGE=traderx/cluster-node:${tag} bash scripts/yu15/start-cluster-kind.sh
        (build it first: bash scripts/yu15/build-cluster-image.sh)
 
-       run-proofs.sh, specifically. It REPINS the members, the gateway and risk-extract to the
-       image you name. start-cluster-kind.sh cannot: it only kind-loads the image and then applies
-       the manifests, which pin whatever THEY declare — so naming an image there loads a build the
-       tier does not run. That cost a bring-up on 2026-08-17.
+       Both callers honour that: start-cluster-kind.sh substitutes it into the manifests it
+       applies, and run-proofs.sh repins the members, the gateway and risk-extract. On a tier that
+       is ALREADY RUNNING a different image, use run-proofs.sh — changing the members' image under
+       a live tier is an engine roll, and only its rebuild_fresh_epoch wipes the PVCs first.
 
        The durable fix is to give ${pack} its own
        specs/${pack}/generation/kubernetes/cluster layer declaring traderx/cluster-node:${tag}.
@@ -94,10 +94,10 @@ EOF
     return 1
   fi
   [[ "${quiet}" == "--quiet" ]] || cat >&2 <<EOF
-[note] ${pack} has no cluster manifest layer; using ${found}'s. You named
-       ${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE}}, which run-proofs.sh will repin the workloads to —
-       but the manifests remain ${found}'s in every other respect, and applying them alone would
-       run the image THEY declare.
+[note] ${pack} has no cluster manifest layer; using ${found}'s. The workloads will run
+       ${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE}} as you named, but the manifests are ${found}'s in
+       every other respect — replica counts, probes, env, resources and the service images all come
+       from ${found}, not from ${pack}.
 EOF
   printf '%s\n' "${root}/specs/${found}/generation/kubernetes/cluster"
 }
