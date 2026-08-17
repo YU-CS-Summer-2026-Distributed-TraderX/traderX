@@ -2,10 +2,24 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-KDIR="${ROOT}/specs/YU16-cdm-instruments/generation/kubernetes/cluster"
+# shellcheck source=lib-state-image.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
+
+# KDIR and IMAGE are DERIVED from the state this worktree is, not hardcoded. Both used to be
+# literals, and both went stale at the YU16 cut in different directions: this path still named
+# YU16 on the YU17 branch (so the tip applied its ANCESTOR's manifests), while the manifests it
+# pointed at still declared :yu15. Two copies of "which build is this tier", disagreeing, silently.
+# cluster_manifest_dir warns loudly when it has to fall back to an ancestor's layer.
+KDIR="$(cluster_manifest_dir "${ROOT}")" || exit 1
 CLUSTER="traderx-yu12-cluster"
 CTX="kind-${CLUSTER}"
-IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# The manifests are the authority: whatever tag they declare is what kubectl will apply, so
+# defaulting to anything else would just be a fourth copy of the truth. YU15_CLUSTER_IMAGE stays
+# for explicit overrides; CLUSTER_IMAGE is the neutral name (a state id inside a variable used by
+# every state is the smell this whole change is about).
+IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}")}}"
+[[ -n "${IMAGE}" ]] || { echo "[fail] could not determine the cluster image and will not guess one"; exit 1; }
+echo "[state] $(state_pack "${ROOT}") -> manifests ${KDIR#"${ROOT}/"}, image ${IMAGE}"
 
 if ! kind get clusters | grep -qx "${CLUSTER}"; then
   echo "[kind] creating cluster ${CLUSTER}"
@@ -54,8 +68,13 @@ kubectl --context "${CTX}" get namespace traderx >/dev/null 2>&1 \
 # at that moment. In a reused namespace carrying an older database-init-sql, applying it after the
 # kustomization lets eod-price-db initialize against the narrow pre-YU15 schema (the OCC blocker).
 echo "[apply] database schema configmap"
-kubectl --context "${CTX}" -n traderx apply \
-  -f "${ROOT}/specs/YU16-cdm-instruments/generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml"
+# Also derived: runtime-overrides compose last-wins, so the operative configmap is the one in the
+# highest layer carrying it. Hardcoding YU16's here meant the YU17 branch applied YU16's schema
+# and seeds — the same silent-ancestor bug as KDIR, surfacing much later as a missing table.
+DBCM="$(operative_layer_file "${ROOT}" \
+  generation/runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml)" || exit 1
+echo "[state] db-init configmap: ${DBCM#"${ROOT}/"}"
+kubectl --context "${CTX}" -n traderx apply -f "${DBCM}"
 
 echo "[apply] cluster kustomization"
 kubectl --context "${CTX}" apply -k "${KDIR}"

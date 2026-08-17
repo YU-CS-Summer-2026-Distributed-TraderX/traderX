@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: risk-extract
-          image: traderx/cluster-node:yu15
+          image: traderx/cluster-node:yu16
           imagePullPolicy: IfNotPresent
           # Same image as the node and the gateway, a different main — the cluster tier's
           # established shape (ADR-047).
