@@ -535,7 +535,14 @@ for p in "${PROOFS[@]}"; do
   bash "${script}" > "/tmp/proofrun/${p}.log" 2>&1
   case $? in
     0) echo "PASS"; pass=$((pass + 1)); results+=("PASS ${p}") ;;
-    2) echo "SKIP (capability absent — see log)"; skip=$((skip + 1)); results+=("SKIP ${p}") ;;
+    # "capability absent" was a cause this line cannot know. It was true of the only skippers that
+    # existed when it was written (the yu04/yu05 pair, which skip when reference-data's control
+    # snapshot is missing) and became a false statement the moment a proof skipped for a different
+    # reason: yu16-accrued-interest skips when the EOD gate holds the session, where the capability
+    # is present and working and the PRECONDITION is dirty. The summary line is what gets skimmed,
+    # so it was asserting the wrong cause to exactly the readers who never open the log. Render the
+    # verdict, let the proof state the reason.
+    2) echo "SKIP (see log)"; skip=$((skip + 1)); results+=("SKIP ${p}") ;;
     *) echo "FAIL"; fail=$((fail + 1)); results+=("FAIL ${p}") ;;
   esac
 
