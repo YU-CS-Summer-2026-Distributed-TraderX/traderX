@@ -202,7 +202,47 @@ probe, will be restarted`, 18110 serving again **26 s** later. §1b's mitigation
 unbounded outage into a ~26 s one on the tier where it matters. It neither prevents the wedge nor
 explains it, and the offset rebuilds on the next leader kill.
 
-## The suspected worst consequence — a 200 carrying another order's `orderRef` — is NOT established
+## CONFIRMED 2026-08-16 on kind: a 200 carrying another order's `orderRef`
+
+**The claim retracted below is now measured.** Gateway `traderx/cluster-node:yu15prewedge`
+(pre-self-heal, `restarts=0`), members `:yu16`, kind rig `kind-traderx-yu12-cluster`, rig verified
+quiet before the reading (`next_order_ref` stationary at 1445 across three samples, `depth` stable).
+
+Induced **K = 20**, with `depth` and `gap` agreeing exactly — the evidence that no reconnect drained
+anything. Then **50 orders staggered 60 ms apart so offer order equals launch order**, distinct
+`clientOrderId`s. Launch index *i* therefore has true ref `R0+i-1` = 1445…1494. **Both branches were
+fixed in the script before the run:**
+
+| | OFFSET predicts | INNOCENT predicts | **measured** |
+|---|---|---|---|
+| which clients get `504` | **last** 20 (i 31–50) | first 20 (i 1–20) | **i 31–50** |
+| 200s carrying the ref of the order K later | 30 | 0 | **30** |
+| 200s carrying their own ref | 0 | 30 | **0** |
+| unexplained | — | — | **0** |
+
+**Launch index 1, whose true ref is 1445, was told `{"orderRef":1465}`** — the ref of the order 20
+positions later. All 30 successes were off by exactly K; not one carried its own ref.
+
+**The offer-order assumption is closed, not assumed** — that was precisely the loophole that made
+the earlier all-at-once burst worthless. The returned refs are strictly **+1 monotonic** with launch
+index across all 30 successes, and `next_order_ref` ended at **1495 = R0+50** on all three members,
+so exactly 50 refs were consumed. Shuffled offer order cannot produce refs monotonic in launch index.
+
+**Both harms land in a single burst:**
+
+- **refs 1445–1464 were assigned, booked, and reported to nobody** — §1's invisible orders, exactly K
+  of them;
+- **refs 1465–1494 were each reported to the client of a different order** — HTTP 200, no error, no
+  timeout. A client cancelling "its" 1465 cancels the order that really is 1465, which is someone
+  else's.
+
+This is worse than §1 in the direction that matters: §1's client under-counts its own exposure,
+which is unsafe but conservative. This client records an exposure **belonging to somebody else**.
+
+*The retracted history below is kept deliberately — the reasoning error that produced a
+non-discriminating experiment is more instructive than the eventual confirmation.*
+
+## The retracted first attempt — why the all-at-once burst could NOT establish this
 
 `completePipelinedHead` reads the ref for a NEW order out of the **ack buffer**, not out of the
 pending request:
