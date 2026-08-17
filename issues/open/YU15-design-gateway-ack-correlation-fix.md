@@ -376,15 +376,27 @@ Under B the watermark does not exist and `drain()` is unchanged except for clear
 
 ---
 
-## Severity framing
+## Severity framing — the misattribution consequence is now CONFIRMED (kind, 2026-08-16)
 
-The misattribution consequence — a `200` carrying another order's `orderRef` — is **plausible and
-unestablished**. **This design does not depend on it.** Both options are justified by the measured
-facts alone: permanent invisible orders and a total HTTP collapse at `K ≥ 64`. If the
-staggered-burst or engine-resend test confirms misattribution, **urgency changes and the design does
-not** — except in one respect worth stating now: confirmation would make B's *unconditional*
-correctness materially more valuable than A's *trigger-specific* repair, because a silent
-cross-client wrong answer is not something to leave exposed to an unknown second trigger.
+**Measured, no longer predicted.** Gateway `:yu15prewedge`, members `:yu16`, rig verified quiet,
+K = 20, **50 orders staggered 60 ms so offer order equals launch order**, both branches fixed in the
+script before the run:
+
+- **all 30 successes carried the ref of the order K positions later; zero carried their own;**
+- **the last K clients got `504`**, where the innocent reading required the *first* K;
+- launch index 1, true ref 1445, was told `{"orderRef":1465}`;
+- offer order closed independently — returned refs strictly +1 monotonic with launch index, and
+  `next_order_ref` ended at exactly `R0+50` on all three members.
+
+So the defect is not only invisible orders. It is **silent cross-client wrong answers carrying HTTP
+200**: a client cancelling "its" ref cancels a stranger's order.
+
+**This design never depended on that claim and still does not** — both options were justified by the
+measured facts alone (permanent invisible orders, total HTTP collapse at `K ≥ 64`). **What
+confirmation changes is urgency, plus one thing more:** it makes B's *unconditional* correctness
+materially more valuable than A's *trigger-specific* repair, because a silent cross-client wrong
+answer is now a **live** exposure to the by-design second trigger that A cannot reach — not a
+hypothetical one.
 
 ---
 
