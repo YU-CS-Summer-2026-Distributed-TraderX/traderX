@@ -224,6 +224,47 @@ TOKEN="$(${K} exec deploy/trade-processor -- sh -c 'curl -fsS -X POST http://loc
 CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
   "curl -fsS -X POST 'http://localhost:18091/eod/session/close' -H 'Authorization: Bearer ${TOKEN}'" 2>/dev/null)"
 CLOSE_STATUS="$(echo "${CLOSE}" | json_field status)"
+# A single flagged instrument blocks publication of the WHOLE session (FR-EOD23), and with
+# EOD_UNIVERSE unset the universe is "every ticker the price feed has been seen publishing" —
+# which includes the simulated option chain. An out-of-the-money option marked off a random-walk
+# underlying routinely clears even the 200% option band between two sessions: measured 2026-08-17,
+# AAPL260918P00220000 went 0.435 -> 1.846 (+324%) and was correctly SPIKE, then 1.430 (+229%,
+# still SPIKE), then 0.986 (+127%, OK) as the walk came back — four of that day's five closes
+# carried the flag. Asserting PUBLISHED straight off the close therefore made this proof pass only
+# when nothing in that universe happened to be flagged, which is not a property of swaps and not
+# something this proof controls.
+#
+# Resolve it the way an operator does — override each flagged mark at its own observed close and
+# publish (ADR-026: a correction is a new version, never an in-place edit) — so the proof depends
+# on the EOD chain running, not on a quiet random walk. It does NOT widen the band: a genuine
+# outlier is still flagged, still recorded, and still requires the explicit override to clear.
+if [[ "${CLOSE_STATUS}" != "PUBLISHED" ]]; then
+  SESSION_DATE="$(echo "${CLOSE}" | json_field sessionDate)"
+  [[ -n "${SESSION_DATE}" ]] || fail "close returned ${CLOSE_STATUS} and no sessionDate: ${CLOSE}"
+  FLAGGED="$(echo "${CLOSE}" | python3 -c 'import json,sys
+for p in json.load(sys.stdin)["instruments"]:
+    if p.get("flagged"):
+        print("%s\t%s\t%s" % (p["security"], p["quality"], p.get("closingPrice")))')"
+  [[ -n "${FLAGGED}" ]] \
+    || fail "close returned ${CLOSE_STATUS} with nothing flagged — publication was blocked by something else"
+  echo "   session ${SESSION_DATE} is ${CLOSE_STATUS}; $(echo "${FLAGGED}" | wc -l | tr -d ' ') instrument(s) flagged"
+  while IFS=$'\t' read -r SEC QUAL PX; do
+    # MISSING carries no mark at all, so there is nothing to accept. That is a real gap in the
+    # price chain rather than a band being strict, and it is not this proof's to paper over.
+    [[ "${PX}" != "None" && -n "${PX}" ]] \
+      || fail "${SEC} is ${QUAL} with no mark — the EOD chain could not price it at all"
+    echo "   overriding ${SEC} (${QUAL}) at its own observed close ${PX}"
+    ${K} exec deploy/trade-processor -- sh -c \
+      "curl -fsS -X POST 'http://localhost:18091/eod/prices/${SESSION_DATE}/override' \
+        -H 'Authorization: Bearer ${TOKEN}' -H 'Content-Type: application/json' \
+        -d '{\"security\":\"${SEC}\",\"price\":${PX},\"reason\":\"yu17-swap-netting: accepted the observed mark\"}'" \
+      </dev/null >/dev/null 2>&1 || fail "override of ${SEC} was rejected"
+  done <<< "${FLAGGED}"
+  CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
+    "curl -fsS -X POST 'http://localhost:18091/eod/prices/${SESSION_DATE}/publish' \
+      -H 'Authorization: Bearer ${TOKEN}'" </dev/null 2>/dev/null)"
+  CLOSE_STATUS="$(echo "${CLOSE}" | json_field status)"
+fi
 [[ "${CLOSE_STATUS}" == "PUBLISHED" ]] || fail "session close did not publish (status '${CLOSE_STATUS}')"
 for _ in $(seq 1 60); do
   AFTER_READY="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"

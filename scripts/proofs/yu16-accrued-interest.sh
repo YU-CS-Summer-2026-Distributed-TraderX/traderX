@@ -72,48 +72,39 @@ CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
 SESSION_DATE="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sessionDate"])')"
 STATUS="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
 
-# A HELD SESSION IS A MISSING PRECONDITION, NOT A WRONG ACCRUAL — and this used to fail as though
-# it were the latter. The EOD price-quality gate holds the session at DRAFT when any instrument in
-# the universe is flagged, and the extract this proof reads is only produced on publish. So one
-# noisy option mark anywhere in the universe reported "accrued interest is broken", which is a
-# claim about arithmetic that was never evaluated.
-#
-# The universe is not under this proof's control and has nothing to do with its subject: option
-# marks come off a simulated random-walk underlying, and other proofs' fixtures leak into the
-# priced set. Today's green suite passed because the universe happened to be clean at that moment
-# — the fragility was in the result, not disproved by it.
-#
-# Exit 2 is the runner's SKIP, and skipping is the honest verdict here: this script measured
-# NOTHING about accrual. It is deliberately not a pass. Note that RED would measure no more: every
-# accrual assertion in this file sits BELOW the close, so a failure here is unreachable-code either
-# way. RED and SKIP have identical coverage and differ only in whether the claim is true.
-#
-# Measured 2026-08-17: 4 of 5 closes flagged. Option marks come off a simulated random-walk
-# underlying against a 200% band, so excursions are the process rather than the tail.
-#
-# THIS BRANCH EXPIRES. The fix is to override each flagged instrument at its observed close, publish,
-# then assert (ADR-026's own remedy) — designed by the swaps chat, blocked on a permission classifier
-# pending yaakov. When it lands, all four sites revert to asserting and this branch is DELETED, not
-# left dormant: a skip with a TODO is how the YU17 proof gap was born. Do not build a second version
-# of that fix; it is written and waiting.
-# EodReport's field names are read from the record, not guessed: sessionDate, version, status,
-# instrumentCount, flaggedCount, instruments[{security, closingPrice, quality, ...}].
+# A HELD SESSION IS A MISSING PRECONDITION, NOT A WRONG ACCRUAL. The EOD price-quality gate holds
+# the session at DRAFT when any instrument in the universe is flagged, and option marks off the
+# simulated random-walk underlying clear even the 200% band on MOST closes (measured 2026-08-17:
+# 4 of 5). The universe is not under this proof's control and has nothing to do with accrual — so
+# resolve the precondition the operator's way: override each flagged mark at its own observed
+# close, publish (ADR-026: a correction is a new version, never an in-place edit), then assert.
+# The band is not widened, and MISSING still fails — no mark at all is a price-chain gap, not a
+# mark the gate disliked. Full account: yu17-swap-netting.sh step 4 (YU17 branch). This replaces
+# the interim exit-2 SKIP branch, per its own expiry note.
 if [[ "${STATUS}" != "PUBLISHED" ]]; then
-  FLAGGED="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("flaggedCount",0))')"
-  if [[ "${STATUS}" == "DRAFT" && "${FLAGGED}" -gt 0 ]]; then
-    echo "[skip] the EOD gate held session ${SESSION_DATE} at DRAFT: ${FLAGGED} flagged instrument(s)."
-    printf '%s' "${CLOSE}" | python3 -c '
-import sys,json
-for i in json.load(sys.stdin)["instruments"]:
-    if i["quality"] != "OK":
-        print("         %-24s quality=%-8s close=%s" % (i["security"], i["quality"], i["closingPrice"]))'
-    echo "       No extract is produced for a held session, so NOTHING about accrued interest was"
-    echo "       measured. This is not a pass. The gate is correct; the universe is noisy. Fix:"
-    echo "       swaps chat's override-then-publish patch, blocked pending yaakov."
-    exit 2
-  fi
-  fail "session close did not publish (status ${STATUS}, flagged ${FLAGGED})"
+  FLAGGED="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json
+for p in json.load(sys.stdin)["instruments"]:
+    if p.get("flagged"):
+        print("%s\t%s\t%s" % (p["security"], p["quality"], p.get("closingPrice")))')"
+  [[ -n "${FLAGGED}" ]] \
+    || fail "close returned ${STATUS} with nothing flagged — publication was blocked by something else"
+  echo "   session ${SESSION_DATE} is ${STATUS}; $(printf '%s\n' "${FLAGGED}" | wc -l | tr -d ' ') instrument(s) flagged"
+  while IFS=$'\t' read -r SEC QUAL PX; do
+    [[ "${PX}" != "None" && -n "${PX}" ]] \
+      || fail "${SEC} is ${QUAL} with no mark — the EOD chain could not price it at all"
+    echo "   overriding ${SEC} (${QUAL}) at its own observed close ${PX}"
+    ${K} exec deploy/trade-processor -- sh -c \
+      "curl -fsS -X POST 'http://localhost:18091/eod/prices/${SESSION_DATE}/override' \
+        -H 'Authorization: Bearer ${TOKEN}' -H 'Content-Type: application/json' \
+        -d '{\"security\":\"${SEC}\",\"price\":${PX},\"reason\":\"yu16-accrued-interest: accepted the observed mark\"}'" \
+      </dev/null >/dev/null 2>&1 || fail "override of ${SEC} was rejected"
+  done <<< "${FLAGGED}"
+  CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
+    "curl -fsS -X POST 'http://localhost:18091/eod/prices/${SESSION_DATE}/publish' \
+      -H 'Authorization: Bearer ${TOKEN}'" </dev/null 2>/dev/null)"
+  STATUS="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])' 2>/dev/null)"
 fi
+[[ "${STATUS}" == "PUBLISHED" ]] || fail "session close did not publish (status ${STATUS})"
 
 for _ in $(seq 1 60); do
   AFTER="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
