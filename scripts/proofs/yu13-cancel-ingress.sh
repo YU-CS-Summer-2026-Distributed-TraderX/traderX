@@ -341,7 +341,7 @@ elif [[ "${DEPLOYED_IMAGE}" == "${IMAGE_PRE}" && "$(cancel 0 2>/dev/null)" == *'
   SKIP_WHY="the deployed gateway IS ${IMAGE_PRE} and it already serves /cancel"
 fi
 vlog "   deployed gateway image: ${DEPLOYED_IMAGE}" \
-     "   regression half: $([[ "${SKIP_REGRESSION}" == 1 ]] && echo "SKIPPED — the deployed image IS ${IMAGE_PRE} and it already serves /cancel" || echo "will run — rolling to ${IMAGE_PRE} to test it directly")"
+     "   regression half: $([[ "${SKIP_REGRESSION}" == 1 ]] && echo "SKIPPED — ${SKIP_WHY}" || echo "will run — rolling to ${IMAGE_PRE} to test it directly")"
 
 if [[ "${SKIP_REGRESSION}" == "1" ]]; then
   echo
