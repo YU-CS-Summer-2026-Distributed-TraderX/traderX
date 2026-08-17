@@ -23,19 +23,35 @@ asserted by nothing.
 
 ## How the last detector was removed, legitimately
 
-Until `f379497b` / `97b03d70` / `d3fd70b3` (2026-08-17), `yu15-risk-extract.sh` asserted
-`CLOSE_OPTIONS_OK == CLOSE_OPTIONS` — every option priced clean. An option wrongly demoted to the
-20% equity band would flag SPIKE on an ordinary move, and that assertion would fail. That was the
-only end-to-end detector of a band-selection regression.
+**Corrected 2026-08-17, same day, after the implementing lane's failure-set analysis. The conclusion
+stands; the mechanism in the first version of this file was wrong, and the correction is instructive.**
 
-It was removed correctly. It detected the bug only *incidentally* and only *nondeterministically*:
-the option marks come off a simulated random-walk underlying, and genuine excursions clear even the
-200% band on roughly one close in five (measured 2026-08-17). The assertion was a flake whose
-detection value was an accident of what else it happened to catch. Keeping it to preserve that
-accident would have been keeping a 4-of-5 failure.
+I originally named the deleted `CLOSE_OPTIONS_OK == CLOSE_OPTIONS` line as the lost detector. It was
+not. Verified against the pre-patch file (`f379497b^:scripts/proofs/yu15-risk-extract.sh`):
 
-**But the coverage did leave, and the ledger should say so.** After the patch a flagged option is
-overridden at its own observed close and published, so a demoted option now *passes*.
+```
+66  [[ "${CLOSE_STATUS}" == "PUBLISHED" ]] || fail ...     <- the detector
+69  [[ "${CLOSE_OPTIONS_OK}" == "${CLOSE_OPTIONS}" ]] || fail ...
+```
+
+The options-OK line sat **below** the PUBLISHED assertion. The gate publishes only at
+`flaggedCount == 0`, and flagged is `STALE|SPIKE|MISSING`, so on any published session every quality
+is already in `{OK, OVERRIDDEN}`. The deleted line's entire *reachable* failure set was therefore
+"a published session containing an OVERRIDDEN option" — the legitimate state ADR-026's remedy
+produces. It was a latent false alarm waiting for the first operator override, and deleting it was
+strictly right.
+
+**The detector was line 66 — and the patch did not delete it, it converted it.** Pre-patch, an option
+demoted to the 20% equity band flags SPIKE on an ordinary move, the session stays DRAFT, and the
+proof *fails there*. Post-patch, the same DRAFT is no longer a failure: it is the trigger to override
+each flagged mark at its observed close, republish, and continue. The demoted option now **passes**.
+
+The conversion was still correct. That detection was *incidental* and *nondeterministic* — option
+marks come off a simulated random-walk underlying and genuine excursions clear even the 200% band on
+roughly one close in five (measured 2026-08-17). It was a 4-of-5 flake whose detection value was an
+accident of what else it happened to catch. Keeping a flake to preserve an accident is not coverage.
+
+**But the coverage did leave, and the ledger should say so.**
 
 ## Why this matters more than it looks
 
@@ -66,8 +82,15 @@ assert.
 
 ## The general rule this is an instance of
 
-**When you delete an assertion, name what it was covering before you decide the deletion is neutral.**
-The lane that landed the patch stated the removal and its rationale in the code comment, which is why
-this was findable at all. What was missing was the second step: an assertion's *stated* subject
-("all options priced clean") is not the same as its *effective* failure set, and the coverage that
-leaves with it is usually the incidental part, not the stated part.
+**When you change an assertion, name what it was covering before deciding the change is neutral —
+and check the assertions you CONVERT, not only the ones you delete.**
+
+Both parties got half of this. I named the deleted line and never checked that it was reachable. The
+implementing lane analysed the deleted line rigorously and correctly, and stopped there — the loss
+was one line above, in the check the patch turned from a failure into a remedy. A converted assertion
+is the easier one to miss precisely because it is still present in the file and still mentions the
+same condition.
+
+The durable form: an assertion's *stated* subject is not its *effective* failure set. Compute the
+reachable set (what can actually arrive at this line, given everything above it), and do it for every
+assertion the patch touches — including the ones that survive in altered form.
