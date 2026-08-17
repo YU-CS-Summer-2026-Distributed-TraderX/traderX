@@ -32,6 +32,13 @@ CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
+# Whether the operator NAMED a pre-image, captured before the default eats the distinction. It
+# decides whether a missing image is a precondition or an error: an ambient default that has been
+# tidied out of the daemon is the former, a tag someone explicitly asked to compare against is the
+# latter. Same line as DRAFT-vs-MISSING in the EOD proofs — never silently decline to do the thing
+# an operator asked for.
+IMAGE_PRE_NAMED=0
+[[ -n "${IMAGE_PRE:-}" ]] && IMAGE_PRE_NAMED=1
 IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15}"
 IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-cancel}"
 ACCOUNT="${ACCOUNT:-99001}"
@@ -269,14 +276,30 @@ cancel() { # cancel <ref> -> "<httpCode> <body>"
 step "0. preflight"
 [[ "$(members | wc -l | tr -d ' ')" == "3" ]] || fail "expected 3 cluster members"
 start_pf
-docker image inspect "${IMAGE_PRE}" >/dev/null 2>&1 || fail "pre-fix image ${IMAGE_PRE} not present locally"
+# A MISSING DEFAULT PRE-IMAGE IS A PRECONDITION, NOT A FAILURE — the same extension this proof
+# already makes for a pre-image that is too NEW. The default tag is mutable and historical: it gets
+# rebuilt, retagged and tidied by tooling that knows nothing about this proof (on 2026-08-17 it was
+# retagged out of the daemon entirely, because it had been found to hold an intermediate build under
+# a YU15 name). Failing then reports "the cancel route is broken" on the strength of a housekeeping
+# operation. The forward claim — a cancel reaches the engine and takes effect identically on every
+# member — needs no pre-image at all and still runs in full.
+#
+# But only for the DEFAULT. An IMAGE_PRE the operator named and which does not exist is a real
+# error: they are running a comparison and asked for a specific before-arm.
+PRE_ABSENT=0
+if ! docker image inspect "${IMAGE_PRE}" >/dev/null 2>&1; then
+  [[ "${IMAGE_PRE_NAMED}" == "1" ]] && fail "IMAGE_PRE=${IMAGE_PRE} was named explicitly but is not present locally"
+  PRE_ABSENT=1
+fi
 docker image inspect "${IMAGE_FIX}" >/dev/null 2>&1 || fail "fixed image ${IMAGE_FIX} not present locally"
 
 # Present in the local Docker daemon is not the same as present in the cluster. start-cluster-kind.sh
 # loads the images the kustomization names; these two are proof-only tags it has never heard of, so
 # on a freshly created cluster the roll-forward just sits in ImagePullBackOff and the rollout times
 # out with "did not complete" -- saying nothing about the missing image. Load them here.
-for _img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
+_load=("${IMAGE_FIX}")
+[[ "${PRE_ABSENT}" == "1" ]] || _load=("${IMAGE_PRE}" "${IMAGE_FIX}")
+for _img in "${_load[@]}"; do
   kind load docker-image "${_img}" --name "${CLUSTER:-traderx-yu12-cluster}" >/dev/null 2>&1 \
     || echo "[warn] could not kind-load ${_img}; assuming it is already on the nodes"
 done
@@ -309,18 +332,29 @@ echo "[ok] starting book:"; book_all
 # the route, so roll and find out rather than skipping coverage on a guess.
 DEPLOYED_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
 SKIP_REGRESSION=0
-if [[ "${DEPLOYED_IMAGE}" == "${IMAGE_PRE}" && "$(cancel 0 2>/dev/null)" == *'"canceled"'* ]]; then
+SKIP_WHY=""
+if [[ "${PRE_ABSENT}" == "1" ]]; then
   SKIP_REGRESSION=1
+  SKIP_WHY="the default pre-fix image ${IMAGE_PRE} is not in the local Docker daemon"
+elif [[ "${DEPLOYED_IMAGE}" == "${IMAGE_PRE}" && "$(cancel 0 2>/dev/null)" == *'"canceled"'* ]]; then
+  SKIP_REGRESSION=1
+  SKIP_WHY="the deployed gateway IS ${IMAGE_PRE} and it already serves /cancel"
 fi
 vlog "   deployed gateway image: ${DEPLOYED_IMAGE}" \
      "   regression half: $([[ "${SKIP_REGRESSION}" == 1 ]] && echo "SKIPPED — the deployed image IS ${IMAGE_PRE} and it already serves /cancel" || echo "will run — rolling to ${IMAGE_PRE} to test it directly")"
 
 if [[ "${SKIP_REGRESSION}" == "1" ]]; then
   echo
-  echo "=== 1-3. SKIPPED: the deployed gateway already serves /cancel ==="
-  echo "[skip] the pre-fix half needs IMAGE_PRE to predate the cancel route; ${IMAGE_PRE} does not"
-  echo "[skip] (that tag is rebuilt by build-cluster-image.sh)"
-  echo "[skip] not rolling the gateway; the forward proof below runs against what is deployed"
+  echo "=== 1-3. SKIPPED: the regression demonstration cannot be staged ==="
+  echo "[skip] ${SKIP_WHY}"
+  echo "[skip] the pre-fix half needs an IMAGE_PRE that both EXISTS and predates the cancel route."
+  echo "[skip] That tag is mutable — rebuilt by build-cluster-image.sh, and retagged out of the"
+  echo "[skip] daemon on 2026-08-17 once it was found to hold an intermediate build under a YU15 name."
+  echo "[skip] To restore the demonstration, set IMAGE_PRE to a genuinely pre-cancel build — verified"
+  echo "[skip] with 'git log -S' for the /cancel route registration on YU13, NOT by grepping images"
+  echo "[skip] (that marker hits :yu12 too, so it discriminates nothing)."
+  echo "[skip] Not rolling the gateway. THE FORWARD CLAIM STILL RUNS IN FULL below, against what is"
+  echo "[skip] deployed — that claim, not the regression narrative, is what this proof is for."
 else
 step "1. roll the gateway BACK to the pre-fix image ${IMAGE_PRE}"
 roll_gateway "${IMAGE_PRE}"
