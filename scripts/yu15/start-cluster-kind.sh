@@ -21,23 +21,35 @@ IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-$(declared_cluster_image "${ROOT}"
 [[ -n "${IMAGE}" ]] || { echo "[fail] could not determine the cluster image and will not guess one"; exit 1; }
 echo "[state] $(state_pack "${ROOT}") -> manifests ${KDIR#"${ROOT}/"}, image ${IMAGE}"
 
-# IMAGE IS LOAD-ONLY IN THIS SCRIPT, and that is worth refusing over rather than documenting.
-# Everything below uses ${IMAGE} for `kind load`; the workloads come from `apply -k`, which pins
-# whatever the manifests declare. So naming a different CLUSTER_IMAGE here loads a build onto the
-# nodes and then runs a different one — silently, while the [state] line above reads as if you got
-# what you asked for. A lane brought up what it believed was a YU17 tier this way on 2026-08-17:
-# :yu17-ackfix faithfully loaded, members, gateway and risk-extract all running :yu16.
+# ${IMAGE} USED TO REACH ONLY THE `kind load` LOOP. The workloads came from `apply -k`, which pins
+# whatever the manifests declare, so naming a CLUSTER_IMAGE loaded one build onto the nodes and ran
+# a different one — silently, under a [state] line that read as though the override had taken. A
+# lane brought up what it believed was a YU17 tier that way on 2026-08-17: :yu17-ackfix faithfully
+# loaded, members, gateway and risk-extract all on :yu16. The escape hatch delivered the exact
+# failure the refusal printing it exists to prevent.
 #
-# run-proofs.sh is the path that honours the override, because it repins the three workloads after
-# applying. This script cannot without turning a bring-up into an engine roll.
+# The promise is that the image you name is the image that RUNS, so the apply below substitutes it
+# into the rendered manifests. Two things that promise cannot do, both refusals rather than
+# surprises:
+#
+#   * It cannot roll a LIVE tier. Changing the members' image on a cluster that already has state
+#     is an engine roll, not a bring-up: the mixed-version window diverges the members permanently,
+#     whether you get there by `set image` or by substituting into the manifests. The safe form is
+#     scale to zero, wipe the PVCs, fresh epoch — which is what run-proofs.sh's rebuild_fresh_epoch
+#     does, and why it is the right tool for that case.
+#   * It cannot invent an image. `kind load` below already refuses on anything missing from the
+#     local daemon.
 DECLARED="$(declared_cluster_image "${ROOT}" 2>/dev/null || true)"
-if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then
+RUNNING="$(kubectl --context "${CTX}" -n traderx get statefulset order-matcher-cluster \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)"
+if [[ -n "${RUNNING}" && "${RUNNING}" != "${IMAGE}" ]]; then
   cat >&2 <<EOF
-[fail] you named ${IMAGE}, but ${KDIR#"${ROOT}/"} declares ${DECLARED}.
-       This script would load yours onto the nodes and then run theirs. Refusing.
-       To bring the tier up ON the image you named:
+[fail] the members are already running ${RUNNING}; you are asking for ${IMAGE}.
+       Applying that would roll the deterministic core under a live tier, and a mixed-version
+       window diverges the members permanently. Refusing.
+       The safe form wipes the PVCs and mints a fresh epoch:
            CLUSTER_IMAGE=${IMAGE} bash scripts/yu15/run-proofs.sh <proof>
-       To bring it up on the declared image, just drop the override.
+       Or tear the tier down first if you want this script to build it up clean.
 EOF
   exit 1
 fi
@@ -97,11 +109,23 @@ DBCM="$(operative_layer_file "${ROOT}" \
 echo "[state] db-init configmap: ${DBCM#"${ROOT}/"}"
 kubectl --context "${CTX}" -n traderx apply -f "${DBCM}"
 
-echo "[apply] cluster kustomization"
-kubectl --context "${CTX}" apply -k "${KDIR}"
+# Render, substitute, apply — rather than `apply -k` — so that the named image reaches the
+# workloads and not just the nodes. When no override is in play DECLARED == IMAGE and the sed is a
+# no-op, so the normal path is byte-identical to what `apply -k` would have sent.
+pin() { # a filter, so each apply keeps its own namespace handling: the kustomize render carries
+        # explicit namespaces, gateway.yaml carries none and needs -n traderx.
+  if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then sed "s|${DECLARED}|${IMAGE}|g"; else cat; fi
+}
+
+if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then
+  echo "[apply] cluster kustomization, pinning ${DECLARED} -> ${IMAGE}"
+else
+  echo "[apply] cluster kustomization"
+fi
+kubectl kustomize "${KDIR}" | pin | kubectl --context "${CTX}" apply -f -
 
 echo "[apply] gateway"
-kubectl --context "${CTX}" -n traderx apply -f "${KDIR}/gateway.yaml"
+pin < "${KDIR}/gateway.yaml" | kubectl --context "${CTX}" -n traderx apply -f -
 
 echo "[wait] 3/3 members ready"
 kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-cluster --timeout=300s
