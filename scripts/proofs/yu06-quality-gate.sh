@@ -38,9 +38,11 @@ DATE="$(date -u +%F)"
 # Band-selection controls (step 6): an OCC option the live publisher quotes, and AAPL, which is
 # already in the universe. Their doctored priors live in a SPARSE extra version of YESTERDAY's
 # session — priorPublishedClose takes strictly-earlier dates, latest version first, per security —
-# so no other instrument's baseline moves. A planted prior of 100000 makes ANY live mark a ~99.9%
-# move, deterministically: inside the option band (200%), past the equity band (20%), with no need
-# to read a price first. The option's prior is planted from step 0 so it can never flag during the
+# so no other instrument's baseline moves. The load-bearing property of the planted prior is the
+# BOUND, not the magnitude: |x-P|/P is bounded above by 1 for P >> x, so the move is ~99.9% for
+# ANY live mark and can never cross the 200% option band no matter what the walk did that day —
+# that bound is what must be preserved if the number is ever touched, and it is why no current
+# price is ever read. The option's prior is planted from step 0 so it can never flag during the
 # QLTY collapse; the equity's only in step 6, where flagging it is the point.
 OPT_CTL="AAPL260918C00240000"
 EQ_CTL="AAPL"
@@ -94,6 +96,16 @@ kx rollout status deploy/trade-processor --timeout=180s >/dev/null 2>&1 \
 kx wait --for=condition=ready pod -l app=trade-processor --timeout=120s >/dev/null 2>&1
 sleep 4
 echo "[ok] universe injected (${UNIVERSE##*,} is priceless by construction)"
+# UNPLANT BEFORE PLANTING, unconditionally. An EXIT trap does not fire on SIGKILL, a dead kubectl
+# session, or the box going down — and the object planted below is a PUBLISHED prior of 100000.
+# If one survives a killed run, every later close flags the controls SPIKE against a baseline that
+# never existed, which presents as a product regression, not as this proof's leftovers. The
+# signature delete (control securities at exactly 100000, any earlier date) is the only cleanup
+# that survives the failure modes a trap cannot; the trap and the inline delete keep the tidy
+# path tidy. A stale empty session HEADER can also survive a kill between the two inserts — left
+# alone deliberately: priorPublishedClose joins snapshot rows, so a rowless header matches nothing.
+db "DELETE FROM eod_price_snapshot WHERE session_date < '${DATE}'
+      AND security IN ('${OPT_CTL}','${EQ_CTL}') AND closing_price = 100000.0;" >/dev/null 2>&1
 # Plant the OPTION control's prior now, before the first close — see the OPT_CTL comment above.
 CTL_V="$(( $(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${DATE_PREV}';" | tr -d '[:space:]') + 1 ))"
 db "INSERT INTO eod_price_session (session_date, version, status, instrument_count, flagged_count, created_at)
@@ -170,6 +182,11 @@ step "6. band selection: the SAME ~99.9% move must flag the equity and pass the 
 # ordinary moves and now gets quietly overridden; an equity promoted to the option band stops
 # flagging at all. One planted prior, two bands, opposite verdicts: the pair is its own negative
 # control, and neither verdict depends on the random walk.
+#
+# Scope, stated so nobody reads more into a green run: the option leg proves the option got a band
+# WIDER than ~100% — band SELECTION, which is what the OccSymbols defect threatens — not that the
+# band is exactly 200. A max-move-pct-option misconfigured to 500 passes here; pinning the constant
+# is the unit tests' job (EodQualityCheckerTest), not this proof's.
 db "INSERT INTO eod_price_snapshot (session_date, version, security, closing_price, quality)
       VALUES ('${DATE_PREV}', ${CTL_V}, '${EQ_CTL}', 100000.0, 'OK');" \
   || fail "could not plant the equity control baseline"
