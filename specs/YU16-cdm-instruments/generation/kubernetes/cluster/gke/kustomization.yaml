@@ -14,31 +14,48 @@ namespace: traderx
 # Measured by the coordinator session, which has GAR access; NOT verifiable from this worktree, so
 # treat "exists" as its reading rather than mine.
 #
-# THE GCS BUCKETS ARE STILL 501015 ON PURPOSE. `gs://traderx-501015-order-matcher-journal-archive`
-# (backup-cronjob) and `gs://traderx-501015-risk-extracts` (risk-extract) share the project id only
-# as a naming convention — they are storage, not the registry, and nothing has been measured about
-# them. A blanket project rewrite renames them to buckets nobody has shown exist, which fails at
-# deploy as a write error rather than an ImagePullBackOff. Note also that the access yaakov granted
-# on 501015 was READ; these two are WRITE paths, so they need their own answer before a GKE deploy:
-# either the buckets move, or the writer keeps a credential that can write to the old project.
+# THE GCS BUCKETS MOVED TOO, but they needed a separate answer and got one. They share the project
+# id as a NAMING CONVENTION, not as a registry path, so the registry measurement said nothing about
+# them: a blanket project rewrite would have pointed the journal archive and the extract sink at
+# buckets nobody had shown existed, failing at write time rather than as an ImagePullBackOff. The
+# access yaakov granted on 501015 was READ, and both of these are WRITE paths, so staying put was
+# not an option either. Both destinations were then created on 505400 (2026-08-17, us-east1), so
+# the refs now name them:
+#   gs://traderx-505400-risk-extracts                 (created + populated)
+#   gs://traderx-505400-order-matcher-journal-archive (created, empty)
+#
+# WHAT DID NOT TRAVEL WITH THE NAME: the extract sink's immutability. On 501015 the bucket granted
+# the writer objectCreator+objectViewer only, so overwrite was impossible even with valid creds.
+# There is no workload identity on 505400 yet, so that binding has nothing to attach to and the
+# only remaining guarantee is client-side (RiskExtractGcsSink's no-clobber precondition). The
+# binding and its 403-on-overwrite proof belong to the GKE bring-up. See the comment at the sink
+# in risk-extract.yaml — do not quote the YU15 write-once guarantee for this project until then.
 #
 # STILL OPEN, deliberately, and it is the interesting one. The five cluster-node refs remain on
 # :yu15-idempfix. cluster-node:yu16 does exist in 505400, so pinning them is one sed away — but
 # which build the DETERMINISTIC CORE runs is not a tag edit, and it is not mine to make silently:
 #
-#   * A YU16 GKE tier on a YU15 core is missing every YU16 engine change, the fraction-of-par book
-#     grid above all. It would come up healthy and price bonds on the equity grid.
-#   * Against that, :yu15-idempfix is the build carrying the idempotency tombstone fix and the one
-#     this tier has actually been run on.
-#   * And the platform of the pushed :yu16 is unknown from here. GKE nodes are amd64; a local kind
-#     build on this laptop is arm64. The :yu15prewedge-amd64 tag suggests amd64 pushes get marked
-#     explicitly, which means an unmarked :yu16 may well be the arm64 one — verify before pinning.
+#   * Moving a cluster-node tag is an ENGINE ROLL, not manifest hygiene. A mixed-version window
+#     diverges the members permanently; the safe change is scale to zero, wipe the PVCs, mint a
+#     fresh epoch. That belongs to whoever brings the tier up and cannot ride along in a tag edit.
+#   * The failure mode is silent-wrong-build at its most expensive. A YU16 tier on a YU15 core comes
+#     up HEALTHY and prices bonds on the equity grid — ADR-060's ticker-derived grid is the one real
+#     engine change bonds needed. Nothing errors; the numbers are just wrong. That is strictly worse
+#     than an ImagePullBackOff, which at least announces itself.
+#   * Against that, :yu15-idempfix carries the idempotency tombstone fix and is the build this tier
+#     has actually been run on.
 #
-# So: whoever deploys the YU16 tier to GKE decides that one, builds+pushes --platform linux/amd64
-# if needed, and moves all five together. A tag that is not there fails as ImagePullBackOff, this
-# project's documented recurring GKE trap (see deploy-gke). execution-algo-engine does not appear in
-# this directory at all — the kind copy pins it to :yu15 with its own note, and the registry holds
-# no images for it under any tag.
+# NOT a reason, though it was offered as one: platform. cluster-node:yu16 in 505400 is linux/amd64,
+# verified with `buildx imagetools inspect` — the second index entry is buildx provenance
+# (unknown/unknown), not a second architecture. So :yu15prewedge-amd64 was someone being explicit,
+# NOT a convention marking the amd64 builds, and an unmarked tag is no evidence of arm64. All four
+# :yu16 service images pinned above are amd64 as well.
+#
+# So: whoever deploys the YU16 tier to GKE decides that one and moves all five together, as part of
+# a fresh epoch. A tag that is not there fails as ImagePullBackOff, this project's documented
+# recurring GKE trap (see deploy-gke). execution-algo-engine does not appear in this directory at
+# all — the kind copy pins it to :yu15 with its own note, and the registry holds no images for it
+# under any tag.
 #
 # The kind-side derivation in scripts/yu15/lib-state-image.sh covers kind only, for exactly the
 # reason this whole comment exists: there is nothing here to derive the answer from.

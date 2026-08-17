@@ -45,11 +45,19 @@ spec:
             - name: RISK_EXTRACT_JDBC_PASSWORD
               value: "traderx"
             # The real delivery: a write-once object in GCS. RiskExtractGcsSink enforces
-            # no-clobber server-side (x-goog-if-generation-match: 0), and the bucket grants the
-            # HMAC's SA objectCreator+objectViewer only — no delete, so overwrite is impossible
-            # even with these creds. Same journal-archive HMAC pair the restore init already uses.
+            # no-clobber server-side (x-goog-if-generation-match: 0), and on 501015 the bucket
+            # granted the HMAC's SA objectCreator+objectViewer only — no delete, so overwrite was
+            # impossible even with these creds. Same journal-archive HMAC pair the restore init uses.
+            #
+            # THAT SECOND HALF DOES NOT YET HOLD ON 505400. The bucket exists (created 2026-08-17)
+            # but there is no workload identity on this project to bind, so the objectCreator-only
+            # grant that makes the sink immutable has nothing to attach to. Today the guarantee is
+            # the client-side one alone: RiskExtractGcsSink's no-clobber precondition, which is a
+            # correctly-behaving-writer guarantee, not an IAM one. The binding and its 403-on-
+            # overwrite proof go with the GKE bring-up — do not quote the YU15 write-once guarantee
+            # for this project until that proof has run.
             - name: RISK_EXTRACT_SINK_URI
-              value: "gs://traderx-501015-risk-extracts"
+              value: "gs://traderx-505400-risk-extracts"
             - name: RISK_EXTRACT_GCS_HMAC_KEY_ID
               valueFrom:
                 secretKeyRef:
