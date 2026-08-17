@@ -41,8 +41,18 @@ state_tag() {
 # cluster_manifest_dir <repo-root> [--quiet] -> the operative cluster manifest directory.
 #
 # Walks DOWN the lineage from this state until it finds a layer that actually carries the cluster
-# manifests, and is LOUD when that is not the state's own layer — which is the case this whole file
-# exists for. Falling back is allowed; falling back silently is not.
+# manifests, and REFUSES when that is not the state's own layer unless the caller has named the
+# image explicitly.
+#
+# This was a warning first. A warning is not enough: the fallback hands you the ANCESTOR's image
+# under this state's spec tree, and the warning scrolls past inside a twelve-minute proof run that
+# then reports success. That is not hypothetical — it is how :yu17, :yu17wedge and :yu17p2 came to
+# carry neither the ack fix nor the wedge self-heal while YU17 observations were being taken on
+# them. The costs are not symmetric: refusing costs one environment variable, warning costs a rig
+# campaign plus reclassifying everything measured during it.
+#
+# So: fall back only for a caller who has said which build it means, via CLUSTER_IMAGE. A lane that
+# means it types it; a lane that does not, stops here.
 cluster_manifest_dir() {
   local root="${1:?cluster_manifest_dir needs the repo root}" quiet="${2:-}" pack own found
   pack="$(state_pack "${root}")" || return 1
@@ -59,15 +69,29 @@ cluster_manifest_dir() {
     fi
   done < <(ls -d "${root}"/specs/YU*/ 2>/dev/null | sed 's|.*/specs/||; s|/$||' | sort -Vr)
   [[ -n "${found:-}" ]] || { echo "[fail] no cluster manifest layer anywhere under ${root}/specs" >&2; return 1; }
-  if [[ "${quiet}" != "--quiet" ]]; then
+  local tag; tag="$(echo "${pack%%-*}" | tr '[:upper:]' '[:lower:]')"
+  if [[ -z "${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-}}" ]]; then
     cat >&2 <<EOF
-[WARN] ${pack} has no cluster manifest layer of its own; using ${found}'s.
-       The tier will therefore run ${found}'s manifests and the image THEY declare, which is not
-       ${pack}'s build. That is the silent-ancestor-image bug this warning exists to make loud.
-       Fix: give ${pack} its own specs/${pack}/generation/kubernetes/cluster layer declaring
-       traderx/cluster-node:$(echo "${pack%%-*}" | tr '[:upper:]' '[:lower:]').
+[fail] ${pack} has no cluster manifest layer of its own, and no image was named.
+       Falling back to ${found}'s manifests would bring the tier up on the image THEY declare
+       ($(grep -hoE 'traderx/cluster-node:[A-Za-z0-9._-]+' \
+            "${root}/specs/${found}/generation/kubernetes/cluster/statefulset.yaml" 2>/dev/null | head -1)),
+       which is not ${pack}'s build — and every proof run against it would pass, describing a build
+       nobody is testing. Refusing instead of guessing.
+
+       To proceed deliberately, name the build:
+           CLUSTER_IMAGE=traderx/cluster-node:${tag} <this command>
+       (build it first: bash scripts/yu15/build-cluster-image.sh)
+
+       The durable fix is to give ${pack} its own
+       specs/${pack}/generation/kubernetes/cluster layer declaring traderx/cluster-node:${tag}.
 EOF
+    return 1
   fi
+  [[ "${quiet}" == "--quiet" ]] || cat >&2 <<EOF
+[note] ${pack} has no cluster manifest layer; using ${found}'s manifests with the image you named
+       (${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE}}). The manifests are ${found}'s in every other respect.
+EOF
   printf '%s\n' "${root}/specs/${found}/generation/kubernetes/cluster"
 }
 
