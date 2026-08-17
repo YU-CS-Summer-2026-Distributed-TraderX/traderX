@@ -57,12 +57,29 @@ PROOFS=(
   # rig nothing else is disturbing. It closes an EOD session, so it sits AFTER every proof that
   # reads an extract (yu15-risk-extract, yu16-accrued-interest) rather than bumping the session
   # version underneath them. Its first suite run was 2026-08-17 on traderx/cluster-node:yu17-ackfix
-  # at a fresh epoch, and it was NOT a "passes alone, fails in a suite" case: it fails at step 4 for
-  # the SAME reason yu17-swap-netting does — /eod/session/close returns DRAFT because the price
-  # quality gate flags AAPL260918P00220000 as SPIKE. Steps 0-3 pass, both swaptions sequenced
-  # through consensus and the unknown exercise style refused without moving the sequence. So this
-  # entry is RED on one shared, already-owned defect in the EOD publish path, not on anything
-  # about suite ordering or about swaptions.
+  # at a fresh epoch, and it was NOT a "passes alone, fails in a suite" case. Steps 0-3 pass: both
+  # swaptions sequenced through consensus, and an unknown exercise style refused 400 without moving
+  # the sequence.
+  #
+  # WHY IT IS RED, AND WHOSE DEFECT IT IS. It fails at step 4 with /eod/session/close returning
+  # DRAFT, and so does yu17-swap-netting below. THE GATE IS CORRECT AND THE PROOF IS WRONG: it
+  # asserts PUBLISHED straight off the close, which assumes a universe that is never flagged. On
+  # 2026-08-17 the option AAPL260918P00220000 was flagged SPIKE against the prior PUBLISHED close
+  # (2026-08-16 v1 = 0.435), so v1 at 1.846 is +324% and v2 at 1.430 is +229%, both over the 200%
+  # option band. Do NOT read "1.846 -> 1.430" as the comparison; those are two consecutive DRAFTs
+  # of the same session and neither is what the checker compared. Option marks come off a simulated
+  # random-walk underlying, so a sub-dollar OTM put moving 1.41 absolute is ordinary and no band
+  # tuned for cash instruments survives it. v3 was +127% and published on its own.
+  #
+  # THIS IS A CLASS OF FOUR, not two. Every one of these asserts PUBLISHED straight off the close:
+  #   yu17-swap-netting.sh:227   yu17-swaption-terms.sh:173
+  #   yu16-accrued-interest.sh:74   yu15-risk-extract.sh:66
+  # The latter two are already in this array and passed on 2026-08-17 — because the universe
+  # happened to be clean at that moment, NOT because they are robust. A green suite containing them
+  # hides this fragility rather than disproving it. The fix (override each flagged instrument at its
+  # own observed close, publish, then assert — ADR-026's own remedy) is designed but BLOCKED pending
+  # yaakov's approval; fixing one means fixing all four, and the lineage rule applies to the YU15
+  # and YU16 copies. Do not route around that block.
   yu17-swaption-terms
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
@@ -76,12 +93,14 @@ PROOFS=(
   # adjacency. It must stay BEFORE yu13-stp-and-replace, which rolls the members onto yu15-era
   # builds that predate the contract record entirely.
   #
-  # CURRENTLY RED at step 4, deliberately, and NOT as a skip: /eod/session/close returns DRAFT
-  # instead of PUBLISHED because the EOD price-quality gate flags AAPL260918P00220000 as SPIKE
-  # (1.846000 -> 1.430000) and EOD_SESSION_AUTO_PUBLISH will not fire with a flag outstanding.
-  # Steps 0-3 pass, both swaps sequenced through consensus. The defect is real, diagnosed and
-  # owned elsewhere; it is not in the ack path and not in this proof. A skip would read as a pass
-  # in the summary line, which is exactly how the "no YU17 proofs in the YU17 suite" gap was born.
+  # CURRENTLY RED at step 4, deliberately, and NOT as a skip. Steps 0-3 pass: both swaps sequenced
+  # through consensus, the risk gate refusing an unknown account without creating a contract.
+  # The step-4 failure is the SHARED proof defect documented at yu17-swaption-terms above — the
+  # price-quality gate is behaving correctly and the assertion of PUBLISHED straight off
+  # /eod/session/close is what is wrong, in four call sites of which this is one. It is NOT a
+  # product regression and NOT in the ack path; anyone skimming "two YU17 proofs fail" as "YU17 is
+  # broken" has it backwards. A skip would read as a pass in the summary line, which is exactly how
+  # the "no YU17 proofs in the YU17 suite" gap was born in the first place.
   yu17-swap-netting
   yu16-ready-tracks-commit   # scales the members to 1 and back (no PVC wipe, no epoch change)
   # Same quorum-loss trick, taken further: it drives the no-ack streak past the LIVENESS limit and
