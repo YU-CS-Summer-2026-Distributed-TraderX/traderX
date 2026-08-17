@@ -73,6 +73,39 @@ public final class SwapConventions {
         return index >= 0 && index < TABLE.length;
     }
 
+    // ----- currencies (YU17 FX-rate fix) -------------------------------------------------------
+    //
+    // The third index-addressed table, under the same append-only rule: a currency index is
+    // journaled in every TYPE_FX_RATE event and in the T_FX_RATE snapshot record, so an index that
+    // has ever been committed must keep its meaning forever. Index 0 is USD, the currency the
+    // credit limit is denominated in — its rate is identity BY CONSTRUCTION and is never stored,
+    // never settable and never absent.
+
+    private static final String[] CURRENCIES = { "USD", "EUR", "GBP", "JPY" };
+
+    public static int currencyCount() {
+        return CURRENCIES.length;
+    }
+
+    /** Index for a currency code, or -1. Used at the boundary, before anything is sequenced. */
+    public static int currencyIndexOf(final String code) {
+        for (int i = 0; i < CURRENCIES.length; i++) {
+            if (CURRENCIES[i].equalsIgnoreCase(code)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * The currency index a convention's notional is denominated in, or -1 for a convention this
+     * build does not know. -1 rather than a throw: the credit gate must refuse such a booking
+     * deterministically (it cannot value a notional in an unknowable currency), not abort apply.
+     */
+    public static int currencyIndexOfConvention(final int conventionIndex) {
+        return knows(conventionIndex) ? currencyIndexOf(TABLE[conventionIndex].currency()) : -1;
+    }
+
     // ----- exercise style (YU17 phase 2, ADR-065) ----------------------------------------------
     //
     // The second index-addressed table in this class, under the same rules and for the same

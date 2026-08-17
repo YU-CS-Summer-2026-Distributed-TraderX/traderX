@@ -10,6 +10,7 @@ import finos.traderx.ordermatcher.lmax.OccSymbol;
 import finos.traderx.ordermatcher.lmax.OutputEvent;
 import finos.traderx.ordermatcher.lmax.OutputPublisher;
 import finos.traderx.ordermatcher.lmax.Px;
+import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.risk.BlpRiskState;
 import finos.traderx.ordermatcher.risk.RiskMetrics;
 import finos.traderx.ordermatcher.risk.RiskReason;
@@ -130,7 +131,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int MAX_CONTRACTS = 4096;
 
     /**
-     * Format 6 (YU17 phase 2): T_CONTRACT gains the three option-wrapper columns so a swaption can
+     * Format 7 (YU17 FX-rate fix): the T_FX_RATE record joins the snapshot for the FX conversion
+     * rates the credit gate values non-USD swap notionals with. A new record TYPE, not a changed
+     * one — every format-6 record keeps its shape and meaning, so MIN_READABLE stays at 3 and a
+     * format-6 epoch rolls forward untouched (it simply has no rates yet, and every non-USD
+     * booking is refused PRICE_MISSING until rates are sequenced). The bump exists for the other
+     * direction: a format-7 snapshot handed to a format-6 build must abort legibly at the header
+     * rather than deep in record parsing.
+     *
+     * <p>Format 6 (YU17 phase 2): T_CONTRACT gains the three option-wrapper columns so a swaption can
      * be carried beside a swap. This is the first change to a record's SHAPE rather than an
      * addition of a new type, so the reader dispatches on the restored format — see
      * {@link #restoredFormat} — and a format-5 record is read as its eight columns with the wrapper
@@ -161,12 +170,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * A version number makes that hazard unconditional and legible at the header instead of latent.
      * Bump this for any change to what the records can CONTAIN, not merely to their shape.
      */
-    static final int SNAPSHOT_FORMAT = 6;
+    static final int SNAPSHOT_FORMAT = 7;
     /**
      * Oldest format this build can still restore. 3 -> 4 only WIDENED the symbol-id domain, 4 -> 5
-     * only ADDED a record type, and 5 -> 6 changed T_CONTRACT's shape in a way this reader handles
-     * explicitly by format. So every format-3, -4 and -5 record still means here exactly what it
-     * meant there, and all three restore exactly — which is what lets this build roll onto an
+     * and 6 -> 7 only ADDED a record type, and 5 -> 6 changed T_CONTRACT's shape in a way this
+     * reader handles explicitly by format. So every format-3 through -6 record still means here
+     * exactly what it meant there, and all of them restore exactly — which is what lets this build roll onto an
      * existing epoch without wiping it. Raise this only for a change that genuinely cannot read
      * the older records.
      */
@@ -184,6 +193,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_BOOK = 11;
     /** YU17: one booked OTC swap. See {@link #CONTRACT_TUPLE_LENGTH} for the column order. */
     static final int T_CONTRACT = 12;
+    /** YU17 FX-rate fix: {currencyIndex, usdRateTicks} — one per currency with a sequenced rate.
+     *  Never written for index 0: USD is the limit currency and its rate is identity by
+     *  construction, not state. */
+    static final int T_FX_RATE = 13;
 
     /**
      * {contractId, accountId, payFixed, notional, fixedRateTicks, conventionIndex,
@@ -321,6 +334,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // after restore. Cold path (a handful of bookings a day), so the ArrayList's allocation never
     // touches the order hot loop.
     private final java.util.List<long[]> contracts = new java.util.ArrayList<>();
+    // YU17 FX-rate fix: USD per unit of currency, 1e6 fixed-point, indexed by SwapConventions
+    // currency index. Replicated state — written ONLY by the sequenced TYPE_FX_RATE apply and by
+    // snapshot restore, never from any apply-time lookup, so every member and every replay holds
+    // the identical rate at the identical sequence. 0 = no rate sequenced yet, and the credit gate
+    // fails closed on it. Slot 0 (USD) stays 0 and is never read: USD is identity by construction.
+    private final long[] fxUsdTicksPerCurrency = new long[SwapConventions.currencyCount()];
 
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
@@ -443,6 +462,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         java.util.Arrays.fill(tickerById, null);
         this.nextSymbolId = 0;
         this.contracts.clear();
+        java.util.Arrays.fill(fxUsdTicksPerCurrency, 0L);
     }
 
     @Override
@@ -468,6 +488,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
+        }
+        if (event.type == InputEvent.TYPE_FX_RATE) {
+            // YU17 FX-rate fix: sequenced like every command, applied here, never handed to the
+            // engine — the rate is credit-gate state, not an instrument. See onFxRate.
+            onFxRate();
+            return;
         }
         if (event.type == InputEvent.TYPE_SWAP_BOOK || event.type == InputEvent.TYPE_SWAPTION_BOOK) {
             // YU17 (ADR-062): an OTC swap is sequenced like every other command — it is a committed
@@ -609,6 +635,39 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     }
 
     /**
+     * Apply a sequenced FX rate (YU17 FX-rate fix). The credit gate values every swap notional in
+     * the limit currency (USD), and the rate it converts with must reach every member as a
+     * committed log entry and live in the snapshot — a rate resolved by any member at apply time
+     * diverges the members permanently. Same posture as a price mark: an input event, replicated
+     * state, nothing looked up.
+     *
+     * <p>Fails closed and silently on an index or rate this build cannot hold: the gateway
+     * validates both before sequencing, so a bad value here is a later build's log entry, and
+     * "ignored deterministically on every member" is the only apply that cannot diverge. No
+     * egress ack, exactly as the *_CONTROL commands answer nothing.
+     *
+     * <p>Cold path — rates change a handful of times a day.
+     */
+    private void onFxRate() {
+        appliedSeq++;
+        final int currencyIndex = event.fxCurrencyIndex();
+        if (currencyIndex > 0 && currencyIndex < fxUsdTicksPerCurrency.length
+            && event.fxRateTicks() > 0L) {
+            fxUsdTicksPerCurrency[currencyIndex] = event.fxRateTicks();
+        }
+    }
+
+    /** USD ticks per one unit of the currency at {@code currencyIndex}; 0 = no rate available.
+     *  Index 0 is the limit currency itself, identity by construction. Package-private: tests. */
+    long fxUsdRateTicks(final int currencyIndex) {
+        if (currencyIndex == 0) {
+            return Px.SCALE;
+        }
+        return currencyIndex > 0 && currencyIndex < fxUsdTicksPerCurrency.length
+            ? fxUsdTicksPerCurrency[currencyIndex] : 0L;
+    }
+
+    /**
      * Book an OTC interest-rate swap (YU17, ADR-062). A sequenced command that creates a contract
      * and nothing else: no order, no book entry, no position, no trade, no price.
      *
@@ -645,9 +704,27 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         } else if (contracts.size() >= MAX_CONTRACTS) {
             reason = (byte) RiskReason.CAPACITY.ordinal();
         } else {
-            final long notionalTicks = (long) event.swapNotional() * Px.SCALE;
-            final RiskReason decision = risk.decideSwapBooking(clientKey, 0L, event.accountId,
-                notionalTicks, contracts.size() + 1);
+            // The FX-rate fix: credit is limited in USD, so the notional is valued in USD BEFORE
+            // the gate — notional units x usdRateTicks IS the USD notional in Px ticks (USD's rate
+            // is identity, so a USD swap consumes exactly what it always did). No rate for the
+            // convention's currency — including a convention this build does not know, whose
+            // currency is unknowable — refuses the booking rather than admitting the raw contract
+            // notional against a USD limit: under-reserving EUR/GBP by the FX rate and
+            // over-reserving JPY ~150x is the measured defect this converts away.
+            final int currencyIndex =
+                SwapConventions.currencyIndexOfConvention(event.swapConventionIndex());
+            final long usdRateTicks = fxUsdRateTicks(currencyIndex);
+            long notionalTicks;
+            try {
+                notionalTicks = usdRateTicks <= 0L ? -1L
+                    : Math.multiplyExact((long) event.swapNotional(), usdRateTicks);
+            } catch (final ArithmeticException ex) {
+                notionalTicks = Long.MAX_VALUE; // overflow: let the gate refuse it as ORDER_NOTIONAL
+            }
+            final RiskReason decision = notionalTicks < 0L
+                ? RiskReason.PRICE_MISSING
+                : risk.decideSwapBooking(clientKey, 0L, event.accountId,
+                    notionalTicks, contracts.size() + 1);
             reason = (byte) decision.ordinal();
             if (decision == RiskReason.ACCEPTED) {
                 contractId = appliedSeq;
@@ -847,6 +924,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         for (final long[] contract : contracts) {
             writeTuple(writer, T_CONTRACT, contract);
         }
+        // FX rates (format 7): index 0 (USD) is identity by construction and never written.
+        for (int i = 1; i < fxUsdTicksPerCurrency.length; i++) {
+            if (fxUsdTicksPerCurrency[i] != 0L) {
+                writeTuple(writer, T_FX_RATE, new long[] { i, fxUsdTicksPerCurrency[i] });
+            }
+        }
         for (final long[] position : engine.positionTuples()) {
             writeTuple(writer, T_POSITION, position);
         }
@@ -973,6 +1056,20 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                         + " is not after " + contracts.get(contracts.size() - 1)[0]);
                 }
                 contracts.add(contract);
+            }
+            case T_FX_RATE -> {
+                final int currencyIndex = (int) buffer.getLong(offset + 4);
+                final long rateTicks = buffer.getLong(offset + 12);
+                if (currencyIndex <= 0 || currencyIndex >= fxUsdTicksPerCurrency.length
+                    || rateTicks <= 0L) {
+                    // Fail closed: a rate this build cannot hold (or a written USD/non-positive
+                    // rate, which the writer can never produce) means the snapshot is not this
+                    // build's to restore — silently dropping it would revalue every restored
+                    // booking's credit.
+                    throw new IllegalStateException("snapshot corrupt: fx rate currency "
+                        + currencyIndex + " rate " + rateTicks);
+                }
+                fxUsdTicksPerCurrency[currencyIndex] = rateTicks;
             }
             case T_ORDER -> {
                 final long ref = buffer.getLong(offset + 4);

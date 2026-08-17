@@ -1844,6 +1844,36 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             final long version = System.currentTimeMillis();
             final String instrument = instrumentOf(body).trim();
 
+            // YU17 FX-rate fix: POST /risk/control/fxrate {"currency":"EUR","rate":1.0842} — USD
+            // per one unit. Validated HERE, before sequencing (boundary-owns-semantics, FR-CDM16):
+            // an unknown currency or non-positive rate must never become a committed log entry the
+            // members can only ignore. USD is refused because its rate is identity by construction
+            // — sequencing a USD rate could only ever mean someone believes it is settable.
+            final int fxCurrency;
+            final long fxRateTicks;
+            if ("fxrate".equals(action)) {
+                final String currency = body.path("currency").asText("");
+                fxCurrency = SwapConventions.currencyIndexOf(currency);
+                fxRateTicks = Math.round(body.path("rate").asDouble() * 1_000_000d);
+                if (fxCurrency < 0) {
+                    respond(exchange, 400, "{\"error\":\"unknown currency '" + currency + "'\"}");
+                    return;
+                }
+                if (fxCurrency == 0) {
+                    respond(exchange, 400,
+                        "{\"error\":\"USD is the limit currency; its rate is identity and not settable\"}");
+                    return;
+                }
+                if (fxRateTicks <= 0L) {
+                    respond(exchange, 400,
+                        "{\"error\":\"rate must be a positive decimal (USD per unit, e.g. 1.0842)\"}");
+                    return;
+                }
+            } else {
+                fxCurrency = 0;
+                fxRateTicks = 0L;
+            }
+
             final Boolean ok = onOwner(() -> {
                 // `event` is the shared owner-thread flyweight, so whatever the last order left in
                 // the limit/qty slots would otherwise be encoded into the log. The control handlers
@@ -1862,6 +1892,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         // null in the JSON should mean -- the proof sends nulls for both.
                         event.qty = body.path("maxPositionQuantity").asInt(0);
                         event.limitPx = body.path("maxConcentrationNotionalTicks").asLong(0L);
+                    }
+                    case "fxrate" -> {
+                        event.type = InputEvent.TYPE_FX_RATE;
+                        event.accountId = 0;
+                        event.securityId = fxCurrency;
+                        event.limitPx = fxRateTicks;
+                        event.side = 0;
+                        event.orderRef = 0;
+                        event.setClientOrderKey(0L);
                     }
                     case "restriction", "security", "account" -> {
                         final boolean enabled = switch (action) {

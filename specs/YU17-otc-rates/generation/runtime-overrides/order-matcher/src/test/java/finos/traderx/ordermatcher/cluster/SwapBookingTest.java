@@ -130,13 +130,23 @@ class SwapBookingTest {
 
     @Test
     void aContractBookedUnderAnUnknownConventionIsRefusedNotGuessed() {
+        // Pre-FX fix the store kept what the log committed and only the render refused. The credit
+        // gate now has to VALUE the notional in USD, and an unknown convention's currency is
+        // unknowable, so the gate refuses the booking itself rather than admitting a notional it
+        // cannot convert.
         final MatchingEngineClusteredService service = enabledAccounts();
         final InputEvent booking = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L);
         booking.securityId = SwapConventions.count() + 5;   // a later build's convention index
         apply(service, booking);
-        assertEquals(1, service.contractCount(),
-            "the engine stores what the log committed; it is the RENDER that must refuse");
+        assertEquals(0, service.contractCount(),
+            "a notional in an unknowable currency must not book");
+        assertEquals(0L, service.risk().executedNotional(BUYER), "and must consume no credit");
 
+        // The render's refusal is still its own property: a contract committed by a LATER build
+        // (whose gate knew the convention) must abort the render, not resolve to index 0's day
+        // count. Injected directly, since this build's gate can no longer commit one.
+        service.contractTuples().add(new long[] { 1L, BUYER, 0L, NOTIONAL, RECEIVE_RATE_TICKS,
+            SwapConventions.count() + 5, EFFECTIVE.toEpochDay(), MATURITY.toEpochDay(), 0L, 0L, 0L });
         final String cut = markAndCapture(service);
         final RiskExtractCsv.Stamp stamp = stamp(cut);
         assertThrows(IllegalStateException.class,
@@ -162,11 +172,11 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatSix() {
+    void aSnapshotFromThisBuildDeclaresFormatSeven() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
-        assertEquals(6, header.getInt(4), "T_CONTRACT changed shape; the format must say so");
+        assertEquals(7, header.getInt(4), "T_FX_RATE joined the snapshot; the format must say so");
         assertEquals(3, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
             "adding a record type does not stop older snapshots restoring — do not raise this");
     }
@@ -288,6 +298,125 @@ class SwapBookingTest {
         assertEquals(-1, SwapConventions.indexOf("USD-LIBOR-3M"), "an unknown name resolves to -1, not 0");
         assertFalse(SwapConventions.knows(SwapConventions.count()));
         assertThrows(IllegalStateException.class, () -> SwapConventions.at(SwapConventions.count()));
+    }
+
+    // ----- the credit gate is currency-aware (the FX-rate fix) ---------------------------------
+    //
+    // The defect these exist for: the credit counter summed RAW contract notionals across
+    // currencies — EUR/GBP under-reserved by roughly the FX rate, JPY over-reserved ~150x. Each
+    // test's verdict flips solely on whether the sequenced rate was applied, so a stubbed-out
+    // conversion cannot pass them (the vacuous-pass negative control).
+
+    private static final long EUR_RATE_TICKS = 1_084_200L;   // 1.0842 USD per EUR
+    private static final long JPY_RATE_TICKS = 6_700L;       // 0.0067 USD per JPY
+
+    @Test
+    void aNonUsdSwapWithNoSequencedRateIsRefusedNotBookedAtRawNotional() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        final InputEvent booking = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L);
+        booking.securityId = SwapConventions.indexOf("EUR-ESTR-1Y-ACT360");
+        apply(service, booking);
+        assertEquals(0, service.contractCount(),
+            "a EUR notional with no USD rate must be refused, never admitted raw against a USD limit");
+        assertEquals(0L, service.risk().executedNotional(BUYER), "and must consume no credit");
+
+        // The negative control's other arm: an identical booking is accepted once the rate is
+        // sequenced, and consumes exactly the USD-converted notional — NOT the raw one the
+        // currency-blind counter used to charge. Nothing but the rate event changed.
+        apply(service, fxRate("EUR", EUR_RATE_TICKS));
+        final InputEvent retry = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 2L);
+        retry.securityId = SwapConventions.indexOf("EUR-ESTR-1Y-ACT360");
+        apply(service, retry);
+        assertEquals(1, service.contractCount(), "the acceptance flips solely on the rate event");
+        final long accrued = service.risk().executedNotional(BUYER);
+        assertEquals((long) NOTIONAL * EUR_RATE_TICKS, accrued,
+            "credit must be consumed by the USD equivalent of the EUR notional");
+        assertTrue(accrued > (long) NOTIONAL * 1_000_000L,
+            "the raw-notional charge is the under-reserve this fix removes (EUR > 1 USD)");
+    }
+
+    @Test
+    void aJpySwapConsumesItsUsdEquivalentNotTheRawNotional() {
+        // The over-reservation direction: 10mm JPY is ~67k USD, and the currency-blind counter
+        // charged it as 10mm USD — a ~150x over-reserve whose downstream symptom is valid orders
+        // rejected for CREDIT_LIMIT somewhere that looks unrelated.
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, fxRate("JPY", JPY_RATE_TICKS));
+        final InputEvent booking = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L);
+        booking.securityId = SwapConventions.indexOf("JPY-TONA-1Y-ACT365F");
+        apply(service, booking);
+
+        assertEquals(1, service.contractCount());
+        final long accrued = service.risk().executedNotional(BUYER);
+        assertEquals((long) NOTIONAL * JPY_RATE_TICKS, accrued,
+            "credit must be consumed by the USD equivalent");
+        assertTrue(accrued < (long) NOTIONAL * 1_000_000L,
+            "the raw-notional charge is the ~150x over-reserve this fix removes");
+        assertEquals(NOTIONAL, service.contractTuples().get(0)[3],
+            "the CONTRACT keeps its raw JPY notional — only the credit valuation converts");
+    }
+
+    @Test
+    void fxRatesSurviveASnapshotAndAFormatSixEpochHasNone() {
+        final MatchingEngineClusteredService source = enabledAccounts();
+        apply(source, fxRate("EUR", EUR_RATE_TICKS));
+        final MatchingEngineClusteredService replica = restore(source);
+
+        // The restored member values a EUR booking with the restored rate — exact ticks.
+        final InputEvent booking = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L);
+        booking.securityId = SwapConventions.indexOf("EUR-ESTR-1Y-ACT360");
+        apply(replica, booking);
+        assertEquals(1, replica.contractCount());
+        assertEquals((long) NOTIONAL * EUR_RATE_TICKS, replica.risk().executedNotional(BUYER));
+
+        // A format-6 epoch (pre-fix) restores untouched and simply has no rates: the same booking
+        // is refused there. Header rewritten to 6 and the T_FX_RATE record dropped, mirroring
+        // what a real format-6 snapshot contains.
+        final List<byte[]> records = new ArrayList<>();
+        for (final byte[] record : snapshotRecords(source)) {
+            final UnsafeBuffer view = new UnsafeBuffer(record);
+            if (view.getInt(0) == MatchingEngineClusteredService.T_FX_RATE) {
+                continue;
+            }
+            if (view.getInt(0) == MatchingEngineClusteredService.T_HEADER) {
+                view.putInt(4, 6);
+            }
+            records.add(record);
+        }
+        final MatchingEngineClusteredService preFix = new MatchingEngineClusteredService();
+        preFix.initEngine();
+        boolean done = false;
+        for (final byte[] record : records) {
+            done = preFix.onSnapshotRecord(new UnsafeBuffer(record), 0);
+        }
+        assertTrue(done, "a format-6 snapshot must still restore here");
+        apply(preFix, booking);
+        assertEquals(0, preFix.contractCount(),
+            "no sequenced rate in the epoch means a EUR booking is refused, not booked raw");
+    }
+
+    @Test
+    void aRateThatOverflowsTheConversionIsRefused() {
+        final MatchingEngineClusteredService service = enabledAccounts();
+        apply(service, fxRate("EUR", Long.MAX_VALUE / 1_000L));
+        final InputEvent booking = swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L);
+        booking.securityId = SwapConventions.indexOf("EUR-ESTR-1Y-ACT360");
+        apply(service, booking);
+        assertEquals(0, service.contractCount(), "an overflowing conversion must refuse, not wrap");
+        assertEquals(0L, service.risk().executedNotional(BUYER));
+    }
+
+    @Test
+    void everyConventionsCurrencyResolvesToARateSlot() {
+        // Guards the append path: a future convention naming a currency absent from the currency
+        // table would make every booking under it refusable-only — loudly caught here instead.
+        for (int i = 0; i < SwapConventions.count(); i++) {
+            assertTrue(SwapConventions.currencyIndexOfConvention(i) >= 0,
+                "convention " + i + " (" + SwapConventions.at(i).currency() + ") has no currency index");
+        }
+        assertEquals(0, SwapConventions.currencyIndexOf("USD"), "USD is index 0, the limit currency");
+        assertEquals(-1, SwapConventions.currencyIndexOf("CHF"), "an unknown code resolves to -1, not 0");
+        assertEquals(-1, SwapConventions.currencyIndexOfConvention(SwapConventions.count() + 5));
     }
 
     // ----- swaptions (phase 2) ---------------------------------------------------------------
@@ -491,6 +620,16 @@ class SwapBookingTest {
         final InputEvent e = swap(accountId, direction, strikeTicks, clientKey);
         e.type = InputEvent.TYPE_SWAPTION_BOOK;
         e.setSwaptionTerms(0, exerciseStyle, (int) EXPIRY.toEpochDay());
+        return e;
+    }
+
+    /** Sequenced FX rate: USD per one unit of {@code currency}, in 1e6 ticks. */
+    private InputEvent fxRate(final String currency, final long usdRateTicks) {
+        final InputEvent e = new InputEvent();
+        e.type = InputEvent.TYPE_FX_RATE;
+        e.securityId = SwapConventions.currencyIndexOf(currency);
+        e.limitPx = usdRateTicks;
+        e.eventTimeMillis = timestamp;
         return e;
     }
 

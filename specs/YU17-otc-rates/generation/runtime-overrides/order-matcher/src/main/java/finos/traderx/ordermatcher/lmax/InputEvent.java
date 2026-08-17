@@ -106,6 +106,22 @@ public final class InputEvent {
      */
     public static final byte TYPE_SWAPTION_BOOK = 13;
 
+    /**
+     * Set the USD conversion rate for one currency (YU17 FX-rate fix). The credit gate values a
+     * swap's notional in the limit currency (USD), and the rate it converts with must be part of
+     * SEQUENCED state — a rate any member looked up at apply time would diverge the members
+     * permanently. So the rate arrives as a command, exactly as a price mark does, and lives in
+     * the snapshot (T_FX_RATE).
+     *
+     * <p>Same shape as every other control: a new command type on the EXISTING template, no
+     * schema change. Payload — {@code securityId} = the currency index into
+     * {@link SwapConventions#currencyIndexOf} (never index 0: USD is the limit currency itself,
+     * identity by construction); {@code limitPx} = USD per one unit of that currency as a 1e6
+     * fixed-point long (EUR at 1.0842 = 1_084_200), the same representation every price and rate
+     * on this line already uses.
+     */
+    public static final byte TYPE_FX_RATE = 14;
+
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;
     /** TYPE_SWAP_BOOK direction: the booking account receives / pays the FIXED leg. */
@@ -236,5 +252,17 @@ public final class InputEvent {
 
     public boolean swapPaysFixed() {
         return side == SWAP_PAY_FIXED;
+    }
+
+    // ----- TYPE_FX_RATE (YU17 FX-rate fix) ------------------------------------------------------
+
+    /** Currency index into {@code SwapConventions}' currency table; rides the free securityId slot. */
+    public int fxCurrencyIndex() {
+        return securityId;
+    }
+
+    /** USD per one unit of the currency, 1e6 fixed-point (1.0842 = 1_084_200). */
+    public long fxRateTicks() {
+        return limitPx;
     }
 }
