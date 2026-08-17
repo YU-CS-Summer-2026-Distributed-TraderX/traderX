@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: traderx/price-publisher:yu15
+          image: traderx/price-publisher:yu16
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -109,7 +109,7 @@ spec:
     spec:
       containers:
         - name: position-service
-          image: traderx/position-service:yu15
+          image: traderx/position-service:yu16
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

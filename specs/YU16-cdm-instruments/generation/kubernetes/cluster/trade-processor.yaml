@@ -56,7 +56,7 @@ spec:
     spec:
       containers:
         - name: trade-processor
-          image: traderx/trade-processor:yu15
+          image: traderx/trade-processor:yu16
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
