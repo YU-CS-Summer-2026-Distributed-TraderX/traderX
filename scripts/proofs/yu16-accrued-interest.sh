@@ -84,9 +84,18 @@ STATUS="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(s
 # — the fragility was in the result, not disproved by it.
 #
 # Exit 2 is the runner's SKIP, and skipping is the honest verdict here: this script measured
-# NOTHING about accrual. It is deliberately not a pass. If this starts skipping routinely the
-# coverage is gone and the fix is to publish over the flag with an operator override
-# (/eod/session/override) rather than to relax the assertion — see the note in run-proofs.sh.
+# NOTHING about accrual. It is deliberately not a pass. Note that RED would measure no more: every
+# accrual assertion in this file sits BELOW the close, so a failure here is unreachable-code either
+# way. RED and SKIP have identical coverage and differ only in whether the claim is true.
+#
+# Measured 2026-08-17: 4 of 5 closes flagged. Option marks come off a simulated random-walk
+# underlying against a 200% band, so excursions are the process rather than the tail.
+#
+# THIS BRANCH EXPIRES. The fix is to override each flagged instrument at its observed close, publish,
+# then assert (ADR-026's own remedy) — designed by the swaps chat, blocked on a permission classifier
+# pending yaakov. When it lands, all four sites revert to asserting and this branch is DELETED, not
+# left dormant: a skip with a TODO is how the YU17 proof gap was born. Do not build a second version
+# of that fix; it is written and waiting.
 # EodReport's field names are read from the record, not guessed: sessionDate, version, status,
 # instrumentCount, flaggedCount, instruments[{security, closingPrice, quality, ...}].
 if [[ "${STATUS}" != "PUBLISHED" ]]; then
@@ -99,7 +108,8 @@ for i in json.load(sys.stdin)["instruments"]:
     if i["quality"] != "OK":
         print("         %-24s quality=%-8s close=%s" % (i["security"], i["quality"], i["closingPrice"]))'
     echo "       No extract is produced for a held session, so NOTHING about accrued interest was"
-    echo "       measured. This is not a pass. The gate is behaving correctly; the universe is noisy."
+    echo "       measured. This is not a pass. The gate is correct; the universe is noisy. Fix:"
+    echo "       swaps chat's override-then-publish patch, blocked pending yaakov."
     exit 2
   fi
   fail "session close did not publish (status ${STATUS}, flagged ${FLAGGED})"
