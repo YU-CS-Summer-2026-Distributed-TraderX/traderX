@@ -9,6 +9,11 @@
 # into a proof: every claim now hard-fails, including the one the demo never tested — that a
 # publish attempt WHILE FLAGGED is actually refused.
 #
+# Step 6 (YU15+) additionally asserts BAND SELECTION end-to-end: one planted prior gives an equity
+# and an OCC option the same ~99.9% move, which must flag the equity (20% band) and pass the
+# option (200% band). Deterministic — no random walk involved — and the only end-to-end detector
+# of a band-selection regression now that the EOD proofs resolve flagged sessions by override.
+#
 # Self-contained via kubectl (in-cluster curl through the edge-proxy pod; JWT minted from the
 # dev-token endpoint). Restarts trade-processor to inject the universe; resets it on exit.
 # kind-runnable: pure correctness, no timing claim. Usage: ./yu06-quality-gate.sh
@@ -30,7 +35,17 @@ MASTER="${MASTER:-dev-token-master-secret}"
 # the new date — observed as "close -> v48 flagged=0" eight times while the service was actually on
 # v82 of the next day. A latent bug this suite only surfaced by running at night.
 DATE="$(date -u +%F)"
-UNIVERSE="AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF,QLTY"
+# Band-selection controls (step 6): an OCC option the live publisher quotes, and AAPL, which is
+# already in the universe. Their doctored priors live in a SPARSE extra version of YESTERDAY's
+# session — priorPublishedClose takes strictly-earlier dates, latest version first, per security —
+# so no other instrument's baseline moves. A planted prior of 100000 makes ANY live mark a ~99.9%
+# move, deterministically: inside the option band (200%), past the equity band (20%), with no need
+# to read a price first. The option's prior is planted from step 0 so it can never flag during the
+# QLTY collapse; the equity's only in step 6, where flagging it is the point.
+OPT_CTL="AAPL260918C00240000"
+EQ_CTL="AAPL"
+DATE_PREV="$(python3 -c 'import datetime as d;print((d.datetime.now(d.timezone.utc)-d.timedelta(days=1)).strftime("%Y-%m-%d"))')"
+UNIVERSE="AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF,${OPT_CTL},QLTY"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -53,9 +68,13 @@ api_code() { # api_code <curl-args-after-api> -> http code, retried past 000
 }
 
 # The induction lever is a live-config change; put it back whatever happens, or every later EOD
-# close on this rig silently runs against the proof's universe.
+# close on this rig silently runs against the proof's universe. The planted control baseline is a
+# DB mutation with the same obligation: leave it behind and every later close flags the controls
+# against a prior that never existed.
 cleanup() {
   kx set env deploy/trade-processor EOD_UNIVERSE- >/dev/null 2>&1
+  db "DELETE FROM eod_price_snapshot WHERE session_date='${DATE_PREV}' AND version=${CTL_V:-0};
+      DELETE FROM eod_price_session  WHERE session_date='${DATE_PREV}' AND version=${CTL_V:-0};" >/dev/null 2>&1
   kx rollout status deploy/trade-processor --timeout=180s >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -75,6 +94,14 @@ kx rollout status deploy/trade-processor --timeout=180s >/dev/null 2>&1 \
 kx wait --for=condition=ready pod -l app=trade-processor --timeout=120s >/dev/null 2>&1
 sleep 4
 echo "[ok] universe injected (${UNIVERSE##*,} is priceless by construction)"
+# Plant the OPTION control's prior now, before the first close — see the OPT_CTL comment above.
+CTL_V="$(( $(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${DATE_PREV}';" | tr -d '[:space:]') + 1 ))"
+db "INSERT INTO eod_price_session (session_date, version, status, instrument_count, flagged_count, created_at)
+      VALUES ('${DATE_PREV}', ${CTL_V}, 'PUBLISHED', 2, 0, NOW());
+    INSERT INTO eod_price_snapshot (session_date, version, security, closing_price, quality)
+      VALUES ('${DATE_PREV}', ${CTL_V}, '${OPT_CTL}', 100000.0, 'OK');" \
+  || fail "could not plant the band-control baseline (${DATE_PREV} v${CTL_V})"
+echo "[ok] option control ${OPT_CTL} planted at prior 100000 (${DATE_PREV} v${CTL_V})"
 
 step "1. close the session until ONLY QLTY is flagged (restart wiped the price history)"
 # Each close mints a new version; ticks from the live price-publisher refill the history, so poll
@@ -135,7 +162,47 @@ echo "   v${V}: status=${STATUS4} flagged=${FLAGGED4}"
 [[ "${STATUS4}" == "DRAFT" && "${FLAGGED4}" == "1" ]] \
   || fail "the flagged version was mutated (status=${STATUS4} flagged=${FLAGGED4}) — versions must be immutable"
 
+step "6. band selection: the SAME ~99.9% move must flag the equity and pass the option"
+# The detector the EOD proofs lost when they stopped asserting a clean universe
+# (issues/open/option-band-selection-has-no-assertion.md): EodQualityChecker picks the 200% band
+# for OCC symbols and 20% for everything else, and nothing else end-to-end fails if that selection
+# breaks — an option demoted to the equity band (the open OccSymbols contamination defect) flags
+# ordinary moves and now gets quietly overridden; an equity promoted to the option band stops
+# flagging at all. One planted prior, two bands, opposite verdicts: the pair is its own negative
+# control, and neither verdict depends on the random walk.
+db "INSERT INTO eod_price_snapshot (session_date, version, security, closing_price, quality)
+      VALUES ('${DATE_PREV}', ${CTL_V}, '${EQ_CTL}', 100000.0, 'OK');" \
+  || fail "could not plant the equity control baseline"
+V_PRE="$(maxver)"
+api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/session/close -H \"Authorization: Bearer \$T\"" >/dev/null
+BV=""
+for i in $(seq 1 20); do
+  BV="$(maxver)"
+  [[ "${BV:-0}" -gt "${V_PRE}" ]] && break
+  sleep 3
+done
+[[ "${BV:-0}" -gt "${V_PRE}" ]] || fail "the band-control close never minted a version (still v${BV:-?})"
+EQ_Q="$(db "SELECT quality FROM eod_price_snapshot WHERE session_date='${DATE}' AND version=${BV} AND security='${EQ_CTL}';")"
+OPT_Q="$(db "SELECT quality FROM eod_price_snapshot WHERE session_date='${DATE}' AND version=${BV} AND security='${OPT_CTL}';")"
+echo "   v${BV} against the planted prior 100000: ${EQ_CTL}=${EQ_Q:-absent} ${OPT_CTL}=${OPT_Q:-absent}"
+[[ "${EQ_Q}" == "SPIKE" ]] \
+  || fail "the equity band did not flag a ~99.9% move (${EQ_CTL} quality=${EQ_Q:-absent}) — the 20% band is not being applied"
+[[ "${OPT_Q}" == "OK" ]] \
+  || fail "the option band rejected (or lost) a ~99.9% move (${OPT_CTL} quality=${OPT_Q:-absent}) — an OCC symbol is not getting the 200% band"
+# Unplant inline, then prove the next close is clean, so the rig leaves this proof unpoisoned even
+# though the trap would also have deleted the rows.
+db "DELETE FROM eod_price_snapshot WHERE session_date='${DATE_PREV}' AND version=${CTL_V};
+    DELETE FROM eod_price_session  WHERE session_date='${DATE_PREV}' AND version=${CTL_V};"
+api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/session/close -H \"Authorization: Bearer \$T\"" >/dev/null
+sleep 3
+CV="$(maxver)"
+EQ_Q2="$(db "SELECT quality FROM eod_price_snapshot WHERE session_date='${DATE}' AND version=${CV} AND security='${EQ_CTL}';")"
+[[ "${CV:-0}" -gt "${BV}" && "${EQ_Q2}" == "OK" ]] \
+  || fail "after unplanting, ${EQ_CTL} is still ${EQ_Q2:-absent} at v${CV:-?} — the control baseline leaked"
+echo "   ✔ unplanted: v${CV} has ${EQ_CTL}=OK again"
+
 echo
 echo "[PASS] EOD quality gate: MISSING price flags the session, publish is refused with 409 while"
 echo "       flagged, an operator override resolves it as a new version, that version publishes,"
-echo "       and the flagged version survives immutably."
+echo "       the flagged version survives immutably — and band selection is asserted end-to-end:"
+echo "       one ~99.9% move flags the equity (20% band) and passes the option (200% band)."
