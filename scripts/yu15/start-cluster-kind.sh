@@ -139,3 +139,19 @@ for d in nats eod-price-db trade-processor cluster-gateway risk-extract \
 done
 kubectl --context "${CTX}" -n traderx get pods -o wide
 echo "[ok] YU15 cluster up on ${CTX}"
+
+# An out-of-band pin is invisible to the next person, and invisibility is how it gets reverted.
+# The substitution above means the running tier no longer matches what specs/ declares, so ANY
+# plain `kubectl apply -k` from that directory — for a wholly unrelated reason — silently rolls the
+# tier back to the declared image. That is not hypothetical twice over: it took a lane's
+# :yu16-ackfix gateway back to :yu16 mid-measurement this morning, and my own `apply -k` reverted
+# four service tags to :yu15 the same way. Say it at the end, where a handback gets read.
+if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then
+  cat <<EOF
+[warn] this tier is pinned OUT OF BAND: running ${IMAGE}, while
+       ${KDIR#"${ROOT}/"} still declares ${DECLARED}.
+       Any plain \`kubectl apply -k\` from that directory will revert it, silently and without
+       an epoch. If you hand this rig over, hand over this line with it.
+       To make the pin durable instead, change the tag in the manifests and commit it.
+EOF
+fi
