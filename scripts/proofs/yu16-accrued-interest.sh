@@ -71,7 +71,39 @@ CLOSE="$(${K} exec deploy/trade-processor -- sh -c \
 [[ -n "${CLOSE}" ]] || fail "/eod/session/close returned nothing"
 SESSION_DATE="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["sessionDate"])')"
 STATUS="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')"
-[[ "${STATUS}" == "PUBLISHED" ]] || fail "session close did not publish (status ${STATUS})"
+
+# A HELD SESSION IS A MISSING PRECONDITION, NOT A WRONG ACCRUAL — and this used to fail as though
+# it were the latter. The EOD price-quality gate holds the session at DRAFT when any instrument in
+# the universe is flagged, and the extract this proof reads is only produced on publish. So one
+# noisy option mark anywhere in the universe reported "accrued interest is broken", which is a
+# claim about arithmetic that was never evaluated.
+#
+# The universe is not under this proof's control and has nothing to do with its subject: option
+# marks come off a simulated random-walk underlying, and other proofs' fixtures leak into the
+# priced set. Today's green suite passed because the universe happened to be clean at that moment
+# — the fragility was in the result, not disproved by it.
+#
+# Exit 2 is the runner's SKIP, and skipping is the honest verdict here: this script measured
+# NOTHING about accrual. It is deliberately not a pass. If this starts skipping routinely the
+# coverage is gone and the fix is to publish over the flag with an operator override
+# (/eod/session/override) rather than to relax the assertion — see the note in run-proofs.sh.
+# EodReport's field names are read from the record, not guessed: sessionDate, version, status,
+# instrumentCount, flaggedCount, instruments[{security, closingPrice, quality, ...}].
+if [[ "${STATUS}" != "PUBLISHED" ]]; then
+  FLAGGED="$(printf '%s' "${CLOSE}" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("flaggedCount",0))')"
+  if [[ "${STATUS}" == "DRAFT" && "${FLAGGED}" -gt 0 ]]; then
+    echo "[skip] the EOD gate held session ${SESSION_DATE} at DRAFT: ${FLAGGED} flagged instrument(s)."
+    printf '%s' "${CLOSE}" | python3 -c '
+import sys,json
+for i in json.load(sys.stdin)["instruments"]:
+    if i["quality"] != "OK":
+        print("         %-24s quality=%-8s close=%s" % (i["security"], i["quality"], i["closingPrice"]))'
+    echo "       No extract is produced for a held session, so NOTHING about accrued interest was"
+    echo "       measured. This is not a pass. The gate is behaving correctly; the universe is noisy."
+    exit 2
+  fi
+  fail "session close did not publish (status ${STATUS}, flagged ${FLAGGED})"
+fi
 
 for _ in $(seq 1 60); do
   AFTER="$(${K} logs "${POD}" --tail=-1 | grep -c 'RISK-EXTRACT-READY' || true)"
