@@ -99,12 +99,32 @@ egressed to this session. So repair the invariant at that moment.
 > computes a watermark of -1 — harmless. The threading question is still worth answering, but
 > correctness no longer depends on the answer.
 
-Step 2 is the part that makes this correct rather than merely better, and it is the step an obvious
-implementation would miss. Without it there is a residual race: an ack that was in flight across the
-election arrives *after* the drain, finds newly-registered orders in the FIFO, and pops one — the
-original bug, re-seeded. The watermark is sound because **`appliedSeq` is replicated state**
-(`snapshotBuffer.putLong(24, appliedSeq)`, restored on load), so it is monotonic across elections;
-an ack numbered at or below what we had already seen cannot belong to an offer made after the drain.
+Step 2 is the step an obvious implementation would miss, and it is load-bearing — **but not for the
+reason the first draft of this document gave, which was wrong and is corrected here.**
+
+**The wrong justification (retracted):** "it stops an ack that was in flight across the election from
+landing after the drain and popping a newly-registered order." **It cannot do that.** A stranded
+order's ack carries a seq *above* everything we had evidence of — never seeing it is what made the
+order stranded — so `seq <= ignoreAcksAtOrBelow` is false and it would pass the gate. A genuinely
+late old-leader ack is indistinguishable from the new leader's next one.
+
+**What the watermark actually closes, and it is real: straggling continuation fills.** The resync
+sets `lastInputSeq = -1`, deliberately forgetting the continuation boundary. A later fill of a
+*pre-resync* order arrives carrying its entry ack's seq, which is `!= -1`, so without the gate it
+would **pop a fresh head** — re-seeding the offset by one. That seq is `<= highestInputSeqSeen`, so
+the gate catches it. Sound because `appliedSeq` is replicated state
+(`snapshotBuffer.putLong(24, appliedSeq)`, restored on load) and monotonic across elections.
+
+**This makes "observe every egress kind" necessary rather than merely safe.** Feeding
+`highestInputSeqSeen` from resting updates, symbol acks and batch fences as well as direct acks
+raises the evidence, and every extra kind catches more stragglers. It can never gate a legitimate
+ack: any offer made after the resync is applied after everything already applied, so its ack carries
+a seq strictly greater than anything observed before.
+
+**The residual, stated rather than hidden:** a genuinely late stranded ack, above the watermark, is
+uncovered. It is also **measured not to occur** — K never decreased across three elections — and
+that is the identical fact on which A2 was rejected. If late at-risk acks were possible, A2 would be
+viable *and* this gate would be insufficient; they stand or fall together.
 
 ### What A fixes and what it does not — stated plainly
 
@@ -448,6 +468,44 @@ consequence, as noted above.
   with the reasoning — `connectCycling()` loops `while (running)` and would park the owner thread
   during a quorum loss, the exact hazard the `offeredUnacked` trigger exists to avoid. The next
   reader will see two drains and be tempted to unify them.
+
+## Implementation review — GKE arm reviewing the kind arm's build, 2026-08-16
+
+Role swap: this design's author reviewing its implementation. Concur, subject to one blocking fix.
+
+**Improvement on the design, adopted:** the blocking `highestInputSeqSeen` reset was made
+*structural* rather than a line — `resetSequenceSpace()` is the single place all three
+`appliedSeq`-derived fields clear, declared together under one comment naming them as one sequence
+space. A rule stated once beside the fields beats a line someone must remember to add. `drain()` and
+`onNewLeaderResync()` then differ exactly where they should: both complete the at-risk set, only
+`drain()` resets the numbering, because a new leader continues `appliedSeq` while a new session may
+not.
+
+**BLOCKING — `noAckStreak` must not be inflated by the resync, and must not be reset either.**
+
+The resync completes N orders `null`; each submitter's `submitPipelined` then increments
+`noAckStreak`, so the streak jumps by **N**. At N ≥ 20 (`READY_NO_ACK_STREAK`) `/ready` goes 503;
+at `replicas: 1` the pod leaves the Service; **`noAckStreak` clears only on a successful order**,
+which can no longer arrive because the pod is out of the Service. Liveness fires at 100, so **for
+20 ≤ N < 100 nothing clears it at all** — a hang needing a human, not a flap. Measured strand sizes
+were 21, 15, 15, so the first bracket is the likely one.
+
+**No proof would catch it.** Every proof drives the **pod IP** deliberately, because a failing
+readiness probe evicts the pod from the Service exactly when measurements matter — so the whole
+suite bypasses the mechanism that breaks.
+
+**And resetting the streak in the resync is also wrong**: quorum restoration elects a leader and
+fires `onNewLeader`, so a blanket reset would flip `/ready` to 200 during
+`yu16-ready-tracks-commit`'s step 3, which asserts it stays 503 across a **restored** quorum —
+failing that proof or, worse, laundering its verdict.
+
+**Fix: do not COUNT resync-completed orders.** Mark the `PendingOrder` in the resync path and skip
+the `noAckStreak` increment for those in `submitPipelined`. Quorum-loss orders fail via
+`offerPipelined`'s deadline path, are not marked, and still count — so the readiness proof is
+untouched; new post-resync failures still climb the streak, which is the honest signal. Those N
+ambiguous answers are not evidence the gateway cannot commit: they are the resync's own deliberate
+act, and post-resync it is *more* able to commit than a moment earlier. `offeredUnackedStreak.set(0)`
+is correct as built.
 
 ## Still open, for yaakov rather than for review
 
