@@ -1,7 +1,29 @@
 # The option/equity band selection in the EOD quality gate has no assertion
 
 **Filed** 2026-08-17, by the coordinator, verified against the tree.
-**Status** open. Small, deterministic, needs a rig only to run the existing proof.
+**Status: RESOLVED 2026-08-17**, same day, by the lane whose patch retired the detector. Step 6 of
+`yu06-quality-gate.sh` now asserts band selection end-to-end, deterministically, exactly as specified
+below — with one design addition: the control needs **no knowledge of current prices**. A planted
+prior of 100000 makes any live mark a ~99.9% move (`|x−P|/P → 1` for `P ≫ x`), inside the option
+band and past the equity band by construction. The prior lives in a sparse extra PUBLISHED version
+of *yesterday's* session carrying only the two control rows — `priorPublishedClose` takes
+strictly-earlier dates, latest version first, *per security* (`EodPriceSnapshotRepository.java:110`)
+— so no other instrument's baseline moves; it is deleted inline and in the EXIT trap, and an
+unplant-verify close proves the baseline did not leak. Run green on the kind rig 2026-08-17:
+`v19 against the planted prior 100000: AAPL=SPIKE AAPL260918C00240000=OK`, then `v20 AAPL=OK` after
+the unplant. Landed on YU15, carried to YU16/YU17 byte-identically; not carried
+below YU15, where the checker has one band. The OccSymbols contamination item this detector guards
+remains open — but it has a detector again: a demoted option flags SPIKE at ~99.9% and step 6 fails.
+
+**Hardened same day, per the coordinator's kill-safety review** (YU15 `8a3ce3ce`, carries `0b75ceb9`/
+`e08ac232`, md5 `1229c36b…` on all three): the proof now **unplants before planting**, by signature
+(control securities at exactly 100000, any earlier date), unconditionally at step 0 — an EXIT trap
+does not fire on SIGKILL or a dead kubectl session, and a surviving 100000 PUBLISHED prior would
+flag the controls SPIKE on every later close, presenting as a product regression. The pre-clean is
+the only cleanup that survives the run that was not tidy. Two scope notes now live in the comments:
+the planted prior's load-bearing property is the **bound** (`|x−P|/P < 1` for `P ≫ x`), not the
+magnitude; and the option leg proves band **selection** (wider than ~100%), not the 200 constant —
+pinning the value is `EodQualityCheckerTest`'s job. Re-run green after hardening: v23/v24.
 
 ## What is unasserted
 
