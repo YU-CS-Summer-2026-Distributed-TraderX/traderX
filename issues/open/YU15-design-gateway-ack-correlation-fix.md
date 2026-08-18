@@ -638,11 +638,21 @@ YU15 (home), YU16 and YU17 so the same readers see the same record.
 ### Where B is and is not
 
 - **YU17: landed and rig-proven** (`traderx/cluster-node:yu17-ackB`, fresh epoch).
-- **YU16, YU13/14/15 (via the YU13 gateway layer), YU12: NOT carried.** They keep A, which is
-  verified on-rig for YU16/YU17-as-of-A and the YU13 layer. B on any of them is a per-branch
-  gateway<->member wire break + fresh epoch, and shipping an unexercised deterministic-tier wire
-  break into a branch is the exact trap the propagation skill names. Carrying B to YU16 is
-  mechanical (patch-carry + its own test override + a re-pinned rig run) and is scheduled work,
-  not done work. The YU13-layer test `InflightCorrelationTest` still locks POSITIONAL semantics
-  for the branches that run it — that is correct and deliberate; YU17 shadows it with a keyed
-  override.
+- **YU16: landed and rig-proven, 2026-08-18 same day** (`traderx/cluster-node:yu16-ackB`, fresh
+  epoch; carried by patch from YU17's landing — 22 of 23 gateway hunks applied at ZERO fuzz, the
+  engine was hand-applied after a fuzz mis-stack was caught and reverted). Suite 363/0 + all
+  gates; the same three detonators failed exactly the new tests; red arm on `:yu16-ackfix` (the
+  A build) failed exit-1 attributed to the ABSENT KEYED MECHANISM while A honestly passed the
+  per-item arms — the exact distinction that makes the red arm meaningful; green arm: 35
+  stranded, 15/15 answered clients own-ref, 0 cross-wired, depth self-drained with no reconnect,
+  reaped 0 -> 20, full suite green modulo two environment failures re-run green standalone (the
+  ephemeral-DB catalog wipe, third instance that day, and the un-hardened YU16 runner's missing
+  CTX export — both pre-existing, neither about B; the runner-hardening carry of 1947fd16 to all
+  branches is its own scheduled task). **Landing B on YU16 ended the YU15<->YU16 mixing window**:
+  a YU15 gateway can no longer read YU16 member acks or vice versa (24 vs 32 bytes).
+- **YU13/14/15 (via the YU13 gateway layer), YU12: NOT carried.** They keep A, which is verified
+  on-rig for the YU13 layer. B on any of them is a per-branch gateway<->member wire break + fresh
+  epoch, and shipping an unexercised deterministic-tier wire break into a branch is the exact
+  trap the propagation skill names. The YU13-layer test `InflightCorrelationTest` still locks
+  POSITIONAL semantics for the branches that run it — that is correct and deliberate; YU16 and
+  YU17 shadow it with keyed overrides.
