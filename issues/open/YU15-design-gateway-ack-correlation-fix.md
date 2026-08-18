@@ -544,3 +544,105 @@ is correct as built.
 
    Same property that made the engine-resend oracle worth having: it can ride on work that is
    happening anyway rather than needing its own expedition.
+
+---
+
+## IMPLEMENTED — Option B landed on YU17, 2026-08-18
+
+**Status of this section: B is BUILT, unit-proven with detonators, and rig-proven on
+`kind-traderx-yu12-cluster` (results below). It lands on YU17's operative layers ONLY; every other
+branch still runs A (positional + resync), which remains correct there.** This doc now exists on
+YU15 (home), YU16 and YU17 so the same readers see the same record.
+
+### The two places the design's pricing was wrong, both in B's favour
+
+1. **The ingress costs NOTHING.** The design priced "the gateway cannot know a correlating value at
+   offer time" and stopped at the egress. It missed that the ingress `InputEventMessage` carries an
+   `inputSeq` field that is DEAD on the cluster tier: every gateway call site passes literal 0, and
+   the member overwrites `event.seq = ++appliedSeq` on apply. The request id rides that slot. So:
+   no SBE schema change, no generated-codec change, no `InputEvent.java` change, no committed-log
+   format change — a pre-B log entry simply decodes as requestId 0, which the gateway never
+   registers. The only wire break is the egress ack, 24 -> 32 (requestId appended at 24..31),
+   exactly the break this design already priced.
+2. **The snapshot does not move.** The id is carriage, not state: it is read by no decision and
+   written to no snapshot, and `RequestIdEchoTest.requestIdsNeverEnterReplicatedState` asserts two
+   services applying identical inputs that differ only in request ids write byte-identical
+   snapshots. `SNAPSHOT_FORMAT` stays 7. The FX-rate precedent's fail-closed discipline therefore
+   applies at the WIRE instead: the gateway refuses (loudly, `GATEWAY-ACK-FORMAT-MISMATCH` + a
+   metric) any egress record whose length is not this build's ack length, because reading a request
+   id off a 24-byte record would be silent adjacent-memory garbage and a permanent silent 504.
+   The deterministic-core roll discipline is UNCHANGED by this good news: the egress break alone
+   means members and gateways roll together — scale to zero, wipe PVCs, fresh epoch.
+
+### What replaced what, on the YU17 layers
+
+- `MatchingEngineClusteredService` (YU17 layer): `EGRESS_ACK_LENGTH` 32; apply-scoped
+  `applyRequestId` captured after decode (before the sequencer overwrites `event.seq`) and echoed
+  by every egress of that apply — order-lifecycle acks carry it at 24..31; symbol/extract acks
+  carry 0 there (they keep their own requestId at 13); backpressure drains are the same apply and
+  carry the same id.
+- `ClusterGatewayMain` (YU17 layer): `Inflight` is now a map keyed by request id plus an
+  offer-order reap queue. `onDirectAck(requestId)` is `pending.remove(requestId)` — id 0 never
+  matches. Continuation fills find the entry already removed. **A's entire appliedSeq sequence
+  space (`lastInputSeq`, `highestInputSeqSeen`, `ignoreAcksAtOrBelow`) is deleted with the
+  positional pop**: ids are gateway-lifetime-monotonic and never reused, so there is nothing to
+  reset at any boundary — the epoch detonator class of bug is structurally gone.
+- **`onNewLeaderResync` is deleted, deliberately.** Under keyed correlation an election needs no
+  repair: survivors (anything the new leader sequences) complete by their own key, and draining at
+  `onNewLeader` would DESTROY those answers — the exact transparent failover B exists to buy. The
+  destroyed-ack strands are reaped by a new owner-thread deadline sweep (`sweepOverdue`), which is
+  also the ONLY thing that returns a stranded offer's permit — without it every drop-induced strand
+  leaks a permit permanently, a leak the positional pop used to mask by misattributing. The
+  resync-mark streak exemption went with the resync: nothing bulk-answers the window any more, so
+  every submitter null is honest streak evidence again.
+- **The design's open question 3 (is drop-stranding reachable in practice?) now has a direct
+  instrument**: `traderx_gateway_pipeline_total{stage="reaped"}` counts exactly the stranded
+  offers, on any run, kill or no kill — no `ack_completed`-vs-`offer_success` gap inference needed,
+  and `drain()`'s known over-report of that gap is moot.
+
+### Verification record
+
+- Composed YU17 suite: 392 tests, 0 failures; all four allocation gates + both Epsilon-GC gates
+  green (the apply-path edit is one long capture — allocation-free).
+- Detonators (exact-inverse injections in the generated tree, full suite each): zeroing the echo
+  failed exactly `RequestIdEchoTest`'s echo case; restoring the positional pop failed exactly the
+  six keyed-semantics cases in the YU17 `InflightCorrelationTest` override; removing the sweep's
+  `permits.release()` failed exactly the sweep test plus `ThreeMemberClusterTest` — the latter is
+  an independent end-to-end witness of the permit leak, and the former proves no pre-existing test
+  covered it.
+- Rig: `scripts/proofs/yu17-keyed-ack-correlation.sh` — a PER-ITEM proof (every answered client is
+  checked against the engine's own idempotency table, honouring the resting-guard/LRU/blank-key
+  constraints this doc records) with an induction-retry loop so a non-stranding kill exits 2
+  loudly instead of passing (rule 18), plus the deterministic mechanism reading: depth returns to
+  0 with NO reconnect (restarts and `GATEWAY up` count asserted against preflight baselines) and
+  `reaped` moves by the strand.
+  - **GREEN ARM (kind, 2026-08-18, `traderx/cluster-node:yu17-ackB`, fresh epoch, in the full
+    suite):** leader killed under a 50-order 60ms-staggered stream → 32 clients stranded;
+    **18/18 answered clients carried their OWN ref** (engine idempotency oracle, 0 cross-wired);
+    depth self-drained to 0 with restarts and `GATEWAY up` unchanged; `reaped` 0 → 20 (the sweep
+    freeing exactly the stranded-and-offered set — the other 12 never cleared the election-window
+    offer and released on the offer deadline); post-strand serial probe committed immediately with
+    the oracle agreeing; all three members agreed on book and ref counter after quiesce. Under the
+    positional build this same scenario produced 504-starving serial sends and a depth pinned
+    through idle.
+  - **RED ARM (same script, pre-B `:yu17-fx`):** exit 1, correctly attributed — A's election-time
+    resync makes the per-item and depth arms pass HONESTLY (A does repair the election trigger),
+    and the proof fails on the absent keyed mechanism (no `reaped` instrument): "depth 0 here came
+    from a bulk election drain, not from per-request completion plus the deadline sweep".
+  - Full suite on the B build: every proof PASS except `yu16-bond-position`, whose step-6 failure
+    reproduced the PRE-EXISTING catalog-membership defect
+    (`issues/open/catalog-additions-never-reach-a-deployed-environment.md`) after the fresh
+    epoch's reseed — repaired through the supported `POST /stocks` path (10 keys, 201 each) and
+    re-run green; unrelated to B (the bill BOOKS; the position write fails two services away).
+
+### Where B is and is not
+
+- **YU17: landed and rig-proven** (`traderx/cluster-node:yu17-ackB`, fresh epoch).
+- **YU16, YU13/14/15 (via the YU13 gateway layer), YU12: NOT carried.** They keep A, which is
+  verified on-rig for YU16/YU17-as-of-A and the YU13 layer. B on any of them is a per-branch
+  gateway<->member wire break + fresh epoch, and shipping an unexercised deterministic-tier wire
+  break into a branch is the exact trap the propagation skill names. Carrying B to YU16 is
+  mechanical (patch-carry + its own test override + a re-pinned rig run) and is scheduled work,
+  not done work. The YU13-layer test `InflightCorrelationTest` still locks POSITIONAL semantics
+  for the branches that run it — that is correct and deliberate; YU17 shadows it with a keyed
+  override.
