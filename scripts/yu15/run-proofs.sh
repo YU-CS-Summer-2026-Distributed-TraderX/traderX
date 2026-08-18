@@ -23,7 +23,17 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
-CTX="${CTX:-kind-traderx-yu12-cluster}"
+# EXPORTED, because 34 proofs read CTX/KCTX themselves and each decides independently which cluster
+# to talk to. Most default to this same kind rig, so they were right by coincidence rather than by
+# instruction. yu13-otel-trace-join deliberately has NO default (it can legitimately target the yu12
+# rig, state-014 or GKE) and refuses rather than guess — measured 2026-08-18 TWICE: once on YU17
+# after a host reboot left the ambient context on GKE, and once on THIS branch's un-exported copy,
+# where it failed a suite run that was otherwise green. Its sibling yu13-otel-reject-trace-log-join
+# carries the IDENTICAL trailing comment and DOES default, so the strictness difference reads as
+# deliberate in both when it is arbitrary in one. Exporting makes the strict form work under the
+# suite while keeping it strict for manual invocation, which is the behaviour worth having.
+# (Carried from YU17's 1947fd16 hardening.)
+export CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 
@@ -207,8 +217,36 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
 # defect was being older than the manifest. See
 # issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+# THE IMAGE MUST BE ON THE NODES BEFORE ANYTHING IS DESTROYED. rebuild_fresh_epoch wipes the PVCs
+# first and discovers an unreachable image afterwards, at which point the epoch it would have fallen
+# back to no longer exists. `kind load` is start-cluster-kind.sh's job and this script never did it,
+# so naming a CLUSTER_IMAGE that exists only in the local Docker daemon used to mean
+# ImagePullBackOff several minutes later, on a rig with nothing left to run — measured on THIS
+# branch's copy 2026-08-18: it wiped the PVCs, never loaded traderx/cluster-node:yu16-ackB, and
+# announced a fresh epoch over three ImagePullBackOff members. Idempotent and cheap when already
+# there. (Carried from YU17's 1947fd16 hardening.)
+ensure_image_on_nodes() { # ensure_image_on_nodes <image>
+  local image="${1:-}" cluster
+  [[ -n "${image}" ]] || return 0
+  case "${CTX}" in kind-*) cluster="${CTX#kind-}" ;; *) return 0 ;; esac   # kind rigs only
+  docker image inspect "${image}" >/dev/null 2>&1 \
+    || fail_hard "${image} is not in the local Docker daemon — build it first (scripts/yu15/build-cluster-image.sh)"
+  kind load docker-image "${image}" --name "${cluster}" >/dev/null 2>&1 \
+    || fail_hard "could not load ${image} onto kind cluster ${cluster}"
+}
+
+fail_hard() { echo "[fail] $*" >&2; exit 1; }
+
+# GATE ON THE FACT, NOT ON THE COMMAND RETURNING. Both rollout waits used to redirect stdout only,
+# so their failure text reached the terminal while their EXIT STATUS was discarded — the function
+# carried on and the caller printed "fresh epoch" regardless. The dangerous variant is a PARTIAL
+# rollout — two members up, one wedged, rollout status times out, the message still says fresh
+# epoch, and every proof afterwards describes a two-member cluster truthfully.
+# prove-cluster-engine-change §1 already prescribes the end-state assertion below; it was simply
+# never wired in here. (Carried from YU17's 1947fd16 hardening.)
 rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
+  ensure_image_on_nodes "${image}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
   ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
   ${K} delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1
@@ -217,9 +255,37 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optiona
       "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   fi
   ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
-  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
+  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null \
+    || fail_hard "the members' rollout did not complete — NOT a fresh epoch, and the PVCs are already wiped"
   ${K} rollout restart deployment/cluster-gateway >/dev/null
-  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null \
+    || fail_hard "the gateway's rollout did not complete after the epoch mint"
+  assert_members_up "${image}"
+}
+
+# Every member on the target image AND ready — the check `rollout status` returning is not the same
+# as. Empty image argument means "whatever is pinned", so only readiness is asserted.
+# NOTE the `if` form throughout rather than `grep -q ... && fail_hard`. That shorter spelling returns
+# 1 in the HEALTHY case (grep finds no bad line), which is harmless under this script's `set -uo
+# pipefail` and becomes an abort-when-everything-is-fine the day someone adds `-e`. Not worth
+# leaving as a tripwire in the function whose whole job is to be believed.
+assert_members_up() { # assert_members_up [image]
+  local image="${1:-}" states count
+  states="$(${K} get pods -l app=order-matcher-cluster \
+    -o jsonpath='{range .items[*]}{.spec.containers[0].image}{" "}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null)"
+  count="$(printf '%s\n' "${states}" | grep -c . || true)"
+  if [[ "${count}" != "3" ]]; then
+    fail_hard "expected 3 members after the epoch mint, saw ${count}"
+  fi
+  if printf '%s\n' "${states}" | grep -q -v ' true$'; then
+    fail_hard "a member is not ready after the epoch mint:
+${states}"
+  fi
+  if [[ -n "${image}" ]] && printf '%s\n' "${states}" | grep -q -v "^${image} "; then
+    fail_hard "a member is not on ${image} after the epoch mint:
+${states}"
+  fi
+  return 0
 }
 
 NEED_FRESH=0
