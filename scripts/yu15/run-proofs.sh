@@ -23,7 +23,16 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
-CTX="${CTX:-kind-traderx-yu12-cluster}"
+# EXPORTED, because 34 proofs read CTX/KCTX themselves and each decides independently which cluster
+# to talk to. Most default to this same kind rig, so they were right by coincidence rather than by
+# instruction. yu13-otel-trace-join deliberately has NO default (it can legitimately target the yu12
+# rig, state-014 or GKE) and refuses rather than guess — measured 2026-08-18, it failed a suite run
+# purely because a host reboot left the ambient current-context pointing at GKE. Its sibling
+# yu13-otel-reject-trace-log-join carries the IDENTICAL trailing comment and DOES default, so the
+# strictness difference reads as deliberate in both when it is arbitrary in one. Exporting makes the
+# strict form work under the suite while keeping it strict for manual invocation, which is the
+# behaviour worth having.
+export CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 
@@ -61,25 +70,30 @@ PROOFS=(
   # swaptions sequenced through consensus, and an unknown exercise style refused 400 without moving
   # the sequence.
   #
-  # WHY IT IS RED, AND WHOSE DEFECT IT IS. It fails at step 4 with /eod/session/close returning
-  # DRAFT, and so does yu17-swap-netting below. THE GATE IS CORRECT AND THE PROOF IS WRONG: it
-  # asserts PUBLISHED straight off the close, which assumes a universe that is never flagged. On
-  # 2026-08-17 the option AAPL260918P00220000 was flagged SPIKE against the prior PUBLISHED close
-  # (2026-08-16 v1 = 0.435), so v1 at 1.846 is +324% and v2 at 1.430 is +229%, both over the 200%
-  # option band. Do NOT read "1.846 -> 1.430" as the comparison; those are two consecutive DRAFTs
-  # of the same session and neither is what the checker compared. Option marks come off a simulated
-  # random-walk underlying, so a sub-dollar OTM put moving 1.41 absolute is ordinary and no band
-  # tuned for cash instruments survives it. v3 was +127% and published on its own.
+  # IT WAS RED, AND IT IS FIXED — 2026-08-17, commits d3fd70b3 (YU17) / 97b03d70 (YU16) /
+  # f379497b (YU15). Kept here because the reasoning is what stops the fix being undone.
   #
-  # THIS IS A CLASS OF FOUR, not two. Every one of these asserts PUBLISHED straight off the close:
-  #   yu17-swap-netting.sh:227   yu17-swaption-terms.sh:173
-  #   yu16-accrued-interest.sh:74   yu15-risk-extract.sh:66
-  # The latter two are already in this array and passed on 2026-08-17 — because the universe
-  # happened to be clean at that moment, NOT because they are robust. A green suite containing them
-  # hides this fragility rather than disproving it. The fix (override each flagged instrument at its
-  # own observed close, publish, then assert — ADR-026's own remedy) is designed but BLOCKED pending
-  # yaakov's approval; fixing one means fixing all four, and the lineage rule applies to the YU15
-  # and YU16 copies. Do not route around that block.
+  # It used to fail at step 4 with /eod/session/close returning DRAFT, and so did yu17-swap-netting
+  # below. THE GATE WAS CORRECT AND THE PROOF WAS WRONG: it asserted PUBLISHED straight off the
+  # close, which assumes a universe that is never flagged. On 2026-08-17 the option
+  # AAPL260918P00220000 was flagged SPIKE against the prior PUBLISHED close (2026-08-16 v1 = 0.435).
+  # Option marks come off a simulated random-walk underlying, so a sub-dollar OTM put moving 1.41
+  # absolute is ordinary and no band tuned for cash instruments survives it — roughly four closes in
+  # five were affected.
+  #
+  # IT WAS A CLASS OF FOUR, not two, and all four were fixed together: yu17-swap-netting,
+  # yu17-swaption-terms, yu16-accrued-interest, yu15-risk-extract. The latter two were passing at the
+  # time — because the universe happened to be clean, NOT because they were robust — which is exactly
+  # why a green suite was not evidence against the defect. The fix is ADR-026's own remedy: override
+  # each flagged instrument AT ITS OWN OBSERVED CLOSE, publish, then assert. The band is not widened
+  # and MISSING still fails, because no mark at all is a price-chain gap rather than a mark the gate
+  # disliked. Both proofs verified green on a rig 2026-08-17 and again in the full suite 2026-08-18.
+  #
+  # WHAT LEFT WITH THE FIX, since it is not recorded anywhere else in this file: converting the
+  # PUBLISHED assertion removed the only end-to-end detector of an option demoted to the 20% equity
+  # band. Its replacement is yu06-quality-gate.sh step 6 (band selection, one planted prior driving
+  # two opposite verdicts) — already in this array above. Do not remove that step believing the
+  # accrual and extract proofs still cover it; they do not.
   yu17-swaption-terms
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
@@ -93,14 +107,15 @@ PROOFS=(
   # adjacency. It must stay BEFORE yu13-stp-and-replace, which rolls the members onto yu15-era
   # builds that predate the contract record entirely.
   #
-  # CURRENTLY RED at step 4, deliberately, and NOT as a skip. Steps 0-3 pass: both swaps sequenced
-  # through consensus, the risk gate refusing an unknown account without creating a contract.
-  # The step-4 failure is the SHARED proof defect documented at yu17-swaption-terms above — the
-  # price-quality gate is behaving correctly and the assertion of PUBLISHED straight off
-  # /eod/session/close is what is wrong, in four call sites of which this is one. It is NOT a
-  # product regression and NOT in the ack path; anyone skimming "two YU17 proofs fail" as "YU17 is
-  # broken" has it backwards. A skip would read as a pass in the summary line, which is exactly how
-  # the "no YU17 proofs in the YU17 suite" gap was born in the first place.
+  # WAS RED at step 4, deliberately and NOT as a skip; FIXED 2026-08-17 with the other three call
+  # sites — see the account at yu17-swaption-terms above. The price-quality gate was behaving
+  # correctly and the assertion of PUBLISHED straight off /eod/session/close was what was wrong.
+  # Anyone reading a historical "two YU17 proofs fail" as "YU17 is broken" had it backwards. Green
+  # on a rig 2026-08-17 and in the full suite 2026-08-18.
+  #
+  # The reason it was left RED rather than skipped still applies to anything else that fails here:
+  # a skip reads as a pass in the summary line, which is exactly how the "no YU17 proofs in the YU17
+  # suite" gap was born in the first place.
   yu17-swap-netting
   # YU17 FX-rate fix (7256a33c). Same rolling class as the two above — it deletes member 2's PVC
   # and pod to prove the sequenced FX rate survives a rebuild from an empty disk — hence the
@@ -252,8 +267,35 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
 # defect was being older than the manifest. See
 # issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+# THE IMAGE MUST BE ON THE NODES BEFORE ANYTHING IS DESTROYED. This function wipes the PVCs first
+# and discovers an unreachable image afterwards, at which point the epoch it would have fallen back
+# to no longer exists. `kind load` is start-cluster-kind.sh's job and this script never did it, so
+# naming a CLUSTER_IMAGE that exists only in the local Docker daemon used to mean ImagePullBackOff
+# several minutes later, on a rig with nothing left to run. Idempotent and cheap when already there.
+ensure_image_on_nodes() { # ensure_image_on_nodes <image>
+  local image="${1:-}" cluster
+  [[ -n "${image}" ]] || return 0
+  case "${CTX}" in kind-*) cluster="${CTX#kind-}" ;; *) return 0 ;; esac   # kind rigs only
+  docker image inspect "${image}" >/dev/null 2>&1 \
+    || fail_hard "${image} is not in the local Docker daemon — build it first (scripts/yu15/build-cluster-image.sh)"
+  kind load docker-image "${image}" --name "${cluster}" >/dev/null 2>&1 \
+    || fail_hard "could not load ${image} onto kind cluster ${cluster}"
+}
+
+fail_hard() { echo "[fail] $*" >&2; exit 1; }
+
+# GATE ON THE FACT, NOT ON THE COMMAND RETURNING. Both rollout waits used to redirect stdout only,
+# so their failure text reached the terminal while their EXIT STATUS was discarded — the function
+# carried on and the caller printed "fresh epoch" regardless. Measured 2026-08-17: it announced a
+# fresh epoch while all three members sat in ImagePullBackOff and the PVCs were already wiped; the
+# rig was down and the log asserted it was up. That failure was loud because NOTHING was running.
+# The dangerous variant is a PARTIAL rollout — two members up, one wedged, rollout status times out,
+# the message still says fresh epoch, and every proof afterwards describes a two-member cluster
+# truthfully. prove-cluster-engine-change §1 already prescribes the end-state assertion below; it
+# was simply never wired in here.
 rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
+  ensure_image_on_nodes "${image}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
   ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
   ${K} delete pvc -l app=order-matcher-cluster --ignore-not-found >/dev/null 2>&1
@@ -262,9 +304,37 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optiona
       "$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].name}')=${image}" >/dev/null
   fi
   ${K} scale sts order-matcher-cluster --replicas=3 >/dev/null
-  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null
+  ${K} rollout status statefulset/order-matcher-cluster --timeout=600s >/dev/null \
+    || fail_hard "the members' rollout did not complete — NOT a fresh epoch, and the PVCs are already wiped"
   ${K} rollout restart deployment/cluster-gateway >/dev/null
-  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null
+  ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null \
+    || fail_hard "the gateway's rollout did not complete after the epoch mint"
+  assert_members_up "${image}"
+}
+
+# Every member on the target image AND ready — the check `rollout status` returning is not the same
+# as. Empty image argument means "whatever is pinned", so only readiness is asserted.
+# NOTE the `if` form throughout rather than `grep -q ... && fail_hard`. That shorter spelling returns
+# 1 in the HEALTHY case (grep finds no bad line), which is harmless under this script's `set -uo
+# pipefail` and becomes an abort-when-everything-is-fine the day someone adds `-e`. Not worth
+# leaving as a tripwire in the function whose whole job is to be believed.
+assert_members_up() { # assert_members_up [image]
+  local image="${1:-}" states count
+  states="$(${K} get pods -l app=order-matcher-cluster \
+    -o jsonpath='{range .items[*]}{.spec.containers[0].image}{" "}{.status.containerStatuses[0].ready}{"\n"}{end}' 2>/dev/null)"
+  count="$(printf '%s\n' "${states}" | grep -c . || true)"
+  if [[ "${count}" != "3" ]]; then
+    fail_hard "expected 3 members after the epoch mint, saw ${count}"
+  fi
+  if printf '%s\n' "${states}" | grep -q -v ' true$'; then
+    fail_hard "a member is not ready after the epoch mint:
+${states}"
+  fi
+  if [[ -n "${image}" ]] && printf '%s\n' "${states}" | grep -q -v "^${image} "; then
+    fail_hard "a member is not on ${image} after the epoch mint:
+${states}"
+  fi
+  return 0
 }
 
 NEED_FRESH=0

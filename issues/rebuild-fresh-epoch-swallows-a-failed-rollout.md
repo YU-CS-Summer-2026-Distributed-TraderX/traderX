@@ -1,6 +1,7 @@
 # `rebuild_fresh_epoch` reports success after a rollout that timed out
 
-**Filed** 2026-08-17 by the coordinator, from a live bring-up. **Open.** Small fix, real consequence.
+**Filed** 2026-08-17 by the coordinator, from a live bring-up.
+**RESOLVED 2026-08-18** — both gaps fixed, plus a third found the same way (see the end).
 
 ## What happened
 
@@ -70,3 +71,40 @@ first and discovers the problem afterwards, so there is nothing to fall back to.
 
 Found while minting the epoch that first exercised `scripts/proofs/yu17-fx-credit.sh` (which then
 passed, all eight arms). Both gaps are in the harness, not in the FX change.
+
+---
+
+## Resolution, 2026-08-18
+
+All three fixed in `scripts/yu15/run-proofs.sh`:
+
+1. **Both `rollout status` calls now fail the function** rather than having their exit status
+   discarded, and the `[baseline] ... fresh epoch` line only prints after the end state is asserted.
+2. **`assert_members_up()` gates on the fact**: three members, every one ready, every one on the
+   target image — the check `prove-cluster-engine-change` §1 prescribes and that was never wired in.
+   Verified with both controls against the live rig: it passes on the healthy cluster and refuses a
+   wrong image while printing the actual state.
+3. **`ensure_image_on_nodes()` runs BEFORE the scale-to-zero**, refusing outright if the image is not
+   in the local Docker daemon and `kind load`ing it otherwise. Ordering is the whole point: the old
+   path destroyed the epoch and discovered the missing image afterwards.
+
+### A third gap, found by the same suite run
+
+`CTX` was set but **never exported**, so the 34 proofs that read it each decided independently which
+cluster to talk to. Most default to the same kind rig and were therefore right by coincidence rather
+than by instruction. `yu13-otel-trace-join` deliberately has no default — it can legitimately target
+the yu12 rig, state-014 or GKE — so on 2026-08-18 it failed a suite run purely because a host reboot
+left the ambient current-context pointing at GKE. It refused rather than assert about the wrong
+cluster, which is the machinery working.
+
+Its sibling `yu13-otel-reject-trace-log-join` carries the **identical trailing comment** and does
+default, so the strictness difference reads as deliberate in both when it is arbitrary in one.
+`CTX` is now exported, which makes the strict form work under the suite while keeping it strict for
+manual invocation.
+
+### Note on the implementation
+
+`assert_members_up` uses `if grep ...; then fail; fi` rather than `grep -q ... && fail`. The shorter
+spelling returns 1 in the **healthy** case, which is harmless under this script's `set -uo pipefail`
+and becomes an abort-when-everything-is-fine the day someone adds `-e`. Not a tripwire worth leaving
+in the function whose entire job is to be believed.
