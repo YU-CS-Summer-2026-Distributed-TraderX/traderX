@@ -58,24 +58,22 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>PIPELINED per-order ingress (NFR-AC02, extended from the batch path to single orders): the
  * owner thread OFFERS each order-lifecycle command (new/cancel/replace) into the log and returns
  * immediately — it does NOT block on that order's commit. The waiting moves off the owner thread
- * onto the submitting REST/FIX thread, which parks on a {@link CompletableFuture}. Acks stream back
- * on the ONE cluster session in FIFO offer order — exactly one direct (non-resting) lifecycle/
- * not-found ack per offer, the same invariant {@code handleBatch} counts on — so a FIFO of awaiting
- * requests reconciles them by position ({@link Inflight}). One owner thread thus keeps MANY orders
- * in flight instead of one commit-RTT at a time: the ~580/s/gateway synchronous ceiling was the
- * commit wait, not compute. Per-session FIX ordering is preserved for free — a session thread
- * offers its orders in order and blocks for each ack, so its acks return in that order; across
- * sessions they interleave, which is the whole win. The in-flight window is bounded by a permit
- * semaphore ({@code GATEWAY_MAX_INFLIGHT}) = client backpressure. Honesty: this raises throughput
- * and cuts latency UNDER LOAD by removing queueing; it does NOT cut unloaded single-order latency
- * — a client still waits one commit (~1.7ms) for its own order.
- *
- * <p>ponytail: FIFO correlation assumes reliable, ordered egress — true at the 1 MiB term geometry
- * the campaign settled on (Aeron NAK-repairs gaps in order). A reconnect drains outstanding pendings
- * to ambiguous, keeping the FIFO aligned with the fresh session. A mid-session dropped ack (only
- * possible below the repair window at tiny term sizes) would misalign the FIFO; the durable fix is
- * an echoed correlation id in the ack, which needs an ack-format field (a deterministic-core change,
- * out of scope for a gateway-only lever).
+ * onto the submitting REST/FIX thread, which parks on a {@link CompletableFuture}. Correlation is
+ * KEYED (ack-correlation fix, option B): the gateway stamps each offer with a monotonic 64-bit
+ * request id (riding the ingress message's dead inputSeq slot), the member echoes it at ack bytes
+ * 24..31, and {@link Inflight} completes the pending by map lookup — never by arrival order. A
+ * stranded offer (an election destroying the dying leader's un-egressed acks, or a deliberate
+ * best-effort egress drop) therefore harms NO other order: it simply never completes, and an
+ * owner-thread deadline sweep reaps it and returns its permit. This replaced the positional FIFO
+ * whose invariant one strand broke permanently — measured as a ratcheting offset (K = 21→36→51
+ * across three leader kills) in which every later ack answered the wrong request, clients carried
+ * strangers' orderRefs with HTTP 200, and total HTTP collapse arrived at K >= pool size. One owner
+ * thread keeps MANY orders in flight instead of one commit-RTT at a time: the ~580/s/gateway
+ * synchronous ceiling was the commit wait, not compute. Per-session FIX ordering is preserved for
+ * free; across sessions acks interleave, which is the whole win. The in-flight window is bounded by
+ * a permit semaphore ({@code GATEWAY_MAX_INFLIGHT}) = client backpressure. Honesty: this raises
+ * throughput and cuts latency UNDER LOAD by removing queueing; it does NOT cut unloaded
+ * single-order latency — a client still waits one commit (~1.7ms) for its own order.
  *
  * Split readiness (ADR-045), corrected: {@code /ready} reports the ability to COMMIT, not the state
  * of a socket, and {@code /live} is the same signal at a much higher bar — the point at which a
@@ -134,9 +132,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private final Map<String, Integer> idByTicker = new HashMap<>();
     // Tasks that touch the cluster client; run ONLY on the owner thread.
     private final LinkedBlockingQueue<FutureTask<?>> tasks = new LinkedBlockingQueue<>();
-    // Pipelined order-lifecycle correlation (new/cancel/replace). FIFO + inputSeq boundary are
-    // owner-thread-confined (see Inflight); only the permit semaphore and each order's
-    // CompletableFuture cross the thread seam.
+    // Pipelined order-lifecycle correlation (new/cancel/replace), keyed by echoed request id
+    // (option B). Map + reap queue are owner-thread-confined (see Inflight); only the permit
+    // semaphore and each order's CompletableFuture cross the thread seam.
     private final Inflight inflight = new Inflight(MAX_INFLIGHT);
 
     private String ingressEndpoints;
@@ -219,7 +217,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         env("LIVE_NO_ACK_STREAK", Integer.toString(READY_NO_ACK_STREAK * 5)));
 
     // Owner-thread-only ack scratch (set by the egress listener between poll calls). Order-lifecycle
-    // acks no longer use a single slot — they complete the head of the pipelined FIFO (see onEgress).
+    // acks no longer use a single slot — they complete the pending their echoed request id names
+    // (see onEgress / Inflight).
     private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long nextSymbolRequestId = 1;
@@ -254,6 +253,18 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private volatile long pipelineOffersSucceeded;
     private volatile long pipelineOfferBackpressure;
     private volatile long pipelineAcksCompleted;
+    // Option B observability. `reaped` counts pendings the deadline sweep gave up on — each one is
+    // a stranded offer (dropped or election-destroyed ack), which is the quantity the design's
+    // "drop-stranding in the wild" question asks for directly, on any run, with no kills needed.
+    // `unmatched` counts direct order acks whose request id matched no pending (late ack after its
+    // reap, or another epoch's leftovers) — ignored by construction, but a rising rate is worth a
+    // look. `refused` counts egress records whose LENGTH was not this build's ack length: that is
+    // a mixed-version fleet (a 24-byte pre-B member), refused loudly rather than read as garbage.
+    private volatile long pipelineReaped;
+    private volatile long pipelineAcksUnmatched;
+    private volatile long egressLengthRefused;
+    // Owner-thread-only request-id generator; starts at 1 because 0 is the wire's "no request".
+    private long nextRequestId = 1;
     // Market-trade (/trades, the UI create-order path) outcome counters — the market-trade path
     // emits KIND_TRADE_BOOKED/REJECTED, neither of which the order-lifecycle metrics above count,
     // so without these a stage mis-seed books nothing with no visible signal. Owner-thread writes.
@@ -438,6 +449,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 if (client != null) {
                     client.pollEgress(); // drain committed acks -> complete pending futures each pass
                 }
+                // Option B: reap pendings whose ack deadline has passed — a stranded offer (dropped
+                // or election-destroyed ack) holds a permit that NOTHING else returns under keyed
+                // correlation, since no foreign ack can complete it any more. Owner thread, same
+                // ownership rule as every other FIFO/map touch; a peek per pass when nothing is due.
+                pipelineReaped += inflight.sweepOverdue(System.currentTimeMillis());
                 // Session keepalive. Ingress traffic keeps a session alive on its own, but an IDLE
                 // gateway sends nothing and the consensus module expires its session — observed on
                 // GKE 2026-07-26 as every quiet gateway flapping /ready 503 for ~50ms every ~5-10s,
@@ -533,31 +549,29 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
 
         /**
-         * A leader change is the one moment the FIFO's "one direct ack per cleared offer, in offer
-         * order" invariant provably breaks: the dying leader sequenced offers it never egressed to
-         * this session, and the promotion destroys them (a follower applied the same log with its
-         * egress suppressed, and does not re-apply once promoted). Left alone, the FIFO stays
-         * permanently N ahead and every subsequent ack answers an abandoned request — measured
-         * ratcheting 21 -> 36 -> 51 across three kills, and never recovering.
-         *
-         * <p>So resynchronise here, on the owner thread, DIRECTLY — never via connectCycling(),
-         * which loops {@code while (running)} until it reconnects and would park the owner thread
-         * for the duration of a quorum loss. That is the precise hazard the self-heal's
-         * offer-cleared trigger was designed to avoid, and routing this through it would reintroduce
-         * it by the back door.
+         * Under KEYED correlation (option B) an election needs NO repair here, and deliberately
+         * gets none — this is what buys transparent failover. The dying leader's un-egressed acks
+         * are destroyed by the promotion (measured: K never decreased across three kills), so the
+         * pendings they would have answered simply never complete and the owner-thread deadline
+         * sweep reaps them at their own timeout; every other in-flight order — anything the NEW
+         * leader sequences — is completed correctly by its own key when its ack arrives. The
+         * positional design had to answer the ENTIRE in-flight set ambiguous at this instant
+         * (`onNewLeaderResync`, the A mitigation), destroying the survivors along with the dead;
+         * a keyed map has no offset to repair, so draining here would only throw away answers
+         * that are still coming.
          */
         @Override
         public void onNewLeader(final long clusterSessionId, final long leadershipTermId,
                                 final int leaderMemberId, final String ingressEndpoints) {
-            final int stranded = inflight.depth();
-            inflight.onNewLeaderResync();
-            // The at-risk set was unacked by definition; forgetting it makes the self-heal fire
-            // LESS often, never more, which is the safe direction for a trigger whose hazard is
-            // firing when a reconnect cannot help.
+            // An election explains missing acks without this session being bad, so the wedge
+            // detector must not count the at-risk window toward a session rebuild: forgetting it
+            // makes the self-heal fire LESS often, never more — the safe direction for a trigger
+            // whose hazard is firing when a reconnect cannot help.
             offeredUnackedStreak.set(0);
             System.out.println("CLUSTER-NEW-LEADER leader=" + leaderMemberId
                 + " term=" + leadershipTermId + " session=" + clusterSessionId
-                + " resynced=" + stranded + " (in-flight answered ambiguous)");
+                + " inflight=" + inflight.depth()
+                + " (keyed correlation: survivors complete by id, strands reap at deadline)");
         }
     };
 
@@ -591,9 +605,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private void connectCycling() {
         // A fresh cluster session will not deliver the old session's outstanding egress, so complete
         // every in-flight pending as ambiguous (post-publish ambiguity: the order may have committed,
-        // so the submitter must not claim rejection). Keeps the FIFO aligned with the new session.
-        // No-op at startup (empty). Owner thread only — safe, no pollEgress runs inside here. drain()
-        // also resets the inputSeq boundary in case a fresh epoch restarts appliedSeq.
+        // so the submitter must not claim rejection). No-op at startup (empty). Owner thread only —
+        // safe, no pollEgress runs inside here. No sequence space to reset any more: request ids are
+        // gateway-lifetime-monotonic, so a fresh epoch's acks can never collide with old pendings.
         inflight.drain();
         int attempt = 0;
         while (running) {
@@ -630,11 +644,21 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     private void onEgress(final long clusterSessionId, final long timestamp, final DirectBuffer buffer,
                           final int offset, final int length, final io.aeron.logbuffer.Header header) {
+        // FAIL CLOSED on a wrong-width ack (option B). Every egress record on this tier is exactly
+        // EGRESS_ACK_LENGTH; a 24-byte record means a pre-B member is answering a post-B gateway —
+        // a mixed-version fleet the roll discipline forbids. Reading the request id off a short
+        // record would return silent garbage from adjacent memory, every lookup would miss, and the
+        // gateway would 504 forever while looking connected — so refuse the record and say why,
+        // once per streak, rather than guess.
+        if (length != MatchingEngineClusteredService.EGRESS_ACK_LENGTH) {
+            if (egressLengthRefused++ == 0) {
+                System.out.println("GATEWAY-ACK-FORMAT-MISMATCH egress length " + length
+                    + " != " + MatchingEngineClusteredService.EGRESS_ACK_LENGTH
+                    + " — members and this gateway are running mixed ack formats; roll them together");
+            }
+            return;
+        }
         final byte kind = buffer.getByte(offset + 12);
-        // Every egress kind carries the member's appliedSeq at offset 0. Record it before dispatch,
-        // for ALL kinds: the leader-change watermark is only as good as the highest sequence we can
-        // prove we saw, and a resting update or symbol ack is evidence just as much as a direct ack.
-        inflight.observeInputSeq(buffer.getLong(offset));
         if (kind == MatchingEngineClusteredService.KIND_SYMBOL_REGISTERED) {
             lastSymbolAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
@@ -660,15 +684,18 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         }
                     }
                 } else {
-                    // Pipelined mode: the FIRST direct ack of each input (by inputSeq at offset 0)
-                    // is that order's entry ack and answers the FIFO head; later direct acks with the
-                    // same inputSeq are continuation fills of the SAME order (a crossing order emits
-                    // ACCEPTED, then per-match-step FILLs, all under one appliedSeq) and must not pop
-                    // again — that would shift every later order onto the wrong request. Mirrors the
-                    // old sync path's first-ack-wins, now with many orders in flight.
-                    final PendingOrder head = inflight.onDirectAck(buffer.getLong(offset));
-                    if (head != null) {
-                        completePipelinedHead(head, buffer, offset, kind);
+                    // Pipelined mode (option B): the ack NAMES the request it answers — bytes 24..31
+                    // carry the request id this gateway stamped on the offer. The FIRST direct ack
+                    // for that id completes and REMOVES the pending; continuation fills of the same
+                    // input (a crossing order emits ACCEPTED then per-match-step FILLs, all under
+                    // one apply, all carrying one id) find the entry already gone and are ignored.
+                    // Foreign, stale-epoch and already-reaped acks miss the map by construction —
+                    // no arrival-order assumption is left to break.
+                    final PendingOrder p = inflight.onDirectAck(buffer.getLong(offset + 24));
+                    if (p != null) {
+                        completePipelinedHead(p, buffer, offset, kind);
+                    } else if (buffer.getLong(offset + 24) != 0) {
+                        pipelineAcksUnmatched++;
                     }
                 }
             }
@@ -870,9 +897,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      *
      * <p>Correlation safety: {@code emitOrderNotFound} hardcodes orderRef 0 in its ack, so a
      * cancel-of-unknown cannot be correlated by ref — but it does not need to be, because the
-     * pipelined FIFO correlates by POSITION: this cancel is registered at the FIFO tail when offered
-     * and its (possibly ref-0 NOT_FOUND) ack completes the head in that same order. The batch fence
-     * is untouched: {@code handleBatch} holds the owner thread for a whole batch, so no pipelined
+     * pipelined correlation is keyed on the echoed request id (option B): this cancel's own ack
+     * carries the id it was offered under, whatever ref the ack body says. The batch fence is
+     * untouched: {@code handleBatch} holds the owner thread for a whole batch, so no pipelined
      * cancel can interleave with the fence's own orderRef-0 NOT_FOUND ack.
      */
     @Override
@@ -936,7 +963,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     /**
      * Submit one order-lifecycle command and block (on THIS thread, not the owner) for its committed
-     * ack. The owner thread only offers and registers it on the FIFO; the ack completes it later.
+     * ack. The owner thread only offers and registers it under its request id; the ack completes it
+     * later.
      * The permit semaphore bounds in-flight orders and IS the client backpressure — a full window
      * parks the submitter here until a slot frees. Returns null on any ambiguity (window saturated
      * for the whole timeout, no committed ack, or a reconnect drained it): post-publish, the caller
@@ -947,18 +975,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // The wedge detector, in the ONE place every ingress path funnels through — REST new,
         // cancel, replace, the binary fast path and the FIX acceptor all reach consensus here, so
         // one update covers them and none can be added later that bypasses it. A null is exactly
-        // "no committed decision", which is what /ready now has to know about.
-        if (r == null && p.resyncAmbiguous) {
-            // Answered by the leader-change resync, not by any inability of this gateway. Counting
-            // it would invert the signal the streaks carry: a strand of 20-99 would fail readiness,
-            // remove the only gateway from the Service, and then never clear — nothing resets
-            // noAckStreak but a SUCCESSFUL order, and a pod out of the Service is sent none.
-            // Liveness is 5x readiness, so that bracket has no rescue and needs a human. Neither
-            // incremented nor reset: orders that fail for real still climb the streak below, so
-            // yu16-ready-tracks-commit's quorum-loss assertions are untouched (those fail through
-            // offerPipelined's deadline path and are never resync-marked).
-            return r;
-        }
+        // "no committed decision", which is what /ready now has to know about. (The A-era
+        // resync-mark exemption is gone WITH the resync: under keyed correlation nothing bulk-
+        // answers orders as a deliberate repair any more — every null here is an order whose
+        // committed decision genuinely never reached this gateway, which is honest streak
+        // evidence. Elections stop mass-nulling the window entirely, so the exemption's
+        // 20-99-strand eviction scenario now needs a real mass ack loss to arise — and then the
+        // 503 is telling the truth.)
         if (r == null) {
             noAckStreak.incrementAndGet();
             // THE SELF-HEAL. Only orders that actually cleared the ingress count: those are the ones
@@ -1026,12 +1049,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     /**
-     * Owner thread: encode {@code p} into the shared scratch, offer it (backpressure via pollEgress,
-     * which also drains earlier pendings), then register it at the FIFO tail so its ack — the next
-     * direct lifecycle ack in offer order — completes it. Registration happens AFTER the successful
-     * offer and before any further pollEgress, so this order's own ack can never be processed before
-     * it is registered. On an unresolvable ticker or an offer that never clears, complete ambiguous
-     * and release the permit without registering (keeps the FIFO exactly one entry per live offer).
+     * Owner thread: encode {@code p} into the shared scratch stamped with a fresh request id, offer
+     * it (backpressure via pollEgress, which also drains earlier pendings), then register it under
+     * that id so the ack ECHOING it completes it. Registration happens AFTER the successful offer
+     * and before any further pollEgress, so this order's own ack can never be processed before it
+     * is registered. On an unresolvable ticker or an offer that never clears, complete ambiguous
+     * and release the permit without registering (keeps the window exactly one entry per live offer).
      */
     private void offerPipelined(final PendingOrder p) {
         try {
@@ -1060,7 +1083,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             event.limitPx = p.limitPx;
             event.priceTicks = p.clientKey;
             event.eventTimeMillis = 0;
-            codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+            // Option B: name this request. The id rides the ingress message's inputSeq slot — dead
+            // on this tier (the member overwrites event.seq with ++appliedSeq on apply) — and the
+            // member echoes it at ack bytes 24..31, which is what the keyed lookup completes on.
+            // Owner thread only, so a plain increment; starts at 1 because 0 means "no request".
+            p.requestId = nextRequestId++;
+            codec.encodeInput(orderBuffer, 0, event, p.requestId, 0, 0);
             final long deadline = System.currentTimeMillis() + ACK_TIMEOUT_MS;
             pipelineOfferAttempts++;
             while (client.offer(orderBuffer, 0, AeronReplicationCodec.INPUT_BYTES) < 0) {
@@ -1086,7 +1114,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             if (p.traceKey != 0L) {
                 p.traceOfferNanos = System.nanoTime();
             }
-            inflight.register(p); // offer order == ack order
+            // Registered under its id, with the reap deadline the sweep enforces. Registration in
+            // offer order keeps the sweep's queue deadline-ordered for free.
+            p.reapAtMillis = System.currentTimeMillis() + ACK_TIMEOUT_MS + 2_000;
+            inflight.register(p);
         } catch (final Exception e) {
             p.future.complete(null);
             inflight.release();
@@ -1094,8 +1125,10 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     /**
-     * Owner thread (from onEgress): {@code p} is the FIFO head that {@link Inflight#onDirectAck}
-     * just popped for this entry ack. Build its committed outcome and release its permit.
+     * Owner thread (from onEgress): {@code p} is the pending this ack's echoed request id named —
+     * {@link Inflight#onDirectAck} just removed it. Build its committed outcome and release its
+     * permit. The ack IS this request's answer by construction now, so reading the NEW-order ref
+     * out of the ack body is reading this order's own engine-assigned ref, never a stranger's.
      */
     private void completePipelinedHead(final PendingOrder p, final DirectBuffer buffer,
                                        final int offset, final byte kind) {
@@ -1325,9 +1358,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             final Integer batchResult = onOwner(() -> {
                 final long deadline = System.currentTimeMillis() + batchBudgetMs;
                 // Batch and pipelined single-order ingress are mutually exclusive: onEgress routes
-                // direct acks to batch counting while batchActive, so any single order still in the
-                // FIFO would never be completed. The bench never mixes them; drain defensively so a
-                // mixed workload degrades to ambiguous singles rather than a stuck FIFO.
+                // direct acks to batch counting while batchActive, so any single order still
+                // pending would never be completed. The bench never mixes them; drain defensively
+                // so a mixed workload degrades to ambiguous singles rather than stuck pendings.
                 inflight.drain();
                 batchActive = true;
                 batchOutstanding = 0;
@@ -1902,6 +1935,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             + "traderx_gateway_pipeline_total{stage=\"offer_backpressure\"} "
                 + pipelineOfferBackpressure + "\n"
             + "traderx_gateway_pipeline_total{stage=\"ack_completed\"} " + pipelineAcksCompleted + "\n"
+            // Option B: every reaped pending is a stranded offer — an ack dropped by best-effort
+            // egress or destroyed by a promotion. Non-zero on a kill-free run answers the design's
+            // "does drop-stranding occur in the wild" question directly; unmatched counts direct
+            // acks naming no pending (late after reap / foreign epoch), refused counts wrong-width
+            // egress records (a mixed-version fleet — see GATEWAY-ACK-FORMAT-MISMATCH).
+            + "traderx_gateway_pipeline_total{stage=\"reaped\"} " + pipelineReaped + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"ack_unmatched\"} " + pipelineAcksUnmatched + "\n"
+            + "traderx_gateway_pipeline_total{stage=\"egress_length_refused\"} " + egressLengthRefused + "\n"
             // OTEL-01 follow-up: reject lines the per-second cap refused to print. Exported rather
             // than silent for the same reason the span drop count is: a correlation gap an operator
             // cannot see is worse than one they can. Non-zero here means read the reject COUNTERS,
@@ -2144,11 +2185,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // Set by the owner thread once client.offer() clears; read by the submitting thread when
         // its wait expires. Volatile: those are different threads and the future never completed.
         volatile boolean offered;
-        // Answered ambiguous by the LEADER-CHANGE RESYNC rather than by any failure of this gateway.
-        // Such an order must not advance the no-ack streaks: it was completed by our own deliberate
-        // repair, and after that repair the gateway is MORE able to commit, not less. Counting it as
-        // ill-health inverts the signal — see submitPipelined. Volatile for the same reason as above.
-        volatile boolean resyncAmbiguous;
+        // Option B correlation identity, both owner-thread-only (assigned in offerPipelined before
+        // the offer; read by onEgress's keyed lookup and the deadline sweep on the same thread).
+        // requestId 0 = never offered — id 0 is the wire's "no request" and is never registered.
+        long requestId;
+        long reapAtMillis; // when the sweep may give up on this pending and return its permit
         // LATENCY-01 Phase A single-clock timestamps (gateway nanoTime), 0 = order not sampled. Written
         // by the submit thread (tSubmit) then the owner thread (tOffer); the concurrent task queue and
         // the owner's single-threaded run give the happens-before, so no volatile needed.
@@ -2157,8 +2198,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // OTEL-01 trace state, same threading contract as the two fields above. traceKey 0 = this
         // order is not sampled (the common case) and every trace call site short-circuits. The key
         // is derived, never generated, so it needs no carriage to the members — and because it lives
-        // HERE, on the gateway's heap, the trace context crosses consensus in the FIFO that already
-        // correlates the committed ack back to this request. No trace id ever enters the log.
+        // HERE, on the gateway's heap, the trace context crosses consensus in the pending entry
+        // that already correlates the committed ack back to this request. No trace id enters the log.
         long traceKey;
         long traceStartNanos; // ingress: root span + queue span start
         long traceOfferNanos; // offer cleared: queue span ends, cluster.consensus span starts
@@ -2192,41 +2233,43 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     /**
-     * The pipelined in-flight window. The FIFO is touched ONLY by the owner thread (register on
-     * offer, onDirectAck in onEgress, drain on reconnect/batch), so it needs no synchronization. The
-     * permit semaphore is the sole cross-thread piece: submitters {@link #acquire} before enqueuing
-     * an offer and the owner {@link #release}s when the ack completes the order (or it is drained),
-     * bounding in-flight orders and backpressuring submitters when the window is full.
+     * The pipelined in-flight window, KEYED (ack-correlation fix, option B): pendings are held in a
+     * map under the gateway-chosen request id the member echoes back at ack bytes 24..31, so an ack
+     * completes exactly the request it names — never "the oldest one waiting". The positional FIFO
+     * this replaced had one invariant ("one direct ack per cleared offer, in offer order") and two
+     * documented ways to break it permanently: an election destroying the dying leader's
+     * un-egressed acks, and the member's deliberate best-effort egress drop. Under the map both are
+     * harmless-to-others by construction — a stranded pending completes nothing wrong, it merely
+     * waits for the deadline sweep to reap it. The A-era appliedSeq sequence space (lastInputSeq /
+     * highestInputSeqSeen / ignoreAcksAtOrBelow) is GONE WITH the positional pop: request ids are
+     * gateway-lifetime-monotonic and never reused, so no epoch restart, election or continuation
+     * fill can make one ack complete another's pending, and there is nothing left to reset.
      *
-     * <p>Package-private so {@code InflightCorrelationTest} can drive the correlation core (FIFO +
-     * inputSeq boundary + permit accounting) with no cluster.
+     * <p>Everything but the permit semaphore is touched ONLY by the owner thread (register on
+     * offer, onDirectAck in onEgress, sweepOverdue in the owner loop, drain on reconnect/batch), so
+     * it needs no synchronization. The semaphore is the sole cross-thread piece: submitters
+     * {@link #acquire} before enqueuing an offer and the owner {@link #release}s when the ack (or
+     * the sweep, or a drain) completes the order, bounding in-flight orders and backpressuring
+     * submitters when the window is full.
+     *
+     * <p>Package-private so {@code InflightCorrelationTest} can drive the correlation core (keyed
+     * completion + reap + permit accounting) with no cluster.
      */
     static final class Inflight {
-        private final ArrayDeque<PendingOrder> fifo = new ArrayDeque<>();
+        // Pendings by request id — the single source of "still awaiting its committed decision".
+        // Pre-sized to the window so the order hot path never resizes it.
+        private final org.agrona.collections.Long2ObjectHashMap<PendingOrder> pending;
+        // The same pendings in OFFER order, which is reap-deadline order (one constant timeout,
+        // stamped at offer). The sweep peeks the head; entries completed by their ack are simply
+        // skipped when their turn comes. Never consulted for correlation.
+        private final ArrayDeque<PendingOrder> byOffer = new ArrayDeque<>();
         private final Semaphore permits;
         private final int max;
-        // ---- THE appliedSeq SEQUENCE SPACE. All three fields below are derived from the member's
-        // applied-sequence and belong to ONE numbering. They must therefore be reset TOGETHER, and
-        // resetSequenceSpace() is the only place that does it. A fresh session may be a fresh epoch
-        // in which appliedSeq restarts at 0 (MatchingEngineClusteredService sets appliedSeq = 0 on
-        // start), so a survivor from the previous epoch's numbering is not merely stale, it is
-        // catastrophic: a leftover watermark swallows every ack in the new epoch and the gateway
-        // 504s forever while looking connected. If a fourth appliedSeq-derived field is ever added,
-        // it goes here and into that method. Do NOT collapse these into one comparison — they answer
-        // different questions (see onDirectAck).
-        //
-        // inputSeq whose entry ack last popped the head. -1 forces the first ack to pop.
-        private long lastInputSeq = -1;
-        // Highest appliedSeq this session has EVIDENCE of, from any egress message. Feeds the
-        // watermark at a leader change.
-        private long highestInputSeqSeen = -1;
-        // Acks at or below this are stale — sequenced before a leader change we have already
-        // resynchronised past — and must not pop a head that belongs to a later order.
-        private long ignoreAcksAtOrBelow = -1;
 
         Inflight(final int max) {
             this.max = max;
             this.permits = new Semaphore(max);
+            this.pending = new org.agrona.collections.Long2ObjectHashMap<>(max * 2, 0.65f);
         }
 
         /** Submitter thread: reserve a slot, or false if none frees within {@code timeoutMs}. */
@@ -2234,40 +2277,23 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             return permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS);
         }
 
-        /** Owner thread: order was offered — register it in offer order. */
+        /** Owner thread: order was offered under {@code p.requestId} — register it for its ack. */
         void register(final PendingOrder p) {
-            fifo.addLast(p);
+            pending.put(p.requestId, p);
+            byOffer.addLast(p);
         }
 
         /**
-         * Owner thread: a direct (non-resting) order-lifecycle ack arrived carrying {@code inputSeq}.
-         * If it OPENS a new input (its first direct ack), pop and return the FIFO head — the order to
-         * complete. If it CONTINUES the current input (a later fill under the same applied-sequence),
-         * return null: that fill belongs to the order already answered, and popping again would shift
-         * every later order onto the wrong request. Returns null too if the window is empty.
+         * Owner thread: a direct (non-resting) order-lifecycle ack arrived naming {@code requestId}.
+         * Returns the pending it completes and forgets it, or null when the id names nothing here:
+         * 0 (a pre-B log entry or a request-less producer — never registered, so never guessed at),
+         * a continuation fill of an input already answered (first ack won and removed the entry),
+         * a foreign client's ack, a reaped pending's late ack, or another session/epoch's leftovers.
+         * Every one of those was a misattribution under the positional pop; under the key they are
+         * all the same safe no-op.
          */
-        PendingOrder onDirectAck(final long inputSeq) {
-            // STALE-ACK GATE, and it is a DIFFERENT question from the continuation test below.
-            // "<= ignoreAcksAtOrBelow" means "sequenced before a leader change we have already
-            // resynchronised past, so it belongs to an order that is gone"; "== lastInputSeq" means
-            // "a later fill of the input we just answered". Collapsing them loses one meaning.
-            if (inputSeq <= ignoreAcksAtOrBelow) {
-                return null; // stale: its order was completed by the leader-change resync
-            }
-            if (inputSeq == lastInputSeq) {
-                return null; // continuation fill of the already-answered order
-            }
-            lastInputSeq = inputSeq;
-            return fifo.pollFirst();
-        }
-
-        /** Owner thread: record evidence of the member's applied-sequence from ANY egress message.
-         *  Tracking every kind, not just direct acks, keeps the leader-change watermark as high as
-         *  the evidence allows — a lower watermark would let a stale ack through. */
-        void observeInputSeq(final long inputSeq) {
-            if (inputSeq > highestInputSeqSeen) {
-                highestInputSeqSeen = inputSeq;
-            }
+        PendingOrder onDirectAck(final long requestId) {
+            return requestId == 0 ? null : pending.remove(requestId);
         }
 
         /** Owner thread: an order completed — return its slot to the window. */
@@ -2276,63 +2302,48 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         }
 
         /**
-         * Owner thread: a NEW LEADER was elected on the SAME session. The dying leader sequenced
-         * offers it never egressed to us, and the promotion destroys them — a follower applied the
-         * same log with its egress suppressed and does not re-apply after promotion, so those acks
-         * are never coming. Without this the FIFO stays permanently N ahead and every later ack pops
-         * a head belonging to an abandoned request (the correlation offset).
+         * Owner thread: reap pendings whose ack deadline has passed, completing them ambiguous
+         * (null — post-publish ambiguity, the caller must not claim rejection) and returning their
+         * permits. This is the ONLY thing that frees a stranded offer's slot under keyed
+         * correlation: no foreign ack can complete it any more (that was the defect), the
+         * submitter's own timeout deliberately does not release (the owner owns the slot), and an
+         * election no longer bulk-drains the window. Entries their ack already completed are
+         * skipped as their turn comes — the map, not this queue, says what is still pending.
          *
-         * <p>Answer the at-risk set honestly and resynchronise. The sequence space is NOT reset:
-         * a new leader continues the same {@code appliedSeq}, so the watermark it sets is meaningful.
-         * That is exactly what distinguishes this from {@link #drain()}.
+         * @return how many were reaped, so the caller can count strands (each one is a dropped or
+         *         election-destroyed ack — the design's second trigger, now directly observable).
          */
-        void onNewLeaderResync() {
-            completeAllAmbiguous(true);
-            ignoreAcksAtOrBelow = highestInputSeqSeen;
-            lastInputSeq = -1;
+        int sweepOverdue(final long nowMillis) {
+            int reaped = 0;
+            for (PendingOrder h; (h = byOffer.peekFirst()) != null; ) {
+                if (h.reapAtMillis > nowMillis) {
+                    break; // offer order == deadline order: nothing behind it is due either
+                }
+                byOffer.pollFirst();
+                if (pending.remove(h.requestId) != null) {
+                    h.future.complete(null);
+                    permits.release();
+                    reaped++;
+                }
+            }
+            return reaped;
         }
 
-        /**
-         * Owner thread: complete every outstanding order as ambiguous and free its slot.
-         *
-         * @param resync true when this is the leader-change repair, which marks each order so the
-         *               submitter does not count it against the no-ack streaks. Not a cosmetic
-         *               distinction: at a strand of 20-99 an uncounted streak would fail readiness,
-         *               remove the only gateway from the Service, and then never clear — the streak
-         *               resets ONLY on a successful order, and a pod out of the Service receives
-         *               none. Liveness sits at 5x readiness, so nothing rescues that bracket.
-         */
-        private void completeAllAmbiguous(final boolean resync) {
-            for (PendingOrder p; (p = fifo.pollFirst()) != null; ) {
-                p.resyncAmbiguous = resync;
+        /** Owner thread: a NEW SESSION (reconnect or batch takeover). The old session's undelivered
+         *  egress is gone with it, so complete every outstanding order as ambiguous — never a false
+         *  reject — and free its slot. Honest streak evidence: the gateway genuinely could not
+         *  complete these, which is what keeps yu16-ready-tracks-commit's restored-quorum assertion
+         *  meaning what it says. No sequence space is left to reset — request ids never restart. */
+        void drain() {
+            for (final PendingOrder p : pending.values()) {
                 p.future.complete(null);
                 permits.release();
             }
+            pending.clear();
+            byOffer.clear();
         }
 
-        /** Owner thread: a NEW SESSION. Complete every outstanding order as ambiguous, free its
-         *  slot, and reset the whole appliedSeq sequence space — the new session may be a new epoch
-         *  in which appliedSeq restarts at 0. */
-        void drain() {
-            // NOT resync-marked: a session-boundary drain answers orders the gateway genuinely
-            // could not complete, and those are honest evidence for the streak. This is what keeps
-            // yu16-ready-tracks-commit's step 3 intact — it asserts /ready STAYS 503 across a
-            // restored quorum, and a blanket reset here (or in the resync) would flip it to 200 and
-            // launder that verdict rather than fail it.
-            completeAllAmbiguous(false);
-            resetSequenceSpace();
-        }
-
-        /** The ONLY place the appliedSeq-derived fields are reset, so they cannot drift apart.
-         *  Carrying any of them across an epoch boundary is silent and total: a stale watermark
-         *  makes every ack in the new epoch look stale, nothing ever pops, and every order 504s. */
-        private void resetSequenceSpace() {
-            lastInputSeq = -1;
-            highestInputSeqSeen = -1;
-            ignoreAcksAtOrBelow = -1;
-        }
-
-        /** Thread-safe (semaphore-based, never touches the FIFO) in-flight depth — for /metrics. */
+        /** Thread-safe (semaphore-based, never touches the map) in-flight depth — for /metrics. */
         int depth() {
             return max - permits.availablePermits();
         }
