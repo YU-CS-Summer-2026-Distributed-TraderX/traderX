@@ -44,6 +44,29 @@ which had never been reached before.
 
 That is a rig repair. Any environment brought up before a catalog addition still has the gap.
 
+## MEASURED AGAIN 2026-08-18, and the diagnosis was too narrow
+
+The B lane hit the identical failure four hours after the repair: `yu16-bond-position` step 6 failed
+again, with 527 stocks and **zero bills or STRIPS**. It re-repaired the same 10 keys the same way.
+
+Investigating that, the missing piece: **`eod-price-db` has NO persistent volume.** Its only volume is
+the `database-init-sql` configMap; the namespace's only PVCs belong to the cluster members. So the
+database is **ephemeral** — every restart wipes it and re-initialises, `stocks` comes back empty, and
+the one-time seed runs afresh.
+
+**So this is not "environments brought up before a catalog addition".** It is **every DB restart,
+forever**: a fresh seed reliably produces a `stocks` population with no bills and no STRIPS, and any
+runtime `POST /stocks` repair is erased with it. Two independent instances in one day, four hours apart.
+
+That also settles the alternative below: **documenting a manual `POST /stocks` per environment is not
+merely fragile, it is non-viable** — the repair does not survive a pod restart, so the instruction would
+have to be "re-apply after every restart, forever", which nobody will do and nothing checks.
+
+**Open question, named rather than guessed:** `YU16_TREASURY_ROWS` in `load-csv-data.ts` maps ALL of
+`TREASURY_SEEDS`, including the bills, so a fresh seed *should* contain them. It does not. Worth
+establishing why before designing the fix — `loadCsvData` takes `supportedTickers`/`maxTickers`, and a
+cap that truncates after the S&P rows would explain it exactly. Do not assume; measure.
+
 ## The durable fix
 
 Make startup **reconcile** rather than seed-only-if-empty: for every key in the CDM catalog, ensure a
@@ -51,7 +74,8 @@ Make startup **reconcile** rather than seed-only-if-empty: for every key in the 
 is idempotent, cheap, and turns "add an instrument to the catalog" into a complete operation.
 
 The narrower alternative — document that catalog additions require a manual `POST /stocks` per
-environment — is not recommended. It has already been forgotten once, silently, and the symptom
+environment — is **ruled out by the measurement above**: the DB is ephemeral, so the repair does not
+survive a restart. It has already been forgotten once and erased once, and both times the symptom
 surfaced two services away as a missing position.
 
 ## A second, smaller defect found alongside it
