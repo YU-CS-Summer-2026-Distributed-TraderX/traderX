@@ -1,7 +1,8 @@
 # `yu16-bond-position` step 6: the zero-coupon bill does not book
 
-**Filed** 2026-08-18 by the coordinator, from a full-suite run. **Open, and not yet characterised.**
-Deliberately handed off rather than debugged, at yaakov's instruction.
+**Filed** 2026-08-18 by the coordinator, from a full-suite run.
+**RESOLVED the same day** — root cause was NOT in the bond path at all. See
+`catalog-additions-never-reach-a-deployed-environment.md`, which carries the durable defect.
 
 ## The failure
 
@@ -62,3 +63,31 @@ in or out early, but do not start there.
 
 `/tmp/proofrun/yu16-bond-position.log` from the 2026-08-18 suite run (that path is overwritten by the
 next run of the same proof — copy it before re-running).
+
+---
+
+## Resolution, 2026-08-18
+
+**The title of this issue is wrong, and being wrong about it cost the first hour.** The bill *did*
+book: two trade rows in SQL at the correct price. What failed was the **position** write.
+
+Root cause: `UST-BILL-20270812` was absent from the `stocks` table, which is what
+`reference-data` uses for membership. `trade-processor` then correctly failed closed
+(`Bond reference metadata is unavailable`). The instrument had been added to the CDM catalog after
+the rig's DB was first seeded, and the seeder only runs when `stocks` is empty — so it never
+appeared. Full account, including the rig repair through `POST /stocks` and why a raw SQL insert
+would have been wrong (the seeder writes an outbox row per seed), in the linked issue.
+
+`yu16-bond-position` now passes in full, including step 7, which had never been reached.
+
+### Two method errors in the investigation, kept because both are recurring shapes
+
+1. **A post-hoc SQL query was used as evidence and proved nothing** — two fresh epochs had been minted
+   after the failure, so the empty result was fully explained by the wipes. This file warned against
+   exactly that before it happened, in its own "how to characterise it" section.
+2. **A staleness theory survived three checks it should not have.** The reference-data image was
+   inspected, then the pod's digest, then the compiled `dist` — each time looking for a build that
+   predated the bills. The bills were present at every layer. The actual answer was a **runtime
+   membership filter**, which was the first hypothesis and was abandoned too early. Asking the running
+   process what it held (`node -e` against its own `dist`) settled it in one call and should have been
+   the second step, not the seventh.
