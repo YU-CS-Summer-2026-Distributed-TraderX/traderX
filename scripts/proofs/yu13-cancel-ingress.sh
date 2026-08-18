@@ -39,7 +39,43 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 # an operator asked for.
 IMAGE_PRE_NAMED=0
 [[ -n "${IMAGE_PRE:-}" ]] && IMAGE_PRE_NAMED=1
-IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15}"
+# DEFAULT MEASURED, not assumed — 2026-08-18. It used to be traderx/cluster-node:yu15, a MUTABLE tag
+# that was retagged away on 2026-08-17 (it turned out to hold a YU16-intermediate build, not a YU15
+# one), after which this half skipped silently on every run while the summary line still said PASS.
+#
+# :yu12 is the default because BOTH properties were measured, each with a positive control:
+#   * no /cancel in ClusterGatewayMain.class — :yu17-fx and :yu15-pre both read positive there, so the
+#     marker discriminates. Grep the CLASS, not the image: OrderController.class carries "/cancel" in
+#     every build back to :yu12, so an image-wide grep reads positive everywhere and proves nothing.
+#   * it HAS the probe server (18111, /live) — :yu15-pre reads 0 for both and is exactly the build
+#     that crash-looped the kubelet in
+#     issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md. Being older is
+#     not sufficient; an older gateway that fails its startup probe demonstrates nothing.
+#
+# :yu12 WAS TRIED AS THE DEFAULT ON 2026-08-18 AND IS NOT USABLE — do not reach for it again. It
+# rolls and comes up (the probe server is genuinely there), and then step 2 fails with
+# {"error":"no committed ack"}: it is far enough back that its gateway cannot get a committed ack
+# from today's members. That is WORSE than skipping, because a missing /cancel and a gateway that
+# cannot reach the engine are indistinguishable from the probe — and it turned a proof that passed
+# its forward half into a red one.
+#
+# NO LOCAL IMAGE SATISFIES ALL THREE REQUIREMENTS. Measured the same day, each with a control:
+#   tag        /cancel in ClusterGatewayMain    probe server (18111)    committed ack
+#   yu12       absent                           present                 NO
+#   yu13       absent                           ABSENT (crash-loops)    -
+#   yu14       absent                           ABSENT (crash-loops)    -
+#   yu15-pre+  PRESENT (not pre-cancel)         absent                  -
+#
+# So the default is deliberately a name that DOES NOT EXIST, which routes to the skip branch below
+# rather than to a failure. That is on purpose and is better than the old traderx/cluster-node:yu15
+# default: a real-but-mutable tag can be rebuilt into something that is not what its name says (that
+# tag was retagged away on 2026-08-17 after it turned out to hold a YU16-intermediate build), and it
+# then stages a demonstration against the wrong build while looking correct. A name that cannot
+# resolve can only ever skip, loudly, with the remedy in its message.
+#
+# TO RESTORE THE DEMONSTRATION: build a pre-cancel image from the commit before the route landed and
+# name it here. See issues/open/cancel-regression-demo-has-no-stageable-image.md.
+IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:precancel-BUILD-ME}"
 IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-cancel}"
 ACCOUNT="${ACCOUNT:-99001}"
 # JPM is deliberately avoided as the default. On a long-lived rig its price reference drifts
