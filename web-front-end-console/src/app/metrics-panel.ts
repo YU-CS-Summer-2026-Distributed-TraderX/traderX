@@ -1,10 +1,15 @@
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { Api, parseProm } from './api';
+import { HelpTip } from './help';
 
 @Component({
   selector: 'metrics-panel',
+  imports: [HelpTip],
   template: `
-    <h2>Latency &amp; throughput <span class="sub">gateway /metrics + /latency, live</span></h2>
+    <div class="card-head">
+      <h2>Latency &amp; throughput</h2>
+      <help-tip text="Live from the gateway's /metrics and /latency endpoints — the same process serving the orders. 'Consensus' is the round trip through the replicated cluster: offer the order, reach quorum, receive the committed acknowledgement. Percentiles come from a 1-in-128 sample of single orders, so n says how many samples back the number. These are local-rig figures on a laptop, not the benchmarked production numbers." />
+    </div>
     <div class="tiles">
       <div class="tile"><div class="v">{{ throughput() }}</div><div class="k">acks / s</div></div>
       <div class="tile"><div class="v">{{ inflight() }}</div><div class="k">in flight</div></div>
@@ -13,15 +18,21 @@ import { Api, parseProm } from './api';
       <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs (n={{ n() }})</div></div>
       <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs (n={{ n() }})</div></div>
     </div>
-    <div class="sub">sampled 1-in-128, serial orders only · local kind rig — not the campaign's bench numbers</div>
-    <pre class="lat">{{ latency() }}</pre>
+    <div class="faint">sampled 1-in-128, serial orders only · local kind rig — not the campaign's bench numbers</div>
+    <details>
+      <summary class="sub">raw latency decomposition</summary>
+      <pre class="lat">{{ latency() }}</pre>
+    </details>
   `,
   styles: `
-    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0; }
-    .tile { background: #16202e; border-radius: 4px; padding: 8px; text-align: center; }
-    .tile .v { font-size: 20px; color: #8fb8e8; font-variant-numeric: tabular-nums; }
-    .tile .k { font-size: 11px; color: #778; }
-    .lat { font-size: 11px; color: #999; white-space: pre-wrap; max-height: 120px; overflow-y: auto; }
+    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 8px; }
+    .tile { background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; text-align: center; }
+    .tile .v { font-size: 22px; font-weight: 600; font-family: var(--mono); color: var(--accent); }
+    .tile .k { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+    details { margin-top: 8px; }
+    summary { cursor: pointer; }
+    .lat { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap;
+           max-height: 180px; overflow-y: auto; background: #f8f9fb; border-radius: 6px; padding: 8px; }
   `,
 })
 export class MetricsPanel implements OnInit, OnDestroy {

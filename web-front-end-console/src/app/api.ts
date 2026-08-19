@@ -129,4 +129,112 @@ export class Api {
       body: JSON.stringify(body),
     });
   }
+
+  // ---- message bus (NATS over the edge proxy's /nats-ws websocket) ----------------------------
+  //
+  // A deliberate ~60-line NATS client instead of nats.ws: this console only ever SUBs on an
+  // unauthenticated local listener and treats every message as "re-read the REST read model", so
+  // the whole protocol surface it needs is INFO/CONNECT, PING/PONG, SUB and MSG framing — and the
+  // real library's node-crypto fallback fights the bundler for capability we never use.
+
+  private bus: MiniNats | null = null;
+
+  /**
+   * Subscribe bus topics; call onMsg per message (payload deliberately unused — a bus event is a
+   * trigger to re-read the REST read model, which keeps payload-shape assumptions out of the
+   * browser). onStatus reports whether the live feed is up. Returns an unsubscribe.
+   */
+  busSubscribe(topics: string[], onMsg: () => void, onStatus: (up: boolean) => void): () => void {
+    if (!this.bus) {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      this.bus = new MiniNats(`${proto}://${location.host}/nats-ws`);
+    }
+    const offs = topics.map(t => this.bus!.subscribe(t, onMsg));
+    const offStatus = this.bus.onStatus(onStatus);
+    return () => { offs.forEach(f => f()); offStatus(); };
+  }
+}
+
+/** Minimal NATS-protocol client over a browser WebSocket: subscribe-only, auto-reconnect. */
+class MiniNats {
+  private ws: WebSocket | null = null;
+  private buf = new Uint8Array(0);
+  private pending: { sid: number; need: number } | null = null;
+  private subs = new Map<number, { subject: string; cb: () => void }>();
+  private statusCbs = new Set<(up: boolean) => void>();
+  private nextSid = 1;
+  private up = false;
+  private readonly dec = new TextDecoder();
+
+  constructor(private url: string) { this.connect(); }
+
+  subscribe(subject: string, cb: () => void): () => void {
+    const sid = this.nextSid++;
+    this.subs.set(sid, { subject, cb });
+    if (this.ws?.readyState === WebSocket.OPEN && this.up) this.send(`SUB ${subject} ${sid}\r\n`);
+    return () => {
+      this.subs.delete(sid);
+      if (this.ws?.readyState === WebSocket.OPEN && this.up) this.send(`UNSUB ${sid}\r\n`);
+    };
+  }
+
+  onStatus(cb: (up: boolean) => void): () => void {
+    this.statusCbs.add(cb);
+    cb(this.up);
+    return () => this.statusCbs.delete(cb);
+  }
+
+  private setUp(up: boolean): void {
+    if (this.up === up) return;
+    this.up = up;
+    this.statusCbs.forEach(cb => cb(up));
+  }
+
+  private connect(): void {
+    const ws = new WebSocket(this.url);
+    ws.binaryType = 'arraybuffer';
+    this.ws = ws;
+    ws.onmessage = e => this.feed(new Uint8Array(e.data as ArrayBuffer));
+    ws.onclose = ws.onerror = () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      this.buf = new Uint8Array(0);
+      this.pending = null;
+      this.setUp(false);
+      setTimeout(() => this.connect(), 2000);
+    };
+  }
+
+  private send(s: string): void { this.ws?.send(s); }
+
+  /** Byte-accurate framing: MSG payload length is in bytes and may contain CRLF. */
+  private feed(chunk: Uint8Array): void {
+    const merged = new Uint8Array(this.buf.length + chunk.length);
+    merged.set(this.buf); merged.set(chunk, this.buf.length);
+    this.buf = merged;
+    for (;;) {
+      if (this.pending) {
+        if (this.buf.length < this.pending.need + 2) return;
+        this.subs.get(this.pending.sid)?.cb();
+        this.buf = this.buf.slice(this.pending.need + 2);
+        this.pending = null;
+        continue;
+      }
+      const nl = this.buf.indexOf(13);
+      if (nl < 0 || this.buf[nl + 1] !== 10) return;
+      const line = this.dec.decode(this.buf.slice(0, nl));
+      this.buf = this.buf.slice(nl + 2);
+      if (line.startsWith('MSG ')) {
+        const parts = line.split(' ');
+        this.pending = { sid: Number(parts[2]), need: Number(parts[parts.length - 1]) };
+      } else if (line === 'PING') {
+        this.send('PONG\r\n');
+      } else if (line.startsWith('INFO ')) {
+        this.send('CONNECT {"verbose":false,"pedantic":false,"protocol":1,"lang":"console","version":"0.0.1"}\r\n');
+        for (const [sid, s] of this.subs) this.send(`SUB ${s.subject} ${sid}\r\n`);
+        this.setUp(true);
+      }
+      // +OK / -ERR / PONG: nothing to do.
+    }
+  }
 }

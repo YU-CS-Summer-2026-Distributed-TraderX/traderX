@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api } from './api';
+import { HelpTip } from './help';
 
 // Shapes from trade-processor's EodReport / EodPrice records.
 interface EodPrice {
@@ -16,76 +17,82 @@ const TOKEN_KEY = 'traderx-console-eod-token';
 
 @Component({
   selector: 'eod-panel',
-  imports: [FormsModule],
+  imports: [FormsModule, HelpTip],
   template: `
-    <h2>EOD session <span class="sub">draft → gate → publish; a correction is a new version (ADR-026)</span></h2>
+    <div class="card-head">
+      <h2>End-of-day session</h2>
+      <help-tip text="Every trading day gets an official closing-price session. It starts as a DRAFT: each instrument's close is checked and given a quality code (STALE, SPIKE, MISSING…). A session with flagged instruments cannot be published — the quality gate refuses with an HTTP 409 — until an operator overrides each flagged price, with a recorded reason. A correction never edits in place: it creates a new version, so the full history stays auditable. These operations need an admin token, which the console obtains automatically in a dev environment." />
+    </div>
 
     @if (!token()) {
-      <div class="auth">
-        EOD operations need an admin JWT (four-eyes surface).
-        <input [(ngModel)]="masterSecret" type="password" placeholder="dev-token master secret">
-        <button (click)="mint()">Mint token</button>
-        @if (authError()) { <span class="bad">{{ authError() }}</span> }
+      <div class="bar">
+        @if (minting()) { <span class="sub">obtaining admin token…</span> }
+        @else {
+          <span class="sub">Auto-mint unavailable — paste the rig's dev-token master secret:</span>
+          <input [(ngModel)]="masterSecret" type="password" placeholder="master secret">
+          <button (click)="mint()">Mint token</button>
+          @if (authError()) { <span class="pill bad">{{ authError() }}</span> }
+        }
       </div>
     } @else {
       <div class="bar">
         <input type="date" [(ngModel)]="date">
         <button (click)="loadLatest()">Load</button>
         @if (report(); as r) {
-          <span class="pill" [class.pub]="r.status === 'PUBLISHED'">{{ r.status }}</span>
-          <span>v{{ r.version }} · {{ r.instrumentCount }} instruments ·
-            <b [class.bad]="r.flaggedCount > 0">{{ r.flaggedCount }} flagged</b></span>
+          <span class="pill" [class.good]="r.status === 'PUBLISHED'" [class.warn]="r.status !== 'PUBLISHED'">{{ r.status }}</span>
+          <span class="sub">v{{ r.version }} · {{ r.instrumentCount }} instruments ·
+            <b [class.flagged]="r.flaggedCount > 0">{{ r.flaggedCount }} flagged</b></span>
           <button (click)="loadVersion(r.version - 1)" [disabled]="r.version <= 1">◀ v{{ r.version - 1 }}</button>
           <button (click)="publish()" [disabled]="r.status === 'PUBLISHED'">Publish</button>
+          <help-tip text="Publish asks the session to become the official close. If any instrument is still flagged, the quality gate refuses with HTTP 409 — the refusal you may see here is the control working, not an error." />
         }
-        <span class="sub">token: {{ tokenSubject() }} <a (click)="dropToken()">forget</a></span>
+        <span class="spacer"></span>
+        <span class="faint">token: {{ tokenSubject() }} <a (click)="dropToken()">forget</a></span>
       </div>
-      @if (gateMsg(); as g) { <div class="gate" [class.ok]="g.ok">{{ g.text }}</div> }
+      @if (gateMsg(); as g) { <div class="banner" [class.good]="g.ok" [class.bad]="!g.ok">{{ g.text }}</div> }
       @if (report(); as r) {
         <table>
-          <thead><tr><th>security</th><th>close</th><th>quality</th><th>override reason</th><th></th></tr></thead>
+          <thead><tr><th>security</th><th class="num">close</th><th>quality</th><th>override reason</th><th></th></tr></thead>
           <tbody>
             @for (p of visible(); track p.security) {
-              <tr [class.flag]="p.quality !== 'OK' && p.quality !== 'OVERRIDDEN'" [class.ovr]="p.quality === 'OVERRIDDEN'">
+              <tr>
                 <td>{{ p.security }}</td>
                 <td class="num">{{ p.closingPrice }}</td>
-                <td>{{ p.quality }}</td>
-                <td>{{ p.overrideReason || '' }}</td>
+                <td>
+                  @if (p.quality === 'OK') { {{ p.quality }} }
+                  @else if (p.quality === 'OVERRIDDEN') { <span class="pill good">{{ p.quality }}</span> }
+                  @else { <span class="pill warn">{{ p.quality }}</span> }
+                </td>
+                <td class="sub">{{ p.overrideReason || '' }}</td>
                 <td>@if (p.quality !== 'OK') { <button (click)="startOverride(p)">override…</button> }</td>
               </tr>
             }
           </tbody>
         </table>
         @if (r.instruments.length > visible().length) {
-          <div class="sub">showing flagged + overridden + first rows — {{ r.instruments.length }} total</div>
+          <div class="faint">showing flagged + overridden + first rows — {{ r.instruments.length }} total</div>
         }
-      } @else if (loaded()) { <div class="sub">no session for {{ date }}</div> }
+      } @else if (loaded()) { <div class="faint">no session for {{ date }}</div> }
 
       @if (overriding(); as o) {
         <div class="ovr-form">
           Override <b>{{ o.security }}</b> (was {{ o.closingPrice }}, {{ o.quality }})
           <input type="number" [(ngModel)]="ovrPrice" step="0.000001" placeholder="price">
           <input [(ngModel)]="ovrReason" placeholder="reason (audit trail)">
-          <button (click)="applyOverride()">Apply — creates v{{ (report()?.version ?? 0) + 1 }}</button>
+          <button class="btn-primary" (click)="applyOverride()">Apply — creates v{{ (report()?.version ?? 0) + 1 }}</button>
           <button (click)="overriding.set(null)">cancel</button>
         </div>
       }
     }
   `,
   styles: `
-    .auth, .bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; font-size: 12px; color: #999; margin: 6px 0; }
-    input, button { background: #1a1a1a; color: #eee; border: 1px solid #444; padding: 4px 6px; border-radius: 3px; font-size: 12px; }
-    button { cursor: pointer; }
-    .pill { padding: 2px 8px; border-radius: 8px; background: #4a3b14; color: #ffd479; font-weight: 600; }
-    .pill.pub { background: #143d14; color: #7be07b; }
-    .bad { color: #ff9d9d; }
-    .gate { padding: 5px 8px; border-radius: 3px; background: #4d1414; color: #ff9d9d; font-size: 12px; margin: 4px 0; }
-    .gate.ok { background: #143d14; color: #7be07b; }
-    tr.flag td { color: #ffd479; }
-    tr.ovr td { color: #8fb8e8; }
-    td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    .ovr-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; background: #16202e; padding: 6px; border-radius: 4px; font-size: 12px; margin-top: 6px; }
-    a { color: #667; cursor: pointer; text-decoration: underline; }
+    .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+    .spacer { flex: 1; }
+    .flagged { color: var(--warn); }
+    .banner { margin-bottom: 8px; }
+    .ovr-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--accent-soft);
+                padding: 10px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
+    a { color: var(--faint); cursor: pointer; text-decoration: underline; }
   `,
 })
 export class EodPanel {
@@ -97,6 +104,7 @@ export class EodPanel {
   ovrReason = '';
 
   readonly token = signal<string | null>(sessionStorage.getItem(TOKEN_KEY));
+  readonly minting = signal(false);
   readonly authError = signal('');
   readonly report = signal<EodReport | null>(null);
   readonly loaded = signal(false);
@@ -114,19 +122,29 @@ export class EodPanel {
     return [...interesting, ...rest];
   });
 
-  async mint(): Promise<void> {
+  constructor() {
+    // In dev the proxy injects the master secret header, so a no-secret mint succeeds and the
+    // panel needs no manual step. The paste box remains as the fallback when that 401s.
+    if (!this.token()) this.mint(true);
+    else this.loadLatest();
+  }
+
+  async mint(auto = false): Promise<void> {
+    if (auto) this.minting.set(true);
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.masterSecret) headers['X-Auth-Master-Secret'] = this.masterSecret;
     const r = await this.api.load<string>('/trade-processor/auth/dev-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Auth-Master-Secret': this.masterSecret },
+      method: 'POST', headers,
       body: JSON.stringify({ subject: 'ui-console', admin: true, ttlSeconds: 28800 }),
     });
+    this.minting.set(false);
     if (r.status === 200 && typeof r.body === 'string') {
       sessionStorage.setItem(TOKEN_KEY, r.body);
       this.token.set(r.body);
       this.authError.set('');
       this.masterSecret = '';
       this.loadLatest();
-    } else {
+    } else if (!auto) {
       this.authError.set(r.status === 401 ? 'invalid master secret' : `HTTP ${r.status}`);
     }
   }

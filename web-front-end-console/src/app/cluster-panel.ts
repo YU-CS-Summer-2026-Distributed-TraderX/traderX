@@ -1,41 +1,42 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { Api, GatewayHealth, MemberHealth } from './api';
+import { HelpTip } from './help';
 
 @Component({
   selector: 'cluster-panel',
+  imports: [HelpTip],
   template: `
-    <h2>Aeron cluster <span class="sub">3 members, Raft consensus</span></h2>
-    <div class="agree" [class.split]="!agreed()">
+    <div class="card-head">
+      <h2>Aeron cluster</h2>
+      <help-tip text="The matching engine runs as three replicated members under Raft consensus. Every order is sequenced through the cluster, and each member applies the same events in the same order — so their counters should always be identical. This table reads each member's own health endpoint directly. If a member is killed, the other two keep serving and the counters stay in lockstep." />
+    </div>
+    <div class="banner" [class.good]="agreed()" [class.bad]="!agreed()">
       @if (agreed()) { ✓ members agree — applied {{ members()[0]?.applied }} }
       @else { ⚠ members diverge or unreachable }
     </div>
     <table>
-      <thead><tr><th></th><th>role</th><th>applied</th><th>engineApplied</th><th>trades</th><th>snapshots</th></tr></thead>
+      <thead><tr><th></th><th>role</th><th class="num">applied</th><th class="num">engineApplied</th><th class="num">trades</th><th class="num">snapshots</th></tr></thead>
       <tbody>
         @for (m of members(); track $index) {
-          <tr [class.dead]="!m" [class.leader]="m?.role === 'LEADER'">
+          <tr>
             <td>member-{{ $index }}</td>
             @if (m) {
-              <td>{{ m.role }}</td><td>{{ m.applied }}</td><td>{{ m.engineApplied }}</td>
-              <td>{{ m.trades }}</td><td>{{ m.snapshots }}</td>
-            } @else { <td colspan="5">unreachable</td> }
+              <td><span class="pill" [class.warn]="m.role === 'LEADER'">{{ m.role }}</span></td>
+              <td class="num">{{ m.applied }}</td><td class="num">{{ m.engineApplied }}</td>
+              <td class="num">{{ m.trades }}</td><td class="num">{{ m.snapshots }}</td>
+            } @else { <td colspan="5" class="faint">unreachable</td> }
           </tr>
         }
-        <tr class="gw">
+        <tr>
           <td>gateway</td>
           @if (gateway(); as g) {
             <td colspan="5">{{ g.connected ? 'connected' : 'DISCONNECTED' }} · noAckStreak {{ g.noAckStreak }}</td>
-          } @else { <td colspan="5">unreachable</td> }
+          } @else { <td colspan="5" class="faint">unreachable</td> }
         </tr>
       </tbody>
     </table>
   `,
-  styles: `
-    .agree { padding: 4px 8px; margin: 4px 0; border-radius: 3px; background: #143d14; color: #7be07b; font-variant-numeric: tabular-nums; }
-    .agree.split { background: #4d1414; color: #ff9d9d; }
-    tr.leader td { color: #ffd479; }
-    tr.dead td, tr.gw td { color: #999; }
-  `,
+  styles: `.banner { margin-bottom: 10px; font-family: var(--mono); font-size: 12.5px; }`,
 })
 export class ClusterPanel implements OnInit, OnDestroy {
   private api = inject(Api);

@@ -2,6 +2,7 @@ import { Component, computed, effect, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api, OrderResult, parseOcc } from './api';
+import { HelpTip } from './help';
 
 type Cls = 'Equity' | 'Option' | 'Treasury' | 'Corporate' | 'Swap' | 'Swaption';
 
@@ -11,18 +12,60 @@ const CONVENTIONS = [
   'GBP-SONIA-1Y-ACT365F', 'JPY-TONA-1Y-ACT365F',
 ];
 
+interface Preset { label: string; apply: (t: TicketPanel) => void; }
+
+const iso = (daysFromNow: number) => {
+  const d = new Date(Date.now() + daysFromNow * 86_400_000);
+  return d.toISOString().slice(0, 10);
+};
+
+// One preset per demo story. Each fills the whole ticket; Submit is the only remaining click.
+const PRESETS: Preset[] = [
+  { label: 'Equity — buy 100 IBM @ 200', apply: t => {
+      t.cls.set('Equity'); t.ticker = 'IBM'; t.side = 'Buy'; t.quantity = 100; t.limitPrice = 200; } },
+  { label: 'Equity — off the book band → PRICE_COLLAR reject', apply: t => {
+      t.cls.set('Equity'); t.ticker = 'IBM'; t.side = 'Buy'; t.quantity = 100; t.limitPrice = 500; } },
+  { label: 'Listed option — AAPL Dec-26 260 Call', apply: t => {
+      t.cls.set('Option'); t.occSymbol = 'AAPL261218C00260000'; t.side = 'Buy'; t.quantity = 5; t.limitPrice = 2.40; } },
+  { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
+      t.cls.set('Treasury'); t.ticker = 'UST-BILL-20270812'; t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
+  { label: 'Corporate — GS 5.75% 2036, 30/360 day count', apply: t => {
+      t.cls.set('Corporate'); t.ticker = 'CORP-GS-20360315'; t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.991230; } },
+  { label: 'Swap — USD SOFR, pay fixed 4.2%, 10mm 5Y', apply: t => {
+      t.cls.set('Swap'); t.payReceive = 'Pay'; t.notional = 10_000_000; t.fixedRate = 0.042;
+      t.effectiveDate = iso(2); t.maturityDate = iso(2 + 365 * 5); t.conventions = 'USD-SOFR-1Y-ACT360'; } },
+  { label: 'Swap — GBP with no sequenced rate → PRICE_MISSING', apply: t => {
+      t.cls.set('Swap'); t.payReceive = 'Pay'; t.notional = 5_000_000; t.fixedRate = 0.045;
+      t.effectiveDate = iso(2); t.maturityDate = iso(2 + 365 * 3); t.conventions = 'GBP-SONIA-1Y-ACT365F'; } },
+  { label: 'Swaption — European into 5Y USD payer', apply: t => {
+      t.cls.set('Swaption'); t.payReceive = 'Pay'; t.notional = 10_000_000; t.fixedRate = 0.042;
+      t.effectiveDate = iso(365); t.maturityDate = iso(365 + 365 * 5); t.conventions = 'USD-SOFR-1Y-ACT360';
+      t.expiryDate = iso(363); t.exerciseStyle = 'European'; } },
+];
+
 @Component({
   selector: 'ticket-panel',
-  imports: [FormsModule, NgTemplateOutlet],
+  imports: [FormsModule, NgTemplateOutlet, HelpTip],
   template: `
-    <h2>Order entry <span class="sub">five instrument classes, one consensus path</span></h2>
+    <div class="card-head">
+      <h2>Order entry</h2>
+      <help-tip text="One ticket per instrument class, all submitted through the same gateway and sequenced through the same consensus log. The five classes need genuinely different tickets: equities carry a price, options are identified by their OCC symbol alone, bonds are priced as a fraction of par with quantity in USD face value, and swaps carry contractual terms rather than any price. Demo presets fill the whole ticket for each story — Submit is the only remaining click." />
+    </div>
+
+    <label class="field">Demo preset
+      <select [ngModel]="''" (ngModelChange)="usePreset($event)" name="preset">
+        <option value="" disabled>choose a story…</option>
+        @for (p of presets; track p.label; let i = $index) { <option [value]="i">{{ p.label }}</option> }
+      </select>
+    </label>
+
     <div class="tabs">
       @for (c of classes; track c) {
-        <button [class.on]="cls() === c" (click)="cls.set(c)">{{ c }}</button>
+        <button type="button" [class.on]="cls() === c" (click)="cls.set(c)">{{ c }}</button>
       }
     </div>
     <form (ngSubmit)="submit()">
-      <label>Account
+      <label class="field">Account
         <select [(ngModel)]="accountId" name="acct">
           @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
         </select>
@@ -30,67 +73,74 @@ const CONVENTIONS = [
 
       @switch (cls()) {
         @case ('Equity') {
-          <label>Ticker
+          <label class="field">Ticker
             <select [(ngModel)]="ticker" name="ticker">
               @for (i of equities(); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.instrumentKey }} — {{ i.displayName }}</option> }
             </select>
           </label>
-          <label>Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
-          <label>Quantity <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
-          <label>Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+          <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
+          <label class="field">Quantity <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
+          <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
         }
         @case ('Option') {
-          <label>OCC symbol <input [(ngModel)]="occSymbol" name="occ" placeholder="AAPL261218C00260000" spellcheck="false"></label>
+          <label class="field">OCC symbol
+            <input [(ngModel)]="occSymbol" name="occ" placeholder="AAPL261218C00260000" spellcheck="false">
+          </label>
           @if (occ(); as o) {
             <div class="derived">{{ o.underlying }} · {{ o.expiry }} · {{ o.callPut }} · strike {{ o.strike }}
-              <span class="sub">derived from the symbol — not entered</span></div>
+              <help-tip text="Underlying, expiry, call/put and strike are all encoded in the OCC symbol itself, so the ticket derives them rather than asking for them separately — there is exactly one source of truth for the contract's terms." /></div>
           } @else if (occSymbol) { <div class="derived bad">not a valid OCC symbol</div> }
-          <label>Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
-          <label>Contracts <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
-          <label>Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+          <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
+          <label class="field">Contracts <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
+          <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
         }
         @case ('Treasury') { <ng-container *ngTemplateOutlet="bond"></ng-container> }
         @case ('Corporate') { <ng-container *ngTemplateOutlet="bond"></ng-container> }
         @case ('Swap') { <ng-container *ngTemplateOutlet="swap"></ng-container> }
         @case ('Swaption') {
           <ng-container *ngTemplateOutlet="swap"></ng-container>
-          <label>Option expiry <input type="date" [(ngModel)]="expiryDate" name="expiry"></label>
-          <label>Exercise style
+          <label class="field">Option expiry <input type="date" [(ngModel)]="expiryDate" name="expiry"></label>
+          <label class="field">Exercise style
             <select [(ngModel)]="exerciseStyle" name="style"><option>European</option><option>Bermudan</option><option>American</option></select>
           </label>
         }
       }
-      <button class="go" type="submit" [disabled]="busy()">{{ busy() ? '…' : 'Submit' }}</button>
+      <button class="btn-primary" type="submit" [disabled]="busy()">{{ busy() ? '…' : 'Submit' }}</button>
       @if (last(); as r) {
-        <div class="result" [class.bad]="!r.ok">{{ r.text }}</div>
+        <div class="banner" [class.good]="r.ok" [class.bad]="!r.ok">{{ r.text }}</div>
       }
     </form>
 
     <ng-template #bond>
-      <label>Instrument
+      <label class="field">Instrument
         <select [(ngModel)]="ticker" name="ticker">
           @for (i of bonds(); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.shortDisplayName || i.instrumentKey }} — {{ i.displayName }}</option> }
         </select>
       </label>
       @if (bondInfo(); as b) {
         <div class="derived">{{ b.issuer }}@if (b.creditRating) { · {{ b.creditRating }} } · day count {{ b.dayCount }}
-          <span class="sub">from the reference-data join, never the ticker</span></div>
+          <help-tip text="Issuer, rating and day-count convention come from the reference-data record for this instrument, joined by the system — never parsed out of the ticker. Treasuries accrue on ACT/ACT ICMA, corporates on 30/360; the split is data, not naming convention." /></div>
       }
-      <label>Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
-      <label>USD face <input type="number" [(ngModel)]="quantity" name="qty" min="100" step="100"></label>
-      <label>Price (fraction of par) <input type="number" [(ngModel)]="limitPrice" name="px" step="0.000001" placeholder="0.998780"></label>
+      <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
+      <label class="field">USD face
+        <input type="number" [(ngModel)]="quantity" name="qty" min="100" step="100">
+      </label>
+      <label class="field">Price (fraction of par)
+        <input type="number" [(ngModel)]="limitPrice" name="px" step="0.000001" placeholder="0.998780">
+      </label>
     </ng-template>
 
     <ng-template #swap>
-      <div class="derived">Terms, not a price — there is no NPV in this system, by design.</div>
-      <label>Pay / receive fixed
+      <div class="derived">Terms, not a price
+        <help-tip text="A swap is booked as its contractual terms — notional, fixed rate, direction, dates, convention. There is deliberately no NPV or valuation anywhere in this system: it books and sequences contracts, it does not price them." /></div>
+      <label class="field">Pay / receive fixed
         <select [(ngModel)]="payReceive" name="payrec"><option>Pay</option><option>Receive</option></select>
       </label>
-      <label>Notional <input type="number" [(ngModel)]="notional" name="notional" min="1"></label>
-      <label>Fixed rate (fraction: 0.042 = 4.2%) <input type="number" [(ngModel)]="fixedRate" name="rate" step="0.0001"></label>
-      <label>Effective <input type="date" [(ngModel)]="effectiveDate" name="eff"></label>
-      <label>Maturity <input type="date" [(ngModel)]="maturityDate" name="mat"></label>
-      <label>Convention
+      <label class="field">Notional <input type="number" [(ngModel)]="notional" name="notional" min="1"></label>
+      <label class="field">Fixed rate (fraction: 0.042 = 4.2%) <input type="number" [(ngModel)]="fixedRate" name="rate" step="0.0001"></label>
+      <label class="field">Effective <input type="date" [(ngModel)]="effectiveDate" name="eff"></label>
+      <label class="field">Maturity <input type="date" [(ngModel)]="maturityDate" name="mat"></label>
+      <label class="field">Convention
         <select [(ngModel)]="conventions" name="conv">
           @for (c of conventionList; track c) { <option>{{ c }}</option> }
         </select>
@@ -98,24 +148,21 @@ const CONVENTIONS = [
     </ng-template>
   `,
   styles: `
-    .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 6px 0; }
-    .tabs button { background: #222; color: #bbb; border: 1px solid #444; padding: 3px 10px; border-radius: 3px; cursor: pointer; }
-    .tabs button.on { background: #2d4a6b; color: #fff; border-color: #5b8cc4; }
-    form { display: flex; flex-direction: column; gap: 6px; }
-    label { display: flex; flex-direction: column; font-size: 12px; color: #999; gap: 2px; }
-    input, select { background: #1a1a1a; color: #eee; border: 1px solid #444; padding: 4px 6px; border-radius: 3px; }
-    .derived { font-size: 12px; color: #8fb8e8; padding: 4px 6px; background: #16202e; border-radius: 3px; }
-    .derived.bad { color: #ff9d9d; background: #2e1616; }
-    .go { margin-top: 4px; background: #2d6b3f; color: #fff; border: none; padding: 6px; border-radius: 3px; cursor: pointer; }
-    .go:disabled { opacity: .5; }
-    .result { padding: 5px 8px; border-radius: 3px; background: #143d14; color: #7be07b; font-size: 12px; }
-    .result.bad { background: #4d1414; color: #ff9d9d; }
+    .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0; }
+    .tabs button { background: #f0f2f5; color: var(--muted); border: none; padding: 4px 11px; border-radius: 6px; font-size: 12.5px; font-weight: 500; }
+    .tabs button.on { background: var(--accent-soft); color: var(--accent); }
+    form { display: flex; flex-direction: column; gap: 9px; }
+    .derived { font-size: 12.5px; color: var(--accent); padding: 6px 9px; background: var(--accent-soft); border-radius: 6px;
+               display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .derived.bad { color: var(--bad); background: var(--bad-soft); }
+    .banner { font-family: var(--mono); font-size: 12.5px; }
   `,
 })
 export class TicketPanel {
   readonly api = inject(Api);
   readonly classes: Cls[] = ['Equity', 'Option', 'Treasury', 'Corporate', 'Swap', 'Swaption'];
   readonly conventionList = CONVENTIONS;
+  readonly presets = PRESETS;
 
   readonly cls = signal<Cls>('Equity');
   readonly busy = signal(false);
@@ -134,6 +181,7 @@ export class TicketPanel {
   maturityDate = '';
   expiryDate = '';
   exerciseStyle = 'European';
+  conventions = CONVENTIONS[0];
 
   readonly equities = computed(() =>
     this.api.instruments().filter(i => i.securityType === 'Equity' || i.securityType === 'Fund'));
@@ -142,6 +190,8 @@ export class TicketPanel {
     return this.api.instruments().filter(i => i.assetClass === want);
   });
   readonly occ = computed(() => parseOcc(this.occSymbol));
+  readonly bondInfo = computed(() =>
+    this.api.instruments().find(i => i.instrumentKey === this.ticker)?.debtEconomics);
 
   constructor() {
     // Keep the ticker pointing at something valid for the selected class.
@@ -152,8 +202,11 @@ export class TicketPanel {
       }
     });
   }
-  readonly bondInfo = computed(() =>
-    this.api.instruments().find(i => i.instrumentKey === this.ticker)?.debtEconomics);
+
+  usePreset(index: string | number): void {
+    const p = PRESETS[Number(index)];
+    if (p) { p.apply(this); this.last.set(null); }
+  }
 
   async submit(): Promise<void> {
     this.busy.set(true);
@@ -194,8 +247,6 @@ export class TicketPanel {
       }
     } finally { this.busy.set(false); }
   }
-
-  conventions = CONVENTIONS[0];
 
   private report(kind: 'order' | 'swap' | 'swaption', ok: boolean, text: string, detail: string, reason?: string): void {
     this.last.set({ ok, text });
