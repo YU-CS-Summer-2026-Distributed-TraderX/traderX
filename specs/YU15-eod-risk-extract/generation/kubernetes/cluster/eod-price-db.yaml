@@ -6,6 +6,32 @@
 #
 # Both init keys are mounted the way the real database Deployment mounts them: 001 on a fresh
 # volume, 900-migrations on every start.
+#
+# THE DATADIR IS PERSISTENT, and it was not until 2026-08-18. This Deployment's only volume was
+# the init ConfigMap, so /var/lib/mysql lived in the pod's writable layer and EVERY restart
+# started from an empty datadir. That is not a slow leak — 001-initialSchema.sql opens with
+# `DROP TABLE IF EXISTS` on trades, orderbook, positions, accounts and all three eod_* tables, so
+# each restart deleted the tier's entire history and re-seeded the fixture accounts. Measured
+# consequences, none of them theoretical:
+#   * it destroyed evidence mid-investigation — a post-hoc query about whether a bond had crossed
+#     came back empty, and the emptiness was explained by an intervening wipe rather than by the
+#     bond (issues/yu16-bond-position-bill-does-not-book.md);
+#   * runtime repairs evaporated — instruments added via POST /stocks did not survive a restart
+#     (issues/catalog-additions-never-reach-a-deployed-environment.md);
+#   * any before/after measurement spanning a restart was silently invalid, which is the failure
+#     .claude/skills/establish-a-valid-baseline exists to prevent.
+# The single-BLP tier's `database` Deployment has had a PVC since YU02; only this one lacked it.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: eod-price-db-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
 ---
 apiVersion: v1
 kind: Service
@@ -27,6 +53,10 @@ metadata:
   name: eod-price-db
 spec:
   replicas: 1
+  # Recreate: the datadir PVC is ReadWriteOnce, so a rolling update would deadlock with the old
+  # and new pods both claiming it. Same reason as the `database` Deployment's.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: eod-price-db
@@ -35,6 +65,51 @@ spec:
       labels:
         app: eod-price-db
     spec:
+      # Applies 900-migrations.sql to an ALREADY-POPULATED PVC before the serving container
+      # starts. The entrypoint runs /docker-entrypoint-initdb.d/*.sql only on an empty datadir —
+      # which is exactly what makes 001 safe now, and exactly what would strand 900 — so without
+      # this a state's schema change would silently never reach a persistent datadir.
+      # 900-migrations.sql is idempotent throughout (CREATE TABLE IF NOT EXISTS, ALTER ... MODIFY,
+      # ADD COLUMN IF NOT EXISTS, DROP CONSTRAINT IF EXISTS then re-add; no INSERT, no DELETE, no
+      # unguarded DROP), so running it on every start is a no-op once converged.
+      # Fresh volume: exits immediately and the entrypoint initializes + seeds. A failed migration
+      # blocks serving (Init:Error) instead of running on a stale schema.
+      initContainers:
+        - name: schema-migrate
+          image: mariadb:11.4
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -ec
+            - |
+              if [ ! -d /var/lib/mysql/mysql ]; then
+                echo "fresh datadir - entrypoint will initialize and seed"
+                exit 0
+              fi
+              echo "populated datadir - applying idempotent migrations"
+              docker-entrypoint.sh mariadbd --skip-networking --socket=/tmp/migrate.sock &
+              srv=$!
+              ok=""
+              for i in $(seq 1 60); do
+                if mariadb --socket=/tmp/migrate.sock -uroot -p"$MARIADB_ROOT_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then ok=1; break; fi
+                sleep 2
+              done
+              [ -n "$ok" ] || { echo "temp mariadbd never became ready"; exit 1; }
+              mariadb --socket=/tmp/migrate.sock -uroot -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE" < /migrations/900-migrations.sql
+              mariadb-admin --socket=/tmp/migrate.sock -uroot -p"$MARIADB_ROOT_PASSWORD" shutdown
+              wait $srv
+              echo "migrations applied"
+          env:
+            - name: MARIADB_DATABASE
+              value: traderx
+            - name: MARIADB_ROOT_PASSWORD
+              value: traderx
+          volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/mysql
+            - name: init
+              mountPath: /migrations/900-migrations.sql
+              subPath: 900-migrations.sql
       containers:
         - name: mariadb
           image: mariadb:11.4
@@ -59,6 +134,8 @@ spec:
             failureThreshold: 24
           args: ["--lower-case-table-names=1", "--innodb-flush-log-at-trx-commit=2"]
           volumeMounts:
+            - name: db-data
+              mountPath: /var/lib/mysql
             - name: init
               mountPath: /docker-entrypoint-initdb.d/001-initialSchema.sql
               subPath: 001-initialSchema.sql
@@ -72,6 +149,9 @@ spec:
             limits:
               memory: 768Mi
       volumes:
+        - name: db-data
+          persistentVolumeClaim:
+            claimName: eod-price-db-data
         - name: init
           configMap:
             name: database-init-sql
