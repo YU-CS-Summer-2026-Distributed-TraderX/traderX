@@ -158,7 +158,8 @@ export class AdminPanel implements OnInit, OnDestroy {
       this.api.load<BlotterTrade[]>(`/position-service/trades/${Number(this.accountId)}`),
       this.api.load<ParentOrder[]>('/algo/orders'),
     ]);
-    if (r.status === 200 && Array.isArray(r.body)) this.trades.set([...r.body].reverse().slice(0, 30));
+    // Newest-first from the service; head as-is (reversing dropped the NEWEST past 30).
+    if (r.status === 200 && Array.isArray(r.body)) this.trades.set(r.body.slice(0, 30));
     if (p.status === 200 && Array.isArray(p.body)) { this.parents.set([...p.body].reverse()); this.algoDown.set(false); }
     else if (p.status >= 500 || p.status === 0 || p.status === 502) { this.parents.set([]); this.algoDown.set(true); }
   }

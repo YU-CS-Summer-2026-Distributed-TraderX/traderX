@@ -186,6 +186,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
       this.api.load<BlotterTrade[]>(`/position-service/trades/${id}`),
     ]);
     if (p.status === 200 && Array.isArray(p.body)) this.positions.set(p.body);
-    if (t.status === 200 && Array.isArray(t.body)) this.trades.set([...t.body].reverse().slice(0, 30));
+    // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).
+    if (t.status === 200 && Array.isArray(t.body)) this.trades.set(t.body.slice(0, 30));
   }
 }
