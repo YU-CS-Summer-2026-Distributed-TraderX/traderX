@@ -2,16 +2,28 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=lib-state-image.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
 OM="${ROOT}/generated/code/target-generated/order-matcher"
-IMAGE="${YU15_CLUSTER_IMAGE:-traderx/cluster-node:yu15}"
+# DERIVED, like everything else that answers "which build is this". The default used to be a
+# literal traderx/cluster-node:yu15, so running this from another worktree stamped that worktree's
+# code :yu15 — the stale-tag class in its most direct form — and the literal-only env handling
+# silently IGNORED an explicit CLUSTER_IMAGE (measured 2026-08-18: a build asked to be
+# :yu15-ackB landed on :yu15). CLUSTER_IMAGE is the neutral override every sibling script takes;
+# YU15_CLUSTER_IMAGE keeps working. (Carried from YU16/YU17's copies.)
+IMAGE="${CLUSTER_IMAGE:-${YU15_CLUSTER_IMAGE:-traderx/cluster-node:$(state_tag "${ROOT}")}}"
 
 [[ -d "${OM}" ]] || {
   echo "[fail] generated order-matcher missing; run: bash pipeline/generate-state.sh YU15-eod-risk-extract"
   exit 1
 }
 
-echo "[build] bootJar (host gradle — container gradle builds stall on this host)"
-(cd "${OM}" && ./gradlew -q bootJar)
+# `clean`, and it is load-bearing rather than tidiness. Generation writes sources with mtimes OLDER
+# than the previously compiled output, so gradle's up-to-date check judges compileJava current and
+# bootJar packages classes predating the regeneration. The image is then tagged for a build it does
+# not contain — one :yu17-ackfix image shipped that way. (Carried from YU16/YU17's copies.)
+echo "[build] clean bootJar (host gradle — container gradle builds stall on this host)"
+(cd "${OM}" && ./gradlew -q clean bootJar)
 
 JAR="$(ls "${OM}"/build/libs/*.jar | grep -v plain | head -1)"
 [[ -n "${JAR}" ]] || { echo "[fail] no boot jar built"; exit 1; }
