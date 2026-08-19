@@ -11,210 +11,181 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The pipelined-ingress correlation core, with no cluster (ClusterGatewayMain.Inflight is the one
- * non-trivial piece the gateway change adds). It proves the property the whole lever rests on: an
- * ack stream reconciles back to the RIGHT awaiting request even with many orders in flight and
- * multi-fill crossing orders — the failure that would silently answer request N+1 with order N's
- * fill. The live GKE run proves throughput; this proves it does not corrupt outcomes doing so.
+ * The KEYED correlation core (ack-correlation fix, option B), with no cluster. YU17-layer override
+ * of the YU13-layer test of the positional FIFO: composition pairs each branch's gateway with its
+ * own semantics, so ancestors keep proving the FIFO they still run while this state proves the map.
+ *
+ * <p>The property everything here defends: an ack completes exactly the request whose id it
+ * echoes, so a STRANDED offer — an election destroying the dying leader's un-egressed acks, or the
+ * member's deliberate best-effort egress drop — harms NO other order. Under the positional pop one
+ * strand shifted every later ack onto the wrong request permanently (measured K = 21→36→51 across
+ * three leader kills, clients told strangers' orderRefs with HTTP 200); under the key that failure
+ * class does not exist, and the deadline sweep is what returns a stranded slot.
  */
 @Timeout(30)
 class InflightCorrelationTest {
 
-    private static ClusterGatewayMain.PendingOrder order() {
-        return new ClusterGatewayMain.PendingOrder(
+    private static ClusterGatewayMain.PendingOrder order(final long requestId) {
+        final ClusterGatewayMain.PendingOrder p = new ClusterGatewayMain.PendingOrder(
             InputEvent.TYPE_ORDER_NEW, 11, "JPM", 'B', 10, 100_000_000L, 0L, 0);
+        p.requestId = requestId;
+        p.reapAtMillis = Long.MAX_VALUE; // tests that sweep set a real deadline explicitly
+        return p;
     }
 
-    /** Distinct inputSeqs (each order's own entry ack) pop the FIFO head in strict offer order. */
+    /** THE option-B property, positively: acks complete exactly the request they name, whatever
+     *  order they arrive in — arrival order carries no meaning at all any more. */
     @Test
-    void entryAcksCompleteInFifoOrder() {
+    void acksCompleteExactlyTheRequestTheyName() {
         final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        final ClusterGatewayMain.PendingOrder a = order();
-        final ClusterGatewayMain.PendingOrder b = order();
-        final ClusterGatewayMain.PendingOrder c = order();
+        final ClusterGatewayMain.PendingOrder a = order(1);
+        final ClusterGatewayMain.PendingOrder b = order(2);
+        final ClusterGatewayMain.PendingOrder c = order(3);
         inflight.register(a);
         inflight.register(b);
         inflight.register(c);
 
-        assertSame(a, inflight.onDirectAck(100));
-        assertSame(b, inflight.onDirectAck(101));
-        assertSame(c, inflight.onDirectAck(102));
-        assertNull(inflight.onDirectAck(103), "empty window: nothing to complete");
+        assertSame(b, inflight.onDirectAck(2), "the ack for 2 completes b, not the oldest waiter");
+        assertSame(a, inflight.onDirectAck(1));
+        assertSame(c, inflight.onDirectAck(3));
+        assertNull(inflight.onDirectAck(4), "an id naming nothing completes nothing");
     }
 
     /**
-     * THE case the inputSeq boundary exists for: a crossing order emits ACCEPTED then one or more
-     * FILL acks, all under one applied-sequence. Only the FIRST (the entry ack) may pop the head;
-     * the continuation fill sharing that inputSeq must NOT pop the next order, or every later order
-     * shifts onto the wrong request. Without the boundary, order B would be answered by A's fill.
+     * THE option-B property, negatively — the exact shape of the measured defect: a stranded offer
+     * (its ack destroyed or dropped, so it never arrives) must not shift any later order onto the
+     * wrong request. Under the positional FIFO, b's ack would have completed a and every
+     * subsequent client would have carried a stranger's orderRef with HTTP 200.
      */
     @Test
-    void continuationFillsOfOneInputDoNotPopTheNextOrder() {
+    void aStrandedOfferHarmsNoOtherOrder() {
         final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        final ClusterGatewayMain.PendingOrder a = order();
-        final ClusterGatewayMain.PendingOrder b = order();
-        inflight.register(a);
+        final ClusterGatewayMain.PendingOrder stranded = order(1); // its ack will never arrive
+        final ClusterGatewayMain.PendingOrder b = order(2);
+        final ClusterGatewayMain.PendingOrder c = order(3);
+        inflight.register(stranded);
         inflight.register(b);
+        inflight.register(c);
 
-        assertSame(a, inflight.onDirectAck(200), "A's entry ack (ACCEPTED) pops A");
-        assertNull(inflight.onDirectAck(200), "A's fill shares inputSeq 200 — must not pop B");
-        assertNull(inflight.onDirectAck(200), "A's second fill — still not B");
-        assertSame(b, inflight.onDirectAck(201), "B's entry ack (new inputSeq) pops B");
+        assertSame(b, inflight.onDirectAck(2), "b's own ack completes b — never the stranded head");
+        assertSame(c, inflight.onDirectAck(3), "c's own ack completes c — the strand shifts nothing");
+        assertFalse(stranded.future.isDone(),
+            "the stranded order is still awaiting its own answer, not completed with someone else's");
     }
 
-    /** A reconnect drains every outstanding order to ambiguous (null) and resets the boundary so the
-     *  fresh session's first ack pops again even if its applied-sequence restarts lower. */
+    /** A crossing order emits ACCEPTED then per-match-step FILLs, all under one apply and all
+     *  echoing ONE request id. The first completes and removes the pending; the continuations must
+     *  find nothing — under the FIFO a continuation popping again shifted every later order. */
     @Test
-    void drainCompletesOutstandingAmbiguousAndResetsBoundary() throws Exception {
+    void continuationAcksOfACompletedRequestAreIgnored() {
         final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        final ClusterGatewayMain.PendingOrder a = order();
-        final ClusterGatewayMain.PendingOrder b = order();
-        assertTrue(inflight.acquire(1_000));
-        assertTrue(inflight.acquire(1_000));
+        final ClusterGatewayMain.PendingOrder a = order(1);
+        final ClusterGatewayMain.PendingOrder b = order(2);
         inflight.register(a);
         inflight.register(b);
-        // a's entry ack pops it and advances the boundary to 5000 (mimic completePipelinedHead,
-        // which completes the returned pending and releases its slot). b stays outstanding.
-        assertSame(a, inflight.onDirectAck(5_000));
-        inflight.release();
 
+        assertSame(a, inflight.onDirectAck(1), "A's entry ack completes A");
+        assertNull(inflight.onDirectAck(1), "A's fill echoes the same id — must complete nothing");
+        assertNull(inflight.onDirectAck(1), "A's second fill — still nothing");
+        assertSame(b, inflight.onDirectAck(2), "B is completed only by its own id");
+    }
+
+    /** Id 0 is the wire's "no request" — a pre-B log entry, another producer's input, a batch
+     *  offer. It is never registered and must never complete anything, whatever is pending. */
+    @Test
+    void requestIdZeroNeverCompletesAnything() {
+        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
+        inflight.register(order(1));
+        assertNull(inflight.onDirectAck(0));
+    }
+
+    /** Request ids never restart (gateway-lifetime-monotonic), so an ack surviving from a drained
+     *  session or an older epoch names an id that is simply gone — it must complete nothing, and
+     *  there is no watermark or sequence space left to get wrong across the boundary. */
+    @Test
+    void acksFromADrainedSessionCompleteNothing() throws Exception {
+        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
+        final ClusterGatewayMain.PendingOrder old = order(1);
+        assertTrue(inflight.acquire(1_000));
+        inflight.register(old);
         inflight.drain();
+        assertNull(old.future.get(), "drained to ambiguous, never a false reject");
 
-        assertNull(b.future.get(), "the outstanding order is drained to ambiguous, never a false reject");
-        // Boundary reset: an ack at a LOWER inputSeq than before the drain must still pop.
-        final ClusterGatewayMain.PendingOrder c = order();
-        inflight.register(c);
-        assertSame(c, inflight.onDirectAck(1), "post-drain first ack pops despite lower inputSeq");
+        final ClusterGatewayMain.PendingOrder fresh = order(2);
+        assertTrue(inflight.acquire(1_000));
+        inflight.register(fresh);
+        assertNull(inflight.onDirectAck(1), "the drained order's late ack names nothing now");
+        assertSame(fresh, inflight.onDirectAck(2), "the live order still completes by its own id");
     }
 
     /**
-     * A leader change strands the offers the dying leader sequenced but never egressed — the
-     * promotion destroys those acks, so they never arrive. The resync answers the at-risk set
-     * ambiguous and returns its slots, which is what stops the FIFO staying permanently N ahead.
+     * The deadline sweep is the ONLY thing that frees a stranded offer's slot under keyed
+     * correlation: no foreign ack can complete it any more, the submitter's timeout deliberately
+     * does not release (the owner owns the slot), and an election no longer bulk-drains the window.
+     * Without the sweep every strand leaks a permit PERMANENTLY and the window is gone in
+     * MAX_INFLIGHT strands — the leak the positional pop used to mask by misattributing.
      */
     @Test
-    void newLeaderResyncAnswersTheAtRiskSetAndFreesItsSlots() throws Exception {
-        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        final ClusterGatewayMain.PendingOrder a = order();
-        final ClusterGatewayMain.PendingOrder b = order();
+    void sweepReapsOverdueStrandsAndReturnsTheirPermits() throws Exception {
+        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(2);
+        final ClusterGatewayMain.PendingOrder stranded = order(1);
+        final ClusterGatewayMain.PendingOrder live = order(2);
         assertTrue(inflight.acquire(1_000));
         assertTrue(inflight.acquire(1_000));
-        inflight.register(a);
-        inflight.register(b);
+        stranded.reapAtMillis = 1_000;
+        live.reapAtMillis = 9_000;
+        inflight.register(stranded);
+        inflight.register(live);
         assertEquals(2, inflight.depth());
 
-        inflight.onNewLeaderResync();
+        assertEquals(0, inflight.sweepOverdue(999), "nothing due yet: nothing reaped");
+        assertEquals(1, inflight.sweepOverdue(1_000), "the overdue strand is reaped, exactly it");
+        assertNull(stranded.future.get(), "reaped ambiguous — post-publish, never a false reject");
+        assertFalse(live.future.isDone(), "the not-yet-due order is untouched");
+        assertEquals(1, inflight.depth(), "exactly one permit returned");
 
-        assertNull(a.future.get(), "at-risk order answered ambiguous, never a false reject");
-        assertNull(b.future.get(), "at-risk order answered ambiguous, never a false reject");
-        assertEquals(0, inflight.depth(), "both slots returned — no offset left behind");
+        assertNull(inflight.onDirectAck(1), "the reaped order's late ack completes nothing");
+        assertSame(live, inflight.onDirectAck(2), "the live order still completes normally");
     }
 
-    /**
-     * THE STALE-ACK WATERMARK. An ack that was in flight across the election lands after the resync;
-     * without the watermark it would find the newly-registered orders and pop one — re-seeding the
-     * very offset the resync just repaired. Acks at or below the high-water mark are ignored;
-     * anything above it is the new leader's work and must still complete normally.
-     */
+    /** An entry its ack already completed is skipped when its reap turn comes — the map, not the
+     *  sweep queue, says what is still pending — so one order can never release two permits. */
     @Test
-    void staleAcksFromBeforeALeaderChangeDoNotPopLaterOrders() {
-        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        inflight.observeInputSeq(900);   // evidence of the old leader's applied-sequence
-        inflight.onNewLeaderResync();    // watermark := 900
+    void sweepDoesNotDoubleReleaseAnAckCompletedOrder() throws Exception {
+        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(2);
+        final ClusterGatewayMain.PendingOrder a = order(1);
+        assertTrue(inflight.acquire(1_000));
+        a.reapAtMillis = 1_000;
+        inflight.register(a);
 
-        final ClusterGatewayMain.PendingOrder afterElection = order();
-        inflight.register(afterElection);
+        assertSame(a, inflight.onDirectAck(1));
+        inflight.release(); // completePipelinedHead's release
+        assertEquals(0, inflight.depth());
 
-        assertNull(inflight.onDirectAck(880), "an in-flight ack from before the election is stale");
-        assertNull(inflight.onDirectAck(900), "an ack AT the watermark is stale too");
-        assertSame(afterElection, inflight.onDirectAck(901),
-            "the new leader's own ack is above the watermark and completes the waiting order");
+        assertEquals(0, inflight.sweepOverdue(2_000),
+            "the completed order's queue entry is skipped, not reaped");
+        assertEquals(0, inflight.depth(), "no second release: depth would have gone negative-ish");
     }
 
-    /** The watermark test and the continuation test answer DIFFERENT questions and must not be
-     *  collapsed: continuation fills still share one inputSeq after a resync. */
+    /** A reconnect (or batch takeover) drains every outstanding order to ambiguous and frees its
+     *  slot — the old session's undelivered egress is gone with the session. */
     @Test
-    void continuationFillsStillWorkAfterAResync() {
+    void drainCompletesOutstandingAmbiguousAndFreesSlots() throws Exception {
         final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        inflight.observeInputSeq(50);
-        inflight.onNewLeaderResync();
-        final ClusterGatewayMain.PendingOrder a = order();
-        final ClusterGatewayMain.PendingOrder b = order();
+        final ClusterGatewayMain.PendingOrder a = order(1);
+        final ClusterGatewayMain.PendingOrder b = order(2);
+        assertTrue(inflight.acquire(1_000));
+        assertTrue(inflight.acquire(1_000));
         inflight.register(a);
         inflight.register(b);
 
-        assertSame(a, inflight.onDirectAck(60), "entry ack pops A");
-        assertNull(inflight.onDirectAck(60), "A's continuation fill must not pop B");
-        assertSame(b, inflight.onDirectAck(61), "B's own entry ack pops B");
-    }
-
-    /**
-     * THE EPOCH DETONATOR — the one test that fails if the sequence-space fields are reset
-     * separately rather than together.
-     *
-     * <p>A fresh session may be a fresh EPOCH, in which the members restart {@code appliedSeq} at 0.
-     * If {@code highestInputSeqSeen} survives {@code drain()} while the watermark is cleared, the
-     * bug is latent: everything works until the first election in the new epoch, at which point the
-     * watermark is recomputed from the OLD epoch's numbering, sits above every sequence the new
-     * epoch will produce for a long time, and the gateway silently ignores every ack and 504s
-     * forever while reporting {@code connected:true}.
-     *
-     * <p>Note this asserts on an election AFTER the fresh epoch, not merely on the fresh epoch: a
-     * test that only reconnects and sends orders passes with the bug present.
-     */
-    @Test
-    void anElectionAfterAFreshEpochMustNotInheritTheOldEpochsNumbering() {
-        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        // Old epoch ran a long way.
-        inflight.observeInputSeq(5_000);
-        final ClusterGatewayMain.PendingOrder old = order();
-        inflight.register(old);
-        assertSame(old, inflight.onDirectAck(5_000));
-
-        // Fresh session onto a FRESH EPOCH: the members restart appliedSeq at 0.
         inflight.drain();
 
-        // An election in the new epoch, before its sequence has climbed anywhere near 5000.
-        inflight.onNewLeaderResync();
-
-        final ClusterGatewayMain.PendingOrder fresh = order();
-        inflight.register(fresh);
-        assertSame(fresh, inflight.onDirectAck(1),
-            "an election after a fresh epoch must not carry the old epoch's high-water mark: "
-            + "a surviving highestInputSeqSeen sets the watermark above every ack the new epoch "
-            + "will produce, and every order 504s forever while /ready says connected");
-    }
-
-    /**
-     * The resync must MARK the orders it answers, and a session drain must NOT.
-     *
-     * <p>The mark is what stops the submitter counting a resync-completed order against the no-ack
-     * streaks. Without it a strand of 20–99 fails readiness, removes the only gateway from the
-     * Service, and then never recovers: the streak clears only on a SUCCESSFUL order and a pod out
-     * of the Service is sent none, while liveness sits at 5× readiness and never fires. The measured
-     * strands were 21, 15 and 15 — the first is inside that bracket.
-     *
-     * <p>The negative half matters just as much: a session drain answers orders the gateway really
-     * could not complete, and those must still count, or `yu16-ready-tracks-commit`'s restored-quorum
-     * assertion is laundered rather than failed.
-     */
-    @Test
-    void resyncMarksItsOrdersAndASessionDrainDoesNot() throws Exception {
-        final ClusterGatewayMain.Inflight inflight = new ClusterGatewayMain.Inflight(16);
-        final ClusterGatewayMain.PendingOrder viaResync = order();
-        inflight.register(viaResync);
-        inflight.onNewLeaderResync();
-        assertNull(viaResync.future.get());
-        assertTrue(viaResync.resyncAmbiguous,
-            "a leader-change resync must mark its orders, or the streak counts the gateway's own "
-            + "repair as ill-health and can strand the pod out of the Service permanently");
-
-        final ClusterGatewayMain.PendingOrder viaDrain = order();
-        inflight.register(viaDrain);
-        inflight.drain();
-        assertNull(viaDrain.future.get());
-        assertFalse(viaDrain.resyncAmbiguous,
-            "a session drain is honest evidence the gateway could not commit and must still count");
+        assertNull(a.future.get(), "drained to ambiguous, never a false reject");
+        assertNull(b.future.get(), "drained to ambiguous, never a false reject");
+        assertEquals(0, inflight.depth(), "both slots returned");
+        assertEquals(0, inflight.sweepOverdue(Long.MAX_VALUE),
+            "the sweep queue was cleared with the map — a drained order cannot be reaped again");
     }
 
     /** The permit semaphore is the in-flight bound and the client backpressure: a full window blocks
