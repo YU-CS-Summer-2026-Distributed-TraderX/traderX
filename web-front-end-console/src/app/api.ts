@@ -145,13 +145,70 @@ export class Api {
    * browser). onStatus reports whether the live feed is up. Returns an unsubscribe.
    */
   busSubscribe(topics: string[], onMsg: () => void, onStatus: (up: boolean) => void): () => void {
+    const offs = topics.map(t => this.busClient().subscribe(t, onMsg));
+    const offStatus = this.busClient().onStatus(onStatus);
+    return () => { offs.forEach(f => f()); offStatus(); };
+  }
+
+  private busClient(): MiniNats {
     if (!this.bus) {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       this.bus = new MiniNats(`${proto}://${location.host}/nats-ws`);
     }
-    const offs = topics.map(t => this.bus!.subscribe(t, onMsg));
-    const offStatus = this.bus.onStatus(onStatus);
-    return () => { offs.forEach(f => f()); offStatus(); };
+    return this.bus;
+  }
+
+  // ---- live prices ----------------------------------------------------------------------------
+
+  /** ticker -> {price, dir} from price-publisher's pricing.<ticker> ticks; dir is the last move. */
+  readonly prices = signal<Record<string, { price: number; dir: 1 | -1 | 0 }>>({});
+  private pricesStarted = false;
+
+  /** Start the pricing.> subscription once; the prices signal updates per tick thereafter. */
+  watchPrices(): void {
+    if (this.pricesStarted) return;
+    this.pricesStarted = true;
+    this.busClient().subscribe('pricing.>', payload => {
+      try {
+        // Envelope measured off the wire: {topic, payload: {ticker, price, ...}, from, type}.
+        const p = JSON.parse(payload).payload;
+        if (!p?.ticker || typeof p.price !== 'number') return;
+        this.prices.update(m => {
+          const prev = m[p.ticker]?.price;
+          const dir = prev === undefined || p.price === prev ? 0 : p.price > prev ? 1 : -1;
+          return { ...m, [p.ticker]: { price: p.price, dir: dir as 1 | -1 | 0 } };
+        });
+      } catch { /* not a price tick */ }
+    });
+  }
+
+  // ---- admin token (shared by the EOD and Admin pages) ----------------------------------------
+
+  readonly adminToken = signal<string | null>(sessionStorage.getItem('traderx-console-eod-token'));
+
+  /** Mint an admin JWT; without a secret the dev proxy injects the master-secret header. */
+  async mintAdminToken(masterSecret?: string): Promise<boolean> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (masterSecret) headers['X-Auth-Master-Secret'] = masterSecret;
+    const r = await this.load<string>('/trade-processor/auth/dev-token', {
+      method: 'POST', headers,
+      body: JSON.stringify({ subject: 'ui-console', admin: true, ttlSeconds: 28800 }),
+    });
+    if (r.status === 200 && typeof r.body === 'string') {
+      sessionStorage.setItem('traderx-console-eod-token', r.body);
+      this.adminToken.set(r.body);
+      return true;
+    }
+    return false;
+  }
+
+  dropAdminToken(): void {
+    sessionStorage.removeItem('traderx-console-eod-token');
+    this.adminToken.set(null);
+  }
+
+  authHeaders(): Record<string, string> {
+    return { Authorization: `Bearer ${this.adminToken()}` };
   }
 }
 
@@ -160,7 +217,7 @@ class MiniNats {
   private ws: WebSocket | null = null;
   private buf = new Uint8Array(0);
   private pending: { sid: number; need: number } | null = null;
-  private subs = new Map<number, { subject: string; cb: () => void }>();
+  private subs = new Map<number, { subject: string; cb: (payload: string) => void }>();
   private statusCbs = new Set<(up: boolean) => void>();
   private nextSid = 1;
   private up = false;
@@ -168,7 +225,7 @@ class MiniNats {
 
   constructor(private url: string) { this.connect(); }
 
-  subscribe(subject: string, cb: () => void): () => void {
+  subscribe(subject: string, cb: (payload: string) => void): () => void {
     const sid = this.nextSid++;
     this.subs.set(sid, { subject, cb });
     if (this.ws?.readyState === WebSocket.OPEN && this.up) this.send(`SUB ${subject} ${sid}\r\n`);
@@ -215,7 +272,7 @@ class MiniNats {
     for (;;) {
       if (this.pending) {
         if (this.buf.length < this.pending.need + 2) return;
-        this.subs.get(this.pending.sid)?.cb();
+        this.subs.get(this.pending.sid)?.cb(this.dec.decode(this.buf.slice(0, this.pending.need)));
         this.buf = this.buf.slice(this.pending.need + 2);
         this.pending = null;
         continue;

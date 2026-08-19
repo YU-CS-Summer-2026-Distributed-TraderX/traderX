@@ -1,7 +1,16 @@
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, BlotterTrade, Position } from './api';
+import { Api, BlotterTrade, Position, parseOcc } from './api';
 import { HelpTip } from './help';
+
+// The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
+// OCC option symbols and 1 for everything else (a bond's quantity is already USD face, so face ×
+// fraction-of-par is the dollar value with multiplier 1).
+const mult = (security: string) => (parseOcc(security) ? 100 : 1);
+
+interface PosRow extends Position {
+  last?: number; dir: 1 | -1 | 0; value?: number; upnl?: number;
+}
 
 @Component({
   selector: 'blotter-panel',
@@ -9,7 +18,7 @@ import { HelpTip } from './help';
   template: `
     <div class="card-head">
       <h2>Blotter &amp; positions</h2>
-      <help-tip text="The account's positions and trade history, read from the position service — a read model fed downstream of the matching engine. A trade booked in the engine flows through the trade processor into this view. 'live' means updates arrive over the message bus the moment a trade books; otherwise the view refreshes every few seconds." />
+      <help-tip text="The account's positions and trade history from the position service, a read model fed downstream of the matching engine. Last prices stream in live from the price publisher over the message bus; market value and unrealized P&L are computed against them, green when the position is in profit, red when it is not. A trade stays 'Processing' until its T+n settlement date passes (or an operator force-settles it from the Admin page) — that is the settlement lifecycle, not a stuck trade." />
       <span class="spacer"></span>
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
@@ -20,13 +29,29 @@ import { HelpTip } from './help';
     </label>
     <h3>Positions</h3>
     <table>
-      <thead><tr><th>security</th><th class="num">qty</th><th class="num">avg cost</th><th>updated</th></tr></thead>
+      <thead><tr><th>security</th><th class="num">qty</th><th class="num">avg cost</th>
+        <th class="num">last</th><th class="num">mkt value</th><th class="num">unrealized P&amp;L</th></tr></thead>
       <tbody>
-        @for (p of positions(); track p.security) {
-          <tr><td>{{ p.security }}</td><td class="num">{{ p.quantity }}</td>
-              <td class="num">{{ p.averageCostBasis.toFixed(6) }}</td><td class="sub">{{ p.updated.slice(11, 19) }}</td></tr>
-        } @empty { <tr><td colspan="4" class="faint">no positions</td></tr> }
+        @for (p of rows(); track p.security) {
+          <tr>
+            <td>{{ p.security }}</td>
+            <td class="num">{{ p.quantity }}</td>
+            <td class="num">{{ p.averageCostBasis.toFixed(6) }}</td>
+            <td class="num" [class.up]="p.dir === 1" [class.down]="p.dir === -1">
+              {{ p.last !== undefined ? p.last.toFixed(p.last < 2 ? 6 : 3) : '—' }}</td>
+            <td class="num">{{ p.value !== undefined ? fmt(p.value) : '—' }}</td>
+            <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">
+              {{ p.upnl !== undefined ? fmt(p.upnl) : '—' }}</td>
+          </tr>
+        } @empty { <tr><td colspan="6" class="faint">no positions</td></tr> }
       </tbody>
+      @if (totals(); as t) {
+        <tfoot><tr>
+          <td colspan="4"><b>total</b></td>
+          <td class="num"><b>{{ fmt(t.value) }}</b></td>
+          <td class="num" [class.pos]="t.upnl > 0" [class.neg]="t.upnl < 0"><b>{{ fmt(t.upnl) }}</b></td>
+        </tr></tfoot>
+      }
     </table>
     <h3>Trades</h3>
     <table>
@@ -36,7 +61,9 @@ import { HelpTip } from './help';
           <tr>
             <td class="sub">{{ t.id }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
             <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
-            <td>@if (t.rejectionReason) { <span class="pill bad">{{ t.rejectionReason }}</span> } @else { {{ t.state }} }</td>
+            <td>@if (t.rejectionReason) { <span class="pill bad">{{ t.rejectionReason }}</span> }
+                @else if (t.state === 'Settled') { <span class="pill good">Settled</span> }
+                @else { {{ t.state }} }</td>
           </tr>
         } @empty { <tr><td colspan="6" class="faint">no trades</td></tr> }
       </tbody>
@@ -46,6 +73,11 @@ import { HelpTip } from './help';
     .acct { margin-bottom: 6px; max-width: 340px; }
     .spacer { flex: 1; }
     h3 { margin: 10px 0 3px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+    td.up { color: var(--good); background: var(--good-soft); transition: background .15s; }
+    td.down { color: var(--bad); background: var(--bad-soft); transition: background .15s; }
+    .pos { color: var(--good); }
+    .neg { color: var(--bad); }
+    tfoot td { border-top: 1px solid var(--border); }
   `,
 })
 export class BlotterPanel implements OnInit, OnDestroy {
@@ -57,9 +89,37 @@ export class BlotterPanel implements OnInit, OnDestroy {
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
 
+  readonly rows = computed<PosRow[]>(() => {
+    const prices = this.api.prices();
+    return this.positions().map(p => {
+      const tick = prices[p.security];
+      const m = mult(p.security);
+      return {
+        ...p,
+        last: tick?.price,
+        dir: tick?.dir ?? 0,
+        value: tick ? p.quantity * tick.price * m : undefined,
+        upnl: tick ? (tick.price - p.averageCostBasis) * p.quantity * m : undefined,
+      };
+    });
+  });
+  readonly totals = computed(() => {
+    const rs = this.rows().filter(r => r.value !== undefined);
+    if (!rs.length) return null;
+    return {
+      value: rs.reduce((s, r) => s + r.value!, 0),
+      upnl: rs.reduce((s, r) => s + (r.upnl ?? 0), 0),
+    };
+  });
+
+  fmt(v: number): string {
+    return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
   ngOnInit(): void {
     this.poll();
     this.timer = setInterval(() => this.poll(), 3000);
+    this.api.watchPrices();
     this.follow();
   }
   ngOnDestroy(): void { clearInterval(this.timer); this.unsub?.(); }

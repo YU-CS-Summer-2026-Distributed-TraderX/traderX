@@ -38,6 +38,54 @@ if (!secret) {
   }
 }
 
+// ---- GCS bridge: read-only window onto the risk-extract archive bucket -----------------------
+// The EOD cut provenance (consensus seq, session date, price version) lives in gs:// objects and
+// nowhere HTTP-reachable; this serves them to the provenance panel using the developer's own
+// gcloud auth. Dev-only, list+cat only, one bucket only.
+import { createHash } from 'node:crypto';
+
+const BUCKET = process.env.EXTRACT_BUCKET ?? 'gs://traderx-505400-risk-extracts';
+const gcsCache = new Map();
+
+function gcs(cmd) {
+  return execSync(`gcloud storage ${cmd}`, { shell: '/bin/sh', timeout: 30000 }).toString();
+}
+
+function gcsBypass(req, res) {
+  const url = new URL(req.url, 'http://x');
+  try {
+    if (url.pathname === '/gcs/extracts') {
+      const key = 'ls';
+      const hit = gcsCache.get(key);
+      if (!hit || Date.now() - hit.at > 60_000) {
+        const files = gcs(`ls -r '${BUCKET}/**'`).split('\n').filter(l => l.endsWith('.cut') || l.endsWith('.csv'));
+        gcsCache.set(key, { at: Date.now(), body: JSON.stringify({ bucket: BUCKET, files }) });
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.end(gcsCache.get(key).body);
+      return false;
+    }
+    if (url.pathname === '/gcs/read') {
+      const path = url.searchParams.get('path') ?? '';
+      if (!path.startsWith(`${BUCKET}/`) || path.includes("'")) { res.statusCode = 400; res.end('{}'); return false; }
+      if (!gcsCache.has(path)) {
+        const content = gcs(`cat '${path}'`);
+        const sha256 = createHash('sha256').update(content).digest('hex');
+        gcsCache.set(path, { body: JSON.stringify({ path, sha256, content }) });
+      }
+      res.setHeader('Content-Type', 'application/json');
+      res.end(gcsCache.get(path).body);
+      return false;
+    }
+  } catch (e) {
+    res.statusCode = 502;
+    res.end(JSON.stringify({ error: 'gcloud failed — is the CLI authenticated?' }));
+    return false;
+  }
+  res.statusCode = 404; res.end('{}');
+  return false;
+}
+
 const plain = (ctx) => ({ context: [ctx], target, secure: false });
 
 export default [
@@ -49,4 +97,5 @@ export default [
     ...(secret ? { headers: { 'X-Auth-Master-Secret': secret } } : {}) },
   plain('/m0'), plain('/m1'), plain('/m2'),
   { context: ['/nats-ws'], target, secure: false, ws: true },
+  { context: ['/gcs'], target, secure: false, bypass: gcsBypass },
 ];
