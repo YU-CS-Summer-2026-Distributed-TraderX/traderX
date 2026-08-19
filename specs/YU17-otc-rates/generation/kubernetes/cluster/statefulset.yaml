@@ -55,6 +55,12 @@ spec:
           image: traderx/cluster-node:yu17-ackB
           imagePullPolicy: IfNotPresent
           env:
+            # lowpark is the latency campaign's SHIPPED recommendation (2026-07-24: RTT p50
+            # 4.85->~2.0ms on the bench rig, ~0.34c idle). Set live on this rig 2026-08-18 and
+            # mirrored here so declared matches running; remove both together or neither.
+            # Env-only + same binary, so a rolling restart is semantically safe.
+            - name: CLUSTER_IDLE_STRATEGY
+              value: "lowpark"
             - name: CLUSTER_HOSTNAMES
               value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
             - name: CLUSTER_PORT_BASE
