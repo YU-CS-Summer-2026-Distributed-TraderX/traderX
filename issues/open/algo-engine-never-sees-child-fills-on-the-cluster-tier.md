@@ -31,28 +31,32 @@ children rested unfilled because their limits (182.84/183.86/183.05) were below 
 demonstrably occurred, at prices recorded in both the read model and the kdb capture. Check the book
 before assuming a repeat of the refuted case.
 
-## Mechanism — one part measured, one part hypothesis. The distinction matters.
+## Mechanism — RESOLVED 2026-08-19 by the discriminator. Two mismatches, both engine-side.
 
-**Measured:**
+The hypothesis this file first carried — "nothing publishes the subject for gateway-submitted orders" —
+was **REFUTED**. A NATS watcher on `>` during a live child fill (parent `8e7e7c9f`, child `2549`) saw
+the leader-side bridge publish the child's complete lifecycle: `status:NEW, remainingQuantity:10`
+followed by `status:FILLED, lastExecutionPrice:196.20, lastFillQuantity:10`, plus the counterparty's
+`PARTIALLY_FILLED`. **The feedback channel exists and works on this tier.** The engine speaks the old
+tier's dialect on two axes:
 
-- `OrderUpdateSubscriber` subscribes to NATS **match-all `>`** and filters client-side for
-  `/accounts/{id}/orders` (`OrderUpdateSubscriber.java:36-38`); it logged `subscribed to >` at startup,
-  so the subscription itself is alive.
-- The known publisher of that subject is **trade-processor's `OrderController`** (YU13 layer) — i.e.
-  the REST order path.
-- The engine posts children to **`ORDER_MATCHER_URL=http://order-matcher:18110`** — the cluster
-  gateway — which **bypasses that controller entirely**.
+**1. Subject mismatch.** The bridge publishes on bare **`/orders`** —
+`MatchingEngineClusteredService.java:206` constructs `new OrderNatsPublisher(bridgeUrl, "/orders", …)`.
+The engine filters for **`/accounts/{id}/orders`** (`OrderUpdateSubscriber.java:36-38`), a subject form
+that **never occurs on this tier**. The `/accounts/{id}/trades|positions` family does exist —
+trade-processor publishes those — which is exactly what makes the wrong filter look reasonable.
 
-**Hypothesis, NOT proven:** nothing publishes `/accounts/{id}/orders` for gateway-submitted orders, so
-the subscriber is alive and correct and simply never hears anything. This is plausible and unverified —
-the gateway does carry `/accounts/` references (4 classes) and there is a leader-side `/orders` egress
-mirroring the trade bridge, so a publish path may exist and be failing for a different reason
-(payload shape, correlation key, or a strict-consumer drop — see
-`feedback_additive_payload_strict_consumer`, where a typed subscriber silently dropped 10,812 messages).
+**2. Identifier mismatch.** The bridge's ids are **epoch-qualified** (`1-2549`); the engine stores its
+child as a **bare orderRef** (`2549` — that is what `GET /algo/orders` reports as `childOrderId`). So
+**fixing the subject alone will not fix the defect** — the correlation join must handle the epoch
+prefix too. Two bugs on one payload line.
 
-**The decisive next step is cheap:** attach a NATS client to `>` and watch while a child fills. Either
-the subject never appears (publish gap) or it appears and the engine ignores it (parse/correlation
-gap). Those need completely different fixes; do not start coding before knowing which.
+**Why the original hypothesis was plausible and wrong, worth keeping:** the gateway image does carry
+`/accounts/` references, but `ClusterGatewayMain.java:1774` shows them to be a REST *call*
+(`base + "/accounts/" + accountId + "/orders"`), not a NATS publish. An in-image grep could not tell
+those apart; only watching the bus could.
+
+**The fix is engine-side consumption — subject filter and id join. No new publisher is needed.**
 
 ## Why it is YU08's and not the tier's
 
