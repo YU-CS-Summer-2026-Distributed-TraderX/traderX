@@ -121,7 +121,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     //                    emits KIND_TRADE_BOOKED twice per MATCH for ordinary order fills, so
     //                    kind alone no longer identifies the /trades path; without this byte the
     //                    gateway would answer a market trade from a foreign fill's ack.
-    static final int EGRESS_ACK_LENGTH = 24;
+    //  24..31 requestId — the gateway-chosen 64-bit request id this apply's input carried (ack
+    //                    correlation fix, option B): the gateway matches acks by THIS KEY, never
+    //                    by arrival order, so a stranded offer can no longer shift every later ack
+    //                    onto the wrong request. 0 = the input named no request (another producer's
+    //                    tick, a batch offer, a pre-B log entry) — the gateway never registers id 0,
+    //                    so a zero can complete nothing. It rides the ingress message's inputSeq
+    //                    slot (dead on this tier: the gateway always offered 0 and event.seq is
+    //                    overwritten with ++appliedSeq on apply), so the INGRESS schema and the log
+    //                    format are unchanged; only this egress record grew, 24 -> 32. A 24-byte
+    //                    reader against this writer is a mixed-version fleet and is refused loudly
+    //                    at the gateway's length check — members and gateways roll together; the
+    //                    pre-B <-> post-B mixing window is over on this tier by design.
+    static final int EGRESS_ACK_LENGTH = 32;
 
     /** Snapshot transport seam: production offers to the cluster snapshot publication; tests
      *  capture buffers directly. One call per record. */
@@ -135,7 +147,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private final ExpandableArrayBuffer snapshotBuffer = new ExpandableArrayBuffer();
 
     private Cluster cluster;
-    private IdleStrategy idle;
+    // Initialized so a clusterless harness (a capturing test session) can reach offerEgress;
+    // onStart replaces it with the cluster's own strategy before any real traffic.
+    private IdleStrategy idle = new org.agrona.concurrent.NoOpIdleStrategy();
     private BlpRiskState risk;
     private MatchingEngine engine;
     private RingBuffer<OutputEvent> outputRing;
@@ -146,6 +160,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // crossing book emits KIND_TRADE_BOOKED for both sides of every ORDER match, so the ack kind
     // alone can no longer tell the /trades path from ordinary fills.
     private boolean applyingMarketTrade;
+    // Apply-scoped (ack-correlation fix, option B): the gateway-chosen request id the CURRENT input
+    // carried in the ingress inputSeq slot, captured after decode and BEFORE event.seq is
+    // overwritten with ++appliedSeq. Echoed at ack bytes 24..31 by every egress this apply emits
+    // (including mid-apply backpressure drains, which are the same apply). NEVER state: it is read
+    // by no decision, written to no snapshot, and identical-state applies differing only in it
+    // produce identical replicated state — which is why the snapshot format did not move for this.
+    private long applyRequestId;
     private boolean stampFirstApplyAsLeader; // Phase-0 SLO clock: armed on LEADER, fires once
 
     private long nextOrderRef = 1;
@@ -280,6 +301,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (codec.tryDecodeInput(buffer, offset, length, event) != AeronReplicationCodec.OK) {
             return; // fail closed: unknown schema/template/version never reaches the engine (FR-AC04)
         }
+        // Ack-correlation fix (option B): the ingress inputSeq slot carries the gateway's request
+        // id (0 from any producer that names none). Captured HERE because the sequencer overwrites
+        // event.seq with ++appliedSeq below; echoed into bytes 24..31 of every ack this apply emits.
+        applyRequestId = event.seq;
         // OTEL-01: derive this order's trace identity BEFORE the sequenced generator overwrites
         // orderRef below — at this instant the decoded event holds exactly the field values the
         // gateway held when it made its own sampling decision, so the two derivations agree without
@@ -398,6 +423,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(21, (byte) 0);
         ackBuffer.putByte(22, (byte) 0);
         ackBuffer.putByte(23, (byte) 0);
+        ackBuffer.putLong(24, 0L); // symbol acks correlate by their own requestId at 13
         offerEgress(session);
     }
 
@@ -715,6 +741,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             ackBuffer.putByte(21, (out.flags & OutputEvent.FLAG_RESTING_UPDATE) != 0 ? (byte) 1 : (byte) 0);
             ackBuffer.putByte(22, out.riskReason);
             ackBuffer.putByte(23, applyingMarketTrade ? (byte) 1 : (byte) 0);
+            // Option B: name the request this egress answers. Every output drained here belongs to
+            // the input being applied (the drain runs inside its apply, backpressure drains
+            // included), so the CURRENT input's request id is the right stamp for all of them —
+            // the gateway still routes on the class bytes first, so a resting update carrying the
+            // aggressor's id can never complete the aggressor's pending with counterparty data.
+            ackBuffer.putLong(24, applyRequestId);
             offerEgress(session);
         }
         outputConsumed.set(cursor);
