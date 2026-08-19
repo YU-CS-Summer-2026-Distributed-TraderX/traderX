@@ -650,9 +650,32 @@ YU15 (home), YU16 and YU17 so the same readers see the same record.
   CTX export — both pre-existing, neither about B; the runner-hardening carry of 1947fd16 to all
   branches is its own scheduled task). **Landing B on YU16 ended the YU15<->YU16 mixing window**:
   a YU15 gateway can no longer read YU16 member acks or vice versa (24 vs 32 bytes).
-- **YU13/14/15 (via the YU13 gateway layer), YU12: NOT carried.** They keep A, which is verified
-  on-rig for the YU13 layer. B on any of them is a per-branch gateway<->member wire break + fresh
-  epoch, and shipping an unexercised deterministic-tier wire break into a branch is the exact
-  trap the propagation skill names. The YU13-layer test `InflightCorrelationTest` still locks
-  POSITIONAL semantics for the branches that run it — that is correct and deliberate; YU16 and
-  YU17 shadow it with keyed overrides.
+- **YU15: landed and rig-proven, 2026-08-18** (`traderx/cluster-node:yu15-ackB` — also tagged
+  `:yu15`, deliberately: the bare tag had been vacated when the poisoned intermediate was renamed
+  to `:yu16-intermediate-20260813`). The YU13 gateway layer was patched identically on the
+  YU13/YU14/YU15 branches (22/23 hunks at zero fuzz + one comment hunk by hand); the YU15 engine
+  layer hand-applied including the extract-ack echo site. Composed suite 353/0 + gates. RED ARM on
+  `:yu15-ackfix` (A present, B absent): per-item arms passed HONESTLY (15/15 own-ref — A's resync
+  repairs elections) and the proof failed exit-1 on the ABSENT KEYED MECHANISM. Green-arm numbers
+  in the YU15 commit. The keyed proof entry rides YU15's runner now (it must fail on pre-B builds,
+  so it rides ONLY branches where B is landed). Discriminating artifact marker, with its negative
+  control: in-image class grep for `GATEWAY-ACK-FORMAT-MISMATCH` (keyed >= 1, A-builds 0) —
+  `requestId` string counts and `javap` on the inlined `EGRESS_ACK_LENGTH` do NOT discriminate.
+- **YU13 and YU14: CARRIED, UNIT-AND-DETONATOR-PROVEN, NOT RIG-EXERCISED.** Hold this wording —
+  "carried" and "proven" must not blur, because an unexercised deterministic-tier copy that reads
+  as coverage was the whole objection to carrying at all. What ran per branch: composed suites
+  green (YU13 315/0, YU14 329/0, gates included) and the echo detonator failed exactly
+  `RequestIdEchoTest` against each branch's OWN engine. What did NOT run: no rig has ever run a
+  YU13-branch or YU14-branch build of this change — their operative GATEWAY layer is rig-proven
+  (it is byte-identical to YU15's, which ran live), their engine layers are not. Their stale
+  generated trees also had never compiled for an unrelated reason (a corpse
+  `NatsReplicationPhase0Test` that current renders drop — removed from both trees, a fact about
+  those branches worth knowing independent of B).
+- **YU12: NOT carried, deliberately.** No FIFO, no `submitPipelined` — a different program whose
+  misattribution is depth-1 and self-correcting; the design withdrew it as a justification for B
+  and nothing here changes that.
+- **The pre-B <-> post-B wire boundary now sits below YU13**: every cluster branch from YU13 up
+  speaks 32-byte keyed acks; any pre-carry build (`:yu15-pre`, `:yu15-stp`, `:yu15-ackfix`,
+  `:yu16-ackfix`, `:yu17-fx`-era) cannot mix with post-carry builds in either direction. The
+  yu13-stp-and-replace proof stays safe because it patches the GATEWAY to the matching era itself
+  and restores it on exit — verified at the code and corroborated by keyed-branch suite runs.
