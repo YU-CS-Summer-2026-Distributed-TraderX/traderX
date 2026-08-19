@@ -10,9 +10,10 @@ import { Api, parseProm } from './api';
       <div class="tile"><div class="v">{{ inflight() }}</div><div class="k">in flight</div></div>
       <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted</div></div>
       <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills</div></div>
-      <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs</div></div>
-      <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs</div></div>
+      <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs (n={{ n() }})</div></div>
+      <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs (n={{ n() }})</div></div>
     </div>
+    <div class="sub">sampled 1-in-128, serial orders only · local kind rig — not the campaign's bench numbers</div>
     <pre class="lat">{{ latency() }}</pre>
   `,
   styles: `
@@ -35,6 +36,7 @@ export class MetricsPanel implements OnInit, OnDestroy {
   readonly fills = signal('—');
   readonly p50 = signal('—');
   readonly p99 = signal('—');
+  readonly n = signal(0);
   readonly latency = signal('');
 
   ngOnInit(): void {
@@ -65,7 +67,9 @@ export class MetricsPanel implements OnInit, OnDestroy {
       this.latency.set(l.body.trim());
       const p = parseProm(l.body);
       // Sampled 1-in-2^mask, single-order path only — counts stay 0 until serial traffic flows.
-      if (p['traderx_gateway_latency_count{segment="cluster"}']) {
+      const count = p['traderx_gateway_latency_count{segment="cluster"}'] ?? 0;
+      if (count) {
+        this.n.set(count);
         this.p50.set(p['traderx_gateway_latency_us{segment="cluster",pct="p50"}']?.toFixed(0) ?? '—');
         this.p99.set(p['traderx_gateway_latency_us{segment="cluster",pct="p99"}']?.toFixed(0) ?? '—');
       }
