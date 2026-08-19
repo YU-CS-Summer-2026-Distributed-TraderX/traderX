@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Observable, of, throwError } from 'rxjs';
-import { catchError, map } from 'rxjs/operators';
+import { Observable, forkJoin, of, throwError } from 'rxjs';
+import { catchError, map, switchMap } from 'rxjs/operators';
 import { environment } from 'main/environments/environment';
 import { OrderRecord, OrderCreateRequest } from '../model/order.model';
 import { TradeFeedService } from './trade-feed.service';
@@ -9,19 +9,32 @@ import { TradeFeedService } from './trade-feed.service';
 /**
  * YU17: repointed at the CLUSTER TIER's gateway dialect.
  *
+ * <p><b>Tier-scoped, not universally wrong.</b> On the single-BLP tier the order-matcher really
+ * does serve {@code GET /orders}, {@code /orders/{id}/cancel} and {@code /orders/{id}/force-fill},
+ * so the composed app is correct there. The cluster tier moved order flow to the gateway, which
+ * speaks a different dialect — so this layer is a translation for THIS tier, not a bug fix for the
+ * component in general.
+ *
  * <p>This service was written against the single-BLP order-matcher's REST API, which the cluster
  * gateway does not serve. Three of its four calls were wrong here, and the first was dangerous:
  *
  * <ul>
  *   <li><b>Cancel.</b> {@code POST /orders/{id}/cancel} has no context on the gateway, so
  *       HttpServer's longest-prefix routing handed it to <b>/orders</b> — the NEW ORDER handler.
- *       That is the exact failure the gateway's own source calls out ("a cancel that silently
- *       books an order is the worst available failure mode") and the reason it exposes a sibling
- *       {@code /cancel} route taking {@code {orderRef}}. Measured on the rig before the fix:
- *       {@code GET /orders} 405, and the cancel path reaching the order handler.</li>
+ *       That is the exact failure the gateway's own source calls out — see the comment above the
+ *       {@code /cancel} context in {@code ClusterGatewayMain.java} (~L332): "Deliberately NOT
+ *       /orders/cancel ... measured: it sequenced the cancel body as a NEW order and returned an
+ *       orderRef. A cancel that silently books an order is the worst available failure mode." The
+ *       gateway added that sibling route to survive the TRANSIENT form of this during rolling
+ *       updates; this UI hit the PERMANENT form, since no such context exists here at all.
+ *       <b>The sibling {@code /cancel} call below is deliberate — do not "tidy" it into the
+ *       RESTful-looking {@code /orders/{id}/cancel}, which silently reintroduces the booking
+ *       bug.</b> Verified after the fix: cancelling 1-2552 marked it CANCELED and booked
+ *       nothing.</li>
  *   <li><b>Open orders.</b> {@code GET /orders} answers {@code 405 {"error":"POST only"}} — the
- *       gateway holds no queryable order state; the book lives in the members. The blotter is
- *       therefore built from the live order feed rather than a snapshot fetch (see below).</li>
+ *       gateway holds no queryable order state; the book lives in the members. Snapshots come
+ *       from trade-processor's order read model instead (per account; the all-accounts view fans
+ *       out over the account list).</li>
  *   <li><b>Force fill.</b> No such route on this tier by design: the engine's book decides fills.
  *       Kept as an explicit refusal rather than a 404 nobody can interpret.</li>
  * </ul>
@@ -63,7 +76,21 @@ export class OrderAdminService {
      */
     getOpenOrders(accountId?: number): Observable<OrderRecord[]> {
         if (accountId == null || accountId <= 0) {
-            return of([]);
+            // All-accounts view (the Admin page): the read model is per account, so fan out over
+            // the account list and flatten. Small and bounded — this deployment has single-digit
+            // accounts — and it beats showing an empty grid on a page whose whole job is oversight.
+            return this.http.get<Array<{ id: number }>>(`${environment.accountUrl}/account/`).pipe(
+                switchMap((accounts) => {
+                    const ids = (accounts ?? []).map((account) => account.id).filter((id) => id > 0);
+                    if (ids.length === 0) {
+                        return of([] as OrderRecord[]);
+                    }
+                    return forkJoin(ids.map((id) => this.getOpenOrders(id))).pipe(
+                        map((perAccount) => perAccount.flat())
+                    );
+                }),
+                catchError(() => of([] as OrderRecord[]))
+            );
         }
         return this.http.get<any[]>(`${environment.tradeProcessorUrl}/accounts/${accountId}/orders`).pipe(
             map((rows) => (rows ?? [])
