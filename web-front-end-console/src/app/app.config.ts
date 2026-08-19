@@ -1,6 +1,6 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
 import { provideRouter } from '@angular/router';
-import { TradingPage, SystemPage, EodPage, AdminPage } from './pages';
+import { TradingPage, SystemPage, EodPage, AdminPage, KdbPage } from './pages';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -11,6 +11,7 @@ export const appConfig: ApplicationConfig = {
       { path: 'system', component: SystemPage },
       { path: 'eod', component: EodPage },
       { path: 'admin', component: AdminPage },
+      { path: 'kdb', component: KdbPage },
     ]),
   ],
 };

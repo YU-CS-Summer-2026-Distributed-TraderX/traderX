@@ -86,6 +86,36 @@ function gcsBypass(req, res) {
   return false;
 }
 
+// ---- kdb capture-tap bridge -------------------------------------------------------------------
+// The KDB-X analytical path (brief 06) is a leader-side tap writing tickerplant capture logs to
+// each member's /data/kdb-capture — files q loads directly, with no HTTP surface. This serves a
+// bounded tail of each member's captures for the Kdb page. Read-only kubectl exec, dev-only.
+const kdbCache = { at: 0, body: '' };
+
+function kdbBypass(req, res) {
+  try {
+    if (Date.now() - kdbCache.at > 10_000) {
+      const members = [0, 1, 2].map(m => {
+        try {
+          const out = execSync(
+            `kubectl --context ${CTX} -n ${NS} exec order-matcher-cluster-${m} -- sh -c ` +
+            `'for f in /data/kdb-capture/*.csv; do echo "==FILE $f $(wc -l < $f)"; tail -n 300 $f; done 2>/dev/null'`,
+            { shell: '/bin/sh', timeout: 20000 }).toString();
+          return { member: m, capture: out };
+        } catch { return { member: m, capture: '' }; }
+      });
+      kdbCache.at = Date.now();
+      kdbCache.body = JSON.stringify({ members });
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(kdbCache.body);
+  } catch {
+    res.statusCode = 502;
+    res.end('{"error":"kubectl exec failed"}');
+  }
+  return false;
+}
+
 const plain = (ctx) => ({ context: [ctx], target, secure: false });
 
 export default [
@@ -98,4 +128,6 @@ export default [
   plain('/m0'), plain('/m1'), plain('/m2'),
   { context: ['/nats-ws'], target, secure: false, ws: true },
   { context: ['/gcs'], target, secure: false, bypass: gcsBypass },
+  { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
+  plain('/algo'), plain('/tempo'),
 ];

@@ -58,13 +58,28 @@ interface PosRow extends Position {
       <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">price</th><th>state</th></tr></thead>
       <tbody>
         @for (t of trades(); track t.id) {
-          <tr>
-            <td class="sub">{{ t.id }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
+          <tr class="rowlink" (click)="toggle(t)">
+            <td class="sub">{{ t.id }} {{ openId() === t.id ? '▾' : '▸' }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
             <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
             <td>@if (t.rejectionReason) { <span class="pill bad">{{ t.rejectionReason }}</span> }
                 @else if (t.state === 'Settled') { <span class="pill good">Settled</span> }
                 @else { {{ t.state }} }</td>
           </tr>
+          @if (openId() === t.id) {
+            <tr><td colspan="6" class="det">
+              <div class="kv">
+                <span>created <b>{{ t.created.slice(0, 19).replace('T', ' ') }}</b></span>
+                <span>updated <b>{{ t.updated.slice(0, 19).replace('T', ' ') }}</b></span>
+                @if (t.sourceOrderId) { <span>source order <b>{{ t.sourceOrderId }}</b></span> }
+                <span>notional <b>{{ (t.quantity * t.price).toLocaleString('en-US', { maximumFractionDigits: 2 }) }}</b></span>
+                @if (t.state !== 'Settled' && !t.rejectionReason && api.adminToken()) {
+                  <button (click)="settle(t); $event.stopPropagation()">Force settle</button>
+                }
+                @if (api.adminToken()) { <button (click)="tca(t); $event.stopPropagation()">TCA</button> }
+              </div>
+              @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
+            </td></tr>
+          }
         } @empty { <tr><td colspan="6" class="faint">no trades</td></tr> }
       </tbody>
     </table>
@@ -73,6 +88,12 @@ interface PosRow extends Position {
     .acct { margin-bottom: 6px; max-width: 340px; }
     .spacer { flex: 1; }
     h3 { margin: 10px 0 3px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+    .rowlink { cursor: pointer; }
+    .rowlink:hover td { background: #f5f7fa; }
+    td.det { background: #f8f9fb; }
+    .kv { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+    .kv b { color: var(--text); font-weight: 600; }
+    .tca { margin-top: 5px; font-size: 12.5px; color: var(--accent); }
     td.up { color: var(--good); background: var(--good-soft); transition: background .15s; }
     td.down { color: var(--bad); background: var(--bad-soft); transition: background .15s; }
     .pos { color: var(--good); }
@@ -86,8 +107,31 @@ export class BlotterPanel implements OnInit, OnDestroy {
   readonly positions = signal<Position[]>([]);
   readonly trades = signal<BlotterTrade[]>([]);
   readonly live = signal(false);
+  readonly openId = signal<string | null>(null);
+  readonly tcaText = signal('');
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
+
+  toggle(t: BlotterTrade): void {
+    this.tcaText.set('');
+    this.openId.set(this.openId() === t.id ? null : t.id);
+  }
+
+  async settle(t: BlotterTrade): Promise<void> {
+    const r = await this.api.load<void>(`/trade-processor/trades/${t.id}/settlement/force`, {
+      method: 'POST', headers: this.api.authHeaders(),
+    });
+    this.api.log({ kind: 'eod', ok: r.status === 200, summary: `force settle ${t.id} → HTTP ${r.status}` });
+    this.poll();
+  }
+
+  async tca(t: BlotterTrade): Promise<void> {
+    const r = await this.api.load<{ benchmarkPrice: number; arrivalPrice: number; slippageBps: number; benchmarkSampleCount: number }>(
+      `/trade-processor/tca/report/${t.id}`, { headers: this.api.authHeaders() });
+    this.tcaText.set(r.status === 200 && r.body
+      ? `TCA: execution ${t.price} vs benchmark ${r.body.benchmarkPrice} (arrival ${r.body.arrivalPrice}) · ${r.body.slippageBps} bps · ${r.body.benchmarkSampleCount} samples`
+      : `TCA unavailable (HTTP ${r.status})`);
+  }
 
   readonly rows = computed<PosRow[]>(() => {
     const prices = this.api.prices();

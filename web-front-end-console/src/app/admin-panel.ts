@@ -11,6 +11,12 @@ interface TcaReport {
 
 interface ReconStatus { [k: string]: unknown; }
 
+interface ParentOrder {
+  parentOrderId: string; accountId: number; security: string; side: string; quantity: number;
+  algoType: string; durationSeconds: number; bucketSeconds: number; status: string;
+  buckets: { quantity: number; state?: string; [k: string]: unknown }[];
+}
+
 @Component({
   selector: 'admin-panel',
   imports: [FormsModule, HelpTip],
@@ -55,6 +61,39 @@ interface ReconStatus { [k: string]: unknown; }
       </table>
 
       <div class="card-head sect">
+        <h2>Algo parent orders</h2>
+        <help-tip text="A parent order handed to the execution algo engine, sliced into child orders on a TWAP or VWAP schedule — each child goes through the same gateway and consensus path as a manual order. The buckets show the schedule filling in real time. Submit one from the order ticket by choosing TWAP or VWAP execution." />
+      </div>
+      @if (parents().length) {
+        <table>
+          <thead><tr><th>parent</th><th>security</th><th>side</th><th class="num">qty</th><th>algo</th><th>status</th><th class="num">buckets</th></tr></thead>
+          <tbody>
+            @for (p of parents(); track p.parentOrderId) {
+              <tr class="rowlink" (click)="openParent.set(openParent() === p.parentOrderId ? null : p.parentOrderId)">
+                <td class="sub">{{ p.parentOrderId.slice(0, 12) }}…</td>
+                <td>{{ p.security }}</td><td>{{ p.side }}</td><td class="num">{{ p.quantity }}</td>
+                <td>{{ p.algoType }}</td>
+                <td>@if (p.status === 'COMPLETE') { <span class="pill good">{{ p.status }}</span> } @else { {{ p.status }} }</td>
+                <td class="num">{{ p.buckets.length }}</td>
+              </tr>
+              @if (openParent() === p.parentOrderId) {
+                <tr><td colspan="7" class="det">
+                  @for (b of p.buckets; track $index) {
+                    <span class="bucket" [class.done]="b.state === 'SENT' || b.state === 'FILLED'">
+                      {{ b.quantity }}@if (b.state) { · {{ b.state }} }</span>
+                  }
+                </td></tr>
+              }
+            }
+          </tbody>
+        </table>
+      } @else if (algoDown()) {
+        <div class="banner warn-note">Algo engine is scaled to 0 — the proof suite parks it there
+          deliberately (its child orders move counters under counter-exact proofs). To demo:
+          <span class="mono">kubectl -n traderx scale deploy/execution-algo-engine --replicas=1</span></div>
+      } @else { <div class="faint">no parent orders yet — submit one from the ticket with TWAP/VWAP execution</div> }
+
+      <div class="card-head sect">
         <h2>Open-order controls</h2>
         <help-tip text="Cancels go through the same consensus path as orders: the cancel is sequenced, the engine removes the resting order, and the acknowledgement comes back committed. Force-fill does not exist on the cluster tier — the engine's book decides fills; an operator can only cancel." />
       </div>
@@ -80,6 +119,14 @@ interface ReconStatus { [k: string]: unknown; }
     .sect { margin-top: 18px; }
     .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
     .tca-row td { background: var(--accent-soft); font-size: 12.5px; }
+    .rowlink { cursor: pointer; }
+    .rowlink:hover td { background: #f5f7fa; }
+    td.det { background: #f8f9fb; }
+    .bucket { display: inline-block; margin: 2px 4px 2px 0; padding: 2px 8px; border-radius: 5px;
+              background: #eef0f3; color: var(--muted); font-size: 12px; font-family: var(--mono); }
+    .bucket.done { background: var(--good-soft); color: var(--good); }
+    .warn-note { background: var(--warn-soft); color: var(--warn); }
+    .mono { font-family: var(--mono); font-size: 12px; }
     .pos { color: var(--good); } .neg { color: var(--bad); }
     .recon { font-family: var(--mono); font-size: 12px; color: var(--muted); background: #f8f9fb;
              border-radius: 6px; padding: 8px; max-height: 200px; overflow: auto; }
@@ -91,6 +138,9 @@ export class AdminPanel implements OnInit, OnDestroy {
   accountId = 22214;
   cancelRef: number | null = null;
   readonly trades = signal<BlotterTrade[]>([]);
+  readonly parents = signal<ParentOrder[]>([]);
+  readonly openParent = signal<string | null>(null);
+  readonly algoDown = signal(false);
   readonly tcaReport = signal<TcaReport | null>(null);
   readonly cancelMsg = signal<{ ok: boolean; text: string } | null>(null);
   readonly reconStatus = signal<string | null>(null);
@@ -104,8 +154,13 @@ export class AdminPanel implements OnInit, OnDestroy {
   ngOnDestroy(): void { clearInterval(this.timer); }
 
   async poll(): Promise<void> {
-    const r = await this.api.load<BlotterTrade[]>(`/position-service/trades/${Number(this.accountId)}`);
+    const [r, p] = await Promise.all([
+      this.api.load<BlotterTrade[]>(`/position-service/trades/${Number(this.accountId)}`),
+      this.api.load<ParentOrder[]>('/algo/orders'),
+    ]);
     if (r.status === 200 && Array.isArray(r.body)) this.trades.set([...r.body].reverse().slice(0, 30));
+    if (p.status === 200 && Array.isArray(p.body)) { this.parents.set([...p.body].reverse()); this.algoDown.set(false); }
+    else if (p.status >= 500 || p.status === 0 || p.status === 502) { this.parents.set([]); this.algoDown.set(true); }
   }
 
   async settle(t: BlotterTrade): Promise<void> {

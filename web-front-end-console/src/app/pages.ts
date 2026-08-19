@@ -7,6 +7,7 @@ import { ActivityPanel } from './activity-panel';
 import { EodPanel } from './eod-panel';
 import { AdminPanel } from './admin-panel';
 import { ProvenancePanel } from './provenance-panel';
+import { KdbPanel } from './kdb-panel';
 
 @Component({
   selector: 'trading-page',
@@ -55,3 +56,10 @@ export class EodPage {}
   template: `<section class="card" style="max-width: 980px"><admin-panel /></section>`,
 })
 export class AdminPage {}
+
+@Component({
+  selector: 'kdb-page',
+  imports: [KdbPanel],
+  template: `<section class="card" style="max-width: 980px"><kdb-panel /></section>`,
+})
+export class KdbPage {}

@@ -40,6 +40,10 @@ metadata:
   labels:
     app: execution-algo-engine
 spec:
+  # 1 is the declared state, but the PROOF SUITE parks this at 0 (run-proofs.sh scales it down at
+  # suite start and around yu08-algo-slicing) because its child-order traffic moves next_order_ref
+  # under counter-exact proofs. Finding it at 0 after a suite run is that, not drift to "fix" by
+  # editing this line. The console's Admin page renders the parked state legibly.
   replicas: 1
   selector:
     matchLabels:

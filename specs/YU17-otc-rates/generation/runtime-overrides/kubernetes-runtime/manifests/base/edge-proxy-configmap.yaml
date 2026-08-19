@@ -117,6 +117,17 @@ data:
             proxy_pass http://$member_host:8080/$2$is_args$args;
         }
 
+        # YU17 console: algo parent-order API (the app's own ingress; children go through the
+        # gateway like any order) and read-only Tempo trace lookups for the order-details view.
+        location /algo/ {
+            proxy_set_header Host $http_host;
+            proxy_pass http://execution-algo-engine:18120/algo/;
+        }
+
+        location /tempo/ {
+            proxy_pass http://tempo:3200/;
+        }
+
         location /grafana/ {
             proxy_pass http://grafana:3000;
             proxy_http_version 1.1;

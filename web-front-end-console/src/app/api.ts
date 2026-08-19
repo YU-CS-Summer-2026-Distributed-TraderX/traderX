@@ -43,7 +43,7 @@ export interface Position {
 export interface BlotterTrade {
   id: string; accountId: number; security: string; side: string; state: string;
   quantity: number; price: number; updated: string; created: string;
-  rejectionReason: string | null;
+  rejectionReason: string | null; sourceOrderId: string | null;
 }
 
 export interface EodRow {
@@ -59,8 +59,49 @@ export interface EodReport {
 }
 
 export interface ActivityEntry {
-  at: Date; kind: 'order' | 'swap' | 'swaption' | 'cancel' | 'replace' | 'eod';
+  at: Date; kind: 'order' | 'swap' | 'swaption' | 'cancel' | 'replace' | 'eod' | 'algo';
   summary: string; ok: boolean; reason?: string; detail?: string;
+  orderRef?: number; clientOrderId?: string; traceId?: string;
+}
+
+// ---- trace-id derivation, bit-for-bit with the gateway's OrderTrace ---------------------------
+// KEEP IN SYNC with order-matcher/src/main/java/finos/traderx/ordermatcher/cluster/OrderTrace.java
+// (and clientOrderKey in ClusterGatewayMain): this duplicates that FNV/mix math, and a change
+// there silently breaks trace lookup here — in a demo, not in review.
+// The gateway derives an order's W3C trace id deterministically from its clientOrderId (FNV-1a 64)
+// or, key-less, from mix(orderRef). Reproducing that math here means the console can name any
+// order's trace without asking anyone. Rejected orders are ALWAYS head-sampled (escalate), so a
+// reject's trace is guaranteed to exist in Tempo.
+const M64 = (1n << 64n) - 1n;
+const TRACE_SALT = 0x5851F42D4C957F2Dn;
+
+function mix64(z: bigint): bigint {
+  z = (z + 0x9E3779B97F4A7C15n) & M64;
+  z = ((z ^ (z >> 30n)) * 0xBF58476D1CE4E5B9n) & M64;
+  z = ((z ^ (z >> 27n)) * 0x94D049BB133111EBn) & M64;
+  return (z ^ (z >> 31n)) & M64;
+}
+
+function fnv64(s: string): bigint {
+  let h = 0xcbf29ce484222325n;
+  for (let i = 0; i < s.length; i++) h = ((h ^ BigInt(s.charCodeAt(i))) * 0x100000001b3n) & M64;
+  return h === 0n ? 1n : h;
+}
+
+const hex16 = (v: bigint) => v.toString(16).padStart(16, '0');
+const nonZero = (v: bigint) => (v === 0n ? 1n : v);
+
+export function traceIdFor(clientOrderId: string | undefined, orderRef?: number): string | undefined {
+  const key = clientOrderId ? fnv64(clientOrderId)
+    : orderRef && orderRef > 0 ? mix64(BigInt(orderRef)) : 0n;
+  if (key === 0n) return undefined;
+  return hex16(nonZero(mix64(key))) + hex16(nonZero(mix64(key ^ TRACE_SALT)));
+}
+
+let clOrdSeq = 0;
+/** Console-generated client order id: feeds idempotency AND the deterministic trace id. */
+export function nextClientOrderId(): string {
+  return `console-${Date.now()}-${++clOrdSeq}`;
 }
 
 // OCC option symbol: ROOT + YYMMDD + C/P + strike*1000 (8 digits). All fields derivable.

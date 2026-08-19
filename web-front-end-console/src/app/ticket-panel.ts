@@ -1,7 +1,7 @@
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Api, OrderResult, parseOcc } from './api';
+import { Api, OrderResult, nextClientOrderId, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
 
 type Cls = 'Equity' | 'Option' | 'Treasury' | 'Corporate' | 'Swap' | 'Swaption';
@@ -80,7 +80,20 @@ const PRESETS: Preset[] = [
           </label>
           <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
           <label class="field">Quantity <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
-          <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+          <label class="field">Execution
+            <select [(ngModel)]="execMode" name="exec">
+              <option>Direct</option><option>TWAP</option><option>VWAP</option>
+            </select>
+          </label>
+          @if (execMode === 'Direct') {
+            <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+          } @else {
+            <div class="derived">Parent order — the algo engine slices it into child orders on a
+              {{ execMode }} schedule, each child through the same consensus path.
+              <help-tip text="TWAP slices the quantity evenly across the duration; VWAP weights each bucket by the expected volume profile. The engine prices each child from the live market with a small offset, so no limit price is entered here. Watch the buckets fill on the Admin page." /></div>
+            <label class="field">Duration (seconds) <input type="number" [(ngModel)]="durationSeconds" name="dur" min="10"></label>
+            <label class="field">Bucket (seconds) <input type="number" [(ngModel)]="bucketSeconds" name="bucket" min="5"></label>
+          }
         }
         @case ('Option') {
           <label class="field">OCC symbol
@@ -171,6 +184,9 @@ export class TicketPanel {
   accountId = 22214;
   ticker = '';
   side = 'Buy';
+  execMode: 'Direct' | 'TWAP' | 'VWAP' = 'Direct';
+  durationSeconds = 60;
+  bucketSeconds = 10;
   quantity = 100;
   limitPrice = 0;
   occSymbol = '';
@@ -232,18 +248,32 @@ export class TicketPanel {
                 : r.body?.error ?? `HTTP ${r.status}`,
           `${this.payReceive} fixed ${this.fixedRate} on ${this.notional} ${this.conventions}`,
           r.body?.reason);
+      } else if (c === 'Equity' && this.execMode !== 'Direct') {
+        const r = await this.api.post<{ parentOrderId?: string; status?: string; error?: string }>('/algo/orders', {
+          accountId: Number(this.accountId), security: this.ticker, side: this.side,
+          quantity: this.quantity, algoType: this.execMode,
+          durationSeconds: this.durationSeconds, bucketSeconds: this.bucketSeconds,
+        });
+        const ok = r.status === 201 && !!r.body?.parentOrderId;
+        this.last.set({ ok, text: ok ? `parent ${r.body!.parentOrderId} ${r.body!.status} — buckets on the Admin page` : `HTTP ${r.status}` });
+        this.api.log({ kind: 'algo', ok,
+          summary: `${this.execMode} ${this.side} ${this.quantity} ${this.ticker} over ${this.durationSeconds}s → ${ok ? `parent ${r.body!.parentOrderId}` : `HTTP ${r.status}`}` });
       } else {
         const ticker = c === 'Option' ? this.occSymbol.trim().toUpperCase() : this.ticker;
+        const clientOrderId = nextClientOrderId();
         const r = await this.api.post<OrderResult>('/order-matcher/orders', {
           accountId: Number(this.accountId), ticker, side: this.side,
-          quantity: this.quantity, limitPrice: this.limitPrice,
+          quantity: this.quantity, limitPrice: this.limitPrice, clientOrderId,
         });
         const ok = r.status === 200;
-        this.report('order', ok,
-          ok ? `orderRef ${r.body?.orderRef} accepted`
-             : r.body?.reason ? `REJECTED: ${r.body.reason}` : r.body?.error ?? `HTTP ${r.status}`,
-          `${this.side} ${this.quantity} ${ticker} @ ${this.limitPrice}`,
-          r.body?.reason);
+        this.last.set({ ok, text: ok ? `orderRef ${r.body?.orderRef} accepted`
+          : r.body?.reason ? `REJECTED: ${r.body.reason}` : r.body?.error ?? `HTTP ${r.status}` });
+        this.api.log({
+          kind: 'order', ok, reason: r.body?.reason,
+          summary: `${this.side} ${this.quantity} ${ticker} @ ${this.limitPrice} → ${this.last()!.text}`,
+          orderRef: r.body?.orderRef, clientOrderId,
+          traceId: traceIdFor(clientOrderId, r.body?.orderRef),
+        });
       }
     } finally { this.busy.set(false); }
   }
