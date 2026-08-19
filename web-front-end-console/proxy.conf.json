@@ -1,0 +1,10 @@
+{
+  "/order-matcher": { "target": "http://localhost:30080", "secure": false },
+  "/reference-data": { "target": "http://localhost:30080", "secure": false },
+  "/account-service": { "target": "http://localhost:30080", "secure": false },
+  "/position-service": { "target": "http://localhost:30080", "secure": false },
+  "/trade-processor": { "target": "http://localhost:30080", "secure": false },
+  "/m0": { "target": "http://localhost:30080", "secure": false },
+  "/m1": { "target": "http://localhost:30080", "secure": false },
+  "/m2": { "target": "http://localhost:30080", "secure": false }
+}
