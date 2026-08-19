@@ -58,17 +58,22 @@ those apart; only watching the bus could.
 
 **The fix is engine-side consumption — subject filter and id join. No new publisher is needed.**
 
-## SECOND VICTIM, 2026-08-19 — this is a CLASS, not one component's bug
+## THREE VICTIMS AND COUNTING, 2026-08-19 — this is a CLASS, not one component's bug
 
 The composed `web-front-end-angular` blotter was found broken by the **same gap, independently**: the
 tier publishes on bare `/orders` and keys the order `id`, so the blotter's guard discarded **every**
 live order update. It was fixed in the new
 `specs/YU17-otc-rates/generation/runtime-overrides/web-front-end/` layer.
 
-Two consumers, both written against the single-BLP dialect, both silently deaf on the cluster tier,
-neither failing loudly. **So the question for any fix is not "does the algo engine work now" but "who
-else subscribes to order updates".** Before closing this issue, grep for other consumers of that
-subject family; two were found by accident, which is weak evidence that two is all there are.
+**A THIRD was found within the hour**, after that question was asked: the same UI's **admin/oversight
+page** subscribed to the raw `/orders` feed and dropped every update on the identical `id`/`orderId`
+mismatch. Three consumers, all written against the single-BLP dialect, all silently deaf on the cluster
+tier, none failing loudly.
+
+**So the question for any fix is not "does the algo engine work now" but "who else subscribes to order
+updates".** Two were found by accident and the third only because the question was asked out loud —
+which is direct evidence that accident is not a search strategy. Before closing this issue, grep the
+whole tree for consumers of that subject family rather than trusting the count here.
 
 Note also that the same UI carried a *third* symptom of the same tier move: `POST /orders/{id}/cancel`
 fell through to the gateway's NEW-ORDER handler and **booked an order instead of cancelling one** (the
