@@ -31,7 +31,21 @@ spec:
     spec:
       containers:
         - name: gateway
-          image: traderx/cluster-node:yu16
+          # PINNED TO THE B BUILD, deliberately, and NOT to the derived :yu16.
+          # The bare `:yu16` tag holds the preserved PRE-A before-arm — a historical artifact
+          # squatting on this state's canonical name. Declaring it here made `kubectl apply -k`
+          # a live footgun: it silently rolled members, gateway and risk-extract back across the
+          # pre-B/post-B ack-format boundary (32-byte egress acks -> 24-byte), which nothing
+          # detects because both builds start cleanly and only cross-wire under load.
+          # The `:yu16-ackB` tag is the current YU16 build (option B keyed ack correlation, rig-proven
+          # 2026-08-18). Do NOT "tidy" this back to :yu16 — that is the defect, not the fix.
+          # Wire rule: pre-B and post-B builds never mix, either direction, any branch.
+          # NOTE ON THE ODD WORDING ABOVE: tags are written `:yu16` / `:yu16-ackB` rather than as
+          # full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
+          # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above
+          # the image line becomes the declared image. Writing one here broke the deriver on
+          # 2026-08-18. Keep prose un-parseable; the image line is the only declaration.
+          image: traderx/cluster-node:yu16-ackB
           imagePullPolicy: IfNotPresent
           command:
             - java
