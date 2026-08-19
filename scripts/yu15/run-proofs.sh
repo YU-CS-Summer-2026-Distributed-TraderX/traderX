@@ -61,6 +61,14 @@ PROOFS=(
   # restored quorum, which a restart would clear.
   yu16-ready-tracks-commit
   yu16-liveness-restarts-wedge
+  # Option B (keyed ack correlation, carried from YU17): kills a leader under a staggered stream
+  # and checks EVERY answered client against the engine's own idempotency table, then that depth
+  # self-drains with no reconnect. Disruptive (leader kill, statefulset recovers it on the same
+  # image) but no PVC wipe and no epoch — hence this block. Must stay BEFORE yu13-cancel-ingress
+  # (whose gateway roll would hide the "no reconnect" reading) and BEFORE yu13-stp-and-replace's
+  # yu15-pre member roll (whose build predates the 32-byte ack entirely). A kill that strands
+  # nothing exits 2 (uninformative, not confirming); on a pre-B build this proof MUST fail.
+  yu17-keyed-ack-correlation
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
