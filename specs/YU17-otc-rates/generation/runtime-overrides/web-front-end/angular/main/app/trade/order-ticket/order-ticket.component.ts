@@ -1,0 +1,383 @@
+import { Component, Input, Output, EventEmitter, OnChanges, OnInit, OnDestroy, SimpleChanges } from '@angular/core';
+import { PriceTick } from 'main/app/model/trade.model';
+import { Stock, isBond, isTreasury } from 'main/app/model/symbol.model';
+import { Account } from 'main/app/model/account.model';
+import { TypeaheadMatch } from 'ngx-bootstrap/typeahead';
+import { TradeFeedService } from 'main/app/service/trade-feed.service';
+import { OrderCreateRequest, AlgoCreateRequest, AlgoType } from 'main/app/model/order.model';
+import { PriceSnapshotService } from 'main/app/service/price-snapshot.service';
+
+/** YU17: Direct sends one order to the book; TWAP/VWAP hand a PARENT to the algo engine. */
+export type ExecutionMode = 'Direct' | AlgoType;
+
+@Component({
+  standalone: false,
+  selector: 'app-order-ticket',
+  templateUrl: './order-ticket.component.html',
+  styleUrls: ['./order-ticket.component.scss']
+})
+export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
+  @Input() stocks: Stock[] = [];
+  @Input() account: Account | undefined;
+  @Input() presetSecurity = '';
+  @Output() create = new EventEmitter<OrderCreateRequest>();
+  @Output() createAlgo = new EventEmitter<AlgoCreateRequest>();
+  @Output() cancel = new EventEmitter<void>();
+
+  // ---- YU17: execution mode ------------------------------------------------------------------
+  // A parent carries no limit price: the engine prices each child off the live market when it
+  // submits it, which is exactly what handing over a parent buys. Algo execution is offered for
+  // equities only — the engine's slicing has no notion of face amounts or fraction-of-par grids.
+  executionMode: ExecutionMode = 'Direct';
+  durationSeconds = 60;
+  bucketSeconds = 10;
+
+  selectedCompany?: string = undefined;
+  ticket: OrderCreateRequest = {
+    accountId: 0,
+    security: '',
+    side: 'Buy',
+    quantity: 0,
+    limitPrice: 0,
+    clientOrderId: ''
+  };
+  filteredStocks: Array<Stock & { matchLabel: string }> = [];
+  selectedPrice: number | null = null;
+  selectedPriceAsOf: string | null = null;
+  private selectedPriceTicker: string | null = null;
+  private selectedPriceAsOfEpoch = 0;
+  private priceStreamUnsubscribeFn?: Function;
+  // YU16 (FR-CDM16/27): the selected instrument's CDM record and, for a Treasury, the last
+  // seen publisher-computed YTM (parsed, never computed here - FR-CDM20).
+  selectedStock?: Stock;
+  ytmPercent: number | null = null;
+  validationMessage: string | null = null;
+
+  constructor(
+    private tradeFeed: TradeFeedService,
+    private priceSnapshots: PriceSnapshotService
+  ) {}
+
+  ngOnInit() {
+    this.ticket.accountId = this.account?.id || 0;
+    this.filteredStocks = (this.stocks || []).map((stock) => ({
+      ...stock,
+      matchLabel: this.toMatchLabel(stock)
+    }));
+    this.applyPresetSecurity(this.presetSecurity);
+  }
+
+  ngOnChanges(changes: SimpleChanges): void {
+    if (changes.stocks) {
+      this.filteredStocks = (this.stocks || []).map((stock) => ({
+        ...stock,
+        matchLabel: this.toMatchLabel(stock)
+      }));
+    }
+    if (changes.account) {
+      this.ticket.accountId = this.account?.id || 0;
+    }
+    if (changes.presetSecurity) {
+      this.applyPresetSecurity(changes.presetSecurity.currentValue);
+    }
+  }
+
+  ngOnDestroy() {
+    this.priceStreamUnsubscribeFn?.();
+  }
+
+  onSelect(e: TypeaheadMatch): void {
+    const selectedStock = e.item as Stock & { matchLabel?: string };
+    this.ticket.security = selectedStock.ticker;
+    this.selectedCompany = selectedStock.matchLabel || this.toMatchLabel(selectedStock);
+    this.selectedStock = selectedStock;
+    this.validationMessage = null;
+    this.ytmPercent = null;
+    this.subscribeToTickerPrice(selectedStock.ticker);
+  }
+
+  // ---- YU16 Treasury semantics (FR-CDM16/17/21/27) ----
+
+  // Renamed from isTreasurySelected when corporates arrived. Every use of it was really asking
+  // "is this quoted in face and fractions of par?", which is true of all debt — the ticket
+  // labels, the value estimate and the FR-CDM16 face rule alike.
+  get isBondSelected(): boolean {
+    const key = this.ticket.security.toUpperCase();
+    return isBond(this.selectedStock) || key.startsWith('UST-') || key.startsWith('CORP-');
+  }
+
+  /**
+   * The limit-price step the BOOK will actually accept. ADR-060 derives the fine grid from the
+   * ticker prefix, so only UST- gets six decimals; a corporate limit at six decimals is refused
+   * as off-grid. Offering 0.000001 on a corporate ticket would let a trader type a price the
+   * gateway then rejects with no explanation — the UI must not promise precision the engine
+   * does not honour.
+   */
+  get limitPriceStep(): string {
+    if (!this.isBondSelected) {
+      return '0.001';
+    }
+    return this.ticket.security.toUpperCase().startsWith('UST-') ? '0.000001' : '0.001';
+  }
+
+  get isMaturedSelected(): boolean {
+    return this.isBondSelected && this.selectedStock?.matured === true;
+  }
+
+  get quantityLabel(): string {
+    return this.isBondSelected ? 'Face Amount (USD)' : 'Quantity';
+  }
+
+  get limitPriceLabel(): string {
+    // The wire and the model carry the FRACTION of par (ADR-057); the percent alongside is
+    // display only (FR-CDM17) - nothing ever converts back.
+    return this.isBondSelected ? 'Limit Clean Price (fraction of par)' : 'Strike Price';
+  }
+
+  get limitPriceAsPercent(): string {
+    if (!this.isBondSelected || !this.ticket.limitPrice || this.ticket.limitPrice <= 0) {
+      return '';
+    }
+    return `= ${(this.ticket.limitPrice * 100).toFixed(4)}% of par`;
+  }
+
+  get estimatedCleanValue(): number | null {
+    if (!this.isBondSelected || !this.ticket.quantity || !this.ticket.limitPrice) {
+      return null;
+    }
+    // face x fraction = dollars, with the contract multiplier at 1 (ADR-057). No /100 anywhere.
+    return this.ticket.quantity * this.ticket.limitPrice;
+  }
+
+  get couponLabel(): string {
+    const coupon = this.selectedStock?.debtEconomics?.couponRatePercent;
+    return coupon == null ? '' : `${coupon}%`;
+  }
+
+  get maturityLabel(): string {
+    return this.selectedStock?.debtEconomics?.maturityDate ?? '';
+  }
+
+  private bondValidationError(): string | null {
+    if (!this.isBondSelected) {
+      return null;
+    }
+    if (this.isMaturedSelected) {
+      return 'Bond has matured; no new activity is accepted.';
+    }
+    const face = this.ticket.quantity;
+    if (face < 100) {
+      return 'Bond quantity must be at least 100.';
+    }
+    if (face % 100 !== 0) {
+      return 'Bond quantity must be a multiple of 100.';
+    }
+    return null;
+  }
+
+  onBlur(): void {
+    if (this.selectedCompany) {
+      return;
+    }
+    this.ticket.security = '';
+    this.selectedPrice = null;
+    this.selectedPriceAsOf = null;
+    this.selectedPriceAsOfEpoch = 0;
+    this.selectedPriceTicker = null;
+    this.priceStreamUnsubscribeFn?.();
+    this.priceStreamUnsubscribeFn = undefined;
+  }
+
+  /** Algo slicing is equity-only; a bond ticket keeps the Direct-only path. */
+  get isAlgoEligible(): boolean {
+    return !this.isBondSelected;
+  }
+
+  get isAlgoMode(): boolean {
+    return this.executionMode !== 'Direct' && this.isAlgoEligible;
+  }
+
+  onExecutionModeChange(): void {
+    this.validationMessage = null;
+  }
+
+  onCreate() {
+    if (this.isAlgoMode) {
+      this.createAlgoParent();
+      return;
+    }
+    if (!this.ticket.security || this.ticket.quantity <= 0 || this.ticket.limitPrice <= 0) {
+      console.warn('Order ticket is incomplete');
+      return;
+    }
+    this.validationMessage = this.bondValidationError();
+    if (this.validationMessage) {
+      return;
+    }
+    // YU17: always carry a client order id. It is the idempotency key AND the seed of the
+    // order's deterministic trace id, so an order entered without one could never be traced.
+    const typed = this.ticket.clientOrderId?.trim();
+    const clientOrderId = typed ? typed : OrderTicketComponent.generateClientOrderId();
+    this.create.emit({
+      ...this.ticket,
+      security: this.ticket.security.toUpperCase(),
+      clientOrderId
+    });
+    this.ticket.clientOrderId = '';
+  }
+
+  private createAlgoParent(): void {
+    if (!this.ticket.security || this.ticket.quantity <= 0) {
+      console.warn('Algo parent is incomplete');
+      return;
+    }
+    if (this.durationSeconds <= 0 || this.bucketSeconds <= 0) {
+      this.validationMessage = 'Duration and bucket must both be positive.';
+      return;
+    }
+    if (this.bucketSeconds > this.durationSeconds) {
+      this.validationMessage = 'Bucket cannot be longer than the whole duration.';
+      return;
+    }
+    this.validationMessage = null;
+    this.createAlgo.emit({
+      accountId: this.ticket.accountId,
+      security: this.ticket.security.toUpperCase(),
+      side: this.ticket.side,
+      quantity: this.ticket.quantity,
+      algoType: this.executionMode as AlgoType,
+      durationSeconds: this.durationSeconds,
+      bucketSeconds: this.bucketSeconds
+    });
+  }
+
+  private static clientOrderSeq = 0;
+
+  private static generateClientOrderId(): string {
+    return `ui-${Date.now()}-${++OrderTicketComponent.clientOrderSeq}`;
+  }
+
+  onCancel() {
+    this.cancel.emit();
+  }
+
+  formatLivePrice(): string {
+    if (this.selectedPrice == null) {
+      return 'Streaming...';
+    }
+    if (this.isBondSelected) {
+      // Display is fraction x 100 with the sign - never a stored percentage (FR-CDM17).
+      return `${(this.selectedPrice * 100).toFixed(3)}% of par`;
+    }
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 3,
+      maximumFractionDigits: 3
+    }).format(this.selectedPrice);
+  }
+
+  formatAsOf(): string {
+    if (!this.selectedPriceAsOf) {
+      return '';
+    }
+    const ts = new Date(this.selectedPriceAsOf);
+    if (Number.isNaN(ts.getTime())) {
+      return '';
+    }
+    return ts.toLocaleTimeString();
+  }
+
+  private subscribeToTickerPrice(ticker: string): void {
+    const normalizedTicker = String(ticker || '').trim().toUpperCase();
+    if (!normalizedTicker) {
+      return;
+    }
+    if (this.selectedPriceTicker === normalizedTicker && this.priceStreamUnsubscribeFn) {
+      return;
+    }
+    this.priceStreamUnsubscribeFn?.();
+    this.selectedPrice = null;
+    this.selectedPriceAsOf = null;
+    this.selectedPriceAsOfEpoch = 0;
+    this.selectedPriceTicker = normalizedTicker;
+
+    this.priceSnapshots.getPrice(normalizedTicker).subscribe((snapshot) => {
+      if (!snapshot) {
+        return;
+      }
+      this.applyPriceCandidate(normalizedTicker, snapshot.price, snapshot.asOf ?? null, true);
+    });
+
+    this.priceStreamUnsubscribeFn = this.tradeFeed.subscribe(`pricing.${normalizedTicker}`, (tick: PriceTick) => {
+      if (!tick || String(tick.ticker || '').trim().toUpperCase() !== normalizedTicker) {
+        return;
+      }
+      if (tick.ytmPercent !== undefined) {
+        this.ytmPercent = tick.ytmPercent;
+      }
+      this.applyPriceCandidate(normalizedTicker, tick.price, tick.asOf ?? null, true);
+    });
+  }
+
+  private applyPriceCandidate(ticker: string, price: number, asOf: string | null, seedLimitPrice: boolean): void {
+    if (this.selectedPriceTicker !== ticker) {
+      return;
+    }
+
+    const numericPrice = Number(price);
+    if (!Number.isFinite(numericPrice)) {
+      return;
+    }
+
+    const asOfEpoch = this.toEpochMs(asOf);
+    if (asOfEpoch != null) {
+      if (asOfEpoch < this.selectedPriceAsOfEpoch) {
+        return;
+      }
+      this.selectedPriceAsOfEpoch = asOfEpoch;
+    } else if (this.selectedPriceAsOfEpoch > 0) {
+      return;
+    }
+
+    this.selectedPrice = numericPrice;
+    this.selectedPriceAsOf = asOf || null;
+
+    if (seedLimitPrice && (!this.ticket.limitPrice || this.ticket.limitPrice <= 0)) {
+      this.ticket.limitPrice = numericPrice;
+    }
+  }
+
+  private toEpochMs(asOf: string | null | undefined): number | null {
+    if (!asOf) {
+      return null;
+    }
+    const ts = new Date(asOf).getTime();
+    return Number.isFinite(ts) ? ts : null;
+  }
+
+  private toMatchLabel(stock: Stock): string {
+    if (isTreasury(stock) && stock.shortDisplayName) {
+      return `${stock.shortDisplayName} (${stock.ticker}) - ${stock.companyName}`;
+    }
+    return `${stock.ticker} - ${stock.companyName}`;
+  }
+
+  private applyPresetSecurity(rawSecurity: string): void {
+    const normalized = String(rawSecurity || '').trim().toUpperCase();
+    if (!normalized) {
+      return;
+    }
+    const matched = (this.stocks || []).find((stock) => String(stock.ticker || '').toUpperCase() === normalized);
+    if (matched) {
+      this.ticket.security = matched.ticker;
+      this.selectedCompany = this.toMatchLabel(matched);
+      this.selectedStock = matched;
+      this.subscribeToTickerPrice(matched.ticker);
+      return;
+    }
+    this.ticket.security = normalized;
+    this.selectedCompany = normalized;
+    this.subscribeToTickerPrice(normalized);
+  }
+}
