@@ -18,6 +18,8 @@ import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -50,6 +52,14 @@ public class AlgoOrderService {
    * to the owning parent/bucket without touching order-matcher's output payload. */
   private final Map<String, ChildRef> childIndex = new ConcurrentHashMap<>();
 
+  /** ponytail: the stash is bounded because the subject this engine listens on carries EVERY
+   * order in the venue, not just this engine's children, so every unrelated order is a miss that
+   * gets stashed and never claimed — unbounded, it is a slow leak on a long-lived pod. The race it
+   * exists to close is one HTTP round trip wide, so insertion order eviction at a few hundred
+   * entries cannot lose an update that was still going to be claimed. Raise it if a burst of algo
+   * children ever exceeds it in the window; do not remove the bound. */
+  private static final int PENDING_UPDATE_CAPACITY = 512;
+
   /** Fill updates for an orderId not yet in {@link #childIndex} — closes a real race discovered
    * during live kind verification: order-matcher can broadcast a child order's fill over NATS
    * before the synchronous {@code POST /orders} response (which is what populates {@link
@@ -57,7 +67,13 @@ public class AlgoOrderService {
    * {@link #onOrderUpdate} miss is stashed here; every {@link #submitBucket} success checks for a
    * stashed update immediately after registering the new orderId, so correlation succeeds
    * regardless of which side arrives first. */
-  private final Map<String, PendingUpdate> pendingUpdates = new ConcurrentHashMap<>();
+  private final Map<String, PendingUpdate> pendingUpdates = Collections.synchronizedMap(
+      new LinkedHashMap<>(32, 0.75f, false) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, PendingUpdate> eldest) {
+          return size() > PENDING_UPDATE_CAPACITY;
+        }
+      });
 
   private record ChildRef(String parentOrderId, int bucketIndex) {}
 
@@ -170,9 +186,11 @@ public class AlgoOrderService {
     }
   }
 
-  /** Called by {@code OrderUpdateSubscriber} for every {@code /accounts/*}{@code /orders} event.
-   * An {@code orderId} not yet known here is stashed in {@link #pendingUpdates} rather than
-   * dropped — see that field's javadoc for the race this closes. */
+  /** Called by {@code OrderUpdateSubscriber} for every order-lifecycle broadcast, on whichever
+   * subject and payload shape the tier publishes — that subscriber has already normalised the id
+   * to the bare form this engine stored at submission. Most calls are for orders this engine did
+   * not submit and simply miss. An {@code orderId} not yet known here is stashed in {@link
+   * #pendingUpdates} rather than dropped — see that field's javadoc for the race this closes. */
   public void onOrderUpdate(String orderId, Integer remainingQuantity, BigDecimal lastExecutionPrice) {
     if (!childIndex.containsKey(orderId)) {
       pendingUpdates.put(orderId, new PendingUpdate(remainingQuantity, lastExecutionPrice));
