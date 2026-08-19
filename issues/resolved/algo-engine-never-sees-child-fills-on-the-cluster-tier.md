@@ -202,3 +202,32 @@ rather than by walking down from the tip. `OrderUpdateSubscriber.java`, `AlgoOrd
 `OrderUpdateSubscriberTest.java` and `contracts/contract-delta.md` were byte-identical on YU08, YU09,
 YU10, YU11, YU12, YU13, YU14, YU15, YU16 and YU17 before the change and are byte-identical after.
 `main` also carries them and was **excluded**: it is a PR target, not a propagation target.
+
+## The armed-vs-dead question, SETTLED 2026-08-19 by measurement
+
+The resolution reported pre-existing parents as stranded, with one step labelled **inference**: that
+replay rebuilds `childIndex` via `applyAndIndex`, so such a parent should be *armed but never fed* — a
+fresh fill would correlate. **That inference is now confirmed by experiment.**
+
+Stranded parent `9bde4df4` (children 2555/2556/2557, all `filled:false`, all resting). A sell into the
+book filled `1-2557` at 184.99. Immediately after:
+
+```
+9bde4df4 RUNNING
+   child 2555 filled False   <- still resting, untouched
+   child 2556 filled False   <- still resting, untouched
+   child 2557 filled True  rem 0  px 184.99   <- the fill correlated
+```
+
+**So a stranded parent is armed, not dead:** its index survives the engine restart and correlates any
+*new* fill. What is unrecoverable is only the historical fills, broadcast on core NATS before the fix
+and never replayed. The siblings staying false is the control — it rules out "the fix marks everything".
+
+**Two measurement errors made getting there, both worth copying the fix for:**
+
+1. The originally-nominated target (`1-2526`) was **CANCELED**, not resting — the premise had expired
+   between the plan and the run. Check the precondition at execution time, not from the plan.
+2. The depth query filtered `status='NEW'` and so **missed `PARTIALLY_FILLED` resting orders**, giving a
+   depth of 123 when the true figure was larger; the first sell never reached the target and filled
+   something else entirely. **Resting quantity is `remainingquantity > 0`, not `status = 'NEW'`** — a
+   partially-filled order is still liquidity in the book.
