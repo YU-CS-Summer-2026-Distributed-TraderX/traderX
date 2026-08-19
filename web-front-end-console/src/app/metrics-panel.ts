@@ -10,11 +10,13 @@ import { Api, parseProm } from './api';
       <div class="tile"><div class="v">{{ inflight() }}</div><div class="k">in flight</div></div>
       <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted</div></div>
       <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills</div></div>
+      <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs</div></div>
+      <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs</div></div>
     </div>
     <pre class="lat">{{ latency() }}</pre>
   `,
   styles: `
-    .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin: 6px 0; }
+    .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 6px 0; }
     .tile { background: #16202e; border-radius: 4px; padding: 8px; text-align: center; }
     .tile .v { font-size: 20px; color: #8fb8e8; font-variant-numeric: tabular-nums; }
     .tile .k { font-size: 11px; color: #778; }
@@ -31,6 +33,8 @@ export class MetricsPanel implements OnInit, OnDestroy {
   readonly inflight = signal('—');
   readonly accepted = signal('—');
   readonly fills = signal('—');
+  readonly p50 = signal('—');
+  readonly p99 = signal('—');
   readonly latency = signal('');
 
   ngOnInit(): void {
@@ -57,7 +61,14 @@ export class MetricsPanel implements OnInit, OnDestroy {
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
     // /latency answers 503 with an informative body when LATENCY_DECOMP is off — show it either way.
-    if (typeof l.body === 'string' && l.body) this.latency.set(l.body.trim());
-    else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
+    if (typeof l.body === 'string' && l.body) {
+      this.latency.set(l.body.trim());
+      const p = parseProm(l.body);
+      // Sampled 1-in-2^mask, single-order path only — counts stay 0 until serial traffic flows.
+      if (p['traderx_gateway_latency_count{segment="cluster"}']) {
+        this.p50.set(p['traderx_gateway_latency_us{segment="cluster",pct="p50"}']?.toFixed(0) ?? '—');
+        this.p99.set(p['traderx_gateway_latency_us{segment="cluster",pct="p99"}']?.toFixed(0) ?? '—');
+      }
+    } else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
   }
 }
