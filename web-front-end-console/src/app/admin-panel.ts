@@ -62,7 +62,7 @@ interface ParentOrder {
 
       <div class="card-head sect">
         <h2>Algo parent orders</h2>
-        <help-tip text="A parent order handed to the execution algo engine, sliced into child orders on a TWAP or VWAP schedule — each child goes through the same gateway and consensus path as a manual order, and rests in the book as a live limit order until something crosses it. Watch the executions in the blotter: on this rig the engine's own bucket fill-tracking does not register fills, so buckets read 'open' and the parent stays RUNNING even after its children demonstrably traded. Submit one from the order ticket via the two 'Algo 1/2 + 2/2' presets — the book is consumable, so the demo posts its own liquidity first." />
+        <help-tip text="A parent order handed to the execution algo engine, sliced into child orders on a TWAP or VWAP schedule — each child goes through the same gateway and consensus path as a manual order, and rests in the book as a live limit order until something crosses it. When a child fills, its bucket is marked filled and the parent completes. Submit one from the order ticket via the two 'Algo 1/2 + 2/2' presets — the book is consumable, so the demo posts its own liquidity first. Parents left RUNNING with unfilled buckets are simply waiting: their slices are resting limit orders that nothing has crossed yet." />
       </div>
       @if (parents().length) {
         <table>

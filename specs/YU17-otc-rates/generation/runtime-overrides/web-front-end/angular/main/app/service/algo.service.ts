@@ -11,12 +11,16 @@ import { AlgoParentOrder, AlgoCreateRequest } from '../model/order.model';
  * schedule; every child goes through the same gateway and consensus path as a manually entered
  * order, and rests in the book as a live limit order until something crosses it.
  *
- * <p><b>Known engine behaviour on this tier</b> (filed as an open issue): the engine does not
- * observe its children's fills — it consumes the single-BLP tier's per-account order subject and
- * order-id form, neither of which the cluster tier produces — so a parent stays RUNNING and its
- * buckets read unfilled even after the children demonstrably trade. Executions are real and show
- * up in the order and trade blotters; only the engine's own bucket accounting is blind. The UI
- * says so rather than implying the fills did not happen.
+ * <p><b>Fill feedback: FIXED as of {@code execution-algo-engine:yu17-fills} (2026-08-19).</b> The
+ * {@code :yu15} build consumed the single-BLP tier's per-account order subject and order-id form,
+ * neither of which the cluster tier produces, so every parent stayed RUNNING with unfilled buckets
+ * even after its children demonstrably traded. New parents now mark buckets filled and complete.
+ *
+ * <p><b>Parents created before that roll are stranded — measured, not assumed:</b> they replayed
+ * through the engine restart with every child id byte-identical, but their fill events were
+ * broadcast hours earlier and nothing replays {@code /orders}, so no fill will ever reach them. A
+ * mixed list — old parents RUNNING for ever, new ones completing — is the fix landing, not drift.
+ * Anything started from the ticket today behaves correctly.
  */
 @Injectable({
     providedIn: 'root'
