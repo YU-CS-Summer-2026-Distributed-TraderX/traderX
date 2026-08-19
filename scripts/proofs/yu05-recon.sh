@@ -103,18 +103,61 @@ else
 fi
 
 # ---- 3. the forward sweep: trade-processor classifying the log against its projection ---------
-# The scheduled sweep pages /recon/trades/blotter off a member. Poll rather than sleep-and-hope:
-# a proof that reports whatever the scheduler happened to have done is a coin toss.
-echo "   ── forward sweep (scheduled, journal blotter → projection) ──"
+# CLASSIFICATION IS ONCE-PER-ENTRY AND COUNTERS ARE POD-LIFETIME CUMULATIVE (ReconciliationService:
+# the cursor only ever advances and matched/missing/fieldMismatch are LongAdders), so /recon/status
+# is NOT a reading of the current state — it is the union of every classification this pod ever
+# made, including ones taken mid-epoch-churn. Measured 2026-08-18: field_mismatch=4 classified
+# while a fresh epoch΄s projection was mid-reseed persisted in the counters while this proof΄s own
+# full-history arm was clean, and a pod replacement (cursor rebuilt from 0 over the stable state)
+# read 0. A moment-in-time counter is not a verdict, and neither is a stale cumulative one.
+#
+# So: RESTART trade-processor and judge the from-zero classification of the SETTLED state, once.
+# This is not retry-until-zero — exactly one fresh classification is judged, and a persistent
+# mismatch is present in every fresh classification, proven by the planted control in 3b which
+# rides the same mechanism. The restart kills the runner΄s port-forward, so this proof owns its own
+# from here (prove-cluster-engine-change §5: a dead tunnel is indistinguishable from an absent
+# feature).
+echo "   ── forward sweep (fresh classification, journal blotter → projection) ──"
+ENGINE_T=$($K exec order-matcher-cluster-0 -- sh -c 'wget -qO- http://localhost:8080/metrics' \
+  2>/dev/null | awk '/^traderx_cluster_trades/ {print $2}')
 for _ in $(seq 1 30); do
-  S=$(curl -s -m8 "$TP/recon/status" -H "Authorization: Bearer $ADMIN")
-  MATCHED=$(num "$(printf '%s' "$S" | jfield "d['matched']")")
-  [ -n "$MATCHED" ] && [ "$MATCHED" -gt 0 ] && break
+  SQLT=$(dbq "SELECT COUNT(*) FROM trades;")
+  [ "${SQLT:-0}" -ge "${ENGINE_T:-1}" ] && break
   sleep 2
 done
+TP_PF_PID=""
+own_tp_forward(){
+  [ -n "$TP_PF_PID" ] && kill "$TP_PF_PID" 2>/dev/null
+  pkill -f "port-forward deploy/trade-processor" 2>/dev/null; sleep 1
+  $K port-forward deploy/trade-processor 18091:18091 >/dev/null 2>&1 & TP_PF_PID=$!
+  local t=0
+  until [ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health)" = "200" ]; do
+    t=$((t+1)); [ $t -lt 60 ] || return 1
+    kill -0 "$TP_PF_PID" 2>/dev/null || { $K port-forward deploy/trade-processor 18091:18091 >/dev/null 2>&1 & TP_PF_PID=$!; }
+    sleep 2
+  done
+}
+recon_status(){ curl -s -m8 "$TP/recon/status" -H "Authorization: Bearer $ADMIN"; }
+fresh_classification(){ # restart TP, re-own the forward, echo the from-zero classification΄s status
+  $K rollout restart deploy/trade-processor >/dev/null 2>&1
+  $K rollout status deploy/trade-processor --timeout=300s >/dev/null 2>&1 || return 1
+  own_tp_forward || return 1
+  local s m
+  for _ in $(seq 1 60); do
+    s=$(recon_status); m=$(num "$(printf '%s' "$s" | jfield "d['matched']")")
+    [ -n "$m" ] && [ "$m" -gt 0 ] && { printf '%s' "$s"; return 0; }
+    sleep 2
+  done
+  return 1
+}
+if ! S=$(fresh_classification); then
+  bad "no fresh classification arrived after a trade-processor restart — sweep not running or TP unreachable"
+  S=$(recon_status)
+fi
+MATCHED=$(num "$(printf '%s' "$S" | jfield "d['matched']")")
 MISSING=$(num "$(printf '%s' "$S" | jfield "d['missingInProjection']")")
 MISMATCH=$(num "$(printf '%s' "$S" | jfield "d['fieldMismatch']")")
-say "matched"               "${MATCHED:-?}"
+say "matched"               "${MATCHED:-?} (fresh classification)"
 say "missing_in_projection" "${MISSING:-?}"
 say "field_mismatch"        "${MISMATCH:-?}"
 say "journal cursor"        "$(printf '%s' "$S" | jfield "d['cursor']")"
@@ -122,14 +165,47 @@ if [ -z "$MATCHED" ] || [ "$MATCHED" -le 0 ]; then
   bad "the sweep classified 0 trades — matched=0 is a clean reconciliation of NOTHING, which is"
   echo "     what this proof exists to refuse. Check RECON_POLL_INTERVAL_MS on trade-processor."
 elif [ "${MISMATCH:-1}" -ne 0 ]; then
-  bad "field_mismatch=$MISMATCH — the projection disagrees with the log on a trade it holds"
+  bad "field_mismatch=$MISMATCH on a FRESH classification of the settled state — the projection disagrees with the log"
 else
-  echo "   → $MATCHED journal-sourced trades match the projection field for field ✔"
+  echo "   → $MATCHED journal-sourced trades match the projection field for field ✔ (fresh classification)"
 fi
-# missing_in_projection is CUMULATIVE and the bridge is asynchronous, so a trade booked between a
-# sweep and its NATS delivery counts once and never decrements. It is a lag signal here, not a
-# drift signal — the drift claim is the set comparison below, which is immune to that race.
-[ "${MISSING:-0}" -gt 0 ] && echo "     (missing=$MISSING is bridge lag counted at sweep time; the set comparison below is the verdict)"
+# missing_in_projection: fresh pod, but the bridge is asynchronous — a trade delivered between the
+# blotter page and the projection read counts once. Lag signal, not drift; the set comparison below
+# is the drift verdict.
+[ "${MISSING:-0}" -gt 0 ] && echo "     (missing=$MISSING is bridge lag counted at classification time; the set comparison below is the verdict)"
+
+# ---- 3b. negative control: a PERSISTENT field mismatch must fail a fresh classification -------
+# The restart discipline above must not have weakened the assertion into one that only ever sees
+# clean states (an assertion never observed failing is a hypothesis). Mutate one projection field,
+# prove a fresh classification names it, restore, prove it clears. The restore is trapped so a
+# killed run cannot leave the projection poisoned. NOTE a mutation is invisible WITHOUT the
+# restart: classification is once-per-entry, which is why this control and the verdict above ride
+# the same mechanism — this control failing means the verdict above is not real.
+MUT_ROW=$(dbq "SELECT id FROM trades ORDER BY id LIMIT 1;")
+MUT_QTY=$(num "$(dbq "SELECT quantity FROM trades WHERE id='$MUT_ROW';")")
+if [ -z "$MUT_ROW" ] || [ -z "$MUT_QTY" ]; then
+  bad "no projection row available to plant the mismatch control — the control did not run"
+else
+  say "planted field mismatch" "row $MUT_ROW qty $MUT_QTY -> $((MUT_QTY + 1))"
+  restore_mut(){ [ -n "$MUT_ROW" ] && dbq "UPDATE trades SET quantity=$MUT_QTY WHERE id='$MUT_ROW'" >/dev/null 2>&1; MUT_ROW=""; }
+  trap restore_mut EXIT
+  dbq "UPDATE trades SET quantity=$((MUT_QTY + 1)) WHERE id='$MUT_ROW'" >/dev/null 2>&1
+  S2=$(fresh_classification) || true
+  M2=$(num "$(printf '%s' "$S2" | jfield "d['fieldMismatch']")")
+  restore_mut; trap - EXIT
+  if [ -z "$M2" ] || [ "$M2" -le 0 ]; then
+    bad "a PLANTED persistent mismatch was NOT caught by a fresh classification — the verdict above cannot be trusted"
+  else
+    echo "   → the planted mismatch is named by a fresh classification (field_mismatch=$M2) ✔"
+  fi
+  S3=$(fresh_classification) || true
+  M3=$(num "$(printf '%s' "$S3" | jfield "d['fieldMismatch']")")
+  if [ -z "$M3" ] || [ "$M3" -ne 0 ]; then
+    bad "field_mismatch did not clear after the control was restored (read: ${M3:-unreadable}) — the projection may be left poisoned"
+  else
+    echo "   → restored: fresh classification back to field_mismatch=0 ✔  (the clean verdict above is a real verdict)"
+  fi
+fi
 
 # ---- 4. orphan sweep: every projection row must have journal provenance -----------------------
 echo "   ── full-history sweep (admin): every projection row vs the whole log ──"
