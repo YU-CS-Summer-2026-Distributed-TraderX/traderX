@@ -56,7 +56,8 @@ export class MetricsPanel implements OnInit, OnDestroy {
       this.accepted.set(String(p['traderx_order_events_total{event="accepted"}'] ?? '—'));
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
-    if (l.status === 200 && typeof l.body === 'string') this.latency.set(l.body.trim());
+    // /latency answers 503 with an informative body when LATENCY_DECOMP is off — show it either way.
+    if (typeof l.body === 'string' && l.body) this.latency.set(l.body.trim());
     else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
   }
 }

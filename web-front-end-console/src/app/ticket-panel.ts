@@ -174,8 +174,11 @@ export class TicketPanel {
             ? 'route absent — gateway on this rig predates YU17 swaps'
             : r.body?.contractId
               ? `${r.body.contractId} booked at consensus seq ${r.body.sequence}`
-              : r.body?.error ?? `HTTP ${r.status}`,
-          `${this.payReceive} fixed ${this.fixedRate} on ${this.notional} ${this.conventions}`);
+              : r.body?.reason
+                ? `REFUSED: ${r.body.reason}`
+                : r.body?.error ?? `HTTP ${r.status}`,
+          `${this.payReceive} fixed ${this.fixedRate} on ${this.notional} ${this.conventions}`,
+          r.body?.reason);
       } else {
         const ticker = c === 'Option' ? this.occSymbol.trim().toUpperCase() : this.ticker;
         const r = await this.api.post<OrderResult>('/order-matcher/orders', {
