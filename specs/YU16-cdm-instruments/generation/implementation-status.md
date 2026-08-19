@@ -174,10 +174,17 @@ transparency, which was fine — right finding, wrong subsystem.
 - **`Position.setAverageCostBasis` silently rounded to 3dp.** The entity setter, not the column,
   was the last 100×-class rounding on the path. When widening a price anywhere, grep the *setters*
   as well as the DDL.
-- **`eod-price-db` has no PVC** — its datadir is ephemeral and only the init ConfigMap is mounted,
-  so restarting it rebuilds the read model from `001-initialSchema.sql`. The `900-migrations.sql`
-  populated-volume path is therefore *not* exercised by an ordinary roll on this rig;
-  `yu15-option-persistence` is the proof that does exercise it.
+- **`eod-price-db` HAS a PVC as of 2026-08-18** — it did not before, and the difference is the
+  whole read model. Its only volume was the init ConfigMap, so the datadir lived in the pod's
+  writable layer and every restart re-ran `001-initialSchema.sql`, which opens with
+  `DROP TABLE IF EXISTS` on trades, orderbook, positions, accounts and all three `eod_*` tables.
+  A restart was a wipe, not a reload. That destroyed evidence mid-investigation, evaporated
+  `POST /stocks` repairs, and silently invalidated any before/after measurement spanning it.
+  Now: `eod-price-db-data` (10Gi RWO) at `/var/lib/mysql`, `strategy: Recreate`, and a
+  `schema-migrate` initContainer — because the entrypoint runs init SQL *only* on an empty
+  datadir, which is exactly what makes `001` safe now and exactly what would have stranded
+  `900-migrations.sql`. The populated-volume path is therefore exercised by every ordinary roll
+  on this rig, not just by `yu15-option-persistence`.
 - **The member health endpoint is port 8080, not 18110.** 18110 is the gateway's REST port; a
   proof asking it for `applied` gets a JSON body with no such field. The first version of
   `yu16-bond-position` did exactly that and refused loudly rather than passing — which is the

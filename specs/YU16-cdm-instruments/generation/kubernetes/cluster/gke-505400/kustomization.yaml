@@ -36,7 +36,10 @@ namespace: traderx
 # price then rounds from 0.996650 to 0.997 on the way in, which still books, still shows a
 # position, and is wrong by a tenth of a point of par with no error anywhere. Apply the configmap
 # FIRST — mariadb runs init SQL once, at first boot on an empty datadir, against whatever configmap
-# exists at that moment, and eod-price-db has no PVC, so a restart is a first boot.
+# exists at that moment. Ordering still matters on a FRESH namespace, but the second half of this
+# warning is no longer true: as of 2026-08-18 eod-price-db has a PVC, so a restart is NOT a first
+# boot and the schema is not re-derived from the configmap on every roll. Schema changes reach a
+# populated datadir through the schema-migrate initContainer's 900-migrations.sql, not through 001.
 
 resources:
   - ../gke
