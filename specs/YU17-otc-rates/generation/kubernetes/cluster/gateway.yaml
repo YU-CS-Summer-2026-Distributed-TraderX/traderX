@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  ports:
+    - name: http
+      port: 18110
+      targetPort: 18110
+    - name: fix
+      port: 18130
+      targetPort: 18130
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cluster-gateway
+  template:
+    metadata:
+      labels:
+        app: cluster-gateway
+    spec:
+      containers:
+        - name: gateway
+          # YU17's OWN declaration (layer created 2026-08-18; previously YU17 composed YU16's
+          # layer and the derive machinery REFUSED to guess an image — this layer is the durable
+          # fix its refusal message asked for). The `:yu17-ackB` tag is the current YU17 build
+          # (option B keyed ack correlation, rig-proven 2026-08-18). Do NOT "tidy" this to the
+          # derived `:yu17` — that local tag is a stale 4-day-old spare, not this state's build.
+          # Wire rule: pre-B and post-B builds never mix, either direction, any branch.
+          # NOTE ON WORDING: tags in these comments are written `:yu17` / `:yu17-ackB` rather than
+          # as full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
+          # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above the
+          # image line becomes the declared image. That bit a coordinator on 2026-08-18.
+          image: traderx/cluster-node:yu17-ackB
+          imagePullPolicy: IfNotPresent
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.ClusterGatewayMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GATEWAY_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            - name: GATEWAY_HTTP_PORT
+              value: "18110"
+            - name: GATEWAY_EGRESS_PORT
+              value: "40470"
+            # Probe port. /ready, /health and /live are served here by their OWN single-thread
+            # server, so a saturated order path cannot leave a probe unanswered — measured: a
+            # wedged gateway under ~20 orders/s stopped answering all HTTP on 18110, permanently,
+            # which turns every probe verdict below into an indiscriminate timeout. They are still
+            # served on 18110 too, for the proofs and benches that curl it.
+            - name: GATEWAY_PROBE_PORT
+              value: "18111"
+            # YU04 durable control feed: consume reference-data's security deltas and sequence them
+            # through consensus. On for the kind rig (this is the support/demo story); benches that
+            # want a quiet startup leave it unset.
+            - name: CONTROL_FEED_SUBSCRIBER
+              value: "1"
+            - name: FIX_ACCEPTOR_PORT
+              value: "18130"
+            - name: FIX_SESSION_COMPIDS
+              value: "CLIENT1"
+            # OTEL-01. On by default on kind because this rig is the support/demo story; the GKE
+            # overlay ships the same knobs set to 0 so the banked benchmark numbers stay
+            # comparable and the before/after A/B is a one-value edit rather than a rebuild.
+            # Nothing here can reach the trade path: a full ring drops, a dead collector counts.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            # 0 = trace every order. Correct for a functional rig at demo rates; at 190k/s use the
+            # 127 default (1 in 128) — per-order spans at that rate are their own problem.
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dsun.net.httpserver.nodelay=true -Xms192m -Xmx384m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: http
+              containerPort: 18110
+            - name: fix
+              containerPort: 18130
+            - name: probe
+              containerPort: 18111
+          # STARTUP: "is the HTTP surface up at all". Deliberately /live and not /ready — /live is
+          # 200 as soon as the process serves, so a cluster that is DOWN while this pod boots
+          # cannot hold startup open until the kubelet kills it. 120s covers JVM + media driver +
+          # the up-to-60s awaitConnected. Its real job is to let readiness and liveness below run
+          # at sane thresholds: without it, readiness needed failureThreshold 24 purely to tolerate
+          # a slow start, i.e. two minutes in which an unready gateway was still in the Service.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 24
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 3
+          # LIVENESS: ask for a restart when this gateway has told 100+ consecutive clients their
+          # orders failed, sustained for 60s. The restart is the known cure (verified on kind and
+          # GKE) and the gateway is stateless, so it costs only the in-flight orders — and on this
+          # rig, at replicas: 1, readiness alone cannot heal anything because there is nowhere else
+          # to route. failureThreshold 6 x 10s is the storm guard: an election, a member roll or a
+          # brief burst of ambiguous timeouts clears long before it, and an IDLE gateway can never
+          # trip it at all because the streak only advances on a submit that got no ack. See
+          # LIVE_NO_ACK_STREAK in ClusterGatewayMain for the full judgement, and note the tuning
+          # knob: LIVE_NO_ACK_STREAK env, default 5x READY_NO_ACK_STREAK.
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 448Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

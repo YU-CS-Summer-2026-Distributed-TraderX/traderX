@@ -1,0 +1,124 @@
+# trade-processor beside the cluster tier: the consumer of the ADR-048 leader-side trade bridge.
+# It exists here so the option-persistence path can be proven end to end — cluster books an option
+# fill, the bridge republishes it to NATS /trades, trade-processor writes Trade + Position rows.
+# Before the widened instrument-identifier columns that write failed on every option, because an
+# unpadded OCC symbol is 19 characters and the columns were VARCHAR(15).
+#
+# Points at this tier's own service names (eod-price-db, nats) rather than the full runtime's
+# (database, nats-broker); everything else matches the shipped deployment.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mariadb-credentials
+type: Opaque
+stringData:
+  username: traderx
+  password: traderx
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: auth-secrets
+type: Opaque
+stringData:
+  jwt-secret: kind-local-jwt-secret-not-a-real-credential
+  dev-token-master-secret: kind-local-dev-token-secret-not-a-real-credential
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trade-processor
+  labels:
+    app: trade-processor
+spec:
+  selector:
+    app: trade-processor
+  ports:
+    - name: http
+      port: 18091
+      targetPort: 18091
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trade-processor
+  labels:
+    app: trade-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: trade-processor
+  template:
+    metadata:
+      labels:
+        app: trade-processor
+    spec:
+      containers:
+        - name: trade-processor
+          image: traderx/trade-processor:yu16
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 18091
+          env:
+            - name: TRADE_PROCESSOR_SERVICE_PORT
+              value: "18091"
+            - name: DATABASE_PG_HOST
+              value: "eod-price-db"
+            - name: DATABASE_PG_PORT
+              value: "3306"
+            - name: DATABASE_NAME
+              value: "traderx"
+            - name: DATABASE_DBUSER
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: username
+            - name: DATABASE_DBPASS
+              valueFrom:
+                secretKeyRef:
+                  name: mariadb-credentials
+                  key: password
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: AUTH_DEV_TOKEN_MASTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: dev-token-master-secret
+            - name: NATS_BROKER_HOST
+              value: "nats"
+            # Back to YU05's own default. It was backed off to daily because the blotter endpoint
+            # did not exist on this tier — the sweep could only log "order-matcher unreachable" and
+            # report matched=0, which reads as a clean reconciliation of nothing. The cluster
+            # members now serve /recon/trades/blotter off the committed log, so the sweep has a
+            # source of truth to classify against and belongs back on its normal cadence.
+            - name: RECON_POLL_INTERVAL_MS
+              value: "10000"
+            # A session close produces a version and, with nothing flagged, publishes it and emits
+            # eod.prices.ready — the real YU06 gate, not a hand-seeded table.
+            - name: EOD_SESSION_AUTO_PUBLISH
+              value: "true"
+            # Price every instrument the feed has been seen quoting, which now includes the option
+            # chain. Left unset it defaults to exactly that.
+            - name: EOD_QUALITY_STALENESS_SECONDS
+              value: "300"
+            - name: MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE
+              value: "health,prometheus,info"
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 18091
+            initialDelaySeconds: 20
+            periodSeconds: 5
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              memory: 1Gi
