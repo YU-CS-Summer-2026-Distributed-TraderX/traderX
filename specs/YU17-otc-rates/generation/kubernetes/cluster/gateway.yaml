@@ -49,6 +49,11 @@ spec:
             - /opt/app/classes:/opt/app/lib/*
             - finos.traderx.ordermatcher.cluster.ClusterGatewayMain
           env:
+            # Latency decomposition ON for the demo rig: the console's p50/p99 panel reads
+            # /latency, which answers 503 'disabled' without this. Matches the live deployment
+            # (set 2026-08-18); remove here AND live together, or declared drifts from running.
+            - name: LATENCY_DECOMP
+              value: "1"
             - name: POD_IP
               valueFrom:
                 fieldRef:
