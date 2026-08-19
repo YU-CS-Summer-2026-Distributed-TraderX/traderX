@@ -1,0 +1,579 @@
+# Issue: the gateway silently stops committing after a leader kill, and every probe says it is fine
+
+**Status: RESOLVED 2026-08-18.** The wedge was diagnosed to a line of code and fixed (2026-08-14, cure
+verified on kind); the ack-correlation class behind it was closed by **Option B**, landed and rig-proven
+on YU15/YU16/YU17 and carried to YU13/YU14, which replaces positional matching with a keyed request id
+so neither the election trigger nor the drop trigger can strand a correlation. A's `onNewLeaderResync`
+was deleted along with it, deliberately.
+
+**§5 was NOT resolved with this issue and has been split out** to
+`issues/open/gateway-http-executor-never-drains.md` so it is not buried by this file's closure. That
+defect — the gateway serving no HTTP at all and never draining — is open, and nobody has re-run its
+repro on a B build.
+
+**The line of code.** `AeronCluster.Context.egressListener(this::onEgress)` was a METHOD REFERENCE.
+It satisfies `EgressListener`'s single abstract method and leaves `onSessionEvent` and `onNewLeader`
+on their **default no-op bodies** (verified with `javap` against aeron-cluster-1.51.0). That is all
+of §3's "no exception, no reconnect attempt, no log line at any level": the events that would name
+the cause were being discarded by the interface's own defaults, and the owner loop's only reconnect
+trigger was `client.isClosed()` — which the wedge never reaches, because **the wedge does not close
+the session** (measured: non-OK session events across a reproduced wedge = 0).
+
+**The cure: the gateway rebuilds its own session.** A `rollout restart` was already known to clear
+the wedge instantly, and a fresh session is the only thing it changes — so the gateway now reaches
+for one itself. The trigger is a streak of orders whose offer **cleared into the log** and whose
+committed ack then never arrived (`offeredUnackedStreak`, default 20 = `READY_NO_ACK_STREAK`).
+
+**Why that trigger and not `noAckStreak`** — this is the safety argument, and it is measured rather
+than assumed, because firing during a QUORUM LOSS would park the owner thread inside
+`connectCycling()`'s `while (running)` loop and turn a recoverable outage into a permanent one:
+
+| regime | `offer_attempt` | `offer_success` |
+|---|---|---|
+| healthy cluster | +10 | **+10** |
+| quorum loss | +1 | **+0** |
+
+During quorum loss the offer never clears, so the streak physically cannot advance and the self-heal
+cannot fire there. During the wedge the offer DOES clear — the cluster consumes a ref for every
+order it then never acks, measured 1:1 — so it does.
+
+**Verified end to end**, `traderx/cluster-node:yu17heal`, members and gateway on that build:
+
+1. Wedge reproduced via `yu12-gke-failover-transparency.sh` on kind with the gateway at
+   `replicas: 1` (leader kill under a live stream). Gateway left at `/ready connected:true` with
+   every order `504 no committed ack` — §1's signature.
+2. Drove 25 orders. The first 13 were denied while the streak climbed, then:
+
+   ```
+   GATEWAY-WEDGE-SUSPECTED offeredUnacked>=20 noAckStreak=20 — rebuilding the cluster session
+       #14 COMMITTED: {"orderRef":1044,"kind":1}
+       #15 COMMITTED: {"orderRef":1045,"kind":1}
+   ```
+3. Afterwards `/ready` = `noAckStreak 0`, and orders commit normally.
+4. **No pod restart.** One `GATEWAY up` line in the log — a single container lifetime from
+   `21:30:59Z`, continuous through the leader kill at `21:32:41Z`, the wedge and the cure. The
+   gateway healed in-process; the kubelet was not involved.
+
+**Non-regression:** `yu16-ready-tracks-commit` and `yu16-liveness-restarts-wedge` both PASS on the
+fix build, and `GATEWAY-WEDGE-SUSPECTED` fired **zero** times during them — so the new trigger does
+not launder either proof's verdict, which was the specific risk since both drive the streak
+deliberately.
+
+**The residual limitation, stated plainly:** the threshold means the first ~20 clients after a wedge
+are still told their orders failed while the book takes them (13 in the verified run). That is
+inherent to a streak trigger and is the same shape §1's liveness note already records. It converts
+an unbounded outage into a bounded one; it does not make the wedge free.
+
+**Carried to the YU16 layer as well as YU17's** (`ClusterGatewayMain` has four carriers — YU12,
+YU13, YU16, YU17 — and a descendant's fix reaches no ancestor).
+
+**And, 2026-08-16, to the YU13 layer — which is what YU13, YU14 and YU15 actually run.** Verified
+before and after on the kind rig; see *The YU13 layer* in §6. **YU12 remains uncarried**, and the
+reason is narrower than this file used to say — see the same section.
+
+Original report follows.
+
+**Status when filed:** OPEN. Reproduced on GKE twice (YU15 `:bench` 2026-08-12, YU16 `:yu16`
+2026-08-13) and **on kind 2026-08-13**. Not diagnosed to a line of code.
+**Related:** `HANDOFF-issue-yu-vacuous-pipeline-guards.md` (the proof that found it reported the
+wrong cause, §4 below).
+
+> **The first version of this document called this an outage. That was wrong, and wrong in the
+> direction that matters.** The gateway does not stop working. It keeps committing orders to the
+> cluster and tells every client they failed. See §1.
+
+## §1. What actually happens
+
+Kill the cluster leader while a single gateway is serving traffic. The cluster does everything it
+is supposed to: a new leader is elected, all three members stay in lockstep, the applied sequence
+keeps advancing. Every subsequent order returns
+
+```
+HTTP 504 {"error":"no committed ack"}
+```
+
+and it does not stop. But the order **was not refused** — the gateway's ingress path is intact and
+the cluster sequences and books it. Only the ack path back to the gateway is gone.
+
+Measured on kind, 2026-08-13, with the cluster's own `next_order_ref` as the witness:
+
+| test | client saw | `next_order_ref` delta | resting orders created |
+|---|---|---:|---:|
+| 5 orders, 5 distinct `clientOrderId`s | **5 × 504 failed** | +5 | **5** |
+| 3 orders, the SAME `clientOrderId` | **3 × 504 failed** | +3 | **1** |
+
+Ten orders sat in the read model in status `NEW` for an account whose client had been told every
+single one of them failed:
+
+```
+1-876  IBM  1  200.000000  NEW
+1-875  IBM  1  200.000000  NEW
+...    (ten rows, all reported to the client as 504 no committed ack)
+```
+
+So the failure mode is **not lost orders, it is invisible orders**: the client's view and the
+book's view diverge silently and permanently, in the direction of the client under-counting its own
+exposure. For an OMS that is worse than refusing the order outright, which is at least honest.
+
+**The ClOrdId ledger still protects a retrying client from duplication** — three sends of one key
+produced one resting order — so a correctly-implemented client does not double up. It does still
+burn a `next_order_ref` per attempt, which matters for §4.
+
+A `kubectl rollout restart` of the gateway clears it instantly with nothing else changed. Same
+order, kind, immediately after: `{"orderRef":879,"kind":1}`.
+
+## The evidence, 2026-08-13 (YU16 build, project traderx-505400)
+
+Leader `order-matcher-cluster-1` killed at 00:55:14 by
+`scripts/proofs/yu12-gke-failover-transparency.sh`. State ~8 minutes later:
+
+| what | reading |
+|---|---|
+| members | `applied=348` on all three, `engineApplied=348`, leader = member 2 |
+| gateway pod | `restarts=0`, `ready=true`, started `04:09:21Z` — **before** the kill, never bounced |
+| `GET /ready` | `{"connected":true}` |
+| `GET /health` | `{"connected":true}` |
+| `POST /orders` | `{"error":"no committed ack"}` |
+| gateway log | last line predates the kill. **Nothing** about the leader change, the session, or the 504s |
+
+Same order, immediately after `rollout restart deploy/cluster-gateway` and no other change:
+
+```
+{"orderRef":305,"kind":1}
+```
+
+## Why this is worse than a crash
+
+0. **It is not a refusal.** Every 504 is a lie: the order is on the log and in the book. A crash
+   loses nothing (the client retries into a healthy replica); this creates state the client does
+   not know it owns. Position, exposure and risk all drift silently from what the client believes.
+1. **The readiness probe cannot see it.** `/ready` reports `connected:true` throughout, so
+   Kubernetes never takes the pod out of the Service and never restarts it. A crash would have
+   self-healed; this does not.
+2. **The load balancer keeps sending traffic to it.** `order-matcher-gw` is a LoadBalancer Service
+   with `externalTrafficPolicy: Local`, and the LB health check follows the same readiness signal.
+   The one public IP therefore routes every external order into a black hole.
+3. **It is silent.** No exception, no reconnect attempt, no log line at any level. Nothing to alert
+   on, and nothing for a supporter to find. The OTel work (`yu13-otel-*`) instruments the REJECT
+   path, which this never reaches — the order is not rejected, it is un-acked.
+4. **The cluster looks perfect while it happens**, which sends an investigator to consensus first.
+   That is where the 2026-08-12 run went, and it cost most of an hour.
+
+## What has been ruled out
+
+- **Not the cluster.** All three members agreed on `applied` throughout, before and after, and a
+  direct in-cluster order path is unaffected — `yu12-gke-recovery` and
+  `yu12-gke-cross-epoch-idreuse` both PASS on the same rig minutes either side of the wedge, and
+  both kill leaders themselves.
+- **Not the YU16 build.** First seen on YU15 `:bench`, reproduced on YU16 `:yu16`. Nothing in the
+  bond work touches session handling.
+- **Not the load balancer.** The 504 body is the gateway's own (`ClusterGatewayMain.handleOrder`
+  returns it when `submitOrder` yields no `ExecResult`), so the request reached the gateway and the
+  gateway answered.
+- **Not slow recovery.** It persisted ~8 minutes across repeated requests and did not self-heal.
+
+## The condition that hides it
+
+**One gateway.** The GKE correctness rig runs `replicas: 1` because the gateway Deployment carries
+`requiredDuringSchedulingIgnoredDuringExecution` anti-affinity on hostname and the 32-vCPU quota
+leaves exactly one untainted node. With more than one gateway the survivors keep serving and the
+wedged replica's share of traffic looks like an elevated error rate rather than an outage — which
+is very likely why a campaign that ran four gateways never surfaced this.
+
+That makes the single-gateway rig the *useful* configuration for this bug, not a degraded one.
+
+## Next steps for whoever picks this up
+
+1. ~~**Make the probe honest first**~~ — **DONE 2026-08-13**, `gateway readiness: report the ability
+   to COMMIT, not the state of a socket`. `/ready` now fails after 20 consecutive submits that got
+   no committed ack, counted in `submitPipelined` where every ingress path funnels. Proof:
+   `scripts/proofs/yu16-ready-tracks-commit.sh`.
+
+   **Correction to what this section used to say:** readiness alone does *not* convert this into a
+   pod restart. It removes the pod from the Service — which stops the LoadBalancer feeding a
+   gateway that lies, and that is the substantive win — but with a single replica there is nowhere
+   else to route, so the outage persists until something restarts the pod.
+
+   **1b. The other half — DONE 2026-08-13.** The liveness probe is now wired, and the decision it
+   was waiting on is recorded here. `/live` fails at `LIVE_NO_ACK_STREAK` (default 5× the readiness
+   limit = 100) and the manifest demands `failureThreshold: 6 × 10s` on top, so the kubelet
+   restarts the container only after ~60s of continuous inability to commit. Proof:
+   `scripts/proofs/yu16-liveness-restarts-wedge.sh` (passes; `restarts 0 -> 1` at streak 144, the
+   kubelet's own `Liveness probe failed` event naming the cause).
+
+   Why this is not the restart storm the decision was worried about, in three properties:
+
+   - **It ignores `connected`.** A closed session is not a restart reason — an election or a member
+     roll closes it and the owner thread reconnects on its own. Restarting on that would restart
+     every gateway on every failover.
+   - **It cannot fire on an idle gateway.** The streak only advances on a submit that got no ack, so
+     a cluster-wide outage with no traffic offered restarts nothing.
+   - **It is reached by volume, not by elapsed time,** and then has to persist for a minute.
+
+   The residual risk is real and accepted: a cluster-wide outage *under live load* will restart
+   gateways, because from the gateway's side that is indistinguishable from its own wedge. It costs
+   the in-flight orders of a tier that was not committing anything anyway, and the kubelet's restart
+   backoff caps the flap rate — against a single public IP routing every order into a gateway that
+   books what it denies.
+
+   A **startupProbe** landed with it (`/live`, 120s), which is what let the readiness
+   `failureThreshold` drop 24 → 3: the old 24 existed purely to tolerate a slow JVM+Aeron start,
+   i.e. two minutes in which an unready gateway stayed in the Service. It reads `/live` and not
+   `/ready` deliberately — `/live` is 200 as soon as the process serves, so a cluster that is down
+   while this pod boots cannot hold startup open until the kubelet kills it.
+
+   **What liveness still does not catch:** the same partial-degradation blind spot as readiness
+   (any ack resets the streak), and an idle wedged gateway — which is correct but means the first
+   ~100 clients after a quiet wedge are still lied to before the restart is asked for.
+
+   Two measured limits on the fix:
+
+   - **It only catches a TOTAL wedge.** A gateway that fails most orders but succeeds occasionally
+     never builds a streak, because any ack resets it. Observed live oscillating at 8–12 during a
+     partial wedge. That is the intended trade — a rate-based signal would trip under legitimate
+     saturation — but it means partial degradation stays invisible.
+   - ~~**Under heavy load the probe cannot be served at all** (§5), so the streak never gets
+     read.~~ — **fixed 2026-08-13**, see §5.
+
+2. ~~**§5 first, arguably.**~~ Its *probe* half is done (separate probe server). The hang itself is
+   still undiagnosed and is still more severe than the wedge it hides inside.
+2. **PARTLY ANSWERED 2026-08-14 — the gateway was throwing both session events away.**
+   `AeronCluster.Context.egressListener(this::onEgress)` was a METHOD REFERENCE. It satisfies
+   `EgressListener`'s single abstract method and leaves `onSessionEvent` and `onNewLeader` on their
+   **default no-op bodies** (verified against `aeron-cluster-1.51.0` with `javap`, not from memory).
+   So §3's "no exception, no reconnect attempt, no log line at any level" was not a mystery: the two
+   events that would name the cause were being discarded by the interface's own defaults, and the
+   owner loop's ONLY reconnect trigger was `client.isClosed()`.
+
+   Fixed by registering a full `EgressListener`: both events are logged, and a session event whose
+   code is anything other than `OK` sets `sessionLost`, which the owner loop now treats as a
+   reconnect trigger alongside `isClosed()`. A fresh session is the known cure — a `rollout restart`
+   clears the wedge instantly and a new session is the only thing that changes — so the gateway can
+   now reach for it without needing the kubelet to kill the pod.
+
+   **Verified on the kind rig** (`traderx/cluster-node:yu17wedge`, gateway and members on that
+   build). Leader `order-matcher-cluster-0` killed; the gateway's own log, which previously said
+   nothing at all about a leader change:
+
+   ```
+   CLUSTER-SESSION-EVENT code=OK session=4 leader=2 term=11
+   CLUSTER-NEW-LEADER leader=2 term=11 session=4
+   ```
+
+   and it committed normally straight after (`{"orderRef":150,"kind":1}`, `/ready` 200, streak 0).
+   `yu16-ready-tracks-commit` and `yu16-liveness-restarts-wedge` both still PASS on that build, which
+   matters because they assert on the same session machinery. Checked before building: a reconnect
+   cannot reset `noAckStreak` — it is touched only in the submit path, never by `drain()` or
+   `connectCycling()` — so neither proof's verdict can be laundered by the new trigger.
+
+   **What is NOT yet proven.** The event observed was `code=OK`, which correctly does *not* set
+   `sessionLost`. So this run demonstrates the flag is not set spuriously; it does **not** demonstrate
+   the reconnect path firing, because the wedge did not reproduce in this run. The logging half is
+   proven, the self-heal half is wired and unobserved. Catching a non-OK session event during a real
+   wedge is the next step, and the new log line is now what makes that identifiable.
+
+   **Carried to the YU16 layer as well as YU17's** — `ClusterGatewayMain.java` has FOUR carriers
+   (YU12, YU13, YU16, YU17), and a descendant's fix reaches no ancestor. YU12's and YU13's layers are
+   deliberately NOT carried: they are operative for YU12 and YU13-YU15, tiers with no rig available
+   here, and shipping an unexercised change to a different program (YU12 has no `submitPipelined`) is
+   the trap §6 of this file already records.
+
+3. Then find the remaining session question. `submitOrder` returning null means no egress ack arrived for the
+   request. Worth checking whether the gateway's egress subscription is re-established on a leader
+   change, or whether it stays bound to the old leader's publication.
+3. ~~Reproduce on kind if possible~~ — **done, 2026-08-13.** It reproduces reliably:
+
+   ```bash
+   CTX=kind-traderx-yu12-cluster GW_SVC=order-matcher-gw \
+     bash scripts/proofs/yu12-gke-failover-transparency.sh
+   ```
+
+   **For §1's divergence specifically, do NOT use this route.** Quorum loss produces the same
+   booked-but-denied orders deterministically in ~90 seconds with no leader kill and no race — 159
+   resting orders for 160 clients told 504, measured 2026-08-13. See the drain experiment in §5.
+   The wedge is only needed for §5's hang.
+
+   with the gateway at `replicas: 1` and `execution-algo-engine` at 0. The whole fix-and-prove
+   cycle is therefore local and free; the GKE rig is not needed for this at all. The proof's own
+   header says "WHY GKE — election behaviour on kind's starved CPUs is not the system's behaviour",
+   which is a fair caution about *timing* — but this defect is not a timing claim, and it shows up
+   on both rigs identically.
+
+
+## §6. Where the fix has actually run, and where it still has not
+
+The probe work was written once and back-ported to YU12–YU15 and the GKE tier. "Back-ported and
+renders correctly" is not "has run", and the two are recorded separately here on purpose — a
+manifest that renders and a funnel that compiles are the two failure modes this project keeps
+paying for. Ticked off 2026-08-13.
+
+### YU12's gateway — VERIFIED on the kind rig, 2026-08-13
+
+`646b1e1d` was generate + `compileJava` clean and nothing more. It matters separately from YU13's
+back-port (which is operative for YU13–YU15 and had run) because **YU12 is a different program**:
+it has no `submitPipelined`, so the no-ack streak is hooked into `submitOrder` instead — a
+synchronous funnel with no in-flight window, where every submit round-trips through the owner
+thread. That funnel had never been exercised anywhere.
+
+Run on `kind-traderx-yu12-cluster` on YU12's own image (`traderx/cluster-node:yu12`, built from
+`traderX-YU12-aeron-cluster`), members and gateway both on that build, fresh epoch. Both YU16 proof
+scripts, run directly from the YU16 worktree — YU12 carries no `scripts/proofs`, and
+`scripts/yu15/run-proofs.sh` must NOT be used for this because it pins `BASELINE_IMAGE` and would
+silently rebuild the rig onto the baseline before reporting.
+
+| | reading |
+|---|---|
+| pod comes up | Ready, kubelet driving all three probes at 18111 |
+| `yu16-ready-tracks-commit.sh` | **PASS** — control 25 orders/streak 0/200; quorum gone 503 at streak 25; discriminator held (`connected:true` with /ready still 503); one committed order (`orderRef 50`) cleared it |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — control 80 concurrent (> the 64 pool) left /live 200 and the pod untouched; probe port answered 200 under saturation both rounds; /live 503 at streak 144; `restarts 0 -> 1`, `reason=Error` not OOMKilled, kubelet event `Container gateway failed liveness probe, will be restarted`; recovered order `orderRef 131` |
+
+**The synchronous tier accumulates the streak at the same rate as the pipelined one**, which was the
+open question and the reason the run was worth doing. 80 concurrent orders produced streak 80 in one
+round and 144 in two — the YU16 shape exactly. Each submitter's own `ft.get()` expires at
+`ACK_TIMEOUT_MS + 2s` regardless of where its task sits in the owner queue, so queue position does
+not slow accumulation, and the `LIVE_NO_ACK_STREAK` env knob was not needed. The readiness run makes
+it exactly 1:1: 25 orders, streak 25.
+
+**What this run does NOT establish**, and should not be read as establishing: whether a synchronous
+gateway drains its abandoned-task backlog. Every timed-out submitter leaves a task queued on the
+owner thread, and on this tier each can burn a full ack timeout. The recovered order in step 4
+committed fine — but the restart under test kills the container, and the owner queue with it, so
+step 4 always meets a fresh JVM by construction. Measuring the drain needs a drive with no restart
+(`LIVE_NO_ACK_STREAK` raised above the reachable streak, then watch whether an order commits after
+load stops).
+
+**That experiment has since been run, ON THE PIPELINED TIER — see the drain subsection at the end
+of §5, which is the canonical result.** There the backlog drains instantly: the ack timeout is only
+spent while the cluster refuses the offer, so a restored quorum empties the queue in microseconds.
+
+**It does not close the question this section asked**, which was about the SYNCHRONOUS gateway. The
+mechanism measured is `offerPipelined`'s retry loop — offer, pollEgress, check deadline — and YU12
+does not have it: `submitOrder0` → `onOwner` → `offerAndAwait` waits on an ack condition, not on the
+offer clearing. The same fast drain is plausible there and is not measured. Left explicitly
+unmeasured rather than inferred; it is the same script with the rig on `:yu12`.
+
+What the pipelined result does settle reaches further than drain, and is the reason it is
+cross-referenced here at all: it retired §5's own proposed mechanism. Whatever that hang is, it is
+not merely a deep owner queue.
+
+### The YU13 layer — VERIFIED before and after on the kind rig, 2026-08-16
+
+The listener and the self-heal were carried to the **YU13** layer, which is the operative
+`ClusterGatewayMain` for **three** branches — YU13, YU14 and YU15. Until this landed, those three
+had the wedge both **unmitigated and silent**: no self-heal, and a method-reference `EgressListener`
+whose two events sat on the interface's default no-op bodies.
+
+**Ported the two mechanisms, not the file.** YU16's copy is 2188 lines against YU13's 1941 and the
+delta is YU16's own instrument work, so a file copy would have dragged descendant features backwards
+into three ancestor branches. Six sites, +105/−2.
+
+**The wire contract was checked before the rig was borrowed**, because a YU15-layer gateway was being
+rolled at members running `:yu16`. `InputEvent`, `AeronReplicationCodec` and `OutputEvent` are
+identical between the YU15 and YU16 operative layers (YU17 is what changed `InputEvent`), and that
+code reading was then confirmed empirically — the gateway seeded and committed `orderRef 957` before
+any wedge was induced. So no member roll, no PVC wipe, no fresh epoch: the borrow was one field.
+
+| | BEFORE (`:yu15prewedge`) | AFTER (`:yu15heal`) |
+|---|---|---|
+| 5 orders during the wedge | **5 × 504** `no committed ack` | — |
+| `traderx_cluster_next_order_ref` | 1843 → 1848 (**+5**) | — |
+| `traderx_book_open_orders` | 839 → 844 (**+5**) | — |
+| `/ready` | `connected:true, noAckStreak:10` | streak back to **0** after the cure |
+| session / leader / wedge log lines | **none at all** | all three, below |
+| pod restarts | 0 | **0** |
+
+Before, on the unpatched build, five orders sat resting for an account whose client had been told
+every one of them failed — §1 reproduced on this tier. After, the same repro wedged the gateway
+again and then 25 orders were driven in:
+
+```
+CLUSTER-SESSION-EVENT code=OK session=7 leader=2 term=3
+CLUSTER-NEW-LEADER leader=2 term=3 session=7
+GATEWAY-WEDGE-SUSPECTED offeredUnacked>=20 noAckStreak=20 — rebuilding the cluster session
+    #17 COMMITTED: {"orderRef":2774,"kind":1}
+    ...
+    #25 COMMITTED: {"orderRef":2782,"kind":1}
+```
+
+**No pod restart** — `restarts=0`, one container lifetime from `19:46:10Z` continuous through the
+leader kill at `19:46:53Z`, the wedge and the cure. The kubelet was not involved.
+
+**The two halves earn their keep separately here, which the YU16 run could not show.** The before
+build printed **nothing whatsoever** across the same leader kill, so the first two lines are the
+listener; the third is the self-heal. 16 orders were denied before it fired rather than YU16's 13,
+because the streak had been partly advanced by earlier probing.
+
+**Non-regression — and this is the safety argument MEASURED on this layer, not inherited.**
+`yu16-ready-tracks-commit` PASSES on the fix build. During its quorum-loss step `noAckStreak`
+reached **25**, past the threshold of 20, while `GATEWAY-WEDGE-SUSPECTED` stayed at its pre-proof
+count of **1**. The offers never cleared, so `offeredUnackedStreak` could not advance and the
+self-heal could not fire in the one regime where a reconnect is useless and `connectCycling()` would
+park the owner thread. The discriminator window (`connected:true` with `/ready` still 503) held, so
+the new trigger does not launder that proof's verdict. Unit suite 344 tests, 0 failures, 4 skipped.
+
+### YU12 — still uncarried, and the reason is not the one this file gave
+
+This file used to say YU12 "is a different program (no `submitPipelined`, so the funnel this hooks
+into does not exist there in the same shape)". That is true of the copy of the YU12 layer carried in
+the **descendant** worktrees — which is a 610-line, pre-probe-work copy that **is shadowed and never
+runs**. YU12's own branch carries **741 lines**, with `noAckStreak` already hooked into
+`submitOrder`.
+
+The real blocker is finer. `offerAndAwait` collapses *offer-cleared* and *ack-arrived* into a single
+returned boolean:
+
+```java
+boolean offered = false;
+while (System.currentTimeMillis() < deadline) {
+    client.pollEgress();
+    if (!offered && client.offer(buffer, 0, length) > 0) { offered = true; }
+    if (offered && ackArrived.getAsBoolean()) { return true; }
+    Thread.yield();
+}
+return false;   // "never cleared" and "cleared, no ack" are indistinguishable here
+```
+
+The offer-cleared fact exists as a local and is **discarded**, so there is nothing for `p.offered`
+to read — and that distinction is the entire safety argument. A YU12-shaped fix therefore means
+changing `offerAndAwait`'s contract to report which of the two failures occurred, across its **four**
+call sites (orders, trades, symbols, batch).
+
+**That is its own change with its own blast radius, not this patch recompiled**, and it should be
+scoped as one rather than logged as "deferred".
+
+> **The method error worth keeping, because it nearly set the scope wrong.** The 610-line
+> measurement was taken in a descendant worktree, where that layer is dead. Measured across
+> worktrees, the YU13 layer shows the same trap and worse: YU13/YU14/YU15 carry 2173 lines
+> (`6d40c428`, including this change) while YU16/YU17 carry **1941** (`6c653951`) — the probe work
+> landed on the operative copies and never on the shadowed ones. Nothing is broken, because the
+> shadowed copies never run. But **a layer measured in a descendant worktree can be a copy that
+> never runs**: measure the layer in a worktree where it is *operative*, or you are reading a corpse.
+
+### The GKE tier — VERIFIED on a live cluster, 2026-08-13
+
+`15e758df`/`f40d110e`/`9bb7b5dc`/`0d7fab5c`/`86552494` wired startup + readiness + liveness at 18111
+into each branch's `gke/gateway.yaml`. Those had rendered and had never met a kubelet. They have now:
+cluster `traderx-bench` in `traderx-505400`, YU16 build at `:yu16`, three members and one gateway at
+`replicas: 1` behind the LoadBalancer — the configuration the wedge was first observed in.
+
+**The probes behaved correctly in every respect checked, and the change did not destabilise a
+healthy tier** — which was its main risk:
+
+| what | reading |
+|---|---|
+| pods Ready, `containerPort: 18111` present | yes; gateway `restarts=0` through the whole healthy period |
+| probe failures during normal operation | none. The only `Unhealthy` events were startup during JVM boot and readiness while quorum was genuinely absent |
+| `GATEWAY_PROBE_PORT` on the serving pod | `18111` — `a2781db7`'s pin, exercised by a kubelet for the first time |
+| `yu16-ready-tracks-commit.sh` | **PASS** — 503 at streak 25, discriminator window held, cleared by `orderRef 51` |
+| `yu16-liveness-restarts-wedge.sh` | **PASS** — `/live` 503 at streak 144, `restarts 4 -> 5`, `exitCode 143`, recovered with `orderRef 452` |
+
+Three GKE-specific readings worth keeping, because none of them could have been taken on kind:
+
+- **The 120s startup budget has about 2x headroom on real hardware, not a lucky fit.** The
+  startupProbe recorded 12 `connection refused` failures at `periodSeconds: 5` — ~60s from container
+  start to first answer on 18111 — against a budget of 24 x 5s. GKE's JVM+Aeron boot is the slow
+  case this constant exists for, and it clears it twice over.
+- **Liveness did not fire on an idle gateway that genuinely could not commit.** Before the members
+  were scheduled, the gateway sat ~10 minutes unable to commit anything with zero traffic offered,
+  and was never restarted. That is the anti-storm property (§1b) confirmed on the tier where a
+  restart storm would actually cost something, rather than argued from the code.
+- **`/ready` and `/live` disagreeing is visible and correct.** With quorum gone and no traffic,
+  `/ready` was 503 (it counts `connected`) while `/live` stayed 200 (it deliberately ignores
+  `connected`). The distinction that keeps an election from restarting every gateway is observable,
+  not just intended.
+
+**THE LANDMINE HAS A TAIL, and `apply -k` does not clear it.** Fixing the manifest and recreating the
+pool got the *StatefulSet spec* right, and members 0 and 1 still would not schedule: the existing
+pods carried the hand-patched `nodeSelector: blp-compact` from the deleted pool, and a pod's node
+selector is immutable. `apply -k` updated the spec and left two pods Pending against it —
+`0/4 nodes are available: 4 node(s) didn't match Pod's node affinity/selector` — while the third,
+which the apply had recreated, ran fine. **Deleting the stale pods is part of the fix**; without it
+the tier comes up one-third scheduled and looks like a quota problem.
+
+**What the run cost, and what it says about the proofs rather than the gateway.** The gateway
+behaved correctly in every run; `yu16-liveness-restarts-wedge.sh` failed three of them, on four
+separate assumptions that were true on kind and false here. All four are fixed in `8634eb01` and
+the detail is in that commit. The pattern is the durable part and it is not "test on GKE":
+
+> A proof's timing constants and its string matching are claims about the ENVIRONMENT, and a
+> passing run does not falsify them. Every one of the four was green on kind for a reason unrelated
+> to the property it asserted — an event string the kubelet's rate limiter structurally cannot
+> deliver on this path, a reconnect budget sized for kind's boot, a `port-forward` never re-spawned
+> after the restart it exists to watch, and a 20s wait defending against a 60s failure mode.
+
+That is a different class from the vacuous-pass audit's existing rules, which are about assertions
+being too *weak*. These assertions were strong; they were about the wrong universe.
+
+**The event half of that has a consequence in PRODUCTION, not just in the proof.** The saturation is
+structural: readiness fails at 20 and liveness at 100, so by the time liveness fires, readiness has
+been failing for ~80 further no-ack submits and has long since spent the shared `reason=Unhealthy`
+budget. Measured on GKE: `Unhealthy count=150` for readiness, and **no liveness `Unhealthy` event at
+all**. So when this probe restarts a real gateway, the `Liveness probe failed` event will usually be
+missing there too — anyone who builds alerting on that string for this gateway gets silence while
+the restart is happening. The reliable signals are the `Killing` event (`Container gateway failed
+liveness probe, will be restarted`), emitted once per kill and so not subject to that pressure, and
+the container's own `restartCount`. This is a consequence of choosing `LIVE_NO_ACK_STREAK` well
+above `READY_NO_ACK_STREAK`, which is deliberate for every other reason (§1b) — it is worth the
+trade, but the alerting has to key off the right event.
+
+Recorded here rather than as a comment in the five `gateway.yaml` copies on purpose: this document
+already exists on every branch that carries the defect, so it reaches the same readers, and a
+comment maintained in five places is exactly the divergence surface the lineage rule punishes.
+
+**The rig itself.** Two facts about the cloud that cost most of an hour and are not about this
+issue at all, kept because the next person will meet them: `us-east1-b` had no `c2d-standard-8`
+capacity (`ZONE_RESOURCE_POOL_EXHAUSTED` / `GCE_STOCKOUT`), and a `CREATE_NODE_POOL` operation
+**cannot be cancelled and blocks every other operation on the cluster while it retries** — 35
+minutes, with `node-pools delete` returning `Cluster is running incompatible operation` throughout.
+So a stockout is not a fast failure to retry around. Check
+`gcloud compute instance-groups managed list-errors <mig>` early rather than reading a long
+`PROVISIONING` as slow provisioning. The pool that eventually came up is `n2-standard-8` without
+`--placement-type COMPACT`; compact placement narrows eligible hosts and `76c45bbb` already found
+it is not the latency lever, so a correctness rig should not ask for it.
+
+**The `blp-c4d-tuned-pool` landmine is now fixed at the source.** `gke/statefulset-emptydir.yaml`
+pinned a pool that a compact-placement experiment had deleted; the live StatefulSet only worked
+because someone had hand-patched the selector, and any fresh `apply -k` would have left all three
+members Pending on "didn't match Pod's node affinity/selector". Fixed by recreating the pool under
+the name the manifests expect, which repairs every branch at once rather than baking an
+experiment's pool name into the tier. The machine-type divergence that comes with it (c2d, not c4d,
+because CPUS_ALL_REGIONS is 32) is recorded at the `nodeSelector` itself.
+
+## §4. The proof reported the wrong cause
+
+`yu12-gke-failover-transparency.sh` announced:
+
+```
+[FAIL] 1 orders were never acknowledged even after retries — the outage was not transparent
+```
+
+That verdict is about **consensus transparency**, and consensus was fine. Its retry loop cannot
+distinguish a dead connection from a cluster refusal — `curl -s` with no output and a cluster
+rejection both land as an empty `out` — so it attributes any failure to the failover. On the
+2026-08-12 run it reported `0 acked` including in the 20 seconds *before* the kill, which should
+have been impossible to read as a failover result at all.
+
+The finding was real; the attribution was not. This is rule 7 of the vacuous-pass audit and the
+script has not yet been fixed.
+
+**And its central accounting is unsound.** On the kind run it reported
+
+```
+stream done: 783 acked, 1 needed retries, 0 gave up
+next_order_ref: 30 -> 868 (delta 838)
+[FAIL] cluster booked 838 orders for 783 acks: 55 DUPLICATED
+```
+
+"55 DUPLICATED" is not a duplication count. The proof equates `next_order_ref` delta with orders
+booked, and §1 shows a ref is consumed by orders that never rest — a same-key retry burns a ref and
+is then suppressed. So the counter measures *ref allocations*, not *bookings*, and the two differ
+by exactly the traffic this defect generates.
+
+Note also that only **1** order needed a retry across the whole stream, so those 55 refs cannot be
+retry-caused. Something allocated ~55 refs for one client request each without the client seeing a
+failure — most likely the gateway resubmitting internally when an ack does not arrive, which would
+be the same root cause as §1. **Unverified**: that hypothesis has not been checked against
+`ClusterGatewayMain.submitOrder`, and it is the most promising next thread.
+
+Whoever fixes the proof should assert against a booking-grained quantity (open-order count, or the
+read model) rather than the ref counter.
