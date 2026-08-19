@@ -1,7 +1,9 @@
 # An instrument added to the CDM catalog never reaches an already-deployed environment
 
-**Filed** 2026-08-18 by the coordinator, root-caused from a suite failure. **Open.**
-This is a product/deployment defect, not rig drift. It will behave identically on GKE.
+**Filed** 2026-08-18 by the coordinator, root-caused from a suite failure.
+**Resolved 2026-08-18**: startup now reconciles the `stocks` table against the CSV catalog through
+the outbox-writing path, and the proof that was eating the rows restores them itself. Both fixes
+rig-verified — see "Resolution", below. The pre-fix analysis is kept as filed.
 
 ## The rule that causes it
 
@@ -66,6 +68,57 @@ have to be "re-apply after every restart, forever", which nobody will do and not
 `TREASURY_SEEDS`, including the bills, so a fresh seed *should* contain them. It does not. Worth
 establishing why before designing the fix — `loadCsvData` takes `supportedTickers`/`maxTickers`, and a
 cap that truncates after the S&P rows would explain it exactly. Do not assume; measure.
+
+## MEASURED A THIRD TIME 2026-08-18 — the true eater, and both prior diagnoses were wrong
+
+The open question above has an answer, and it is neither a fresh-seed truncation nor a DB restart:
+
+- The deployed dist's `loadCsvData({})` returns **533 rows including all 19 bond keys**. Both env
+  filters (`REFERENCE_DATA_SUPPORTED_TICKERS`, `REFERENCE_DATA_MAX_TICKERS`) are empty on the rig.
+  A fresh seed does NOT omit the bills. The truncation hypothesis is dead.
+- The DB pod had **not restarted** across the second eating. The ephemeral-DB observation is real
+  (it has no PVC) but it was not the mechanism either.
+
+The eater is **`scripts/proofs/yu15-option-persistence.sh` step 1**: as setup for the migration
+proof it runs `DELETE FROM stocks WHERE CHAR_LENGTH(ticker) > 16` (and the same for the other
+instrument-identifier tables), then widens the schema back via 900-migrations — but **never
+restores the deleted rows**. Every catalog member above 16 characters is exactly the missing set:
+the 4 bills and 2 later corporates at 17, the 4 STRIPS at 18 — the measured 9-present/10-missing
+split, character for character. Every suite run re-ate the rows, which is why the repair "did not
+survive" and why `yu16-bond-position` failed two proofs later in the same suite, far from the cause.
+
+## Resolution (2026-08-18, rig-verified on kind-traderx-yu12-cluster)
+
+Two independent fixes, either of which prevents the recurrence; both landed:
+
+1. **Reconcile-on-startup** (`specs/YU04-durable-control-feeds/.../stocks.service.ts`, YU16+YU17):
+   `onModuleInit` now diffs the CSV catalog against the `stocks` table and inserts every missing
+   row **with its outbox row in one transaction** — the same ADR-021 path as `create()`, never raw
+   SQL, so the durable control feed cannot diverge. Rows in the table but not the CSV are left
+   alone (the table is the mutable universe; the CSV is only its floor). Verified live: a boot
+   against the eaten table logged `Reconciled 10 catalog rows from CSV (531 already present)` and
+   restored exactly the 10 keys with 10 outbox rows; an immediate second boot inserted nothing and
+   wrote no duplicate outbox rows. This also closes the original filing: a catalog addition now
+   reaches every deployed environment on its next reference-data restart.
+2. **The proof restores what it deletes** (`scripts/proofs/yu15-option-persistence.sh`, new step
+   3b, carried to YU15/YU16/YU17): the doomed rows are captured before the DELETE and re-created
+   after the widen through in-cluster `POST /stocks` (201 asserted per row) — again the outbox
+   path, not SQL. The step then WAITS for the gateway to apply its highest outbox version into
+   consensus before exiting: each restore POST queues a control-feed event that is applied into
+   the cluster asynchronously AFTER the proof would otherwise exit, and `yu16-bond-position`
+   step 1 asserts the applied sequence is still — an unflushed tail is a real race against the
+   next proof in a suite. (The back-to-back failures that prompted the wait turned out to be a
+   different cause — the rig was still on YU15's cluster build, where FR-CDM16 boundary
+   validation does not exist, so the two 422 probes themselves reached consensus. The wait stays:
+   the tail race is real even if it was not that day's bullet.) Verified: option-persistence PASS
+   with `10 long-ticker universe rows restored`, followed back-to-back by `yu16-bond-position`
+   with no manual repair in between, on the YU16 build.
+
+**Ancestor gap, recorded:** the seed-if-empty defect exists on every YU04+ branch, but the
+reconcile is carried only to the catalog-bearing branches (YU16, YU17). Ancestors have no CDM
+catalog and no >16-char tickers in their CSV, so the failure this issue documents cannot occur
+there; carrying anyway would mean rebuilding reference-data images on branches with nothing to
+reconcile.
 
 ## The durable fix
 
