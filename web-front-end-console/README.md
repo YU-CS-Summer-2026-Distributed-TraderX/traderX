@@ -46,9 +46,12 @@ operative manifest is
 
 ## Known gaps (deliberate)
 
-- **Swap/swaption booking needs a YU17 gateway.** The rig's `:yu16-ackB` build has no
-  `/swaps`/`/swaptions` routes; the ticket reports "route absent" on 404. Roll the tier to a YU17
-  ackB build (members + gateway together, fresh epoch — 24 vs 32-byte ack wire rule) to demo it.
+- **Swap/swaption booking needs a YU17 gateway** (`/swaps`/`/swaptions` don't exist before it;
+  the ticket reports "route absent" on 404). Verified live 2026-08-18 after the rig rolled to
+  `:yu17-ackB`: swaps and swaptions book with contract id + consensus seq, and a GBP swap (the
+  deliberately rate-less currency) renders `REFUSED: PRICE_MISSING`.
+- **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway.** Off by default; the panel shows
+  the gateway's own "disabled" message until someone flips it (a gateway env change + restart).
 - **EOD cut provenance** (consensus seq + per-member SHA) has no HTTP surface anywhere — the
   extract writes files. Needs a read-only endpoint before it can be a panel.
 - Polling, not push. NATS later, once the shape settles.
