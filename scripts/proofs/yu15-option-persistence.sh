@@ -84,6 +84,13 @@ step "1. narrow the columns back to an older state's widths"
 # Now that the feed quotes the chain and the bridge persists option fills, real 19-character rows
 # exist, and MariaDB (correctly) refuses to shrink a column under them. Clear them first so the
 # starting state is a faithful older-schema database rather than an impossible hybrid.
+# Capture the universe rows this regression is about to delete, so step 3b can put them back.
+# Real catalog members live above 16 characters now (UST bills and STRIPS at 17-18, two
+# corporates at 17); deleting them without restoring is what silently ate three manual catalog
+# repairs in one day and failed yu16-bond-position LATER IN THE SAME SUITE, two proofs away from
+# the cause. Two columns rather than CONCAT(ticker, 0x09, name): mariadb batch mode escapes a
+# tab INSIDE a value as backslash-t, so only the real inter-column separator is a genuine tab.
+DOOMED="$(sql "SELECT ticker, company_name FROM stocks WHERE CHAR_LENGTH(ticker) > 16;")"
 sql "DELETE FROM eod_position_pnl WHERE CHAR_LENGTH(security) > 16;
      DELETE FROM eod_price_snapshot WHERE CHAR_LENGTH(security) > 16;
      DELETE FROM trades WHERE CHAR_LENGTH(security) > 15;
@@ -135,6 +142,49 @@ widths | sed 's/^/  /'
 NARROW="$(widths | grep -cv '=32$' || true)"
 [[ "${NARROW}" == "0" ]] || fail "${NARROW} column(s) still narrow after the migration"
 echo "[ok] every instrument-identifier column widened in place, on a populated volume"
+
+step "3b. restore the universe rows the step-1 regression deleted — through the outbox path"
+# POST /stocks, never raw SQL: reference-data writes the stocks row and its control-outbox row in
+# one transaction, and a raw insert would diverge the durable control feed
+# (issues/open/catalog-additions-never-reach-a-deployed-environment.md). In-cluster via the
+# service DNS so this step does not depend on whichever host port-forwards happen to be alive.
+# The restore must run AFTER the widen — a 17-character ticker cannot enter a VARCHAR(16) column.
+RESTORED=0
+if [[ -n "${DOOMED}" ]]; then
+  while IFS=$'\t' read -r T C; do
+    [[ -n "${T}" ]] || continue
+    CODE="$(${K} exec deploy/reference-data -- node -e "
+      fetch('http://reference-data:18085/stocks', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ticker: process.argv[1], companyName: process.argv[2]})})
+      .then(r => { console.log(r.status); process.exit(0); })
+      .catch(() => { console.log('ERR'); process.exit(1); })" "${T}" "${C}" 2>/dev/null)"
+    [[ "${CODE}" == "201" ]] || fail "restore of ${T} through POST /stocks failed (got '${CODE}')"
+    RESTORED=$((RESTORED+1))
+  done <<< "${DOOMED}"
+fi
+LEFT="$(sql "SELECT COUNT(*) FROM stocks WHERE CHAR_LENGTH(ticker) > 16;")"
+[[ "${LEFT}" == "${RESTORED}" ]] || fail "restored ${RESTORED} long-ticker rows but the table holds ${LEFT}"
+
+# Do not exit while our own writes are still in flight: each POST above queued a control-outbox
+# row that the gateway later applies INTO CONSENSUS, and that tail moves the cluster's applied
+# sequence after this proof exits — yu16-bond-position step 1 asserts that very sequence is
+# still, so an unflushed tail fails the NEXT proof in the suite, two minutes from its cause.
+# Quiesce oracle: the gateway logs "CONTROL-FEED applied ... version=N" per event; wait until it
+# has applied our highest outbox version.
+if [[ "${RESTORED}" -gt 0 ]]; then
+  MAXV="$(sql "SELECT MAX(version) FROM stocks_control_outbox;")"
+  QUIESCED=0
+  for _ in $(seq 1 60); do
+    # grep WITHOUT -q: under this script's pipefail, -q's early exit SIGPIPEs kubectl and the
+    # whole pipeline reads as a miss even when the line is present. Full-read grep drains the stream.
+    if ${K} logs deploy/cluster-gateway --since=10m 2>/dev/null \
+         | grep "CONTROL-FEED applied .*version=${MAXV}\b" >/dev/null; then QUIESCED=1; break; fi
+    sleep 2
+  done
+  [[ "${QUIESCED}" == 1 ]] || fail "control feed never applied outbox version ${MAXV} to the cluster within 120s"
+fi
+echo "[ok] ${RESTORED} long-ticker universe rows restored (one outbox row each, applied through consensus; 0 restored is legal on a rig that never held them)"
 
 step "4. book another option cross — it must land intact"
 cross "${AFTER_SYM}" "${PREMIUM}"

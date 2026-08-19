@@ -20,28 +20,34 @@ export class StocksService implements OnModuleInit {
   ) {}
 
   /**
-   * One-time idempotent seed from the CSV (only runs if `stocks` is empty) — replaces the old
-   * CSV-only in-memory cache. Each seed row also gets an outbox row, so the initial universe is
-   * itself replayable through the durable feed (ADR-021).
+   * Idempotent startup reconcile against the CSV catalog — replaces the old seed-only-if-empty,
+   * which meant any row later deleted from `stocks` (or a catalog addition landing after first
+   * boot) never reached a deployed environment. Every missing row is inserted together with its
+   * outbox row in one transaction, so repairs flow through the durable feed like any other
+   * change (ADR-021). Rows present in `stocks` but absent from the CSV are left alone: the
+   * table is the mutable universe, the CSV is only its floor.
    */
   async onModuleInit(): Promise<void> {
-    const existing = await this.stocksRepository.count();
-    if (existing > 0) {
-      return;
-    }
     const supportedTickers = this.parseSupportedTickers(process.env.REFERENCE_DATA_SUPPORTED_TICKERS);
     const maxTickers = this.parsePositiveInt(process.env.REFERENCE_DATA_MAX_TICKERS);
     const seedStocks = await loadCsvData({ supportedTickers, maxTickers });
+    const existing = new Set((await this.stocksRepository.findAll()).map((stock) => stock.ticker));
+    const missing = seedStocks.filter((stock) => !existing.has(stock.ticker));
+    if (missing.length === 0) {
+      return;
+    }
 
     const conn = await this.pool.getConnection();
     try {
       await conn.beginTransaction();
-      for (const stock of seedStocks) {
+      for (const stock of missing) {
         await this.stocksRepository.insert(conn, stock.ticker, stock.companyName);
         await this.outboxRepository.recordChange(conn, stock.ticker, stock.companyName);
       }
       await conn.commit();
-      StocksService.logger.log(`Seeded ${seedStocks.length} stocks from CSV`);
+      StocksService.logger.log(
+        `Reconciled ${missing.length} catalog rows from CSV (${existing.size} already present)`,
+      );
     } catch (err) {
       await conn.rollback();
       throw err;
