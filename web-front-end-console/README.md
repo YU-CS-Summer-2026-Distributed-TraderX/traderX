@@ -8,51 +8,46 @@ does not replace.
 Deliberately standalone — **not** folded into `specs/` (layer composition for an app with no
 lineage is the expensive order; promote it later if it earns it).
 
-## Surfaces
-
-- **Aeron cluster** — the three members' role / `applied` / `engineApplied` / `trades`, side by
-  side, polled every 2s, with an agreement banner. Reachable from a browser only via the
-  `/m0../m2` edge-proxy routes (see below).
-- **Order entry** — six tickets: equity, listed option (OCC symbol; underlying/expiry/call-put/
-  strike are *derived from the symbol*, never entered), treasury and corporate (fraction-of-par
-  price, six decimals, quantity = USD face; issuer/day-count/rating shown from the reference-data
-  join), swap and swaptions (terms, not a price — no NPV exists in this system, by design).
-- **Blotter & positions** — off position-service, per account.
-- **Activity & rejections** — every submission with its outcome; rejects show the `RiskReason`
-  code (`PRICE_COLLAR`, `UNKNOWN_SECURITY`, `PRICE_MISSING`, …).
-- **Latency & throughput** — gateway `/metrics` (ack rate derived client-side) and `/latency`.
-- **EOD session** — draft vs published with the version chain (a correction is a new version,
-  ADR-026), per-instrument quality codes, the override form, and the publish button that shows
-  the quality gate's 409 when a flagged session refuses to publish. Needs an admin JWT: paste the
-  rig's dev-token master secret once, the panel mints its own token
-  (`POST /trade-processor/auth/dev-token`).
-
-## Running against a rig
-
-The app calls same-origin relative paths and expects the edge-proxy route table. In dev:
+## Running
 
 ```bash
-kubectl --context kind-traderx-yu12-cluster -n traderx port-forward svc/edge-proxy 30080:8080 &
-npm start          # ng serve with proxy.conf.json -> localhost:30080
+npm start
 ```
 
-`proxy.conf.json` forwards `/order-matcher`, `/reference-data`, `/account-service`,
-`/position-service`, `/trade-processor`, `/m0../m2` to the port-forward.
+That is the whole workflow: the dev proxy (`proxy.conf.mjs`) spawns and babysits the
+`kubectl port-forward svc/edge-proxy` itself, reads the rig's dev-token master secret the same way
+the proof scripts do (so the EOD panel auto-mints its admin token — no pasting), and proxies the
+`/nats-ws` websocket for the live blotter. Override the rig with `RIG_CONTEXT` / `RIG_NAMESPACE`
+env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
 
-The `/m0../m2` per-member health routes are served by the `edge-proxy-config` ConfigMap; the
-operative manifest is
-`specs/YU17-otc-rates/generation/runtime-overrides/kubernetes-runtime/manifests/base/edge-proxy-configmap.yaml`
-(the YU17 layer is last, so it wins). Applied to the kind rig 2026-08-18.
+## Pages
+
+- **Trading** — order entry (six tickets: equity, OCC option with symbol-derived terms, treasury
+  and corporate at fraction-of-par with the day-count split from the reference-data join, swap and
+  swaption as terms with no NPV by design), blotter & positions, activity & rejections with reason
+  codes. A **Demo preset** dropdown fills the whole ticket for each story — Submit is the only
+  remaining click. The blotter subscribes `/accounts/{id}/trades|positions` on the message bus and
+  shows `live · message bus` when the feed is up, `polling` otherwise.
+- **System** — the three cluster members side by side (role, applied, engineApplied, trades) with
+  an agreement banner, and live latency/throughput with consensus p50/p99 (sample count shown —
+  a percentile without its n is an anecdote).
+- **End of day** — draft vs published with the version chain (a correction is a new version,
+  ADR-026), per-instrument quality codes, the override form, and the publish button that shows the
+  quality gate's 409.
+
+Every panel carries a `?` hover explainer written for someone who doesn't know the system.
 
 ## Known gaps (deliberate)
 
-- **Swap/swaption booking needs a YU17 gateway** (`/swaps`/`/swaptions` don't exist before it;
-  the ticket reports "route absent" on 404). Verified live 2026-08-18 after the rig rolled to
-  `:yu17-ackB`: swaps and swaptions book with contract id + consensus seq, and a GBP swap (the
-  deliberately rate-less currency) renders `REFUSED: PRICE_MISSING`.
-- **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway.** Off by default; the panel shows
-  the gateway's own "disabled" message until someone flips it (a gateway env change + restart).
+- **The live blotter needs the NATS websocket listener enabled on the rig** — declared in the YU17
+  cluster layer's `nats.yaml` (ConfigMap-based config; nats-server cannot enable websocket from a
+  CLI flag) but applying it restarts the NATS pod, and JetStream state on emptyDir does not
+  survive that, so the apply is a human's call. Until then the blotter pill honestly says
+  `polling`. The `nats-broker` Service also needs port 8081 added (the edge proxy's `/nats-ws`
+  route targets it).
+- **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway** — live on the rig and declared in
+  the YU17 layer since 2026-08-18.
 - **EOD cut provenance** (consensus seq + per-member SHA) has no HTTP surface anywhere — the
   extract writes files. Needs a read-only endpoint before it can be a panel.
-- Polling, not push. NATS later, once the shape settles.
-- Styling is "legible", per the brief.
+- The in-cluster deployment (Dockerfile + `/console/` edge route) is still deferred; the auto-mint
+  and port-forward conveniences above are dev-proxy-only and would need real equivalents.
