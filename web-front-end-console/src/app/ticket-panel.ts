@@ -41,6 +41,19 @@ const PRESETS: Preset[] = [
       t.cls.set('Swaption'); t.payReceive = 'Pay'; t.notional = 10_000_000; t.fixedRate = 0.042;
       t.effectiveDate = iso(365); t.maturityDate = iso(365 + 365 * 5); t.conventions = 'USD-SOFR-1Y-ACT360';
       t.expiryDate = iso(363); t.exerciseStyle = 'European'; } },
+  // The algo demo is two beats, because the seed book is consumable: first post the liquidity the
+  // slices will cross (priced off the LIVE feed, just through the touch), then run the parent.
+  // The slices are live limit orders, not fire-and-forget — a parent whose slices price below the
+  // book simply rests, which is correct and is its own (labelled) story.
+  { label: 'Algo 1/2 — post the bid the slices will cross (buy 100 IBM)', apply: t => {
+      t.cls.set('Equity'); t.execMode = 'Direct'; t.accountId = 42422; t.ticker = 'IBM';
+      t.side = 'Buy'; t.quantity = 100;
+      // +5 through the touch: the simulated feed walks ~1%/min, and the slices price off the
+      // LIVE feed up to durationSeconds later — a tight bid loses that race and rests.
+      t.limitPrice = Math.round(((t.api.prices()['IBM']?.price ?? 182) + 5) * 100) / 100; } },
+  { label: 'Algo 2/2 — TWAP sell 30 IBM over 30s (slices cross that bid)', apply: t => {
+      t.cls.set('Equity'); t.execMode = 'TWAP'; t.accountId = 22214; t.ticker = 'IBM';
+      t.side = 'Sell'; t.quantity = 30; t.durationSeconds = 30; t.bucketSeconds = 10; } },
 ];
 
 @Component({
