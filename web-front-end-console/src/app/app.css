@@ -9,19 +9,25 @@ header {
   max-width: 1400px; margin: 0 auto; padding: 7px 20px;
   min-height: 52px; display: flex; align-items: center; gap: 14px 18px; flex-wrap: wrap;
 }
-.brand { display: flex; align-items: center; gap: 5px; text-decoration: none; flex: 0 0 auto; }
-.brand:hover .wordmark { color: var(--text); }
+.brand { display: flex; align-items: center; gap: 6px; text-decoration: none; flex: 0 0 auto; }
+.brand:hover .console { color: #000; }
 .brand .yu { height: 28px; width: auto; }
 /* The wordmark stands in for the word "TraderX", so it is sized against the type beside it
-   rather than as a small mark: cap height of 15px text is ~11px, and this SVG's own glyphs sit
-   at roughly two-thirds of its box. */
-.brand .tx { height: 26px; width: auto; margin: 0 1px; }
-.wordmark { font-size: 15px; color: var(--muted); white-space: nowrap; }
-.wordmark b { color: var(--text); font-weight: 700; }
+   rather than as a small mark. */
+.brand .tx { height: 30px; width: auto; }
+.wordmark { font-size: 16px; white-space: nowrap; }
+.yu-text { color: var(--text); font-weight: 800; }
+/* "Console" completes the lockup, so it is set in the brand face at the wordmark's own weight
+   and sits tight against it — the two read as one phrase, not a logo with a caption. */
+.console {
+  font-family: 'Overpass', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-weight: 800; font-size: 19px; letter-spacing: -0.01em; color: var(--text);
+  margin-left: -1px;
+}
 /* A true middle dot, vertically centred against the cap height rather than sitting on the
    baseline like a full stop would. */
-.dot { padding: 0 5px; color: var(--faint); font-weight: 700; vertical-align: middle;
-       line-height: 1; }
+.dot { padding: 0 4px; color: var(--text); font-weight: 800; font-size: 1.15em;
+       vertical-align: middle; line-height: 1; }
 
 nav { display: flex; gap: 2px; flex-wrap: wrap; }
 nav a {

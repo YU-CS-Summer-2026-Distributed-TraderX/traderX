@@ -70,7 +70,7 @@ export class Section<T> {
     .tog { display: flex; align-items: center; gap: 6px; background: none; border: none; padding: 0;
            font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; }
     .tog:hover { color: var(--text); }
-    .arrow { display: inline-block; width: 10px; font-size: 10px; }
+    .arrow { display: inline-block; width: 13px; font-size: 13px; line-height: 1; }
   `,
 })
 export class SecHead {
