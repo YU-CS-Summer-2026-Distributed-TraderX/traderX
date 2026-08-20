@@ -29,6 +29,7 @@ const headers = (content: string) =>
       <help-tip text="At end of day the cluster takes a cut: every position at an exact consensus sequence number, against a specific published price version. Because the engine is deterministic, all three members render byte-identical files from it — the SHA-256 here is the fingerprint of that claim. Each cut produces two artifacts from one committed source: the netted positions, and the OTC contracts. Both name the cut they were rebuilt from, so 'reproduces from the cut alone' is something you can check on this screen rather than take on faith. Swaps appear only in the contracts file, never as position rows — netting a pay-fixed against a receive-fixed would destroy both rates." />
     </div>
 
+    @if (rigNote()) { <div class="banner warn-note">{{ rigNote() }}</div> }
     @for (c of cuts(); track c.key) {
       <div class="cut-head">
         <b>{{ c.date }}</b> <span class="pill">{{ c.version }}</span>
@@ -57,7 +58,7 @@ const headers = (content: string) =>
         </tbody>
       </table>
     } @empty {
-      <div class="faint">{{ error() || 'loading cuts…' }}</div>
+      <div class="faint">{{ error() || (loaded() ? 'no cuts anywhere' : 'loading cuts…') }}</div>
     }
     @if (cuts().length && error()) { <div class="sub err">{{ error() }}</div> }
   `,
@@ -70,18 +71,28 @@ const headers = (content: string) =>
     .cut { font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: #f8f9fb;
            border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; margin: 4px 0; }
     .err { margin-top: 10px; }
+    .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; margin-bottom: 6px; }
   `,
 })
 export class ProvenancePanel implements OnInit {
   private api = inject(Api);
   readonly cuts = signal<Cut[]>([]);
   readonly error = signal('');
+  readonly loaded = signal(false);
+  /**
+   * An empty sink has to announce itself. The extract's volume is an emptyDir (deliberately —
+   * durability is the GCS sink's job on the GKE overlay), so rescheduling deploy/risk-extract
+   * silently deletes every cut on the epoch. Without this line the panel would simply render the
+   * archive rows and look fine, which is exactly how "it was full an hour ago" happens mid-demo.
+   */
+  readonly rigNote = signal('');
 
   async ngOnInit(): Promise<void> {
     // Two independent sources, loaded independently: the rig's own sink is where a cut taken on
     // this rig lands (and the only place the contracts artifact exists), while the GCS bucket holds
     // the uploaded archive. Neither failing should blank the other.
     await Promise.all([this.loadRig(), this.loadArchive()]);
+    this.loaded.set(true);
   }
 
   rowsOf(a: Artifact): string {
@@ -98,6 +109,12 @@ export class ProvenancePanel implements OnInit {
     const r = await this.api.load<{ pod: string; files: { path: string; sha256: string; content: string }[]; error?: string }>('/extracts');
     if (r.status !== 200 || !r.body?.files) {
       this.error.set(r.body?.error ?? 'rig cut sink unreachable (dev proxy + kubectl required)');
+      return;
+    }
+    if (!r.body.files.length) {
+      this.rigNote.set('No cuts on the rig sink. risk-extract mounts an emptyDir, so rescheduling '
+        + 'that pod deletes every cut written on this epoch — nothing older survives a restart. '
+        + 'Take a fresh cut before demonstrating this panel, and leave the pod alone afterwards.');
       return;
     }
     const byDir = new Map<string, typeof r.body.files>();

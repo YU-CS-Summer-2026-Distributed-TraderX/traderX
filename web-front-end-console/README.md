@@ -112,10 +112,18 @@ it — a real print and a position on both sides.
   same is applied (NATS pod restart — JetStream state on emptyDir does not survive it).
 - **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway** — live on the rig and declared in
   the YU17 layer since 2026-08-18.
-- **EOD cut provenance still has no HTTP surface** — the extract writes files to
-  `file:///data/risk-extracts` on the risk-extract pod, so the panel reads them through a read-only
-  dev-proxy bridge (`kubectl exec`, same shape as the kdb one). A deployed console would need a
-  real read endpoint. Note the sink is where cuts taken *on this rig* land; the GCS bucket holds
-  older uploaded ones.
+- **Cuts on the kind rig are ephemeral, and losing them is silent.** The extract's
+  `/data/risk-extracts` is an `emptyDir` — deliberately, because durability is the GCS sink's job
+  on the GKE overlay and there is none on kind. Rescheduling `deploy/risk-extract` deletes every
+  cut on the epoch. **Take a fresh cut before demonstrating the provenance panel, and leave that
+  pod alone afterwards**; the panel says so when it finds the sink empty, rather than rendering the
+  archive rows and looking fine.
+- **Reading the sink is a kind-only gap, and an HTTP server is the wrong fix.** `risk-extract` has
+  no Service and no container ports — it is a headless worker, NATS in, files out — so there is
+  nothing for an edge-proxy route to point at, and serving the files would mean giving a
+  deliberately-headless component an ingress. On GKE the gap does not exist: the sink is
+  `gs://traderx-…-risk-extracts`, already a URL and already durable. So the work item is *deployed
+  console reads the bucket, local console keeps the `kubectl exec` bridge* — not "build a file
+  server into risk-extract".
 - The in-cluster deployment (Dockerfile + `/console/` edge route) is still deferred; the auto-mint
   and port-forward conveniences above are dev-proxy-only and would need real equivalents.
