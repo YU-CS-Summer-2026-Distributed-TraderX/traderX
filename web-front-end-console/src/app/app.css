@@ -58,5 +58,8 @@ nav a.on { background: var(--accent-soft); color: var(--accent); }
   padding: 4px 9px; border-radius: 7px;
 }
 .site:hover { background: #f0f2f5; color: var(--text); }
+/* Marks the one link in the shell that leaves the console. aria-hidden because "Project site"
+   already names the destination — a screen reader announcing "north east arrow" adds nothing. */
+.site .ext { font-size: 11px; opacity: .7; margin-left: -1px; }
 
 main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 40px; }
