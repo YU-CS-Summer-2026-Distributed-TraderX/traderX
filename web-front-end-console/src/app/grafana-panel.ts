@@ -86,7 +86,7 @@ const DASHBOARDS: Dash[] = [
 export class GrafanaPanel implements OnInit {
   private api = inject(Api);
   readonly dashboards = DASHBOARDS;
-  /** Same-origin through the dev proxy, so the link works from wherever the console is served. */
+  /** Same-origin through whichever back end is serving the console, so the link works either way. */
   readonly base = '/grafana/';
   readonly up = signal<boolean | null>(null);
 

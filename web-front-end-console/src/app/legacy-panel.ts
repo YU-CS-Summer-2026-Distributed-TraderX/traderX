@@ -76,7 +76,7 @@ const ADDED: { what: string; why: string }[] = [
 export class LegacyPanel {
   private api = inject(Api);
   readonly added = ADDED;
-  /** The edge proxy's root serves the original app; the dev proxy forwards that port already. */
+  /** The edge proxy's root serves the original app; the console's back end forwards it already. */
   readonly url = '/legacy/';
   rig(): boolean { return this.api.accounts().length > 0; }
 }

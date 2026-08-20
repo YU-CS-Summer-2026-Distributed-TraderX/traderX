@@ -1,5 +1,5 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
-import { Api } from './api';
+import { Api, bridgeError } from './api';
 import { HelpTip } from './help';
 
 interface Artifact { kind: string; label: string; path: string; sha256: string; content: string; }
@@ -146,7 +146,7 @@ export class ProvenancePanel implements OnInit {
   private async loadRig(): Promise<void> {
     const r = await this.api.load<{ pod: string; files: { path: string; sha256: string; content: string }[]; error?: string }>('/extracts');
     if (r.status !== 200 || !r.body?.files) {
-      this.error.set(r.body?.error ?? 'rig cut sink unreachable (dev proxy + kubectl required)');
+      this.error.set(bridgeError(r, 'the cut-sink bridge'));
       return;
     }
     if (!r.body.files.length) { this.rigEmpty.set(true); return; }

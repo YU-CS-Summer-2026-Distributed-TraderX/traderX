@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api } from './api';
+import { Api, bridgeError } from './api';
 import { HelpTip } from './help';
 import { SecHead, SecPager, Section } from './section';
 import { QResult, runQ } from './qeval';
@@ -604,7 +604,8 @@ export class KdbPanel implements OnInit, OnDestroy {
     this.engineTrades.set(counts.length && new Set(counts).size === 1 ? counts[0] : null);
     const r = await this.api.load<{ members: { member: number; capture: string }[] }>('/kdbtap');
     if (r.status !== 200 || !r.body?.members) {
-      this.error.set('capture bridge unreachable (dev proxy + kubectl required)');
+      // The bridge says why it failed; this used to throw that away and substitute a guess.
+      this.error.set(bridgeError(r, 'the capture bridge'));
       return;
     }
     this.error.set('');

@@ -1,6 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, nextClientOrderId } from './api';
+import { Api, bridgeError, nextClientOrderId } from './api';
 import { HelpTip } from './help';
 
 /** FIX 4.4 tags this panel renders by name — enough to read a NewOrderSingle and its report. */
@@ -37,8 +37,10 @@ interface Msg { type: string; typeName: string; raw: string; fields: Field[]; }
         FIX.4.4 · CLIENT1 → TRADERX</span>
     </div>
 
+    <!-- "the dev proxy holds the session" was true where it was written and false where it runs:
+         deployed, this is server.mjs dialling the acceptor Service. Named by role instead. -->
     <div class="sub note">A browser cannot open a TCP socket, so the console cannot speak FIX
-      itself: the dev proxy holds the session for the length of one order — logon, NewOrderSingle,
+      itself: its back end holds the session for the length of one order — logon, NewOrderSingle,
       ExecutionReport, disconnect — and hands back the raw wire text of every message. Sessions are
       ephemeral by design (the acceptor stores them in memory), so a one-order session is an
       ordinary one, not a shortcut.</div>
@@ -120,7 +122,7 @@ export class FixPanel {
         side: this.side, quantity: this.quantity, limitPrice: this.limitPrice,
       });
       if (r.status !== 200 || !r.body) {
-        this.last.set({ messages: [], error: `bridge unreachable (HTTP ${r.status}) — is the dev proxy running?` });
+        this.last.set({ messages: [], error: bridgeError(r, 'the FIX bridge') });
         return;
       }
       // Interleaved in wire order: logon out, logon in, order out, report in.

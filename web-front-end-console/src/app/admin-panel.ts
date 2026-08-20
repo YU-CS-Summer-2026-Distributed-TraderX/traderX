@@ -98,7 +98,10 @@ interface ParentOrder {
       } @else if (algoDown()) {
         <div class="banner warn-note">Algo engine is scaled to 0 — the proof suite parks it there
           deliberately (its child orders move counters under counter-exact proofs). To demo:
-          <span class="mono">kubectl -n traderx scale deploy/execution-algo-engine --replicas=1</span></div>
+          <span class="mono">kubectl -n traderx scale deploy/execution-algo-engine --replicas=1</span>
+          <div class="sub">— against whichever context your kubectl currently points at. There are two
+            rigs and no <span class="mono">--context</span> here on purpose: hardcoding one would be
+            right on that rig and quietly wrong on the other. Check it first.</div></div>
       } @else { <div class="faint">no parent orders yet — submit one from the ticket with TWAP/VWAP execution</div> }
 
       <div class="card-head sect">

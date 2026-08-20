@@ -173,6 +173,27 @@ export function parseProm(text: string): Record<string, number> {
   return out;
 }
 
+/**
+ * What to show when one of the four bridges did not answer.
+ *
+ * Each bridge has two implementations — proxy.conf.mjs's bypasses on a laptop, server.mjs in the
+ * cluster — and BOTH report their own failures in `error`, with the detail that is only knowable
+ * there ("kubectl exec failed — is the risk-extract pod up?", "gcloud failed — is Workload Identity
+ * bound for this pod?"). So the bridge's own words always win, and the console never has to guess
+ * which half it is talking to.
+ *
+ * The fallback fires only when nothing intelligible came back, which is precisely when the console
+ * knows least. It names the bridge's ROLE rather than a deployment: these messages used to say
+ * "dev proxy + kubectl required", which sends a viewer of the deployed console hunting for a
+ * process that does not exist on their machine while the real cause — the console server's bridge,
+ * its RBAC, or the upstream pod — goes unexamined. An error that names the wrong subsystem is
+ * worse than a generic one: it spends the reader's attention before they have any evidence.
+ */
+export const bridgeError = (r: { status: number; body: unknown }, role: string): string => {
+  const own = (r.body as { error?: string } | null)?.error;
+  return own || `${role} did not answer (${r.status ? 'HTTP ' + r.status : 'no response'})`;
+};
+
 @Injectable({ providedIn: 'root' })
 export class Api {
   readonly accounts = signal<Account[]>([]);
@@ -224,9 +245,11 @@ export class Api {
    * state — orders from an account the engine has never been told about are refused UNKNOWN_ACCOUNT,
    * which is why creating one in the account service alone is not enough to trade.
    *
-   * The token is the gateway's own default: RISK_CONTROL_TOKEN is unset on the kind rig, so
-   * ClusterGatewayMain's env("RISK_CONTROL_TOKEN", "dev-risk-control") stands. A rig that sets it
-   * will answer 401 here, and the panel says so rather than pretending the control landed.
+   * The token is the gateway's own default: no rig currently sets RISK_CONTROL_TOKEN, so
+   * ClusterGatewayMain's env("RISK_CONTROL_TOKEN", "dev-risk-control") stands on every tier.
+   * A rig that does set it will answer 401 here, and the panel says so rather than pretending the
+   * control landed. (Said "unset on the kind rig" until 2026-08-20, which read as a kind-only
+   * fact and left the cloud tier looking unaccounted for.)
    */
   riskControl<T>(action: string, body: unknown): Promise<{ status: number; body: T | null }> {
     return this.load<T>(`/order-matcher/risk/control/${action}`, {
@@ -308,7 +331,11 @@ export class Api {
 
   readonly adminToken = signal<string | null>(sessionStorage.getItem('traderx-console-eod-token'));
 
-  /** Mint an admin JWT; without a secret the dev proxy injects the master-secret header. */
+  /**
+   * Mint an admin JWT. Without a secret typed here the console's own back end supplies the master
+   * secret: proxy.conf.mjs reads it off the rig with kubectl, server.mjs reads it from the
+   * auth-secrets Secret mounted into its pod. Either way the browser never holds it.
+   */
   async mintAdminToken(masterSecret?: string): Promise<boolean> {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (masterSecret) headers['X-Auth-Master-Secret'] = masterSecret;

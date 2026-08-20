@@ -128,6 +128,42 @@ The reverse trap is just as cheap to hit: converting a field to a signal makes e
 of it a read of the function object. Grep every use before flipping one — a loosely-typed request
 body will happily serialize a function and the build will pass.
 
+## Writing a panel: prose has no test that fails
+
+**A claim can be true where it was authored and false where it runs.** This console is served two
+ways — `ng serve` + `proxy.conf.mjs` on a laptop, `server.mjs` in a pod on the cloud tier — and every
+sentence written while looking at one of them is a claim about both.
+
+It is the environment-switch rule's twin. That one is about a *data source* ignoring the switch, and
+it announces itself: the numbers change shape and someone notices. This one is about *prose*, and
+nothing announces it at all. A comment does not run. A `<div>` of explanatory text renders exactly as
+confidently on the tier it is wrong about.
+
+Two that shipped:
+
+- The EOD provenance banner said an empty cut sink meant the end-of-day chain had produced nothing,
+  "a real fault", because risk-extract holds its cuts on a PVC. The PVC is a **kind-rig** fix. On the
+  cloud tier the sink is a `gs://` bucket with `/data/risk-extracts` as an `emptyDir`, so it is empty
+  by design — and the panel drew that accusation directly above the archive rows disproving it.
+- Four bridge errors said `dev proxy + kubectl required`. On the cloud tier there is no dev proxy and
+  no kubectl on the reader's machine. **An error that names the wrong subsystem is worse than a
+  generic one**: it spends the reader's attention before they have any evidence.
+
+So:
+
+1. **Name the role, not the deployment.** "the capture bridge", "the cut-sink bridge" — the thing the
+   reader can go look at on either tier.
+2. **Let the side that knows do the talking.** Both bridge implementations report their own failures
+   in `error`, with detail only they can have (`kubectl exec failed — is the risk-extract pod up?`).
+   Surface it; `bridgeError()` in `api.ts` does this, and its fallback fires only when nothing
+   intelligible came back — precisely when the console knows least and should claim least.
+3. **Derive the verdict from what the panel can see**, not from remembered plumbing. Empty sink *plus
+   archive rows* reads as expected; empty sink *plus empty archive* is the real fault. Same data,
+   and the panel works out which world it is in rather than asserting one.
+4. **Grep your own tier-specific words before committing**: `dev proxy`, `kubectl`, `kind`, `PVC`,
+   `emptyDir`, `gs://`, a cluster name. Each one is a claim that has to hold on both rigs or say
+   which rig it means.
+
 ## Writing a panel: a result is not evidence unless something in it proves the check ran
 
 The failure this console keeps meeting is not a wrong number. It is a **confident number produced
