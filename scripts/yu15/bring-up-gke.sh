@@ -122,6 +122,50 @@ else
   say "  admitted ${#ACCTS[@]} accounts"
 fi
 
+# ---- 3c. ADMIT EVERY CATALOG INSTRUMENT -------------------------------------------------------
+# Exactly the 3b failure one noun over, and it hides better. The engine gates on
+# `securityEnabled[securityId]` and answers UNKNOWN_SECURITY to anything unset; `resolveSecurityId`
+# auto-registers a ticker on first sight, so the symbol gets an ID and still cannot trade. Nothing
+# in the bring-up ever admitted a security, so the ONLY tradable instrument was whichever one the
+# fixtures happened to enable — IBM.
+#
+# Observed 2026-08-20: a session over 12 instruments and 4 accounts, 16 orders, 0 accepted. Every
+# equity came back UNKNOWN_SECURITY, and the console's own band panel read "never accepted" for all
+# eleven non-IBM names, which is the panel being right about a rig that was wrong.
+#
+# Admission is ENOUGH — verified, no price seed required. A seed would also set the mark, and under
+# ADR-051 that only applies while no trade has printed, so seeding here would be an inert write on a
+# used book and a silent mark change on a fresh one. Enable, and let the session set its own prices.
+#
+# The catalog is read from the LIVE price-publisher rather than copied here: `PRICE_TICKERS` is
+# already duplicated across eod-chain.yaml, price-publisher and reference-data manifests, and a
+# fourth copy in this script would drift from all three.
+say "admitting every catalog instrument to the engine's risk state"
+TICKERS="$("${K[@]}" get deploy price-publisher \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PRICE_TICKERS")].value}' 2>/dev/null || true)"
+SEC_N="$(printf '%s' "${TICKERS}" | tr ',' '\n' | grep -c . || true)"
+# Shape-test, not emptiness-test: a partial read is worse than none, because it admits a few and
+# reports success. The catalog is 44; anything under 20 means the read went wrong, not that the
+# catalog shrank.
+if [[ "${SEC_N:-0}" -lt 20 ]]; then
+  say "  catalog read returned ${SEC_N:-0} tickers, expected >=20 — SKIPPING (instruments will reject UNKNOWN_SECURITY)"
+else
+  sec_ok=0
+  for t in $(printf '%s' "${TICKERS}" | tr ',' ' '); do
+    if curl -sf -m 20 -X POST "http://${GW}:18110/risk/control/security" \
+      -H 'Content-Type: application/json' \
+      -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
+      -H 'X-Risk-Operator: bring-up' \
+      -d "{\"ticker\":\"${t}\",\"enabled\":true}" >/dev/null 2>&1; then
+      sec_ok=$((sec_ok + 1))
+    else
+      say "  admission failed for ${t}"
+    fi
+  done
+  say "  admitted ${sec_ok}/${SEC_N} instruments"
+  [[ "${sec_ok}" -eq "${SEC_N}" ]] || say "  WARNING: $((SEC_N - sec_ok)) instrument(s) will reject UNKNOWN_SECURITY"
+fi
+
 # ---- 4. PROVE IT, rather than report it -------------------------------------------------------
 # The check above can only say the ids no longer collide. Whether a trade actually reaches the read
 # model is a different claim, and it is the one that matters — so book a real cross and look for it.
