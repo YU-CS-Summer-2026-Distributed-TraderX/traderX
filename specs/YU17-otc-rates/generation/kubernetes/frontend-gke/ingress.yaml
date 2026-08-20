@@ -1,0 +1,45 @@
+# Public entry point: https://yaakovseif.dev -> the new console.
+#
+# The certificate is a Google-managed one, which has two consequences worth knowing before anyone
+# debugs this. It only provisions AFTER the domain's A record already resolves to the Ingress's
+# static IP — so DNS is a prerequisite, not a parallel task — and provisioning then takes 15-60
+# minutes during which the site serves a certificate error rather than nothing. Neither is a fault.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: traderx-cert
+spec:
+  domains:
+    - yaakovseif.dev
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traderx
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    # The reserved GLOBAL address. Named, not literal, so re-creating the Ingress keeps the same
+    # public IP and the DNS record stays valid.
+    kubernetes.io/ingress.global-static-ip-name: "traderx-ip"
+    networking.gke.io/managed-certificates: "traderx-cert"
+    # Serve HTTP too. The redirect to HTTPS is deliberately NOT enabled until the certificate is
+    # ACTIVE: turning it on first makes the site unreachable rather than merely untrusted, and the
+    # managed cert's own HTTP-01 style validation needs the plain listener.
+    kubernetes.io/ingress.allow-http: "true"
+spec:
+  defaultBackend:
+    service:
+      name: web-front-end-console
+      port:
+        number: 8080
+  rules:
+    - host: yaakovseif.dev
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-front-end-console
+                port:
+                  number: 8080

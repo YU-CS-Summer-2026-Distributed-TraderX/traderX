@@ -1,0 +1,84 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+
+# YU17 GKE tier on project traderx-505400. Created 2026-08-20 for the first YU17 cloud bring-up.
+#
+# WHY THIS EXISTS SEPARATELY. Kubernetes manifests do NOT inherit across states — render-state is a
+# plain `cp -R`, so every state's kubernetes/ directory is its own complete copy, not an overlay on
+# its parent's. Pointing at YU16's overlay would deploy the YU16 tier: no sequenced FX rates, no
+# swap/swaption ingress, snapshot format 6 instead of 7. It would come up entirely healthy and
+# could not exercise a single YU17 claim.
+#
+# HOW THIS DIFFERS FROM THE YU16 OVERLAY IT WAS COPIED FROM — four deliberate reversals:
+#
+# 1. NO gateway replicas patch. YU16 forced `replicas: 1` because CPUS_ALL_REGIONS is 32 and the
+#    old shape (3 x n2-standard-8 members = 24) left one untainted node, and the anti-affinity is
+#    one gateway per node. This rig re-cuts the same 32 vCPU as 3 x n2-standard-4 members (12) +
+#    1 x n2-standard-8 support (8) + 3 x n2-standard-4 gateways (12), so ../gke's `replicas: 3`
+#    is correct as written and a patch here would silently shrink the front door back to one.
+#
+# 2. risk-extract is KEPT. YU16 deleted it because its bucket lived in traderx-501015 and would
+#    403. gs://traderx-505400-risk-extracts now exists, and ../gke/risk-extract.yaml already names
+#    it, so the producer runs here and the console's provenance panel has a source.
+#
+# 3. NO images: block. YU16 needed one to rewrite 501015 refs; every image in ../gke is already a
+#    505400 ref pinned at :yu17-gke, so a rename block here would match nothing and read as if it
+#    were doing something. An images: block that silently matches nothing is worse than none.
+#
+# 4. execution-algo-engine is deployed (added in ../gke). See that file's header.
+#
+# THE DATABASE SCHEMA IS NOT IN THIS KUSTOMIZATION. eod-price-db initialises from
+# ../../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml, which
+# lives outside this root and MUST be applied first — mariadb runs its init SQL once, at first boot
+# on an empty datadir, against whatever ConfigMap exists at that moment. Applying this into a
+# namespace holding an older ConfigMap initialises prices at DECIMAL(18,3): every bond price then
+# rounds on the way in, still books, still shows a position, and is wrong by a tenth of a point of
+# par with no error anywhere.
+
+resources:
+  - ../gke
+
+# The snapshot-backup CronJob and its RBAC stay deleted. It needs Workload Identity to write to the
+# journal-archive bucket, which is unconfigured on this project — left in place it fails on
+# credentials, which reads as a cluster fault rather than a wiring one. Deliberately NOT part of
+# "everything running": it is a periodic backup job, not a service, and nothing in the demo path
+# depends on it.
+patches:
+  - target: { kind: Service, name: order-matcher-gw }
+    patch: |
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: order-matcher-gw
+      spec:
+        type: LoadBalancer
+        externalTrafficPolicy: Local
+  - target: { kind: CronJob, name: yu12-snapshot-backup }
+    patch: |
+      $patch: delete
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        name: yu12-snapshot-backup
+  - target: { kind: ServiceAccount, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: yu12-backup
+  - target: { kind: Role, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: yu12-backup
+  - target: { kind: RoleBinding, name: yu12-backup }
+    patch: |
+      $patch: delete
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: yu12-backup

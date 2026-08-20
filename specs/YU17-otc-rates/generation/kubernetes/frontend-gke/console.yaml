@@ -1,0 +1,92 @@
+# The new TraderX console, and the RBAC its four bridges need.
+#
+# WHY THIS POD HAS KUBERNETES PERMISSIONS AT ALL, since that is the surprising part: two of the
+# console's panels read things that have no HTTP surface anywhere in the system — the kdb capture
+# logs written to each member's /data/kdb-capture, and the EOD cut artifacts on the risk-extract
+# pod's volume. On a laptop the dev proxy reaches them with `kubectl exec`. In-cluster the same
+# code needs the same verb, so the pod gets a ServiceAccount that can exec into pods IN THIS
+# NAMESPACE ONLY, and nothing else. It is a Role, not a ClusterRole, deliberately.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web-front-end-console
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: web-front-end-console
+rules:
+  # get/list to find the risk-extract pod by label; exec to read the two file-only surfaces.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: web-front-end-console
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: web-front-end-console }
+subjects:
+  - kind: ServiceAccount
+    name: web-front-end-console
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-front-end-console
+  labels: { app: web-front-end-console }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: web-front-end-console }
+  template:
+    metadata:
+      labels: { app: web-front-end-console }
+    spec:
+      serviceAccountName: web-front-end-console
+      # Support pool, not the gateway pool: this is a support service and the gateway nodes are
+      # tainted so their cores stay with the gateways.
+      nodeSelector:
+        cloud.google.com/gke-nodepool: support-pool
+      containers:
+        - name: console
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: NAMESPACE
+              value: traderx
+            # Every plain route (/order-matcher, /m0..2, /nats-ws, /grafana, …) is forwarded here
+            # rather than reimplemented — the edge proxy already knows the tier's topology.
+            - name: EDGE_PROXY
+              value: "edge-proxy:8080"
+            - name: FIX_HOST
+              value: "order-matcher-gw-fix"
+            - name: EXTRACT_BUCKET
+              value: "gs://traderx-505400-risk-extracts"
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8080 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 768Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web-front-end-console
+  labels: { app: web-front-end-console }
+  annotations:
+    # Container-native load balancing. Without a NEG the GCE Ingress health-checks the NODE rather
+    # than the pod, so a healthy node with an unready console still passes and the LB serves 502s
+    # that look like the app crashing.
+    cloud.google.com/neg: '{"ingress": true}'
+spec:
+  selector: { app: web-front-end-console }
+  ports:
+    - { name: http, protocol: TCP, port: 8080, targetPort: 8080 }
