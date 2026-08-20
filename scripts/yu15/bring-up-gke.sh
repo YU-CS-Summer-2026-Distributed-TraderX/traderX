@@ -137,12 +137,30 @@ fi
 # ADR-051 that only applies while no trade has printed, so seeding here would be an inert write on a
 # used book and a silent mark change on a fresh one. Enable, and let the session set its own prices.
 #
-# The catalog is read from the LIVE price-publisher rather than copied here: `PRICE_TICKERS` is
-# already duplicated across eod-chain.yaml, price-publisher and reference-data manifests, and a
-# fourth copy in this script would drift from all three.
+# WHICH POPULATION, and this is the part the first version of this step got wrong. It admitted
+# `PRICE_TICKERS` from price-publisher — 44 names — and proved itself with instruments that happen
+# to be in both lists, so it looked complete. The console's instrument picker loads
+# /reference-data/instruments, which is 533. The other 489 stayed UNKNOWN_SECURITY, and a session
+# over any of them failed exactly as before the "fix". Verified: `ABT` is in the catalog, was not in
+# PRICE_TICKERS, and was refused until admitted directly.
+#
+# The right population is what the UI OFFERS, not what the publisher ticks. A user can only pick
+# what the picker lists, and every name it lists must trade.
+#
+# MAX_SECURITIES is 1024 (MatchingEngineClusteredService:82) so 533 fits with room for the OCC
+# option symbols, which are registered separately and also consume slots. If the catalog grows past
+# ~900, that headroom is the thing to check first.
 say "admitting every catalog instrument to the engine's risk state"
-TICKERS="$("${K[@]}" get deploy price-publisher \
-  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PRICE_TICKERS")].value}' 2>/dev/null || true)"
+TICKERS="$("${K[@]}" exec deploy/web-front-end-console -- \
+  curl -s -m 20 http://reference-data:18085/instruments 2>/dev/null \
+  | python3 -c 'import sys,json;print(",".join(x["instrumentKey"] for x in json.load(sys.stdin) if not x.get("matured")))' 2>/dev/null || true)"
+# Fall back to the publisher list rather than admitting nothing: 44 tradable names is a worse rig
+# than 533 but a far better one than 1.
+if [[ -z "${TICKERS}" ]]; then
+  say "  reference-data unreadable — falling back to PRICE_TICKERS (fewer instruments will trade)"
+  TICKERS="$("${K[@]}" get deploy price-publisher \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="PRICE_TICKERS")].value}' 2>/dev/null || true)"
+fi
 SEC_N="$(printf '%s' "${TICKERS}" | tr ',' '\n' | grep -c . || true)"
 # Shape-test, not emptiness-test: a partial read is worse than none, because it admits a few and
 # reports success. The catalog is 44; anything under 20 means the read went wrong, not that the
@@ -150,18 +168,29 @@ SEC_N="$(printf '%s' "${TICKERS}" | tr ',' '\n' | grep -c . || true)"
 if [[ "${SEC_N:-0}" -lt 20 ]]; then
   say "  catalog read returned ${SEC_N:-0} tickers, expected >=20 — SKIPPING (instruments will reject UNKNOWN_SECURITY)"
 else
-  sec_ok=0
+  sec_ok=0; sec_bad=""
   for t in $(printf '%s' "${TICKERS}" | tr ',' ' '); do
+    # Retry once. At this size a couple of connections drop for reasons that have nothing to do with
+    # the request — 2 of 533 came back curl 000 on the first live run — and a transport blip must not
+    # leave an instrument permanently untradable for the session.
     if curl -sf -m 20 -X POST "http://${GW}:18110/risk/control/security" \
-      -H 'Content-Type: application/json' \
-      -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
-      -H 'X-Risk-Operator: bring-up' \
-      -d "{\"ticker\":\"${t}\",\"enabled\":true}" >/dev/null 2>&1; then
+        -H 'Content-Type: application/json' \
+        -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
+        -H 'X-Risk-Operator: bring-up' \
+        -d "{\"ticker\":\"${t}\",\"enabled\":true}" >/dev/null 2>&1 \
+      || curl -sf -m 20 -X POST "http://${GW}:18110/risk/control/security" \
+        -H 'Content-Type: application/json' \
+        -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
+        -H 'X-Risk-Operator: bring-up' \
+        -d "{\"ticker\":\"${t}\",\"enabled\":true}" >/dev/null 2>&1; then
       sec_ok=$((sec_ok + 1))
     else
-      say "  admission failed for ${t}"
+      sec_bad="${sec_bad} ${t}"
     fi
   done
+  # Name them. "12 failed" sends someone to the logs; the list tells them whether it is one asset
+  # class, one prefix, or a random scatter — which is the difference between a bug and a blip.
+  [[ -z "${sec_bad}" ]] || say "  NOT admitted (will reject UNKNOWN_SECURITY):${sec_bad}"
   say "  admitted ${sec_ok}/${SEC_N} instruments"
   [[ "${sec_ok}" -eq "${SEC_N}" ]] || say "  WARNING: $((SEC_N - sec_ok)) instrument(s) will reject UNKNOWN_SECURITY"
 fi
