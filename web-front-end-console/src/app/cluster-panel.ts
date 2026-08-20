@@ -1,5 +1,5 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
-import { Api, GatewayHealth, MemberHealth } from './api';
+import { Api, MemberHealth } from './api';
 import { HelpTip } from './help';
 
 @Component({
@@ -27,12 +27,6 @@ import { HelpTip } from './help';
             } @else { <td colspan="5" class="faint">unreachable</td> }
           </tr>
         }
-        <tr>
-          <td>gateway</td>
-          @if (gateway(); as g) {
-            <td colspan="5">{{ g.connected ? 'connected' : 'DISCONNECTED' }} · noAckStreak {{ g.noAckStreak }}</td>
-          } @else { <td colspan="5" class="faint">unreachable</td> }
-        </tr>
       </tbody>
     </table>
   `,
@@ -43,7 +37,6 @@ export class ClusterPanel implements OnInit, OnDestroy {
   private timer: ReturnType<typeof setInterval> | undefined;
 
   readonly members = signal<(MemberHealth | null)[]>([null, null, null]);
-  readonly gateway = signal<GatewayHealth | null>(null);
   readonly agreed = computed(() => {
     const ms = this.members();
     return ms.every(m => m !== null)
@@ -61,16 +54,12 @@ export class ClusterPanel implements OnInit, OnDestroy {
     // ASK how many members there are rather than assuming three. An Aeron cluster is normally 3 or
     // 5, and the count is a configuration — hardcoding it showed three rows on a five-member cluster
     // and two permanently-dead rows on a shrunk one. /members returns each pod's own /health.
-    const [mem, gw] = await Promise.all([
-      this.api.load<{ count: number; members: { ordinal: number; code: number; health: MemberHealth }[] }>('/members'),
-      this.api.load<GatewayHealth>('/order-matcher/health'),
-    ]);
+    const mem = await this.api.load<{ count: number; members: { ordinal: number; code: number; health: MemberHealth }[] }>('/members');
     // A missing route falls through to the SPA and returns 200 HTML — require the actual member
     // shape, not just a 200.
     const list = mem.status === 200 && mem.body?.members ? mem.body.members : [];
     this.members.set(list.map(m =>
       m.code === 200 && m.health && typeof m.health === 'object' && 'applied' in (m.health as object)
         ? m.health : null));
-    this.gateway.set(gw.status === 200 || gw.status === 503 ? gw.body : null);
   }
 }

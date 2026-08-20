@@ -10,7 +10,13 @@ import { execSync, spawn } from 'node:child_process';
 const CTX = process.env.RIG_CONTEXT ?? 'kind-traderx-yu12-cluster';
 const NS = process.env.RIG_NAMESPACE ?? 'traderx';
 const PORT = 30080;
-const target = `http://localhost:${PORT}`;
+// RIG_URL points the whole console at a remote rig instead of the port-forwarded kind one —
+// `RIG_URL=https://yaakovseif.dev npm start`. The state runs in two places now, and routes that
+// exist on one and not the other (/gateways, /members, /gw/N, /mem/N) cannot be developed against
+// a rig that lacks them. When it is set the port-forward is skipped entirely: nothing local to
+// forward to.
+const REMOTE = process.env.RIG_URL ?? '';
+const target = REMOTE || `http://localhost:${PORT}`;
 
 /**
  * Keep localhost:PORT answering, whoever owns the forward.
@@ -33,9 +39,13 @@ function ensureForward() {
     { stdio: 'ignore' });
   console.log(`[proxy] port-forwarding svc/edge-proxy via ${CTX}`);
 }
-ensureForward();
-setInterval(ensureForward, 3000).unref?.();
-process.on('exit', () => pf?.kill());
+if (REMOTE) {
+  console.log(`[proxy] targeting remote rig ${REMOTE} — no port-forward`);
+} else {
+  ensureForward();
+  setInterval(ensureForward, 3000).unref?.();
+  process.on('exit', () => pf?.kill());
+}
 
 let secret = process.env.AUTH_MASTER_SECRET ?? '';
 if (!secret) {
@@ -279,7 +289,9 @@ async function fixBypass(req, res) {
   return false;
 }
 
-const plain = (ctx) => ({ context: [ctx], target, secure: false });
+// changeOrigin when remote: the rig routes by Host header, and without it every request arrives
+// announcing localhost:4200 and misses the ingress rule entirely.
+const plain = (ctx) => ({ context: [ctx], target, secure: false, changeOrigin: !!REMOTE });
 
 export default [
   plain('/order-matcher'),
@@ -291,12 +303,18 @@ export default [
   plain('/m0'), plain('/m1'), plain('/m2'),
   { context: ['/nats-ws'], target, secure: false, ws: true },
   { context: ['/gcs'], target, secure: false, bypass: gcsBypass },
-  { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
-  { context: ['/extracts'], target, secure: false, bypass: extractBypass },
+  // The kdb and extract bridges shell out to `kubectl exec` against the LOCAL kind context. Against
+  // a remote rig that would answer from the wrong cluster entirely — the page would show one rig's
+  // captures beside another rig's cluster state and look perfectly consistent. The remote already
+  // serves both routes itself, so proxy them there and keep the bypasses for the local rig only.
+  REMOTE ? plain('/kdbtap') : { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
+  REMOTE ? plain('/extracts') : { context: ['/extracts'], target, secure: false, bypass: extractBypass },
   { context: ['/fixorder'], target, secure: false, bypass: fixBypass },
   plain('/algo'), plain('/tempo'),
   // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
   // enough for the whole app — and without the route the dev server answers its SPA fallback with
   // a 200, which any "is it up?" check reads as healthy. Same fallthrough that made /mN lie.
   plain('/grafana'),
+  // Per-pod fan-out and discovery, added on the cloud rig: one row per gateway and per member.
+  plain('/gateways'), plain('/members'), plain('/gw'), plain('/mem'), plain('/legacy'),
 ];

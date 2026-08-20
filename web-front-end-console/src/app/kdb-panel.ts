@@ -3,6 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { Api } from './api';
 import { HelpTip } from './help';
 import { SecHead, SecPager, Section } from './section';
+import { QResult, runQ } from './qeval';
 
 // Capture rows, positional against KdbTapWriter's own headers:
 //   txtrade: seq,epoch,tradeSeq,account,sym,side,qty,px,tsMs
@@ -204,6 +205,34 @@ interface Gap { from: number; to: number; missing: number; }
         {{ qFrom() === 'txTrade' ? 'executions' : 'order events' }} matched.
         vwap weights <span class="mono">{{ qFrom() === 'txTrade' ? 'px' : 'limitPx' }}</span> by qty.</div>
     }
+
+    <sec-head [s]="freeSec" label="Run q against the capture">
+      <help-tip text="Type the q yourself. It evaluates in the browser over the rows the bridge holds, not in a q process over the whole store — so it runs the select statements txstore.q is built from, and REFUSES anything outside that rather than approximating it. A box that quietly returned a plausible number for a statement it had not really understood would be worse than no box: every other panel here is careful about the line between a measurement and a guess. Supported: select with count/sum/avg/min/max/first/last, the (sum a*b)%sum c weighted-average idiom, by grouping, and where with = <> < > <= >= and like. Tables are txTrade and txOrder. Anything else names itself as unsupported." />
+    </sec-head>
+    @if (freeSec.open()) {
+      <textarea class="qin" rows="3" spellcheck="false"
+        [ngModel]="freeQ()" (ngModelChange)="freeQ.set($event)"></textarea>
+      <div class="qbar">
+        <button class="btn-primary" (click)="runFree()">Run</button>
+        @for (e of examples; track e.label) {
+          <button type="button" (click)="freeQ.set(e.q); runFree()">{{ e.label }}</button>
+        }
+        <span class="spacer"></span>
+        <span class="sub mono">txTrade · txOrder</span>
+      </div>
+      @if (freeErr()) { <div class="banner bad">{{ freeErr() }}</div> }
+      @if (freeOut(); as o) {
+        <table>
+          <thead><tr>@for (c of o.columns; track c) { <th [class.num]="o.rows.length > 0 && isNum(o.rows[0][$index])">{{ c }}</th> }</tr></thead>
+          <tbody>
+            @for (r of o.rows; track $index) {
+              <tr>@for (v of r; track $index) { <td [class.num]="isNum(v)">{{ v }}</td> }</tr>
+            } @empty { <tr><td [attr.colspan]="o.columns.length" class="faint">no rows</td></tr> }
+          </tbody>
+        </table>
+        <div class="sub">{{ o.rows.length }} row{{ o.rows.length === 1 ? '' : 's' }}</div>
+      }
+    }
   `,
   styles: `
     .spacer { flex: 1; }
@@ -212,6 +241,8 @@ interface Gap { from: number; to: number; missing: number; }
     .qbar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin: 6px 0 4px; }
     .qbar input { width: 110px; }
     .q.built { border-left-color: var(--good); color: var(--text); }
+    .qin { width: 100%; font-family: var(--mono); font-size: 12px; line-height: 1.5; resize: vertical;
+           margin: 4px 0 6px; }
     .mono { font-family: var(--mono); font-size: 11.5px; }
     .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 6px; }
     .tile { background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; text-align: center; }
@@ -409,8 +440,39 @@ export class KdbPanel implements OnInit, OnDestroy {
       + `${by} from ${this.qFrom()}${where.length ? ' where ' + where.join(', ') : ''}`;
   });
 
+  // ---- free-form q ------------------------------------------------------------------------------
+  readonly freeQ = signal(
+    '.tx.fills:{[] 0!select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty, '
+    + 'first_px:first px, last_px:last px by sym from txTrade}');
+  readonly freeOut = signal<QResult | null>(null);
+  readonly freeErr = signal('');
+
+  readonly examples = [
+    { label: 'fills by sym', q: '.tx.fills:{[] 0!select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty, first_px:first px, last_px:last px by sym from txTrade}' },
+    { label: 'by account', q: 'select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty by account from txTrade' },
+    { label: 'buys only', q: 'select execs:count i, volume:sum qty by sym from txTrade where side="B"' },
+    { label: 'orders by status', q: 'select orders:count i, qty:sum qty by status from txOrder' },
+  ];
+
+  isNum(v: unknown): boolean { return typeof v === 'number'; }
+
+  runFree(): void {
+    try {
+      this.freeErr.set('');
+      this.freeOut.set(runQ(this.freeQ(), {
+        // The q names, not the console's — someone typing `sym` should get sym.
+        txTrade: this.allTrades() as unknown as Record<string, string | number>[],
+        txOrder: this.allOrders() as unknown as Record<string, string | number>[],
+      }));
+    } catch (e) {
+      this.freeOut.set(null);
+      this.freeErr.set(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   readonly showQ = signal(false);
   readonly querySec = new Section(this.qResult, r => r.key);
+  readonly freeSec = new Section<unknown>(signal([]), () => '');
   readonly filesSec = new Section<unknown>(signal([]), () => '');
   readonly vwapSec = new Section(this.vwap, v => v.sym);
   readonly ordersSec = new Section(this.orderStates, o => o.key);

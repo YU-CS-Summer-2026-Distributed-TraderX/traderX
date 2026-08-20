@@ -1,4 +1,4 @@
-import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
+import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { Api } from './api';
 import { HelpTip } from './help';
 
@@ -33,7 +33,11 @@ const CHECKS: Check[] = [
 
 interface Row extends Check {
   status: number | null; up: boolean; latencyMs: number | null; checkedAt: number; upSince: number;
+  /** Set for the replicated tiers, which collapse behind one summary row each. */
+  group?: 'gateways' | 'members';
 }
+
+interface Group { key: 'gateways' | 'members'; label: string; note: string; rows: Row[]; }
 
 @Component({
   selector: 'status-panel',
@@ -54,7 +58,38 @@ interface Row extends Check {
       <thead><tr><th>service</th><th>state</th><th class="num">http</th><th class="num">latency</th>
         <th>checked</th><th>up since</th></tr></thead>
       <tbody>
-        @for (r of rows(); track r.id) {
+        <!-- The replicated tiers collapse to one row each: three gateways and three members are
+             six rows saying the same thing, and the question a status page answers first is "are
+             they all up", not "what did pod 2 say". The per-pod rows are still there, one click
+             down, because when the answer is NOT all-up that is the only thing worth reading. -->
+        @for (g of groups(); track g.key) {
+          <tr class="grp" (click)="toggle(g.key)">
+            <td>
+              <span class="arrow">{{ expanded()[g.key] ? '▾' : '▸' }}</span>{{ g.label }}
+              <div class="sub">{{ g.note }}</div>
+            </td>
+            <td><span class="pill" [class.good]="upIn(g) === g.rows.length" [class.bad]="upIn(g) < g.rows.length">
+              {{ upIn(g) }}/{{ g.rows.length }} up</span></td>
+            <td class="num">—</td>
+            <td class="num">{{ latencyRange(g) }}</td>
+            <td class="sub">{{ ago(newestCheck(g)) }}</td>
+            <td class="sub">—</td>
+          </tr>
+          @if (expanded()[g.key]) {
+            @for (r of g.rows; track r.id) {
+              <tr class="child">
+                <td><span class="indent"></span>{{ r.name }}<div class="sub">{{ r.path }}</div></td>
+                <td><span class="pill" [class.good]="r.up" [class.bad]="!r.up && r.checkedAt > 0">
+                  {{ r.checkedAt === 0 ? '…' : r.up ? 'up' : 'down' }}</span></td>
+                <td class="num">{{ r.status === 0 ? 'no answer' : r.status ?? '—' }}</td>
+                <td class="num">{{ r.latencyMs === null ? '—' : r.latencyMs + ' ms' }}</td>
+                <td class="sub">{{ ago(r.checkedAt) }}</td>
+                <td class="sub">{{ r.upSince ? ago(r.upSince) : '—' }}</td>
+              </tr>
+            }
+          }
+        }
+        @for (r of singles(); track r.id) {
           <tr>
             <td>{{ r.name }}<div class="sub">{{ r.path }} — {{ r.note }}</div></td>
             <td><span class="pill" [class.good]="r.up" [class.bad]="!r.up && r.checkedAt > 0">
@@ -72,6 +107,12 @@ interface Row extends Check {
   styles: `
     .spacer { flex: 1; }
     td .sub { font-size: 11.5px; }
+    tr.grp { cursor: pointer; }
+    tr.grp:hover td { background: #f5f7fa; }
+    tr.grp .arrow { display: inline-block; width: 13px; font-size: 13px; line-height: 1; color: var(--muted); }
+    /* The shading is what says "these belong to the row above" once the group is open. */
+    tr.child td { background: #f8f9fb; }
+    tr.child .indent { display: inline-block; width: 13px; }
   `,
 })
 export class StatusPanel implements OnInit, OnDestroy {
@@ -114,14 +155,14 @@ export class StatusPanel implements OnInit, OnDestroy {
       this.gatewayCount.set(n);
       this.memberCount.set(mn);
       const gwRows: Row[] = Array.from({ length: n }, (_, i) => ({
-        id: `gw${i}`, name: `Cluster gateway ${i}`, path: `/gw/${i}/ready`, expect: [200],
+        id: `gw${i}`, name: `Gateway ${i}`, path: `/gw/${i}/ready`, expect: [200],
         note: 'ready = it can commit to the log, not merely that its socket is open',
-        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
+        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0, group: 'gateways',
       }));
       const memRows: Row[] = Array.from({ length: mn }, (_, i) => ({
-        id: `m${i}`, name: `Cluster member ${i}`, path: `/mem/${i}/health`, expect: [200],
+        id: `m${i}`, name: `Member ${i}`, path: `/mem/${i}/health`, expect: [200],
         note: 'per-pod health',
-        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
+        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0, group: 'members',
       }));
       const rest = this.rows().filter(r =>
         r.id !== 'gateway' && !r.id.startsWith('gw') && !/^m\d+$/.test(r.id));
@@ -145,6 +186,32 @@ export class StatusPanel implements OnInit, OnDestroy {
     this.rows.set(probed);
     this.downCount.set(probed.filter(r => !r.up).length);
     this.checking.set(false);
+  }
+
+  /** Collapsed by default: the summary answers the usual question, the rows answer the rare one. */
+  readonly expanded = signal<Record<string, boolean>>({ gateways: false, members: false });
+  toggle(key: string): void { this.expanded.update(m => ({ ...m, [key]: !m[key] })); }
+
+  readonly groups = computed<Group[]>(() => ([
+    { key: 'gateways' as const, label: 'Cluster gateways',
+      note: 'ready = each can commit to the log, not merely that its socket is open' },
+    { key: 'members' as const, label: 'Cluster members',
+      note: 'per-pod health, straight from each member' },
+  ] as const)
+    .map(g => ({ ...g, rows: this.rows().filter(r => r.group === g.key) }))
+    .filter(g => g.rows.length));
+
+  readonly singles = computed(() => this.rows().filter(r => !r.group));
+
+  upIn(g: Group): number { return g.rows.filter(r => r.up).length; }
+  newestCheck(g: Group): number { return Math.max(0, ...g.rows.map(r => r.checkedAt)); }
+
+  /** A range, not an average: one slow pod out of three is the thing worth seeing. */
+  latencyRange(g: Group): string {
+    const ls = g.rows.map(r => r.latencyMs).filter((v): v is number => v !== null);
+    if (!ls.length) return '—';
+    const lo = Math.min(...ls), hi = Math.max(...ls);
+    return lo === hi ? `${lo} ms` : `${lo}–${hi} ms`;
   }
 
   ago(at: number): string {
