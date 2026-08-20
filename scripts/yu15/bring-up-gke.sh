@@ -86,12 +86,46 @@ else
   say "engine and SQL agree — not wedged"
 fi
 
+# The gateway's public address, needed by both the admission step and the proof below.
+GW="$("${K[@]}" get svc order-matcher-gw -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+[[ -n "${GW}" ]] || die "gateway LoadBalancer has no external IP yet"
+
+# ---- 3b. ADMIT EVERY DIRECTORY ACCOUNT --------------------------------------------------------
+# The account directory and the engine's risk state are TWO different things, and a fresh epoch
+# resets only the second. account-service keeps the directory (which is what every account dropdown
+# in both UIs lists), while the engine holds its own admitted set and answers UNKNOWN_ACCOUNT to
+# anything not in it.
+#
+# So after any epoch roll the UI offers eight accounts of which two work — the two the fixtures
+# happen to seed. Picking any other one produces a run where every single order is rejected
+# UNKNOWN_ACCOUNT, which reads as a broken account rather than an unadmitted one. Observed
+# 2026-08-20 in a live trading session with four actors: 22214 and 42422 accepted, 17017 and 10031
+# rejected 13 of 13.
+#
+# Idempotent, so re-running costs nothing. Same class as the option chain that a fresh epoch drops.
+say "admitting every directory account to the engine's risk state"
+# Read the directory from account-service itself, IN-CLUSTER. It is not behind the gateway — the
+# gateway serves the engine, account-service serves the directory, and conflating them is how this
+# step reads an empty list and silently admits nothing.
+ACCTS=( $("${K[@]}" exec deploy/edge-proxy -- sh -c 'curl -s -m15 http://account-service:18088/account/' 2>/dev/null \
+  | python3 -c "import sys,json;[print(a['id']) for a in json.load(sys.stdin)]" 2>/dev/null || true) )
+if [[ "${#ACCTS[@]}" -eq 0 ]]; then
+  say "  could not read the account directory — skipping admission (accounts may reject UNKNOWN_ACCOUNT)"
+else
+  for a in "${ACCTS[@]}"; do
+    curl -sf -m 20 -X POST "http://${GW}:18110/risk/control/account" \
+      -H 'Content-Type: application/json' \
+      -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
+      -H 'X-Risk-Operator: bring-up' \
+      -d "{\"accountId\":${a},\"enabled\":true}" >/dev/null 2>&1 || say "  admission failed for ${a}"
+  done
+  say "  admitted ${#ACCTS[@]} accounts"
+fi
+
 # ---- 4. PROVE IT, rather than report it -------------------------------------------------------
 # The check above can only say the ids no longer collide. Whether a trade actually reaches the read
 # model is a different claim, and it is the one that matters — so book a real cross and look for it.
 say "proving the path end to end"
-GW="$("${K[@]}" get svc order-matcher-gw -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
-[[ -n "${GW}" ]] || die "gateway LoadBalancer has no external IP yet"
 BEFORE="$(sql 'SELECT COUNT(*) FROM trades;')"
 for acct in 22214 42422; do
   curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
