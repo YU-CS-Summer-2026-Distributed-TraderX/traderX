@@ -32,7 +32,7 @@ interface PosRow extends Position {
       @if (recon(); as r) {
         <span class="pill" [class.good]="r.clean" [class.warn]="r.mismatch > 0" [class.info]="!r.clean && !r.mismatch">
           recon {{ r.matched }} matched@if (r.unmatched) { · {{ r.unmatched }} unmatched }@if (r.mismatch) { · {{ r.mismatch }} field mismatch }</span>
-        <help-tip text="The reconciliation service walks the engine's trades against what this read model recorded. 'Matched' is the part you can trust. 'Unmatched' is a QUESTION, not a loss: measured on this rig, the incremental reconciler reports 6 unmatched while the full-history orphan sweep reports zero orphans and equal counts on both sides — so an unmatched row can mean the two sides key a trade differently rather than that the trade is absent. Only a field mismatch is an unambiguous disagreement about a trade's content. Run the orphan sweep on the Admin page for the authoritative count, which compares full histories rather than walking a cursor." />
+        <help-tip text="The reconciliation service walks each of the engine's trades once, in sequence order, and checks whether this read model has it. These are LIFETIME COUNTS, not a current state: a trade classified in the instant before the projection wrote it is counted unmatched forever, because the counter is increment-only and nothing ever re-checks it. So 'unmatched' means 'was not here yet when recon looked', which is a timing observation, not a missing trade — the full-history orphan sweep on the Admin page is the current-state answer, and on this rig it reports equal counts and zero orphans while this counter sits at 6. Only a field mismatch is an unambiguous disagreement about a trade's content." />
       }
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
@@ -212,10 +212,16 @@ export class BlotterPanel implements OnInit, OnDestroy {
    * <p>What it must NOT do is upgrade its measurement into a verdict. The first version of this
    * pill read `missingInProjection` and said "6 engine trades missing here" — and the full-history
    * orphan sweep, run immediately afterwards, reported zero orphans with 292 trades on both sides.
-   * Two reconciliation surfaces disagreeing persistently (the count is stable, so it is not lag)
-   * means an unmatched row can be an identity difference rather than an absence. So the pill
-   * reports what was counted, flags only a field mismatch as unambiguous, and points at the
-   * full-history sweep for the authoritative answer.
+   *
+   * <p>ReconciliationService settles it: `missingInProjection` is a LongAdder, incremented in
+   * classify() when findById misses, and never decremented, never reset, never re-classified —
+   * each trade is visited exactly once, after the cursor (matched 286 + missing 6 = cursor 292).
+   * The sweep polls the engine every 10s while the projection writes asynchronously, so a trade
+   * classified in the gap is counted missing permanently even though it lands a moment later.
+   * These are LIFETIME counts being read as current state, which is the same trap as reporting a
+   * distinct-value count as an event count: the two are indistinguishable in a status document.
+   * So the pill reports what was counted, flags only a field mismatch, and names the full-history
+   * sweep as the current-state answer.
    */
   readonly recon = signal<{ clean: boolean; matched: number; unmatched: number; mismatch: number } | null>(null);
   private timer: ReturnType<typeof setInterval> | undefined;
