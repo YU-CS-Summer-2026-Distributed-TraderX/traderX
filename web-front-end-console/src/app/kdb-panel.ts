@@ -50,7 +50,7 @@ interface Gap { from: number; to: number; missing: number; }
     @if (capture(); as c) {
       <div class="banner"
         [class.good]="c.verdict === 'complete'"
-        [class.warn-note]="c.verdict === 'short' || c.verdict === 'excess'"
+        [class.warn-note]="c.verdict !== 'complete' && c.verdict !== 'unknown'"
         [class.faint-note]="c.verdict === 'unknown'">
         @switch (c.verdict) {
           @case ('complete') {
@@ -59,17 +59,29 @@ interface Gap { from: number; to: number; missing: number; }
             The VWAP below is over every fill, not a sample of them. <b>Count is what is verified</b>;
             price fidelity rests on each row carrying its own px and qty.
           }
-          @case ('short') {
-            ⚠ capture is short for epoch {{ c.epoch }} — {{ c.captured }} captured against the engine's
-            {{ c.engine }}. {{ c.engine! - c.captured }} fill{{ c.engine! - c.captured === 1 ? '' : 's' }}
-            never reached the tap, so the VWAP below is computed over an incomplete set and is wrong
-            in an unbounded direction. The tap sheds under sustained flood by design rather than
-            back-pressuring the engine.
+          @case ('since-restart') {
+            ✓ capture complete <b>since it began</b>, at trade {{ c.from }} — {{ c.captured }} row{{ c.captured === 1 ? '' : 's' }}
+            captured with no holes, against {{ c.engine }} the engine has seen this epoch.
+            The earlier {{ c.from - 1 }} were captured and then lost: the members' capture volume does
+            not survive a restart, while the engine's counter does, via journal restore. So the VWAP
+            below is exact for trades {{ c.from }} onward and blind before that — which is a different
+            failure from the tap shedding under load, and total for its window rather than partial.
+          }
+          @case ('dropped') {
+            ⚠ capture has holes inside its own range for epoch {{ c.epoch }} — {{ c.captured }} rows
+            against the engine's {{ c.engine }}, missing rows scattered rather than a clean prefix.
+            That is the tap shedding under sustained load, which it does by design rather than
+            back-pressuring the engine. The VWAP below is over an incomplete set.
           }
           @case ('excess') {
             ⚠ more captured rows ({{ c.captured }}) than the engine reports trades ({{ c.engine }}) for
             epoch {{ c.epoch }}. That should not happen — the same trade captured twice, or files from
             an epoch this counter does not describe.
+          }
+          @case ('short') {
+            ⚠ capture is short for epoch {{ c.epoch }} — {{ c.captured }} rows against the engine's
+            {{ c.engine }}. This bridge is showing a truncated tail of the files, so which rows are
+            missing cannot be read from here, and restart loss cannot be told from flood loss.
           }
           @default {
             capture holds {{ c.captured }} row{{ c.captured === 1 ? '' : 's' }} for epoch {{ c.epoch }},
@@ -98,7 +110,7 @@ interface Gap { from: number; to: number; missing: number; }
     }
 
     <sec-head [s]="vwapSec" label="Fill VWAP by symbol">
-      <help-tip text="Our own fill VWAP: unlike a VWAP over a market tape it is complete and unconditioned, because the engine emitted every one of these rows itself. It is still subject to capture loss under flood — which is what the gaps view below is for." />
+      <help-tip text="Our own fill VWAP: unlike a VWAP over a market tape, every one of these rows was emitted by the engine itself. Whether it is complete is not assumed — the banner at the top of this page compares the captured row count against the engine's own replicated trade counter and says which of two things is true. The two ways it can be short are different and matter differently: a RESTART takes everything written before it, because the capture volume is not durable, so the loss is total for that window and the VWAP is simply blind before the first captured trade. A FLOOD makes the tap shed rows scattered through the range, by design rather than back-pressuring the engine, and the VWAP is then wrong by an unknown amount everywhere. A missing prefix is the first; holes inside the range are the second." />
     </sec-head>
     @if (vwapSec.open()) {
       @if (showQ()) { <pre class="q">{{ Q.fills }}</pre> }
@@ -555,12 +567,31 @@ export class KdbPanel implements OnInit, OnDestroy {
     const epoch = Math.max(...byEpoch.keys());
     const captured = byEpoch.get(epoch) ?? 0;
     const engine = this.engineTrades();
-    return {
-      epoch, captured, engine, older: byEpoch.size - 1,
-      verdict: engine === null ? 'unknown' as const
-        : captured === engine ? 'complete' as const
-        : captured < engine ? 'short' as const : 'excess' as const,
-    };
+    const older = byEpoch.size - 1;
+
+    // WHERE the missing rows sit says WHICH failure this was, and the two have different shapes
+    // and different fixes. A missing PREFIX with a contiguous run after it is restart-induced:
+    // the members' capture volume is not durable, so a restart takes everything written before it
+    // while the engine's own counter survives via journal restore — total loss of a window. HOLES
+    // inside the captured range are the tap shedding under flood — partial loss, by design, rather
+    // than back-pressuring the deterministic core.
+    //
+    // Only claimable when the tail shows the WHOLE file: otherwise the lowest tradeSeq on screen is
+    // the tail's edge, not the capture's beginning, and "missing prefix" would be the bridge's
+    // truncation misread as data loss.
+    const seqs = this.allTrades().filter(t => t.epoch === epoch).map(t => t.tradeSeq).sort((a, b) => a - b);
+    const whole = seqs.length === captured;
+    const contiguous = seqs.length > 0 && seqs[seqs.length - 1] - seqs[0] + 1 === seqs.length;
+    const from = seqs.length ? seqs[0] : 0;
+
+    const verdict = engine === null ? 'unknown' as const
+      : captured === engine ? 'complete' as const
+      : captured > engine ? 'excess' as const
+      : whole && contiguous && from > 1 ? 'since-restart' as const
+      : whole && !contiguous ? 'dropped' as const
+      : 'short' as const;
+
+    return { epoch, captured, engine, older, from, verdict };
   });
 
   private async poll(): Promise<void> {
