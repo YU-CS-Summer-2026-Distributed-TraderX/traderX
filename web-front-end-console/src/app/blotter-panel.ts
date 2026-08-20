@@ -8,6 +8,11 @@ import { HelpTip } from './help';
 // fraction-of-par is the dollar value with multiplier 1).
 const mult = (security: string) => (parseOcc(security) ? 100 : 1);
 
+interface OpenOrder {
+  orderId: string; security: string; side: string;
+  quantity: number; remainingQuantity: number; limitPrice: number;
+}
+
 interface PosRow extends Position {
   last?: number; dir: 1 | -1 | 0; value?: number; upnl?: number;
 }
@@ -53,6 +58,23 @@ interface PosRow extends Position {
         </tr></tfoot>
       }
     </table>
+    <h3>Open orders
+      <help-tip text="Orders resting in the matching engine's book: submitted, sequenced through consensus, accepted — and waiting for someone to trade against them. An order that rests is a normal outcome, not a failure; it only becomes a trade when a counterparty crosses it. Without this view a resting order is invisible, which makes a perfectly good order look like it vanished." />
+    </h3>
+    <table>
+      <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
+      <tbody>
+        @for (o of openOrders(); track o.orderId) {
+          <tr>
+            <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
+            <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
+            <td class="num">{{ o.limitPrice }}</td>
+            <td><button class="cancel" (click)="cancelOrder(o)">cancel</button></td>
+          </tr>
+        } @empty { <tr><td colspan="7" class="faint">no resting orders</td></tr> }
+      </tbody>
+    </table>
+
     <h3>Trades</h3>
     <table>
       <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">price</th><th>state</th></tr></thead>
@@ -96,6 +118,7 @@ interface PosRow extends Position {
     .tca { margin-top: 5px; font-size: 12.5px; color: var(--accent); }
     td.up { color: var(--good); background: var(--good-soft); transition: background .15s; }
     td.down { color: var(--bad); background: var(--bad-soft); transition: background .15s; }
+    .cancel { font-size: 11.5px; padding: 1px 8px; }
     .pos { color: var(--good); }
     .neg { color: var(--bad); }
     tfoot td { border-top: 1px solid var(--border); }
@@ -108,6 +131,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
   readonly trades = signal<BlotterTrade[]>([]);
   readonly live = signal(false);
   readonly openId = signal<string | null>(null);
+  readonly openOrders = signal<OpenOrder[]>([]);
   readonly tcaText = signal('');
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
@@ -122,6 +146,18 @@ export class BlotterPanel implements OnInit, OnDestroy {
       method: 'POST', headers: this.api.authHeaders(),
     });
     this.api.log({ kind: 'eod', ok: r.status === 200, summary: `force settle ${t.id} → HTTP ${r.status}` });
+    this.poll();
+  }
+
+  /** Cancel takes the gateway's sibling /cancel route with the numeric ref — NOT
+   *  /orders/{id}/cancel, which the gateway routes to its new-order handler. */
+  async cancelOrder(o: OpenOrder): Promise<void> {
+    const ref = Number(o.orderId.includes('-') ? o.orderId.slice(o.orderId.lastIndexOf('-') + 1) : o.orderId);
+    const r = await this.api.post<{ canceled?: boolean }>('/order-matcher/cancel', { orderRef: ref });
+    this.api.log({
+      kind: 'cancel', ok: r.status === 200 && !!r.body?.canceled,
+      summary: `cancel ${o.orderId} (${o.security}) → ${r.status === 200 && r.body?.canceled ? 'canceled' : `HTTP ${r.status}`}`,
+    });
     this.poll();
   }
 
@@ -181,11 +217,23 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   async poll(): Promise<void> {
     const id = Number(this.accountId);
-    const [p, t] = await Promise.all([
+    const [p, t, o] = await Promise.all([
       this.api.load<Position[]>(`/position-service/positions/${id}`),
       this.api.load<BlotterTrade[]>(`/position-service/trades/${id}`),
+      // The gateway serves no order snapshot (405 POST only); trade-processor's order read model
+      // does, keyed `id` rather than `orderId`.
+      this.api.load<any[]>(`/trade-processor/accounts/${id}/orders`),
     ]);
     if (p.status === 200 && Array.isArray(p.body)) this.positions.set(p.body);
+    if (o.status === 200 && Array.isArray(o.body)) {
+      this.openOrders.set(o.body.map(row => ({
+        orderId: String(row.id ?? row.orderId ?? ''),
+        security: row.security, side: row.side,
+        quantity: Number(row.quantity ?? 0),
+        remainingQuantity: Number(row.remainingQuantity ?? 0),
+        limitPrice: Number(row.limitPrice ?? 0),
+      })));
+    }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).
     if (t.status === 200 && Array.isArray(t.body)) this.trades.set(t.body.slice(0, 30));
   }
