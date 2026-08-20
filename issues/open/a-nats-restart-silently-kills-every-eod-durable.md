@@ -229,3 +229,18 @@ the same three lines:
 - **Build the command as an array** (`C=(kubectl …)`, `"${C[@]}"`), never a scalar.
 - **Guard the baseline for non-emptiness before comparing.** The re-run refuses to proceed unless the
   before-manifest has at least 6 files, so "identical" can never again mean "identically absent".
+
+### The empty-comparison trap, twice in one session, from unrelated causes
+
+The false green above was not a one-off. The console lane shipped the same class independently, from a
+different cause: a verification wrapped in `timeout`, which **does not exist on macOS**, so the command
+silently did nothing and the check reported green. Two sessions, two causes — a zsh scalar splitting
+into "command not found", and a missing binary — **one shape**:
+
+> **A comparison whose inputs can be empty must assert they are not.**
+
+The uncomfortable part: this trap is *already named* in the `vacuous-pass-audit` skill's own
+description ("agreement on no-data reads"), and it was still shipped, by a session that had that skill
+loaded. So the lesson is not "write the rule down" — the rule was written down. It is that **the guard
+has to be executable, in the script, not remembered**. Both fixed versions now assert a minimum input
+count before comparing, so "identical" can never mean "identically absent".

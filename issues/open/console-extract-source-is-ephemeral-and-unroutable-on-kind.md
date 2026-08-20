@@ -115,3 +115,37 @@ same one that means it cannot happen again. **Do not repopulate this sink by han
 sink through the dev-proxy `kubectl exec` bridge on kind, and still reads GCS directly on a deployed
 console. The cuts merely now survive long enough to be worth reading — which was the live demo risk,
 and is what §1 was actually about.
+
+## Resolved for the reschedule case — and a principle that came out of it
+
+The `emptyDir` is now a PVC (`risk-extract-extracts`, kind's `standard`/local-path class), mountPath
+unchanged at `/data/risk-extracts`. Verified three independent ways: the fix lane's (`jsz` + in-pod
+sha), the coordinator's (`delete pod`, 9 artifacts byte-identical), and the console's own read path
+from outside the pod, whose shas match the in-pod ones.
+
+Scope the claim precisely: **cuts survive a reschedule of risk-extract.** They do not survive deletion
+of the PVC, the volume is node-pinned local-path, and GKE was never affected — its `gs://` sink was
+always durable.
+
+### The four pre-transition cuts were deliberately NOT restored
+
+The `emptyDir`→PVC transition destroyed the four cuts that existed before it. They were archived, and
+an offer to copy them back into the PVC was **declined by the console lane**, correctly:
+
+> A provenance store you can inject artifacts into is not a provenance store.
+
+Every row in that store asserts *"the three members rendered this, at this sequence, on this volume"*.
+Four files copied in from a scratchpad would render identically to ones that are true, and nothing
+downstream could tell them apart — including the console's own sha-agreement check, which would go
+green on them. **Their loss is honest history.** The archive is the right home for them; the store is
+not.
+
+This generalises to anything else fed from the cut artifacts, the external risk-extract deliverable
+included: the value of that store is that its contents can only have arrived one way.
+
+### The banner was repointed, not retired
+
+Its job was explaining an empty sink, and what an empty sink *means* changed rather than went away:
+before it meant "someone rescheduled the pod"; now it means "the EOD chain has not produced a cut".
+Ambiguous before, diagnostic now. The README bullet is struck through and dated rather than deleted,
+so the history of the condition stays readable.
