@@ -195,6 +195,42 @@ So:
    `emptyDir`, `gs://`, a cluster name. Each one is a claim that has to hold on both rigs or say
    which rig it means.
 
+## Writing a panel: one cell, one meaning — and print the counter that closes the sum
+
+**A counter that exists and is not rendered is the same failure as a number without its window.**
+The reader tries to close the arithmetic, cannot, and correctly infers loss.
+
+The session panel counted `noPrice` — orders counted as sent but never priced, because the
+instrument had no tick yet — and rendered it *only as fallback text in the "last reject" cell*:
+
+```html
+{{ a.lastReason || (a.noPrice ? a.noPrice + ' skipped, no price' : '—') }}
+```
+
+So "1200 sent, 1195 accepted" read as five orders lost in flight. They never left the browser. And
+the shape is nastier than "not rendered": the counter appeared when there were **no** rejections and
+vanished the moment an actor had one — **least visible exactly when the session was most
+interesting.**
+
+Two rules from it:
+
+1. **One cell, one meaning.** A cell that shows X when X exists and Y otherwise hides Y precisely
+   when X is happening. If both are worth seeing, both get a column. Sweep for this with
+   `{{ a || b }}` and interpolated ternaries: name fallbacks (`shortDisplayName || instrumentKey`)
+   and button labels are fine, because both branches mean the same kind of thing.
+2. **Print the identity, and make it hold on screen.** `sent = accepted + rejected + skipped` is
+   now stated under the table — and computed, so it refuses to print a total it cannot balance.
+
+Writing that assertion is what found two bugs in the line it was checking, which had been on screen
+and believed for a full round:
+
+- **Units.** In batch mode `sent` counts *batches* while the other three count *orders*. The left
+  side is batches x batch size; summing the raw numbers puts two units in one equation.
+- **When the invariant is legitimately false.** `sent` increments *before* the request goes out, so
+  a mid-run shortfall is in flight, not lost. A check that cannot tell "not yet" from "never" fires
+  every second of every session and gets ignored by week two. Name the gap by state: *in flight*
+  while running, *UNACCOUNTED* once stopped, when nothing more can arrive.
+
 ## Writing a panel: a result is not evidence unless something in it proves the check ran
 
 The failure this console keeps meeting is not a wrong number. It is a **confident number produced
