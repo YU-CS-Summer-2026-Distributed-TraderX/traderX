@@ -63,6 +63,15 @@ packaged chain — 2 underlyings x 2 expiries x 3 strikes x call/put — with:
 MATCHER_URL=http://localhost:30080/order-matcher bash scripts/proofs/seed-option-chain.sh
 ```
 
+## If option positions vanish after a proof-suite run
+
+Expected, and not a UI fault: `scripts/proofs/yu15-option-persistence.sh` deletes every trade and
+position whose security is longer than 15 characters — which is every OCC symbol — and its restore
+step puts back only the `stocks` catalog rows. The contracts stay tradeable (enablement lives in
+cluster state, not the database), so the blotter simply loses its option history. Recovery is the
+two option presets, in order: **1/2** rests an offer from the counterparty account, **2/2** lifts
+it — a real print and a position on both sides.
+
 ## Known gaps (deliberate)
 
 - **The NATS websocket listener is enabled on the kind rig (2026-08-19)** and declared in the YU17

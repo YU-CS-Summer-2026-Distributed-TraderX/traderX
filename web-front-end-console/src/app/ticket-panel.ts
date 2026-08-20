@@ -25,8 +25,18 @@ const PRESETS: Preset[] = [
       t.cls.set('Equity'); t.ticker.set('IBM'); t.side = 'Buy'; t.quantity = 100; t.limitPrice = 200; } },
   { label: 'Equity — off the book band → PRICE_COLLAR reject', apply: t => {
       t.cls.set('Equity'); t.ticker.set('IBM'); t.side = 'Buy'; t.quantity = 100; t.limitPrice = 500; } },
-  { label: 'Listed option — AAPL Dec-26 260 Call', apply: t => {
-      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00260000'); t.side = 'Buy'; t.quantity = 5; t.limitPrice = 2.40; } },
+  // Options are a two-beat demo for the same reason the algo one is: nothing rests in an option
+  // book by default, so a lone buy just sits there and shows no position. Beat 1 posts the offer,
+  // beat 2 lifts it — a real print, a real position on both sides. This pair is also the recovery
+  // procedure after a proof-suite run: yu15-option-persistence deletes every trade and position
+  // whose security is >15 chars (i.e. every OCC symbol) and restores only the catalog rows, so
+  // option positions vanish while the contracts stay tradeable. Two clicks put them back.
+  { label: 'Listed option 1/2 — rest an offer (AAPL Sep-26 240 Call)', apply: t => {
+      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 42422;
+      t.side = 'Sell'; t.quantity = 5; t.limitPrice = 3.80; } },
+  { label: 'Listed option 2/2 — lift it → print, position, both sides', apply: t => {
+      t.cls.set('Option'); t.occSymbol.set('AAPL260918C00240000'); t.accountId = 22214;
+      t.side = 'Buy'; t.quantity = 5; t.limitPrice = 3.80; } },
   { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
       t.cls.set('Treasury'); t.ticker.set('UST-BILL-20270812'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
   { label: 'Corporate — GS 5.75% 2036, 30/360 day count', apply: t => {
