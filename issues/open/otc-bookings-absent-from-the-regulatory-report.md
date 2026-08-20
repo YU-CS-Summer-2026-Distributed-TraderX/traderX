@@ -78,3 +78,25 @@ added**, otherwise every future instrument class is silently absent from it too.
 `SW-19864` on account 22214 (10mm receive-fixed 4.2%, 2026-08-17 → 2031-08-17) is left booked on the
 rig by this investigation. Harmless — it is the same shape the netting proof books — but it is one
 extra contract in the next EOD contracts artifact.
+
+## Related content gap in the same surface: a rejection carries no reason
+
+Measured 2026-08-19. `ORDER_REJECTED` events in the regulatory report carry exactly these fields:
+
+```
+accountId, inputSeq, kind, orderId, price, quantity, security, side, timestampMillis, tradeId
+```
+
+There is **no `riskReason`**. The engine decides rejections with a specific reason
+(`UNKNOWN_ACCOUNT`, `PRICE_COLLAR`, `ORDER_SIZE`, `RESTRICTED`, `PRICE_MISSING`, …) and returns it on
+the order path, but the audit projection drops it.
+
+Consequence, hit while triaging real rejections: from the audit surface you can see **that** an order
+was refused and never **why**. Distinguishing "the risk gate refused an unknown account" from "the
+price collar refused a good account" required reconstructing it from the accepted/rejected price
+ranges per security — an inference, not a record.
+
+For a surface whose purpose is a reproducible regulatory audit, "refused, reason not recorded" is a
+weaker claim than the surface implies. Same decision as the OTC question above: either the reason
+belongs in the projection, or the report's scope should say plainly that it is an order-lifecycle
+trace and not a decision record.
