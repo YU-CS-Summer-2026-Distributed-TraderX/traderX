@@ -74,8 +74,16 @@ The contracts stay *tradeable* — engine-side enablement lives in the cluster's
 not the DB — so this is invisible on the order path and visible only on read surfaces. A UI option
 blotter goes empty with no error anywhere.
 
-Measured at the time of writing: `AAPL260918C00240000` held two 5-lot prints at 3.80 (the
-`seed-option-chain.sh` smoke cross, run twice). Those are what a suite run removes.
+Measured at the time of writing: `AAPL260918C00240000` held **one** 5-lot cross at 3.80 (the
+`seed-option-chain.sh` smoke test). That is what a suite run removes.
+
+CORRECTED 2026-08-19 — this first read "two 5-lot prints ... run twice". `trades` records **one row
+per side**: ids are suffixed `-S`/`-B`, so a single 5-lot cross is two rows. The query behind the
+wrong count projected `security, price, quantity` and dropped `id`, `accountid` and `side` — the
+three columns that make a two-sided print self-evident. Reading a row count as an event count off a
+projection that discarded the discriminator is the same error shape as filtering `status='NEW'` and
+missing partially-filled depth: the arithmetic does not close, and nothing complains. The UI lane's
+independent position count (+5 / -5 across the two accounts) is what falsified it.
 
 Whether the deletion is right is arguable — it is the regression the proof exists to exercise. What
 is not arguable is that it is an unrestored mutation of shared state on a rig other lanes demo from,
