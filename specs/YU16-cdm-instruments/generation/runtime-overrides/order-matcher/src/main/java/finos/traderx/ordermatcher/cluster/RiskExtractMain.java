@@ -62,6 +62,8 @@ public final class RiskExtractMain {
 
     private AeronCluster client;
     private String aeronDir;
+    /** Set once the subscription machinery exists; run on every NATS reconnect. See {@link #run}. */
+    private volatile Runnable onReconnect;
     private volatile long[] lastExtractAck; // {seq, rows, requestId}
     private long nextRequestId = 1;
 
@@ -118,15 +120,27 @@ public final class RiskExtractMain {
             .dirDeleteOnStart(true));
 
         this.aeronDir = aeronDir;
-        final Connection nats = connectNats(natsUrl);
+        // The listener is registered at connect time because a reconnect is the ONLY notice we get
+        // that JetStream state may have been recreated underneath us — see onReconnect below.
+        final Connection nats = connectNats(natsUrl, (conn, type) -> {
+            if (type == io.nats.client.ConnectionListener.Events.RECONNECTED) {
+                final Runnable r = onReconnect;
+                if (r != null) {
+                    r.run();
+                }
+            }
+        });
 
-        ensureStream(nats, stream, pricesReady, pnlDone);
         final JetStream js = nats.jetStream();
         final Dispatcher dispatcher = nats.createDispatcher();
+        final long bindTimeoutS = Long.parseLong(env("RISK_EXTRACT_BIND_TIMEOUT_S", "300"));
+
+        // ONE bind routine, run at startup and again after every NATS reconnect.
+        //
         // The previous pod's binding to the durable can outlive it: the server clears interest
         // only once it notices the dead client's disconnect, and a rolling replacement overlaps
         // pods outright. That is a self-healing condition, not an error — wait it out
-        // ([SUB-90012] "Consumer is already bound to a subscription"). Anything else still throws.
+        // ([SUB-90012] "Consumer is already bound to a subscription").
         // BOUNDED. Waiting out a lingering binding is right; waiting forever is the bug this class
         // was just fixed for, reached by a different road. Nothing throws while the loop spins, so
         // the halt() above never fires, and this Deployment carries no readiness probe — so an
@@ -137,35 +151,71 @@ public final class RiskExtractMain {
         // The ordinary case clears in seconds (the server drops the dead client's interest, and
         // strategy: Recreate means a rollout no longer overlaps pods at all), so this deadline is
         // only reached when the durable is genuinely stuck — a ghost consumer, or a second replica
-        // someone scaled up by hand. Falling through to the outer catch turns "retrying silently
-        // forever" into a container exit, and a persistent one into CrashLoopBackOff, which is
-        // visible in `kubectl get pods` and alertable. Loud and dead beats quiet and dead.
-        final long bindDeadline = System.currentTimeMillis()
-            + 1000L * Long.parseLong(env("RISK_EXTRACT_BIND_TIMEOUT_S", "300"));
-        int bindAttempts = 0;
-        while (true) {
-            try {
-                js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
-                    false, PushSubscribeOptions.builder().stream(stream).durable(durable).build());
-                break;
-            } catch (final IllegalArgumentException e) {
-                if (!String.valueOf(e.getMessage()).contains("[SUB-90012]")) {
-                    throw e;
+        // someone scaled up by hand. Throwing turns "retrying silently forever" into a container
+        // exit, and a persistent one into CrashLoopBackOff, which is visible in `kubectl get pods`
+        // and alertable. Loud and dead beats quiet and dead.
+        //
+        // `reconnect` is the only difference between the two callers. On the reconnect path a
+        // durable that is still there means our push subscription came back with the connection
+        // and there is nothing to do; at startup a durable that exists is an ORPHAN, not a
+        // subscription, so we must bind to it regardless.
+        final java.util.function.Consumer<Boolean> bind = reconnect -> {
+            final long deadline = System.currentTimeMillis() + 1000L * bindTimeoutS;
+            int attempts = 0;
+            while (true) {
+                try {
+                    if (reconnect && durableExists(nats, stream, durable)) {
+                        System.out.println("RISK-EXTRACT NATS reconnected; durable '" + durable
+                            + "' survived, subscription intact");
+                        return;
+                    }
+                    ensureStream(nats, stream, pricesReady, pnlDone);
+                    js.subscribe(pnlDone, dispatcher, msg -> onPnlDone(nats, msg, cutSubject, readySubject),
+                        false, PushSubscribeOptions.builder().stream(stream).durable(durable).build());
+                    System.out.println("RISK-EXTRACT bound durable='" + durable + "' subject=" + pnlDone
+                        + " after " + attempts + " retries" + (reconnect ? " (re-bind)" : ""));
+                    return;
+                } catch (final Exception e) {
+                    if (System.currentTimeMillis() >= deadline) {
+                        throw new IllegalStateException("durable '" + durable + "' would not bind after "
+                            + attempts + " attempts; giving up so this pod dies visibly rather than"
+                            + " sitting Ready with no producer. Something else is holding it — check for"
+                            + " a second risk-extract replica or a ghost consumer on the stream.", e);
+                    }
+                    attempts++;
+                    System.out.println("RISK-EXTRACT durable '" + durable
+                        + "' not bound yet; retrying (attempt " + attempts
+                        + ", giving up in " + ((deadline - System.currentTimeMillis()) / 1000) + "s): "
+                        + e);
+                    try {
+                        Thread.sleep(2000);
+                    } catch (final InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("interrupted while binding '" + durable + "'", ie);
+                    }
                 }
-                if (System.currentTimeMillis() >= bindDeadline) {
-                    throw new IllegalStateException("durable '" + durable + "' was still bound after "
-                        + bindAttempts + " attempts; giving up so this pod dies visibly rather than"
-                        + " sitting Ready with no producer. Something else is holding it — check for"
-                        + " a second risk-extract replica or a ghost consumer on the stream.", e);
-                }
-                bindAttempts++;
-                System.out.println("RISK-EXTRACT durable '" + durable
-                    + "' still bound to the previous pod; retrying (attempt " + bindAttempts
-                    + ", giving up in " + ((bindDeadline - System.currentTimeMillis()) / 1000) + "s): "
-                    + e.getMessage());
-                Thread.sleep(2000);
             }
-        }
+        };
+
+        // A NATS restart recreates JetStream state, so the durable this process is subscribed to
+        // simply ceases to exist. The client reconnects the CONNECTION and stops there: it does
+        // NOT re-create a push consumer that was destroyed server-side, and nothing throws. The
+        // pod stays Running 1/1 RESTARTS 0 with the trigger permanently absent — the same end
+        // state the bind deadline above exists to prevent, reached by a road that had no guard on
+        // it until 2026-08-19, when the EOD chain sat dead for ten hours looking healthy.
+        // A failed re-bind halts for the same reason main() does: process exit is the only
+        // liveness signal this Deployment has (no Service, no ports, no readiness probe).
+        onReconnect = () -> {
+            try {
+                bind.accept(true);
+            } catch (final Throwable t) {
+                System.err.println("RISK-EXTRACT-DEAD re-bind after NATS reconnect failed; exiting"
+                    + " so Kubernetes sees it");
+                t.printStackTrace();
+                Runtime.getRuntime().halt(1);
+            }
+        };
+        bind.accept(false);
 
         System.out.println("RISK-EXTRACT up: nats=" + natsUrl + " trigger=" + pnlDone
             + " durable=" + durable + " sink=" + env("RISK_EXTRACT_SINK_URI", "<unset>"));
@@ -230,15 +280,35 @@ public final class RiskExtractMain {
      * A once-a-day batch producer must not die because a dependency was slow to come up — it would
      * simply not exist when the batch fires. Retry forever; the pod is useless until NATS is there.
      */
-    private static Connection connectNats(final String url) throws InterruptedException {
+    private static Connection connectNats(final String url,
+                                          final io.nats.client.ConnectionListener listener)
+            throws InterruptedException {
         while (true) {
             try {
-                return Nats.connect(new Options.Builder()
-                    .server(url).connectionTimeout(Duration.ofSeconds(10)).maxReconnects(-1).build());
+                return Nats.connect(new Options.Builder().server(url)
+                    .connectionTimeout(Duration.ofSeconds(10)).maxReconnects(-1)
+                    .connectionListener(listener).build());
             } catch (final Exception e) {
                 System.out.println("RISK-EXTRACT waiting for NATS at " + url + ": " + e);
                 Thread.sleep(2000);
             }
+        }
+    }
+
+    /**
+     * Does the server still hold this durable? A missing STREAM answers "no" rather than throwing:
+     * a wiped JetStream is precisely the case the caller has to rebuild for. Any other failure
+     * throws, so the caller retries instead of concluding the durable is gone from a hiccup.
+     */
+    private static boolean durableExists(final Connection nats, final String stream,
+                                         final String durable) throws Exception {
+        try {
+            return nats.jetStreamManagement().getConsumerNames(stream).contains(durable);
+        } catch (final io.nats.client.JetStreamApiException e) {
+            if (e.getApiErrorCode() == 10059) { // stream not found: nothing to be bound to
+                return false;
+            }
+            throw e;
         }
     }
 

@@ -6,6 +6,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.nats.client.Connection;
+import io.nats.client.ConnectionListener;
 import io.nats.client.Dispatcher;
 import io.nats.client.JetStream;
 import io.nats.client.JetStreamApiException;
@@ -71,6 +72,8 @@ public class EodPnlConsumer {
 
     private volatile Connection connection;
     private volatile JetStream jetStream;
+    private volatile Dispatcher dispatcher;
+    private final AtomicLong subscribed = new AtomicLong(0);
 
     public EodPnlConsumer(PositionRepository positions, EodPriceSnapshotReader snapshotReader,
                           EodPnlRepository pnlRepository, MeterRegistry registry,
@@ -95,6 +98,14 @@ public class EodPnlConsumer {
             .description("Accounts halted (missing/flagged closing price) — fail-safe alert").register(registry);
         Gauge.builder("traderx_eod_pnl_last_completed_millis", lastCompletedMillis, AtomicLong::get)
             .description("Epoch millis the consumer last finished a session").register(registry);
+        // The one number that diagnoses a dead EOD chain, exported so it does not have to be
+        // fished out of `nats/jsz` by hand. Deliberately NOT wired into /actuator/health: this
+        // service also answers live position queries, and unreadying it out of rotation because
+        // an overnight batch consumer lost its durable trades a silent batch failure for a loud
+        // outage of everything else. The re-bind below is the repair; this is the alert.
+        Gauge.builder("traderx_eod_pnl_subscribed", subscribed, AtomicLong::get)
+            .description("1 when the EOD durable consumer is bound to the stream, 0 when it is not")
+            .register(registry);
     }
 
     /**
@@ -157,26 +168,34 @@ public class EodPnlConsumer {
             log.info("eod.consumer.enabled=false; EOD P&L consumer NATS subscription disabled");
             return;
         }
-        Thread t = new Thread(this::connectWithRetry, "eod-pnl-consumer-init");
-        t.setDaemon(true);
-        t.start();
+        retryInBackground("eod-pnl-consumer-init", this::connectAndSubscribe);
     }
 
-    private void connectWithRetry() {
-        while (!Thread.currentThread().isInterrupted()) {
-            try {
-                connectAndSubscribe();
-                return;
-            } catch (Exception ex) {
-                log.warn("eod consumer connect/subscribe failed, retrying in 5s: {}", ex.toString());
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    /** Retry forever on a daemon thread. Used for the initial connect and for the re-bind below,
+     * which must not run on the NATS callback thread that delivers the reconnect event. */
+    private void retryInBackground(String name, ThrowingRunnable action) {
+        Thread t = new Thread(() -> {
+            while (!Thread.currentThread().isInterrupted()) {
                 try {
-                    Thread.sleep(5000);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
+                    action.run();
                     return;
+                } catch (Exception ex) {
+                    log.warn("{} failed, retrying in 5s: {}", name, ex.toString());
+                    try {
+                        Thread.sleep(5000);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
                 }
             }
-        }
+        }, name);
+        t.setDaemon(true);
+        t.start();
     }
 
     private void connectAndSubscribe() throws Exception {
@@ -184,14 +203,53 @@ public class EodPnlConsumer {
             .server(natsAddress)
             .connectionTimeout(Duration.ofSeconds(10))
             .maxReconnects(-1)
+            .connectionListener((conn, type) -> {
+                if (type == ConnectionListener.Events.RECONNECTED) {
+                    rebindIfDurableGone();
+                }
+            })
             .build());
-        ensureStream(connection);
         jetStream = connection.jetStream();
-        Dispatcher dispatcher = connection.createDispatcher();
+        dispatcher = connection.createDispatcher();
+        subscribe();
+    }
+
+    private void subscribe() throws Exception {
+        ensureStream(connection);
         PushSubscribeOptions options = PushSubscribeOptions.builder()
             .stream(streamName).durable(durable).build();
         jetStream.subscribe(pricesReadySubject, dispatcher, this::onMessage, false, options);
+        subscribed.set(1);
         log.info("eod consumer subscribed subject={} durable={} stream={}", pricesReadySubject, durable, streamName);
+    }
+
+    /**
+     * A NATS restart recreates JetStream state, so the durable this consumer is subscribed to
+     * simply ceases to exist. The client reconnects the CONNECTION and stops there: it does NOT
+     * re-create a push consumer destroyed server-side, and NOTHING throws — the pod stays
+     * Running 1/1, RESTARTS 0, logging nothing, with {@code eod.prices.ready} landing nowhere.
+     * That is how the EOD chain sat dead for ten hours on 2026-08-19 looking perfectly healthy.
+     *
+     * <p>A reconnect is the only notice we get, so it is the trigger. If the durable survived,
+     * our subscription came back with the connection and there is nothing to do. Re-creating it
+     * replays from the start of the stream, which is safe by this class's existing contract:
+     * {@link #process} is idempotent (NFR-EOD05) and {@code eod.pnl.done} is published with a
+     * per-(date, version) message id, so JetStream de-duplicates the re-emitted event too.
+     */
+    private void rebindIfDurableGone() {
+        try {
+            if (connection.jetStreamManagement().getConsumerNames(streamName).contains(durable)) {
+                return;
+            }
+        } catch (Exception ex) {
+            // Could not tell. Re-subscribing is idempotent and losing the chain is not, so retry.
+            log.warn("could not list consumers on {} after a NATS reconnect, re-subscribing anyway: {}",
+                streamName, ex.toString());
+        }
+        subscribed.set(0);
+        log.warn("EOD durable '{}' is gone after a NATS reconnect (a broker restart recreates "
+            + "JetStream state); re-subscribing", durable);
+        retryInBackground("eod-pnl-consumer-rebind", this::subscribe);
     }
 
     private void onMessage(Message msg) {
