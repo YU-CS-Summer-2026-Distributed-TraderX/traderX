@@ -142,12 +142,39 @@ mis-anchored". They are not. Comparing accepted against rejected price ranges pe
 for every one but MSFT:
 
 ```
-BAC                  accepted 40.0        rejected 40.0        <- same price both ways
-UST-BILL-20270812    accepted 0.96        rejected 0.96        <- same price both ways
-AAPL261218C00260000  accepted 3.0..9.907  rejected 8.8..8.86   <- inside the accepted range
-IBM                  accepted 180.6..200  rejected 183.44..900 <- overlaps; sample carries accountId 99999
+security              accepted (orders / distinct px)     rejected
+A                     NONE ACCEPTED EVER                  1  @ 0.0
+AAPL260918P00220000   1 order,    1 px,  3.0              1  @ 0.42
+AAPL261218C00260000   4 orders,   4 px,  3.0..9.907       3  @ 8.8..8.86
+BAC                   2 orders,   1 px,  40.0             1  @ 40.0
+IBM                   2573 orders, 53 px, 180.607..200.0  10 @ 183.44..900.0
+MSFT                  2 orders,   1 px,  180.0            12 @ 384.11..386.695
+UST-BILL-20270812     5 orders,   1 px,  0.96             1  @ 0.96
 ```
 
 A band problem produces a **disjoint** accepted/rejected split. An overlap means the refusal came
-from something else (the IBM sample is the proofs' deliberate unknown-account arm). **Check the
-overlap before blaming the band.**
+from something else (the IBM sample carries `accountId 99999` — the proofs' deliberate
+unknown-account arm). **Check the overlap before blaming the band.**
+
+### Two guards the disjointness rule needs, or it over-claims on its own
+
+Both found by the console lane building this into a screen, and both are cases the rule as first
+written gets WRONG:
+
+1. **Zero accepted orders is not disjointness.** `A` has never been accepted at all — one refusal at
+   price 0.0 and nothing else. "Disjoint" is trivially true of an empty set, so the bare rule
+   condemns it as mis-anchored; the lane's first pass did exactly that. A security with no accepted
+   orders supports **no verdict** — report "never accepted" and stop.
+2. **Count the samples before believing the split.** `AAPL260918P00220000` is disjoint at
+   **1 accepted vs 1 refused**. That is two data points, not evidence. Below roughly three either
+   side, mark the finding thin rather than confident — it can be flagged and uncertain at once.
+
+So the usable rule is three-part, in order: *no accepted orders → no verdict; too few samples → thin;
+only then disjoint → band, overlap → other cause.*
+
+### Read the column headings before quoting a number
+
+The first version of this table printed `(n=53)` for IBM, meaning **53 distinct price levels**. It
+was quoted onward as "53 accepted orders", which is wrong by a factor of ~49 — IBM has **2573
+accepted orders** across those 53 prices. Distinct-value counts and event counts answer different
+questions and look identical in a summary table. Label which one is on the page.
