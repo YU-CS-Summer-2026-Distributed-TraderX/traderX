@@ -67,17 +67,106 @@ TRADERX_EOD: msgs=6  consumers=2
 identical sha `75008ec6011a…` from all three members, both artifacts reproducing from `seq-19906.cut`
 alone, and a member destroyed to an empty disk re-rendering the same sha.
 
-## What still needs deciding
+## RESOLVED on YU17 2026-08-19 — option 2 (self-heal), verified on the kind rig
 
-The restart is a remedy, not a fix. Candidates, cheapest first:
+**The defect class was THREE services, not two.** The brief's open question about
+`execution-algo-engine` is now settled by measurement rather than left as a guess — see below.
 
-1. **A readiness probe that fails when the durable is not bound.** Both Deployments lack one, and the
-   risk-extract comment says so explicitly. This is the smallest change that converts a silent death
-   into a visible one.
-2. **Detect consumer-deleted and re-subscribe.** The NATS client surfaces this; neither service acts
-   on it.
-3. **Accept it and document that any NATS restart requires restarting both consumers** — the honest
-   minimum, and worth writing into the bring-up runbook regardless of which of the above lands.
+### What landed
+
+A NATS reconnect is the only notice a client gets that JetStream state may have been recreated, so
+it is the trigger. Each consumer now asks the server whether its consumer still exists and, if not,
+re-creates it. Three files, one shape:
+
+| Service | File (operative layer on YU17) | Consumer | Repair |
+|---|---|---|---|
+| position-service | `specs/YU15-eod-risk-extract/…/eod/EodPnlConsumer.java` | durable `eod-pnl` | `rebindIfDurableGone()` on RECONNECTED |
+| risk-extract | `specs/YU17-otc-rates/…/cluster/RiskExtractMain.java` | durable `risk-extract` | one `bind` routine, run at startup and on RECONNECTED |
+| execution-algo-engine | `specs/YU08-execution-algo-engine/…/eventstore/AlgoEventStore.java` | **ephemeral** pull consumer | `rebuildIfConsumerGone()` → re-create + replay |
+
+**Option 1 (a readiness probe) was taken only where it is free and correct, and deliberately
+refused where it is not:**
+
+- `execution-algo-engine` — **taken.** `healthy()` already fed the readiness group and already said
+  "a wedged/dead subscriber must unready the pod"; it returned true for a destroyed consumer
+  (connection CONNECTED, thread alive, fetching from nothing). It now also requires a live
+  subscription, so the probe finally means what its own comment claims.
+- `risk-extract` — **not applicable, and this is the issue's own finding**: no Service, no container
+  ports, no probe. Instead the file's existing mechanism was reused rather than competed with: a
+  failed re-bind calls `halt(1)`, exactly as `main()` does, because process exit is the only
+  liveness signal this Deployment has. Loud and dead beats quiet and dead.
+- `position-service` — **deliberately NOT wired into `/actuator/health`.** This service also answers
+  live position queries; unreadying it out of rotation because an overnight batch consumer lost its
+  durable trades a silent batch failure for a loud outage of everything else. It exports
+  **`traderx_eod_pnl_subscribed`** (1/0) instead — the alert without the self-inflicted outage, and
+  the same number `consumer_count` gives, without having to fish it out of `jsz` by hand.
+
+Option 3 was not needed as a standing workaround, but the mechanism is now written into
+`cluster/nats.yaml`'s own comment, which previously said only that "consumers recreate their
+streams on demand" — true of the streams, and the exact half-truth that made this look survivable.
+
+### Measured on `kind-traderx-yu12-cluster`, 2026-08-19
+
+**Negative control first, on the deployed unfixed build** (`cluster-node:yu17-ackB`,
+`position-service:yu16`, `execution-algo-engine:yu17-fills`). NATS restarted at 02:55:28Z. Three and
+a half minutes later:
+
+```
+streams = 0    consumers = 0    messages = 0
+num_connections = 27
+```
+
+**Twenty-seven clients reconnected and not one rebuilt anything.** risk-extract logged the same
+single `IOException: Read channel closed` named at the top of this file and then nothing;
+position-service logged nothing at all; every pod stayed `Running 1/1`, `RESTARTS 0`. The incident
+reproduced exactly, on demand, in under four minutes.
+
+**`TRADERX_ALGO_ENGINE` went with them.** That settles the open question: `execution-algo-engine`
+survived the 2026-08-19 incident *only* because it had started after the restart. Its consumer is
+ephemeral rather than durable, which changes nothing — the client does not re-create either kind.
+The defect class is three services.
+
+**Positive test, on the fixed build** (`:yu17-jsrebind` everywhere). NATS restarted at 03:12:22Z;
+**no consumer was restarted by hand.** Streams and consumers were back within 40s and stationary
+across fourteen readings over four minutes:
+
+```
+TRADERX_EOD = 2   TRADERX_ALGO_ENGINE = 1
+```
+
+And the repair was observed FIRING, not merely inferred from the symptom clearing — the distinction
+this project pays for elsewhere. Same pods throughout, `RESTARTS 0`, unchanged `startTime`:
+
+```
+risk-extract    RISK-EXTRACT created stream TRADERX_EOD subjects=[eod.prices.ready, eod.pnl.done]
+                RISK-EXTRACT bound durable='risk-extract' subject=eod.pnl.done after 0 retries (re-bind)
+position-svc    EOD durable 'eod-pnl' is gone after a NATS reconnect ...; re-subscribing
+                eod consumer subscribed subject=eod.prices.ready durable=eod-pnl stream=TRADERX_EOD
+algo-engine     algo-engine event-store consumer is gone after a NATS reconnect ...; rebuilding
+                created algo-engine event stream: TRADERX_ALGO_ENGINE
+                replayed 0 algo-engine events from TRADERX_ALGO_ENGINE
+```
+
+`scripts/proofs/yu17-swap-netting.sh` then passed end to end, **exit 0**: cut at N=20209, 17
+contracts, identical sha from all three members, both artifacts reproducing from the cut alone, and
+a member destroyed to an empty disk re-rendering the same sha.
+
+### The build, and why no fresh epoch was needed
+
+`traderx/cluster-node:yu17-jsrebind` differs from `:yu17-ackB` by **exactly one class**. Measured on
+the artifacts, not inferred: a class-by-class md5 inside both images gives 265 classes each and one
+difference, `RiskExtractMain`. The deterministic core, the gateway and every member class are
+byte-identical, so the tier rolled without minting a fresh epoch. Wire rule unchanged — still a
+post-B build, still never mixed with a pre-B one.
+
+### Known minor legibility item, not a defect
+
+The algo engine's repair logs `WARN could not list consumers … stream not found [10059]` before
+rebuilding. The outcome is correct and the next line states it, but "stream not found" is in fact a
+*definitive* answer that the consumer is gone, not the uncertainty the wording implies —
+`RiskExtractMain.durableExists` already treats 10059 that way. Worth aligning when someone is next
+in the file; deliberately not changed after the images were built and verified, so that the
+committed source matches the image the measurements above were taken on.
 
 ## Why this one matters more than its size
 

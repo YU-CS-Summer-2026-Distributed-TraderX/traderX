@@ -109,7 +109,9 @@ spec:
     spec:
       containers:
         - name: position-service
-          image: traderx/position-service:yu16
+          # `:yu17-jsrebind` is `:yu16` plus the EOD durable re-bind in EodPnlConsumer —
+          # a NATS restart destroys the `eod-pnl` durable and the client never re-creates it.
+          image: traderx/position-service:yu17-jsrebind
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

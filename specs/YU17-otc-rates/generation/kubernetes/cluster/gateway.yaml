@@ -41,7 +41,13 @@ spec:
           # as full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
           # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above the
           # image line becomes the declared image. That bit a coordinator on 2026-08-18.
-          image: traderx/cluster-node:yu17-ackB
+          # 2026-08-19: `:yu17-jsrebind` is `:yu17-ackB` plus ONE class. Measured on the
+          # artifacts, not inferred: a class-by-class md5 of both images gives 265 classes each
+          # and exactly one difference, RiskExtractMain — the EOD durable re-bind after a NATS
+          # reconnect. The deterministic core, the gateway and every member class are BYTE-
+          # IDENTICAL, which is why this rolled without minting a fresh epoch. Wire rule is
+          # unchanged: this is still a post-B build and never mixes with a pre-B one.
+          image: traderx/cluster-node:yu17-jsrebind
           imagePullPolicy: IfNotPresent
           command:
             - java

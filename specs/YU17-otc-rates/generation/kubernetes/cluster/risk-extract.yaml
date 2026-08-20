@@ -1,3 +1,19 @@
+# The cut artifacts outlive the pod. `file:///data/risk-extracts` is the kind sink (the GKE
+# overlay swaps it for a gs:// URI, where durability is GCS's job) — and on an emptyDir that meant
+# rescheduling this Deployment silently erased every cut ever taken, with the console's provenance
+# panel then rendering empty and no error anywhere. A claim is the same shape the cluster members
+# already use for their `data` volume. strategy: Recreate below is what makes ReadWriteOnce safe:
+# no rollout ever overlaps two pods on this claim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: risk-extract-extracts
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,7 +44,13 @@ spec:
           # as full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
           # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above the
           # image line becomes the declared image. That bit a coordinator on 2026-08-18.
-          image: traderx/cluster-node:yu17-ackB
+          # 2026-08-19: `:yu17-jsrebind` is `:yu17-ackB` plus ONE class. Measured on the
+          # artifacts, not inferred: a class-by-class md5 of both images gives 265 classes each
+          # and exactly one difference, RiskExtractMain — the EOD durable re-bind after a NATS
+          # reconnect. The deterministic core, the gateway and every member class are BYTE-
+          # IDENTICAL, which is why this rolled without minting a fresh epoch. Wire rule is
+          # unchanged: this is still a post-B build and never mixes with a pre-B one.
+          image: traderx/cluster-node:yu17-jsrebind
           imagePullPolicy: IfNotPresent
           # Same image as the node and the gateway, a different main — the cluster tier's
           # established shape (ADR-047).
@@ -73,7 +95,8 @@ spec:
               memory: 512Mi
       volumes:
         - name: extracts
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: risk-extract-extracts
         - name: shm
           emptyDir:
             medium: Memory

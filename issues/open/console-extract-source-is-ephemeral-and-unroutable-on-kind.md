@@ -4,6 +4,11 @@
 only reachable through a dev-proxy `kubectl exec` — a deployed console needs a real read endpoint")
 before it gets handed to someone as a work item. Two facts change what that work item should say.
 
+> **§1 RESOLVED on YU17 2026-08-19; §2 still open and deliberately so.** The kind sink is now a
+> PVC, so a reschedule no longer erases the epoch's cuts. §2 — no Service, no ports, nothing to
+> route to — is unchanged, and the ruling at the bottom of this file stands: do not give a
+> deliberately-headless component an ingress to solve a kind-only problem. See "What changed" below.
+
 ## 1. The cut artifacts are on an `emptyDir`. A pod restart erases every cut.
 
 `specs/*/generation/kubernetes/cluster/risk-extract.yaml`:
@@ -53,3 +58,31 @@ So the honest work item is *not* "build a file-serving endpoint for risk-extract
 
 Building an HTTP file server into risk-extract would solve only the local case, at the cost of giving
 a deliberately-headless component an ingress. Worth not doing by default.
+
+---
+
+## What changed, 2026-08-19 — §1 only
+
+`specs/YU17-otc-rates/generation/kubernetes/cluster/risk-extract.yaml` now backs the `extracts`
+volume with a `PersistentVolumeClaim` (`risk-extract-extracts`, 1Gi, RWO) instead of an `emptyDir`.
+Volume name and mountPath are unchanged, so nothing else in the manifest or the service moved. The
+Deployment's existing `strategy: Recreate` is what makes ReadWriteOnce safe here — no rollout ever
+overlaps two pods on the claim, which is the same reason the strategy was there in the first place.
+
+**The `gke/` overlay was not touched, and could not have been:** `specs/YU17-otc-rates/` carries no
+`gke/` variant at all, so YU16's `gke/risk-extract.yaml` remains the operative GKE layer. Its
+`gs://traderx-505400-risk-extracts` sink is untouched and `kubectl kustomize` still returns rc=0 on
+the YU15 and YU16 gke overlays. Durability there is still GCS's job, as designed.
+
+**Verified on `kind-traderx-yu12-cluster`.** Two fresh cuts taken (`2026-08-20/v4/seq-20196`,
+`v5/seq-20209`), sha256 recorded for all six artifacts, `kubectl delete pod -l app=risk-extract`,
+replacement pod confirmed to be a different pod (`…-4pzd9` → `…-zcbq7`), and every one of the six
+artifacts present afterwards **byte-identical**. On an `emptyDir` all six would have been gone.
+
+The four cuts that predated the change were destroyed once, in the transition, as expected when the
+volume type changes. That was the last time a reschedule can do it.
+
+**What this does NOT change:** the "real read endpoint" gap of §2. The console still reaches the
+sink through the dev-proxy `kubectl exec` bridge on kind, and still reads GCS directly on a deployed
+console. The cuts merely now survive long enough to be worth reading — which was the live demo risk,
+and is what §1 was actually about.

@@ -58,8 +58,10 @@ spec:
           # producer's durable consumer is what makes a failed extract retry instead of vanish.
           # Config moved from args into nats-server-config so the websocket listener (browser
           # blotter feed) can exist — see the ConfigMap above. NOTE: /data is emptyDir, so this
-          # pod restarting wipes JetStream stream/durable state; consumers recreate their streams
-          # on demand, but un-consumed messages at roll time are gone.
+          # pod restarting wipes JetStream stream AND durable-consumer state. Both EOD consumers
+          # now re-create their durable on the reconnect that follows (2026-08-19: they did not,
+          # and the chain sat dead for ten hours with every pod healthy), but un-consumed messages
+          # at roll time are still gone.
           args: ["-c", "/etc/nats/nats.conf"]
           ports:
             - name: client

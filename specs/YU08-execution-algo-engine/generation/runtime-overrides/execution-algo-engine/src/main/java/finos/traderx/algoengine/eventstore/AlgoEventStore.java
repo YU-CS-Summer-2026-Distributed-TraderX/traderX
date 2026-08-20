@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.nats.client.Connection;
+import io.nats.client.ConnectionListener;
 import io.nats.client.JetStream;
 import io.nats.client.JetStreamApiException;
 import io.nats.client.JetStreamManagement;
@@ -58,6 +59,10 @@ public class AlgoEventStore {
   private volatile JetStream jetStream;
   private volatile Thread liveThread;
   private volatile boolean stopped;
+  /** Null while the consumer is being (re)built — the live loop idles and {@link #healthy()}
+   * reports down for exactly that window. */
+  private volatile JetStreamSubscription subscription;
+  private volatile Consumer<AlgoEvent> applier;
 
   public AlgoEventStore(@Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress) {
     this.natsAddress = natsAddress;
@@ -66,11 +71,30 @@ public class AlgoEventStore {
   /** Blocks until the entire event log has been replayed and applied, then starts a background
    * thread that keeps applying new events as they are appended. */
   public synchronized void replayAndSubscribe(Consumer<AlgoEvent> applier) throws Exception {
+    this.applier = applier;
     connection = Nats.connect(new Options.Builder()
         .server(natsAddress)
         .connectionTimeout(Duration.ofSeconds(10))
         .maxReconnects(-1)
+        .connectionListener((conn, type) -> {
+          if (type == ConnectionListener.Events.RECONNECTED) {
+            rebuildIfConsumerGone();
+          }
+        })
         .build());
+    rebuild();
+
+    Thread thread = new Thread(this::liveLoop, "algo-engine-event-store-live");
+    thread.setDaemon(true);
+    thread.start();
+    liveThread = thread;
+  }
+
+  /** Create the stream if needed, open a fresh ephemeral consumer, replay the log through the
+   * applier, and hand the live loop the new subscription. Used at boot and on repair — the two
+   * are the same operation, which is the whole point of replaying from the start every time. */
+  private void rebuild() throws Exception {
+    subscription = null; // the live loop idles rather than fetching on a dead consumer
     JetStreamManagement jsm = connection.jetStreamManagement();
     ensureStream(jsm);
     jetStream = connection.jetStream();
@@ -82,24 +106,76 @@ public class AlgoEventStore {
             .filterSubject(SUBJECT)
             .build())
         .build();
-    JetStreamSubscription subscription = jetStream.subscribe(SUBJECT, pullOptions);
+    JetStreamSubscription sub = jetStream.subscribe(SUBJECT, pullOptions);
 
-    int replayed = drain(subscription, applier);
+    int replayed = drain(sub, applier);
+    subscription = sub;
     log.info("replayed {} algo-engine events from {}", replayed, STREAM_NAME);
-
-    Thread thread = new Thread(() -> liveLoop(subscription, applier), "algo-engine-event-store-live");
-    thread.setDaemon(true);
-    thread.start();
-    liveThread = thread;
   }
 
-  /** True when the NATS connection is up and the live-apply thread is still running.
-   * Feeds the readiness health group: a wedged/dead subscriber must unready the pod. */
+  /**
+   * A NATS restart recreates JetStream state, so this consumer — ephemeral, and never re-created
+   * by the client — simply ceases to exist. The client reconnects the CONNECTION and stops there:
+   * {@code fetch} on the dead subscription returns empty forever, the live thread stays alive,
+   * and NOTHING throws. Measured on kind 2026-08-19: after a NATS restart the broker reported 27
+   * connected clients and ZERO streams and consumers, with every pod Running 1/1, RESTARTS 0.
+   * The EOD chain reached the same state by the same road and sat dead for ten hours.
+   *
+   * <p>Replaying the whole log on repair is correct for the same reason it is correct on boot:
+   * {@link AlgoOrderState#apply} is deterministic and idempotent (ADR-030), which is exactly why
+   * this consumer is ephemeral rather than durable.
+   */
+  private void rebuildIfConsumerGone() {
+    JetStreamSubscription sub = subscription;
+    try {
+      if (sub != null
+          && connection.jetStreamManagement().getConsumerNames(STREAM_NAME)
+              .contains(sub.getConsumerName())) {
+        return;
+      }
+    } catch (Exception ex) {
+      // Could not tell. Rebuilding is idempotent and a silently dead subscriber is not.
+      log.warn("could not list consumers on {} after a NATS reconnect, rebuilding anyway: {}",
+          STREAM_NAME, ex.toString());
+    }
+    subscription = null;
+    log.warn("algo-engine event-store consumer is gone after a NATS reconnect (a broker restart "
+        + "recreates JetStream state); rebuilding and replaying {}", STREAM_NAME);
+    Thread t = new Thread(() -> {
+      while (!stopped && !Thread.currentThread().isInterrupted()) {
+        try {
+          rebuild();
+          return;
+        } catch (Exception ex) {
+          log.warn("algo-engine event-store rebuild failed, retrying in 5s: {}", ex.toString());
+          try {
+            Thread.sleep(5000);
+          } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return;
+          }
+        }
+      }
+    }, "algo-engine-event-store-rebind");
+    t.setDaemon(true);
+    t.start();
+  }
+
+  /** True when the NATS connection is up, the live-apply thread is still running, AND a live
+   * JetStream consumer is actually bound. Feeds the readiness health group: a wedged/dead
+   * subscriber must unready the pod.
+   *
+   * <p>The subscription check is load-bearing, not belt-and-braces. Without it this returned true
+   * for a consumer the broker had destroyed — connection CONNECTED, thread alive, fetching from
+   * nothing — which is the shape that let a NATS restart kill the event-sourced engine while the
+   * pod reported Ready. It goes down only for the seconds a rebuild takes, and stays down if the
+   * rebuild never succeeds, which is the visible failure this defect never had. */
   public boolean healthy() {
     Connection conn = connection;
     Thread live = liveThread;
     return conn != null && conn.getStatus() == Connection.Status.CONNECTED
-        && live != null && live.isAlive();
+        && live != null && live.isAlive()
+        && subscription != null;
   }
 
   private int drain(JetStreamSubscription subscription, Consumer<AlgoEvent> applier) throws Exception {
@@ -123,10 +199,15 @@ public class AlgoEventStore {
     return events.size();
   }
 
-  private void liveLoop(JetStreamSubscription subscription, Consumer<AlgoEvent> applier) {
+  private void liveLoop() {
     while (!stopped) {
       try {
-        List<Message> messages = subscription.fetch(FETCH_BATCH, FETCH_WAIT);
+        JetStreamSubscription sub = subscription;
+        if (sub == null) { // a rebuild is in flight; it owns the replay
+          Thread.sleep(FETCH_WAIT.toMillis());
+          continue;
+        }
+        List<Message> messages = sub.fetch(FETCH_BATCH, FETCH_WAIT);
         for (Message msg : messages) {
           apply(msg, applier);
         }

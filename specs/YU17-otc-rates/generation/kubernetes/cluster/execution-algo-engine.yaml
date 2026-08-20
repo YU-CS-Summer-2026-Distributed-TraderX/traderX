@@ -66,7 +66,10 @@ spec:
           # moving the tag. That is what happened; the tag is named for the fix rather than the
           # state so it cannot be confused with a routine state rebuild. Still local-only, like
           # every other kind tag on this rig.
-          image: traderx/execution-algo-engine:yu17-fills
+          # `:yu17-jsrebind` is `:yu17-fills` plus the JetStream consumer rebuild in
+          # AlgoEventStore. Its consumer is ephemeral, so a NATS restart destroyed it exactly the
+          # way it destroyed the two EOD durables — measured on this rig 2026-08-19, not assumed.
+          image: traderx/execution-algo-engine:yu17-jsrebind
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
