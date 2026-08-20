@@ -43,13 +43,16 @@ interface Row extends Check {
   imports: [HelpTip],
   template: `
     <div class="card-head">
-      <h2>Service status</h2>
+      <button type="button" class="card-tog" (click)="open.set(!open())">
+        <span class="arrow">{{ open() ? '▾' : '▸' }}</span><h2>Service status</h2>
+      </button>
       <help-tip text="One request per service, from the browser, through the same edge proxy every other panel uses — so a green row means the path this console actually depends on is working end to end, not that something somewhere reported itself healthy. Refreshes every 30 seconds. Latency is round-trip from the browser and includes the proxy hop, so it is a reachability figure, not a measure of the system's internal latency (the panel above measures that)." />
       <span class="spacer"></span>
       <span class="pill" [class.good]="downCount() === 0" [class.bad]="downCount() > 0">
         {{ rows().length - downCount() }}/{{ rows().length }} up</span>
       <button (click)="refresh()" [disabled]="checking()">{{ checking() ? '…' : 'Refresh' }}</button>
     </div>
+    @if (open()) {
     <table>
       <thead><tr><th>service</th><th>state</th><th class="num">http</th><th class="num">latency</th>
         <th>checked</th><th>up since</th></tr></thead>
@@ -67,6 +70,7 @@ interface Row extends Check {
         }
       </tbody>
     </table>
+    }
   `,
   styles: `
     .spacer { flex: 1; }
@@ -78,6 +82,7 @@ export class StatusPanel implements OnInit, OnDestroy {
   readonly rows = signal<Row[]>(CHECKS.map(c => ({
     ...c, status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
   })));
+  readonly open = signal(true);
   readonly checking = signal(false);
   readonly downCount = signal(0);
   private timer: ReturnType<typeof setInterval> | undefined;

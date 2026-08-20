@@ -25,10 +25,13 @@ const headers = (content: string) =>
   imports: [HelpTip],
   template: `
     <div class="card-head">
-      <h2>EOD cut provenance</h2>
+      <button type="button" class="card-tog" (click)="open.set(!open())">
+        <span class="arrow">{{ open() ? '▾' : '▸' }}</span><h2>EOD cut provenance</h2>
+      </button>
       <help-tip text="At end of day the cluster takes a cut: every position at an exact consensus sequence number, against a specific published price version. Because the engine is deterministic, all three members render byte-identical files from it — the SHA-256 here is the fingerprint of that claim. Each cut produces two artifacts from one committed source: the netted positions, and the OTC contracts. Both name the cut they were rebuilt from, so 'reproduces from the cut alone' is something you can check on this screen rather than take on faith. Swaps appear only in the contracts file, never as position rows — netting a pay-fixed against a receive-fixed would destroy both rates." />
     </div>
 
+    @if (open()) {
     @if (rigNote()) { <div class="banner warn-note">{{ rigNote() }}</div> }
     @for (c of cuts(); track c.key) {
       <div class="cut-head">
@@ -61,6 +64,7 @@ const headers = (content: string) =>
       <div class="faint">{{ error() || (loaded() ? 'no cuts anywhere' : 'loading cuts…') }}</div>
     }
     @if (cuts().length && error()) { <div class="sub err">{{ error() }}</div> }
+    }
   `,
   styles: `
     .spacer { flex: 1; }
@@ -79,6 +83,7 @@ export class ProvenancePanel implements OnInit {
   readonly cuts = signal<Cut[]>([]);
   readonly error = signal('');
   readonly loaded = signal(false);
+  readonly open = signal(true);
   /**
    * An empty sink has to announce itself. The extract's volume is an emptyDir (deliberately —
    * durability is the GCS sink's job on the GKE overlay), so rescheduling deploy/risk-extract

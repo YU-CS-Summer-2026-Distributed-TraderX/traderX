@@ -35,6 +35,11 @@ h2 { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; }
 }
 .card-head { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; }
 
+/* Disclosure control for a whole card: the arrow and the heading are one click target. */
+.card-tog { display: flex; align-items: center; gap: 6px; background: none; border: none;
+            padding: 0; cursor: pointer; color: inherit; }
+.card-tog .arrow { width: 10px; font-size: 10px; color: var(--muted); }
+
 .sub { font-size: 12px; color: var(--muted); font-weight: 400; }
 .faint { font-size: 12px; color: var(--faint); }
 

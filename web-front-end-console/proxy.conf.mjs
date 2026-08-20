@@ -154,6 +154,120 @@ function extractBypass(req, res) {
   return false;
 }
 
+// ---- FIX 4.4 bridge: the gateway's SECOND ingress ---------------------------------------------
+// The gateway terminates a FIX 4.4 session on its own port (ADR-047): FIX_ACCEPTOR_PORT=18130,
+// SenderCompID TRADERX, counterparty CLIENT1, session state ephemeral (MemoryStoreFactory) and
+// wholly independent of the cluster client — which is the failover-transparency property, since a
+// leader change never touches the counterparty's session.
+//
+// A browser cannot open a TCP socket, so the console cannot speak FIX itself. This bridge logs on,
+// sends one NewOrderSingle, waits for the ExecutionReport, and hands BOTH raw messages back so the
+// panel can show the actual wire text rather than a summary of it. One socket per request, closed
+// straight after: sessions are ephemeral by design, so there is nothing to keep alive.
+import net from 'node:net';
+
+const FIX_PORT = 30130;
+const FIX_HOST = 'localhost';
+const SOH = '\x01';
+
+function fixPortForward() {
+  const pf = spawn('kubectl', ['--context', CTX, '-n', NS, 'port-forward', 'svc/order-matcher',
+    `${FIX_PORT}:18130`], { stdio: 'ignore' });
+  pf.on('exit', () => setTimeout(fixPortForward, 2000));
+  process.on('exit', () => { pf.removeAllListeners('exit'); pf.kill(); });
+}
+try {
+  execSync(`nc -z localhost ${FIX_PORT}`, { stdio: 'ignore' });
+} catch {
+  fixPortForward();
+  console.log(`[proxy] port-forwarding svc/order-matcher:18130 (FIX acceptor) to ${FIX_PORT}`);
+}
+
+/** Frame a FIX message: body length and checksum are computed over the encoded bytes, not fields. */
+function fixFrame(bodyFields) {
+  const body = bodyFields.map(([t, v]) => `${t}=${v}`).join(SOH) + SOH;
+  const head = `8=FIX.4.4${SOH}9=${Buffer.byteLength(body)}${SOH}`;
+  const sum = [...Buffer.from(head + body)].reduce((a, b) => (a + b) & 0xff, 0);
+  return head + body + `10=${String(sum).padStart(3, '0')}${SOH}`;
+}
+
+/** FIX UTCTimestamp: YYYYMMDD-HH:MM:SS.sss — no dashes in the date, colons kept, no trailing Z.
+ *  (Stripping the colons too gets the whole Logon refused: "Incorrect data format ... field=52".) */
+const fixTime = () => {
+  const s = new Date().toISOString();
+  return s.slice(0, 10).replace(/-/g, '') + '-' + s.slice(11, 23);
+};
+
+function fixOrder(o) {
+  return new Promise((resolve) => {
+    const sent = [];
+    const received = [];
+    const sock = net.connect(FIX_PORT, FIX_HOST);
+    let buf = '';
+    let seq = 1;
+    let done = false;
+    const finish = (error) => {
+      if (done) return;
+      done = true;
+      sock.destroy();
+      resolve({ sent, received, ...(error ? { error } : {}) });
+    };
+    const timer = setTimeout(() => finish('no ExecutionReport within 8s'), 8000);
+    const send = (fields) => {
+      const msg = fixFrame([['35', fields.type], ['49', 'CLIENT1'], ['56', 'TRADERX'],
+        ['34', seq++], ['52', fixTime()], ...fields.body]);
+      sent.push(msg);
+      sock.write(msg);
+    };
+    sock.on('connect', () => send({ type: 'A', body: [['98', 0], ['108', 30], ['141', 'Y']] }));
+    sock.on('data', (chunk) => {
+      buf += chunk.toString('latin1');
+      // Frames are self-delimiting: a message ends at its own checksum field.
+      for (let end; (end = buf.indexOf(`${SOH}10=`)) >= 0;) {
+        const cut = buf.indexOf(SOH, end + 1) + 1;
+        if (cut <= 0) break;
+        const msg = buf.slice(0, cut);
+        buf = buf.slice(cut);
+        received.push(msg);
+        const type = /\x0135=([^\x01]+)/.exec(msg)?.[1];
+        if (type === 'A') {
+          send({ type: 'D', body: [
+            ['11', o.clOrdId], ['1', o.accountId], ['55', o.symbol], ['54', o.side === 'Sell' ? 2 : 1],
+            ['38', o.quantity], ['40', 2], ['44', o.limitPrice], ['21', 1], ['60', fixTime()],
+          ] });
+        } else if (type === '8' || type === '3' || type === 'j' || type === '5') {
+          clearTimeout(timer);
+          finish();
+        }
+      }
+    });
+    sock.on('error', (e) => { clearTimeout(timer); finish(`socket: ${e.message}`); });
+  });
+}
+
+const readBody = (req) => new Promise((resolve) => {
+  const chunks = [];
+  req.on('data', (c) => chunks.push(c));
+  req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+});
+
+/**
+ * Async on purpose, and it must stay that way: the dev server awaits the bypass result and answers
+ * 404 itself when it gets `false` back, so a bypass that returns before writing its response loses
+ * the race and the caller sees a 404 with no clue why. Write first, return false after.
+ */
+async function fixBypass(req, res) {
+  try {
+    const out = await fixOrder(JSON.parse((await readBody(req)) || '{}'));
+    res.setHeader('Content-Type', 'application/json');
+    res.end(JSON.stringify(out));
+  } catch (e) {
+    res.statusCode = 502;
+    res.end(JSON.stringify({ error: String((e && e.message) || e) }));
+  }
+  return false;
+}
+
 const plain = (ctx) => ({ context: [ctx], target, secure: false });
 
 export default [
@@ -168,5 +282,6 @@ export default [
   { context: ['/gcs'], target, secure: false, bypass: gcsBypass },
   { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
   { context: ['/extracts'], target, secure: false, bypass: extractBypass },
+  { context: ['/fixorder'], target, secure: false, bypass: fixBypass },
   plain('/algo'), plain('/tempo'),
 ];

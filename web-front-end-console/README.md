@@ -45,16 +45,37 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   ADR-026), per-instrument quality codes, the override form, and the publish button that shows the
   quality gate's 409.
 
-- **Admin** — a **live trading session** (several accounts submitting real orders at their own
-  rate for their own duration, stoppable, so every other surface has something to show at once),
-  trade lifecycle (T+n settlement with force-settle, inline TCA reports), algo parent orders with
+- **Admin** — a **live trading session**: several accounts submitting real orders at their own rate
+  for their own duration, stoppable, so every other surface has something to show at once. The
+  instrument pool is a multi-select over the whole catalog plus free-typed extras (OCC contracts
+  live in engine risk state, not reference data, so they are typed rather than listed); *random
+  instrument per order* spreads flow across books, off keeps every actor in one book where they
+  cross and print. Quantity `-1` draws a random multiple of 25 in [25, 10000]. **Batch ingress**
+  switches each tick to one `POST /orders/batch` carrying an array — the gateway offers the whole
+  array back to back without waiting for each ack and fences once at the end, which is the
+  high-throughput path the load benches use; it answers with a count rather than per-order refs, so
+  batched orders carry no client order id and no trace. Batch and order-at-a-time are mutually
+  exclusive at the gateway (it drains pipelined singles when a batch starts), which is why the
+  toggle is session-wide and not per actor.
+- Also on **Admin**: trade lifecycle (T+n settlement with force-settle, inline TCA reports), algo parent orders with
   their bucket schedules (renders "engine scaled to 0" legibly — the proof suite parks it),
   cancel-by-orderRef, recon status + orphan sweep.
 - **Accounts** — create a trading account and admit it to the engine's risk state, or suspend one.
   Both halves are shown because both are needed: the account service is the directory, and the
   engine keeps its own risk state, so an account that exists in one and not the other lists
   normally and rejects every order (`UNKNOWN_ACCOUNT`, or `ACCOUNT_DISABLED` once suspended).
-  Admission is a control command sequenced through consensus like an order.
+  Admission is a control command sequenced through consensus like an order. New accounts take a
+  random unused five-digit id, so the form asks only for a name. The applied-state column is kept in
+  session storage: the engine has no read surface for account risk state, so without that a refresh
+  would leave no record at all of which accounts had been suspended.
+- **FIX** — the gateway's *second* ingress, and the only page here that leaves HTTP. A counterparty
+  session (FIX 4.4, CLIENT1 → TRADERX) is held against the gateway's own acceptor port; the gateway
+  terminates it itself and forwards each NewOrderSingle through the same submitter seam, consensus
+  log and risk gate as a ticket order. The page shows the whole exchange as raw wire text with every
+  tag decoded — Logon, NewOrderSingle, ExecutionReport — because the point is that it really is FIX,
+  not a description of FIX. A browser cannot open a TCP socket, so the dev proxy holds the session
+  for the length of one order; sessions are ephemeral by design (MemoryStoreFactory), so a
+  one-order session is an ordinary one rather than a shortcut.
 - **Kdb** — the KDB-X capture tap: per-member tickerplant logs (leader-side, so rows map to
   leadership windows), q-style VWAP computed from txtrade, and the latest captured trades. Served
   by a read-only dev-proxy bridge (kubectl exec tail).
@@ -112,6 +133,11 @@ it — a real print and a position on both sides.
   same is applied (NATS pod restart — JetStream state on emptyDir does not survive it).
 - **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway** — live on the rig and declared in
   the YU17 layer since 2026-08-18.
+- **The FIX page needs the dev proxy**, which port-forwards `svc/order-matcher:18130` and speaks the
+  session on the browser's behalf. A deployed console would need a server-side FIX client of its
+  own; nothing in the browser can open a TCP socket. Watch the timestamp format if you touch it:
+  FIX UTCTimestamp is `YYYYMMDD-HH:MM:SS.sss`, and stripping the colons gets the whole Logon
+  refused with *"Incorrect data format for value, field=52"*.
 - **Cuts on the kind rig are ephemeral, and losing them is silent.** The extract's
   `/data/risk-extracts` is an `emptyDir` — deliberately, because durability is the GCS sink's job
   on the GKE overlay and there is none on kind. Rescheduling `deploy/risk-extract` deletes every

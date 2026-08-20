@@ -11,6 +11,7 @@ import { KdbPanel } from './kdb-panel';
 import { StatusPanel } from './status-panel';
 import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
+import { FixPanel } from './fix-panel';
 
 @Component({
   selector: 'trading-page',
@@ -73,6 +74,13 @@ export class AdminPage {}
   template: `<section class="card" style="max-width: 820px"><accounts-panel /></section>`,
 })
 export class AccountsPage {}
+
+@Component({
+  selector: 'fix-page',
+  imports: [FixPanel],
+  template: `<section class="card" style="max-width: 980px"><fix-panel /></section>`,
+})
+export class FixPage {}
 
 @Component({
   selector: 'kdb-page',

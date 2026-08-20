@@ -61,7 +61,6 @@ export class Section<T> {
     <h3>
       <button type="button" class="tog" (click)="s().toggle()">
         <span class="arrow">{{ s().open() ? '▾' : '▸' }}</span>{{ label() }}
-        <span class="count">{{ s().items().length }}</span>
       </button>
       <ng-content />
     </h3>
@@ -72,8 +71,6 @@ export class Section<T> {
            font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; }
     .tog:hover { color: var(--text); }
     .arrow { display: inline-block; width: 10px; font-size: 10px; }
-    .count { font-family: var(--mono); font-weight: 500; font-size: 11.5px; color: var(--faint);
-             background: #f0f2f5; border-radius: 9px; padding: 0 6px; }
   `,
 })
 export class SecHead {
@@ -100,9 +97,12 @@ export class SecHead {
     }
   `,
   styles: `
-    .pager { display: flex; align-items: center; gap: 6px; margin: 4px 0 2px; }
-    .pager button { padding: 1px 9px; font-size: 13px; line-height: 1.4; }
-    .pager input { width: 56px; text-align: center; }
+    .pager { display: flex; align-items: center; gap: 5px; margin: 5px 0 2px; font-size: 12px; }
+    .pager button { padding: 0 7px; font-size: 12px; line-height: 1.7; color: var(--muted); }
+    .pager input { width: 38px; text-align: center; padding: 1px 3px; font-size: 12px; }
+    /* Chrome's number spinners double the apparent width of a field this small. */
+    .pager input::-webkit-inner-spin-button, .pager input::-webkit-outer-spin-button {
+      -webkit-appearance: none; margin: 0; }
   `,
 })
 export class SecPager {

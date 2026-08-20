@@ -1,9 +1,11 @@
-import { Component, OnInit, computed, inject, signal } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api } from './api';
 import { HelpTip } from './help';
 
 interface Step { label: string; ok: boolean; text: string; }
+
+const NOTE_KEY = 'traderx-console-account-risk';
 
 @Component({
   selector: 'accounts-panel',
@@ -36,13 +38,13 @@ interface Step { label: string; ok: boolean; text: string; }
 
     <div class="card-head sect">
       <h2>New account</h2>
-      <help-tip text="Two calls, in order: create the directory record, then admit the account to the engine's risk state. Both are reported below — if the second fails the account will list here and still reject every order, which is a confusing failure worth naming rather than hiding." />
+      <help-tip text="Two calls, in order: create the directory record, then admit the account to the engine's risk state. Both are reported below — if the second fails the account will list here and still reject every order, which is a confusing failure worth naming rather than hiding. The id is drawn at random from the five-digit range and checked against the ones already in use, matching the existing accounts' shape without making you pick a number." />
     </div>
     <form (ngSubmit)="create()">
-      <label class="field">Account id <input type="number" [(ngModel)]="newId" name="id" min="1"></label>
       <label class="field">Display name <input [(ngModel)]="newName" name="name" placeholder="Desk C"></label>
       <button class="btn-primary" type="submit" [disabled]="busy() || !newName.trim()">
         {{ busy() ? '…' : 'Create and admit' }}</button>
+      <span class="sub">id is drawn at random from the unused five-digit range</span>
     </form>
     @for (s of steps(); track s.label) {
       <div class="banner" [class.good]="s.ok" [class.bad]="!s.ok"><b>{{ s.label }}</b> — {{ s.text }}</div>
@@ -60,25 +62,41 @@ interface Step { label: string; ok: boolean; text: string; }
 })
 export class AccountsPanel implements OnInit {
   readonly api = inject(Api);
-  newId = 0;
   newName = '';
   readonly busy = signal(false);
   readonly steps = signal<Step[]>([]);
-  /** accountId -> what this console last applied. Not the engine's own view; see the note. */
-  readonly note = signal<Record<number, string>>({});
+  /**
+   * accountId -> what this console last applied. Persisted, because the engine has no read surface
+   * for account risk state: if this were in-memory only, a refresh would blank the column and the
+   * operator would have no record at all of which accounts they had suspended.
+   */
+  readonly note = signal<Record<number, string>>(
+    JSON.parse(sessionStorage.getItem(NOTE_KEY) ?? '{}'));
 
-  readonly nextId = computed(() =>
-    Math.max(0, ...this.api.accounts().map(a => Number(a.id))) + 1);
+  ngOnInit(): void { this.api.loadAccounts(); }
 
-  ngOnInit(): void {
-    this.api.loadAccounts().then(() => { if (!this.newId) this.newId = this.nextId(); });
+  /** A free five-digit id, drawn at random and checked against the ones already in use. */
+  private freeId(): number {
+    const used = new Set(this.api.accounts().map(a => Number(a.id)));
+    for (let tries = 0; tries < 200; tries++) {
+      const id = 10_000 + Math.floor(Math.random() * 90_000);
+      if (!used.has(id)) return id;
+    }
+    // 200 misses against a 90k range means the range is effectively full; scan it rather than
+    // looping forever or handing the gateway a duplicate.
+    for (let id = 10_000; id < 100_000; id++) if (!used.has(id)) return id;
+    return 0;
   }
 
   async create(): Promise<void> {
     this.busy.set(true);
     this.steps.set([]);
     try {
-      const id = Number(this.newId);
+      const id = this.freeId();
+      if (!id) {
+        this.push({ label: 'account id', ok: false, text: 'every five-digit id is in use' });
+        return;
+      }
       const r = await this.api.post<{ id: number; displayName: string }>(
         '/account-service/account/', { id, displayName: this.newName.trim() });
       const created = r.status === 200 && !!r.body;
@@ -87,7 +105,6 @@ export class AccountsPanel implements OnInit {
       if (!created) return;
       await this.api.loadAccounts();
       await this.admit(id, true);
-      this.newId = this.nextId();
       this.newName = '';
     } finally { this.busy.set(false); }
   }
@@ -100,7 +117,13 @@ export class AccountsPanel implements OnInit {
       : r.status === 401 ? 'HTTP 401 — this rig sets its own RISK_CONTROL_TOKEN'
       : `HTTP ${r.status}`;
     this.push({ label: `engine risk state · account ${accountId}`, ok, text });
-    if (ok) this.note.update(m => ({ ...m, [accountId]: enabled ? 'enabled' : 'disabled' }));
+    if (ok) {
+      this.note.update(m => {
+        const next = { ...m, [accountId]: enabled ? 'enabled' : 'disabled' };
+        sessionStorage.setItem(NOTE_KEY, JSON.stringify(next));
+        return next;
+      });
+    }
     this.api.log({ kind: 'order', ok, summary: `risk control: account ${accountId} ${enabled ? 'enabled' : 'disabled'} → ${text}` });
   }
 
