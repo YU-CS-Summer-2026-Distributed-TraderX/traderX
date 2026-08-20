@@ -88,3 +88,43 @@ once-through cursor spanning an epoch reset, not a live disagreement between two
 
 A staleness hypothesis was tested and **refuted** before this one was accepted: `lastSweepAt` advances
 every 20s, so the sweep is live and genuinely re-reporting the same historical tally.
+
+## Why those six actually missed — NOT async lag, and this is the more serious half
+
+**Corrected 2026-08-20.** A natural reading of the counter mechanism is that the six were classified in
+the gap between the 10s engine poll and the asynchronous projection write, i.e. a benign timing
+artifact that happened to be recorded permanently. **The evidence refutes that.**
+
+Four seconds before the first recon miss, trade-processor was *rejecting* the writes outright:
+
+```
+2026-08-19T00:39:05.733Z  Error: 1406-22001: Data too long for column 'security' at row 1
+2026-08-19T00:39:05.746Z  ERROR TradeFeedHandler   Batch trade processing failed for 1 trades; retrying individually
+2026-08-19T00:39:05.750Z  WARN  OrderFeedHandler   orderbook write rejected for order 1-25 (rejected=1): ... Data too long for column 'security'
+```
+
+**114 timestamped `Data too long` errors**, and they hit `orderbook` as well as `trades`. A 19-character
+OCC symbol did not fit the `security` column. The projection did not lag — it **could not store the
+row**. This is the known `VARCHAR` OCC blocker, caught in the act.
+
+### The discriminator that made this worth checking
+
+All six misses are the **same OCC symbol** inside a five-minute span, and **no other security ever
+missed**. Random async lag scatters across whatever is trading; a systematic cause clusters. The
+clustering is what justified reading the logs instead of accepting the timing explanation — and the
+timing explanation is exactly the kind that sounds right, requires no evidence, and closes the
+investigation.
+
+### Scope — historical and closed, but not benign
+
+```
+first: 2026-08-19T00:39:05Z     last: 2026-08-19T00:57:12Z     114 errors, all within that hour
+```
+
+Nothing since. All four affected columns are now `varchar(32)` (`trades`, `orderbook`, `positions`
+security; `stocks.ticker`), and long-security rows are present in each (4 / 24 / 2), so the widen is in
+effect and options store correctly.
+
+So: **historical, resolved, non-recurring — and a genuine write-rejection event rather than a timing
+artifact.** The six recon misses are its surviving trace. "The numbers were never wrong" is true of the
+counter's semantics; it would be wrong to conclude the six recorded nothing real.
