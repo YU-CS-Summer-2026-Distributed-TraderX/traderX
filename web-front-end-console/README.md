@@ -128,6 +128,39 @@ The reverse trap is just as cheap to hit: converting a field to a signal makes e
 of it a read of the function object. Grep every use before flipping one — a loosely-typed request
 body will happily serialize a function and the build will pass.
 
+## Writing a panel: a result is not evidence unless something in it proves the check ran
+
+The failure this console keeps meeting is not a wrong number. It is a **confident number produced
+by something that never happened**, and it always looks like good news:
+
+- A durability comparison whose every command failed printed `ALL ARTIFACTS BYTE-IDENTICAL` — it
+  had diffed two empty files.
+- A verification wrapped in `timeout`, which does not exist on macOS, ran nothing and reported
+  green.
+- A health check got HTTP 200 from a route that did not exist, because the dev server answers
+  unknown paths with `index.html`.
+- The reconciler answered `matched 0, missing 0` — a clean bill of health from a sweep that had
+  never once run, because the blotter it sweeps against was sized to zero. The only field telling
+  the truth was `lastSweepAt: null`.
+- The band screen rendered "no refusals on record" against a 503, and the Kdb page rendered an
+  empty store when the producer was switched off on that tier.
+
+In every case the *absence* of a problem and the *absence of a check* were indistinguishable on
+screen. So a panel here must be able to say **"I cannot see"** as a distinct state from "nothing is
+wrong", and any number it displays should carry whatever proves it was measured: a sample count, a
+sweep timestamp, a cursor that moved, a row count that matched a reference. The console already had
+this instinct for latency — *a percentile without its n is an anecdote* — before anyone noticed it
+was the general rule.
+
+Two corollaries worth keeping:
+
+- **After an environment switch, check the size and shape of what each source returns, not just
+  that it returned something.** A dev bridge that shells out to the local cluster while everything
+  else points at a remote one produces a page that is internally consistent and entirely wrong. What
+  caught it was 38 KB of captures from a rig that should have had almost none.
+- **A counter named `_total` is a lifetime count** and answers a different question from the one a
+  status panel is usually asking.
+
 ## If listed options reject with UNKNOWN_SECURITY
 
 The instrument is fine and the message is misleading: `/resolve` succeeds and the publisher marks
