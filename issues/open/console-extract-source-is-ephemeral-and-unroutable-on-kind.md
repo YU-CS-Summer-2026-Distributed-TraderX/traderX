@@ -82,6 +82,35 @@ artifacts present afterwards **byte-identical**. On an `emptyDir` all six would 
 The four cuts that predated the change were destroyed once, in the transition, as expected when the
 volume type changes. That was the last time a reschedule can do it.
 
+### Confirmed from a second, independent read path
+
+The console lane re-verified through its own dev-proxy `kubectl exec` bridge and node code — a
+different route and different code from the in-pod `sha256sum` used above. Both cut shas matched
+(`68ec031c583bce88…`, `64c0b2ec176e1656…`), and a third cut produced afterwards by another lane's
+proof run reproduced green too, so the reproducibility check passed on data neither party generated
+for the other. It repeated the durability test independently — nine artifact shas, `delete pod`,
+genuinely different replacement pod, nine shas identical — with a **non-empty guard on both
+manifests**, because an empty-vs-empty diff prints PASS and means nothing when the failure mode is
+silence.
+
+Its `emptyDir` warning banner was **repointed rather than retired**, which is the better outcome and
+worth recording as the general shape: the banner's job was explaining an empty sink, and what empty
+*means* changed. It used to mean someone had rescheduled the pod; it now means the EOD chain has not
+produced a cut. **Empty was ambiguous before and is diagnostic now.**
+
+State the fix no wider than it was measured: **cuts survive a reschedule of `risk-extract`** — not
+"cuts are durable". They do not survive the PVC being deleted, and GKE was never affected.
+
+### The four destroyed cuts were archived, and deliberately NOT restored
+
+They were copied out before the transition and are kept only as an archive. Restoring them into the
+PVC was offered and **refused by the console lane, correctly**: a provenance store you can inject
+artifacts into is not a provenance store. Every row of that panel asserts "the members rendered this
+file at this consensus sequence on this volume", and cuts copied in from a scratchpad would render
+identically to ones that are true, with nothing on screen able to distinguish them. Their loss is
+honest history — they were written to an `emptyDir`, and the transition that destroyed them is the
+same one that means it cannot happen again. **Do not repopulate this sink by hand.**
+
 **What this does NOT change:** the "real read endpoint" gap of §2. The console still reaches the
 sink through the dev-proxy `kubectl exec` bridge on kind, and still reads GCS directly on a deployed
 console. The cuts merely now survive long enough to be worth reading — which was the live demo risk,
