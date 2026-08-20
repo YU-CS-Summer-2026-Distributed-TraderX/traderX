@@ -51,22 +51,33 @@ const actor = (accountId: number, side: Actor['side'], perMin: number, quantity:
 
     @if (open()) {
     <div class="cfg">
-      <label class="field grow">
+      <div class="field grow">
         <span class="lbl">Instruments in play
-          <help-tip text="Every instrument selected here is part of the session's pool. Fewer instruments means buyers and sellers land in the same book and cross each other, which is what produces prints; a wide pool spreads the flow across many books, so more orders simply rest. Both are worth showing — pick the one the demo needs. Instruments with no live price tick are skipped and counted, never guessed at." />
+          <help-tip text="Tick every instrument the session should trade. Fewer instruments means buyers and sellers land in the same book and cross each other, which is what produces prints; a wide pool spreads the flow across many books, so more orders simply rest. Both are worth showing — pick the one the demo needs. Instruments with no live price tick are skipped and counted, never guessed at." />
         </span>
-        <select multiple size="6" [ngModel]="picked()" (ngModelChange)="picked.set($event)" [disabled]="running()">
-          <optgroup label="Equities">
-            @for (i of byClass('Equity'); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.instrumentKey }} — {{ i.displayName }}</option> }
-          </optgroup>
-          <optgroup label="Funds / ETFs">
-            @for (i of byClass('Fund'); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.instrumentKey }} — {{ i.displayName }}</option> }
-          </optgroup>
-          <optgroup label="Bonds">
-            @for (i of byClass('Debt'); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.shortDisplayName || i.instrumentKey }} — {{ i.displayName }}</option> }
-          </optgroup>
-        </select>
-      </label>
+        <div class="picker">
+          <div class="ptop">
+            <input class="filter" [ngModel]="filter()" (ngModelChange)="filter.set($event)"
+              placeholder="filter {{ api.instruments().length }} instruments…" spellcheck="false" [disabled]="running()">
+            <button type="button" (click)="picked.set([])" [disabled]="running() || !picked().length">clear</button>
+          </div>
+          <div class="list">
+            @for (g of groups(); track g.label) {
+              @if (g.items.length) {
+                <div class="grp">{{ g.label }}</div>
+                @for (i of g.items; track i.instrumentKey) {
+                  <label class="row" [class.on]="isPicked(i.instrumentKey)">
+                    <input type="checkbox" [checked]="isPicked(i.instrumentKey)"
+                      (change)="toggle(i.instrumentKey)" [disabled]="running()">
+                    <span class="k">{{ i.shortDisplayName || i.instrumentKey }}</span>
+                    <span class="sub">{{ i.displayName }}</span>
+                  </label>
+                }
+              }
+            } @empty { <div class="faint pad">nothing matches “{{ filter() }}”</div> }
+          </div>
+        </div>
+      </div>
       <div class="side">
         <label class="field">
           <span class="lbl">Extra symbols
@@ -147,8 +158,21 @@ const actor = (accountId: number, side: Actor['side'], perMin: number, quantity:
   `,
   styles: `
     .cfg { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
-    .grow { min-width: 260px; }
-    .grow select { min-width: 260px; }
+    .grow { min-width: 300px; }
+    .picker { border: 1px solid #cfd5dd; border-radius: 6px; overflow: hidden; width: 320px; }
+    .ptop { display: flex; gap: 5px; padding: 5px; border-bottom: 1px solid var(--border); background: #f8f9fb; }
+    .filter { flex: 1; padding: 3px 7px; font-size: 12px; }
+    .ptop button { padding: 2px 8px; font-size: 11.5px; }
+    .list { max-height: 190px; overflow-y: auto; }
+    .grp { position: sticky; top: 0; background: #f0f2f5; color: var(--muted); font-size: 11px;
+           font-weight: 600; padding: 2px 8px; }
+    .row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12.5px; cursor: pointer; }
+    .row:hover { background: #f5f7fa; }
+    .row.on { background: var(--accent-soft); }
+    .row input { width: auto; margin: 0; }
+    .row .k { font-family: var(--mono); font-size: 12px; }
+    .row .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .pad { padding: 8px; }
     .side { display: flex; flex-direction: column; gap: 7px; }
     .side input[type=text], .side .field input { width: 230px; }
     .check { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
@@ -173,6 +197,7 @@ export class DemoSession implements OnInit, OnDestroy {
   readonly maxBatch = MAX_BATCH;
   readonly open = signal(true);
   readonly picked = signal<string[]>(['IBM']);
+  readonly filter = signal('');
   // A signal, not a plain field: pool() is a computed and would never see a plain field change.
   readonly extra = signal('');
   readonly randomPick = signal(false);
@@ -192,9 +217,25 @@ export class DemoSession implements OnInit, OnDestroy {
   /** The pool as it was when Start was pressed — the inputs are locked while running anyway. */
   private livePool: string[] = [];
 
-  byClass(securityType: string) {
-    return this.api.instruments().filter(i => i.securityType === securityType);
+  /** Membership as a Set: this is read once per rendered row, and there are 500+ rows. */
+  private readonly pickedSet = computed(() => new Set(this.picked()));
+  isPicked(key: string): boolean { return this.pickedSet().has(key); }
+
+  toggle(key: string): void {
+    this.picked.update(l => (l.includes(key) ? l.filter(k => k !== key) : [...l, key]));
   }
+
+  readonly groups = computed(() => {
+    const q = this.filter().trim().toUpperCase();
+    const match = (i: { instrumentKey: string; displayName: string }) =>
+      !q || i.instrumentKey.toUpperCase().includes(q) || i.displayName.toUpperCase().includes(q);
+    const of = (type: string) => this.api.instruments().filter(i => i.securityType === type && match(i));
+    return [
+      { label: 'Equities', items: of('Equity') },
+      { label: 'Funds / ETFs', items: of('Fund') },
+      { label: 'Bonds', items: of('Debt') },
+    ].filter(g => g.items.length);
+  });
 
   /** Selected catalog instruments plus anything typed in Extra symbols (OCC contracts, mostly). */
   readonly pool = computed(() => [

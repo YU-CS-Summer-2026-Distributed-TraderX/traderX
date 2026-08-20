@@ -12,6 +12,7 @@ import { StatusPanel } from './status-panel';
 import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
 import { FixPanel } from './fix-panel';
+import { BandsPanel } from './bands-panel';
 
 @Component({
   selector: 'trading-page',
@@ -57,10 +58,11 @@ export class EodPage {}
 
 @Component({
   selector: 'admin-page',
-  imports: [AdminPanel, DemoSession],
+  imports: [AdminPanel, DemoSession, BandsPanel],
   template: `
     <div class="stack">
       <section class="card"><demo-session /></section>
+      <section class="card"><bands-panel /></section>
       <section class="card"><admin-panel /></section>
     </div>
   `,

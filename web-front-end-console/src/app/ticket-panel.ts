@@ -104,6 +104,9 @@ const PRESETS: Preset[] = [
     } @else if (currentTicker()) {
       <div class="live"><span class="sub">no live price for {{ currentTicker() }} yet</span></div>
     }
+    <!-- The refusal this warning prevents is the one that happens on stage: a plausible price on a
+         book whose collar band is anchored somewhere else entirely. -->
+    @if (bandWarning(); as w) { <div class="derived bad band">{{ w }}</div> }
     <form (ngSubmit)="submit()">
       <label class="field">Account
         <select [(ngModel)]="accountId" name="acct">
@@ -228,6 +231,7 @@ const PRESETS: Preset[] = [
     .derived { font-size: 12.5px; color: var(--accent); padding: 6px 9px; background: var(--accent-soft); border-radius: 6px;
                display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .derived.bad { color: var(--bad); background: var(--bad-soft); }
+    .band { margin-bottom: 8px; line-height: 1.45; }
     .banner { font-family: var(--mono); font-size: 12.5px; }
     .live { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
             padding: 6px 9px; background: #f8f9fb; border: 1px solid var(--border); border-radius: 6px; }
@@ -309,7 +313,28 @@ export class TicketPanel {
   readonly bondInfo = computed(() =>
     this.api.instruments().find(i => i.instrumentKey === this.currentTicker())?.debtEconomics);
 
+  /**
+   * Warn before the refusal rather than explaining it afterwards. Only for books measured
+   * mis-anchored (accepted and refused prices disjoint) — an overlap means refusals came from
+   * something else and would make this a false alarm.
+   */
+  readonly bandWarning = computed(() => {
+    const b = this.api.band(this.currentTicker());
+    if (!b || b.verdict !== 'anchored-elsewhere') return '';
+    const live = this.livePrice()?.price;
+    const near = (v: number | undefined) =>
+      v !== undefined && v >= b.acceptedLo * 0.98 && v <= b.acceptedHi * 1.02;
+    if (near(live)) return '';
+    return `${b.security}: this book's collar band is anchored at `
+      + `${b.acceptedLo === b.acceptedHi ? b.acceptedLo : `${b.acceptedLo}–${b.acceptedHi}`}`
+      + ` — every order at ${b.rejectedLo}+ has been refused (${b.rejected} of them). An order at the`
+      + ` live price will be refused PRICE_COLLAR, and no re-seed repairs it. See Book bands on the Admin page.`;
+  });
+
   constructor() {
+    // Cheap (~0.7s for the whole journal) and cached a minute; the ticket is where the warning
+    // has to appear, so the ticket is what loads it.
+    this.api.loadBands();
     // Keep the ticker pointing at something valid for the selected class.
     effect(() => {
       const list = ['Treasury', 'Corporate'].includes(this.cls()) ? this.bonds() : this.equities();

@@ -57,6 +57,16 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   batched orders carry no client order id and no trace. Batch and order-at-a-time are mutually
   exclusive at the gateway (it drains pipelined singles when a batch starts), which is why the
   toggle is session-wide and not per actor.
+- Also on **Admin**: **book bands & refusals** — a pre-demo screen, not a diagnostic. The price
+  collar is a band anchored on the *first limit into a book*, not a percentage around the mark, so a
+  book anchored by a stray order refuses every realistic price for the rest of the epoch and
+  nothing repairs it in place (a seed cannot move a mark that has printed, and the band is not
+  derived from the mark anyway). The screen compares accepted against refused prices per security
+  from the regulatory journal: **disjoint ranges are the signature of a mis-anchored book; an
+  overlap means the refusal came from something else and says nothing about the band.** That
+  distinction is the whole value — this rig shows refusals on seven securities and exactly one is
+  mis-anchored. The order ticket carries the same warning inline, so a doomed order is flagged
+  before it is sent rather than explained afterwards.
 - Also on **Admin**: trade lifecycle (T+n settlement with force-settle, inline TCA reports), algo parent orders with
   their bucket schedules (renders "engine scaled to 0" legibly — the proof suite parks it),
   cancel-by-orderRef, recon status + orphan sweep.
@@ -133,6 +143,13 @@ it — a real print and a position on both sides.
   same is applied (NATS pod restart — JetStream state on emptyDir does not survive it).
 - **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway** — live on the rig and declared in
   the YU17 layer since 2026-08-18.
+- **MSFT is untradeable at a realistic price on this epoch** — every accepted MSFT order is at
+  180.00, every order at 384+ is refused. It is the worked example behind the book-bands screen,
+  and it cannot be fixed from the console. Check the screen before choosing what to demo.
+- **A refusal's reason is not in the regulatory report.** `ORDER_REJECTED` carries
+  accountId/orderId/security/side/quantity/price/seq/timestamp and no reason code, so the
+  book-bands reading is inference from prices, labelled as such. The order path *does* return the
+  reason — an order typed into the ticket names why it was refused.
 - **The FIX page needs the dev proxy**, which port-forwards `svc/order-matcher:18130` and speaks the
   session on the browser's behalf. A deployed console would need a server-side FIX client of its
   own; nothing in the browser can open a TCP socket. Watch the timestamp format if you touch it:

@@ -80,6 +80,27 @@ export interface OtcContract {
   bookedAt: string;
 }
 
+/**
+ * One security's accepted-vs-refused price ranges, from the regulatory report.
+ *
+ * `anchored-elsewhere` means the two ranges are DISJOINT — every accepted price sits on one side
+ * of every refused one, which is what a collar band anchored away from the market looks like.
+ * `other-refusal` means they overlap, so the same price was both accepted and refused and the
+ * refusal came from something other than the band. Note the report carries no reason code on
+ * ORDER_REJECTED (accountId/orderId/security/side/quantity/price/seq/timestamp and nothing else),
+ * so the engine's actual reason is not readable here — this is inference from prices, and it is
+ * labelled as such rather than presented as the engine's own answer.
+ */
+export interface BandCheck {
+  security: string;
+  accepted: number; rejected: number;
+  acceptedLo: number; acceptedHi: number; rejectedLo: number; rejectedHi: number;
+  verdict: 'anchored-elsewhere' | 'other-refusal' | 'never-accepted';
+  thin: boolean;
+}
+
+interface RegulatoryEvent { kind: string; security: string; price: number; }
+
 export interface ActivityEntry {
   at: Date; kind: 'order' | 'swap' | 'swaption' | 'cancel' | 'replace' | 'eod' | 'algo';
   summary: string; ok: boolean; reason?: string; detail?: string;
@@ -301,6 +322,61 @@ export class Api {
       return true;
     }
     return false;
+  }
+
+  // ---- book-band screen ------------------------------------------------------------------------
+  //
+  // The price collar is a band anchored on the FIRST limit that entered a security's book, not a
+  // percentage around the mark — so a book anchored by a stray order hours ago refuses every
+  // realistic price for the rest of the epoch, and nothing repairs it in place: a /seed cannot move
+  // a mark that has already printed (ADR-051), and the band is not derived from the mark anyway.
+  // Measured on this rig: every MSFT order ever accepted is at 180.00 and every order at a
+  // realistic MSFT price is refused. A demo driver typing a plausible MSFT order gets a refusal
+  // and no way to see why, which is why this screen exists.
+  //
+  // The method matters as much as the finding. A band problem produces a DISJOINT accepted/rejected
+  // price split; an overlap means the refusal came from something else entirely (unknown account,
+  // credit, quantity) and says nothing about the band. Six securities on this rig show refusals and
+  // only one is mis-anchored — reading "rejected" as "mis-anchored" would have condemned all seven.
+  readonly bands = signal<BandCheck[]>([]);
+  private bandsAt = 0;
+
+  /** Refresh at most once a minute; mints the admin token the regulatory report requires. */
+  async loadBands(force = false): Promise<void> {
+    if (!force && Date.now() - this.bandsAt < 60_000) return;
+    if (!this.adminToken() && !(await this.mintAdminToken())) return;
+    const r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
+    if (r.status !== 200 || !Array.isArray(r.body)) return;
+    this.bandsAt = Date.now();
+    const acc = new Map<string, number[]>();
+    const rej = new Map<string, number[]>();
+    for (const e of r.body) {
+      const into = e.kind === 'ORDER_ACCEPTED' ? acc : e.kind === 'ORDER_REJECTED' ? rej : null;
+      if (into && e.security) into.set(e.security, [...(into.get(e.security) ?? []), Number(e.price)]);
+    }
+    const out: BandCheck[] = [];
+    for (const [security, rejected] of rej) {
+      const accepted = acc.get(security) ?? [];
+      const rLo = Math.min(...rejected), rHi = Math.max(...rejected);
+      const aLo = accepted.length ? Math.min(...accepted) : 0;
+      const aHi = accepted.length ? Math.max(...accepted) : 0;
+      out.push({
+        security, accepted: accepted.length, rejected: rejected.length,
+        acceptedLo: aLo, acceptedHi: aHi, rejectedLo: rLo, rejectedHi: rHi,
+        verdict: !accepted.length ? 'never-accepted'
+          : rLo > aHi || rHi < aLo ? 'anchored-elsewhere'
+          : 'other-refusal',
+        // One sample either side is an anecdote: the split can be disjoint by luck. Said out loud
+        // rather than folded into the verdict, because a thin reading is still worth seeing.
+        thin: Math.min(accepted.length, rejected.length) < 3,
+      });
+    }
+    this.bands.set(out.sort((a, b) => a.security.localeCompare(b.security)));
+  }
+
+  /** The band verdict for one security, if it has any refusals on record. */
+  band(security: string): BandCheck | undefined {
+    return this.bands().find(b => b.security === security);
   }
 
   dropAdminToken(): void {
