@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api, BlotterTrade } from './api';
 import { HelpTip } from './help';
+import { Gated } from './gated';
 import { SecHead, SecPager, Section } from './section';
 
 interface TcaReport {
@@ -20,7 +21,7 @@ interface ParentOrder {
 
 @Component({
   selector: 'admin-panel',
-  imports: [FormsModule, HelpTip, SecHead, SecPager],
+  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated],
   template: `
     <div class="card-head">
       <button type="button" class="card-tog" (click)="open.set(!open())">
@@ -49,7 +50,7 @@ interface ParentOrder {
               <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
               <td>@if (t.state === 'Settled') { <span class="pill good">Settled</span> } @else { {{ t.state }} }</td>
               <td>@if (t.state !== 'Settled' && !t.rejectionReason) {
-                <button (click)="settle(t)">Force settle</button> }</td>
+                <button (click)="settle(t)">Force settle</button> <gated /> }</td>
               <td><button (click)="tca(t)">TCA</button></td>
             </tr>
             @if (tcaReport()?.tradeId === t.id) {
@@ -110,7 +111,7 @@ interface ParentOrder {
       </div>
       <div class="bar">
         <input type="number" [(ngModel)]="cancelRef" placeholder="orderRef">
-        <button (click)="cancel()">Cancel order</button>
+        <button (click)="cancel()">Cancel order</button> <gated />
         @if (cancelMsg(); as m) { <span class="pill" [class.good]="m.ok" [class.bad]="!m.ok">{{ m.text }}</span> }
       </div>
 
@@ -120,7 +121,7 @@ interface ParentOrder {
       </div>
       <div class="bar">
         <button (click)="recon()">Refresh status</button>
-        <button (click)="sweep()">Run orphan sweep</button>
+        <button (click)="sweep()">Run orphan sweep</button> <gated />
       </div>
       @if (reconStatus(); as r) { <pre class="recon">{{ r }}</pre> }
     }

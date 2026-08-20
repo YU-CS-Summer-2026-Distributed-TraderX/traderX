@@ -3,6 +3,7 @@ import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Api, OrderResult, OtcContract, nextClientOrderId, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
+import { Gated } from './gated';
 
 type Cls = 'Equity' | 'Option' | 'Treasury' | 'Corporate' | 'Swap' | 'Swaption';
 
@@ -68,7 +69,7 @@ const PRESETS: Preset[] = [
 
 @Component({
   selector: 'ticket-panel',
-  imports: [FormsModule, NgTemplateOutlet, HelpTip],
+  imports: [FormsModule, NgTemplateOutlet, HelpTip, Gated],
   template: `
     <div class="card-head">
       <h2>Order entry</h2>
@@ -168,6 +169,9 @@ const PRESETS: Preset[] = [
         }
       }
       <button class="btn-primary" type="submit" [disabled]="busy()">{{ busy() ? '…' : 'Submit' }}</button>
+      <!-- Direct order entry is OPEN; only TWAP/VWAP post to the gated /algo/orders. Marking the
+           button unconditionally would claim a control over plain orders that does not exist. -->
+      @if (execMode !== 'Direct') { <gated /> }
       @if (last(); as r) {
         <div class="banner" [class.good]="r.ok" [class.bad]="!r.ok">{{ r.text }}</div>
       }

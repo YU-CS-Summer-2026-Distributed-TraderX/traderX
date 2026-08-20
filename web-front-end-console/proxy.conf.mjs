@@ -311,6 +311,12 @@ export default [
   REMOTE ? plain('/extracts') : { context: ['/extracts'], target, secure: false, bypass: extractBypass },
   { context: ['/fixorder'], target, secure: false, bypass: fixBypass },
   plain('/algo'), plain('/tempo'),
+  // Sign-in lives on the console's own server, so dev has to forward it or the login form posts
+  // into the SPA fallback. Without this route /auth/me answered 200 WITH THE INDEX PAGE — worse
+  // than a 404, because "200 means signed in" reads an unauthenticated operator as an admin. Same
+  // fallthrough as /grafana above and /mN before it, third time in this file.
+  // cookieDomainRewrite so the rig's Set-Cookie is scoped to localhost rather than the rig host.
+  { context: ['/auth'], target, secure: false, changeOrigin: !!REMOTE, cookieDomainRewrite: '' },
   // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
   // enough for the whole app — and without the route the dev server answers its SPA fallback with
   // a 200, which any "is it up?" check reads as healthy. Same fallthrough that made /mN lie.

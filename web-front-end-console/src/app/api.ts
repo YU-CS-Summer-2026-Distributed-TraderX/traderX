@@ -225,6 +225,68 @@ export class Api {
     });
   }
 
+  // ---- sign-in (server-enforced; this is only the UI's view of it) -----------------------------
+
+  /**
+   * Who the console believes is signed in. The gate that MATTERS is in server.mjs — these endpoints
+   * answer curl whether or not an Angular route rendered — so nothing here is a security control.
+   * It exists so an operator sees a sign-in prompt instead of a raw 401.
+   */
+  readonly authUser = signal<string | null>(null);
+  /** Set when a change was refused for want of a sign-in, so one prompt can be shown centrally. */
+  readonly authPrompt = signal(false);
+
+  /**
+   * A 401 means "sign in" for every path EXCEPT risk control, which carries its own credential
+   * (X-Risk-Control-Token) and its own message. The two are distinguishable today only by response
+   * body — no header, no code field — so this keys on the PATH instead, which is structural and
+   * cannot be broken by rewording. Unknown 401s deliberately fall through to the sign-in prompt:
+   * that degrades to one unnecessary prompt, where the reverse degrades to a silent dead button.
+   */
+  private noteAuth(url: string, status: number): void {
+    // /auth/* is excluded for a different reason than risk control: a 401 from /auth/me IS the
+    // signed-out state, not a refused change. Without this the prompt lit on every anonymous page
+    // load, which trains the operator to ignore the one time it means something.
+    if (status !== 401 || url.includes('/risk/control/') || url.startsWith('/auth/')) return;
+    this.authUser.set(null);
+    this.authPrompt.set(true);
+  }
+
+  /**
+   * Ask the server who we are. Checks the BODY, not just the status: with no /auth route the dev
+   * server answers its SPA fallback — 200, with the index page — and a status-only check reads an
+   * unauthenticated operator as signed in. Same fallthrough that made /mN and /grafana lie.
+   */
+  async checkAuth(): Promise<void> {
+    const r = await this.load<{ user?: string }>('/auth/me');
+    const user = r.status === 200 && r.body && typeof r.body === 'object' ? r.body.user : undefined;
+    this.authUser.set(user ?? null);
+    if (user) this.authPrompt.set(false);
+  }
+
+  /** Returns an error string, or null on success. The password is never stored or echoed. */
+  async login(user: string, password: string): Promise<string | null> {
+    const r = await this.load<{ user?: string; error?: string }>('/auth/login', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user, password }),
+    });
+    if (r.status === 200 && r.body && typeof r.body === 'object' && r.body.user) {
+      this.authUser.set(r.body.user);
+      this.authPrompt.set(false);
+      return null;
+    }
+    if (r.status === 404 || typeof r.body === 'string') {
+      return 'the sign-in endpoint is not reachable from here — the console server serves it, so a '
+        + 'dev session needs the /auth proxy route';
+    }
+    return (r.body && typeof r.body === 'object' && r.body.error) || `sign-in refused (HTTP ${r.status})`;
+  }
+
+  async logout(): Promise<void> {
+    await this.load('/auth/logout', { method: 'POST' });
+    this.authUser.set(null);
+  }
+
   async load<T>(url: string, init?: RequestInit): Promise<{ status: number; body: T | null; headers?: Headers }> {
     try {
       // no-store: a pre-deploy 200 (e.g. the SPA fallthrough that /mN returned before the proxy
@@ -236,6 +298,7 @@ export class Api {
       // Headers, not just the body: a server that reports the SCOPE of what it aggregated
       // (X-Traderx-Gateways-Aggregated) is useless if the client throws that away and prints the
       // total under a label that assumes every gateway answered.
+      this.noteAuth(url, r.status);
       return { status: r.status, body, headers: r.headers };
     } catch {
       return { status: 0, body: null };

@@ -2,10 +2,11 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { Api } from './api';
 import { SessionDriver } from './demo-session';
+import { SignIn } from './sign-in';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, SignIn],
   templateUrl: './app.html',
   styleUrl: './app.css',
 })
@@ -22,6 +23,8 @@ export class App implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.api.init();
+    // Ask once at start-up: the cookie outlives a reload, so the shell must not assume signed-out.
+    this.api.checkAuth();
     this.check();
     this.timer = setInterval(() => this.check(), 5000);
   }

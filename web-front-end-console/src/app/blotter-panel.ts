@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { FormsModule } from '@angular/forms';
 import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
 import { HelpTip } from './help';
+import { Gated } from './gated';
 import { SecHead, SecPager, Section } from './section';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
@@ -20,7 +21,7 @@ interface PosRow extends Position {
 
 @Component({
   selector: 'blotter-panel',
-  imports: [FormsModule, HelpTip, SecHead, SecPager],
+  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated],
   template: `
     <div class="card-head">
       <h2>Blotter &amp; positions</h2>
@@ -137,7 +138,7 @@ interface PosRow extends Position {
                   @if (t.sourceOrderId) { <span>source order <b>{{ t.sourceOrderId }}</b></span> }
                   <span>notional <b>{{ (t.quantity * t.price).toLocaleString('en-US', { maximumFractionDigits: 2 }) }}</b></span>
                   @if (t.state !== 'Settled' && !t.rejectionReason && api.adminToken()) {
-                    <button (click)="settle(t); $event.stopPropagation()">Force settle</button>
+                    <button (click)="settle(t); $event.stopPropagation()">Force settle</button> <gated />
                   }
                   @if (api.adminToken()) { <button (click)="tca(t); $event.stopPropagation()">TCA</button> }
                 </div>

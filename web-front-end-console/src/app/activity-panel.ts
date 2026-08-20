@@ -1,12 +1,13 @@
 import { Component, inject, signal } from '@angular/core';
 import { ActivityEntry, Api } from './api';
 import { HelpTip } from './help';
+import { Gated } from './gated';
 
 interface SpanRow { service: string; name: string; startNs: bigint; durUs: number; }
 
 @Component({
   selector: 'activity-panel',
-  imports: [HelpTip],
+  imports: [HelpTip, Gated],
   template: `
     <div class="card-head">
       <h2>Activity &amp; rejections</h2>
@@ -28,7 +29,7 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
               @if (e.orderRef) { <span>orderRef <b>{{ e.orderRef }}</b></span> }
               @if (e.clientOrderId) { <span>clientOrderId <b>{{ e.clientOrderId }}</b></span> }
               @if (e.traceId) { <span>trace <b class="mono">{{ e.traceId }}</b></span> }
-              @if (e.ok && e.orderRef) { <button (click)="cancel(e)">Cancel order</button> }
+              @if (e.ok && e.orderRef) { <button (click)="cancel(e)">Cancel order</button> <gated /> }
               @if (e.traceId) { <button (click)="loadTrace(e)">{{ spans() ? 'refresh trace' : 'view trace' }}</button> }
             </div>
             @if (traceMsg()) { <div class="faint">{{ traceMsg() }}</div> }
