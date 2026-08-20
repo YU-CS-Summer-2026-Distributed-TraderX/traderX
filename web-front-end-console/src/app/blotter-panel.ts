@@ -26,7 +26,7 @@ interface PosRow extends Position {
       <h2>Blotter &amp; positions</h2>
       <help-tip text="The account's positions and trade history from the position service, a read model fed downstream of the matching engine. Last prices stream in live from the price publisher over the message bus; market value and unrealized P&L are computed against them, green when the position is in profit, red when it is not. A trade stays 'Processing' until its T+n settlement date passes (or an operator force-settles it from the Admin page) — that is the settlement lifecycle, not a stuck trade." />
       <span class="spacer"></span>
-      <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
+      <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'message bus · live' : 'polling' }}</span>
     </div>
     <div class="bar">
       <label class="field acct">Account
