@@ -41,6 +41,13 @@ K="kubectl --context ${CTX} -n ${NS}"
 # removes the pod from the Service — which kills a svc-based port-forward at exactly the moment the
 # measurement matters, and reports 000 instead of the 503 being asserted.
 READY_URL="${READY_URL:-}"
+# WHOSE ENDPOINT IS THIS? A remedy may only name something this script put in the path. The forward
+# below (step 0) is ours and is for READY_URL on 18510; the MATCHER_URL forward is NOT made here, so
+# naming it is only right while MATCHER_URL is the default WE chose. The bench suite exports
+# MATCHER_URL to in-cluster and cloud endpoints (run-all-tiers.sh, run-incluster-comparable.sh,
+# rest-latency-probe.mjs), so an inherited value is a live path, not a hypothetical — and on it a
+# port-forward hint sends the operator to build something that is not in the path at all.
+MATCHER_SET_BY_CALLER=$([[ -n "${MATCHER_URL:-}" ]] && echo yes || echo no)
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 ACCT="${ACCT:-42422}"
 TICKER="${TICKER:-RDY$(date +%H%M%S)}"
@@ -48,6 +55,16 @@ PRICE="${PRICE:-100.00}"
 DRIVE="${DRIVE:-25}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
+# What an unreachable MATCHER_URL means depends on who chose it — see MATCHER_SET_BY_CALLER.
+matcher_hint() {
+  if [[ "${MATCHER_SET_BY_CALLER}" == "yes" ]]; then
+    echo "MATCHER_URL was set by the caller, so check that endpoint itself — this script makes no
+  forward for it and a port-forward is very likely not in its path."
+  else
+    echo "MATCHER_URL is this script's own default, which needs a forward this script does not make:
+  kubectl --context ${CTX} -n ${NS} port-forward svc/order-matcher 18110:18110"
+  fi
+}
 step() { echo; echo "=== $* ==="; }
 
 PF_PID=""
@@ -78,8 +95,8 @@ seed() {
   code="$(printf '%s' "${out}" | tail -1)"
   body="$(printf '%s' "${out}" | sed '$d')"
   [[ ${rc} -eq 0 ]] || fail "seed could not reach ${MATCHER_URL} (curl rc=${rc}).
-  rc=7 is nothing listening and rc=28 is a timeout — both mean the port-forward, not the cluster:
-  kubectl --context ${CTX} -n ${NS} port-forward svc/order-matcher 18110:18110"
+  rc=7 is nothing listening and rc=28 is a timeout — the transport, not the cluster.
+  $(matcher_hint)"
   [[ "${code}" == "200" ]] || fail "seed got HTTP ${code} from ${MATCHER_URL}: ${body:-empty body}"
   [[ "${body}" == *'"seeded":true'* ]] || fail "seed returned 200 but did not seed: ${body:-empty}.
   {\"seeded\":false} is the engine's symbol table exhausted (MAX_SECURITIES) — a fresh epoch is the
