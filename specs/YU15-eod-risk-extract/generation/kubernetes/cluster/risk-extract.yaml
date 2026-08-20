@@ -1,3 +1,19 @@
+# The cut artifacts outlive the pod. `file:///data/risk-extracts` is the kind sink (the GKE
+# overlay swaps it for a gs:// URI, where durability is GCS's job) — and on an emptyDir that meant
+# rescheduling this Deployment silently erased every cut ever taken, with the console's provenance
+# panel then rendering empty and no error anywhere. A claim is the same shape the cluster members
+# already use for their `data` volume. strategy: Recreate below is what makes ReadWriteOnce safe:
+# no rollout ever overlaps two pods on this claim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: risk-extract-extracts
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,7 +79,8 @@ spec:
               memory: 512Mi
       volumes:
         - name: extracts
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: risk-extract-extracts
         - name: shm
           emptyDir:
             medium: Memory
