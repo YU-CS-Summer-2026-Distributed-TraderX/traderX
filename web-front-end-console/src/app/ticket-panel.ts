@@ -136,7 +136,10 @@ const PRESETS: Preset[] = [
           }
         }
         @case ('Option') {
-          <label class="field">OCC symbol
+          <label class="field">
+            <span class="lbl">OCC symbol
+              <help-tip text="The industry-standard contract identifier, and the only thing a listed option ticket needs: ROOT + expiry YYMMDD + C or P + strike × 1000 padded to 8 digits. AAPL261218C00260000 is an Apple call expiring 2026-12-18 struck at 260. Everything below is derived from it, so there is no way to enter a contract whose parts disagree. One contract is 100 shares — the multiplier the position and risk sides both apply." />
+            </span>
             <input [ngModel]="occSymbol()" (ngModelChange)="occSymbol.set($event)" name="occ" placeholder="AAPL261218C00260000" spellcheck="false">
           </label>
           @if (occ(); as o) {
@@ -153,7 +156,10 @@ const PRESETS: Preset[] = [
         @case ('Swaption') {
           <ng-container *ngTemplateOutlet="swap"></ng-container>
           <label class="field">Option expiry <input type="date" [(ngModel)]="expiryDate" name="expiry"></label>
-          <label class="field">Exercise style
+          <label class="field">
+            <span class="lbl">Exercise style
+              <help-tip text="When the holder may exercise the option and enter the underlying swap. European: on the expiry date only. Bermudan: on a set of scheduled dates. American: any time up to expiry. It is a contractual term carried on the booking — this system sequences and records it, and deliberately does not price the optionality it creates." />
+            </span>
             <select [(ngModel)]="exerciseStyle" name="style"><option>European</option><option>Bermudan</option><option>American</option></select>
           </label>
         }
@@ -189,11 +195,24 @@ const PRESETS: Preset[] = [
       <label class="field">Pay / receive fixed
         <select [(ngModel)]="payReceive" name="payrec"><option>Pay</option><option>Receive</option></select>
       </label>
-      <label class="field">Notional <input type="number" [(ngModel)]="notional" name="notional" min="1"></label>
-      <label class="field">Fixed rate (fraction: 0.042 = 4.2%) <input type="number" [(ngModel)]="fixedRate" name="rate" step="0.0001"></label>
+      <label class="field">
+        <span class="lbl">Notional
+          <help-tip text="The reference amount the interest payments are calculated on — never exchanged, which is why a swap can carry a very large notional and a small economic risk. It is also what the credit check consumes: a non-USD notional is converted at the sequenced FX rate before it is measured against the account's limit, and a currency with no rate yet is refused PRICE_MISSING rather than guessed." />
+        </span>
+        <input type="number" [(ngModel)]="notional" name="notional" min="1">
+      </label>
+      <label class="field">
+        <span class="lbl">Fixed rate (fraction: 0.042 = 4.2%)
+          <help-tip text="The fixed leg's rate, entered as a fraction: 0.042 is 4.2%. One side pays this, the other pays the floating index named in the convention. It is stored in ticks as an integer, so every member records the identical rate — a float would diverge across members and break the byte-identical end-of-day cut." />
+        </span>
+        <input type="number" [(ngModel)]="fixedRate" name="rate" step="0.0001">
+      </label>
       <label class="field">Effective <input type="date" [(ngModel)]="effectiveDate" name="eff"></label>
       <label class="field">Maturity <input type="date" [(ngModel)]="maturityDate" name="mat"></label>
-      <label class="field">Convention
+      <label class="field">
+        <span class="lbl">Convention
+          <help-tip text="One code fixing the currency, the floating index, the payment frequency and the day-count basis: USD-SOFR-1Y-ACT360 is a US dollar swap against SOFR, paying annually, accruing actual days over a 360-day year. Picking a convention picks the currency, which is why a non-USD one drags in the FX rate the credit check needs." />
+        </span>
         <select [(ngModel)]="conventions" name="conv">
           @for (c of conventionList; track c) { <option>{{ c }}</option> }
         </select>
@@ -201,6 +220,7 @@ const PRESETS: Preset[] = [
     </ng-template>
   `,
   styles: `
+    .lbl { display: flex; align-items: center; gap: 5px; }
     .tabs { display: flex; gap: 4px; flex-wrap: wrap; margin: 10px 0; }
     .tabs button { background: #f0f2f5; color: var(--muted); border: none; padding: 4px 11px; border-radius: 6px; font-size: 12.5px; font-weight: 500; }
     .tabs button.on { background: var(--accent-soft); color: var(--accent); }

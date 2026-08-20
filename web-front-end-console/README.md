@@ -28,17 +28,29 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   parent goes to the algo engine, which slices children through the same consensus path), blotter
   & positions, activity & rejections with reason codes. A **Demo preset** dropdown fills the whole ticket for each story — Submit is the only
   remaining click. The blotter subscribes `/accounts/{id}/trades|positions` on the message bus and
-  shows `live · message bus` when the feed is up, `polling` otherwise.
+  shows `live · message bus` when the feed is up, `polling` otherwise. Each blotter subsection
+  collapses, pages ten rows at a time (the page size is editable), and **Find by reference** jumps
+  straight to the page holding an order, trade or contract id and highlights it. Position totals
+  span every position, not the visible page.
 - **System** — the three cluster members side by side (role, applied, engineApplied, trades) with
-  an agreement banner, and live latency/throughput with consensus p50/p99 (sample count shown —
-  a percentile without its n is an anecdote).
+  an agreement banner, live latency/throughput with consensus p50/p99 (sample count shown —
+  a percentile without its n is an anecdote), and **service status**: one browser request per
+  service through the edge proxy, so green means the path this console depends on works end to
+  end.
 - **End of day** — draft vs published with the version chain (a correction is a new version,
   ADR-026), per-instrument quality codes, the override form, and the publish button that shows the
   quality gate's 409.
 
-- **Admin** — trade lifecycle (T+n settlement with force-settle, inline TCA reports), algo
-  parent orders with their bucket schedules (renders "engine scaled to 0" legibly — the proof
-  suite parks it), cancel-by-orderRef, recon status + orphan sweep.
+- **Admin** — a **live trading session** (several accounts submitting real orders at their own
+  rate for their own duration, stoppable, so every other surface has something to show at once),
+  trade lifecycle (T+n settlement with force-settle, inline TCA reports), algo parent orders with
+  their bucket schedules (renders "engine scaled to 0" legibly — the proof suite parks it),
+  cancel-by-orderRef, recon status + orphan sweep.
+- **Accounts** — create a trading account and admit it to the engine's risk state, or suspend one.
+  Both halves are shown because both are needed: the account service is the directory, and the
+  engine keeps its own risk state, so an account that exists in one and not the other lists
+  normally and rejects every order (`UNKNOWN_ACCOUNT`, or `ACCOUNT_DISABLED` once suspended).
+  Admission is a control command sequenced through consensus like an order.
 - **Kdb** — the KDB-X capture tap: per-member tickerplant logs (leader-side, so rows map to
   leadership windows), q-style VWAP computed from txtrade, and the latest captured trades. Served
   by a read-only dev-proxy bridge (kubectl exec tail).

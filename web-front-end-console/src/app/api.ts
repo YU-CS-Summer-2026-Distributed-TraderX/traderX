@@ -185,12 +185,38 @@ export class Api {
   }
 
   async init(): Promise<void> {
-    const [a, i] = await Promise.all([
-      this.load<Account[]>('/account-service/account/'),
+    const [, i] = await Promise.all([
+      this.loadAccounts(),
       this.load<Instrument[]>('/reference-data/instruments'),
     ]);
-    if (Array.isArray(a.body)) this.accounts.set(a.body);
     if (Array.isArray(i.body)) this.instruments.set(i.body);
+  }
+
+  async loadAccounts(): Promise<void> {
+    const a = await this.load<Account[]>('/account-service/account/');
+    if (Array.isArray(a.body)) this.accounts.set(a.body);
+  }
+
+  /**
+   * An operator control command: sequenced through consensus like an order, so every member applies
+   * it at a definite log position. `account` admits (or suspends) an account in the engine's risk
+   * state — orders from an account the engine has never been told about are refused UNKNOWN_ACCOUNT,
+   * which is why creating one in the account service alone is not enough to trade.
+   *
+   * The token is the gateway's own default: RISK_CONTROL_TOKEN is unset on the kind rig, so
+   * ClusterGatewayMain's env("RISK_CONTROL_TOKEN", "dev-risk-control") stands. A rig that sets it
+   * will answer 401 here, and the panel says so rather than pretending the control landed.
+   */
+  riskControl<T>(action: string, body: unknown): Promise<{ status: number; body: T | null }> {
+    return this.load<T>(`/order-matcher/risk/control/${action}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Risk-Control-Token': 'dev-risk-control',
+        'X-Risk-Operator': 'ui-console',
+      },
+      body: JSON.stringify(body),
+    });
   }
 
   log(e: Omit<ActivityEntry, 'at'>): void {

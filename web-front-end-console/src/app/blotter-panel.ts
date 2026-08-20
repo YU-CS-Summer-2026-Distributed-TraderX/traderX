@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { FormsModule } from '@angular/forms';
 import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
 import { HelpTip } from './help';
+import { SecHead, SecPager, Section } from './section';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
 // OCC option symbols and 1 for everything else (a bond's quantity is already USD face, so face ×
@@ -19,7 +20,7 @@ interface PosRow extends Position {
 
 @Component({
   selector: 'blotter-panel',
-  imports: [FormsModule, HelpTip],
+  imports: [FormsModule, HelpTip, SecHead, SecPager],
   template: `
     <div class="card-head">
       <h2>Blotter &amp; positions</h2>
@@ -27,113 +28,136 @@ interface PosRow extends Position {
       <span class="spacer"></span>
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
-    <label class="field acct">Account
-      <select [ngModel]="accountId()" (ngModelChange)="accountId.set($event); onAccount()">
-        @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
-      </select>
-    </label>
-    <h3>Positions</h3>
-    <table>
-      <thead><tr><th>security</th><th class="num">qty</th><th class="num">avg cost</th>
-        <th class="num">last</th><th class="num">mkt value</th><th class="num">unrealized P&amp;L</th></tr></thead>
-      <tbody>
-        @for (p of rows(); track p.security) {
-          <tr>
-            <td>{{ p.security }}</td>
-            <td class="num">{{ p.quantity }}</td>
-            <td class="num">{{ p.averageCostBasis.toFixed(6) }}</td>
-            <td class="num" [class.up]="p.dir === 1" [class.down]="p.dir === -1">
-              {{ p.last !== undefined ? p.last.toFixed(p.last < 2 ? 6 : 3) : '—' }}</td>
-            <td class="num">{{ p.value !== undefined ? fmt(p.value) : '—' }}</td>
-            <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">
-              {{ p.upnl !== undefined ? fmt(p.upnl) : '—' }}</td>
-          </tr>
-        } @empty { <tr><td colspan="6" class="faint">no positions</td></tr> }
-      </tbody>
-      @if (totals(); as t) {
-        <tfoot><tr>
-          <td colspan="4"><b>total</b></td>
-          <td class="num"><b>{{ fmt(t.value) }}</b></td>
-          <td class="num" [class.pos]="t.upnl > 0" [class.neg]="t.upnl < 0"><b>{{ fmt(t.upnl) }}</b></td>
-        </tr></tfoot>
-      }
-    </table>
-    <h3>Open orders
-      <help-tip text="Orders resting in the matching engine's book: submitted, sequenced through consensus, accepted — and waiting for someone to trade against them. An order that rests is a normal outcome, not a failure; it only becomes a trade when a counterparty crosses it. Without this view a resting order is invisible, which makes a perfectly good order look like it vanished." />
-    </h3>
-    <table>
-      <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
-      <tbody>
-        @for (o of openOrders(); track o.orderId) {
-          <tr>
-            <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
-            <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
-            <td class="num">{{ o.limitPrice }}</td>
-            <td><button class="cancel" (click)="cancelOrder(o)">cancel</button></td>
-          </tr>
-        } @empty { <tr><td colspan="7" class="faint">no resting orders</td></tr> }
-      </tbody>
-    </table>
+    <div class="bar">
+      <label class="field acct">Account
+        <select [ngModel]="accountId()" (ngModelChange)="accountId.set($event); onAccount()">
+          @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
+        </select>
+      </label>
+      <label class="field find">Find by reference
+        <input [(ngModel)]="query" (keyup.enter)="find()" placeholder="order or trade id" spellcheck="false">
+      </label>
+      <button type="button" (click)="find()">Go</button>
+      @if (findMsg(); as m) { <span class="pill" [class.good]="m.ok" [class.warn]="!m.ok">{{ m.text }}</span> }
+    </div>
 
-    @if (contracts().length) {
-      <h3>OTC contracts
-        <help-tip text="Swaps and swaptions are carried at CONTRACT grain, never as positions — a receive-fixed and a pay-fixed of equal notional would net to zero as positions and destroy both rates, which the netting proof exists to catch. They are also invisible everywhere else on this tier until the next end-of-day cut: the booking routes are write-only, there is no contract table, and the regulatory report enumerates order and trade kinds only. So the console keeps what it booked, with the consensus sequence the engine assigned." />
-      </h3>
+    <sec-head [s]="positions" label="Positions" />
+    @if (positions.open()) {
       <table>
-        <thead><tr><th>contract</th><th class="num">seq</th><th>terms</th><th class="num">notional</th><th>booked</th></tr></thead>
+        <thead><tr><th>security</th><th class="num">qty</th><th class="num">avg cost</th>
+          <th class="num">last</th><th class="num">mkt value</th><th class="num">unrealized P&amp;L</th></tr></thead>
         <tbody>
-          @for (c of contracts(); track c.contractId) {
-            <tr>
-              <td>{{ c.contractId }}</td>
-              <td class="num">{{ c.sequence }}</td>
-              <td class="sub">{{ c.payReceive }} fixed {{ (c.fixedRate * 100).toFixed(3) }}% ·
-                {{ c.conventions }} · {{ c.effectiveDate }} → {{ c.maturityDate }}@if (c.exerciseStyle) {
-                  · {{ c.exerciseStyle }} expiry {{ c.expiryDate }} }</td>
-              <td class="num">{{ fmt(c.notional) }}</td>
-              <td class="sub">{{ c.bookedAt.slice(11, 19) }}</td>
+          @for (p of positions.view(); track p.security) {
+            <tr [class.hit]="hit() === p.security">
+              <td>{{ p.security }}</td>
+              <td class="num">{{ p.quantity }}</td>
+              <td class="num">{{ p.averageCostBasis.toFixed(6) }}</td>
+              <td class="num" [class.up]="p.dir === 1" [class.down]="p.dir === -1">
+                {{ p.last !== undefined ? p.last.toFixed(p.last < 2 ? 6 : 3) : '—' }}</td>
+              <td class="num">{{ p.value !== undefined ? fmt(p.value) : '—' }}</td>
+              <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">
+                {{ p.upnl !== undefined ? fmt(p.upnl) : '—' }}</td>
             </tr>
-          }
+          } @empty { <tr><td colspan="6" class="faint">no positions</td></tr> }
         </tbody>
+        @if (totals(); as t) {
+          <tfoot><tr>
+            <td colspan="4"><b>total</b> <span class="faint">(all {{ rows().length }} positions)</span></td>
+            <td class="num"><b>{{ fmt(t.value) }}</b></td>
+            <td class="num" [class.pos]="t.upnl > 0" [class.neg]="t.upnl < 0"><b>{{ fmt(t.upnl) }}</b></td>
+          </tr></tfoot>
+        }
       </table>
+      <sec-pager [s]="positions" />
     }
 
-    <h3>Trades</h3>
-    <table>
-      <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">price</th><th>state</th></tr></thead>
-      <tbody>
-        @for (t of trades(); track t.id) {
-          <tr class="rowlink" (click)="toggle(t)">
-            <td class="sub">{{ t.id }} {{ openId() === t.id ? '▾' : '▸' }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
-            <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
-            <td>@if (t.rejectionReason) { <span class="pill bad">{{ t.rejectionReason }}</span> }
-                @else if (t.state === 'Settled') { <span class="pill good">Settled</span> }
-                @else { {{ t.state }} }</td>
-          </tr>
-          @if (openId() === t.id) {
-            <tr><td colspan="6" class="det">
-              <div class="kv">
-                <span>created <b>{{ t.created.slice(0, 19).replace('T', ' ') }}</b></span>
-                <span>updated <b>{{ t.updated.slice(0, 19).replace('T', ' ') }}</b></span>
-                @if (t.sourceOrderId) { <span>source order <b>{{ t.sourceOrderId }}</b></span> }
-                <span>notional <b>{{ (t.quantity * t.price).toLocaleString('en-US', { maximumFractionDigits: 2 }) }}</b></span>
-                @if (t.state !== 'Settled' && !t.rejectionReason && api.adminToken()) {
-                  <button (click)="settle(t); $event.stopPropagation()">Force settle</button>
-                }
-                @if (api.adminToken()) { <button (click)="tca(t); $event.stopPropagation()">TCA</button> }
-              </div>
-              @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
-            </td></tr>
-          }
-        } @empty { <tr><td colspan="6" class="faint">no trades</td></tr> }
-      </tbody>
-    </table>
+    <sec-head [s]="openOrders" label="Open orders">
+      <help-tip text="Orders resting in the matching engine's book: submitted, sequenced through consensus, accepted — and waiting for someone to trade against them. An order that rests is a normal outcome, not a failure; it only becomes a trade when a counterparty crosses it. Without this view a resting order is invisible, which makes a perfectly good order look like it vanished." />
+    </sec-head>
+    @if (openOrders.open()) {
+      <table>
+        <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
+        <tbody>
+          @for (o of openOrders.view(); track o.orderId) {
+            <tr [class.hit]="hit() === o.orderId">
+              <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
+              <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
+              <td class="num">{{ o.limitPrice }}</td>
+              <td><button class="cancel" (click)="cancelOrder(o)">cancel</button></td>
+            </tr>
+          } @empty { <tr><td colspan="7" class="faint">no resting orders</td></tr> }
+        </tbody>
+      </table>
+      <sec-pager [s]="openOrders" />
+    }
+
+    @if (contracts().length) {
+      <sec-head [s]="otc" label="OTC contracts">
+        <help-tip text="Swaps and swaptions are carried at CONTRACT grain, never as positions — a receive-fixed and a pay-fixed of equal notional would net to zero as positions and destroy both rates, which the netting proof exists to catch. They are also invisible everywhere else on this tier until the next end-of-day cut: the booking routes are write-only, there is no contract table, and the regulatory report enumerates order and trade kinds only. So the console keeps what it booked, with the consensus sequence the engine assigned." />
+      </sec-head>
+      @if (otc.open()) {
+        <table>
+          <thead><tr><th>contract</th><th class="num">seq</th><th>terms</th><th class="num">notional</th><th>booked</th></tr></thead>
+          <tbody>
+            @for (c of otc.view(); track c.contractId) {
+              <tr [class.hit]="hit() === c.contractId">
+                <td>{{ c.contractId }}</td>
+                <td class="num">{{ c.sequence }}</td>
+                <td class="sub">{{ c.payReceive }} fixed {{ (c.fixedRate * 100).toFixed(3) }}% ·
+                  {{ c.conventions }} · {{ c.effectiveDate }} → {{ c.maturityDate }}@if (c.exerciseStyle) {
+                    · {{ c.exerciseStyle }} expiry {{ c.expiryDate }} }</td>
+                <td class="num">{{ fmt(c.notional) }}</td>
+                <td class="sub">{{ c.bookedAt.slice(11, 19) }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+        <sec-pager [s]="otc" />
+      }
+    }
+
+    <sec-head [s]="trades" label="Trades" />
+    @if (trades.open()) {
+      <table>
+        <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">price</th><th>state</th></tr></thead>
+        <tbody>
+          @for (t of trades.view(); track t.id) {
+            <tr class="rowlink" [class.hit]="hit() === t.id" (click)="toggle(t)">
+              <td class="sub">{{ t.id }} {{ openId() === t.id ? '▾' : '▸' }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
+              <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
+              <td>@if (t.rejectionReason) { <span class="pill bad">{{ t.rejectionReason }}</span> }
+                  @else if (t.state === 'Settled') { <span class="pill good">Settled</span> }
+                  @else { {{ t.state }} }</td>
+            </tr>
+            @if (openId() === t.id) {
+              <tr><td colspan="6" class="det">
+                <div class="kv">
+                  <span>created <b>{{ t.created.slice(0, 19).replace('T', ' ') }}</b></span>
+                  <span>updated <b>{{ t.updated.slice(0, 19).replace('T', ' ') }}</b></span>
+                  @if (t.sourceOrderId) { <span>source order <b>{{ t.sourceOrderId }}</b></span> }
+                  <span>notional <b>{{ (t.quantity * t.price).toLocaleString('en-US', { maximumFractionDigits: 2 }) }}</b></span>
+                  @if (t.state !== 'Settled' && !t.rejectionReason && api.adminToken()) {
+                    <button (click)="settle(t); $event.stopPropagation()">Force settle</button>
+                  }
+                  @if (api.adminToken()) { <button (click)="tca(t); $event.stopPropagation()">TCA</button> }
+                </div>
+                @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
+              </td></tr>
+            }
+          } @empty { <tr><td colspan="6" class="faint">no trades</td></tr> }
+        </tbody>
+      </table>
+      <sec-pager [s]="trades" />
+    }
   `,
   styles: `
-    .acct { margin-bottom: 6px; max-width: 340px; }
+    .bar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px; }
+    .acct { max-width: 300px; }
+    .find input { width: 190px; }
     .spacer { flex: 1; }
-    h3 { margin: 10px 0 3px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
     .rowlink { cursor: pointer; }
     .rowlink:hover td { background: #f5f7fa; }
+    tr.hit td { background: var(--accent-soft); }
     td.det { background: #f8f9fb; }
     .kv { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
     .kv b { color: var(--text); font-weight: 600; }
@@ -153,14 +177,18 @@ export class BlotterPanel implements OnInit, OnDestroy {
   // previous account's contracts after a switch. Same trap that made the ticket's bond terms go
   // stale; worth fixing at the second sighting rather than the third.
   readonly accountId = signal(22214);
-  readonly positions = signal<Position[]>([]);
-  readonly trades = signal<BlotterTrade[]>([]);
+  readonly rawPositions = signal<Position[]>([]);
+  readonly rawTrades = signal<BlotterTrade[]>([]);
+  readonly rawOpenOrders = signal<OpenOrder[]>([]);
   readonly live = signal(false);
   readonly openId = signal<string | null>(null);
-  readonly openOrders = signal<OpenOrder[]>([]);
   readonly contracts = computed<OtcContract[]>(() =>
     this.api.contracts().filter(c => c.accountId === Number(this.accountId())));
   readonly tcaText = signal('');
+  query = '';
+  readonly findMsg = signal<{ ok: boolean; text: string } | null>(null);
+  /** The row the last search landed on, highlighted until the next search. */
+  readonly hit = signal<string | null>(null);
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
 
@@ -199,7 +227,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   readonly rows = computed<PosRow[]>(() => {
     const prices = this.api.prices();
-    return this.positions().map(p => {
+    return this.rawPositions().map(p => {
       const tick = prices[p.security];
       const m = mult(p.security);
       return {
@@ -211,6 +239,8 @@ export class BlotterPanel implements OnInit, OnDestroy {
       };
     });
   });
+  // Totals span EVERY position, not the visible page: a portfolio total that changed when you
+  // turned the page would be a lie.
   readonly totals = computed(() => {
     const rs = this.rows().filter(r => r.value !== undefined);
     if (!rs.length) return null;
@@ -219,6 +249,32 @@ export class BlotterPanel implements OnInit, OnDestroy {
       upnl: rs.reduce((s, r) => s + (r.upnl ?? 0), 0),
     };
   });
+
+  readonly positions = new Section<PosRow>(this.rows, p => p.security);
+  readonly openOrders = new Section<OpenOrder>(this.rawOpenOrders, o => o.orderId);
+  readonly otc = new Section<OtcContract>(this.contracts, c => c.contractId);
+  readonly trades = new Section<BlotterTrade>(this.rawTrades, t => t.id);
+
+  /** Find a reference across every section and page straight to it. */
+  find(): void {
+    const q = this.query.trim();
+    if (!q) { this.findMsg.set(null); this.hit.set(null); return; }
+    const where: { name: string; sec: Section<any> }[] = [
+      { name: 'open orders', sec: this.openOrders },
+      { name: 'trades', sec: this.trades },
+      { name: 'contracts', sec: this.otc },
+      { name: 'positions', sec: this.positions },
+    ];
+    for (const { name, sec } of where) {
+      if (!sec.reveal(q)) continue;
+      const row = sec.items().find(x => sec.idOf(x).toLowerCase().includes(q.toLowerCase()));
+      this.hit.set(row ? sec.idOf(row) : null);
+      this.findMsg.set({ ok: true, text: `${name} · page ${sec.cur() + 1}` });
+      return;
+    }
+    this.hit.set(null);
+    this.findMsg.set({ ok: false, text: `${q} not in this account's rows` });
+  }
 
   fmt(v: number): string {
     return v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -252,9 +308,9 @@ export class BlotterPanel implements OnInit, OnDestroy {
       // does, keyed `id` rather than `orderId`.
       this.api.load<any[]>(`/trade-processor/accounts/${id}/orders`),
     ]);
-    if (p.status === 200 && Array.isArray(p.body)) this.positions.set(p.body);
+    if (p.status === 200 && Array.isArray(p.body)) this.rawPositions.set(p.body);
     if (o.status === 200 && Array.isArray(o.body)) {
-      this.openOrders.set(o.body.map(row => ({
+      this.rawOpenOrders.set(o.body.map(row => ({
         orderId: String(row.id ?? row.orderId ?? ''),
         security: row.security, side: row.side,
         quantity: Number(row.quantity ?? 0),
@@ -263,6 +319,8 @@ export class BlotterPanel implements OnInit, OnDestroy {
       })));
     }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).
-    if (t.status === 200 && Array.isArray(t.body)) this.trades.set(t.body.slice(0, 30));
+    // 200 rather than 30 since the section pages: a search for an older reference has to be able
+    // to find it.
+    if (t.status === 200 && Array.isArray(t.body)) this.rawTrades.set(t.body.slice(0, 200));
   }
 }
