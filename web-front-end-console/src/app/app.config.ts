@@ -1,6 +1,7 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
 import { provideRouter } from '@angular/router';
-import { TradingPage, SystemPage, EodPage, AdminPage, KdbPage, AccountsPage, FixPage } from './pages';
+import { TradingPage, SystemPage, EodPage, AdminPage, KdbPage, AccountsPage, FixPage,
+  GrafanaPage, LegacyPage } from './pages';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -14,6 +15,8 @@ export const appConfig: ApplicationConfig = {
       { path: 'accounts', component: AccountsPage },
       { path: 'fix', component: FixPage },
       { path: 'kdb', component: KdbPage },
+      { path: 'grafana', component: GrafanaPage },
+      { path: 'legacy', component: LegacyPage },
     ]),
   ],
 };

@@ -12,19 +12,30 @@ const NS = process.env.RIG_NAMESPACE ?? 'traderx';
 const PORT = 30080;
 const target = `http://localhost:${PORT}`;
 
-function portForward() {
-  const pf = spawn('kubectl', ['--context', CTX, '-n', NS, 'port-forward', `svc/edge-proxy`, `${PORT}:8080`],
+/**
+ * Keep localhost:PORT answering, whoever owns the forward.
+ *
+ * A watchdog rather than spawn-once, because "reuse the existing forward" and "respawn my own on
+ * exit" are the same job and splitting them left a hole: when the console borrowed a forward from a
+ * previous run and THAT process died — which is what a rig roll does to every forward — nothing was
+ * watching it, and the console sat on "rig unreachable" until someone restarted the dev server.
+ * Measured during exactly that: a peer lane rolled the gateway, the borrowed forward went with it.
+ * Polling a port every few seconds is cheaper than reasoning about ownership.
+ */
+let pf = null;
+function ensureForward() {
+  try {
+    execSync(`nc -z localhost ${PORT}`, { stdio: 'ignore' });
+    return;                                   // something is answering; leave it alone
+  } catch { /* nothing there — take it over */ }
+  if (pf && pf.exitCode === null) return;     // ours is starting up
+  pf = spawn('kubectl', ['--context', CTX, '-n', NS, 'port-forward', 'svc/edge-proxy', `${PORT}:8080`],
     { stdio: 'ignore' });
-  pf.on('exit', () => setTimeout(portForward, 2000));
-  process.on('exit', () => { pf.removeAllListeners('exit'); pf.kill(); });
-}
-try {
-  execSync(`nc -z localhost ${PORT}`, { stdio: 'ignore' });
-  console.log(`[proxy] localhost:${PORT} already forwarded — reusing it`);
-} catch {
-  portForward();
   console.log(`[proxy] port-forwarding svc/edge-proxy via ${CTX}`);
 }
+ensureForward();
+setInterval(ensureForward, 3000).unref?.();
+process.on('exit', () => pf?.kill());
 
 let secret = process.env.AUTH_MASTER_SECRET ?? '';
 if (!secret) {
@@ -284,4 +295,8 @@ export default [
   { context: ['/extracts'], target, secure: false, bypass: extractBypass },
   { context: ['/fixorder'], target, secure: false, bypass: fixBypass },
   plain('/algo'), plain('/tempo'),
+  // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
+  // enough for the whole app — and without the route the dev server answers its SPA fallback with
+  // a 200, which any "is it up?" check reads as healthy. Same fallthrough that made /mN lie.
+  plain('/grafana'),
 ];

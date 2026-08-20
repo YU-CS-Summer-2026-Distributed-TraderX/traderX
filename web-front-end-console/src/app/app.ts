@@ -17,6 +17,8 @@ export class App implements OnInit, OnDestroy {
   /** null = checking, true/false = edge proxy reachable. Panels hold last values on failure;
    *  this chip is the single honest signal that the backend itself is gone. */
   readonly rigUp = signal<boolean | null>(null);
+  /** The project's own github.io site — same URL the docusaurus build publishes to. */
+  readonly siteUrl = 'https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/';
 
   ngOnInit(): void {
     this.api.init();

@@ -86,9 +86,22 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   not a description of FIX. A browser cannot open a TCP socket, so the dev proxy holds the session
   for the length of one order; sessions are ephemeral by design (MemoryStoreFactory), so a
   one-order session is an ordinary one rather than a shortcut.
-- **Kdb** — the KDB-X capture tap: per-member tickerplant logs (leader-side, so rows map to
-  leadership windows), q-style VWAP computed from txtrade, and the latest captured trades. Served
-  by a read-only dev-proxy bridge (kubectl exec tail).
+- **Kdb** — the KDB-X capture tap, with each view showing the `txstore.q` function it reproduces
+  beside it: per-member capture files (leader-side, so rows map to leadership windows), fill VWAP
+  by symbol (`.tx.fills`), order final state keyed `(epoch, ref)` (`.tx.orders` — never `ref` alone,
+  since orderRef restarts at 1 on a fresh incarnation and a bare ref silently merges two orders),
+  sequence gaps (`.tx.gaps`, framed as a question rather than a verdict — control events leave
+  legitimate holes), and merged session playback (`.tx.session`). Served by a read-only dev-proxy
+  bridge (`kubectl exec` tail, last 300 rows per file — which is why the gaps view has a floor).
+- **Grafana** — the observability stack: all 18 provisioned dashboards deep-linked by uid, plus a
+  health check that reads the response *body* (a dev server answers unknown paths with its SPA
+  fallback at 200, so status alone would report a missing proxy route as a healthy Grafana). Opens
+  in a new tab rather than embedding: anonymous access is off and Grafana refuses to be framed, and
+  turning either on to decorate a console page is the wrong trade.
+- **Legacy UI** — a link to the original FINOS TraderX app running against the same cluster, with
+  what the YU17 override layer added to it and why. Four of those six are defects rather than
+  features: the upstream app is correct against the single-BLP tier and wrong against the cluster
+  tier, so the layer is a dialect translation, not a bug fix in the component.
 
 Order details: click an activity entry to see orderRef, clientOrderId and the order's **trace** —
 the trace id is derived client-side with the same FNV/mix math as OrderTrace.java (verified

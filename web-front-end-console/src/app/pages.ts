@@ -13,6 +13,8 @@ import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
 import { FixPanel } from './fix-panel';
 import { BandsPanel } from './bands-panel';
+import { GrafanaPanel } from './grafana-panel';
+import { LegacyPanel } from './legacy-panel';
 
 @Component({
   selector: 'trading-page',
@@ -87,6 +89,20 @@ export class FixPage {}
 @Component({
   selector: 'kdb-page',
   imports: [KdbPanel],
-  template: `<section class="card" style="max-width: 980px"><kdb-panel /></section>`,
+  template: `<section class="card" style="max-width: 1080px"><kdb-panel /></section>`,
 })
 export class KdbPage {}
+
+@Component({
+  selector: 'grafana-page',
+  imports: [GrafanaPanel],
+  template: `<section class="card" style="max-width: 980px"><grafana-panel /></section>`,
+})
+export class GrafanaPage {}
+
+@Component({
+  selector: 'legacy-page',
+  imports: [LegacyPanel],
+  template: `<section class="card" style="max-width: 900px"><legacy-panel /></section>`,
+})
+export class LegacyPage {}
