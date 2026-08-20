@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# bring-up-gke.sh — scale the GKE rig back up from zero and hand back a rig that actually works.
+#
+# WHY THIS EXISTS. Members run on an emptyDir (statefulset-emptydir.yaml is what this tier deploys),
+# so scaling nodes to zero destroys their state and they return with trade counter 0 — while
+# eod-price-db has a PVC and keeps yesterday's rows. Trade ids are <tradeSeq>-<side> and carry NO
+# epoch, so every trade the fresh engine books mints an id that already exists and trade-processor
+# drops it as "Duplicate trade delivery ignored".
+#
+# The failure is silent and total: orders are accepted, the engine books them, all three members
+# agree, and NOTHING reaches the blotter, positions or the read model. Every pod is Running. It cost
+# a morning on 2026-08-20 before anyone asked why the blotter was empty.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CTX="${CTX:-gke_traderx-505400_us-east1-b_traderx-bench}"
+NS="${NS:-traderx}"
+ZONE="${ZONE:-us-east1-b}"
+CLUSTER="${CLUSTER:-traderx-bench}"
+K=(kubectl --context "${CTX}" -n "${NS}")
+SKIP_RESIZE="${SKIP_RESIZE:-0}"
+
+say() { echo "[bring-up] $*"; }
+die() { echo "[fail] $*" >&2; exit 1; }
+
+# ---- 1. nodes -------------------------------------------------------------------------------
+# support-pool FIRST and deliberately: it is the only untainted pool, so kube-system (CoreDNS,
+# konnectivity) has nowhere to run until it exists. Bring the tainted pools up into a cluster whose
+# DNS is still pending and the members crashloop on name resolution, which reads as a cluster fault.
+if [[ "${SKIP_RESIZE}" != "1" ]]; then
+  for spec in support-pool:1 blp-c4d-tuned-pool:3 default-pool:3; do
+    pool="${spec%%:*}"; n="${spec##*:}"
+    say "scaling ${pool} -> ${n}"
+    gcloud container clusters resize "${CLUSTER}" --node-pool "${pool}" --num-nodes "${n}" \
+      --zone "${ZONE}" --quiet >/dev/null 2>&1 || die "resize of ${pool} failed"
+  done
+fi
+say "waiting for nodes"
+for _ in $(seq 1 60); do
+  ready="$("${K[@]}" get nodes --no-headers 2>/dev/null | grep -c ' Ready ' || true)"
+  [[ "${ready}" -ge 7 ]] && break
+  sleep 10
+done
+
+# ---- 2. members + a leader ------------------------------------------------------------------
+say "waiting for three members and an elected leader"
+leader=""
+for _ in $(seq 1 60); do
+  leader=""
+  for m in 0 1 2; do
+    role="$("${K[@]}" exec "order-matcher-cluster-${m}" -- wget -qO- localhost:8080/health 2>/dev/null \
+      | python3 -c 'import sys,json;print(json.load(sys.stdin)["role"])' 2>/dev/null || true)"
+    [[ "${role}" == "LEADER" ]] && leader="${m}"
+  done
+  [[ -n "${leader}" ]] && break
+  sleep 10
+done
+[[ -n "${leader}" ]] || die "no leader after 10 minutes — check member logs before going further"
+say "leader is member ${leader}"
+
+# ---- 3. THE WEDGE CHECK ----------------------------------------------------------------------
+# Compare the engine's own trade counter against the highest trade id already in SQL. This is the
+# same check scripts/yu15/run-proofs.sh uses, for the same reason: it detects the STATE rather than
+# the cause, so it fires whatever produced the mismatch — a scale-to-zero, a PVC wipe, a hand-rolled
+# StatefulSet. Both numbers count PER SIDE, so they are directly comparable.
+sql() { "${K[@]}" exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -N -e "$1" 2>/dev/null; }
+ENG="$("${K[@]}" exec "order-matcher-cluster-${leader}" -- sh -c 'wget -qO- http://localhost:8080/metrics' 2>/dev/null \
+  | awk '/^traderx_cluster_trades/ {print $2}')"
+SQLMAX="$(sql "SELECT COALESCE(MAX(CAST(SUBSTRING_INDEX(id,'-',1) AS UNSIGNED)),0) FROM trades;")"
+[[ "${ENG}" =~ ^[0-9]+$ && "${SQLMAX}" =~ ^[0-9]+$ ]] \
+  || die "could not read engine counter ('${ENG}') or SQL max trade id ('${SQLMAX}') — refusing to run blind"
+say "engine trade counter=${ENG}  highest trade id in SQL=${SQLMAX}"
+
+if [[ "${ENG}" -lt "${SQLMAX}" ]]; then
+  say "WEDGED: the projection holds a dead epoch's ids that this engine will re-mint. Clearing it."
+  # A bare SQL clear is the right heal ONLY because we are here at bring-up, before this epoch has
+  # booked anything. Mid-life the projection may already have MISSED trades the engine booked, and
+  # then only a full fresh-epoch rebuild makes "SQL is a projection of the log" true again.
+  sql "DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;"
+  "${K[@]}" rollout restart deploy/trade-processor deploy/position-service >/dev/null
+  "${K[@]}" rollout status deploy/trade-processor --timeout=300s >/dev/null
+  "${K[@]}" rollout status deploy/position-service --timeout=300s >/dev/null
+  say "projection cleared and consumers restarted"
+elif [[ "${ENG}" -gt "${SQLMAX}" ]]; then
+  say "engine is AHEAD of SQL — ordinary bridge lag, not a wedge. Leaving the projection alone."
+else
+  say "engine and SQL agree — not wedged"
+fi
+
+# ---- 4. PROVE IT, rather than report it -------------------------------------------------------
+# The check above can only say the ids no longer collide. Whether a trade actually reaches the read
+# model is a different claim, and it is the one that matters — so book a real cross and look for it.
+say "proving the path end to end"
+GW="$("${K[@]}" get svc order-matcher-gw -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+[[ -n "${GW}" ]] || die "gateway LoadBalancer has no external IP yet"
+BEFORE="$(sql 'SELECT COUNT(*) FROM trades;')"
+for acct in 22214 42422; do
+  curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${acct},\"tickers\":\"IBM\",\"price\":200.00}" >/dev/null || die "seed failed for ${acct}"
+done
+curl -sf -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
+  -d '{"accountId":42422,"ticker":"IBM","side":"Sell","quantity":1,"limitPrice":200.00}' >/dev/null
+curl -sf -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
+  -d '{"accountId":22214,"ticker":"IBM","side":"Buy","quantity":1,"limitPrice":200.00}' >/dev/null
+for _ in $(seq 1 20); do
+  AFTER="$(sql 'SELECT COUNT(*) FROM trades;')"
+  [[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] && break
+  sleep 3
+done
+[[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] \
+  || die "a cross booked in the engine never reached the projection (${BEFORE} -> ${AFTER}). THIS IS THE WEDGE. Do not demo from this rig."
+say "verified: trades ${BEFORE} -> ${AFTER}, the read model is live"
+say "rig is up. https://yaakovseif.dev"
