@@ -7,6 +7,11 @@ import { HelpTip } from './help';
  * Pre-demo screen rather than a diagnostic: the failure it prevents happens on stage, where the
  * true explanation — "that book's collar band is anchored where an unrelated order landed hours
  * ago" — is not one anybody wants to give.
+ *
+ * <p>The reading is three-part and the ORDER matters: no accepted orders means no verdict at all
+ * (disjointness is trivially true against an empty set, so the naive rule condemns a security that
+ * has simply never traded); too few samples means thin, because a split of one against one can be
+ * disjoint by luck; and only then does disjoint mean the band and overlap mean another cause.
  */
 @Component({
   selector: 'bands-panel',
@@ -28,14 +33,19 @@ import { HelpTip } from './help';
         <div class="faint">{{ busy() ? 'reading the journal…' : 'no refusals on record for this epoch' }}</div>
       } @else {
         <table>
-          <thead><tr><th>security</th><th>accepted</th><th>refused</th><th>reading</th></tr></thead>
+          <thead><tr><th>security</th><th class="num">accepted price range</th>
+            <th class="num">refused price range</th><th>reading</th></tr></thead>
           <tbody>
             @for (b of api.bands(); track b.security) {
               <tr>
                 <td>{{ b.security }}</td>
+                <!-- "2573 orders", never a bare number: a count printed beside a price range reads
+                     as a count of price levels just as easily as of orders, and those differ by
+                     ~49x on IBM here. The ambiguity has already caused one wrong figure. -->
                 <td class="num">{{ b.accepted ? range(b.acceptedLo, b.acceptedHi) : '—' }}
-                  <span class="n">{{ b.accepted }}</span></td>
-                <td class="num">{{ range(b.rejectedLo, b.rejectedHi) }}<span class="n">{{ b.rejected }}</span></td>
+                  <span class="n">{{ b.accepted }} order{{ b.accepted === 1 ? '' : 's' }}</span></td>
+                <td class="num">{{ range(b.rejectedLo, b.rejectedHi) }}
+                  <span class="n">{{ b.rejected }} order{{ b.rejected === 1 ? '' : 's' }}</span></td>
                 <td>
                   @switch (b.verdict) {
                     @case ('anchored-elsewhere') {
@@ -69,7 +79,7 @@ import { HelpTip } from './help';
   `,
   styles: `
     .spacer { flex: 1; }
-    .n { display: inline-block; min-width: 26px; text-align: right; color: var(--faint); font-size: 11px; }
+    .n { display: block; color: var(--faint); font-size: 11px; }
     .sub.thin { color: var(--warn); }
     .note { margin-top: 10px; max-width: 720px; }
     td .sub { font-size: 11.5px; }
