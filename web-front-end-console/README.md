@@ -36,7 +36,11 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   an agreement banner, live latency/throughput with consensus p50/p99 (sample count shown —
   a percentile without its n is an anecdote), and **service status**: one browser request per
   service through the edge proxy, so green means the path this console depends on works end to
-  end.
+  end. **EOD cut provenance** lists every cut on the rig's own sink — the committed `.cut` plus the
+  two artifacts rebuilt from it (netted positions, and OTC contracts at contract grain), each with
+  the SHA-256 taken on the pod. Both derived artifacts name the cut they came from, so the panel
+  checks that claim on screen rather than asserting it. The GCS archive is listed alongside as a
+  second source (older, uploaded cuts, no contracts artifact — it predates YU17).
 - **End of day** — draft vs published with the version chain (a correction is a new version,
   ADR-026), per-instrument quality codes, the override form, and the publish button that shows the
   quality gate's 409.
@@ -62,6 +66,23 @@ rendered as a span timeline. Rejects are always head-sampled, so a refusal's tra
 Blotter trade rows expand to details with inline TCA and force-settle.
 
 Every panel carries a `?` hover explainer written for someone who doesn't know the system.
+
+## Writing a panel: `computed()` only sees signals
+
+**Any `computed()` in these panels that reads a plain class field is silently wrong.** It will
+render correctly once and then never update, because a computed recomputes only when a *signal* it
+read changes — a plain field is invisible to it. Nothing fails: no error, no warning, just a value
+frozen at first render, which reads as a backend problem and gets debugged as one.
+
+This has cost three sittings here already — the ticket's bond terms stopped following the selected
+instrument, the blotter kept showing the previous account's OTC contracts after a switch, and the
+paged sections would have frozen on their first page of rows. It is a property of this codebase,
+not an accident. So: if a value feeds a `computed()`, make it a `signal()`, and bind it as
+`[ngModel]="x()" (ngModelChange)="x.set($event)"` rather than `[(ngModel)]="x"`.
+
+The reverse trap is just as cheap to hit: converting a field to a signal makes every *other* read
+of it a read of the function object. Grep every use before flipping one — a loosely-typed request
+body will happily serialize a function and the build will pass.
 
 ## If listed options reject with UNKNOWN_SECURITY
 
@@ -91,7 +112,10 @@ it — a real print and a position on both sides.
   same is applied (NATS pod restart — JetStream state on emptyDir does not survive it).
 - **p50/p99 latency needs `LATENCY_DECOMP=1` on the gateway** — live on the rig and declared in
   the YU17 layer since 2026-08-18.
-- **EOD cut provenance** (consensus seq + per-member SHA) has no HTTP surface anywhere — the
-  extract writes files. Needs a read-only endpoint before it can be a panel.
+- **EOD cut provenance still has no HTTP surface** — the extract writes files to
+  `file:///data/risk-extracts` on the risk-extract pod, so the panel reads them through a read-only
+  dev-proxy bridge (`kubectl exec`, same shape as the kdb one). A deployed console would need a
+  real read endpoint. Note the sink is where cuts taken *on this rig* land; the GCS bucket holds
+  older uploaded ones.
 - The in-cluster deployment (Dockerfile + `/console/` edge route) is still deferred; the auto-mint
   and port-forward conveniences above are dev-proxy-only and would need real equivalents.

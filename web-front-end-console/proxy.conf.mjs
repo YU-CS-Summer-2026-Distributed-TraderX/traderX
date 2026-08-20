@@ -116,6 +116,44 @@ function kdbBypass(req, res) {
   return false;
 }
 
+// ---- EOD extract bridge: the rig's OWN cut sink -----------------------------------------------
+// The cluster writes its risk extracts to file:///data/risk-extracts on the risk-extract pod, not
+// to the GCS archive — the archive holds older, uploaded cuts. So this is where a cut taken on this
+// rig actually lands, and it is the only place the YU17 CONTRACTS artifact exists at all.
+// Each cut is three files: seq-N.cut (the committed cut both artifacts rebuild from), seq-N.csv
+// (netted positions) and seq-N-contracts.csv (OTC contracts, carried at contract grain). The
+// sha256 is taken ON THE POD so it is the same number the proofs and the members report.
+// Read-only kubectl exec, dev-only. Depth is fixed (date/version/file), so a glob beats find.
+const extractCache = { at: 0, body: '' };
+
+function extractBypass(req, res) {
+  try {
+    if (Date.now() - extractCache.at > 30_000) {
+      const pod = execSync(
+        `kubectl --context ${CTX} -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+        { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+      const out = execSync(
+        `kubectl --context ${CTX} -n ${NS} exec ${pod} -- sh -c ` +
+        `'for f in /data/risk-extracts/*/*/*; do [ -f "$f" ] || continue; ` +
+        `echo "==FILE $f $(sha256sum $f | cut -d\\  -f1)"; cat $f; done'`,
+        { shell: '/bin/sh', timeout: 30000 }).toString();
+      const files = out.split('==FILE ').slice(1).map(chunk => {
+        const nl = chunk.indexOf('\n');
+        const [path, sha256] = chunk.slice(0, nl).trim().split(' ');
+        return { path, sha256, content: chunk.slice(nl + 1) };
+      });
+      extractCache.at = Date.now();
+      extractCache.body = JSON.stringify({ pod, files });
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(extractCache.body);
+  } catch {
+    res.statusCode = 502;
+    res.end('{"error":"kubectl exec failed — is the risk-extract pod up?"}');
+  }
+  return false;
+}
+
 const plain = (ctx) => ({ context: [ctx], target, secure: false });
 
 export default [
@@ -129,5 +167,6 @@ export default [
   { context: ['/nats-ws'], target, secure: false, ws: true },
   { context: ['/gcs'], target, secure: false, bypass: gcsBypass },
   { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
+  { context: ['/extracts'], target, secure: false, bypass: extractBypass },
   plain('/algo'), plain('/tempo'),
 ];
