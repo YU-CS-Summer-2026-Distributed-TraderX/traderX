@@ -53,7 +53,7 @@ spec:
         cloud.google.com/gke-nodepool: support-pool
       containers:
         - name: console
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke15
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke16
           ports:
             - name: http
               containerPort: 8080
@@ -78,6 +78,23 @@ spec:
                 secretKeyRef:
                   name: auth-secrets
                   key: dev-token-master-secret
+            # Admin-change auth. Both optional: without them the server falls back to its seeded
+            # credential and a fresh per-process session secret, which is correct for one replica.
+            # Set console-session-secret before scaling the console past one pod — two replicas with
+            # different secrets reject each other's cookies, and the only symptom is a random logout.
+            - name: AUTH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: console-session-secret
+                  optional: true
+            # Overrides the seeded password hash without a rebuild. Never a plaintext password.
+            - name: ADMIN_PASSWORD_HASH
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: console-admin-hash
+                  optional: true
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 5

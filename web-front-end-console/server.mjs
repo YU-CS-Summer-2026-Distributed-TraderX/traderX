@@ -16,7 +16,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import { execSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT ?? 8080);
 const NS = process.env.NAMESPACE ?? 'traderx';
@@ -32,6 +32,82 @@ const ROOT = path.resolve(process.env.STATIC_ROOT ?? './dist/web-front-end-conso
 // a broken auth path rather than a header that was never sent.
 const MASTER_SECRET = process.env.AUTH_MASTER_SECRET ?? '';
 const SOH = '\x01';
+
+// ---- admin auth: READ is open, CHANGE needs a login -------------------------------------------
+// Deliberately NOT a route guard. The admin page stays viewable by anyone — the TCA reports, recon
+// status, parent orders and band scan are all reads, and hiding them behind a login would only make
+// the demo harder to show. What needs an identity is a CHANGE, so the gate is on the mutating
+// endpoints themselves rather than on the page that happens to call them.
+//
+// That distinction matters for more than tidiness: a client-side route guard is not a control at
+// all — the endpoints are reachable with curl whether or not an Angular route rendered. Gating here
+// is the part that actually holds, and the UI work is presentation on top of it.
+const ADMIN_USER = process.env.ADMIN_USER ?? 'admin';
+// scrypt$<salt-hex>$<64-byte-hash-hex>. Seeded default; override with ADMIN_PASSWORD_HASH from the
+// auth-secrets Secret to change the credential without rebuilding the image. The PLAINTEXT is never
+// stored, here or anywhere else — a wrong password and an unknown user are indistinguishable to a
+// caller, and both take the same work to answer.
+const ADMIN_HASH = process.env.ADMIN_PASSWORD_HASH
+  ?? 'scrypt$d237dc4715a581e8aa52fe69e851c068$24425c6a2a0db01442036d58957824cab947b45bbc35be6debd2839d0ec452650171b95b6d353f668391e97b33b3e9e669a3e790036991b153ea8233c65b6adf';
+// A random per-process secret is the right DEFAULT (a restart invalidating sessions is a re-login,
+// not an outage) but it is wrong the moment there is a second replica, because the two would reject
+// each other's cookies with no symptom but a random logout. Set AUTH_SESSION_SECRET before scaling
+// the console past one pod.
+const SESSION_SECRET = process.env.AUTH_SESSION_SECRET ?? randomBytes(32).toString('hex');
+const SESSION_TTL_MS = Number(process.env.AUTH_SESSION_TTL_MS ?? 8 * 60 * 60 * 1000);
+const COOKIE = 'tx_admin';
+
+function checkPassword(user, password) {
+  // Compare BOTH halves in constant time and always do the scrypt work, so a bad username and a bad
+  // password cost the same and neither can be found by timing.
+  const [scheme, salt, want] = String(ADMIN_HASH).split('$');
+  if (scheme !== 'scrypt' || !salt || !want) return false;
+  const got = scryptSync(String(password ?? ''), salt, 32);
+  const wantBuf = Buffer.from(want, 'hex').subarray(0, 32);
+  const passwordOk = got.length === wantBuf.length && timingSafeEqual(got, wantBuf);
+  const userBuf = Buffer.from(String(user ?? '').padEnd(64).slice(0, 64));
+  const adminBuf = Buffer.from(ADMIN_USER.padEnd(64).slice(0, 64));
+  return timingSafeEqual(userBuf, adminBuf) && passwordOk;
+}
+
+const sign = (v) => createHmac('sha256', SESSION_SECRET).update(v).digest('hex');
+
+function issueToken(user) {
+  const body = `${user}.${Date.now() + SESSION_TTL_MS}`;
+  return `${body}.${sign(body)}`;
+}
+
+function readToken(req) {
+  const raw = req.headers.cookie ?? '';
+  const hit = raw.split(';').map(s => s.trim()).find(s => s.startsWith(`${COOKIE}=`));
+  if (!hit) return null;
+  const token = decodeURIComponent(hit.slice(COOKIE.length + 1));
+  const i = token.lastIndexOf('.');
+  if (i < 0) return null;
+  const body = token.slice(0, i), mac = token.slice(i + 1);
+  const expect = sign(body);
+  // Length-check first: timingSafeEqual THROWS on a length mismatch, and an exception here would be
+  // a 500 on every request carrying a malformed cookie.
+  if (mac.length !== expect.length || !timingSafeEqual(Buffer.from(mac), Buffer.from(expect))) return null;
+  const [user, exp] = body.split('.');
+  if (!Number(exp) || Number(exp) < Date.now()) return null;
+  return { user };
+}
+
+// Every CHANGE the admin page can make. Reads deliberately absent: /trade-processor/recon/status,
+// /trade-processor/tca/report/*, GET /algo/orders and the band scan stay open.
+// Order entry (/order-matcher/orders) is NOT here and that is on purpose — the trading page offers
+// it to anyone, so gating it on this path alone would be a fence with no field behind it.
+const ADMIN_MUTATIONS = [
+  { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
+  { method: 'POST', re: /^\/order-matcher\/cancel$/ },
+  { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
+  { method: 'POST', re: /^\/algo\/orders$/ },
+  { method: 'DELETE', re: /^\/algo\/orders\// },
+];
+
+const needsAuth = (method, p) =>
+  ADMIN_MUTATIONS.some(m => (m.method === null || m.method === method) && m.re.test(p));
 
 // Paths the edge proxy already knows how to route. Identical list to proxy.conf.mjs's plain()
 // entries — if one gains a route, so must the other.
@@ -328,6 +404,37 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
   if (p === '/healthz') return json(res, 200, { ok: true });
+
+  // ---- auth ----
+  if (p === '/auth/me') {
+    const s = readToken(req);
+    return s ? json(res, 200, { user: s.user }) : json(res, 401, { error: 'not signed in' });
+  }
+  if (p === '/auth/logout') {
+    res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+    return json(res, 200, { ok: true });
+  }
+  if (p === '/auth/login') {
+    if (req.method !== 'POST') return json(res, 405, { error: 'POST only' });
+    let body = {};
+    try { body = JSON.parse(await readBody(req)); } catch { /* fall through to a 401 */ }
+    if (!checkPassword(body.user, body.password)) {
+      // One message for both failures. "No such user" tells an attacker which half to keep trying.
+      return json(res, 401, { error: 'invalid username or password' });
+    }
+    // Secure is set from the proto the CLIENT saw, not from ours: the pod speaks plain HTTP behind
+    // the load balancer, so hardcoding Secure would work on the rig and silently drop the cookie on
+    // a local http:// run — and hardcoding it off would ship a cookie over plaintext on the rig.
+    const secure = (req.headers['x-forwarded-proto'] ?? '').split(',')[0].trim() === 'https';
+    res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; `
+      + `SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`);
+    return json(res, 200, { user: ADMIN_USER });
+  }
+  // The gate itself. Placed before every proxy path below, so a change cannot reach the cluster by
+  // any route this server offers.
+  if (needsAuth(req.method, p) && !readToken(req)) {
+    return json(res, 401, { error: 'sign in as an administrator to make this change' });
+  }
   if (p === '/gateways') return gatewaysBypass(req, res);
   // THE MEMBER COUNT IS ALSO A CONFIGURATION, not a constant. An Aeron cluster is normally 3 or 5;
   // the console hardcoded exactly three member rows, so a 5-member cluster would have shown 3 and a
