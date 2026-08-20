@@ -1,6 +1,7 @@
 import { Component, Input, Output, EventEmitter, OnChanges, OnInit, OnDestroy, SimpleChanges } from '@angular/core';
 import { PriceTick } from 'main/app/model/trade.model';
 import { Stock, isBond, isTreasury } from 'main/app/model/symbol.model';
+import { OccTerms, parseOcc, isOccSymbol, OPTION_CONTRACT_MULTIPLIER } from 'main/app/model/occ';
 import { Account } from 'main/app/model/account.model';
 import { TypeaheadMatch } from 'ngx-bootstrap/typeahead';
 import { TradeFeedService } from 'main/app/service/trade-feed.service';
@@ -96,6 +97,24 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
     this.subscribeToTickerPrice(selectedStock.ticker);
   }
 
+  // ---- YU17 listed options (OCC) ----
+  get occTerms(): OccTerms | null {
+    return parseOcc(this.ticket.security);
+  }
+
+  get isOptionSelected(): boolean {
+    return this.occTerms != null;
+  }
+
+  /** Options are quoted per share and trade in 100-share contracts, so the ticket shows the
+   *  premium the order actually costs rather than leaving the reader to multiply. */
+  get estimatedOptionPremium(): number | null {
+    if (!this.isOptionSelected || !this.ticket.quantity || !this.ticket.limitPrice) {
+      return null;
+    }
+    return this.ticket.quantity * this.ticket.limitPrice * OPTION_CONTRACT_MULTIPLIER;
+  }
+
   // ---- YU16 Treasury semantics (FR-CDM16/17/21/27) ----
 
   // Renamed from isTreasurySelected when corporates arrived. Every use of it was really asking
@@ -125,10 +144,16 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   get quantityLabel(): string {
-    return this.isBondSelected ? 'Face Amount (USD)' : 'Quantity';
+    if (this.isBondSelected) {
+      return 'Face Amount (USD)';
+    }
+    return this.isOptionSelected ? 'Contracts' : 'Quantity';
   }
 
   get limitPriceLabel(): string {
+    if (this.isOptionSelected) {
+      return 'Limit Premium (per share)';
+    }
     // The wire and the model carry the FRACTION of par (ADR-057); the percent alongside is
     // display only (FR-CDM17) - nothing ever converts back.
     return this.isBondSelected ? 'Limit Clean Price (fraction of par)' : 'Strike Price';
@@ -176,6 +201,20 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
   }
 
   onBlur(): void {
+    // YU17: an OCC option is never in the typeahead (reference data holds no option contracts),
+    // so a hand-typed symbol was silently discarded here. Check it BEFORE the "something is in
+    // the box" early return below — that return is what swallowed it, since the typed text does
+    // live in selectedCompany. The price publisher marks these and the gateway books them; only
+    // the catalog lacks them.
+    const typed = String(this.selectedCompany || '').trim().toUpperCase();
+    if (isOccSymbol(typed)) {
+      this.ticket.security = typed;
+      this.selectedCompany = typed;
+      this.selectedStock = undefined;
+      this.validationMessage = null;
+      this.subscribeToTickerPrice(typed);
+      return;
+    }
     if (this.selectedCompany) {
       return;
     }
@@ -190,7 +229,7 @@ export class OrderTicketComponent implements OnInit, OnChanges, OnDestroy {
 
   /** Algo slicing is equity-only; a bond ticket keeps the Direct-only path. */
   get isAlgoEligible(): boolean {
-    return !this.isBondSelected;
+    return !this.isBondSelected && !this.isOptionSelected;
   }
 
   get isAlgoMode(): boolean {

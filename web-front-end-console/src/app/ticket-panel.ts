@@ -22,15 +22,15 @@ const iso = (daysFromNow: number) => {
 // One preset per demo story. Each fills the whole ticket; Submit is the only remaining click.
 const PRESETS: Preset[] = [
   { label: 'Equity — buy 100 IBM @ 200', apply: t => {
-      t.cls.set('Equity'); t.ticker = 'IBM'; t.side = 'Buy'; t.quantity = 100; t.limitPrice = 200; } },
+      t.cls.set('Equity'); t.ticker.set('IBM'); t.side = 'Buy'; t.quantity = 100; t.limitPrice = 200; } },
   { label: 'Equity — off the book band → PRICE_COLLAR reject', apply: t => {
-      t.cls.set('Equity'); t.ticker = 'IBM'; t.side = 'Buy'; t.quantity = 100; t.limitPrice = 500; } },
+      t.cls.set('Equity'); t.ticker.set('IBM'); t.side = 'Buy'; t.quantity = 100; t.limitPrice = 500; } },
   { label: 'Listed option — AAPL Dec-26 260 Call', apply: t => {
-      t.cls.set('Option'); t.occSymbol = 'AAPL261218C00260000'; t.side = 'Buy'; t.quantity = 5; t.limitPrice = 2.40; } },
+      t.cls.set('Option'); t.occSymbol.set('AAPL261218C00260000'); t.side = 'Buy'; t.quantity = 5; t.limitPrice = 2.40; } },
   { label: 'Treasury bill — $100k face, fraction of par', apply: t => {
-      t.cls.set('Treasury'); t.ticker = 'UST-BILL-20270812'; t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
+      t.cls.set('Treasury'); t.ticker.set('UST-BILL-20270812'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.959560; } },
   { label: 'Corporate — GS 5.75% 2036, 30/360 day count', apply: t => {
-      t.cls.set('Corporate'); t.ticker = 'CORP-GS-20360315'; t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.991230; } },
+      t.cls.set('Corporate'); t.ticker.set('CORP-GS-20360315'); t.side = 'Buy'; t.quantity = 100_000; t.limitPrice = 0.991230; } },
   { label: 'Swap — USD SOFR, pay fixed 4.2%, 10mm 5Y', apply: t => {
       t.cls.set('Swap'); t.payReceive = 'Pay'; t.notional = 10_000_000; t.fixedRate = 0.042;
       t.effectiveDate = iso(2); t.maturityDate = iso(2 + 365 * 5); t.conventions = 'USD-SOFR-1Y-ACT360'; } },
@@ -46,13 +46,13 @@ const PRESETS: Preset[] = [
   // The slices are live limit orders, not fire-and-forget — a parent whose slices price below the
   // book simply rests, which is correct and is its own (labelled) story.
   { label: 'Algo 1/2 — post the bid the slices will cross (buy 100 IBM)', apply: t => {
-      t.cls.set('Equity'); t.execMode = 'Direct'; t.accountId = 42422; t.ticker = 'IBM';
+      t.cls.set('Equity'); t.execMode = 'Direct'; t.accountId = 42422; t.ticker.set('IBM');
       t.side = 'Buy'; t.quantity = 100;
       // +5 through the touch: the simulated feed walks ~1%/min, and the slices price off the
       // LIVE feed up to durationSeconds later — a tight bid loses that race and rests.
       t.limitPrice = Math.round(((t.api.prices()['IBM']?.price ?? 182) + 5) * 100) / 100; } },
   { label: 'Algo 2/2 — TWAP sell 30 IBM over 30s (slices cross that bid)', apply: t => {
-      t.cls.set('Equity'); t.execMode = 'TWAP'; t.accountId = 22214; t.ticker = 'IBM';
+      t.cls.set('Equity'); t.execMode = 'TWAP'; t.accountId = 22214; t.ticker.set('IBM');
       t.side = 'Sell'; t.quantity = 30; t.durationSeconds = 30; t.bucketSeconds = 10; } },
 ];
 
@@ -77,6 +77,23 @@ const PRESETS: Preset[] = [
         <button type="button" [class.on]="cls() === c" (click)="cls.set(c)">{{ c }}</button>
       }
     </div>
+
+    <!-- Live context for whatever the ticket is pointed at: the price the book is actually
+         seeing, and (for a bond) the terms that decide how it accrues. Ported from the older
+         app's ticket, which showed this and made the newer one look blind by comparison. -->
+    @if (livePrice(); as p) {
+      <div class="live">
+        <span class="lv" [class.up]="p.dir === 1" [class.down]="p.dir === -1">{{ priceLabel() }}</span>
+        <span class="sub">live price</span>
+        @if (bondInfo(); as b) {
+          <span class="sub">· coupon {{ b.fixedInterest?.couponRatePercent ?? b.zeroCoupon?.couponRatePercent ?? 0 }}%
+            · {{ b.dayCount }}</span>
+        }
+        @if (estimatedValue(); as v) { <span class="est">≈ {{ v }}</span> }
+      </div>
+    } @else if (currentTicker()) {
+      <div class="live"><span class="sub">no live price for {{ currentTicker() }} yet</span></div>
+    }
     <form (ngSubmit)="submit()">
       <label class="field">Account
         <select [(ngModel)]="accountId" name="acct">
@@ -87,7 +104,7 @@ const PRESETS: Preset[] = [
       @switch (cls()) {
         @case ('Equity') {
           <label class="field">Ticker
-            <select [(ngModel)]="ticker" name="ticker">
+            <select [ngModel]="ticker()" (ngModelChange)="ticker.set($event)" name="ticker">
               @for (i of equities(); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.instrumentKey }} — {{ i.displayName }}</option> }
             </select>
           </label>
@@ -110,12 +127,12 @@ const PRESETS: Preset[] = [
         }
         @case ('Option') {
           <label class="field">OCC symbol
-            <input [(ngModel)]="occSymbol" name="occ" placeholder="AAPL261218C00260000" spellcheck="false">
+            <input [ngModel]="occSymbol()" (ngModelChange)="occSymbol.set($event)" name="occ" placeholder="AAPL261218C00260000" spellcheck="false">
           </label>
           @if (occ(); as o) {
             <div class="derived">{{ o.underlying }} · {{ o.expiry }} · {{ o.callPut }} · strike {{ o.strike }}
               <help-tip text="Underlying, expiry, call/put and strike are all encoded in the OCC symbol itself, so the ticket derives them rather than asking for them separately — there is exactly one source of truth for the contract's terms." /></div>
-          } @else if (occSymbol) { <div class="derived bad">not a valid OCC symbol</div> }
+          } @else if (occSymbol()) { <div class="derived bad">not a valid OCC symbol</div> }
           <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
           <label class="field">Contracts <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
           <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
@@ -139,7 +156,7 @@ const PRESETS: Preset[] = [
 
     <ng-template #bond>
       <label class="field">Instrument
-        <select [(ngModel)]="ticker" name="ticker">
+        <select [ngModel]="ticker()" (ngModelChange)="ticker.set($event)" name="ticker">
           @for (i of bonds(); track i.instrumentKey) { <option [value]="i.instrumentKey">{{ i.shortDisplayName || i.instrumentKey }} — {{ i.displayName }}</option> }
         </select>
       </label>
@@ -182,6 +199,12 @@ const PRESETS: Preset[] = [
                display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
     .derived.bad { color: var(--bad); background: var(--bad-soft); }
     .banner { font-family: var(--mono); font-size: 12.5px; }
+    .live { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;
+            padding: 6px 9px; background: #f8f9fb; border: 1px solid var(--border); border-radius: 6px; }
+    .lv { font-family: var(--mono); font-weight: 600; font-size: 13.5px; padding: 0 3px; border-radius: 3px; }
+    .lv.up { color: var(--good); background: var(--good-soft); }
+    .lv.down { color: var(--bad); background: var(--bad-soft); }
+    .est { margin-left: auto; font-family: var(--mono); font-size: 12.5px; color: var(--muted); }
   `,
 })
 export class TicketPanel {
@@ -195,14 +218,17 @@ export class TicketPanel {
   readonly last = signal<{ ok: boolean; text: string } | null>(null);
 
   accountId = 22214;
-  ticker = '';
+  // Signals, not plain fields: the live-price strip and bondInfo are computed() and only
+  // recompute when a SIGNAL they read changes. As plain properties these silently served a stale
+  // instrument — the bond terms simply stopped appearing when the ticket switched instruments.
+  readonly ticker = signal('');
   side = 'Buy';
   execMode: 'Direct' | 'TWAP' | 'VWAP' = 'Direct';
   durationSeconds = 60;
   bucketSeconds = 10;
   quantity = 100;
   limitPrice = 0;
-  occSymbol = '';
+  readonly occSymbol = signal('');
   payReceive = 'Pay';
   notional = 10_000_000;
   fixedRate = 0.042;
@@ -218,16 +244,47 @@ export class TicketPanel {
     const want = this.cls() === 'Treasury' ? 'US_TREASURY' : 'CORPORATE_BOND';
     return this.api.instruments().filter(i => i.assetClass === want);
   });
-  readonly occ = computed(() => parseOcc(this.occSymbol));
+  readonly occ = computed(() => parseOcc(this.occSymbol()));
+
+  /** Whatever instrument the ticket currently names, whichever tab is showing. */
+  readonly currentTicker = computed(() => {
+    const c = this.cls();
+    if (c === 'Swap' || c === 'Swaption') return '';
+    return c === 'Option' ? this.occSymbol().trim().toUpperCase() : this.ticker();
+  });
+
+  readonly livePrice = computed(() => {
+    const t = this.currentTicker();
+    return t ? this.api.prices()[t] ?? null : null;
+  });
+
+  /** Bonds quote as a fraction of par; options and equities in dollars. */
+  readonly priceLabel = computed(() => {
+    const p = this.livePrice();
+    if (!p) return '';
+    const c = this.cls();
+    if (c === 'Treasury' || c === 'Corporate') return `${(p.price * 100).toFixed(3)}% of par`;
+    return p.price.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 3 });
+  });
+
+  /** What the order is worth at the entered limit, using the system's own multiplier convention:
+   *  100 for an option contract, 1 for a bond (quantity is already USD face) or a share. */
+  readonly estimatedValue = computed(() => {
+    const c = this.cls();
+    if (c === 'Swap' || c === 'Swaption' || !this.quantity || !this.limitPrice) return '';
+    const mult = c === 'Option' ? 100 : 1;
+    const value = this.quantity * this.limitPrice * mult;
+    return value.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 });
+  });
   readonly bondInfo = computed(() =>
-    this.api.instruments().find(i => i.instrumentKey === this.ticker)?.debtEconomics);
+    this.api.instruments().find(i => i.instrumentKey === this.currentTicker())?.debtEconomics);
 
   constructor() {
     // Keep the ticker pointing at something valid for the selected class.
     effect(() => {
       const list = ['Treasury', 'Corporate'].includes(this.cls()) ? this.bonds() : this.equities();
-      if (list.length && !list.some(i => i.instrumentKey === this.ticker)) {
-        this.ticker = list[0].instrumentKey;
+      if (list.length && !list.some(i => i.instrumentKey === this.ticker())) {
+        this.ticker.set(list[0].instrumentKey);
       }
     });
   }
@@ -263,16 +320,16 @@ export class TicketPanel {
           r.body?.reason);
       } else if (c === 'Equity' && this.execMode !== 'Direct') {
         const r = await this.api.post<{ parentOrderId?: string; status?: string; error?: string }>('/algo/orders', {
-          accountId: Number(this.accountId), security: this.ticker, side: this.side,
+          accountId: Number(this.accountId), security: this.ticker(), side: this.side,
           quantity: this.quantity, algoType: this.execMode,
           durationSeconds: this.durationSeconds, bucketSeconds: this.bucketSeconds,
         });
         const ok = r.status === 201 && !!r.body?.parentOrderId;
         this.last.set({ ok, text: ok ? `parent ${r.body!.parentOrderId} ${r.body!.status} — buckets on the Admin page` : `HTTP ${r.status}` });
         this.api.log({ kind: 'algo', ok,
-          summary: `${this.execMode} ${this.side} ${this.quantity} ${this.ticker} over ${this.durationSeconds}s → ${ok ? `parent ${r.body!.parentOrderId}` : `HTTP ${r.status}`}` });
+          summary: `${this.execMode} ${this.side} ${this.quantity} ${this.ticker()} over ${this.durationSeconds}s → ${ok ? `parent ${r.body!.parentOrderId}` : `HTTP ${r.status}`}` });
       } else {
-        const ticker = c === 'Option' ? this.occSymbol.trim().toUpperCase() : this.ticker;
+        const ticker = this.currentTicker();
         const clientOrderId = nextClientOrderId();
         const r = await this.api.post<OrderResult>('/order-matcher/orders', {
           accountId: Number(this.accountId), ticker, side: this.side,

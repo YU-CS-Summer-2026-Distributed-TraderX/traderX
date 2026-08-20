@@ -16,7 +16,7 @@
                 typeaheadOptionField="matchLabel"
                 (typeaheadOnSelect)="onSelect($event)"
                 (blur)="onBlur()"
-                placeholder="Search security"
+                placeholder="Search security, or type an OCC option symbol"
                 autocomplete="off"
                 autocapitalize="off"
                 autocorrect="off"
@@ -36,6 +36,25 @@
             <ng-template #noSecuritySelected>
                 <span class="text-muted">Select a security</span>
             </ng-template>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="occTerms as occ">
+        <label class="col-sm-2 col-form-label me-3">Option</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <small class="text-muted">
+                {{ occ.underlying }} &middot; {{ occ.right }} &middot; Strike {{ occ.strike | number:'1.2-2' }}
+                &middot; Expires {{ occ.expiry }}
+                <span class="fst-italic"> &middot; derived from the symbol, not entered</span>
+            </small>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="estimatedOptionPremium != null">
+        <label class="col-sm-2 col-form-label me-3">Premium</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <span class="fw-semibold">{{ estimatedOptionPremium | currency:'USD':'symbol':'1.2-2' }}</span>
+            <small class="text-muted ms-2">contracts &times; premium &times; 100</small>
         </div>
     </div>
 
