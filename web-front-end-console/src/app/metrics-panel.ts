@@ -12,9 +12,11 @@ import { HelpTip } from './help';
     </div>
     <div class="tiles">
       <div class="tile"><div class="v">{{ throughput() }}</div><div class="k">acks / s</div></div>
-      <div class="tile"><div class="v">{{ inflight() }}</div><div class="k">in flight</div></div>
-      <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted</div></div>
-      <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills</div></div>
+      <!-- Both of these are _total counters aggregated across the gateways, so their scope belongs
+           on the glass: "8 fills" reads as recent activity, "8 fills since startup" reads as what
+           it is. Same rule that renamed the recon pill. -->
+      <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted<br>since startup</div></div>
+      <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills<br>since startup</div></div>
     </div>
 
     <!-- PERCENTILES DO NOT SUM. /metrics is aggregated across the gateways because counters add;
@@ -63,7 +65,6 @@ export class MetricsPanel implements OnInit, OnDestroy {
   private lastAt = 0;
 
   readonly throughput = signal('—');
-  readonly inflight = signal('—');
   readonly accepted = signal('—');
   readonly fills = signal('—');
   readonly latency = signal('');
@@ -111,7 +112,6 @@ export class MetricsPanel implements OnInit, OnDestroy {
         this.throughput.set(((acks - this.lastAcks) / ((now - this.lastAt) / 1000)).toFixed(1));
       }
       this.lastAcks = acks; this.lastAt = now;
-      this.inflight.set(String(p['traderx_gateway_inflight_orders'] ?? '—'));
       this.accepted.set(String(p['traderx_order_events_total{event="accepted"}'] ?? '—'));
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
