@@ -11,6 +11,13 @@
       <a routerLink="/kdb" routerLinkActive="on">Kdb</a>
     </nav>
     <span class="spacer"></span>
+    <!-- A session outlives the page that started it, so the only honest place for its state is
+         here: visible from every page, with its own Stop. -->
+    @if (session.running()) {
+      <span class="pill good">live session · {{ session.elapsed() }}s · {{ session.sent() }} sent ·
+        {{ session.accepted() }} accepted</span>
+      <button class="stop" (click)="session.stop('stopped from the header')">Stop</button>
+    }
     @if (rigUp() !== null) {
       <span class="pill" [class.good]="rigUp()" [class.bad]="!rigUp()">
         {{ rigUp() ? 'rig connected' : 'rig unreachable' }}

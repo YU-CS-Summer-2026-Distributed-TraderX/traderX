@@ -18,7 +18,11 @@ import { HelpTip } from './help';
       <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs (n={{ n() }})</div></div>
       <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs (n={{ n() }})</div></div>
     </div>
-    <div class="faint">sampled 1-in-128, serial orders only · local kind rig — not the campaign's bench numbers</div>
+    <!-- "serial orders only" is load-bearing, not a footnote: a batch session moves throughput and
+         the counters while leaving the percentiles exactly where they were, which reads as a broken
+         panel unless you know the sample excludes the batch path. -->
+    <div class="faint">sampled 1-in-128, serial orders only — a <b>batch</b> session moves throughput
+      and the counters but not the percentiles · local kind rig, not the campaign's bench numbers</div>
     <details>
       <summary class="sub">raw latency decomposition</summary>
       <pre class="lat">{{ latency() }}</pre>

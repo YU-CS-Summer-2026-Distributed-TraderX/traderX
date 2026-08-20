@@ -20,4 +20,7 @@ nav a.on { background: var(--accent-soft); color: var(--accent); }
 
 .spacer { flex: 1; }
 
+.stop { background: var(--bad); color: #fff; border-color: var(--bad); font-weight: 600;
+        padding: 3px 10px; font-size: 12px; }
+
 main { max-width: 1240px; margin: 0 auto; padding: 18px 20px 40px; }

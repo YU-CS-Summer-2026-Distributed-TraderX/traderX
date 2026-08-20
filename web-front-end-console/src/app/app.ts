@@ -1,6 +1,7 @@
 import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { Api } from './api';
+import { SessionDriver } from './demo-session';
 
 @Component({
   selector: 'app-root',
@@ -10,6 +11,8 @@ import { Api } from './api';
 })
 export class App implements OnInit, OnDestroy {
   private api = inject(Api);
+  /** The live session runs in a service, so its state belongs in the shell, not on one page. */
+  readonly session = inject(SessionDriver);
   private timer: ReturnType<typeof setInterval> | undefined;
   /** null = checking, true/false = edge proxy reachable. Panels hold last values on failure;
    *  this chip is the single honest signal that the backend itself is gone. */
