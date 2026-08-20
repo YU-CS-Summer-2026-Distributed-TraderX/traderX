@@ -25,6 +25,12 @@ const FIX_HOST = process.env.FIX_HOST ?? 'order-matcher-gw-fix';
 const FIX_PORT = Number(process.env.FIX_PORT ?? 18130);
 const BUCKET = process.env.EXTRACT_BUCKET ?? 'gs://traderx-505400-risk-extracts';
 const ROOT = path.resolve(process.env.STATIC_ROOT ?? './dist/web-front-end-console/browser');
+// The dev proxy reads this off the rig with kubectl and injects it on /trade-processor so the EOD
+// panel can mint its own admin token. In-cluster it arrives as an env var from the same Secret
+// (auth-secrets/dev-token-master-secret) — no kubectl, no extra RBAC. Without it the panel falls
+// back to "paste the master secret" and any guess returns "invalid master secret", which reads as
+// a broken auth path rather than a header that was never sent.
+const MASTER_SECRET = process.env.AUTH_MASTER_SECRET ?? '';
 const SOH = '\x01';
 
 // Paths the edge proxy already knows how to route. Identical list to proxy.conf.mjs's plain()
@@ -196,8 +202,14 @@ function serveStatic(req, res, url) {
 }
 
 const [EDGE_HOST, EDGE_PORT] = EDGE.split(':');
-function proxyToEdge(req, res) {
-  const up = http.request({ host: EDGE_HOST, port: Number(EDGE_PORT), path: req.url, method: req.method, headers: req.headers },
+function proxyToEdge(req, res, rewrite) {
+  const headers = { ...req.headers };
+  // Same injection the dev proxy does, on the same route.
+  if (MASTER_SECRET && (req.url ?? '').startsWith('/trade-processor')) {
+    headers['x-auth-master-secret'] = MASTER_SECRET;
+  }
+  const upstreamPath = rewrite ? rewrite(req.url ?? '/') : (req.url ?? '/');
+  const up = http.request({ host: EDGE_HOST, port: Number(EDGE_PORT), path: upstreamPath, method: req.method, headers },
     (r) => { res.writeHead(r.statusCode ?? 502, r.headers); r.pipe(res); });
   up.on('error', () => json(res, 502, { error: `edge-proxy unreachable at ${EDGE}` }));
   req.pipe(up);
@@ -215,6 +227,12 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
   if (p === '/healthz') return json(res, 200, { ok: true });
+  // The original TraderX UI, served same-origin under /legacy/. This works ONLY because that app
+  // ships <base href="."> — its assets resolve relative to whatever path it is served under, so no
+  // rewriting of the HTML is needed and no second hostname (and no second DNS record and TLS
+  // certificate) either. Strip the prefix; the edge proxy serves that app at its root.
+  if (p === '/legacy' ) { res.statusCode = 302; res.setHeader('Location', '/legacy/'); return res.end(); }
+  if (p.startsWith('/legacy/')) return proxyToEdge(req, res, (u) => u.slice('/legacy'.length) || '/');
   if (PROXY_PREFIXES.some(x => p === x || p.startsWith(`${x}/`))) return proxyToEdge(req, res);
   return serveStatic(req, res, url);
 });

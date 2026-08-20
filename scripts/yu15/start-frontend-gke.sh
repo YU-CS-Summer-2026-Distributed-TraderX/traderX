@@ -33,6 +33,21 @@ done
 f="$(find "${ROOT}/specs" -name 'edge-proxy-configmap.yaml' 2>/dev/null | sort | tail -1)"
 cp "${f}" "${STAGE}/edge-proxy-configmap.yaml"
 
+# THE RESOLVER IP IS RIG-SPECIFIC AND THE CONFIG HARDCODES KIND'S. nginx needs a literal address
+# for `resolver`, and the shipped value (10.96.0.10) is kube-dns on kind's service CIDR. GKE hands
+# out a different one, so every location that resolves through a variable — the per-member /m0../m2
+# routes and /tempo — fails with "could not be resolved (110: Operation timed out)" and returns 502.
+# The console then renders "members diverge or unreachable", which reads as a cluster fault and is
+# really one wrong IP; the members were healthy and agreeing the whole time.
+# Discovered rather than hardcoded, so this is right on any cluster.
+KUBEDNS="$(kubectl --context "${CTX}" -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')"
+[[ -n "${KUBEDNS}" ]] || { echo "[fail] could not read kube-dns clusterIP"; exit 1; }
+echo "[stage] repointing nginx resolver at this cluster's kube-dns (${KUBEDNS})"
+sed -i.bak -E "s/resolver [0-9.]+ /resolver ${KUBEDNS} /g" "${STAGE}/edge-proxy-configmap.yaml"
+rm -f "${STAGE}"/*.bak
+grep -q "resolver ${KUBEDNS} " "${STAGE}/edge-proxy-configmap.yaml" \
+  || { echo "[fail] resolver rewrite did not take"; exit 1; }
+
 # RULE 2: REPOINT EVERY IMAGE AT THE REGISTRY. The staged manifests carry local dev tags
 # (traderx/<svc>:state009) which GKE cannot pull. Leaving one behind does NOT fail loudly: the
 # apply succeeds, the new ReplicaSet's pod sits ImagePullBackOff, and the OLD pod keeps serving —

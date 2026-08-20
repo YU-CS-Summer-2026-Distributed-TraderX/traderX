@@ -53,7 +53,7 @@ spec:
         cloud.google.com/gke-nodepool: support-pool
       containers:
         - name: console
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke2
           ports:
             - name: http
               containerPort: 8080
@@ -68,6 +68,16 @@ spec:
               value: "order-matcher-gw-fix"
             - name: EXTRACT_BUCKET
               value: "gs://traderx-505400-risk-extracts"
+            # Injected on /trade-processor so the EOD panel mints its own admin token, exactly as
+            # the dev proxy does after reading the same Secret with kubectl. Sourced from the
+            # Secret rather than exec'd, so this needs no extra RBAC. Missing, the panel asks the
+            # operator to paste a secret and every attempt returns "invalid master secret" — which
+            # reads as a broken auth path rather than a header that was never sent.
+            - name: AUTH_MASTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: dev-token-master-secret
           readinessProbe:
             httpGet: { path: /healthz, port: 8080 }
             initialDelaySeconds: 5

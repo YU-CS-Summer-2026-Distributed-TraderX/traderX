@@ -77,6 +77,6 @@ export class LegacyPanel {
   private api = inject(Api);
   readonly added = ADDED;
   /** The edge proxy's root serves the original app; the dev proxy forwards that port already. */
-  readonly url = 'http://localhost:30080/';
+  readonly url = '/legacy/';
   rig(): boolean { return this.api.accounts().length > 0; }
 }
