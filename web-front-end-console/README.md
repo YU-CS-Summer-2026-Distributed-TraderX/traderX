@@ -168,12 +168,14 @@ it — a real print and a position on both sides.
   own; nothing in the browser can open a TCP socket. Watch the timestamp format if you touch it:
   FIX UTCTimestamp is `YYYYMMDD-HH:MM:SS.sss`, and stripping the colons gets the whole Logon
   refused with *"Incorrect data format for value, field=52"*.
-- **Cuts on the kind rig are ephemeral, and losing them is silent.** The extract's
-  `/data/risk-extracts` is an `emptyDir` — deliberately, because durability is the GCS sink's job
-  on the GKE overlay and there is none on kind. Rescheduling `deploy/risk-extract` deletes every
-  cut on the epoch. **Take a fresh cut before demonstrating the provenance panel, and leave that
-  pod alone afterwards**; the panel says so when it finds the sink empty, rather than rendering the
-  archive rows and looking fine.
+- ~~**Cuts on the kind rig are ephemeral**~~ — **fixed 2026-08-20.** `/data/risk-extracts` is a PVC
+  (`risk-extract-extracts`, 1Gi RWO), so **cuts survive a reschedule of `risk-extract`**. Deliberately
+  narrower than "cuts are durable": they do not survive the PVC itself being deleted, and none of it
+  applies to GKE, whose overlay writes to `gs://` and was never affected. Verified from this
+  console's own read path — nine artifacts, `delete pod -l app=risk-extract`, a genuinely different
+  replacement pod, all nine shas byte-identical afterwards. The empty-sink banner is repointed
+  rather than retired: an empty sink now means the **EOD chain has not produced a cut**, which is a
+  real fault rather than a plumbing artefact.
 - **Reading the sink is a kind-only gap, and an HTTP server is the wrong fix.** `risk-extract` has
   no Service and no container ports — it is a headless worker, NATS in, files out — so there is
   nothing for an edge-proxy route to point at, and serving the files would mean giving a

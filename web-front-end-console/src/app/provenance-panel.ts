@@ -85,10 +85,18 @@ export class ProvenancePanel implements OnInit {
   readonly loaded = signal(false);
   readonly open = signal(true);
   /**
-   * An empty sink has to announce itself. The extract's volume is an emptyDir (deliberately —
-   * durability is the GCS sink's job on the GKE overlay), so rescheduling deploy/risk-extract
-   * silently deletes every cut on the epoch. Without this line the panel would simply render the
-   * archive rows and look fine, which is exactly how "it was full an hour ago" happens mid-demo.
+   * An empty sink has to announce itself — but what an empty sink MEANS changed on 2026-08-20.
+   *
+   * It used to mean "someone rescheduled risk-extract", because the volume was an emptyDir and a
+   * new pod started with nothing. That is fixed: the volume is a PVC now (risk-extract-extracts,
+   * 1Gi RWO), verified from this console's own read path — nine artifacts, `delete pod -l
+   * app=risk-extract`, a genuinely different replacement pod, all nine shas byte-identical after.
+   *
+   * So an empty sink is no longer an artefact of the plumbing; it means the EOD chain has not
+   * produced a cut, which is a real fault worth chasing. Repointed rather than retired, because the
+   * panel still has to explain itself when it has nothing to show — the message is now more useful
+   * than it was, not less. Scoped to this rig: the GKE overlay writes to gs:// and was never
+   * affected by any of it.
    */
   readonly rigNote = signal('');
 
@@ -117,9 +125,10 @@ export class ProvenancePanel implements OnInit {
       return;
     }
     if (!r.body.files.length) {
-      this.rigNote.set('No cuts on the rig sink. risk-extract mounts an emptyDir, so rescheduling '
-        + 'that pod deletes every cut written on this epoch — nothing older survives a restart. '
-        + 'Take a fresh cut before demonstrating this panel, and leave the pod alone afterwards.');
+      this.rigNote.set('No cuts on the rig sink — and since risk-extract now holds them on a PVC, '
+        + 'this is no longer explained by a reschedule wiping the volume. An empty sink means the '
+        + 'end-of-day chain has not produced a cut on this epoch, which is a real fault: check that '
+        + 'the EOD durables are bound and that a session has been published.');
       return;
     }
     const byDir = new Map<string, typeof r.body.files>();
