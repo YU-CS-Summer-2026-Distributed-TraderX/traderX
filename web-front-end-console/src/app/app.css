@@ -11,23 +11,30 @@ header {
 }
 .brand { display: flex; align-items: center; gap: 6px; text-decoration: none; flex: 0 0 auto; }
 .brand:hover .console { color: #000; }
-.brand .yu { height: 28px; width: auto; }
+.brand .yu { height: 32px; width: auto; }
 /* The wordmark stands in for the word "TraderX", so it is sized against the type beside it
    rather than as a small mark. */
 .brand .tx { height: 30px; width: auto; }
 .wordmark { font-size: 16px; white-space: nowrap; }
-.yu-text { color: var(--text); font-weight: 800; }
-/* "Console" completes the lockup, so it is set in the brand face at the wordmark's own weight
-   and sits tight against it — the two read as one phrase, not a logo with a caption. */
+/* Nudged down a hair: the letters otherwise ride high against the crest and the mark. */
+.yu-text { color: var(--text); font-weight: 800; position: relative; top: 1px; }
+/* "Console" completes the lockup rather than labelling it, so it is set in the brand face at
+   the wordmark's weight, tucked against the mark, and sat on the mark's own baseline — the
+   lettering inside that SVG sits at about 65% of the box height, which is lower than a text
+   baseline centred beside it, so it needs the offset to line up. */
 .console {
   font-family: 'Overpass', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-  font-weight: 800; font-size: 19px; letter-spacing: -0.01em; color: var(--text);
-  margin-left: -1px;
+  /* Sized to the mark, not to the header: the wordmark's lettering spans 83.7..150.5 of its
+     230-unit box, so at a 30px box its cap height is ~8.7px. Overpass caps run ~0.72em, so 13px
+     lands at ~9.4px and the two words are the same size. `top` puts it on the mark's baseline,
+     which sits at 65% of the box rather than at the centre a flex row would align it to. */
+  font-weight: 800; font-size: 13.5px; letter-spacing: -0.01em; color: var(--text);
+  margin-left: -4px; position: relative; top: 3px;
 }
-/* A true middle dot, vertically centred against the cap height rather than sitting on the
-   baseline like a full stop would. */
-.dot { padding: 0 4px; color: var(--text); font-weight: 800; font-size: 1.15em;
-       vertical-align: middle; line-height: 1; }
+/* Raised off the baseline so it reads as a separator floating between the two marks rather
+   than as a full stop after "YU". */
+.dot { padding: 0 3px; color: var(--text); font-weight: 800; font-size: 1.15em;
+       position: relative; top: -2px; line-height: 1; }
 
 nav { display: flex; gap: 2px; flex-wrap: wrap; }
 nav a {
