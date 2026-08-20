@@ -23,18 +23,22 @@ header {
    lettering inside that SVG sits at about 65% of the box height, which is lower than a text
    baseline centred beside it, so it needs the offset to line up. */
 .console {
-  font-family: 'Overpass', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  /* Archivo Black, chosen by comparing candidates against the mark itself rather than from
+     memory — a heavy grotesque with flat, wide letters, which is what the wordmark is and what
+     narrower, rounder faces kept missing. It ships in one weight, so 400 IS its black. */
+  font-family: 'Archivo Black', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
   /* Sized to the mark, not to the header: the wordmark's lettering spans 83.7..150.5 of its
-     230-unit box, so at a 30px box its cap height is ~8.7px. Overpass caps run ~0.72em, so 13px
-     lands at ~9.4px and the two words are the same size. `top` puts it on the mark's baseline,
-     which sits at 65% of the box rather than at the centre a flex row would align it to. */
-  font-weight: 800; font-size: 13.5px; letter-spacing: -0.01em; color: var(--text);
+     230-unit box, so at a 30px box its cap height is ~8.7px, and Archivo Black's caps run about
+     0.73em. `top` puts it on the mark's baseline, which sits at 65% of the box rather than at the
+     centre a flex row would align it to. */
+  font-weight: 400; font-size: 12.5px; letter-spacing: -0.005em; color: var(--text);
   margin-left: -4px; position: relative; top: 3px;
 }
 /* Raised off the baseline so it reads as a separator floating between the two marks rather
-   than as a full stop after "YU". */
-.dot { padding: 0 3px; color: var(--text); font-weight: 800; font-size: 1.15em;
-       position: relative; top: -2px; line-height: 1; }
+   than as a full stop after "YU". No side padding: it is a flex item now, so the row's own gap
+   spaces it equally from the letters and from the mark. */
+.dot { color: var(--text); font-weight: 800; font-size: 19px;
+       position: relative; top: -1px; line-height: 1; }
 
 nav { display: flex; gap: 2px; flex-wrap: wrap; }
 nav a {
