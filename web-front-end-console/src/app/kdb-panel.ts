@@ -47,6 +47,40 @@ interface Gap { from: number; to: number; missing: number; }
       <div class="tile"><div class="v">{{ epochs().length }}</div><div class="k">epoch{{ epochs().length === 1 ? '' : 's' }} in the store</div></div>
     </div>
 
+    @if (capture(); as c) {
+      <div class="banner"
+        [class.good]="c.verdict === 'complete'"
+        [class.warn-note]="c.verdict === 'short' || c.verdict === 'excess'"
+        [class.faint-note]="c.verdict === 'unknown'">
+        @switch (c.verdict) {
+          @case ('complete') {
+            ✓ capture complete for epoch {{ c.epoch }} — {{ c.captured }} captured row{{ c.captured === 1 ? '' : 's' }}
+            across the members equals the engine's own {{ c.engine }} trade{{ c.engine === 1 ? '' : 's' }}.
+            The VWAP below is over every fill, not a sample of them. <b>Count is what is verified</b>;
+            price fidelity rests on each row carrying its own px and qty.
+          }
+          @case ('short') {
+            ⚠ capture is short for epoch {{ c.epoch }} — {{ c.captured }} captured against the engine's
+            {{ c.engine }}. {{ c.engine! - c.captured }} fill{{ c.engine! - c.captured === 1 ? '' : 's' }}
+            never reached the tap, so the VWAP below is computed over an incomplete set and is wrong
+            in an unbounded direction. The tap sheds under sustained flood by design rather than
+            back-pressuring the engine.
+          }
+          @case ('excess') {
+            ⚠ more captured rows ({{ c.captured }}) than the engine reports trades ({{ c.engine }}) for
+            epoch {{ c.epoch }}. That should not happen — the same trade captured twice, or files from
+            an epoch this counter does not describe.
+          }
+          @default {
+            capture holds {{ c.captured }} row{{ c.captured === 1 ? '' : 's' }} for epoch {{ c.epoch }},
+            but the members do not agree on a trade count, so completeness cannot be checked.
+          }
+        }
+        @if (c.older) { <span class="sub"> · {{ c.older }} older epoch{{ c.older === 1 ? '' : 's' }} on
+          disk, excluded — the counter describes this epoch only.</span> }
+      </div>
+    }
+
     <sec-head [s]="filesSec" label="Capture files per member">
       <help-tip text="Only the leader writes, so a member's row count is the size of its leadership windows, not its share of the work. A member that has never led has no file at all, and that is correct rather than missing data." />
     </sec-head>
@@ -252,6 +286,8 @@ interface Gap { from: number; to: number; missing: number; }
          border-left: 3px solid var(--accent); border-radius: 0 6px 6px 0; padding: 7px 10px;
          margin: 2px 0 6px; white-space: pre-wrap; overflow-x: auto; }
     .warnline { color: var(--warn); margin-bottom: 4px; }
+    .warn-note { background: var(--warn-soft); color: var(--warn); }
+    .faint-note { background: #f0f2f5; color: var(--muted); }
     tr.exec td { background: var(--good-soft); }
     .pos { color: var(--good); } .neg { color: var(--bad); }
   `,
@@ -259,6 +295,8 @@ interface Gap { from: number; to: number; missing: number; }
 export class KdbPanel implements OnInit, OnDestroy {
   private api = inject(Api);
   readonly members = signal<MemberCap[]>([]);
+  /** The engine's own trade counter, agreed by the members. Empty if they disagree or are down. */
+  readonly engineTrades = signal<number | null>(null);
   readonly error = signal('');
   private timer: ReturnType<typeof setInterval> | undefined;
 
@@ -487,7 +525,52 @@ export class KdbPanel implements OnInit, OnDestroy {
   }
   ngOnDestroy(): void { clearInterval(this.timer); }
 
+  /**
+   * COMPLETENESS, against the one reference that cannot itself be short.
+   *
+   * The obvious check — compare the captures with the `trades` table — is circular: the projection
+   * is exactly what goes silently short when the read path breaks, so a wedged rig would show both
+   * missing the same fills and the check would go green. The engine's own trade counter is
+   * replicated state agreed by all three members, with nothing downstream able to drop a row.
+   *
+   * Summing across members is not a workaround, it is the correct arithmetic: the tap writes only
+   * on the leader, so after a failover the record is split across whoever led at the time, and each
+   * trade is captured exactly once. A follower with a header-only file is a follower, not a fault.
+   *
+   * This verifies COUNT, which is what capture loss destroys. It says nothing about price fidelity
+   * — but each captured row carries its own px and qty, so count-completeness plus per-row values
+   * is what a VWAP needs. The page says count, and only count.
+   */
+  readonly capture = computed(() => {
+    // Row counts come from the FILES, not from the parsed rows: the bridge tails each file, so the
+    // parsed list can be shorter than the capture while the capture is complete.
+    const byEpoch = new Map<number, number>();
+    for (const m of this.members()) {
+      for (const f of m.files) {
+        const e = /^txtrade-(\d+)-/.exec(f.name);
+        if (e) byEpoch.set(+e[1], (byEpoch.get(+e[1]) ?? 0) + f.rows);
+      }
+    }
+    if (!byEpoch.size) return null;
+    const epoch = Math.max(...byEpoch.keys());
+    const captured = byEpoch.get(epoch) ?? 0;
+    const engine = this.engineTrades();
+    return {
+      epoch, captured, engine, older: byEpoch.size - 1,
+      verdict: engine === null ? 'unknown' as const
+        : captured === engine ? 'complete' as const
+        : captured < engine ? 'short' as const : 'excess' as const,
+    };
+  });
+
   private async poll(): Promise<void> {
+    const mem = await this.api.load<{ members: { health?: { trades?: number } }[] }>('/members');
+    const counts = mem.status === 200 && Array.isArray(mem.body?.members)
+      ? mem.body.members.map(m => m.health?.trades).filter((v): v is number => typeof v === 'number')
+      : [];
+    // Only an AGREED counter is a reference. Divergent members are their own problem and must not
+    // be silently resolved by picking one.
+    this.engineTrades.set(counts.length && new Set(counts).size === 1 ? counts[0] : null);
     const r = await this.api.load<{ members: { member: number; capture: string }[] }>('/kdbtap');
     if (r.status !== 200 || !r.body?.members) {
       this.error.set('capture bridge unreachable (dev proxy + kubectl required)');

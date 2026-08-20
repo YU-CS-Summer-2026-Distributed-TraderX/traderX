@@ -339,14 +339,33 @@ export class Api {
   // credit, quantity) and says nothing about the band. Six securities on this rig show refusals and
   // only one is mis-anchored — reading "rejected" as "mis-anchored" would have condemned all seven.
   readonly bands = signal<BandCheck[]>([]);
+  /**
+   * Whether the screen can see at all. `disabled` is the regulatory projection being off — on the
+   * cloud rig RECON_BLOTTER_CAPACITY is 0 by default, a deliberate throughput trade, and the route
+   * answers 503. A panel that renders "no refusals on record" in that state is asserting an
+   * all-clear it has no basis for.
+   */
+  readonly bandsState = signal<'loading' | 'ok' | 'disabled' | 'no-token' | 'unreachable'>('loading');
   private bandsAt = 0;
 
   /** Refresh at most once a minute; mints the admin token the regulatory report requires. */
   async loadBands(force = false): Promise<void> {
     if (!force && Date.now() - this.bandsAt < 60_000) return;
-    if (!this.adminToken() && !(await this.mintAdminToken())) return;
+    if (!this.adminToken() && !(await this.mintAdminToken())) {
+      this.bandsState.set('no-token');
+      return;
+    }
     const r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
-    if (r.status !== 200 || !Array.isArray(r.body)) return;
+    if (r.status !== 200 || !Array.isArray(r.body)) {
+      // WHY the distinction matters: with the projection off, an empty band list is not "no
+      // mis-anchored books", it is "this console cannot see". Reporting the first when the truth is
+      // the second is the same fault as a status page that goes green because its producer is
+      // missing — the exact class that hid the kdb tap being disabled on this tier.
+      this.bandsState.set(r.status === 503 ? 'disabled' : 'unreachable');
+      this.bands.set([]);
+      return;
+    }
+    this.bandsState.set('ok');
     this.bandsAt = Date.now();
     const acc = new Map<string, number[]>();
     const rej = new Map<string, number[]>();

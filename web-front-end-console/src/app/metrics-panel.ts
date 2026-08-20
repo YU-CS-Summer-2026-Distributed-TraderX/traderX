@@ -15,9 +15,31 @@ import { HelpTip } from './help';
       <div class="tile"><div class="v">{{ inflight() }}</div><div class="k">in flight</div></div>
       <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted</div></div>
       <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills</div></div>
-      <div class="tile"><div class="v">{{ p50() }}</div><div class="k">consensus p50 µs (n={{ n() }})</div></div>
-      <div class="tile"><div class="v">{{ p99() }}</div><div class="k">consensus p99 µs (n={{ n() }})</div></div>
     </div>
+
+    <!-- PERCENTILES DO NOT SUM. /metrics is aggregated across the gateways because counters add;
+         these cannot be, and there are no raw samples exposed to merge — only each gateway's own
+         computed p50/p99. So they are shown side by side. Averaging three p99s would produce a
+         number that is not any gateway's p99 and not the system's either, and one gateway's alone
+         is a sample of a sample: orders spread across all three. -->
+    <h3>Consensus latency per gateway <span class="sub">not summable — each gateway's own sample</span></h3>
+    <table>
+      <thead><tr><th>gateway</th><th class="num">p50 µs</th><th class="num">p99 µs</th>
+        <th class="num">samples</th></tr></thead>
+      <tbody>
+        @for (g of gateways(); track g.ordinal) {
+          <tr>
+            <td>gateway-{{ g.ordinal }}</td>
+            <td class="num">{{ g.n ? g.p50 : '—' }}</td>
+            <td class="num">{{ g.n ? g.p99 : '—' }}</td>
+            <td class="num" [class.faint]="!g.n">{{ g.n }}</td>
+          </tr>
+        } @empty { <tr><td colspan="4" class="faint">no gateway answered /latency</td></tr> }
+      </tbody>
+    </table>
+    <div class="sub">Sampled 1-in-128 on the single-order path, so a gateway with
+      <b>0 samples</b> has no percentile rather than a fast one — and a batch session moves the
+      counters above while leaving every row here untouched.</div>
     <details>
       <summary class="sub">raw latency decomposition</summary>
       <pre class="lat">{{ latency() }}</pre>
@@ -44,16 +66,37 @@ export class MetricsPanel implements OnInit, OnDestroy {
   readonly inflight = signal('—');
   readonly accepted = signal('—');
   readonly fills = signal('—');
-  readonly p50 = signal('—');
-  readonly p99 = signal('—');
-  readonly n = signal(0);
   readonly latency = signal('');
+  /** One row per gateway: percentiles cannot be merged, so they are never merged. */
+  readonly gateways = signal<{ ordinal: number; p50: string; p99: string; n: number }[]>([]);
 
   ngOnInit(): void {
     this.poll();
     this.timer = setInterval(() => this.poll(), 2000);
   }
   ngOnDestroy(): void { clearInterval(this.timer); }
+
+  /**
+   * Ask every gateway for its own percentiles. The Service load-balances, so a single /latency call
+   * answers from one arbitrary pod — a third of the traffic's view, presented as the system's.
+   */
+  private async pollGateways(): Promise<void> {
+    const d = await this.api.load<{ count: number }>('/gateways');
+    const n = d.status === 200 && d.body?.count ? d.body.count : 0;
+    if (!n) { this.gateways.set([]); return; }
+    const rows = await Promise.all(Array.from({ length: n }, async (_, i) => {
+      const r = await this.api.load<string>(`/gw/${i}/latency`);
+      if (typeof r.body !== 'string') return { ordinal: i, p50: '—', p99: '—', n: 0 };
+      const p = parseProm(r.body);
+      return {
+        ordinal: i,
+        p50: p['traderx_gateway_latency_us{segment="cluster",pct="p50"}']?.toFixed(0) ?? '—',
+        p99: p['traderx_gateway_latency_us{segment="cluster",pct="p99"}']?.toFixed(0) ?? '—',
+        n: p['traderx_gateway_latency_count{segment="cluster"}'] ?? 0,
+      };
+    }));
+    this.gateways.set(rows);
+  }
 
   private async poll(): Promise<void> {
     const [m, l] = await Promise.all([
@@ -73,16 +116,8 @@ export class MetricsPanel implements OnInit, OnDestroy {
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
     // /latency answers 503 with an informative body when LATENCY_DECOMP is off — show it either way.
-    if (typeof l.body === 'string' && l.body) {
-      this.latency.set(l.body.trim());
-      const p = parseProm(l.body);
-      // Sampled 1-in-2^mask, single-order path only — counts stay 0 until serial traffic flows.
-      const count = p['traderx_gateway_latency_count{segment="cluster"}'] ?? 0;
-      if (count) {
-        this.n.set(count);
-        this.p50.set(p['traderx_gateway_latency_us{segment="cluster",pct="p50"}']?.toFixed(0) ?? '—');
-        this.p99.set(p['traderx_gateway_latency_us{segment="cluster",pct="p99"}']?.toFixed(0) ?? '—');
-      }
-    } else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
+    if (typeof l.body === 'string' && l.body) this.latency.set(l.body.trim());
+    else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
+    await this.pollGateways();
   }
 }

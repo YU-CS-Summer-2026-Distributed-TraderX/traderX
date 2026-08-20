@@ -23,13 +23,24 @@ import { HelpTip } from './help';
       </button>
       <help-tip text="The price collar is a band anchored on the first limit order that entered a security's book — not a percentage around the current mark. A book anchored by a stray order refuses every realistic price for the rest of the epoch, and nothing repairs it in place: a price seed cannot move a mark that has already printed, and the band is not derived from the mark anyway. This screen reads the regulatory journal and compares, per security, the prices that were accepted against the prices that were refused. Disjoint ranges are the signature of a mis-anchored book; overlapping ranges mean the refusal came from something else and say nothing about the band." />
       <span class="spacer"></span>
-      @if (bad().length) { <span class="pill bad">{{ bad().length }} mis-anchored</span> }
+      @if (api.bandsState() !== 'ok') { <span class="pill warn">cannot see</span> }
+      @else if (bad().length) { <span class="pill bad">{{ bad().length }} mis-anchored</span> }
       @else if (api.bands().length) { <span class="pill good">no mis-anchored book</span> }
       <button (click)="refresh()" [disabled]="busy()">{{ busy() ? '…' : 'Rescan' }}</button>
     </div>
 
     @if (open()) {
-      @if (!api.bands().length) {
+      @if (api.bandsState() === 'disabled') {
+        <div class="banner warn-note">The regulatory projection is off on this rig, so this screen
+          cannot see. It is an in-memory blotter sized by <span class="mono">RECON_BLOTTER_CAPACITY</span>,
+          which the cloud manifest deliberately sets to 0 for throughput — a one-value edit turns it
+          on. <b>Absence of refusals here is not evidence there are none</b>: with no journal to read,
+          an empty screen and a clean rig look identical.</div>
+      } @else if (api.bandsState() === 'unreachable' || api.bandsState() === 'no-token') {
+        <div class="banner warn-note">Could not read the regulatory journal
+          ({{ api.bandsState() === 'no-token' ? 'no admin token' : 'route unreachable' }}), so this
+          screen has nothing to judge from — which is not the same as nothing to report.</div>
+      } @else if (!api.bands().length) {
         <div class="faint">{{ busy() ? 'reading the journal…' : 'no refusals on record for this epoch' }}</div>
       } @else {
         <table>
@@ -82,6 +93,8 @@ import { HelpTip } from './help';
     .n { display: block; color: var(--faint); font-size: 11px; }
     .sub.thin { color: var(--warn); }
     .note { margin-top: 10px; max-width: 720px; }
+    .warn-note { background: var(--warn-soft); color: var(--warn); max-width: 760px; }
+    .mono { font-family: var(--mono); font-size: 12px; }
     td .sub { font-size: 11.5px; }
   `,
 })
