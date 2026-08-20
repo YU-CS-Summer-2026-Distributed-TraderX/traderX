@@ -51,6 +51,18 @@ Blotter trade rows expand to details with inline TCA and force-settle.
 
 Every panel carries a `?` hover explainer written for someone who doesn't know the system.
 
+## If listed options reject with UNKNOWN_SECURITY
+
+The instrument is fine and the message is misleading: `/resolve` succeeds and the publisher marks
+the contract, but the security is not *enabled* in the engine's risk state for the current epoch.
+A fresh epoch re-seeds equities and bonds only, so an epoch roll silently drops the whole option
+class (filed: `issues/open/an-epoch-roll-silently-drops-instrument-classes.md`). Re-enable the
+packaged chain — 2 underlyings x 2 expiries x 3 strikes x call/put — with:
+
+```bash
+MATCHER_URL=http://localhost:30080/order-matcher bash scripts/proofs/seed-option-chain.sh
+```
+
 ## Known gaps (deliberate)
 
 - **The NATS websocket listener is enabled on the kind rig (2026-08-19)** and declared in the YU17
