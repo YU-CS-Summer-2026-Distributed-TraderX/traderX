@@ -194,8 +194,14 @@ spec:
             # log on demand and are not retained, so nothing here enters the snapshot.
             # UNVERIFIED ON GKE: proven on the kind cluster rig 2026-08-02; there was no GKE cluster
             # to verify against when this landed.
+            # TURNED ON 2026-08-20 at yaakov's call. 0 disabled the member-side journal replay
+            # entirely, which made /regulatory/report answer 503 and left the incremental
+            # reconciler with nothing to sweep — it reported cursor 0 / 0 missing / lastSweepAt
+            # null, i.e. a clean bill of health from a check that had never once run.
+            # This is a throughput trade (a 500k in-memory blotter per member), taken
+            # deliberately rather than inherited.
             - name: RECON_BLOTTER_CAPACITY
-              value: "0"
+              value: "500000"
             # Refuse-rather-than-truncate ceilings: a truncated full-history index reports FALSE
             # orphans, so exceeding these is an error, not a shorter answer.
             - name: RECON_FULL_HISTORY_MAX
