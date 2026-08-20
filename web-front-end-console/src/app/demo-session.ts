@@ -84,6 +84,19 @@ export class SessionDriver {
 
   readonly sent = computed(() => this.actors().reduce((s, a) => s + a.sent, 0));
   readonly accepted = computed(() => this.actors().reduce((s, a) => s + a.accepted, 0));
+  readonly rejected = computed(() => this.actors().reduce((s, a) => s + a.rejected, 0));
+  /**
+   * Orders never sent because the instrument had no live tick yet. `sent` is incremented before
+   * the price is looked up, so the identity a reader needs is
+   *
+   *     sent = accepted + rejected + skipped
+   *
+   * and if `skipped` is not on the glass that sum does not close: "1200 sent, 1195 accepted" reads
+   * as five orders lost in flight. It was five that never left the browser. The counter existed
+   * per actor all along and was shown only as fallback text in the reject column, which is exactly
+   * where nobody totalling the header would look.
+   */
+  readonly skipped = computed(() => this.actors().reduce((s, a) => s + a.noPrice, 0));
 
   /** Selected catalog instruments plus anything typed in Extra symbols (OCC contracts, mostly). */
   readonly pool = computed(() => [
@@ -96,6 +109,12 @@ export class SessionDriver {
   private clock: ReturnType<typeof setInterval> | undefined;
   /** The pool as it was when Start was pressed — the inputs are locked while running anyway. */
   private livePool: string[] = [];
+
+  /** One line whose numbers add up: sent = accepted + rejected + skipped. */
+  tally(): string {
+    return `${this.sent()} ${this.batch() ? 'batches' : 'orders'} sent = ${this.accepted()} accepted`
+      + ` + ${this.rejected()} rejected + ${this.skipped()} skipped (no price yet)`;
+  }
 
   patch(i: number, fields: Partial<Actor>): void {
     this.actors.update(list => list.map((a, j) => (j === i ? { ...a, ...fields } : a)));
@@ -123,8 +142,14 @@ export class SessionDriver {
     this.paused.set(false);
     this.elapsed.set(0);
     this.arm();
+    // "12 instruments" is true of the POOL and false of the traffic: with random off, every order
+    // goes to livePool[0] and the other eleven never see one. Same shape as a number without its
+    // window — so the summary says what is actually being traded.
+    const where = this.randomPick()
+      ? `${this.livePool.length} instruments at random`
+      : `${this.livePool[0]} only (head of ${this.livePool.length}; random pick is off)`;
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session started · ${this.actors().length} accounts, ${this.livePool.length} instruments`
+      summary: `live session started · ${this.actors().length} accounts, ${where}`
         + (this.batch() ? `, batch ingress ${this.batchSize()}/request` : '') });
   }
 
@@ -170,7 +195,7 @@ export class SessionDriver {
       (a.running ? { ...a, remainingMs: Math.max(0, a.remainingMs - spent) } : a)));
     this.paused.set(true);
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session paused at ${this.elapsed()}s · ${this.sent()} sent, ${this.accepted()} accepted`
+      summary: `live session paused at ${this.elapsed()}s · ${this.tally()}`
         + ' — counters held, clock stopped' });
   }
 
@@ -202,8 +227,7 @@ export class SessionDriver {
     this.paused.set(false);
     this.actors.update(l => l.map(a => ({ ...a, running: false })));
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session ${why} after ${this.elapsed()}s of trading time · `
-        + `${this.sent()} ${this.batch() ? 'batches' : 'orders'} sent, ${this.accepted()} accepted` });
+      summary: `live session ${why} after ${this.elapsed()}s of trading time · ${this.tally()}` });
     this.bankedSec = 0;
   }
 
@@ -368,6 +392,12 @@ export class SessionDriver {
           </label>
         }
         <span class="sub">pool: {{ d.pool().length }} instrument{{ d.pool().length === 1 ? '' : 's' }}</span>
+        <!-- Picking twelve and trading one is the default, and nothing said so. -->
+        @if (d.pool().length > 1 && !d.randomPick()) {
+          <span class="sub one-book">⚠ all orders go to <b>{{ d.pool()[0] }}</b> — with random pick
+            off the session trades the head of the pool, and the other
+            {{ d.pool().length - 1 }} never see an order.</span>
+        }
       </div>
       <span class="spacer"></span>
       <div class="go">
@@ -401,7 +431,8 @@ export class SessionDriver {
     <table>
       <thead><tr><th>account</th><th>side</th><th class="num">{{ d.batch() ? 'batches/min' : 'orders/min' }}</th>
         <th class="num">qty</th><th class="num">for (s)</th><th class="num">{{ d.batch() ? 'batches' : 'sent' }}</th>
-        <th class="num">accepted</th><th class="num">rejected</th><th>last reject</th><th></th></tr></thead>
+        <th class="num">accepted</th><th class="num">rejected</th><th class="num">skipped</th>
+        <th>last reject</th><th></th></tr></thead>
       <tbody>
         @for (a of d.actors(); track $index; let i = $index) {
           <tr [class.on]="a.running">
@@ -427,13 +458,17 @@ export class SessionDriver {
             <td class="num">{{ a.sent }}</td>
             <td class="num pos">{{ a.accepted }}</td>
             <td class="num" [class.neg]="a.rejected > 0">{{ a.rejected }}</td>
-            <td class="sub">{{ a.lastReason || (a.noPrice ? a.noPrice + ' skipped, no price' : '—') }}</td>
+            <!-- Its own column, not fallback text in the reject cell: an order counted as sent but
+                 never priced has to be visible for sent = accepted + rejected + skipped to close. -->
+            <td class="num" [class.warn-n]="a.noPrice > 0" [title]="a.noPrice ? 'counted as sent, never priced — the instrument had no live tick yet' : ''">{{ a.noPrice }}</td>
+            <td class="sub">{{ a.lastReason || '—' }}</td>
             <td>@if (!d.running()) { <button class="cancel" (click)="d.remove(i)">✕</button> }</td>
           </tr>
         }
       </tbody>
     </table>
     @if (!d.running()) { <button class="add" (click)="d.add()">+ add an account</button> }
+    @if (d.sent()) { <div class="sub tally">{{ d.tally() }}</div> }
 
     <div class="sub note">Quantity <b>-1</b> draws a random multiple of 25 between 25 and 10,000 per
       order. Rejections are logged individually to Activity &amp; rejections with their reason code —
@@ -479,6 +514,9 @@ export class SessionDriver {
     .stop { background: var(--bad); color: #fff; border-color: var(--bad); font-weight: 600; }
     .note { margin-top: 10px; max-width: 760px; }
     .pos { color: var(--good); } .neg { color: var(--bad); }
+    .warn-n { color: var(--warn); }
+    .one-book { color: var(--warn); max-width: 320px; }
+    .tally { margin-top: 8px; font-family: var(--mono); font-size: 11.5px; }
     .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; max-width: 860px;
                  margin-bottom: 10px; }
     .warn-note button { margin-left: 8px; }

@@ -35,14 +35,20 @@ interface Gap { from: number; to: number; missing: number; }
       <label class="qtog">
         <input type="checkbox" [ngModel]="showQ()" (ngModelChange)="showQ.set($event)"> show q source
       </label>
-      <span class="faint">KDB_TAP_DIR=/data/kdb-capture · dev bridge, last 300 rows per file</span>
+      <span class="faint">KDB_TAP_DIR=/data/kdb-capture · the bridge tails the last 300 rows per file</span>
     </div>
 
     @if (error()) { <div class="banner bad">{{ error() }}</div> }
 
     <div class="tiles">
-      <div class="tile"><div class="v">{{ allTrades().length }}</div><div class="k">executions captured</div></div>
-      <div class="tile"><div class="v">{{ allOrders().length }}</div><div class="k">order events captured</div></div>
+      <!-- These count PARSED rows, and the bridge hands back a tail — so "300 executions captured"
+           against 1790 engine trades reads as catastrophic loss when nothing was lost at all. The
+           file row counts are the real totals and the panel already has them; the completeness
+           banner below has always used them. Both numbers, and which is which. -->
+      <div class="tile"><div class="v">{{ allTrades().length }}</div>
+        <div class="k">executions in view<br>of {{ fileRows().trade }} captured</div></div>
+      <div class="tile"><div class="v">{{ allOrders().length }}</div>
+        <div class="k">order events in view<br>of {{ fileRows().order }} captured</div></div>
       <div class="tile"><div class="v">{{ orderStates().length }}</div><div class="k">distinct orders</div></div>
       <div class="tile"><div class="v">{{ epochs().length }}</div><div class="k">epoch{{ epochs().length === 1 ? '' : 's' }} in the store</div></div>
     </div>
@@ -553,6 +559,22 @@ export class KdbPanel implements OnInit, OnDestroy {
    * — but each captured row carries its own px and qty, so count-completeness plus per-row values
    * is what a VWAP needs. The page says count, and only count.
    */
+  /**
+   * True row counts, read from the files rather than from what was parsed. The bridge tails each
+   * file, so every list on this page is a window onto a larger capture — the views below compute
+   * over the window (which is correct and is what they say), while "how much was captured" is this.
+   */
+  readonly fileRows = computed(() => {
+    let trade = 0, order = 0;
+    for (const m of this.members()) {
+      for (const f of m.files) {
+        if (f.name.startsWith('txtrade')) trade += f.rows;
+        else if (f.name.startsWith('txorder')) order += f.rows;
+      }
+    }
+    return { trade, order };
+  });
+
   readonly capture = computed(() => {
     // Row counts come from the FILES, not from the parsed rows: the bridge tails each file, so the
     // parsed list can be shorter than the capture while the capture is complete.
