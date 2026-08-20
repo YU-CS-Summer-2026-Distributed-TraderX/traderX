@@ -26,6 +26,14 @@ interface PosRow extends Position {
       <h2>Blotter &amp; positions</h2>
       <help-tip text="The account's positions and trade history from the position service, a read model fed downstream of the matching engine. Last prices stream in live from the price publisher over the message bus; market value and unrealized P&L are computed against them, green when the position is in profit, red when it is not. A trade stays 'Processing' until its T+n settlement date passes (or an operator force-settles it from the Admin page) — that is the settlement lifecycle, not a stuck trade." />
       <span class="spacer"></span>
+      <!-- A state check, not a liveness check: the pill above says the feed is up, which is not the
+           same as the rows being complete. This one asks the system whether the read model agrees
+           with the engine, so an incomplete blotter announces itself instead of looking healthy. -->
+      @if (recon(); as r) {
+        <span class="pill" [class.good]="r.clean" [class.warn]="r.mismatch > 0" [class.info]="!r.clean && !r.mismatch">
+          recon {{ r.matched }} matched@if (r.unmatched) { · {{ r.unmatched }} unmatched }@if (r.mismatch) { · {{ r.mismatch }} field mismatch }</span>
+        <help-tip text="The reconciliation service walks the engine's trades against what this read model recorded. 'Matched' is the part you can trust. 'Unmatched' is a QUESTION, not a loss: measured on this rig, the incremental reconciler reports 6 unmatched while the full-history orphan sweep reports zero orphans and equal counts on both sides — so an unmatched row can mean the two sides key a trade differently rather than that the trade is absent. Only a field mismatch is an unambiguous disagreement about a trade's content. Run the orphan sweep on the Admin page for the authoritative count, which compares full histories rather than walking a cursor." />
+      }
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
     <div class="bar">
@@ -167,6 +175,8 @@ interface PosRow extends Position {
     .cancel { font-size: 11.5px; padding: 1px 8px; }
     .pos { color: var(--good); }
     .neg { color: var(--bad); }
+    /* Neither green nor a warning: a count that is a question rather than a verdict. */
+    .pill.info { background: #eef0f3; color: var(--muted); }
     tfoot td { border-top: 1px solid var(--border); }
   `,
 })
@@ -189,7 +199,27 @@ export class BlotterPanel implements OnInit, OnDestroy {
   readonly findMsg = signal<{ ok: boolean; text: string } | null>(null);
   /** The row the last search landed on, highlighted until the next search. */
   readonly hit = signal<string | null>(null);
+  /**
+   * Whether the read model this panel renders actually agrees with the engine.
+   *
+   * A liveness check catches the failure you thought of; a state check catches the ones you did
+   * not. The bus pill says the feed is connected and the rows still render happily when the
+   * projection has silently lost trades — this project has already paid for that once, when a
+   * whole proof suite ran green against a read model that was missing rows the engine had
+   * definitely booked. The reconciliation service already computes the comparison; it was just
+   * buried behind a button on another page, which is the wrong place for it.
+   *
+   * <p>What it must NOT do is upgrade its measurement into a verdict. The first version of this
+   * pill read `missingInProjection` and said "6 engine trades missing here" — and the full-history
+   * orphan sweep, run immediately afterwards, reported zero orphans with 292 trades on both sides.
+   * Two reconciliation surfaces disagreeing persistently (the count is stable, so it is not lag)
+   * means an unmatched row can be an identity difference rather than an absence. So the pill
+   * reports what was counted, flags only a field mismatch as unambiguous, and points at the
+   * full-history sweep for the authoritative answer.
+   */
+  readonly recon = signal<{ clean: boolean; matched: number; unmatched: number; mismatch: number } | null>(null);
   private timer: ReturnType<typeof setInterval> | undefined;
+  private reconTimer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
 
   toggle(t: BlotterTrade): void {
@@ -283,10 +313,25 @@ export class BlotterPanel implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.poll();
     this.timer = setInterval(() => this.poll(), 3000);
+    // Far slower than the row poll: recon walks the trade history, so it is a periodic verdict
+    // rather than something to ask on every refresh.
+    this.pollRecon();
+    this.reconTimer = setInterval(() => this.pollRecon(), 30_000);
     this.api.watchPrices();
     this.follow();
   }
-  ngOnDestroy(): void { clearInterval(this.timer); this.unsub?.(); }
+  ngOnDestroy(): void { clearInterval(this.timer); clearInterval(this.reconTimer); this.unsub?.(); }
+
+  /** Needs the admin token; without one the pill simply does not appear, rather than claiming green. */
+  private async pollRecon(): Promise<void> {
+    if (!this.api.adminToken()) return;
+    const r = await this.api.load<{ matched: number; missingInProjection: number; fieldMismatch: number }>(
+      '/trade-processor/recon/status', { headers: this.api.authHeaders() });
+    if (r.status !== 200 || !r.body || typeof r.body.matched !== 'number') { this.recon.set(null); return; }
+    const unmatched = r.body.missingInProjection ?? 0;
+    const mismatch = r.body.fieldMismatch ?? 0;
+    this.recon.set({ clean: unmatched === 0 && mismatch === 0, matched: r.body.matched, unmatched, mismatch });
+  }
 
   onAccount(): void { this.poll(); this.follow(); }
 
