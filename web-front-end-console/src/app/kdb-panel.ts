@@ -94,8 +94,18 @@ interface Gap { from: number; to: number; missing: number; }
             but the members do not agree on a trade count, so completeness cannot be checked.
           }
         }
+        <!-- This said "the counter describes this epoch only", which is the one thing here that
+             cannot be checked: the captured side is epoch-scoped because the FILENAMES carry the
+             epoch, while the engine's side is /health's trade count — memberId, role, started,
+             applied, engineApplied, trades, snapshots, and nothing that scopes any of them. The
+             two agree because a fresh epoch wipes the journal as well as the capture volume, which
+             is an operational procedure this console cannot see and does not verify. -->
         @if (c.older) { <span class="sub"> · {{ c.older }} older epoch{{ c.older === 1 ? '' : 's' }} on
-          disk, excluded — the counter describes this epoch only.</span> }
+          disk, excluded from the captured side. The engine's counter carries no epoch — <span
+          class="mono">/health</span> reports a trade count with nothing to scope it — so this
+          comparison <b>assumes</b> both sides cover the same window. With more than one epoch on
+          disk that is the assumption most likely to be wrong, and nothing here can confirm
+          it.</span> }
       </div>
     }
 

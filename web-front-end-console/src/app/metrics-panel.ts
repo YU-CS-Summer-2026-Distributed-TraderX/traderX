@@ -18,6 +18,15 @@ import { HelpTip } from './help';
       <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted<br>since startup</div></div>
       <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills<br>since startup</div></div>
     </div>
+    @if (scope(); as s) {
+      @if (s.summed < s.discovered) {
+        <div class="banner warn-note">These totals are a sum over <b>{{ s.summed }} of
+          {{ s.discovered }}</b> gateways — the rest did not answer, so the counters above are a
+          narrower total wearing the same label. The shortfall is missing from the numbers, not
+          from the system: orders those gateways accepted are committed and are simply not counted
+          here.</div>
+      }
+    }
 
     <!-- PERCENTILES DO NOT SUM. /metrics is aggregated across the gateways because counters add;
          these cannot be, and there are no raw samples exposed to merge — only each gateway's own
@@ -54,6 +63,8 @@ import { HelpTip } from './help';
     .tile .k { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
     details { margin-top: 8px; }
     summary { cursor: pointer; }
+    .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; max-width: 760px;
+                 margin-bottom: 8px; }
     .lat { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: pre-wrap;
            max-height: 180px; overflow-y: auto; background: #f8f9fb; border-radius: 6px; padding: 8px; }
   `,
@@ -65,6 +76,17 @@ export class MetricsPanel implements OnInit, OnDestroy {
   private lastAt = 0;
 
   readonly throughput = signal('—');
+  /**
+   * How many gateways the server actually summed, and how many it discovered. The totals below are
+   * a sum over a set whose size is found at RUNTIME: if a gateway drops out of discovery or fails
+   * to answer, the server sums what is left and the tiles keep the same label over a smaller
+   * scope. It reports the scope in X-Traderx-Gateways-Aggregated; this used to be discarded,
+   * because api.load returned only status and body.
+   *
+   * Absent header is NOT a fault — the single-gateway tier proxies straight to one pod and has
+   * nothing to aggregate. Unknown scope means no claim, not an alarm.
+   */
+  readonly scope = signal<{ summed: number; discovered: number } | null>(null);
   readonly accepted = signal('—');
   readonly fills = signal('—');
   readonly latency = signal('');
@@ -104,6 +126,7 @@ export class MetricsPanel implements OnInit, OnDestroy {
       this.api.load<string>('/order-matcher/metrics'),
       this.api.load<string>('/order-matcher/latency'),
     ]);
+    const summed = Number(m.headers?.get('X-Traderx-Gateways-Aggregated') ?? NaN);
     if (m.status === 200 && typeof m.body === 'string') {
       const p = parseProm(m.body);
       const acks = p['traderx_gateway_pipeline_total{stage="ack_completed"}'] ?? 0;
@@ -111,10 +134,17 @@ export class MetricsPanel implements OnInit, OnDestroy {
       if (this.lastAcks >= 0 && now > this.lastAt) {
         this.throughput.set(((acks - this.lastAcks) / ((now - this.lastAt) / 1000)).toFixed(1));
       }
+      // A counter cannot fall. If it does, the SCOPE changed under us — a gateway dropped out of
+      // the sum, or one restarted — and the difference is not a rate of anything. Printing it would
+      // show a negative acks/s, which is the sort of number an audience remembers.
+      if (this.lastAcks >= 0 && acks < this.lastAcks) this.throughput.set('—');
       this.lastAcks = acks; this.lastAt = now;
       this.accepted.set(String(p['traderx_order_events_total{event="accepted"}'] ?? '—'));
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
+    const d = await this.api.load<{ count: number }>('/gateways');
+    const discovered = d.status === 200 && d.body?.count ? d.body.count : 0;
+    this.scope.set(Number.isFinite(summed) && discovered ? { summed, discovered } : null);
     // /latency answers 503 with an informative body when LATENCY_DECOMP is off — show it either way.
     if (typeof l.body === 'string' && l.body) this.latency.set(l.body.trim());
     else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));

@@ -225,7 +225,7 @@ export class Api {
     });
   }
 
-  async load<T>(url: string, init?: RequestInit): Promise<{ status: number; body: T | null }> {
+  async load<T>(url: string, init?: RequestInit): Promise<{ status: number; body: T | null; headers?: Headers }> {
     try {
       // no-store: a pre-deploy 200 (e.g. the SPA fallthrough that /mN returned before the proxy
       // route existed) is otherwise replayed from the browser HTTP cache indefinitely.
@@ -233,7 +233,10 @@ export class Api {
       const text = await r.text();
       let body: T | null = null;
       try { body = text ? JSON.parse(text) : null; } catch { body = text as unknown as T; }
-      return { status: r.status, body };
+      // Headers, not just the body: a server that reports the SCOPE of what it aggregated
+      // (X-Traderx-Gateways-Aggregated) is useless if the client throws that away and prints the
+      // total under a label that assumes every gateway answered.
+      return { status: r.status, body, headers: r.headers };
     } catch {
       return { status: 0, body: null };
     }
