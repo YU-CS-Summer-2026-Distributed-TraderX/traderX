@@ -16,8 +16,6 @@ header {
    rather than as a small mark. */
 .brand .tx { height: 30px; width: auto; }
 .wordmark { font-size: 16px; white-space: nowrap; }
-/* Nudged down a hair: the letters otherwise ride high against the crest and the mark. */
-.yu-text { color: var(--text); font-weight: 800; position: relative; top: 1px; }
 /* "Console" completes the lockup rather than labelling it, so it is set in the brand face at
    the wordmark's weight, tucked against the mark, and sat on the mark's own baseline — the
    lettering inside that SVG sits at about 65% of the box height, which is lower than a text
