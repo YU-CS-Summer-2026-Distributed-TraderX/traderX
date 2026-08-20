@@ -106,3 +106,48 @@ hardcoded `limitPrice 150.0`. Its sibling `yu13-otel-reject-trace-log-join.sh` w
 exactly this (moved to a fresh per-run ticker) with a comment explaining that a hardcoded price
 against a traded security is not survivable. The trace-join sibling did not get that fix. Not
 observed failing — filed as the same class, to be checked rather than assumed.
+
+## MSFT is effectively untradeable at realistic prices on this rig
+
+Measured 2026-08-19 from the regulatory report over the whole journal, after the console lane
+observed MSFT refusing orders during a demo session and classified it (correctly, as a code
+judgement) as "not a fault":
+
+```
+security   accepted limit prices     rejected limit prices
+MSFT       180.0 only                384.11 .. 386.695   (12 rejections)
+```
+
+Every MSFT order ever accepted on this epoch is at **180.00**; every order at a realistic MSFT price
+is refused. The book's band is anchored by `slotFor()` on the security's **first limit into that
+book**, and an early demo order put that anchor at 180. Nothing since can move it:
+
+- `/seed` at 388.50 cannot move the **mark** — ADR-051, a price tick seeds the mark only while no
+  trade has printed, and MSFT printed at 180.
+- The band is not derived from the mark **at all**, so even a movable mark would not repair it.
+
+So the seeder's MSFT re-seed is inert twice over, and the security stays unusable for the rest of the
+epoch. **This is a demo hazard, not a cosmetic one**: a demo driver who types a plausible MSFT order
+gets a refusal, and the honest explanation ("the band is anchored where an unrelated order landed
+hours ago") is not one anybody wants to give on stage.
+
+Same root as the option-chain gap above — the fixture seeder decides what is usable, and it does not
+deliberately anchor the band for the securities a demo will actually touch. Whatever closes the
+option gap should anchor each demo security's band at a sane price in the same pass.
+
+### The check that stops this being over-claimed
+
+Six other securities also showed rejections, and the tempting read was "several books are
+mis-anchored". They are not. Comparing accepted against rejected price ranges per security refutes it
+for every one but MSFT:
+
+```
+BAC                  accepted 40.0        rejected 40.0        <- same price both ways
+UST-BILL-20270812    accepted 0.96        rejected 0.96        <- same price both ways
+AAPL261218C00260000  accepted 3.0..9.907  rejected 8.8..8.86   <- inside the accepted range
+IBM                  accepted 180.6..200  rejected 183.44..900 <- overlaps; sample carries accountId 99999
+```
+
+A band problem produces a **disjoint** accepted/rejected split. An overlap means the refusal came
+from something else (the IBM sample is the proofs' deliberate unknown-account arm). **Check the
+overlap before blaming the band.**
