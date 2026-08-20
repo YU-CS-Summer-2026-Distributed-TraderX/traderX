@@ -111,6 +111,19 @@ spec:
           # crash with a node-clock timestamp, no pod-delete API latency in the measurement.
           command: ["/bin/sh", "-c", "java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!"]
           env:
+            # LEADER-SIDE KDB TAP. Off by default on this tier, and that is exactly why the
+            # console's Kdb page reads empty on GKE while working on kind — nothing is broken, the
+            # producer was never switched on. /data here is the node-disk emptyDir (95G, 83G free),
+            # NOT the memory-backed `shm` volume, so captures cost disk rather than the members'
+            # 4Gi. The tap caps itself at KDB_TAP_MAX_MB rather than competing with the consensus
+            # journal that shares the volume.
+            #
+            # This must sit on the MEMBER container. Put on the restore initContainer above (whose
+            # env block looks identical) it is set on a process that exits before the engine starts.
+            - name: KDB_TAP_DIR
+              value: "/data/kdb-capture"
+            - name: KDB_TAP_MAX_MB
+              value: "256"
             - name: CLUSTER_HOSTNAMES
               value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
             - name: CLUSTER_PORT_BASE
