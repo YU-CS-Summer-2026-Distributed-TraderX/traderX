@@ -26,14 +26,6 @@ interface PosRow extends Position {
       <h2>Blotter &amp; positions</h2>
       <help-tip text="The account's positions and trade history from the position service, a read model fed downstream of the matching engine. Last prices stream in live from the price publisher over the message bus; market value and unrealized P&L are computed against them, green when the position is in profit, red when it is not. A trade stays 'Processing' until its T+n settlement date passes (or an operator force-settles it from the Admin page) — that is the settlement lifecycle, not a stuck trade." />
       <span class="spacer"></span>
-      <!-- A state check, not a liveness check: the pill above says the feed is up, which is not the
-           same as the rows being complete. This one asks the system whether the read model agrees
-           with the engine, so an incomplete blotter announces itself instead of looking healthy. -->
-      @if (recon(); as r) {
-        <span class="pill" [class.good]="r.clean" [class.warn]="r.mismatch > 0" [class.info]="!r.clean && !r.mismatch">
-          recon {{ r.matched }} matched@if (r.unmatched) { · {{ r.unmatched }} unmatched since startup }@if (r.mismatch) { · {{ r.mismatch }} field mismatch }</span>
-        <help-tip text="LIFETIME counts held in the reconciliation service's memory, not a picture of now. It walks each engine trade once and never looks again: the counter only rises, it survives epoch rolls, and it is cleared only by restarting trade-processor. So a non-zero 'unmatched' says something happened once, not that anything is wrong today — for the current state, run the full-history orphan sweep on the Admin page, which compares both sides' whole histories. On this rig that sweep reports equal counts and zero orphans while this counter sits at 6, and both are correct. Those 6 are the surviving trace of a real event: for eighteen minutes the database rejected every listed-option write because 19-character OCC symbols did not fit the security column, since widened. Their trade ids now resolve to different trades entirely, because a trade id carries no epoch and an epoch roll restarts the numbering." />
-      }
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
     <div class="bar">
@@ -175,8 +167,6 @@ interface PosRow extends Position {
     .cancel { font-size: 11.5px; padding: 1px 8px; }
     .pos { color: var(--good); }
     .neg { color: var(--bad); }
-    /* Neither green nor a warning: a count that is a question rather than a verdict. */
-    .pill.info { background: #eef0f3; color: var(--muted); }
     tfoot td { border-top: 1px solid var(--border); }
   `,
 })
@@ -199,44 +189,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
   readonly findMsg = signal<{ ok: boolean; text: string } | null>(null);
   /** The row the last search landed on, highlighted until the next search. */
   readonly hit = signal<string | null>(null);
-  /**
-   * Whether the read model this panel renders actually agrees with the engine.
-   *
-   * A liveness check catches the failure you thought of; a state check catches the ones you did
-   * not. The bus pill says the feed is connected and the rows still render happily when the
-   * projection has silently lost trades — this project has already paid for that once, when a
-   * whole proof suite ran green against a read model that was missing rows the engine had
-   * definitely booked. The reconciliation service already computes the comparison; it was just
-   * buried behind a button on another page, which is the wrong place for it.
-   *
-   * <p>What it must NOT do is upgrade its measurement into a verdict. The first version of this
-   * pill read `missingInProjection` and said "6 engine trades missing here" — and the full-history
-   * orphan sweep, run immediately afterwards, reported zero orphans with 292 trades on both sides.
-   *
-   * <p>ReconciliationService explains the SHAPE: `missingInProjection` is a LongAdder, incremented
-   * in classify() when findById misses, never decremented, never reset, never re-classified — the
-   * cursor advances past a miss whether or not it was found, so each trade is judged exactly once
-   * (matched 286 + missing 6 = cursor 292). Lifetime counts, held in process memory, read as if
-   * they were current state. Same trap as reporting a distinct-value count as an event count: two
-   * different quantities, identical presentation.
-   *
-   * <p>It does NOT explain the six, and my first attempt at that was wrong in an instructive way.
-   * I attributed them to the poll-vs-async-write gap — benign timing, permanently recorded — which
-   * sounded right, needed no evidence, and would have closed the investigation. What it fails to
-   * account for is that all six are the same 19-character OCC symbol inside one five-minute span
-   * and no other security ever missed. Random lag scatters; a systematic cause clusters. The
-   * coordinator found the logs: 114 `Data too long for column 'security'` errors over eighteen
-   * minutes, hitting `orderbook` as well as `trades`. The projection did not lag — it could not
-   * store the row. Columns are varchar(32) now and it has not recurred.
-   *
-   * <p>So the counter's semantics were never wrong, and neither were the six: they are the trace of
-   * a real write-rejection window. Their ids resolve to different trades today only because a trade
-   * id is `tradeSeq-side` with no epoch in it, and a roll restarts the numbering under a counter
-   * that cannot see the boundary.
-   */
-  readonly recon = signal<{ clean: boolean; matched: number; unmatched: number; mismatch: number } | null>(null);
   private timer: ReturnType<typeof setInterval> | undefined;
-  private reconTimer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
 
   toggle(t: BlotterTrade): void {
@@ -330,25 +283,10 @@ export class BlotterPanel implements OnInit, OnDestroy {
   ngOnInit(): void {
     this.poll();
     this.timer = setInterval(() => this.poll(), 3000);
-    // Far slower than the row poll: recon walks the trade history, so it is a periodic verdict
-    // rather than something to ask on every refresh.
-    this.pollRecon();
-    this.reconTimer = setInterval(() => this.pollRecon(), 30_000);
     this.api.watchPrices();
     this.follow();
   }
-  ngOnDestroy(): void { clearInterval(this.timer); clearInterval(this.reconTimer); this.unsub?.(); }
-
-  /** Needs the admin token; without one the pill simply does not appear, rather than claiming green. */
-  private async pollRecon(): Promise<void> {
-    if (!this.api.adminToken()) return;
-    const r = await this.api.load<{ matched: number; missingInProjection: number; fieldMismatch: number }>(
-      '/trade-processor/recon/status', { headers: this.api.authHeaders() });
-    if (r.status !== 200 || !r.body || typeof r.body.matched !== 'number') { this.recon.set(null); return; }
-    const unmatched = r.body.missingInProjection ?? 0;
-    const mismatch = r.body.fieldMismatch ?? 0;
-    this.recon.set({ clean: unmatched === 0 && mismatch === 0, matched: r.body.matched, unmatched, mismatch });
-  }
+  ngOnDestroy(): void { clearInterval(this.timer); this.unsub?.(); }
 
   onAccount(): void { this.poll(); this.follow(); }
 
