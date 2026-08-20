@@ -1,6 +1,6 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api } from './api';
+import { Api, riskControlError } from './api';
 import { HelpTip } from './help';
 
 interface Step { label: string; ok: boolean; text: string; }
@@ -114,8 +114,7 @@ export class AccountsPanel implements OnInit {
       'account', { accountId, enabled });
     const ok = r.status === 200 && !!r.body?.applied;
     const text = ok ? `${enabled ? 'admitted' : 'suspended'} at control version ${r.body!.version}`
-      : r.status === 401 ? 'HTTP 401 — this rig sets its own RISK_CONTROL_TOKEN'
-      : `HTTP ${r.status}`;
+      : riskControlError(r);
     this.push({ label: `engine risk state · account ${accountId}`, ok, text });
     if (ok) {
       this.note.update(m => {

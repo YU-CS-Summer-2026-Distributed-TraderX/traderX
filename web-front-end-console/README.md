@@ -128,6 +128,37 @@ The reverse trap is just as cheap to hit: converting a field to a signal makes e
 of it a read of the function object. Grep every use before flipping one — a loosely-typed request
 body will happily serialize a function and the build will pass.
 
+## Checking your own work: two wrong readings agreeing is not corroboration
+
+A measurement taken with a broken instrument does not become sound by being repeated. If both
+readings share the fault, they agree **because** of it — which is exactly when agreement feels most
+convincing.
+
+This cost real time on the session clock. Pause/resume looked like it retired actors early, twice:
+
+1. The first reading came from a **backgrounded browser tab**, where the browser throttles timers —
+   so the `setTimeout(2000)` sleeps pacing the measurement were not 2 seconds, and every elapsed
+   figure derived from them was wrong.
+2. The second timed "since resume" from the start of a **tool call that began ~11s after the
+   resume**, so the origin was wrong even though the clock was fine.
+
+Both said "retires early". Neither was measuring what it claimed, and the code was correct
+throughout. The escape is not a third reading of the same kind — it is to **assert an invariant the
+suspect instrument does not participate in**. Here: *final elapsed == configured duration*. True
+regardless of when anything was sampled, how long a pause lasted, or how badly a tab was throttled;
+it compares the system against its own configuration rather than against my clock.
+
+Two corollaries worth keeping:
+
+- **A display that under-reports a correct system is more dangerous than an obvious break.** The
+  same work turned up a session reporting 19s for a 25s run: the deadline was a single `Date.now()`
+  timeout and was never wrong, only the 1s tick that *reported* it was throttled. The system did the
+  right thing while saying it had not — and the natural response is to "fix" a duration that was
+  already exact.
+- **A green test proves nothing until you have watched it fail.** Revert the fix, run the spec, see
+  red, put the fix back. Both timing bugs above are mutation-tested that way; before that step, a
+  passing test only shows the test ran, not that it was ever attached to the behaviour.
+
 ## Writing a panel: prose has no test that fails
 
 **A claim can be true where it was authored and false where it runs.** This console is served two

@@ -194,6 +194,19 @@ export const bridgeError = (r: { status: number; body: unknown }, role: string):
   return own || `${role} did not answer (${r.status ? 'HTTP ' + r.status : 'no response'})`;
 };
 
+/**
+ * What to show when a risk-control command did not apply.
+ *
+ * Same rule as {@link bridgeError}: the side that knows does the talking. It matters more here
+ * because the obvious guess is wrong — the gateway answers 401 with ONE message for three distinct
+ * conditions (`!riskControlToken.equals(token) || operator == null || operator.isBlank()`), so a
+ * caller cannot tell a bad token from a missing operator. This used to say "this rig sets its own
+ * RISK_CONTROL_TOKEN", which picks one of the three and states it as fact; the gateway's own
+ * "invalid risk-control credentials" claims exactly what is knowable and no more.
+ */
+export const riskControlError = (r: { status: number; body: { error?: string } | null }): string =>
+  r.body?.error ? `HTTP ${r.status} — ${r.body.error}` : `HTTP ${r.status}`;
+
 @Injectable({ providedIn: 'root' })
 export class Api {
   readonly accounts = signal<Account[]>([]);

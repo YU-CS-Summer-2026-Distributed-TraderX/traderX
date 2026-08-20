@@ -1,6 +1,6 @@
 import { Component, Injectable, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, OrderResult, nextClientOrderId, traceIdFor } from './api';
+import { Api, OrderResult, nextClientOrderId, riskControlError, traceIdFor } from './api';
 import { HelpTip } from './help';
 
 /**
@@ -525,7 +525,7 @@ export class DemoSession implements OnInit {
         this.api.log({ kind: 'order', ok,
           summary: `risk control: account ${accountId} admitted → ${ok
             ? 'applied at control version ' + r.body!.version
-            : r.status === 401 ? 'HTTP 401 — this rig sets its own RISK_CONTROL_TOKEN' : 'HTTP ' + r.status}` });
+            : riskControlError(r)}` });
       }
       // Clearing the reasons is what retires the banner: the next order from these actors is the
       // real test, and leaving a stale reject on screen would claim a fix that has not been proven.
