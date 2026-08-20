@@ -31,8 +31,8 @@ interface PosRow extends Position {
            with the engine, so an incomplete blotter announces itself instead of looking healthy. -->
       @if (recon(); as r) {
         <span class="pill" [class.good]="r.clean" [class.warn]="r.mismatch > 0" [class.info]="!r.clean && !r.mismatch">
-          recon {{ r.matched }} matched@if (r.unmatched) { · {{ r.unmatched }} unmatched }@if (r.mismatch) { · {{ r.mismatch }} field mismatch }</span>
-        <help-tip text="The reconciliation service walks each of the engine's trades once, in sequence order, and checks whether this read model has it. These are LIFETIME COUNTS, not a current state: a trade classified in the instant before the projection wrote it is counted unmatched forever, because the counter is increment-only and nothing ever re-checks it. So 'unmatched' means 'was not here yet when recon looked', which is a timing observation, not a missing trade — the full-history orphan sweep on the Admin page is the current-state answer, and on this rig it reports equal counts and zero orphans while this counter sits at 6. Only a field mismatch is an unambiguous disagreement about a trade's content." />
+          recon {{ r.matched }} matched@if (r.unmatched) { · {{ r.unmatched }} unmatched since startup }@if (r.mismatch) { · {{ r.mismatch }} field mismatch }</span>
+        <help-tip text="LIFETIME counts held in the reconciliation service's memory, not a picture of now. It walks each engine trade once and never looks again: the counter only rises, it survives epoch rolls, and it is cleared only by restarting trade-processor. So a non-zero 'unmatched' says something happened once, not that anything is wrong today — for the current state, run the full-history orphan sweep on the Admin page, which compares both sides' whole histories. On this rig that sweep reports equal counts and zero orphans while this counter sits at 6, and both are correct. Those 6 are the surviving trace of a real event: for eighteen minutes the database rejected every listed-option write because 19-character OCC symbols did not fit the security column, since widened. Their trade ids now resolve to different trades entirely, because a trade id carries no epoch and an epoch roll restarts the numbering." />
       }
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
@@ -213,15 +213,26 @@ export class BlotterPanel implements OnInit, OnDestroy {
    * pill read `missingInProjection` and said "6 engine trades missing here" — and the full-history
    * orphan sweep, run immediately afterwards, reported zero orphans with 292 trades on both sides.
    *
-   * <p>ReconciliationService settles it: `missingInProjection` is a LongAdder, incremented in
-   * classify() when findById misses, and never decremented, never reset, never re-classified —
-   * each trade is visited exactly once, after the cursor (matched 286 + missing 6 = cursor 292).
-   * The sweep polls the engine every 10s while the projection writes asynchronously, so a trade
-   * classified in the gap is counted missing permanently even though it lands a moment later.
-   * These are LIFETIME counts being read as current state, which is the same trap as reporting a
-   * distinct-value count as an event count: the two are indistinguishable in a status document.
-   * So the pill reports what was counted, flags only a field mismatch, and names the full-history
-   * sweep as the current-state answer.
+   * <p>ReconciliationService explains the SHAPE: `missingInProjection` is a LongAdder, incremented
+   * in classify() when findById misses, never decremented, never reset, never re-classified — the
+   * cursor advances past a miss whether or not it was found, so each trade is judged exactly once
+   * (matched 286 + missing 6 = cursor 292). Lifetime counts, held in process memory, read as if
+   * they were current state. Same trap as reporting a distinct-value count as an event count: two
+   * different quantities, identical presentation.
+   *
+   * <p>It does NOT explain the six, and my first attempt at that was wrong in an instructive way.
+   * I attributed them to the poll-vs-async-write gap — benign timing, permanently recorded — which
+   * sounded right, needed no evidence, and would have closed the investigation. What it fails to
+   * account for is that all six are the same 19-character OCC symbol inside one five-minute span
+   * and no other security ever missed. Random lag scatters; a systematic cause clusters. The
+   * coordinator found the logs: 114 `Data too long for column 'security'` errors over eighteen
+   * minutes, hitting `orderbook` as well as `trades`. The projection did not lag — it could not
+   * store the row. Columns are varchar(32) now and it has not recurred.
+   *
+   * <p>So the counter's semantics were never wrong, and neither were the six: they are the trace of
+   * a real write-rejection window. Their ids resolve to different trades today only because a trade
+   * id is `tradeSeq-side` with no epoch in it, and a roll restarts the numbering under a counter
+   * that cannot see the boundary.
    */
   readonly recon = signal<{ clean: boolean; matched: number; unmatched: number; mismatch: number } | null>(null);
   private timer: ReturnType<typeof setInterval> | undefined;
