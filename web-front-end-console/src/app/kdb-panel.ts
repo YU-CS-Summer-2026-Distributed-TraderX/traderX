@@ -1,4 +1,5 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { Api } from './api';
 import { HelpTip } from './help';
 import { SecHead, SecPager, Section } from './section';
@@ -24,12 +25,15 @@ interface Gap { from: number; to: number; missing: number; }
 
 @Component({
   selector: 'kdb-panel',
-  imports: [HelpTip, SecHead, SecPager],
+  imports: [FormsModule, HelpTip, SecHead, SecPager],
   template: `
     <div class="card-head">
       <h2>KDB-X capture tap</h2>
       <help-tip text="The analytical path: on each output event the cluster leader appends a row to a tickerplant capture log on its own volume — off the consensus path, non-blocking, dropping visibly under flood rather than silently thinning. These are the files q loads directly (tick-store/kdb/txstore.q). The consensus journal stays the authoritative record; this tap costs analytics, never correctness. Rows are epoch-qualified and carry the member id, so all members' captures load together without collision. Every view below is the console computing exactly what the matching q function computes, with that function's source shown beside it." />
       <span class="spacer"></span>
+      <label class="qtog">
+        <input type="checkbox" [ngModel]="showQ()" (ngModelChange)="showQ.set($event)"> show q source
+      </label>
       <span class="faint">KDB_TAP_DIR=/data/kdb-capture · dev bridge, last 300 rows per file</span>
     </div>
 
@@ -62,7 +66,7 @@ interface Gap { from: number; to: number; missing: number; }
       <help-tip text="Our own fill VWAP: unlike a VWAP over a market tape it is complete and unconditioned, because the engine emitted every one of these rows itself. It is still subject to capture loss under flood — which is what the gaps view below is for." />
     </sec-head>
     @if (vwapSec.open()) {
-      <pre class="q">{{ Q.fills }}</pre>
+      @if (showQ()) { <pre class="q">{{ Q.fills }}</pre> }
       <table>
         <thead><tr><th>sym</th><th class="num">execs</th><th class="num">volume</th><th class="num">VWAP</th><th class="num">first px</th><th class="num">last px</th></tr></thead>
         <tbody>
@@ -80,7 +84,7 @@ interface Gap { from: number; to: number; missing: number; }
       <help-tip text="One row per order, folded from its whole lifecycle. Keyed on (epoch, ref) and never on ref alone: orderRef restarts at 1 on a fresh cluster incarnation, so a bare ref silently merges two different orders from two different epochs into one. That is the kind of mistake an analytical store makes once and then answers wrongly forever." />
     </sec-head>
     @if (ordersSec.open()) {
-      <pre class="q">{{ Q.orders }}</pre>
+      @if (showQ()) { <pre class="q">{{ Q.orders }}</pre> }
       <table>
         <thead><tr><th>epoch·ref</th><th>sym</th><th class="num">account</th><th>side</th>
           <th class="num">qty</th><th class="num">filled</th><th class="num">remaining</th>
@@ -105,7 +109,7 @@ interface Gap { from: number; to: number; missing: number; }
       <help-tip text="Consensus sequences that produced no captured row. READ THIS BEFORE READING IT AS DATA LOSS: every applied input consumes a sequence, but only order-lifecycle and trade outputs are captured, so control events — account and security enablement, price ticks, symbol registration — leave legitimate holes. A gap is a question, not a verdict: expected around seeding and price feeds, suspicious in the middle of a burst of order traffic. The authoritative drop signal is the tap's own counter, not this view." />
     </sec-head>
     @if (gapsSec.open()) {
-      <pre class="q">{{ Q.gaps }}</pre>
+      @if (showQ()) { <pre class="q">{{ Q.gaps }}</pre> }
       <div class="sub warnline">{{ gaps().length }} gap{{ gaps().length === 1 ? '' : 's' }} across
         {{ missingTotal() }} sequence{{ missingTotal() === 1 ? '' : 's' }} — a question, not a verdict.
         Control events legitimately produce holes.</div>
@@ -129,7 +133,7 @@ interface Gap { from: number; to: number; missing: number; }
       <help-tip text="One merged, time-ordered stream of the captured session: order lifecycle events and executions interleaved in consensus order. This is the analytical playback content — a faithful record of what the engine decided, and deliberately NOT a mechanism for rebuilding engine state. Rebuilding is the Aeron Archive's job and only its job." />
     </sec-head>
     @if (sessionSec.open()) {
-      <pre class="q">{{ Q.session }}</pre>
+      @if (showQ()) { <pre class="q">{{ Q.session }}</pre> }
       <table>
         <thead><tr><th class="num">seq</th><th>kind</th><th>sym</th><th class="num">account</th>
           <th>side</th><th class="num">qty</th><th class="num">px</th><th>status</th><th>time</th></tr></thead>
@@ -147,9 +151,67 @@ interface Gap { from: number; to: number; missing: number; }
       </table>
       <sec-pager [s]="sessionSec" />
     }
+
+    <sec-head [s]="querySec" label="Query the capture">
+      <help-tip text="Ask the captured store your own question. The controls build a q select — shown below them, so what you get back and what you would type into a q session are visibly the same statement. Two honest limits: this evaluates in the browser over the rows the bridge holds (the tail of each file), not in a q process over the whole store, and it offers the aggregates txstore.q's own views use rather than arbitrary expressions. For anything beyond that, run the real thing: TXSTORE_DIR=/data/kdb-capture q txstore.q" />
+    </sec-head>
+    @if (querySec.open()) {
+      <div class="qbar">
+        <label class="field">from
+          <select [ngModel]="qFrom()" (ngModelChange)="qFrom.set($event)">
+            <option value="txTrade">txTrade</option><option value="txOrder">txOrder</option>
+          </select>
+        </label>
+        <label class="field">where sym
+          <input [ngModel]="qSym()" (ngModelChange)="qSym.set($event)" placeholder="any" spellcheck="false">
+        </label>
+        <label class="field">account
+          <input [ngModel]="qAccount()" (ngModelChange)="qAccount.set($event)" placeholder="any">
+        </label>
+        <label class="field">side
+          <select [ngModel]="qSide()" (ngModelChange)="qSide.set($event)">
+            <option value="">any</option><option value="B">B</option><option value="S">S</option>
+          </select>
+        </label>
+        <label class="field">by
+          <select [ngModel]="qBy()" (ngModelChange)="qBy.set($event)">
+            <option value="">(none)</option><option value="sym">sym</option>
+            <option value="account">account</option><option value="side">side</option>
+            <option value="epoch">epoch</option>
+          </select>
+        </label>
+        <button type="button" (click)="resetQuery()">reset</button>
+      </div>
+      <pre class="q built">{{ builtQ() }}</pre>
+      <table>
+        <thead><tr>
+          @if (qBy()) { <th>{{ qBy() }}</th> }
+          <th class="num">rows</th><th class="num">qty</th><th class="num">vwap</th>
+          <th class="num">min px</th><th class="num">max px</th></tr></thead>
+        <tbody>
+          @for (r of querySec.view(); track r.key) {
+            <tr>
+              @if (qBy()) { <td>{{ r.key }}</td> }
+              <td class="num">{{ r.n }}</td><td class="num">{{ r.qty }}</td>
+              <td class="num">{{ r.vwap ? r.vwap.toFixed(6) : '—' }}</td>
+              <td class="num">{{ r.minPx.toFixed(6) }}</td><td class="num">{{ r.maxPx.toFixed(6) }}</td>
+            </tr>
+          } @empty { <tr><td [attr.colspan]="qBy() ? 6 : 5" class="faint">no rows match</td></tr> }
+        </tbody>
+      </table>
+      <sec-pager [s]="querySec" />
+      <div class="sub">{{ qMatched() }} of {{ qTotal() }} captured
+        {{ qFrom() === 'txTrade' ? 'executions' : 'order events' }} matched.
+        vwap weights <span class="mono">{{ qFrom() === 'txTrade' ? 'px' : 'limitPx' }}</span> by qty.</div>
+    }
   `,
   styles: `
     .spacer { flex: 1; }
+    .qtog { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); }
+    .qtog input { width: auto; margin: 0; }
+    .qbar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin: 6px 0 4px; }
+    .qbar input { width: 110px; }
+    .q.built { border-left-color: var(--good); color: var(--text); }
     .mono { font-family: var(--mono); font-size: 11.5px; }
     .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 6px; }
     .tile { background: #f8f9fb; border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; text-align: center; }
@@ -285,6 +347,70 @@ export class KdbPanel implements OnInit, OnDestroy {
     return rows.sort((a, b) => b.seq - a.seq || b.ts - a.ts);
   });
 
+  // ---- query the capture -----------------------------------------------------------------------
+  //
+  // A builder rather than a text box: without a q process there is nothing to evaluate a typed
+  // expression against, and a box that silently accepts q and answers with something else would be
+  // worse than no box. The controls compose a real select, the select is shown, and the same
+  // statement is what you would type into `q txstore.q` — with the caveat, stated in the UI, that
+  // this runs over the tail the bridge holds rather than the whole store.
+  readonly qFrom = signal<'txTrade' | 'txOrder'>('txTrade');
+  readonly qSym = signal('');
+  readonly qAccount = signal('');
+  readonly qSide = signal('');
+  readonly qBy = signal('');
+
+  resetQuery(): void {
+    this.qFrom.set('txTrade'); this.qSym.set(''); this.qAccount.set(''); this.qSide.set(''); this.qBy.set('');
+  }
+
+  /** Rows from the chosen table, normalised to the columns the aggregates need. */
+  private readonly qRows = computed(() => this.qFrom() === 'txTrade'
+    ? this.allTrades().map(t => ({ sym: t.sym, account: t.account, side: t.side, epoch: t.epoch, qty: t.qty, px: t.px }))
+    : this.allOrders().map(o => ({ sym: o.sym, account: o.account, side: o.side, epoch: o.epoch, qty: o.qty, px: o.limitPx })));
+
+  private readonly qFiltered = computed(() => {
+    const sym = this.qSym().trim().toUpperCase();
+    const acct = this.qAccount().trim();
+    const side = this.qSide();
+    return this.qRows().filter(r =>
+      (!sym || r.sym.toUpperCase().includes(sym))
+      && (!acct || String(r.account) === acct)
+      && (!side || r.side === side));
+  });
+
+  readonly qTotal = computed(() => this.qRows().length);
+  readonly qMatched = computed(() => this.qFiltered().length);
+
+  readonly qResult = computed(() => {
+    const by = this.qBy();
+    const groups = new Map<string, { key: string; n: number; qty: number; pv: number; minPx: number; maxPx: number }>();
+    for (const r of this.qFiltered()) {
+      const key = by ? String((r as Record<string, unknown>)[by]) : 'all';
+      const g = groups.get(key) ?? { key, n: 0, qty: 0, pv: 0, minPx: Infinity, maxPx: -Infinity };
+      g.n++; g.qty += r.qty; g.pv += r.qty * r.px;
+      g.minPx = Math.min(g.minPx, r.px); g.maxPx = Math.max(g.maxPx, r.px);
+      groups.set(key, g);
+    }
+    return [...groups.values()]
+      .map(g => ({ ...g, vwap: g.qty ? g.pv / g.qty : 0, minPx: g.minPx === Infinity ? 0 : g.minPx, maxPx: g.maxPx === -Infinity ? 0 : g.maxPx }))
+      .sort((a, b) => b.qty - a.qty);
+  });
+
+  /** The q the controls compose — shown so the answer and the statement are visibly the same. */
+  readonly builtQ = computed(() => {
+    const px = this.qFrom() === 'txTrade' ? 'px' : 'limitPx';
+    const where: string[] = [];
+    if (this.qSym().trim()) where.push(`sym like "${this.qSym().trim().toUpperCase()}*"`);
+    if (this.qAccount().trim()) where.push(`account=${this.qAccount().trim()}`);
+    if (this.qSide()) where.push(`side="${this.qSide()}"`);
+    const by = this.qBy() ? ` by ${this.qBy()}` : '';
+    return `select rows:count i, qty:sum qty, vwap:(sum ${px}*qty)%sum qty, minPx:min ${px}, maxPx:max ${px}`
+      + `${by} from ${this.qFrom()}${where.length ? ' where ' + where.join(', ') : ''}`;
+  });
+
+  readonly showQ = signal(false);
+  readonly querySec = new Section(this.qResult, r => r.key);
   readonly filesSec = new Section<unknown>(signal([]), () => '');
   readonly vwapSec = new Section(this.vwap, v => v.sym);
   readonly ordersSec = new Section(this.orderStates, o => o.key);

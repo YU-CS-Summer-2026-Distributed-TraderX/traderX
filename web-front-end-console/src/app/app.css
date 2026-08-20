@@ -9,10 +9,13 @@ header {
   max-width: 1400px; margin: 0 auto; padding: 7px 20px;
   min-height: 52px; display: flex; align-items: center; gap: 14px 18px; flex-wrap: wrap;
 }
-.brand { display: flex; align-items: center; gap: 8px; text-decoration: none; flex: 0 0 auto; }
+.brand { display: flex; align-items: center; gap: 5px; text-decoration: none; flex: 0 0 auto; }
 .brand:hover .wordmark { color: var(--text); }
-.brand .yu { height: 26px; width: auto; }
-.brand .tx { height: 15px; width: auto; }
+.brand .yu { height: 28px; width: auto; }
+/* The wordmark stands in for the word "TraderX", so it is sized against the type beside it
+   rather than as a small mark: cap height of 15px text is ~11px, and this SVG's own glyphs sit
+   at roughly two-thirds of its box. */
+.brand .tx { height: 26px; width: auto; margin: 0 1px; }
 .wordmark { font-size: 15px; color: var(--muted); white-space: nowrap; }
 .wordmark b { color: var(--text); font-weight: 700; }
 /* A true middle dot, vertically centred against the cap height rather than sitting on the

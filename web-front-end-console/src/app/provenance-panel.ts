@@ -44,7 +44,7 @@ const headers = (content: string) =>
           <span class="pill bad">artifact names a different cut</span>
         }
       </div>
-      <table>
+      <table class="fixed">
         <thead><tr><th>artifact</th><th class="num">rows</th><th>sha-256</th><th></th></tr></thead>
         <tbody>
           @for (a of c.artifacts; track a.path) {
@@ -68,12 +68,24 @@ const headers = (content: string) =>
   `,
   styles: `
     .spacer { flex: 1; }
+    /* Fixed layout so the cells cannot be resized by what is inside them; the artifact path column
+       takes the slack and the rest stay put whether a block is expanded or not. */
+    table.fixed { table-layout: fixed; }
+    table.fixed td:first-child, table.fixed th:first-child { width: auto; }
+    table.fixed td:nth-child(2), table.fixed th:nth-child(2) { width: 70px; }
+    table.fixed td:nth-child(3), table.fixed th:nth-child(3) { width: 170px; }
+    table.fixed td:last-child, table.fixed th:last-child { width: 64px; }
+    table.fixed td { overflow-wrap: anywhere; }
     .cut-head { display: flex; align-items: center; gap: 8px; margin: 16px 0 4px; font-size: 13px; }
     .cut-head:first-of-type { margin-top: 4px; }
     .sha { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
     td .sub { font-size: 11px; }
+    /* A table cell sizes to its content, so an artifact's long CSV lines dragged the whole table
+       — and the page — out to the width of the longest row. Wrapping inside the block keeps the
+       expansion vertical, which is the only direction there is room in. */
     .cut { font-family: var(--mono); font-size: 11.5px; color: var(--muted); background: #f8f9fb;
-           border-radius: 6px; padding: 8px; max-height: 260px; overflow: auto; margin: 4px 0; }
+           border-radius: 6px; padding: 8px; max-height: 260px; overflow-y: auto; overflow-x: hidden;
+           margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .err { margin-top: 10px; }
     .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; margin-bottom: 6px; }
   `,

@@ -39,14 +39,7 @@ const ADDED: { what: string; why: string }[] = [
       <a class="btn-primary open" [href]="url" target="_blank" rel="noopener">Open ↗</a>
     </div>
 
-    <h3>What the YU17 layer added to it
-      <span class="sub">deployed as <span class="mono">web-front-end-angular:yu17-ui1</span></span>
-    </h3>
-    <div class="sub note">Four of these are not features but <b>defects</b> — the upstream app is
-      correct against the single-BLP tier it was written for, and wrong against the cluster tier,
-      which serves the same intent at different routes and shapes. The override layer is a dialect
-      translation, not a bug fix in the component: the routes it stops calling are real routes that
-      really work on the other tier.</div>
+    <h3>What the new UI added</h3>
     <table>
       <thead><tr><th>added</th><th>why it was needed</th></tr></thead>
       <tbody>
@@ -58,10 +51,11 @@ const ADDED: { what: string; why: string }[] = [
 
     <h3>Where the two apps differ</h3>
     <div class="sub note">The original covers one instrument class, one ingress and one view of a
-      trade. This console exists because the rest of the system — five instrument classes, an Aeron
-      cluster you can watch agree, FIX ingress, the end-of-day session chain, the kdb capture tap,
-      cut provenance — had no surface at all. Neither app replaces the other: the original is the
-      familiar shape of a trading UI, and this one is the argument that there is more underneath it.</div>
+      trade. This console exists because the rest of the system had no surface at all: five
+      instrument classes, an Aeron cluster you can watch agree, FIX ingress, the end-of-day session
+      chain, the kdb capture tap, cut provenance. Neither app replaces the other. The original is
+      the familiar shape of a trading UI, and this one is the argument that there is more
+      underneath it.</div>
   `,
   styles: `
     .spacer { flex: 1; }
