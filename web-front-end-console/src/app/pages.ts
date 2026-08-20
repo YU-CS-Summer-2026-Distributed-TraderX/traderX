@@ -38,13 +38,12 @@ export class TradingPage {}
 
 @Component({
   selector: 'system-page',
-  imports: [ClusterPanel, MetricsPanel, ProvenancePanel, StatusPanel],
+  imports: [ClusterPanel, MetricsPanel, StatusPanel],
   template: `
     <div class="stack">
       <section class="card"><cluster-panel /></section>
       <section class="card"><metrics-panel /></section>
       <section class="card"><status-panel /></section>
-      <section class="card"><provenance-panel /></section>
     </div>
   `,
   styles: `.stack { display: grid; gap: 14px; max-width: 980px; }`,
@@ -53,8 +52,17 @@ export class SystemPage {}
 
 @Component({
   selector: 'eod-page',
-  imports: [EodPanel],
-  template: `<section class="card" style="max-width: 980px"><eod-panel /></section>`,
+  imports: [EodPanel, ProvenancePanel],
+  template: `
+    <div class="stack">
+      <section class="card"><eod-panel /></section>
+      <!-- The cut is the artifact of the session above it: same day, same version chain. It sat on
+           the System page beside cluster health, which is where it was built rather than where it
+           belongs. -->
+      <section class="card"><provenance-panel /></section>
+    </div>
+  `,
+  styles: `.stack { display: grid; gap: 14px; max-width: 980px; }`,
 })
 export class EodPage {}
 

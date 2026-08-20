@@ -96,20 +96,32 @@ export class ProvenancePanel implements OnInit {
   readonly error = signal('');
   readonly loaded = signal(false);
   readonly open = signal(true);
+  readonly rigEmpty = signal(false);
+
   /**
-   * An empty sink has to announce itself — but what an empty sink MEANS changed on 2026-08-20.
+   * What an empty LOCAL sink means depends on where this rig sends its cuts, and the answer differs
+   * per tier — so the panel works it out from what it can see rather than asserting one tier's
+   * truth everywhere.
    *
-   * It used to mean "someone rescheduled risk-extract", because the volume was an emptyDir and a
-   * new pod started with nothing. That is fixed: the volume is a PVC now (risk-extract-extracts,
-   * 1Gi RWO), verified from this console's own read path — nine artifacts, `delete pod -l
-   * app=risk-extract`, a genuinely different replacement pod, all nine shas byte-identical after.
-   *
-   * So an empty sink is no longer an artefact of the plumbing; it means the EOD chain has not
-   * produced a cut, which is a real fault worth chasing. Repointed rather than retired, because the
-   * panel still has to explain itself when it has nothing to show — the message is now more useful
-   * than it was, not less. Scoped to this rig: the GKE overlay writes to gs:// and was never
-   * affected by any of it.
+   * The cloud overlay sets RISK_EXTRACT_SINK_URI to a gs:// bucket, so its /data/risk-extracts is
+   * empty BY DESIGN and the cuts are the archive rows below. On a rig that writes locally, the same
+   * empty directory means the end-of-day chain has produced nothing, which is a real fault. Saying
+   * the second on a rig doing the first is the exact mistake this panel exists to avoid — and it is
+   * one I made: the previous wording asserted a PVC that only the kind rig has.
    */
+  private explainEmptySink(): void {
+    if (!this.rigEmpty()) { this.rigNote.set(''); return; }
+    const archived = this.cuts().some(c => c.source !== 'rig cut sink');
+    this.rigNote.set(archived
+      ? 'The local sink on the risk-extract pod is empty, which is expected when the extract is '
+        + 'configured to write to a bucket — this rig\'s cuts are the archive rows below, not files '
+        + 'on the pod. Nothing is wrong here.'
+      : 'No cuts anywhere: the local sink on the risk-extract pod is empty and the archive has '
+        + 'nothing either. On a rig that writes locally this means the end-of-day chain has not '
+        + 'produced a cut, which is worth chasing — check that the EOD durables are bound and that '
+        + 'a session has been published.');
+  }
+  /** Set by {@link explainEmptySink} once BOTH sources have answered; empty when there is nothing to say. */
   readonly rigNote = signal('');
 
   async ngOnInit(): Promise<void> {
@@ -118,6 +130,7 @@ export class ProvenancePanel implements OnInit {
     // the uploaded archive. Neither failing should blank the other.
     await Promise.all([this.loadRig(), this.loadArchive()]);
     this.loaded.set(true);
+    this.explainEmptySink();
   }
 
   rowsOf(a: Artifact): string {
@@ -136,13 +149,8 @@ export class ProvenancePanel implements OnInit {
       this.error.set(r.body?.error ?? 'rig cut sink unreachable (dev proxy + kubectl required)');
       return;
     }
-    if (!r.body.files.length) {
-      this.rigNote.set('No cuts on the rig sink — and since risk-extract now holds them on a PVC, '
-        + 'this is no longer explained by a reschedule wiping the volume. An empty sink means the '
-        + 'end-of-day chain has not produced a cut on this epoch, which is a real fault: check that '
-        + 'the EOD durables are bound and that a session has been published.');
-      return;
-    }
+    if (!r.body.files.length) { this.rigEmpty.set(true); return; }
+    this.rigEmpty.set(false);
     const byDir = new Map<string, typeof r.body.files>();
     for (const f of r.body.files) {
       const dir = f.path.slice(0, f.path.lastIndexOf('/'));
