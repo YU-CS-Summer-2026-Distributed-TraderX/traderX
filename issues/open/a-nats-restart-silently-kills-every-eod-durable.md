@@ -188,3 +188,44 @@ state, with a consumer created on demand and gone afterwards. A standing consume
 The distinction that matters: `TRADERX_EOD` drives an **event chain** and needs standing consumers,
 so `consumers=0` there means the chain is dead. A replay-at-bootstrap source at `consumers=0` means
 nothing is booting right now. Same number, opposite verdict — read the stream's role before the count.
+
+## Independently reproduced by the coordinator, 2026-08-20
+
+The fix lane's result was not taken on report. I re-ran the experiment myself on the fixed build,
+after it handed the rig back.
+
+**NATS deleted at 03:30:57Z.** No consumer restarted by hand at any point.
+
+```
+t+30s   TRADERX_EOD=2   TRADERX_ALGO_ENGINE=1   streams=2
+```
+
+Both rebound inside half a minute, and the streams were recreated too — this was a genuine wipe, not
+a reconnect (NATS's own `/data` is an `emptyDir`, which is why the restart destroys JetStream state
+and why the experiment is valid at all; a PVC-backed broker would have made it vacuous).
+
+**Consumer counts alone were NOT accepted as the verdict**, because two bound consumers is exactly
+what the rig showed during the original ten-hour outage's healthy-looking phase. The chain was then
+required to *produce*: `scripts/proofs/yu17-swap-netting.sh` exit **0** — cut at N=20222, 19
+contracts, identical sha across all three members, both artifacts reproducing from `seq-20222.cut`
+alone, and a member destroyed to an empty disk re-rendering the same sha. Artifacts on disk went
+6 → 9.
+
+**Problem 2 re-tested separately**: `delete pod -l app=risk-extract`, replacement confirmed a
+genuinely different pod (`…-zcbq7` → `…-dcx67`), and all **9 artifacts byte-identical by sha256**
+across the replacement.
+
+### A self-inflicted vacuous pass, caught, in the check written to catch one
+
+The first version of that durability comparison used `C="kubectl …"` and then `$C` — the zsh
+scalar-word-splitting trap. Every command failed with "command not found", both sha manifests came
+back **empty**, and `diff` compared nothing to nothing and printed
+**"ALL ARTIFACTS BYTE-IDENTICAL"**. A confident green verdict from a test in which the cluster was
+never contacted.
+
+Two rules, both already written down here and both worth the repetition because they were violated in
+the same three lines:
+
+- **Build the command as an array** (`C=(kubectl …)`, `"${C[@]}"`), never a scalar.
+- **Guard the baseline for non-emptiness before comparing.** The re-run refuses to proceed unless the
+  before-manifest has at least 6 files, so "identical" can never again mean "identically absent".
