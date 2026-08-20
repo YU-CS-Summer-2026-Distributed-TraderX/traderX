@@ -1,6 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { Api } from './api';
-import { SessionDriver } from './demo-session';
+import { SessionDriver, lotOf, randomQty, toLot } from './demo-session';
 
 /**
  * The pause arithmetic, on a mocked clock.
@@ -149,5 +149,44 @@ describe('SessionDriver tally', () => {
     withCounts({ sent: 5, accepted: 99, rejected: 0, noPrice: 0 });
     expect(d.tally().bad).toBeTrue();
     expect(d.tally().text).toContain('do not add up');
+  });
+});
+
+/**
+ * The gateway refuses a bond quantity below 100 or not a multiple of 100, at the boundary, before
+ * the engine sees it (ClusterGatewayMain:1299-1313). A session that generates arbitrary sizes over
+ * a mixed pool spends every bond order on a certain rejection — which is exactly how a 12-instrument
+ * session produced 16 orders and 0 accepted.
+ */
+describe('instrument lot sizing', () => {
+  const debt = (k: string) => ({ instrumentKey: k, securityType: 'Debt' }) as never;
+  const equity = (k: string) => ({ instrumentKey: k, securityType: 'Equity' }) as never;
+
+  it('takes the lot from the catalog rather than the ticker', () => {
+    expect(lotOf(debt('UST-20280630'), 'UST-20280630')).toBe(100);
+    expect(lotOf(equity('IBM'), 'IBM')).toBe(25);
+  });
+
+  it('falls back to the gateway prefix rule when the catalog is missing or disagrees', () => {
+    // The direction that hurts: a UST-/CORP- key the catalog does not type as Debt would be sized
+    // as an equity and refused 422 on every order.
+    expect(lotOf(undefined, 'UST-20280630')).toBe(100);
+    expect(lotOf(equity('CORP-IBM-20330215'), 'CORP-IBM-20330215')).toBe(100);
+  });
+
+  it('draws random sizes as whole lots, never below one lot', () => {
+    for (let n = 0; n < 400; n++) {
+      const q = randomQty(100);
+      expect(q % 100).withContext(`${q} is not a whole lot`).toBe(0);
+      expect(q).toBeGreaterThanOrEqual(100);
+      expect(q).toBeLessThanOrEqual(10_000);
+    }
+  });
+
+  it('rounds a fixed size to a lot and never below the floor', () => {
+    expect(toLot(225, 100)).toBe(200);
+    expect(toLot(250, 100)).toBe(300);   // round-half-up, still a valid lot
+    expect(toLot(1, 100)).withContext('the floor is a rule too, not just the step').toBe(100);
+    expect(toLot(37, 25)).toBe(25);
   });
 });

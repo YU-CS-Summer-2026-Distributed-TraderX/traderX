@@ -1,6 +1,6 @@
 import { Component, Injectable, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, OrderResult, nextClientOrderId, riskControlError, traceIdFor } from './api';
+import { Api, Instrument, OrderResult, nextClientOrderId, riskControlError, traceIdFor } from './api';
 import { HelpTip } from './help';
 
 /**
@@ -37,7 +37,35 @@ const MAX_BATCH = 500;
 const RANDOM_QTY = -1;
 
 /** Random multiple of 25 in [25, 10000] — the lot convention the seeded books already use. */
-const randomQty = () => 25 * (1 + Math.floor(Math.random() * 400));
+/**
+ * The lot an instrument must trade in, enforced by the GATEWAY before the engine sees the order
+ * (ClusterGatewayMain:1299-1313): a bond quantity below 100, or not a multiple of 100, is refused
+ * 422 at the boundary. Everything else is unconstrained; 25 is this console's own house step, not
+ * a rule, kept so equity sizes stay round.
+ *
+ * SOURCED FROM THE CATALOG, not from a copy of the gateway's list. The gateway keys on the ticker
+ * prefixes in ClusterGatewayMain.BOND_KEY_PREFIXES (UST-, CORP-), whose comment says the list
+ * exists so "adding an asset class is one edit here rather than a hunt through string literals" —
+ * mirroring it here would make it two edits again, and the second one would be forgotten silently.
+ * securityType comes from reference-data and agrees with that rule exactly: checked across all 533
+ * catalog instruments, 19 Debt, every one prefixed, and no prefixed instrument typed otherwise.
+ *
+ * The prefix test is kept only as a BACKSTOP for the one direction that hurts. If a UST-/CORP-
+ * instrument were ever typed as something other than Debt, the catalog alone would size it wrong
+ * and every order would 422; the reverse — rounding something the gateway would have accepted
+ * anyway — costs nothing. If a future asset class gets its own lot in BOND_KEY_PREFIXES, this
+ * function needs the edit too.
+ */
+const LOT_DEFAULT = 25;
+const LOT_BOND = 100;
+export const lotOf = (i: Instrument | undefined, ticker: string): number =>
+  (i?.securityType === 'Debt' || /^(UST-|CORP-)/.test(ticker) ? LOT_BOND : LOT_DEFAULT);
+
+/** A random size in [lot, 10000] that is a whole number of lots. */
+export const randomQty = (lot: number) => lot * (1 + Math.floor(Math.random() * Math.floor(10_000 / lot)));
+
+/** Round a fixed size up to the instrument's lot — never below it, since the floor is also a rule. */
+export const toLot = (qty: number, lot: number) => Math.max(lot, Math.round(qty / lot) * lot);
 
 const actor = (accountId: number, side: Actor['side'], perMin: number, quantity: number, durationSec: number): Actor =>
   ({ accountId, side, perMin, quantity, durationSec, sent: 0, accepted: 0, rejected: 0, noPrice: 0, running: false, lastReason: '', remainingMs: 0 });
@@ -290,7 +318,13 @@ export class SessionDriver {
     const off = Math.max(tick.price * 0.0005, tick.price < 2 ? 0.000001 : 0.01);
     const raw = side === 'Buy' ? tick.price + off : tick.price - off;
     const limitPrice = tick.price < 2 ? Math.round(raw * 1e6) / 1e6 : Math.round(raw * 100) / 100;
-    return { ticker, side, quantity: a.quantity === RANDOM_QTY ? randomQty() : a.quantity, limitPrice };
+    // The lot depends on WHICH instrument this order landed on, so it is resolved per order — a
+    // random-instrument session crosses asset classes and a session-wide size would be wrong for
+    // half of them. A fixed size is rounded rather than sent to a certain 422: the operator asked
+    // for orders, and the panel says what it did (see lotNote).
+    const lot = lotOf(this.api.instruments().find(x => x.instrumentKey === ticker), ticker);
+    const quantity = a.quantity === RANDOM_QTY ? randomQty(lot) : toLot(a.quantity, lot);
+    return { ticker, side, quantity, limitPrice };
   }
 
   private async fire(i: number): Promise<void> {
@@ -504,8 +538,15 @@ export class SessionDriver {
     @if (!d.running()) { <button class="add" (click)="d.add()">+ add an account</button> }
     @if (d.sent()) { <div class="sub tally" [class.neg]="d.tally().bad">{{ d.tally().text }}</div> }
 
-    <div class="sub note">Quantity <b>-1</b> draws a random multiple of 25 between 25 and 10,000 per
-      order. Rejections are logged individually to Activity &amp; rejections with their reason code —
+    <div class="sub note">Quantity <b>-1</b> draws a random size per order — a whole number of the
+      instrument's lot, up to 10,000.
+      @if (bondsInPool().length) {
+        <b>{{ bondsInPool().length }} instrument{{ bondsInPool().length === 1 ? '' : 's' }} in this
+        pool trade{{ bondsInPool().length === 1 ? 's' : '' }} in lots of 100</b> — the gateway refuses
+        a bond quantity below 100 or not a multiple of it, at the boundary, before the engine sees
+        the order. Random sizes are drawn in whole lots and a fixed size is rounded to one, so a
+        mixed pool does not spend half its orders on certain rejections.
+      } Rejections are logged individually to Activity &amp; rejections with their reason code —
       accepted orders are only counted, because a session at these rates would otherwise push
       everything else out of that list. Capped at {{ maxPerMin }}/min and {{ maxDuration }}s per
       actor@if (d.batch()) { , {{ maxBatch }} orders per batch }. <b>Pause</b> holds the counters and
@@ -582,6 +623,16 @@ export class DemoSession implements OnInit {
    * Only single-order sessions can populate this: a batch answers with a count, not per-order
    * reasons, so its lastReason is "N of M not accepted" and carries no code to match.
    */
+  /**
+   * Whether the pool contains anything whose lot is not 1 — today that means bonds. Conditional so
+   * an equity-only session is not told about a rule that cannot affect it, and so the sentence
+   * appears exactly when it explains a number on screen.
+   */
+  readonly bondsInPool = computed(() => {
+    const cat = new Map(this.api.instruments().map(i => [i.instrumentKey, i]));
+    return this.d.pool().filter(k => lotOf(cat.get(k), k) !== LOT_DEFAULT);
+  });
+
   readonly unadmitted = computed(() => [...new Set(this.d.actors()
     .filter(a => a.lastReason.includes('UNKNOWN_ACCOUNT'))
     .map(a => a.accountId))]);
