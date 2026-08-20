@@ -18,6 +18,19 @@ import { HelpTip } from './help';
       <div class="tile"><div class="v">{{ accepted() }}</div><div class="k">orders accepted<br>since startup</div></div>
       <div class="tile"><div class="v">{{ fills() }}</div><div class="k">fills<br>since startup</div></div>
     </div>
+    <!-- A dash with no reason is an invitation to reach for the wrong one, and the wrong one is
+         sitting right there: "3 of 3" reads as nothing wrong. -->
+    @if (rateGap() === 'restarted') {
+      <div class="banner warn-note">The acks / s rate is held back: every gateway is present, but
+        <b>not the same set of gateways as the last poll</b> — one was replaced, and a replacement
+        re-enters the sum at zero, so the total fell while the scope stayed full. Nothing was lost;
+        the counters are lifetime-per-process and the new process has its own lifetime. The rate
+        resumes once two polls see the same pods.</div>
+    } @else if (rateGap() === 'unexplained') {
+      <div class="banner bad">The acks / s rate is held back: the summed total fell while the same
+        gateways were present across both polls. A counter cannot decrease, so one of the premises
+        here is wrong — this is the case that is worth chasing rather than explaining away.</div>
+    }
     @if (scope(); as s) {
       @if (s.summed < s.discovered) {
         <div class="banner warn-note">These totals are a sum over <b>{{ s.summed }} of
@@ -87,6 +100,22 @@ export class MetricsPanel implements OnInit, OnDestroy {
    * nothing to aggregate. Unknown scope means no claim, not an alarm.
    */
   readonly scope = signal<{ summed: number; discovered: number } | null>(null);
+  /**
+   * Why the rate is a dash. A counter cannot fall, so when it does the sum changed shape — but
+   * "3 of 3" says nothing about WHICH three, and cardinality is not identity:
+   *
+   *   narrowed  — fewer gateways answered, so terms left the sum (the scope banner covers it)
+   *   restarted — same COUNT, different pods: a replaced pod re-enters at zero, so the total drops
+   *               while the scope indicator reports everything present. Pod replacement is the
+   *               normal outcome of a crash, eviction, node repair, rollout or scale event.
+   *   unexplained — same pods, counter still fell. Nothing benign explains this one.
+   *
+   * A guard on the SIZE of a set does not guard its identity, and size was the visible property so
+   * size became the check. The names were in /gateways the whole time.
+   */
+  readonly rateGap = signal<'narrowed' | 'restarted' | 'unexplained' | null>(null);
+  /** Pod names as of the previous poll — the only way to tell a replaced series from a stable one. */
+  private lastNames = '';
   readonly accepted = signal('—');
   readonly fills = signal('—');
   readonly latency = signal('');
@@ -103,9 +132,7 @@ export class MetricsPanel implements OnInit, OnDestroy {
    * Ask every gateway for its own percentiles. The Service load-balances, so a single /latency call
    * answers from one arbitrary pod — a third of the traffic's view, presented as the system's.
    */
-  private async pollGateways(): Promise<void> {
-    const d = await this.api.load<{ count: number }>('/gateways');
-    const n = d.status === 200 && d.body?.count ? d.body.count : 0;
+  private async pollGateways(n: number): Promise<void> {
     if (!n) { this.gateways.set([]); return; }
     const rows = await Promise.all(Array.from({ length: n }, async (_, i) => {
       const r = await this.api.load<string>(`/gw/${i}/latency`);
@@ -122,6 +149,7 @@ export class MetricsPanel implements OnInit, OnDestroy {
   }
 
   private async poll(): Promise<void> {
+    let fell = false;
     const [m, l] = await Promise.all([
       this.api.load<string>('/order-matcher/metrics'),
       this.api.load<string>('/order-matcher/latency'),
@@ -137,17 +165,32 @@ export class MetricsPanel implements OnInit, OnDestroy {
       // A counter cannot fall. If it does, the SCOPE changed under us — a gateway dropped out of
       // the sum, or one restarted — and the difference is not a rate of anything. Printing it would
       // show a negative acks/s, which is the sort of number an audience remembers.
-      if (this.lastAcks >= 0 && acks < this.lastAcks) this.throughput.set('—');
+      if (this.lastAcks >= 0 && acks < this.lastAcks) { this.throughput.set('—'); fell = true; }
       this.lastAcks = acks; this.lastAt = now;
       this.accepted.set(String(p['traderx_order_events_total{event="accepted"}'] ?? '—'));
       this.fills.set(String(p['traderx_order_events_total{event="fill"}'] ?? '—'));
     }
-    const d = await this.api.load<{ count: number }>('/gateways');
+    // One /gateways call per poll, shared with the percentile table below: it is the source of the
+    // discovered count AND of the pod names the restart check needs.
+    const d = await this.api.load<{ count: number; gateways?: { name: string }[] }>('/gateways');
     const discovered = d.status === 200 && d.body?.count ? d.body.count : 0;
+    const names = (d.body?.gateways ?? []).map(g => g.name).sort().join(',');
     this.scope.set(Number.isFinite(summed) && discovered ? { summed, discovered } : null);
+    if (fell) {
+      this.rateGap.set(
+        Number.isFinite(summed) && discovered && summed < discovered ? 'narrowed'
+        : this.lastNames && names && names !== this.lastNames ? 'restarted'
+        : 'unexplained');
+    } else {
+      // The banner explains why THIS poll's rate is suppressed. If this poll produced a rate, the
+      // samples were comparable and there is nothing to explain — keyed on `fell` alone, because
+      // keying it on the displayed value let the banner outlive the dash by one poll.
+      this.rateGap.set(null);
+    }
+    this.lastNames = names;
     // /latency answers 503 with an informative body when LATENCY_DECOMP is off — show it either way.
     if (typeof l.body === 'string' && l.body) this.latency.set(l.body.trim());
     else if (l.body && typeof l.body === 'object') this.latency.set(JSON.stringify(l.body, null, 1));
-    await this.pollGateways();
+    await this.pollGateways(discovered);
   }
 }
