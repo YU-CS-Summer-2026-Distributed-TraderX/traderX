@@ -13,9 +13,6 @@ interface Check { id: string; name: string; path: string; expect: number[]; note
 const CHECKS: Check[] = [
   { id: 'gateway', name: 'Cluster gateway', path: '/order-matcher/ready', expect: [200],
     note: 'ready = it can commit to the log, not merely that its socket is open' },
-  { id: 'm0', name: 'Cluster member 0', path: '/m0/health', expect: [200], note: 'per-pod health' },
-  { id: 'm1', name: 'Cluster member 1', path: '/m1/health', expect: [200], note: 'per-pod health' },
-  { id: 'm2', name: 'Cluster member 2', path: '/m2/health', expect: [200], note: 'per-pod health' },
   { id: 'reference-data', name: 'Reference data', path: '/reference-data/stocks', expect: [200],
     note: 'the instrument catalog every ticket resolves against' },
   { id: 'account-service', name: 'Account service', path: '/account-service/account/', expect: [200],
@@ -83,6 +80,7 @@ export class StatusPanel implements OnInit, OnDestroy {
     ...c, status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
   })));
   readonly gatewayCount = signal(0);
+  readonly memberCount = signal(0);
   readonly open = signal(true);
   readonly checking = signal(false);
   readonly downCount = signal(0);
@@ -106,16 +104,28 @@ export class StatusPanel implements OnInit, OnDestroy {
    */
   private async expandGateways(): Promise<void> {
     try {
-      const res = await this.api.load<{ count: number }>('/gateways');
-      const n = res.status === 200 && res.body?.count ? res.body.count : 0;
-      if (!n || n === this.gatewayCount()) return;
+      const [gwRes, memRes] = await Promise.all([
+        this.api.load<{ count: number }>('/gateways'),
+        this.api.load<{ count: number }>('/members'),
+      ]);
+      const n = gwRes.status === 200 && gwRes.body?.count ? gwRes.body.count : 0;
+      const mn = memRes.status === 200 && memRes.body?.count ? memRes.body.count : 0;
+      if ((!n && !mn) || (n === this.gatewayCount() && mn === this.memberCount())) return;
       this.gatewayCount.set(n);
+      this.memberCount.set(mn);
       const gwRows: Row[] = Array.from({ length: n }, (_, i) => ({
         id: `gw${i}`, name: `Cluster gateway ${i}`, path: `/gw/${i}/ready`, expect: [200],
         note: 'ready = it can commit to the log, not merely that its socket is open',
         status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
       }));
-      this.rows.set([...gwRows, ...this.rows().filter(r => r.id !== 'gateway' && !r.id.startsWith('gw'))]);
+      const memRows: Row[] = Array.from({ length: mn }, (_, i) => ({
+        id: `m${i}`, name: `Cluster member ${i}`, path: `/mem/${i}/health`, expect: [200],
+        note: 'per-pod health',
+        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
+      }));
+      const rest = this.rows().filter(r =>
+        r.id !== 'gateway' && !r.id.startsWith('gw') && !/^m\d+$/.test(r.id));
+      this.rows.set([...gwRows, ...memRows, ...rest]);
     } catch { /* leave the static row in place — a discovery failure must not blank the panel */ }
   }
 

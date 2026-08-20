@@ -193,8 +193,8 @@ const readBody = (req) => new Promise((resolve) => {
 //      gateways' counters: acks/s swings positive and negative around zero and fills read
 //      2 -> 0 -> 2 -> 0. Nothing is wrong with the cluster; the sampler is not sampling one thing.
 //      aggregateGatewayMetrics() sums every pod, so a counter only ever goes up.
-const podHttp = (ip, path, timeout = 6000) => new Promise((resolve) => {
-  const req = http.request({ host: ip, port: 18110, path, method: 'GET', timeout }, (r) => {
+const podHttp = (ip, path, port = 18110, timeout = 6000) => new Promise((resolve) => {
+  const req = http.request({ host: ip, port, path, method: 'GET', timeout }, (r) => {
     const chunks = [];
     r.on('data', (c) => chunks.push(c));
     r.on('end', () => resolve({ code: r.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
@@ -208,25 +208,29 @@ const podHttp = (ip, path, timeout = 6000) => new Promise((resolve) => {
 // shells its own kubectl and they contend — observed as one ordinal out of three intermittently
 // failing with a kubectl error while the other two answered, which looks like a flaky gateway and
 // is really a flaky lookup. Sorted here, once, so every caller agrees on which pod is ordinal N.
-const podsCache = { at: 0, list: [] };
-function gatewayPods() {
-  if (Date.now() - podsCache.at < 5000 && podsCache.list.length) return podsCache.list;
+const podsCache = new Map();
+function podsFor(label) {
+  const hit = podsCache.get(label);
+  if (hit && Date.now() - hit.at < 5000 && hit.list.length) return hit.list;
   const out = execSync(
     // Semicolon-separated, NOT newline-separated. `{"\n"}` inside a JS template literal is a REAL
     // newline by the time kubectl sees it, and kubectl then rejects the jsonpath as an unterminated
     // quoted string. The failure was invisible from outside: gatewayPods() threw, the /gw route
     // 502'd, and /gw/<n> requests that arrived before this route existed fell through to the SPA
     // fallback and returned index.html with HTTP 200 — a route that did not exist reporting success.
-    `kubectl -n ${NS} get pods -l app=cluster-gateway ` +
+    `kubectl -n ${NS} get pods -l app=${label} ` +
     `-o jsonpath='{range .items[*]}{.metadata.name} {.status.podIP} {.status.phase};{end}'`,
     { shell: '/bin/sh', timeout: 15000 }).toString();
   const parsed = out.split(';').map(l => l.trim()).filter(Boolean).map(l => {
     const [name, ip, phase] = l.split(/\s+/);
     return { name, ip, phase };
   }).filter(g => g.ip).sort((a, b) => a.name.localeCompare(b.name));
-  podsCache.at = Date.now(); podsCache.list = parsed;
+  podsCache.set(label, { at: Date.now(), list: parsed });
   return parsed;
 }
+const gatewayPods = () => podsFor('cluster-gateway');
+// Members are a StatefulSet, so their names already sort into ordinal order.
+const memberPods = () => podsFor('order-matcher-cluster');
 
 const gwCache = { at: 0, body: '' };
 async function gatewaysBypass(req, res) {
@@ -325,6 +329,40 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/healthz') return json(res, 200, { ok: true });
   if (p === '/gateways') return gatewaysBypass(req, res);
+  // THE MEMBER COUNT IS ALSO A CONFIGURATION, not a constant. An Aeron cluster is normally 3 or 5;
+  // the console hardcoded exactly three member rows, so a 5-member cluster would have shown 3 and a
+  // shrunk one would have shown two dead rows for ever. Same shape as the gateway bug, different
+  // resource — found by auditing for hardcoded values rather than by anything failing.
+  if (p === '/members') {
+    (async () => {
+      try {
+        const pods = memberPods();
+        const members = await Promise.all(pods.map(async (m, i) => {
+          const r = await podHttp(m.ip, '/health', 8080);
+          let health = {};
+          try { health = JSON.parse(r.body || '{}'); } catch { /* keep {} */ }
+          return { ordinal: i, name: m.name, ip: m.ip, phase: m.phase, code: r.code, health };
+        }));
+        json(res, 200, { count: members.length, members });
+      } catch (e) { json(res, 502, { error: `could not list members: ${e}` }); }
+    })();
+    return;
+  }
+  const mem = /^\/mem\/(\d+)(\/.*)?$/.exec(p);
+  if (mem) {
+    (async () => {
+      try {
+        const pods = memberPods();
+        const m = pods[Number(mem[1])];
+        if (!m) return json(res, 404, { error: `no member ordinal ${mem[1]} (${pods.length} running)` });
+        const r = await podHttp(m.ip, (mem[2] || '/') + (url.search || ''), 8080);
+        res.statusCode = r.code || 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(r.body || '{}');
+      } catch (e) { json(res, 502, { error: String(e) }); }
+    })();
+    return;
+  }
   // /gw/<n>/... — a stable per-gateway route. Gateway pods have random names and no per-pod DNS, so
   // the ordinal is positional over the pod list sorted by name: stable while the ReplicaSet is, and
   // re-derived on every call so scaling up or down is picked up without redeploying anything.

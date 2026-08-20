@@ -58,17 +58,19 @@ export class ClusterPanel implements OnInit, OnDestroy {
   ngOnDestroy(): void { clearInterval(this.timer); }
 
   private async poll(): Promise<void> {
-    const [m0, m1, m2, gw] = await Promise.all([
-      this.api.load<MemberHealth>('/m0/health'),
-      this.api.load<MemberHealth>('/m1/health'),
-      this.api.load<MemberHealth>('/m2/health'),
+    // ASK how many members there are rather than assuming three. An Aeron cluster is normally 3 or
+    // 5, and the count is a configuration — hardcoding it showed three rows on a five-member cluster
+    // and two permanently-dead rows on a shrunk one. /members returns each pod's own /health.
+    const [mem, gw] = await Promise.all([
+      this.api.load<{ count: number; members: { ordinal: number; code: number; health: MemberHealth }[] }>('/members'),
       this.api.load<GatewayHealth>('/order-matcher/health'),
     ]);
-    // A missing /mN proxy route falls through to the SPA and returns 200 HTML — require the
-    // actual member shape, not just a 200.
-    this.members.set([m0, m1, m2].map(r =>
-      r.status === 200 && r.body && typeof r.body === 'object' && 'applied' in (r.body as object)
-        ? r.body : null));
+    // A missing route falls through to the SPA and returns 200 HTML — require the actual member
+    // shape, not just a 200.
+    const list = mem.status === 200 && mem.body?.members ? mem.body.members : [];
+    this.members.set(list.map(m =>
+      m.code === 200 && m.health && typeof m.health === 'object' && 'applied' in (m.health as object)
+        ? m.health : null));
     this.gateway.set(gw.status === 200 || gw.status === 503 ? gw.body : null);
   }
 }
