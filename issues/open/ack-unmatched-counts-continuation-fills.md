@@ -48,19 +48,37 @@ order paired into a cross; 0.333 means a third of them did; 0.000 means nothing 
 being lost, misrouted, or stranded — and my earlier guess that the scale-out stranded acks was
 wrong, as the lane established before I did.
 
-## The actual defect is the name, and it is on a demo screen
+## The defect is real but gateway-side only — it reaches no screen
 
-The counter is benign by construction, but `ack_unmatched` next to `ack_completed` reads as a
-failure count, and at a healthy 0.5 ratio it reads as **a third of all acks failing to match**. On a
-screen shown to an audience that is the worst possible framing of "the book is crossing normally."
+**Corrected 2026-08-20, same day.** This file first argued the counter was dangerous *because* it sat
+on a demo screen reading 0.5 to an audience. That premise was never checked, and it is false. The
+console lane checked it; I then verified independently against the live rig:
 
-Two fixes, both cheap, neither yet made:
+- console source references exactly one pipeline stage, `ack_completed`, for the throughput rate
+  (`metrics-panel.ts:160`) — `ack_unmatched` appears nowhere in it
+- the metrics panel's raw-text block renders `/order-matcher/latency`, which carries only
+  `latency_us` / `latency_count` segments
+- the string `ack_unmatched` appears **zero** times across *every* JS chunk the page loads, not just
+  the main bundle
 
-1. **Fix the comment** — it asserts the opposite of what the line below it does, and it is the
-   reason this took a rig to settle rather than a read.
-2. **Split the bucket or rename it.** Continuation fills are expected flow; foreign and stale-epoch
-   acks are the ones worth watching. Summed together, neither question can be answered — and the
-   large, boring term hides the small, interesting one.
+So no audience sees this counter through the console. It is visible only to someone reading
+`/metrics` directly — which is exactly what I was doing when I raised it.
+
+That drops the severity to **housekeeping**: a misleading name and a wrong comment on an internal
+endpoint. Worth fixing, not worth interrupting anything for.
+
+1. **Fix the comment.** It asserts the opposite of the line below it, and that is the whole reason
+   this cost a rig session instead of a read.
+2. **Split or rename the bucket** when the file is next open. Continuation fills are expected flow;
+   foreign and stale-epoch acks are the ones worth watching. Summed, neither question is answerable.
+
+### How the overstatement happened
+
+I reasoned from the counter's *shape* — an alarming name at a healthy 0.5 ratio — to a consequence
+that required an exposure path I never looked for. The mechanism work was checked to the point of a
+stated numeric prediction; the impact claim attached to it was not checked at all, and rode in on the
+credibility of the part that was. **The evidence for a finding does not transfer to the claim about
+what it costs.** Those are two claims and they need two checks.
 
 ## The rule
 
