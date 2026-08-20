@@ -88,3 +88,14 @@ should have existed.
 
 **A diagnostic that would have caught it in one command:** `consumer_count` on `TRADERX_EOD` should
 be 2. It was 0.
+
+## Not every `consumers=0` is this bug
+
+Checked 2026-08-19, because the diagnostic above will be run by someone who then sees this and
+raises a false alarm: **`TRADERX_CONTROL_ACCOUNT` sits at `consumers=0` normally.** Its property is
+`risk.bootstrap.account-stream` — the order-matcher replays it **at bootstrap** to rebuild risk
+state, with a consumer created on demand and gone afterwards. A standing consumer is not expected.
+
+The distinction that matters: `TRADERX_EOD` drives an **event chain** and needs standing consumers,
+so `consumers=0` there means the chain is dead. A replay-at-bootstrap source at `consumers=0` means
+nothing is booting right now. Same number, opposite verdict — read the stream's role before the count.
