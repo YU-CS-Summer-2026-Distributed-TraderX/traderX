@@ -231,6 +231,16 @@ and believed for a full round:
   every second of every session and gets ignored by week two. Name the gap by state: *in flight*
   while running, *UNACCOUNTED* once stopped, when nothing more can arrive.
 
+## Testing a panel: a green spec proves nothing until you have watched it fail
+
+Revert the fix, run the spec, see red, put the fix back. Every non-trivial check in `src/app/*.spec.ts`
+has been through that, and the mutations are worth keeping in mind when you add one: dropping the
+batch-size multiplication, never flagging a stopped gap, putting the old 401 wording back.
+
+One wrinkle, because the obvious inference is wrong: **"the mutation failed two tests, so a
+pre-existing test already covered it" only holds if one of them is actually pre-existing.** Two tests
+written together fail together and prove nothing about coverage that predates the fix.
+
 ## Writing a panel: a result is not evidence unless something in it proves the check ran
 
 The failure this console keeps meeting is not a wrong number. It is a **confident number produced
