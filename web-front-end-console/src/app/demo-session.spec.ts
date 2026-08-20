@@ -1,0 +1,85 @@
+import { TestBed } from '@angular/core/testing';
+import { Api } from './api';
+import { SessionDriver } from './demo-session';
+
+/**
+ * The pause arithmetic, on a mocked clock.
+ *
+ * Worth a committed test because the failure mode is invisible until it matters: a session whose
+ * budget is quietly consumed by a pause looks fine on screen and then stops early in front of an
+ * audience. The live check that proved this on the rig is not repeatable; this is.
+ *
+ * Nothing here touches HTTP — prices() returns nothing, so every tick counts a skip instead of
+ * sending an order. The subject is the clock, not the order path.
+ */
+describe('SessionDriver pause/resume', () => {
+  let d: SessionDriver;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [{ provide: Api, useValue: {
+        watchPrices: () => {}, log: () => {}, prices: () => ({}),
+        post: () => Promise.resolve({ status: 200, body: {} }),
+      } }],
+    });
+    d = TestBed.inject(SessionDriver);
+    jasmine.clock().install();
+    jasmine.clock().mockDate(new Date(0));
+    d.actors.set([{ accountId: 1, side: 'Buy', perMin: 60, quantity: 25, durationSec: 10,
+      sent: 0, accepted: 0, rejected: 0, noPrice: 0, running: false, lastReason: '', remainingMs: 0 }]);
+  });
+
+  afterEach(() => { d.stop('test over'); jasmine.clock().uninstall(); });
+
+  const rem = () => d.actors()[0].remainingMs;
+
+  it('holds the clock and the budget across a pause, then finishes on trading time', () => {
+    d.start();
+    expect(rem()).toBe(10_000);
+
+    jasmine.clock().tick(4_000);
+    expect(d.elapsed()).toBe(4);
+
+    d.pause();
+    expect(d.paused()).toBeTrue();
+    expect(d.running()).withContext('paused is a state OF running, not a stop').toBeTrue();
+    expect(rem()).toBe(6_000);
+
+    // The whole point: wall time passes, trading time does not.
+    jasmine.clock().tick(30_000);
+    expect(d.elapsed()).withContext('clock stopped').toBe(4);
+    expect(rem()).withContext('a pause must not spend the budget').toBe(6_000);
+
+    d.resume();
+    expect(d.paused()).toBeFalse();
+
+    // 6s of budget left, so it retires then — 40s after start in wall time.
+    jasmine.clock().tick(5_000);
+    expect(d.running()).withContext('still owed 1s').toBeTrue();
+    jasmine.clock().tick(1_500);
+    expect(d.running()).withContext('budget spent').toBeFalse();
+    expect(d.elapsed()).withContext('elapsed is trading time, not wall time').toBe(10);
+  });
+
+  it('reports the full duration even when the clock tick never fires', () => {
+    // An unfocused tab throttles setInterval, so the last sample can be badly stale. stop() must
+    // re-derive elapsed from the wall clock rather than freeze whatever the tick last wrote —
+    // this reported 19s for a 25s session before it did.
+    d.start();
+    clearInterval((d as unknown as { clock: ReturnType<typeof setInterval> }).clock);
+    jasmine.clock().tick(7_000);
+    expect(d.elapsed()).withContext('no tick fired, so nothing updated it').toBe(0);
+    d.stop('operator');
+    expect(d.elapsed()).toBe(7);
+  });
+
+  it('does not resurrect a session whose budget ran out while paused', () => {
+    d.start();
+    jasmine.clock().tick(9_500);
+    d.pause();
+    expect(rem()).toBe(500);
+    d.resume();
+    jasmine.clock().tick(600);
+    expect(d.running()).toBeFalse();
+  });
+});

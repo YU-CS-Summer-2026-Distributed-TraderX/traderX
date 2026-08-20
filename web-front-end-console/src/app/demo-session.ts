@@ -23,6 +23,12 @@ interface Actor {
   sent: number; accepted: number; rejected: number; noPrice: number;
   running: boolean;
   lastReason: string;
+  /**
+   * Milliseconds of TRADING time this actor still owes, counted down only while armed. An actor
+   * with `durationSec: 120` paused at 30s resumes owing 90s — not 120 (a pause would silently
+   * lengthen the session) and not 0 (a long pause would retire it the instant you resumed).
+   */
+  remainingMs: number;
 }
 
 const MAX_PER_MIN = 120;
@@ -34,7 +40,7 @@ const RANDOM_QTY = -1;
 const randomQty = () => 25 * (1 + Math.floor(Math.random() * 400));
 
 const actor = (accountId: number, side: Actor['side'], perMin: number, quantity: number, durationSec: number): Actor =>
-  ({ accountId, side, perMin, quantity, durationSec, sent: 0, accepted: 0, rejected: 0, noPrice: 0, running: false, lastReason: '' });
+  ({ accountId, side, perMin, quantity, durationSec, sent: 0, accepted: 0, rejected: 0, noPrice: 0, running: false, lastReason: '', remainingMs: 0 });
 
 /**
  * The session itself, deliberately OUTSIDE the panel that configures it.
@@ -59,6 +65,17 @@ export class SessionDriver {
   readonly batch = signal(false);
   readonly batchSize = signal(25);
   readonly running = signal(false);
+  /**
+   * Paused is a state OF a running session, not a third thing beside start and stop: `running()`
+   * stays true so the header keeps showing the session and Stop stays reachable from every page.
+   */
+  readonly paused = signal(false);
+  /**
+   * Seconds of TRADING time, which is not wall time once a pause exists. The clock stops with the
+   * order flow so that sent/elapsed keeps meaning orders per minute of trading — the same reason
+   * the metrics tiles say "since startup". A number is only comparable if the window it covers is
+   * stated, and a clock that ran through a coffee break states the wrong one.
+   */
   readonly elapsed = signal(0);
   readonly actors = signal<Actor[]>([
     actor(22214, 'Buy', 20, 25, 120),
@@ -77,7 +94,6 @@ export class SessionDriver {
   /** Every actor's tick interval and its stop timeout, cleared together on stop. */
   private timers: ReturnType<typeof setTimeout>[] = [];
   private clock: ReturnType<typeof setInterval> | undefined;
-  private startedAt = 0;
   /** The pool as it was when Start was pressed — the inputs are locked while running anyway. */
   private livePool: string[] = [];
 
@@ -99,32 +115,96 @@ export class SessionDriver {
       perMin: Math.min(MAX_PER_MIN, Math.max(1, a.perMin)),
       durationSec: Math.min(MAX_DURATION, Math.max(5, a.durationSec)),
       sent: 0, accepted: 0, rejected: 0, noPrice: 0, lastReason: '', running: true,
+      remainingMs: Math.min(MAX_DURATION, Math.max(5, a.durationSec)) * 1000,
     })));
+    this.bankedSec = 0;
     this.batchSize.set(Math.min(MAX_BATCH, Math.max(1, this.batchSize())));
     this.running.set(true);
-    this.startedAt = Date.now();
+    this.paused.set(false);
     this.elapsed.set(0);
-    this.clock = setInterval(() => this.elapsed.set(Math.round((Date.now() - this.startedAt) / 1000)), 1000);
-    this.actors().forEach((a, i) => {
-      const every = Math.max(250, Math.round(60_000 / a.perMin));
-      this.timers.push(setInterval(() => this.fire(i), every));
-      // Each actor stops on its own duration; the session ends when the last one does.
-      this.timers.push(setTimeout(() => this.retire(i), a.durationSec * 1000));
-    });
+    this.arm();
     this.api.log({ kind: 'algo', ok: true,
       summary: `live session started · ${this.actors().length} accounts, ${this.livePool.length} instruments`
         + (this.batch() ? `, batch ingress ${this.batchSize()}/request` : '') });
   }
 
-  stop(why: string): void {
-    if (!this.running() && !this.timers.length) return;
+  /**
+   * Start every actor's tick and its retirement deadline, and run the clock. Shared by start() and
+   * resume() so there is exactly one place that knows how a session is wired up — resume differs
+   * only in that each actor's deadline is what it has LEFT rather than its full duration.
+   */
+  private arm(): void {
+    this.armedAt = Date.now();
+    this.clock = setInterval(
+      () => this.elapsed.set(this.bankedSec + Math.round((Date.now() - this.armedAt) / 1000)), 1000);
+    this.actors().forEach((a, i) => {
+      if (!a.running || a.remainingMs <= 0) return;
+      const every = Math.max(250, Math.round(60_000 / a.perMin));
+      this.timers.push(setInterval(() => this.fire(i), every));
+      // Each actor stops on its own remaining budget; the session ends when the last one does.
+      this.timers.push(setTimeout(() => this.retire(i), a.remainingMs));
+    });
+  }
+
+  /** Trading seconds banked by earlier arm/pause cycles; 0 for a session that has never paused. */
+  private bankedSec = 0;
+  private armedAt = 0;
+
+  private disarm(): void {
     this.timers.forEach(t => { clearInterval(t); clearTimeout(t); });
     this.timers = [];
     clearInterval(this.clock);
+  }
+
+  /**
+   * Hold the counters and stop the clock. Every actor's remaining budget is debited by the time it
+   * was actually armed, so resuming continues ONE session rather than starting a second.
+   */
+  pause(): void {
+    if (!this.running() || this.paused()) return;
+    const spent = Date.now() - this.armedAt;
+    this.disarm();
+    this.bankedSec += Math.round(spent / 1000);
+    this.elapsed.set(this.bankedSec);
+    this.actors.update(l => l.map(a =>
+      (a.running ? { ...a, remainingMs: Math.max(0, a.remainingMs - spent) } : a)));
+    this.paused.set(true);
+    this.api.log({ kind: 'algo', ok: true,
+      summary: `live session paused at ${this.elapsed()}s · ${this.sent()} sent, ${this.accepted()} accepted`
+        + ' — counters held, clock stopped' });
+  }
+
+  resume(): void {
+    if (!this.running() || !this.paused()) return;
+    // An actor whose budget ran out while paused is already done; if that is all of them, the
+    // session is over and resuming would arm nothing and never retire.
+    if (!this.actors().some(a => a.running && a.remainingMs > 0)) { this.stop('finished while paused'); return; }
+    this.paused.set(false);
+    this.arm();
+    this.api.log({ kind: 'algo', ok: true, summary: `live session resumed at ${this.elapsed()}s` });
+  }
+
+  stop(why: string): void {
+    if (!this.running() && !this.timers.length) return;
+    // Bank the final segment before the clock is torn down. The 1s tick recomputes elapsed from
+    // Date.now(), so each sample is exact — but the browser throttles intervals in an unfocused
+    // window, and the LAST sample can be many seconds stale. Measured: a 25s session reported 19s
+    // because the tick stopped firing while the tab sat idle, and stop() then froze that value.
+    // The deadline itself was never affected (it is one Date.now()-based timeout, not a tick
+    // count), so this was a reporting error, not a timing one — which is the more dangerous kind,
+    // because the session did the right thing while saying it had not.
+    if (this.running() && !this.paused()) {
+      this.bankedSec += Math.round((Date.now() - this.armedAt) / 1000);
+      this.elapsed.set(this.bankedSec);
+    }
+    this.disarm();
     this.running.set(false);
+    this.paused.set(false);
     this.actors.update(l => l.map(a => ({ ...a, running: false })));
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session ${why} · ${this.sent()} ${this.batch() ? 'batches' : 'orders'} sent, ${this.accepted()} accepted` });
+      summary: `live session ${why} after ${this.elapsed()}s of trading time · `
+        + `${this.sent()} ${this.batch() ? 'batches' : 'orders'} sent, ${this.accepted()} accepted` });
+    this.bankedSec = 0;
   }
 
   private retire(i: number): void {
@@ -230,7 +310,9 @@ export class SessionDriver {
       </button>
       <help-tip text="Runs a scripted market: each account submits real orders at its own rate for its own duration, through the same gateway routes a hand-typed ticket uses. Buy actors price just above the live market and sell actors just below, so they cross each other and produce prints — positions, P&L, latency, the kdb tap and the message-bus feed all move together while it runs. The session keeps running when you leave this page, which is the point: the surfaces worth watching under load are on other pages. The header carries a running indicator and a Stop from wherever you are." />
       <span class="spacer"></span>
-      @if (d.running()) { <span class="pill good">running · {{ d.elapsed() }}s</span> }
+      @if (d.running()) {
+        <span class="pill" [class.good]="!d.paused()" [class.warn]="d.paused()">{{ d.paused() ? 'paused' : 'running' }} · {{ d.elapsed() }}s</span>
+      }
     </div>
 
     @if (open()) {
@@ -292,10 +374,29 @@ export class SessionDriver {
         @if (!d.running()) {
           <button class="btn-primary" (click)="d.start()" [disabled]="!d.actors().length || !d.pool().length">Start session</button>
         } @else {
+          @if (d.paused()) { <button class="btn-primary" (click)="d.resume()">Resume</button> }
+          @else { <button (click)="d.pause()">Pause</button> }
           <button class="stop" (click)="d.stop('stopped by operator')">Stop</button>
         }
       </div>
     </div>
+
+    @if (unadmitted().length) {
+      <div class="banner warn-note">
+        <b>UNKNOWN_ACCOUNT is not "no such account".</b> Account
+        {{ unadmitted().length === 1 ? '' : 's' }}
+        <span class="mono">{{ unadmitted().join(', ') }}</span>
+        exist{{ unadmitted().length === 1 ? 's' : '' }} in the directory — that is where this
+        dropdown gets them — but the engine keeps its own admitted set, and an epoch roll resets
+        that while leaving the directory untouched. Until an account is admitted, every order it
+        sends is refused, and the reason code points at the account rather than at the admission.
+        <button (click)="admitAll()" [disabled]="admitting()">
+          {{ admitting() ? 'admitting…' : 'Admit ' + (unadmitted().length === 1 ? 'it' : 'them') + ' now' }}</button>
+        <span class="sub">Sequenced through consensus like an order, the same control the Accounts
+          page uses. The bring-up script now admits every directory account on each run, so this is
+          defence against a future roll rather than a routine step.</span>
+      </div>
+    }
 
     <table>
       <thead><tr><th>account</th><th>side</th><th class="num">{{ d.batch() ? 'batches/min' : 'orders/min' }}</th>
@@ -338,7 +439,9 @@ export class SessionDriver {
       order. Rejections are logged individually to Activity &amp; rejections with their reason code —
       accepted orders are only counted, because a session at these rates would otherwise push
       everything else out of that list. Capped at {{ maxPerMin }}/min and {{ maxDuration }}s per
-      actor@if (d.batch()) { , {{ maxBatch }} orders per batch }.</div>
+      actor@if (d.batch()) { , {{ maxBatch }} orders per batch }. <b>Pause</b> holds the counters and
+      stops the clock, and each actor keeps the time it has left — so a resumed session is one
+      session, and the elapsed figure stays trading time rather than wall time.</div>
     }
   `,
   styles: `
@@ -376,6 +479,11 @@ export class SessionDriver {
     .stop { background: var(--bad); color: #fff; border-color: var(--bad); font-weight: 600; }
     .note { margin-top: 10px; max-width: 760px; }
     .pos { color: var(--good); } .neg { color: var(--bad); }
+    .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; max-width: 860px;
+                 margin-bottom: 10px; }
+    .warn-note button { margin-left: 8px; }
+    .warn-note .sub { display: block; margin-top: 6px; color: inherit; opacity: 0.85; }
+    .mono { font-family: var(--mono); }
   `,
 })
 export class DemoSession implements OnInit {
@@ -391,6 +499,40 @@ export class DemoSession implements OnInit {
   readonly filter = signal('');
 
   ngOnInit(): void { this.api.watchPrices(); }
+
+  /**
+   * Accounts the ENGINE has told us it does not know. Read from the rejection rather than checked
+   * up front, because there is no read path for the admitted set: GET /risk/control/snapshot
+   * reports the control replica's securities and carries no accounts at all. Marking the picker
+   * from anything else would be a guess dressed as a reading — so the panel waits until the engine
+   * says so, and then says what it actually means.
+   *
+   * Only single-order sessions can populate this: a batch answers with a count, not per-order
+   * reasons, so its lastReason is "N of M not accepted" and carries no code to match.
+   */
+  readonly unadmitted = computed(() => [...new Set(this.d.actors()
+    .filter(a => a.lastReason.includes('UNKNOWN_ACCOUNT'))
+    .map(a => a.accountId))]);
+  readonly admitting = signal(false);
+
+  async admitAll(): Promise<void> {
+    this.admitting.set(true);
+    try {
+      for (const accountId of this.unadmitted()) {
+        const r = await this.api.riskControl<{ applied?: boolean; version?: number; error?: string }>(
+          'account', { accountId, enabled: true });
+        const ok = r.status === 200 && !!r.body?.applied;
+        this.api.log({ kind: 'order', ok,
+          summary: `risk control: account ${accountId} admitted → ${ok
+            ? 'applied at control version ' + r.body!.version
+            : r.status === 401 ? 'HTTP 401 — this rig sets its own RISK_CONTROL_TOKEN' : 'HTTP ' + r.status}` });
+      }
+      // Clearing the reasons is what retires the banner: the next order from these actors is the
+      // real test, and leaving a stale reject on screen would claim a fix that has not been proven.
+      this.d.actors.update(l => l.map(a =>
+        (a.lastReason.includes('UNKNOWN_ACCOUNT') ? { ...a, lastReason: '' } : a)));
+    } finally { this.admitting.set(false); }
+  }
 
   /** Membership as a Set: this is read once per rendered row, and there are 500+ rows. */
   private readonly pickedSet = computed(() => new Set(this.d.picked()));

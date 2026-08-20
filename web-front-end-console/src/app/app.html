@@ -26,8 +26,13 @@
     <!-- A session outlives the page that started it, so the only honest place for its state is
          here: visible from every page, with its own Stop. -->
     @if (session.running()) {
-      <span class="pill good">live session · {{ session.elapsed() }}s · {{ session.sent() }} sent ·
-        {{ session.accepted() }} accepted</span>
+      <span class="pill" [class.good]="!session.paused()" [class.warn]="session.paused()">live session{{ session.paused() ? ' · paused' : '' }} ·
+        {{ session.elapsed() }}s · {{ session.sent() }} sent · {{ session.accepted() }} accepted</span>
+      @if (session.paused()) {
+        <button class="btn-primary" (click)="session.resume()">Resume</button>
+      } @else {
+        <button (click)="session.pause()">Pause</button>
+      }
       <button class="stop" (click)="session.stop('stopped from the header')">Stop</button>
     }
     @if (rigUp() !== null) {
