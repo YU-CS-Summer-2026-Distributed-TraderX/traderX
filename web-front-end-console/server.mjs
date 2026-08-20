@@ -180,6 +180,103 @@ const readBody = (req) => new Promise((resolve) => {
   req.on('end', () => resolve(Buffer.concat(chunks).toString()));
 });
 
+
+// ---- gateways: discovered, not counted in advance ---------------------------------------------
+// The gateway is a Deployment behind a Service, so there is no stable per-pod DNS the way the
+// members (a StatefulSet + headless Service) have. Two things follow, and the second one is a bug
+// that only appears once you run more than one gateway:
+//
+//   1. A panel cannot hardcode "the gateway". The replica count is a scaling decision — this rig
+//      runs three — so the console has to ASK how many there are.
+//   2. EVERY GATEWAY KEEPS ITS OWN COUNTERS. Polling /metrics through the Service round-robins
+//      across pods, so a rate computed from consecutive samples is differencing two DIFFERENT
+//      gateways' counters: acks/s swings positive and negative around zero and fills read
+//      2 -> 0 -> 2 -> 0. Nothing is wrong with the cluster; the sampler is not sampling one thing.
+//      aggregateGatewayMetrics() sums every pod, so a counter only ever goes up.
+const podHttp = (ip, path, timeout = 6000) => new Promise((resolve) => {
+  const req = http.request({ host: ip, port: 18110, path, method: 'GET', timeout }, (r) => {
+    const chunks = [];
+    r.on('data', (c) => chunks.push(c));
+    r.on('end', () => resolve({ code: r.statusCode ?? 0, body: Buffer.concat(chunks).toString() }));
+  });
+  req.on('timeout', () => { req.destroy(); resolve({ code: 0, body: '' }); });
+  req.on('error', () => resolve({ code: 0, body: '' }));
+  req.end();
+});
+
+// Cached for 5s. The status panel probes every gateway CONCURRENTLY, so without this each probe
+// shells its own kubectl and they contend — observed as one ordinal out of three intermittently
+// failing with a kubectl error while the other two answered, which looks like a flaky gateway and
+// is really a flaky lookup. Sorted here, once, so every caller agrees on which pod is ordinal N.
+const podsCache = { at: 0, list: [] };
+function gatewayPods() {
+  if (Date.now() - podsCache.at < 5000 && podsCache.list.length) return podsCache.list;
+  const out = execSync(
+    // Semicolon-separated, NOT newline-separated. `{"\n"}` inside a JS template literal is a REAL
+    // newline by the time kubectl sees it, and kubectl then rejects the jsonpath as an unterminated
+    // quoted string. The failure was invisible from outside: gatewayPods() threw, the /gw route
+    // 502'd, and /gw/<n> requests that arrived before this route existed fell through to the SPA
+    // fallback and returned index.html with HTTP 200 — a route that did not exist reporting success.
+    `kubectl -n ${NS} get pods -l app=cluster-gateway ` +
+    `-o jsonpath='{range .items[*]}{.metadata.name} {.status.podIP} {.status.phase};{end}'`,
+    { shell: '/bin/sh', timeout: 15000 }).toString();
+  const parsed = out.split(';').map(l => l.trim()).filter(Boolean).map(l => {
+    const [name, ip, phase] = l.split(/\s+/);
+    return { name, ip, phase };
+  }).filter(g => g.ip).sort((a, b) => a.name.localeCompare(b.name));
+  podsCache.at = Date.now(); podsCache.list = parsed;
+  return parsed;
+}
+
+const gwCache = { at: 0, body: '' };
+async function gatewaysBypass(req, res) {
+  try {
+    if (Date.now() - gwCache.at > 5000) {
+      const pods = gatewayPods();
+      const gateways = await Promise.all(pods.map(async (g, i) => {
+        const ready = await podHttp(g.ip, '/ready');
+        let health = {};
+        try { health = JSON.parse((await podHttp(g.ip, '/health')).body || '{}'); } catch { /* keep {} */ }
+        return { ordinal: i, name: g.name, ip: g.ip, phase: g.phase,
+                 code: ready.code, ready: ready.code === 200, health };
+      }));
+      gwCache.at = Date.now();
+      gwCache.body = JSON.stringify({ count: gateways.length, gateways });
+    }
+    return json(res, 200, gwCache.body);
+  } catch (e) {
+    return json(res, 502, { error: `could not list gateways: ${e}` });
+  }
+}
+
+/** Sum every gateway's Prometheus counters so a rate is differencing ONE series, not three. */
+async function aggregateGatewayMetrics(req, res) {
+  try {
+    const pods = gatewayPods();
+    const bodies = (await Promise.all(pods.map(g => podHttp(g.ip, '/metrics'))))
+      .filter(r => r.code === 200).map(r => r.body);
+    if (!bodies.length) return json(res, 502, { error: 'no gateway answered /metrics' });
+    const sum = new Map(), order = [];
+    for (const body of bodies) {
+      for (const line of body.split('\n')) {
+        const t = line.trim();
+        if (!t || t.startsWith('#')) continue;
+        const sp = t.lastIndexOf(' ');
+        if (sp < 0) continue;
+        const key = t.slice(0, sp), val = Number(t.slice(sp + 1));
+        if (!Number.isFinite(val)) continue;
+        if (!sum.has(key)) order.push(key);
+        sum.set(key, (sum.get(key) ?? 0) + val);
+      }
+    }
+    res.setHeader('Content-Type', 'text/plain; version=0.0.4');
+    res.setHeader('X-Traderx-Gateways-Aggregated', String(bodies.length));
+    res.end(order.map(k => `${k} ${sum.get(k)}`).join('\n') + '\n');
+  } catch (e) {
+    return json(res, 502, { error: String(e) });
+  }
+}
+
 // ---- static + proxy ---------------------------------------------------------------------------
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
@@ -227,6 +324,28 @@ const server = http.createServer(async (req, res) => {
     catch (e) { return json(res, 502, { error: String(e) }); }
   }
   if (p === '/healthz') return json(res, 200, { ok: true });
+  if (p === '/gateways') return gatewaysBypass(req, res);
+  // /gw/<n>/... — a stable per-gateway route. Gateway pods have random names and no per-pod DNS, so
+  // the ordinal is positional over the pod list sorted by name: stable while the ReplicaSet is, and
+  // re-derived on every call so scaling up or down is picked up without redeploying anything.
+  const gw = /^\/gw\/(\d+)(\/.*)?$/.exec(p);
+  if (gw) {
+    (async () => {
+      try {
+        const pods = gatewayPods();
+        const g = pods[Number(gw[1])];
+        if (!g) return json(res, 404, { error: `no gateway ordinal ${gw[1]} (${pods.length} running)` });
+        const r = await podHttp(g.ip, (gw[2] || '/') + (url.search || ''));
+        res.statusCode = r.code || 502;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(r.body || '{}');
+      } catch (e) { json(res, 502, { error: String(e) }); }
+    })();
+    return;
+  }
+  // Intercepted BEFORE the generic /order-matcher proxy: through the Service this would answer
+  // from one arbitrary gateway, and the caller cannot tell which.
+  if (p === '/order-matcher/metrics') return aggregateGatewayMetrics(req, res);
   // The original TraderX UI, served same-origin under /legacy/. This works ONLY because that app
   // ships <base href="."> — its assets resolve relative to whatever path it is served under, so no
   // rewriting of the HTML is needed and no second hostname (and no second DNS record and TLS

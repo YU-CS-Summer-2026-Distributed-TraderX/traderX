@@ -82,6 +82,7 @@ export class StatusPanel implements OnInit, OnDestroy {
   readonly rows = signal<Row[]>(CHECKS.map(c => ({
     ...c, status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
   })));
+  readonly gatewayCount = signal(0);
   readonly open = signal(true);
   readonly checking = signal(false);
   readonly downCount = signal(0);
@@ -97,8 +98,30 @@ export class StatusPanel implements OnInit, OnDestroy {
   }
   ngOnDestroy(): void { clearInterval(this.timer); clearInterval(this.ticker); }
 
+  /**
+   * How many gateways there are is a scaling decision, not a constant — this rig runs three and the
+   * count can change without the console being rebuilt. So the single static 'Cluster gateway' row
+   * is replaced at refresh time by one row per running gateway, probed on its own /gw/<n> route.
+   * A hardcoded row would keep reporting "1 gateway, up" while two others were down.
+   */
+  private async expandGateways(): Promise<void> {
+    try {
+      const res = await this.api.load<{ count: number }>('/gateways');
+      const n = res.status === 200 && res.body?.count ? res.body.count : 0;
+      if (!n || n === this.gatewayCount()) return;
+      this.gatewayCount.set(n);
+      const gwRows: Row[] = Array.from({ length: n }, (_, i) => ({
+        id: `gw${i}`, name: `Cluster gateway ${i}`, path: `/gw/${i}/ready`, expect: [200],
+        note: 'ready = it can commit to the log, not merely that its socket is open',
+        status: null, up: false, latencyMs: null, checkedAt: 0, upSince: 0,
+      }));
+      this.rows.set([...gwRows, ...this.rows().filter(r => r.id !== 'gateway' && !r.id.startsWith('gw'))]);
+    } catch { /* leave the static row in place — a discovery failure must not blank the panel */ }
+  }
+
   async refresh(): Promise<void> {
     this.checking.set(true);
+    await this.expandGateways();
     const probed = await Promise.all(this.rows().map(async r => {
       const started = Date.now();
       const res = await this.api.load<unknown>(r.path);
