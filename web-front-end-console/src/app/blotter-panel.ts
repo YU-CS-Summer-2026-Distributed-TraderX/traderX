@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, BlotterTrade, Position, parseOcc } from './api';
+import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
 import { HelpTip } from './help';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
@@ -28,7 +28,7 @@ interface PosRow extends Position {
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'live · message bus' : 'polling' }}</span>
     </div>
     <label class="field acct">Account
-      <select [(ngModel)]="accountId" (ngModelChange)="onAccount()">
+      <select [ngModel]="accountId()" (ngModelChange)="accountId.set($event); onAccount()">
         @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
       </select>
     </label>
@@ -74,6 +74,28 @@ interface PosRow extends Position {
         } @empty { <tr><td colspan="7" class="faint">no resting orders</td></tr> }
       </tbody>
     </table>
+
+    @if (contracts().length) {
+      <h3>OTC contracts
+        <help-tip text="Swaps and swaptions are carried at CONTRACT grain, never as positions — a receive-fixed and a pay-fixed of equal notional would net to zero as positions and destroy both rates, which the netting proof exists to catch. They are also invisible everywhere else on this tier until the next end-of-day cut: the booking routes are write-only, there is no contract table, and the regulatory report enumerates order and trade kinds only. So the console keeps what it booked, with the consensus sequence the engine assigned." />
+      </h3>
+      <table>
+        <thead><tr><th>contract</th><th class="num">seq</th><th>terms</th><th class="num">notional</th><th>booked</th></tr></thead>
+        <tbody>
+          @for (c of contracts(); track c.contractId) {
+            <tr>
+              <td>{{ c.contractId }}</td>
+              <td class="num">{{ c.sequence }}</td>
+              <td class="sub">{{ c.payReceive }} fixed {{ (c.fixedRate * 100).toFixed(3) }}% ·
+                {{ c.conventions }} · {{ c.effectiveDate }} → {{ c.maturityDate }}@if (c.exerciseStyle) {
+                  · {{ c.exerciseStyle }} expiry {{ c.expiryDate }} }</td>
+              <td class="num">{{ fmt(c.notional) }}</td>
+              <td class="sub">{{ c.bookedAt.slice(11, 19) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
 
     <h3>Trades</h3>
     <table>
@@ -126,12 +148,18 @@ interface PosRow extends Position {
 })
 export class BlotterPanel implements OnInit, OnDestroy {
   readonly api = inject(Api);
-  accountId = 22214;
+  // A signal, not a plain field: the contracts list below is a computed(), and a computed only
+  // recomputes when a SIGNAL it reads changes — as a plain field this would have kept showing the
+  // previous account's contracts after a switch. Same trap that made the ticket's bond terms go
+  // stale; worth fixing at the second sighting rather than the third.
+  readonly accountId = signal(22214);
   readonly positions = signal<Position[]>([]);
   readonly trades = signal<BlotterTrade[]>([]);
   readonly live = signal(false);
   readonly openId = signal<string | null>(null);
   readonly openOrders = signal<OpenOrder[]>([]);
+  readonly contracts = computed<OtcContract[]>(() =>
+    this.api.contracts().filter(c => c.accountId === Number(this.accountId())));
   readonly tcaText = signal('');
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
@@ -210,13 +238,13 @@ export class BlotterPanel implements OnInit, OnDestroy {
   private follow(): void {
     this.unsub?.();
     this.unsub = this.api.busSubscribe(
-      [`/accounts/${Number(this.accountId)}/trades`, `/accounts/${Number(this.accountId)}/positions`],
+      [`/accounts/${Number(this.accountId())}/trades`, `/accounts/${Number(this.accountId())}/positions`],
       () => this.poll(),
       up => this.live.set(up));
   }
 
   async poll(): Promise<void> {
-    const id = Number(this.accountId);
+    const id = Number(this.accountId());
     const [p, t, o] = await Promise.all([
       this.api.load<Position[]>(`/position-service/positions/${id}`),
       this.api.load<BlotterTrade[]>(`/position-service/trades/${id}`),

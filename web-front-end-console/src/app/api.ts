@@ -58,6 +58,28 @@ export interface EodReport {
   flaggedCount?: number; prices?: EodRow[]; [k: string]: unknown;
 }
 
+/**
+ * A booked OTC contract, kept BY THE CONSOLE because nothing else on this tier will show it to
+ * you between booking and the next EOD cut. Measured: /swaps and /swaptions are POST-only ingress
+ * (the gateway registers no read context for either), no swap or contract table exists in the
+ * database, and the regulatory report enumerates order/trade kinds only — a booked contract
+ * appears in none of them. It becomes durable in the EOD risk extract's CONTRACTS artifact
+ * (contractId,accountId,payFixed,notional,fixedRateTicks,…), rendered byte-identically by all
+ * three members at a consensus sequence — but only at the next cut.
+ *
+ * <p>Deliberately NOT given a position row: a receive-fixed and a pay-fixed at equal notional net
+ * to zero at position grain and destroy both rates, which is exactly what yu17-swap-netting step 7
+ * exists to catch. OTC is carried at contract grain, so this list is contract grain too.
+ */
+export interface OtcContract {
+  contractId: string; sequence: number; accountId: number;
+  product: 'Swap' | 'Swaption';
+  payReceive: string; notional: number; fixedRate: number;
+  effectiveDate: string; maturityDate: string; conventions: string;
+  expiryDate?: string; exerciseStyle?: string;
+  bookedAt: string;
+}
+
 export interface ActivityEntry {
   at: Date; kind: 'order' | 'swap' | 'swaption' | 'cancel' | 'replace' | 'eod' | 'algo';
   summary: string; ok: boolean; reason?: string; detail?: string;
@@ -135,6 +157,18 @@ export class Api {
   readonly accounts = signal<Account[]>([]);
   readonly instruments = signal<Instrument[]>([]);
   readonly activity = signal<ActivityEntry[]>([]);
+
+  /** Survives a reload, because a demo that refreshes the page should not lose its bookings. */
+  readonly contracts = signal<OtcContract[]>(
+    JSON.parse(sessionStorage.getItem('traderx-console-contracts') ?? '[]'));
+
+  recordContract(c: OtcContract): void {
+    this.contracts.update(list => {
+      const next = [c, ...list.filter(x => x.contractId !== c.contractId)].slice(0, 100);
+      sessionStorage.setItem('traderx-console-contracts', JSON.stringify(next));
+      return next;
+    });
+  }
 
   async load<T>(url: string, init?: RequestInit): Promise<{ status: number; body: T | null }> {
     try {

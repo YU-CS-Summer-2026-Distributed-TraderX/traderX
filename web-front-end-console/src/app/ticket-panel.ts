@@ -1,7 +1,7 @@
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { Api, OrderResult, nextClientOrderId, parseOcc, traceIdFor } from './api';
+import { Api, OrderResult, OtcContract, nextClientOrderId, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
 
 type Cls = 'Equity' | 'Option' | 'Treasury' | 'Corporate' | 'Swap' | 'Swaption';
@@ -317,6 +317,20 @@ export class TicketPanel {
         };
         if (c === 'Swaption') { body['expiryDate'] = this.expiryDate; body['exerciseStyle'] = this.exerciseStyle; }
         const r = await this.api.post<OrderResult>(c === 'Swap' ? '/order-matcher/swaps' : '/order-matcher/swaptions', body);
+        if (r.status === 200 && r.body?.booked && r.body.contractId) {
+          // Nothing else on this tier will show this contract until the next EOD cut, so the
+          // console keeps it (see OtcContract).
+          this.api.recordContract({
+            contractId: r.body.contractId, sequence: r.body.sequence ?? 0,
+            accountId: Number(this.accountId), product: c,
+            payReceive: this.payReceive, notional: this.notional, fixedRate: this.fixedRate,
+            effectiveDate: this.effectiveDate, maturityDate: this.maturityDate,
+            conventions: this.conventions,
+            expiryDate: c === 'Swaption' ? this.expiryDate : undefined,
+            exerciseStyle: c === 'Swaption' ? this.exerciseStyle : undefined,
+            bookedAt: new Date().toISOString(),
+          } as OtcContract);
+        }
         this.report(c === 'Swap' ? 'swap' : 'swaption',
           r.status === 200 && !!r.body?.booked,
           r.status === 404
