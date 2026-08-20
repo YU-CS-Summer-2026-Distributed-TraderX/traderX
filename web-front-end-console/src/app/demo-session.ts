@@ -104,17 +104,49 @@ export class SessionDriver {
     ...this.extra().split(',').map(s => s.trim().toUpperCase()).filter(Boolean),
   ]);
 
+  /**
+   * The identity, computed rather than asserted in prose — and it refuses to print a balanced-looking
+   * line it cannot balance. Two things make the naive `sent = accepted + rejected + skipped` false,
+   * and both bit this line the first time it was written:
+   *
+   * 1. **Batch mode counts different things.** `sent` counts BATCHES while the other three count
+   *    ORDERS, so the left side is batches × batch size. Summing them raw puts batches and orders
+   *    in one total — which is what "20 batches sent = 9 accepted + 11 skipped" was doing.
+   * 2. **In flight is not loss.** `sent` is incremented before the request goes out, so during a run
+   *    the shortfall is orders still awaiting an answer. Reporting that as unaccounted would invent
+   *    a fault every second of every session; reporting it as nothing would hide a real one.
+   *
+   * So the shortfall is named by state: in flight while running, UNACCOUNTED once stopped — at rest
+   * there is nothing left to arrive, and a gap then is the real thing this is here to catch. A
+   * negative gap (more answered than offered) is impossible and says so rather than rendering.
+   */
+  readonly tally = computed(() => {
+    const unit = this.liveBatch ? `orders in ${this.sent()} batches` : 'orders';
+    const offered = this.liveBatch ? this.sent() * this.liveBatchSize : this.sent();
+    const accounted = this.accepted() + this.rejected() + this.skipped();
+    const gap = offered - accounted;
+    const sum = `${this.accepted()} accepted + ${this.rejected()} rejected + `
+      + `${this.skipped()} skipped (no price yet)`;
+    if (gap < 0) {
+      return { bad: true, text: `${offered} ${unit} sent but ${accounted} accounted for — these do `
+        + `not add up, which should be impossible: ${sum}` };
+    }
+    if (!gap) return { bad: false, text: `${offered} ${unit} sent = ${sum}` };
+    return {
+      bad: !this.running(),
+      text: `${offered} ${unit} sent = ${sum} + ${gap} `
+        + (this.running() ? 'in flight' : 'UNACCOUNTED — no answer ever arrived'),
+    };
+  });
+
   /** Every actor's tick interval and its stop timeout, cleared together on stop. */
   private timers: ReturnType<typeof setTimeout>[] = [];
   private clock: ReturnType<typeof setInterval> | undefined;
   /** The pool as it was when Start was pressed — the inputs are locked while running anyway. */
   private livePool: string[] = [];
-
-  /** One line whose numbers add up: sent = accepted + rejected + skipped. */
-  tally(): string {
-    return `${this.sent()} ${this.batch() ? 'batches' : 'orders'} sent = ${this.accepted()} accepted`
-      + ` + ${this.rejected()} rejected + ${this.skipped()} skipped (no price yet)`;
-  }
+  /** Likewise the ingress shape: the tally is still on screen after a stop, when these unlock. */
+  private liveBatch = false;
+  private liveBatchSize = 1;
 
   patch(i: number, fields: Partial<Actor>): void {
     this.actors.update(list => list.map((a, j) => (j === i ? { ...a, ...fields } : a)));
@@ -129,6 +161,8 @@ export class SessionDriver {
     if (this.running()) return;
     this.api.watchPrices();
     this.livePool = this.pool();
+    this.liveBatch = this.batch();
+    this.liveBatchSize = Math.min(MAX_BATCH, Math.max(1, this.batchSize()));
     this.actors.update(l => l.map(a => ({
       ...a,
       perMin: Math.min(MAX_PER_MIN, Math.max(1, a.perMin)),
@@ -195,7 +229,7 @@ export class SessionDriver {
       (a.running ? { ...a, remainingMs: Math.max(0, a.remainingMs - spent) } : a)));
     this.paused.set(true);
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session paused at ${this.elapsed()}s · ${this.tally()}`
+      summary: `live session paused at ${this.elapsed()}s · ${this.tally().text}`
         + ' — counters held, clock stopped' });
   }
 
@@ -227,7 +261,7 @@ export class SessionDriver {
     this.paused.set(false);
     this.actors.update(l => l.map(a => ({ ...a, running: false })));
     this.api.log({ kind: 'algo', ok: true,
-      summary: `live session ${why} after ${this.elapsed()}s of trading time · ${this.tally()}` });
+      summary: `live session ${why} after ${this.elapsed()}s of trading time · ${this.tally().text}` });
     this.bankedSec = 0;
   }
 
@@ -430,7 +464,7 @@ export class SessionDriver {
 
     <table>
       <thead><tr><th>account</th><th>side</th><th class="num">{{ d.batch() ? 'batches/min' : 'orders/min' }}</th>
-        <th class="num">qty</th><th class="num">for (s)</th><th class="num">{{ d.batch() ? 'batches' : 'sent' }}</th>
+        <th class="num">qty</th><th class="num">for (s)</th><th class="num">{{ d.batch() ? 'batches' : 'orders' }} sent</th>
         <th class="num">accepted</th><th class="num">rejected</th><th class="num">skipped</th>
         <th>last reject</th><th></th></tr></thead>
       <tbody>
@@ -468,7 +502,7 @@ export class SessionDriver {
       </tbody>
     </table>
     @if (!d.running()) { <button class="add" (click)="d.add()">+ add an account</button> }
-    @if (d.sent()) { <div class="sub tally">{{ d.tally() }}</div> }
+    @if (d.sent()) { <div class="sub tally" [class.neg]="d.tally().bad">{{ d.tally().text }}</div> }
 
     <div class="sub note">Quantity <b>-1</b> draws a random multiple of 25 between 25 and 10,000 per
       order. Rejections are logged individually to Activity &amp; rejections with their reason code —

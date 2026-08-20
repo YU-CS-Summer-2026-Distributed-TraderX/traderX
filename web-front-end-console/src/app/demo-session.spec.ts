@@ -83,3 +83,71 @@ describe('SessionDriver pause/resume', () => {
     expect(d.running()).toBeFalse();
   });
 });
+
+/**
+ * The tally is the only place a reader can check the session's arithmetic, so it has to be right
+ * about two things that are easy to get wrong — and were, in its first version: batch mode counts
+ * batches on one side and orders on the other, and an in-flight order is a legitimate shortfall
+ * rather than a loss.
+ */
+describe('SessionDriver tally', () => {
+  let d: SessionDriver;
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [{ provide: Api, useValue: {
+        watchPrices: () => {}, log: () => {}, prices: () => ({}),
+        post: () => Promise.resolve({ status: 200, body: {} }),
+      } }],
+    });
+    d = TestBed.inject(SessionDriver);
+    jasmine.clock().install();
+    jasmine.clock().mockDate(new Date(0));
+  });
+  afterEach(() => { d.stop('test over'); jasmine.clock().uninstall(); });
+
+  /** start() zeroes the counters, so the numbers under test are set after it. */
+  const withCounts = (c: { sent: number; accepted: number; rejected: number; noPrice: number }) => {
+    d.actors.set([{ accountId: 1, side: 'Buy', perMin: 1, quantity: 25, durationSec: 600,
+      sent: 0, accepted: 0, rejected: 0, noPrice: 0, running: false, lastReason: '', remainingMs: 0 }]);
+    d.start();
+    d.actors.update(l => l.map(a => ({ ...a, ...c })));
+  };
+
+  it('balances when every order has been answered', () => {
+    withCounts({ sent: 20, accepted: 9, rejected: 0, noPrice: 11 });
+    d.stop('done');
+    expect(d.tally().bad).toBeFalse();
+    expect(d.tally().text).toBe('20 orders sent = 9 accepted + 0 rejected + 11 skipped (no price yet)');
+  });
+
+  it('calls a shortfall "in flight" while running, and does not flag it', () => {
+    withCounts({ sent: 20, accepted: 15, rejected: 0, noPrice: 2 });
+    expect(d.running()).toBeTrue();
+    expect(d.tally().bad).withContext('in flight is not loss').toBeFalse();
+    expect(d.tally().text).toContain('3 in flight');
+  });
+
+  it('calls the same shortfall UNACCOUNTED once stopped, and flags it', () => {
+    withCounts({ sent: 20, accepted: 15, rejected: 0, noPrice: 2 });
+    d.stop('operator');
+    expect(d.tally().bad).withContext('at rest nothing more can arrive').toBeTrue();
+    expect(d.tally().text).toContain('3 UNACCOUNTED');
+  });
+
+  it('counts ORDERS on both sides in batch mode, not batches against orders', () => {
+    d.batch.set(true);
+    d.batchSize.set(10);
+    withCounts({ sent: 4, accepted: 30, rejected: 4, noPrice: 6 });
+    d.stop('done');
+    // 4 batches x 10 = 40 orders offered, and 30 + 4 + 6 = 40. The naive version compared 4 to 40.
+    expect(d.tally().bad).toBeFalse();
+    expect(d.tally().text).toBe('40 orders in 4 batches sent = 30 accepted + 4 rejected + 6 skipped (no price yet)');
+  });
+
+  it('refuses to print a balanced-looking line when more was answered than offered', () => {
+    withCounts({ sent: 5, accepted: 99, rejected: 0, noPrice: 0 });
+    expect(d.tally().bad).toBeTrue();
+    expect(d.tally().text).toContain('do not add up');
+  });
+});
