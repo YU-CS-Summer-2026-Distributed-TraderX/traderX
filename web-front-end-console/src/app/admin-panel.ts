@@ -2,6 +2,7 @@ import { Component, OnDestroy, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api, BlotterTrade } from './api';
 import { HelpTip } from './help';
+import { SecHead, SecPager, Section } from './section';
 
 interface TcaReport {
   tradeId: string; security: string; side: string; quantity: number;
@@ -19,14 +20,17 @@ interface ParentOrder {
 
 @Component({
   selector: 'admin-panel',
-  imports: [FormsModule, HelpTip],
+  imports: [FormsModule, HelpTip, SecHead, SecPager],
   template: `
     <div class="card-head">
-      <h2>Trade lifecycle &amp; TCA</h2>
+      <button type="button" class="card-tog" (click)="open.set(!open())">
+        <span class="arrow">{{ open() ? '▾' : '▸' }}</span><h2>Trade lifecycle &amp; TCA</h2>
+      </button>
       <help-tip text="A trade books immediately but settles on a T+n cycle: it stays 'Processing' until its settlement date passes, when a sweep advances it to 'Settled'. Force-settle demonstrates that transition on demand. TCA (transaction cost analysis) compares each execution against the market's benchmark and arrival prices and expresses the difference in basis points — the standard measure of execution quality." />
     </div>
 
-    @if (!api.adminToken()) {
+    @if (!open()) {
+    } @else if (!api.adminToken()) {
       <div class="sub">Admin operations need a token — open the End of day page once to auto-mint it.</div>
     } @else {
       <label class="field acct">Account
@@ -34,10 +38,12 @@ interface ParentOrder {
           @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
         </select>
       </label>
+      <sec-head [s]="section" label="Trades" />
+      @if (section.open()) {
       <table>
         <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">price</th><th>state</th><th></th><th></th></tr></thead>
         <tbody>
-          @for (t of trades(); track t.id) {
+          @for (t of section.view(); track t.id) {
             <tr>
               <td class="sub">{{ t.id }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
               <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
@@ -59,6 +65,8 @@ interface ParentOrder {
           } @empty { <tr><td colspan="8" class="faint">no trades for this account</td></tr> }
         </tbody>
       </table>
+      <sec-pager [s]="section" />
+      }
 
       <div class="card-head sect">
         <h2>Algo parent orders</h2>
@@ -137,7 +145,10 @@ export class AdminPanel implements OnInit, OnDestroy {
   readonly api = inject(Api);
   accountId = 22214;
   cancelRef: number | null = null;
+  readonly open = signal(true);
   readonly trades = signal<BlotterTrade[]>([]);
+  /** Same collapse-and-page behaviour as the blotter's sections, from the same class. */
+  readonly section = new Section<BlotterTrade>(this.trades, t => t.id);
   readonly parents = signal<ParentOrder[]>([]);
   readonly openParent = signal<string | null>(null);
   readonly algoDown = signal(false);
@@ -158,8 +169,9 @@ export class AdminPanel implements OnInit, OnDestroy {
       this.api.load<BlotterTrade[]>(`/position-service/trades/${Number(this.accountId)}`),
       this.api.load<ParentOrder[]>('/algo/orders'),
     ]);
-    // Newest-first from the service; head as-is (reversing dropped the NEWEST past 30).
-    if (r.status === 200 && Array.isArray(r.body)) this.trades.set(r.body.slice(0, 30));
+    // Newest-first from the service; head as-is (reversing dropped the NEWEST past 30). 200 rather
+    // than 30 now that the section pages — a page-4 row has to exist to be paged to.
+    if (r.status === 200 && Array.isArray(r.body)) this.trades.set(r.body.slice(0, 200));
     if (p.status === 200 && Array.isArray(p.body)) { this.parents.set([...p.body].reverse()); this.algoDown.set(false); }
     else if (p.status >= 500 || p.status === 0 || p.status === 502) { this.parents.set([]); this.algoDown.set(true); }
   }

@@ -169,9 +169,12 @@ const actor = (accountId: number, side: Actor['side'], perMin: number, quantity:
     .row { display: flex; align-items: center; gap: 6px; padding: 2px 8px; font-size: 12.5px; cursor: pointer; }
     .row:hover { background: #f5f7fa; }
     .row.on { background: var(--accent-soft); }
-    .row input { width: auto; margin: 0; }
-    .row .k { font-family: var(--mono); font-size: 12px; }
-    .row .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    /* Bonds carry a short name with spaces in it ("IBM 4.5% 33", "UST 2Y"), so both spans need
+       nowrap and the checkbox needs to be unshrinkable — otherwise the name wraps mid-row and
+       drags the box out of line with it. min-width:0 is what lets the ellipsis engage at all. */
+    .row input { width: auto; margin: 0; flex: 0 0 auto; }
+    .row .k { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+    .row .sub { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .pad { padding: 8px; }
     .side { display: flex; flex-direction: column; gap: 7px; }
     .side input[type=text], .side .field input { width: 230px; }
