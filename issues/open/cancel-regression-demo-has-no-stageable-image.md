@@ -1,5 +1,12 @@
 # `yu13-cancel-ingress` has no image that can stage its regression demonstration
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Filed** 2026-08-18 by the coordinator, after trying and failing to restore it. **Open.**
 Low severity: the proof's **forward claim runs in full** and passes. What is missing is the
 before/after half that shows the pre-fix build could not cancel.

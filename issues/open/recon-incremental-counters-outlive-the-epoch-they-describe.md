@@ -1,5 +1,12 @@
 # The incremental reconciler's counters outlive the epoch they describe
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Found 2026-08-20 by the coordinator**, running down an observation the console lane flagged but
 deliberately did not file as fact: two recon surfaces answer "is the projection complete?" differently.
 
@@ -58,10 +65,13 @@ not comparable.
 
 ## Consequences
 
-- **"Reconciliation is clean" is TRUE right now** — but cite the **full-history sweep**, which
-  re-examines current state. The incremental counter cannot support that sentence and never will.
-- **`missingInProjection` can only go up.** It will read 6 until trade-processor restarts, regardless
-  of how healthy the projection becomes. Any future epoch roll can add more.
+- **"Reconciliation is clean" can be a true sentence** — but only if it cites the **full-history
+  sweep**, which re-examines current state. The incremental counter cannot support that sentence and
+  never will.
+- **`missingInProjection` can only go up.** Once it has counted a miss it holds that number until
+  trade-processor restarts, regardless of how healthy the projection becomes, and every later epoch
+  roll can add more. (It stood at 6 when this was written; the figure is an illustration of the
+  ratchet, not a current reading.)
 - A UI rendering it as current state will announce data loss on a clean rig. The console lane hit
   exactly this and caught it before shipping, by cross-checking against the sweep.
 

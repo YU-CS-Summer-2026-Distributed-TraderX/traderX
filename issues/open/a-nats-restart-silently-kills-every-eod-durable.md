@@ -1,5 +1,12 @@
 # A NATS restart silently and permanently kills the EOD chain's durable consumers
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Found 2026-08-19 by the coordinator**, while trying to produce a cut so the UI lane's provenance
 panel would have data. The chain had been dead for roughly ten hours with every pod reporting
 healthy.

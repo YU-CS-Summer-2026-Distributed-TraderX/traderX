@@ -1,5 +1,12 @@
 # The gateway's HTTP executor stops serving and never drains
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Split out of `HANDOFF-issue-gateway-wedges-after-leader-kill.md` on 2026-08-18**, when that issue was
 resolved. **This half was NOT resolved with it** and is extracted so it does not get buried: the parent
 covered ack correlation, which Option B closed on every branch YU13 and up. This is a different defect

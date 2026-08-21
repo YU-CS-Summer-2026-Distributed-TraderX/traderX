@@ -1,5 +1,12 @@
 # The GKE deploy path has no image guard — and four bring-up preconditions that do not exist yet
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Status: open, deliberately parked with the next GKE bring-up.** Not unowned by oversight — see
 "Why this is parked" below. Opened 2026-08-17 by the coordinator
 (`local_9cb195ed-56f3-4dad-b87e-ac19060f971a`) from the instrument lane's handover notes.

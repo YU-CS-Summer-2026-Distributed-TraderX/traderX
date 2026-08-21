@@ -1,5 +1,12 @@
 # Two orders sharing a ClOrdID share one trace id, and the trace cannot tell them apart
 
+> **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
+> (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
+> measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
+> symbol table is renumbered, trace ids follow the client order ids of a run that no longer exists.
+> Read them as a worked example of the SHAPE. Do not look them up, and do not treat their absence
+> on a current rig as evidence about this issue.
+
 **Filed 2026-08-21**, measured on the GKE bench rig while proving out the read-model trace id
 (`bfc3ace8`, "orders: persist the trace id on the read-model row").
 
@@ -20,10 +27,13 @@ Measured, two `POST /orders` both carrying ClOrdID `TRACE-REJ-0821`:
 1-67  17017  REJECTED  limitprice    0.010000  traceid 8787023ec4036ea7f2b8b487dca9e692
 ```
 
-`GET /tempo/api/traces/8787023ec4036ea7f2b8b487dca9e692` returns **10 spans** — two complete
-five-span traces (`gateway.queue`, `cluster.consensus`, `order` from `traderx-cluster-gateway`;
-`cluster.commit`, `cluster.apply` from `traderx-cluster-member`) sharing one trace id. A single order
-returns 5, verified alongside on `1-60`.
+Fetching that trace id from Tempo returned **10 spans** — two complete five-span traces
+(`gateway.queue`, `cluster.consensus`, `order` from `traderx-cluster-gateway`; `cluster.commit`,
+`cluster.apply` from `traderx-cluster-member`) sharing one trace id, where a single order returns 5.
+
+**The reproduction, which is what survives a roll:** submit two orders with the SAME clientOrderId,
+then fetch the trace id either one reports. Ten spans instead of five, with no field distinguishing
+which order each belongs to, is the defect. Any two orders and any epoch will do.
 
 ## Why it is necessary, and why it must not be "fixed"
 
