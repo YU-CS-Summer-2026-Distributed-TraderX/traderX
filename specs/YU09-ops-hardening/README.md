@@ -2,6 +2,13 @@
 
 ![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
 
+- No PowerShell parity: the only shell script this pack names is
+  `pipeline/publish-generated-state-branch.sh`, and it is named in prose describing what the
+  BUILD PIPELINE does — not as a command a reader runs. There are no `pipeline/*.ps1` at all;
+  the repo's PowerShell scripts are lifecycle scripts (`scripts/*-generated.ps1`) for the
+  numbered states, and this pack adds no lifecycle script of its own. The windows badge above
+  already says this in an image; this bullet is the machine-readable form of the same claim.
+
 Status: Implemented
 Track: `architecture`
 Lineage role: `optional`

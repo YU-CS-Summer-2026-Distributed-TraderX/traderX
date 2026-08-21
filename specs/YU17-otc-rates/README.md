@@ -2,6 +2,14 @@
 
 ![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
 
+- No PowerShell parity: the scripts this pack names are proof runners (`scripts/proofs/yu17-*.sh`) that drive an Aeron
+  cluster on a Kubernetes rig through `kubectl`. They are
+  Linux/macOS tooling for a rig that is itself Linux, and there is no `.ps1` equivalent
+  anywhere in this repo for `scripts/proofs` or `scripts/bench` — the repo's PowerShell
+  scripts are lifecycle scripts for the numbered states. The windows badge above already
+  says this in an image; this bullet is the machine-readable form of the same claim.
+
+
 Status: In implementation — see generation/implementation-status.md
 Track: `functional`
 Lineage role: `optional`
