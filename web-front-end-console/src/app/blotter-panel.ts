@@ -112,12 +112,15 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
       <sec-pager [s]="positions" />
     }
 
-    <sec-head [s]="openOrders" label="Open orders">
-      <help-tip text="Orders resting in the matching engine's book: submitted, sequenced through consensus, accepted — and waiting for someone to trade against them. An order that rests is a normal outcome, not a failure; it only becomes a trade when a counterparty crosses it. Without this view a resting order is invisible, which makes a perfectly good order look like it vanished." />
+    <sec-head [s]="openOrders" [label]="showTerminal() ? 'Orders — all states' : 'Open orders'">
+      <help-tip text="Orders resting in the matching engine's book: submitted, sequenced through consensus, accepted — and waiting for someone to trade against them. An order that rests is a normal outcome, not a failure; it only becomes a trade when a counterparty crosses it. Without this view a resting order is invisible, which makes a perfectly good order look like it vanished. The read model holds terminal orders too — rejected, cancelled, filled — but the default request asks only for the open ones, so 'all states' is a different QUESTION rather than a filter applied here: it re-reads with ?status=all." />
+      <button type="button" class="terminal" (click)="toggleTerminal(); $event.stopPropagation()">
+        {{ showTerminal() ? 'open only' : 'all states' }}</button>
     </sec-head>
     @if (openOrders.open()) {
       <table>
-        <thead><tr><th></th><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
+        <thead><tr><th></th><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th>
+          @if (showTerminal()) { <th>state</th> }<th></th></tr></thead>
         <tbody>
           @for (o of openOrders.view(); track o.orderId) {
             <tr [class.hit]="hit() === o.orderId" class="click" (click)="toggleOrder(o.orderId)">
@@ -125,9 +128,16 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
               <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
               <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
               <td class="num">{{ o.limitPrice }}</td>
+              @if (showTerminal()) {
+                <td><span class="pill" [class.bad]="o.status === 'REJECTED'">{{ o.status }}</span></td>
+              }
               <!-- $event.stopPropagation: the row is now a toggle, and without this a cancel click
-                   also expands the row it just cancelled. -->
-              <td><button class="cancel" (click)="cancelOrder(o); $event.stopPropagation()">cancel</button></td>
+                   also expands the row it just cancelled. Cancel is offered only where it can do
+                   something: a REJECTED or CANCELED order is terminal, and a button that always
+                   fails teaches the reader to ignore the ones that work. -->
+              <td>@if (cancellable(o)) {
+                <button class="cancel" (click)="cancelOrder(o); $event.stopPropagation()">cancel</button>
+              }</td>
             </tr>
             @if (expanded()[o.orderId]) {
               <tr class="detail">
@@ -227,6 +237,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
     .rowlink:hover td { background: #f5f7fa; }
     tr.hit td { background: var(--accent-soft); }
     td.det { background: #f8f9fb; }
+    .terminal { font-size: 10.5px; padding: 0 7px; line-height: 18px; border-radius: 9px; margin-left: 6px; }
     tr.click { cursor: pointer; }
     tr.click:hover { background: #f5f7fa; }
     td.arrow { width: 16px; color: var(--muted); font-size: 12px; padding-right: 0; }
@@ -326,6 +337,24 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   readonly expanded = signal<Record<string, boolean>>({});
   toggleOrder(id: string): void { this.expanded.update(m => ({ ...m, [id]: !m[id] })); }
+
+  /**
+   * Ask the read model for terminal orders as well as resting ones.
+   *
+   * Off by default, because "Open orders" has to keep meaning open orders — a list that quietly
+   * grew thirteen CANCELED rows would answer a question nobody asked. On, it is the only place a
+   * REJECTED order is visible at all once the in-memory activity list is gone: rejections escalate
+   * past head sampling, so they are the most reliably TRACED rows in the system and the least
+   * reachable. The rig has a pair of them sharing one trace id (1-72 and 1-73, one ClOrdID between
+   * them), which is exactly the case the span table's order column exists for.
+   */
+  readonly showTerminal = signal(false);
+  toggleTerminal(): void { this.showTerminal.update(v => !v); this.poll(); }
+
+  /** Cancel is only offered where it can do something; the rest are terminal. */
+  cancellable(o: OpenOrder): boolean {
+    return !o.status || o.status === 'NEW' || o.status === 'PARTIALLY_FILLED';
+  }
 
   /**
    * An open order's trace: the read model's own field first, this session's record second.
@@ -442,7 +471,11 @@ export class BlotterPanel implements OnInit, OnDestroy {
       this.api.load<BlotterTrade[]>(`/position-service/trades/${id}`),
       // The gateway serves no order snapshot (405 POST only); trade-processor's order read model
       // does, keyed `id` rather than `orderId`.
-      this.api.load<any[]>(`/trade-processor/accounts/${id}/orders`),
+      // `?status=all` is a DIFFERENT QUESTION, not a wider filter: without it the controller
+      // returns only NEW and PARTIALLY_FILLED, so a rejected order is not missing from the read
+      // model — it was never asked for. Measured on the rig: account 42422 answers with 1 row by
+      // default and 4 with ?status=all, three of them REJECTED.
+      this.api.load<any[]>(`/trade-processor/accounts/${id}/orders${this.showTerminal() ? '?status=all' : ''}`),
     ]);
     if (p.status === 200 && Array.isArray(p.body)) this.rawPositions.set(p.body);
     // The epoch arrives with the data and nowhere else — the submit path never learns it. Refs

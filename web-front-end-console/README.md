@@ -110,6 +110,25 @@ the trace id is derived client-side with the same FNV/mix math as OrderTrace.jav
 byte-equal against a gateway reject log line), fetched from Tempo via the `/tempo/` route, and
 rendered as a span timeline. Rejects escalate past head sampling, so a refusal's trace always exists.
 
+Open-order rows expand too, and the section has an **all states** toggle. That is not a filter
+applied in the browser — `/trade-processor/accounts/{id}/orders` returns only NEW and
+PARTIALLY_FILLED unless asked with `?status=all`, so a rejected order is not missing from the read
+model, it was never requested. Off by default, because "Open orders" has to keep meaning open
+orders. On, it is the only place a REJECTED order is visible once the in-memory activity list is
+gone — and since rejections escalate past head sampling, they are the most reliably traced rows in
+the system and were the least reachable.
+
+An order carries its own `traceId` on the row, stamped by the engine on the order's NEW egress, so
+an order this browser never sent — FIX, the algo engine, another session — is traceable here. A
+resting order keeps its own trace through a fill and never acquires the aggressor's. Where the row
+has no id, the console falls back to what it recorded for orders it submitted itself; that fallback
+is keyed on a bare order ref, and refs restart at 1 on a fresh epoch, which is why it is dropped
+when the epoch changes and the row's own field is not.
+
+**A trace can legitimately contain more than one order.** The id is a pure function of the client
+order id, so two orders that reuse one share a trace — measured, refs 72 and 73 on the rig. The span
+table names the refs and adds an `order` column when that happens, and hides both when it does not.
+
 Blotter trade rows expand to details with inline TCA, force-settle, the **source order** the trade
 came from, and that order's trace. The trace there is JOINED, not derived: a trade payload carries
 `sourceOrderId` (`<epoch>-<orderRef>`) but no client order id, and trace ids come from the client
