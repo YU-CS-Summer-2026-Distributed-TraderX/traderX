@@ -469,11 +469,10 @@ export class BlotterPanel implements OnInit, OnDestroy {
         status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
         lastExecutionPrice: row.lastExecutionPrice === null ? undefined : Number(row.lastExecutionPrice),
         lastFillQuantity: row.lastFillQuantity === null ? undefined : Number(row.lastFillQuantity),
-        // Accepting `traceid` as well as `traceId`: the projection's column is lower-case and
-        // whether it reaches JSON camel-cased depends on the serializer, not on this file. Same
-        // defensive shape as `row.id ?? row.orderId` two lines up, and it costs nothing to be
-        // wrong about which one arrives.
-        traceId: row.traceId ?? row.traceid ?? undefined,
+        // Read off the live rig, not assumed: the row's key is camel-cased `traceId`, alongside
+        // `remainingQuantity` and `lastExecutionPrice`. No lower-case arm, because there is no
+        // longer anything to be uncertain about.
+        traceId: row.traceId ?? undefined,
       })));
     }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).

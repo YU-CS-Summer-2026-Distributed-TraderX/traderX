@@ -79,8 +79,9 @@ export class TraceView {
         ? 'No trace id for this order. The row carries one when the engine stamped it on the order\'s '
           + 'own egress, and this session falls back to what it recorded for orders it submitted '
           + 'itself — neither is available here. An order that was not sampled, or that carried no '
-          + 'client order id to derive an id from, has none to show; nor does a resting order filled '
-          + 'by someone else\'s aggressor, which is deliberately NOT given the aggressor\'s trace. '
+          + 'client order id to derive an id from, has none to show — and it does not borrow one from '
+          + 'whoever filled it. (A resting order that HAS a trace keeps it through a fill: measured, '
+          + '1-70 held its own id across a partial fill by another account.) '
           + 'The order may well be traced; this page cannot name the id, and will not guess one.'
         : 'nothing to trace: this row carries no client order id to derive a trace id from');
       return;
