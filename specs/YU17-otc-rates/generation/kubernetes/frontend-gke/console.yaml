@@ -64,7 +64,7 @@ spec:
         cloud.google.com/gke-nodepool: support-pool
       containers:
         - name: console
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke24
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke25
           ports:
             - name: http
               containerPort: 8080

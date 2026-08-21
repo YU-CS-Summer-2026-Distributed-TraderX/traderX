@@ -54,19 +54,40 @@ spec:
             # grant that makes the sink immutable has nothing to attach to. Today the guarantee is
             # the client-side one alone: RiskExtractGcsSink's no-clobber precondition, which is a
             # correctly-behaving-writer guarantee, not an IAM one. The binding and its 403-on-
-            # overwrite proof go with the GKE bring-up — do not quote the YU15 write-once guarantee
-            # for this project until that proof has run.
+            # overwrite proof go with the GKE bring-up.
+            #
+            # PROVEN on this project 2026-08-21, with the service's OWN HMAC credential against the
+            # real endpoint, control first:
+            #   new object      -> HTTP 200   (the credential works at all)
+            #   overwrite a cut -> HTTP 403 AccessDenied
+            #   the cut re-read byte-for-byte unchanged afterwards
+            # The control is the half that matters: an earlier attempt via `gcloud
+            # --impersonate-service-account` returned IAM_PERMISSION_DENIED for the overwrite AND
+            # for the new-object control, because the impersonation itself was refused. Read
+            # without the control that is a write-once proof; with it, it is a test that never
+            # reached the bucket.
             - name: RISK_EXTRACT_SINK_URI
               value: "gs://traderx-505400-risk-extracts"
+            # Its OWN credential, not the journal archive's. This pointed at
+            # `order-matcher-journal-gcs-hmac`, whose access-key-id is the literal placeholder
+            # `unused-restore-is-disabled` because the journal restore path is switched off — so
+            # every cut this cluster ever made 403'd at the sink and wrote nothing, locally or
+            # remotely, while the chain upstream reported success. Created 2026-08-21:
+            # serviceAccount risk-extract-sink@traderx-505400, objectCreator + objectViewer on the
+            # bucket and nothing else, with its own HMAC key in risk-extract-gcs-hmac.
+            #
+            # objectCreator WITHOUT objectAdmin is the write-once guarantee: the identity can add an
+            # object and cannot replace or delete one, so a second write of the same cut is a 403
+            # from IAM rather than a silent overwrite.
             - name: RISK_EXTRACT_GCS_HMAC_KEY_ID
               valueFrom:
                 secretKeyRef:
-                  name: order-matcher-journal-gcs-hmac
+                  name: risk-extract-gcs-hmac
                   key: access-key-id
             - name: RISK_EXTRACT_GCS_HMAC_SECRET_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: order-matcher-journal-gcs-hmac
+                  name: risk-extract-gcs-hmac
                   key: secret-access-key
             - name: JAVA_TOOL_OPTIONS
               value: "-Xms128m -Xmx256m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"

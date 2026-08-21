@@ -492,6 +492,18 @@ function eodChain(req, res, url) {
     out.pnl = { state: 'unreadable', detail: 'could not read eod_position_pnl' };
   }
 
+  // READ THE SINK FIRST — both stages below mean different things depending on it, and this bit
+  // three times while building this endpoint. Where the cut LANDS is configuration, so "the local
+  // volume is empty" and "no cut was produced" are the same observation only when the sink is local.
+  let sink = '';
+  try {
+    sink = execSync(
+      `kubectl -n ${NS} get pod ${podByLabel('app=risk-extract')} -o jsonpath=`
+      + `'{.spec.containers[0].env[?(@.name=="RISK_EXTRACT_SINK_URI")].value}'`,
+      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+  } catch { /* unknown sink is reported as unknown, never assumed */ }
+  const remoteSink = sink.startsWith('gs://');
+
   try {
     const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
       { shell: '/bin/sh', timeout: 20000 }).toString().trim();
@@ -500,8 +512,15 @@ function eodChain(req, res, url) {
       { shell: '/bin/sh', timeout: 25000 }).toString().trim();
     const files = listed ? listed.split('\n').filter(Boolean) : [];
     out.extract = files.length
-      ? { state: 'ok', pod, files, detail: `${files.length} artifact(s) cut on ${pod}` }
-      : { state: 'pending', pod, files: [], detail: 'no cut for this date yet — it follows eod.pnl.done' };
+      ? { state: 'ok', pod, sink, files, detail: `${files.length} artifact(s) cut on ${pod}` }
+      : remoteSink
+        // With a gs:// sink the cut never touches this volume, so an empty directory says nothing
+        // about whether a cut happened — `published` is the stage that knows. Saying "no cut yet"
+        // here would report a completed chain as a stalled one.
+        ? { state: 'remote', pod, sink, files: [],
+            detail: `the sink is ${sink}, so cuts go straight to the bucket and never land on this `
+              + `volume — see the published stage for whether one was produced` }
+        : { state: 'pending', pod, sink, files: [], detail: 'no cut for this date yet — it follows eod.pnl.done' };
   } catch {
     out.extract = { state: 'unreadable', detail: 'could not read the risk-extract volume' };
   }
@@ -513,16 +532,9 @@ function eodChain(req, res, url) {
     // "Nothing in the bucket" means two different things, and only one of them is waiting. If the
     // sink is not pointed at gs:// then nothing will EVER arrive, however long anyone watches — so
     // read the sink the extract is actually configured with rather than assuming it is this bucket.
-    let sink = '';
-    try {
-      sink = execSync(
-        `kubectl -n ${NS} get pod ${podByLabel('app=risk-extract')} -o jsonpath=`
-        + `'{.spec.containers[0].env[?(@.name=="RISK_EXTRACT_SINK_URI")].value}'`,
-        { shell: '/bin/sh', timeout: 20000 }).toString().trim();
-    } catch { /* fall through: an unknown sink is reported as unknown, not as gs:// */ }
     out.published = files.length
       ? { state: 'ok', bucket: BUCKET, sink, files, detail: `${files.length} object(s) in the bucket` }
-      : sink && !sink.startsWith('gs://')
+      : sink && !remoteSink
         ? { state: 'not-configured', bucket: BUCKET, sink, files: [],
             detail: `the extract's sink is ${sink}, so the cut stays on the pod and nothing is `
               + `published externally. Not a wait — point RISK_EXTRACT_SINK_URI at the bucket (and `
