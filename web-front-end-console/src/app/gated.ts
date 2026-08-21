@@ -6,10 +6,16 @@ import { Api } from './api';
  * rather than from a 401 afterwards.
  *
  * Put this only beside an action that is actually gated — a mark on an open endpoint is a lock
- * attached to nothing, which teaches the reader to distrust the ones that are real. The four it is
- * used on were each verified to answer 401 anonymously: force settle, cancel, orphan sweep, and
- * algo order creation. Notably NOT plain order entry, which stays open on both the trading page and
- * the session driver — gating it here alone would fence one door of an open field.
+ * attached to nothing, which teaches the reader to distrust the ones that are real. The three it is
+ * used on were each verified to answer 401 `admin_auth_required` anonymously: force settle (twice)
+ * and the orphan sweep.
+ *
+ * The line the server draws is that **an override departs from what the system would have done by
+ * itself** — force-settle jumps a trade past its settlement cycle, the sweep rewrites reconciliation
+ * state. Cancelling your own order and scheduling a TWAP are ordinary trading and are NOT gated, so
+ * they carry no mark; nor does plain order entry, on the ticket or in the session driver. This list
+ * shrank from four when algo-create was opened — if it moves again, re-probe rather than assume,
+ * because a stale mark and a missing one fail in opposite directions.
  *
  * The action is left ENABLED. The server is the control, this is a label, and a disabled button
  * whose endpoint is open would lie in the other direction.

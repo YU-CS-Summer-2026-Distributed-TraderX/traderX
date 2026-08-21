@@ -111,7 +111,7 @@ interface ParentOrder {
       </div>
       <div class="bar">
         <input type="number" [(ngModel)]="cancelRef" placeholder="orderRef">
-        <button (click)="cancel()">Cancel order</button> <gated />
+        <button (click)="cancel()">Cancel order</button>
         @if (cancelMsg(); as m) { <span class="pill" [class.good]="m.ok" [class.bad]="!m.ok">{{ m.text }}</span> }
       </div>
 

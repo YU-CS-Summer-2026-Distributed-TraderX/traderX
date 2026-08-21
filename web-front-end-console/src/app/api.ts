@@ -237,17 +237,26 @@ export class Api {
   readonly authPrompt = signal(false);
 
   /**
-   * A 401 means "sign in" for every path EXCEPT risk control, which carries its own credential
-   * (X-Risk-Control-Token) and its own message. The two are distinguishable today only by response
-   * body — no header, no code field — so this keys on the PATH instead, which is structural and
-   * cannot be broken by rewording. Unknown 401s deliberately fall through to the sign-in prompt:
-   * that degrades to one unnecessary prompt, where the reverse degrades to a silent dead button.
+   * Which 401s mean "sign in", keyed on the server's `code` — the only one of the three candidates
+   * that is a CONTRACT. Prose gets reworded and paths get rerouted, and neither breaks loudly:
+   *
+   *   admin_auth_required  an override was refused         → prompt
+   *   signed_out           /auth/me with no session        → the resting state, say nothing
+   *   bad_credentials      the login form's own business   → the form shows it
+   *
+   * The path rule is kept only as a fallback for a 401 carrying NO code — an older server, or risk
+   * control, which has its own credential (X-Risk-Control-Token) and predates all of this. A
+   * codeless 401 outside those paths still prompts, because that degrades to one unnecessary
+   * prompt while the reverse degrades to a silently dead button.
    */
-  private noteAuth(url: string, status: number): void {
-    // /auth/* is excluded for a different reason than risk control: a 401 from /auth/me IS the
-    // signed-out state, not a refused change. Without this the prompt lit on every anonymous page
-    // load, which trains the operator to ignore the one time it means something.
-    if (status !== 401 || url.includes('/risk/control/') || url.startsWith('/auth/')) return;
+  private noteAuth(url: string, status: number, body: unknown): void {
+    if (status !== 401) return;
+    const code = (body as { code?: string } | null)?.code;
+    if (code) {
+      if (code !== 'admin_auth_required') return;
+    } else if (url.includes('/risk/control/') || url.startsWith('/auth/')) {
+      return;
+    }
     this.authUser.set(null);
     this.authPrompt.set(true);
   }
@@ -298,7 +307,7 @@ export class Api {
       // Headers, not just the body: a server that reports the SCOPE of what it aggregated
       // (X-Traderx-Gateways-Aggregated) is useless if the client throws that away and prints the
       // total under a label that assumes every gateway answered.
-      this.noteAuth(url, r.status);
+      this.noteAuth(url, r.status, body);
       return { status: r.status, body, headers: r.headers };
     } catch {
       return { status: 0, body: null };
