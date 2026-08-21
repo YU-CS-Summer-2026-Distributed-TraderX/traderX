@@ -75,9 +75,10 @@ need_obs() { # url  name  port-forward-target
     if [[ ${rc} -eq 7 ]]; then break; fi
     sleep 2
   done
-  echo "[FAIL] $2 unreachable at $1 — the observability stack is not up, or not forwarded." >&2
-  echo "[hint] bash scripts/yu15/start-observability-kind.sh" >&2
-  echo "[hint] ${K} port-forward $3 &" >&2
+  echo "[FAIL] $2 is not reachable at $1 (curl rc=${rc}; 7=nothing listening, 28=timed out)." >&2
+  echo "[hint] the only bring-up in this tree is scripts/yu15/start-observability-kind.sh, and it" >&2
+  echo "       is the KIND rig's — on another rig that is not your path. If yours reaches these" >&2
+  echo "       endpoints through a forward: ${K} port-forward $3 &" >&2
   exit 1
 }
 need_obs "${TEMPO_URL}/ready" Tempo "svc/tempo 3200:3200"
