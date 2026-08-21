@@ -84,8 +84,12 @@ identity_consensus() {
 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight — three members, agreed, and a gateway"
+# rc, not a remedy. What stands in front of the gateway differs per rig -- a forward on kind, a
+# LoadBalancer with a public IP on GKE -- so a remedy written here is wrong for half its readers.
+# Report what was observed and name the role; curl -f makes 22 mean "it answered, with an error".
 curl -sf --max-time 10 "${MATCHER_URL}/ready" >/dev/null \
-  || fail "gateway not reachable at ${MATCHER_URL} (port-forward svc/order-matcher 18110:18110?)"
+  || fail "the gateway is not reachable at ${MATCHER_URL} (curl rc=$?; 7=nothing listening,
+  28=timed out, 22=it answered but /ready was not 2xx)"
 [[ "$(${K} get pod -l app=order-matcher-cluster -o name | wc -l | tr -d ' ')" == "3" ]] \
   || fail "need 3 cluster members"
 BASE_STATE="$(identity_consensus)"
@@ -230,7 +234,16 @@ fi
   && echo "  member ${VICTIM} snapshotted (${SNAP_BEFORE} -> ${NOW}); the restore will read T_SYMBOL" \
   || echo "  [note] no snapshot inside ${SNAPSHOT_WAIT_S}s — the rebuild will replay the log instead"
 
-echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (emptyDir — it returns with no disk)"
+# READ THE BACKING, do not assert it. This line used to say "emptyDir — it returns with no disk"
+# unconditionally; yu17-swap-netting.sh already records that as stale for this StatefulSet, and a
+# pod delete against a PVC-backed member returns it WITH its disk. Say what the rig actually has.
+BACKING="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}' 2>/dev/null)"
+if [[ -n "${BACKING}" ]]; then
+  echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (PVC-backed '${BACKING}' — the"
+  echo "  claim outlives the pod, so it returns with its disk and replays only the tail)"
+else
+  echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (emptyDir — it returns with no disk)"
+fi
 ${K} delete pod "order-matcher-cluster-${VICTIM}" --wait=true >/dev/null
 # `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
 # does not exist it returns `NotFound` IMMEDIATELY, and the --timeout never applies at all. The line

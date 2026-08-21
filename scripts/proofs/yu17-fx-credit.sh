@@ -76,8 +76,12 @@ book() { # book <clientOrderId> [account] -> "<http_code> <body>" on stdout
 }
 
 step "0. preflight — rig reachable, three members, a build that KNOWS the fxrate control"
+# rc, not a remedy. What stands in front of the gateway differs per rig -- a forward on kind, a
+# LoadBalancer with a public IP on GKE -- so a remedy written here is wrong for half its readers.
+# Report what was observed and name the role; curl -f makes 22 mean "it answered, with an error".
 curl -sf --max-time 10 "${MATCHER_URL}/ready" >/dev/null \
-  || fail "gateway not reachable at ${MATCHER_URL} (port-forward svc/order-matcher 18110:18110?)"
+  || fail "the gateway is not reachable at ${MATCHER_URL} (curl rc=$?; 7=nothing listening,
+  28=timed out, 22=it answered but /ready was not 2xx)"
 [[ "$(${K} get pod -l app=order-matcher-cluster -o name | wc -l | tr -d ' ')" == "3" ]] \
   || fail "need 3 cluster members"
 POD="$(extract_pod)"; [[ -n "${POD}" ]] || fail "no risk-extract pod"

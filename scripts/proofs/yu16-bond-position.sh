@@ -43,8 +43,12 @@ order() { # order <side> <account> <quantity> [ticker] [price] -> HTTP code on s
 }
 
 step "0. preflight — the rig, the schema width, and a clean slate for this bond"
+# rc, not a remedy. What stands in front of the gateway differs per rig -- a forward on kind, a
+# LoadBalancer with a public IP on GKE -- so a remedy written here is wrong for half its readers.
+# Report what was observed and name the role; curl -f makes 22 mean "it answered, with an error".
 curl -sf --max-time 10 "${MATCHER_URL}/ready" >/dev/null \
-  || fail "gateway not reachable at ${MATCHER_URL} (port-forward svc/order-matcher 18110:18110?)"
+  || fail "the gateway is not reachable at ${MATCHER_URL} (curl rc=$?; 7=nothing listening,
+  28=timed out, 22=it answered but /ready was not 2xx)"
 ${K} get deploy trade-processor >/dev/null 2>&1 || fail "trade-processor is not deployed"
 # A DECIMAL(18,3) price column would round 0.996650 to 0.997 and this proof would report a wrong
 # number as a pass. Verify the migration actually widened the columns — do not trust it.
