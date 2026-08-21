@@ -68,3 +68,28 @@ Two of my own checks reported false passes while chasing this:
   produces unstable results is evidence about the variable, not noise to average away.**
 
 Related: [[securities-need-admission-like-accounts]]
+
+## Resolved 2026-08-21
+
+The durable half landed: `ClusterGatewayMain.connectCycling` now clears `idByTicker` on every
+cluster-session establishment (`ca762e8c`), so the cache cannot outlive the session that built it.
+An epoch roll cannot preserve a session — the members are wiped — so the coarse signal is
+sufficient. The converse costs one sequenced symbol-register round trip per ticker after a wedge
+heal, which is the safe direction to be wrong.
+
+Chosen over teaching the gateway to track epochs, deliberately: this triggers on a signal the
+gateway already receives, and over-clearing degrades to a re-resolve while under-clearing books an
+order against the wrong instrument.
+
+The "cached forever" javadoc was corrected in the same commit. A comment arguing for the behaviour
+you just changed is how the next reader concludes the old behaviour was intended.
+
+**Verified:** the edit reaches the GENERATED tree (checked after regeneration rather than reasoned
+from layer order); order-matcher 394 tests / 0 failures / 0 errors; three gateways rolled to
+`cluster-node:yu17-gke6`, all three running digest `ebb02586…` matching what was pushed; an order
+placed through the load balancer after the roll returns `kind=1`.
+
+**NOT proven, and left open deliberately:** the epoch-roll case itself. A gateway restart begins
+with an empty cache either way, so only a member wipe under a live gateway discriminates — and that
+costs the current book. The mitigation at the operational boundary (bring-up step 3e restarts the
+gateways) is unchanged and still correct.
