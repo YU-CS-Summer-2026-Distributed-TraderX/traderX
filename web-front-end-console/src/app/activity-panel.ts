@@ -1,12 +1,12 @@
 import { Component, inject, signal } from '@angular/core';
 import { ActivityEntry, Api } from './api';
 import { HelpTip } from './help';
+import { TraceView } from './trace-view';
 
-interface SpanRow { service: string; name: string; startNs: bigint; durUs: number; }
 
 @Component({
   selector: 'activity-panel',
-  imports: [HelpTip],
+  imports: [HelpTip, TraceView],
   template: `
     <div class="card-head">
       <h2>Activity &amp; rejections</h2>
@@ -29,20 +29,11 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
               @if (e.clientOrderId) { <span>clientOrderId <b>{{ e.clientOrderId }}</b></span> }
               @if (e.traceId) { <span>trace <b class="mono">{{ e.traceId }}</b></span> }
               @if (e.ok && e.orderRef) { <button (click)="cancel(e)">Cancel order</button> }
-              @if (e.traceId) { <button (click)="loadTrace(e)">{{ spans() ? 'refresh trace' : 'view trace' }}</button> }
             </div>
-            @if (traceMsg()) { <div class="faint">{{ traceMsg() }}</div> }
-            @if (spans(); as ss) {
-              <table class="spans">
-                <thead><tr><th>service</th><th>span</th><th class="num">start +µs</th><th class="num">duration µs</th></tr></thead>
-                <tbody>
-                  @for (s of ss; track $index) {
-                    <tr><td>{{ s.service }}</td><td>{{ s.name }}</td>
-                        <td class="num">{{ rel(s, ss) }}</td><td class="num">{{ s.durUs.toFixed(0) }}</td></tr>
-                  }
-                </tbody>
-              </table>
-            }
+            <!-- One trace-view PER ENTRY, which also fixes a smaller bug: the panel had a single
+                 spans() signal, so opening a second entry's trace replaced the first entry's table
+                 in place while the first entry still looked like the one being viewed. -->
+            @if (e.traceId) { <trace-view [traceId]="e.traceId" derivedFrom="order" /> }
           </div>
         }
       } @empty { <div class="faint">no activity yet — submit an order</div> }
@@ -70,12 +61,9 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
 export class ActivityPanel {
   readonly api = inject(Api);
   readonly open = signal<ActivityEntry | null>(null);
-  readonly spans = signal<SpanRow[] | null>(null);
-  readonly traceMsg = signal('');
 
   toggle(e: ActivityEntry): void {
-    this.spans.set(null);
-    this.traceMsg.set('');
+    // Nothing to reset: each entry's trace-view owns its own state now.
     this.open.set(this.open() === e ? null : e);
   }
 
@@ -84,35 +72,5 @@ export class ActivityPanel {
     this.api.log({ kind: 'cancel', ok: r.status === 200, summary: `cancel orderRef ${e.orderRef} → HTTP ${r.status}` });
   }
 
-  async loadTrace(e: ActivityEntry): Promise<void> {
-    this.traceMsg.set('fetching trace…');
-    const r = await this.api.load<any>(`/tempo/api/traces/${e.traceId}`);
-    if (r.status !== 200 || !r.body?.batches) {
-      this.traceMsg.set(r.status === 404
-        ? 'trace not in Tempo — accepted orders are head-sampled (1-in-N); rejected orders are always traced'
-        : `Tempo unreachable (HTTP ${r.status})`);
-      this.spans.set(null);
-      return;
-    }
-    const rows: SpanRow[] = [];
-    for (const b of r.body.batches) {
-      const service = b.resource?.attributes?.find((a: any) => a.key === 'service.name')?.value?.stringValue ?? '?';
-      for (const ss of b.scopeSpans ?? []) {
-        for (const sp of ss.spans ?? []) {
-          rows.push({
-            service, name: sp.name,
-            startNs: BigInt(sp.startTimeUnixNano ?? 0),
-            durUs: Number(BigInt(sp.endTimeUnixNano ?? 0) - BigInt(sp.startTimeUnixNano ?? 0)) / 1000,
-          });
-        }
-      }
-    }
-    rows.sort((a, b) => (a.startNs < b.startNs ? -1 : 1));
-    this.spans.set(rows);
-    this.traceMsg.set(rows.length ? '' : 'trace exists but has no spans yet');
-  }
 
-  rel(s: SpanRow, all: SpanRow[]): string {
-    return (Number(s.startNs - all[0].startNs) / 1000).toFixed(0);
-  }
 }

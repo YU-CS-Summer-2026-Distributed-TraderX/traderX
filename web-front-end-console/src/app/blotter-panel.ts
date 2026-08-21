@@ -1,8 +1,9 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
+import { Api, BlotterTrade, OtcContract, Position, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
 import { Gated } from './gated';
+import { TraceView } from './trace-view';
 import { SecHead, SecPager, Section } from './section';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
@@ -21,7 +22,7 @@ interface PosRow extends Position {
 
 @Component({
   selector: 'blotter-panel',
-  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated],
+  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated, TraceView],
   template: `
     <div class="card-head">
       <h2>Blotter &amp; positions</h2>
@@ -145,6 +146,15 @@ interface PosRow extends Position {
                   }
                   <button (click)="tca(t); $event.stopPropagation()">TCA</button>
                 </div>
+                <!-- The trade id is <orderRef>-<side>, so the trace id is derivable without a
+                     lookup: traceIdFor hashes the ref the same way the gateway does when it stamps
+                     the span. Evidence for the format: an order submitted here came back
+                     orderRef 2172 and appeared as open order "1-2172" (epoch-ref), and ref 2168
+                     shows as BOTH a trade and a resting order — a partial fill. No trade id carries
+                     two sides, which a trade-sequence id would. -->
+                <div class="trace" (click)="$event.stopPropagation()">
+                  <trace-view [traceId]="traceOf(t)" derivedFrom="trade" />
+                </div>
                 @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
               </td></tr>
             }
@@ -219,6 +229,22 @@ export class BlotterPanel implements OnInit, OnDestroy {
       summary: `cancel ${o.orderId} (${o.security}) → ${r.status === 200 && r.body?.canceled ? 'canceled' : `HTTP ${r.status}`}`,
     });
     this.poll();
+  }
+
+  /**
+   * A trade's trace id, derived from the order reference embedded in its id.
+   *
+   * Trade ids are `<orderRef>-<B|S>`; open orders are `<epoch>-<orderRef>`. Confirmed against a live
+   * submission rather than assumed: an order posted from here returned orderRef 2172 and appeared as
+   * open order "1-2172", and ref 2168 shows as BOTH a trade and a resting order, which is a partial
+   * fill. No trade id carries two sides, which a trade-sequence id would.
+   *
+   * Returns undefined when the id does not parse, so the button says it has nothing to derive from
+   * rather than looking up the hash of a NaN.
+   */
+  traceOf(t: BlotterTrade): string | undefined {
+    const ref = Number(String(t.id).split('-')[0]);
+    return Number.isFinite(ref) && ref > 0 ? traceIdFor(undefined, ref) : undefined;
   }
 
   async tca(t: BlotterTrade): Promise<void> {
