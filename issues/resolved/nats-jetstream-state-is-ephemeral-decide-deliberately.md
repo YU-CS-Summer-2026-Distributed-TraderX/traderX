@@ -119,14 +119,64 @@ ambiguous, and it says so in the log rather than reading as an all-clear.
   `assert-suites-executed.sh` and its `--selftest`: all rc=0, 564 tests across 6 modules, no module
   at zero. (Baseline 555; +6 here, +3 from concurrent trade-processor work by another lane.)
 
+### Verified on the kind rig 2026-08-21 — and it falsified one of these lines
+
+Run on `kind-traderx-yu12-cluster` against the image built from `529c20cc`
+(`execution-algo-engine:yu17-recoverylog`). A true A/B, because the pre-fix line was captured off
+the same rig from the running pod first.
+
+```
+BEFORE  :yu17-jsrebind    2026-08-20T16:31:49Z
+  INFO  replayed 0 algo-engine events from TRADERX_ALGO_ENGINE
+
+AFTER   :yu17-recoverylog 2026-08-21T20:55:46Z
+  WARN  replayed 0 algo-engine events: TRADERX_ALGO_ENGINE reports 0 messages and last sequence 0
+        ... NOT KNOWABLE from this side — a first boot and a wiped log look identical here.
+```
+
+Then a TWAP parent (600 AAPL, 900s, 5 buckets) was put in flight, the broker confirmed holding 3
+messages via `/jsz`, and NATS was wiped. Same process, `restartCount` still 0:
+
+```
+  WARN  could not list consumers on TRADERX_ALGO_ENGINE after a NATS reconnect ... [10059]
+  WARN  algo-engine event-store consumer is gone after a NATS reconnect ...; rebuilding
+  WARN  STATE LOST: TRADERX_ALGO_ENGINE reports 0 messages and this process had already applied
+        3 events off it ...
+```
+
+`applied 3` and the pre-wipe `/jsz` count of 3 agree from two independent sources. **`LOG_LOST` has
+now fired with live algo parents actually in flight** — the gap this record listed as unproven.
+
+**And the run falsified the line's own claim, which is the more valuable half.** The message said
+*"every parent order those events carried is gone and no replay will bring it back."* The parent was
+not gone: `GET /algo/orders/<id>` returned 200 `RUNNING`, and bucket 1 was submitted at 20:59:26Z,
+**after** the 20:58:14Z wipe. It kept slicing.
+
+The mechanism, confirmed in the source and not only in the observation: `AlgoOrderService` calls
+`replayAndSubscribe(this::applyAndIndex)` and nothing resets that state before a replay, so a wipe
+destroys the *broker's* copy of the log while the process keeps its own in-memory schedule. What
+dies is recoverability, not the parents. Reworded in `65993103` to say **UNRECOVERABLE**, naming
+both halves — this process still holds them and keeps running them, nothing will rebuild them if it
+restarts. `CONSUMER_REPLAYED_NONE` carried the same over-claim and was reworded with it.
+
+This is the `prose-has-no-test` failure in its purest form: a verdict derived from remembered
+plumbing rather than from what the surface can observe. Unit tests could not have caught it — the
+off-rig probe had no live parent to contradict it. Only a rig with something actually in flight did.
+
 ### What was NOT proven
 
-- **Not run on either project rig.** The broker exercise above was a local container of the same
-  image, off-rig. The algo-engine image has not been rebuilt or rolled on the state-014 or cluster
-  tiers, so no operator has yet seen these lines come out of a deployed pod. That is the step this
-  record does not cover.
-- **`LOG_LOST` has never fired with live algo parents actually in flight.** The three events in the
-  probe were lost with nothing depending on them. The line's *claim* — that the parent orders those
-  events carried are gone — is what this engine's design says, not something that run measured.
+- **The reworded line has never been printed.** The rig ran `:yu17-recoverylog`, which carries the
+  *false* "is gone" sentence. The corrected UNRECOVERABLE wording (`65993103`) is unit-tested and
+  generated, and no build carrying it has run anywhere. The classification it prints is unchanged —
+  only the sentence moved — but that is a claim about the diff, not an observation.
+- **`STREAM_EMPTY` and `LOG_LOST` fired; `CONSUMER_REPLAYED_NONE` and `UNDETERMINED` did not.**
+  Neither has been seen on a rig. Both are covered by unit tests and by the off-rig probe only.
+- **The state-014 tier was never touched**, and neither was GKE. This is a cluster-tier result only.
+- **The torn-log case was created and not examined.** After the wipe the engine kept appending to
+  the recreated stream, so it now holds a tail whose parent-created events are missing. A later
+  restart would replay that partial history. `AlgoOrderState.applySubmitted`/`applyFillObserved`
+  return early when the bucket is unknown, so it degrades quietly rather than crashing — read from
+  the source, not exercised. Nobody has restarted the engine from a torn log.
 - **The storage decision is unchanged.** Still no PVC. Live algo parents in flight at the moment of
-  a wipe are still lost; that was the accepted cost, and this line makes it visible, not smaller.
+  a wipe are still unrecoverable; that was the accepted cost, and this line makes it visible, not
+  smaller.
