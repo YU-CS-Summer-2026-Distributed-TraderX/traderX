@@ -459,7 +459,25 @@ mkdir -p /tmp/proofrun
 pass=0; skip=0; fail=0; results=()
 for p in "${PROOFS[@]}"; do
   script="${ROOT}/scripts/proofs/${p}.sh"
-  [[ -f "${script}" ]] || { echo "[warn] no such proof: ${p}"; continue; }
+  # A NAMED PROOF THAT DOES NOT EXIST IS A FAILURE, NOT A WARNING.
+  #
+  # This was `continue` with a [warn]: the suite printed one line, never touched `fail`, and
+  # reported success having silently run a smaller suite than it claimed. That is the vacuous pass
+  # in its purest form -- the failure mode and the success mode are indistinguishable from the
+  # output. It was live on `main` for 17 days, where PROOFS named `yu03-risk-demo` while the script
+  # is `yu03-risk-proof`: the YU03 risk proof was skipped on every run and every run said green.
+  # The typo is fixed; this line is why the typo cost anything.
+  #
+  # Deliberately NOT counted as a skip. A skip means "this proof decided it does not apply here" --
+  # a verdict the proof reached. This is the suite failing to find something it was told to run,
+  # which is a fact about the suite. Folding the second into the first is how a shrinking suite
+  # keeps a clean record.
+  if [[ ! -f "${script}" ]]; then
+    echo "[fail] no such proof: ${p} (expected ${script})"
+    results+=("FAIL ${p} - script missing; the suite named a proof that does not exist")
+    fail=$((fail + 1))
+    continue
+  fi
 
   # yu13-stp-and-replace rolls the members onto HISTORICAL engine builds (yu15-pre / yu15-stp)
   # with PVCs intact -- that epoch continuity is the point of the proof. Those builds hold
