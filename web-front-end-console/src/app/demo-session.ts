@@ -411,7 +411,7 @@ export class SessionDriver {
     <div class="cfg">
       <div class="field grow">
         <span class="lbl">Instruments in play
-          <help-tip text="Tick every instrument the session should trade. Fewer instruments means buyers and sellers land in the same book and cross each other, which is what produces prints; a wide pool spreads the flow across many books, so more orders simply rest. Both are worth showing — pick the one the demo needs. Instruments with no live price tick are skipped and counted, never guessed at." />
+          <help-tip text="Tick every instrument the session should trade. Fewer instruments means buyers and sellers land in the same book and cross each other, which is what produces prints; a wide pool spreads the flow across many books, so more orders simply rest. Both are worth showing — pick the one the demo needs. Instruments with no live price tick are skipped and counted, never guessed at. Pool width costs more than spread: a security's order book is allocated on the members by its FIRST order, not by being admitted, so a wide pool is a memory test as well as a throughput one. Size the pool to what the demo needs rather than reaching for every instrument." />
         </span>
         <div class="picker">
           <div class="ptop">

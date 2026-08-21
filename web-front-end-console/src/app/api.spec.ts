@@ -50,3 +50,37 @@ describe('riskControlError', () => {
     expect(riskControlError({ status: 503, body: null })).toBe('HTTP 503');
   });
 });
+
+/**
+ * The band verdict, on the case that exposed the old test.
+ *
+ * A price collar refuses on BOTH sides of its band, so the refused min/max straddles the accepted
+ * prices and a range-disjointness test always says "overlapping — some other cause". That is the
+ * band's own signature being read as its absence. Measured on the rig: EXC accepted 150 and was
+ * refused at 100 and across 180-210.
+ */
+describe('band verdict', () => {
+  // Mirrors the rule in loadBands: no refused price may lie inside the accepted range.
+  const verdict = (accepted: number[], rejected: number[]) => {
+    if (!accepted.length) return 'never-accepted';
+    const aLo = Math.min(...accepted), aHi = Math.max(...accepted);
+    return rejected.every(p => p < aLo || p > aHi) ? 'anchored-elsewhere' : 'other-refusal';
+  };
+
+  it('calls a two-sided collar what it is, where disjointness could not', () => {
+    expect(verdict([150], [100, 180, 190, 192.4, 195, 200, 210])).toBe('anchored-elsewhere');
+  });
+
+  it('still calls it anchored when every refusal is above the band', () => {
+    expect(verdict([100, 110], [200, 210])).toBe('anchored-elsewhere');
+  });
+
+  it('says another cause the moment a refusal lands among the accepted prices', () => {
+    // 150 was both accepted and refused, so the band cannot be what refused it.
+    expect(verdict([100, 200], [150])).toBe('other-refusal');
+  });
+
+  it('concludes nothing without an accepted order to compare against', () => {
+    expect(verdict([], [100, 200])).toBe('never-accepted');
+  });
+});

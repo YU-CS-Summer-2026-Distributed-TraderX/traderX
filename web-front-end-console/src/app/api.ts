@@ -460,7 +460,7 @@ export class Api {
    * answers 503. A panel that renders "no refusals on record" in that state is asserting an
    * all-clear it has no basis for.
    */
-  readonly bandsState = signal<'loading' | 'ok' | 'disabled' | 'no-token' | 'unreachable'>('loading');
+  readonly bandsState = signal<'loading' | 'ok' | 'disabled' | 'no-token' | 'stale-token' | 'absent' | 'unreachable'>('loading');
   private bandsAt = 0;
 
   /** Refresh at most once a minute; mints the admin token the regulatory report requires. */
@@ -470,13 +470,29 @@ export class Api {
       this.bandsState.set('no-token');
       return;
     }
-    const r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
+    let r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
+    // An admin JWT lives 8 hours, so a console left open outlives it — and the endpoint's answer to
+    // an expired one is a 401, which this used to fold into "unreachable" and report as a route
+    // problem. Mint once and retry before concluding anything: a token that simply aged out is not
+    // a fact about the rig.
+    if (r.status === 401 && await this.mintAdminToken()) {
+      r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
+    }
     if (r.status !== 200 || !Array.isArray(r.body)) {
       // WHY the distinction matters: with the projection off, an empty band list is not "no
       // mis-anchored books", it is "this console cannot see". Reporting the first when the truth is
       // the second is the same fault as a status page that goes green because its producer is
       // missing — the exact class that hid the kdb tap being disabled on this tier.
-      this.bandsState.set(r.status === 503 ? 'disabled' : 'unreachable');
+      //
+      // And WHICH way it cannot see is worth separating, because each sends the reader somewhere
+      // different: 503 is the projection deliberately off, 404 is a build that never registered the
+      // route, 401 (after a retry) is credentials, and only what is left is actually the route
+      // being unreachable. "unreachable" for all four sent people to the network for a stale token.
+      this.bandsState.set(
+        r.status === 503 ? 'disabled'
+        : r.status === 404 ? 'absent'
+        : r.status === 401 ? 'stale-token'
+        : 'unreachable');
       this.bands.set([]);
       return;
     }
@@ -497,8 +513,15 @@ export class Api {
       out.push({
         security, accepted: accepted.length, rejected: rejected.length,
         acceptedLo: aLo, acceptedHi: aHi, rejectedLo: rLo, rejectedHi: rHi,
+        // WHICH TEST: "no refused price lies INSIDE the accepted range", not "the two ranges are
+        // disjoint". A collar refuses on BOTH sides of its band, so the refused min/max straddles
+        // the accepted prices and the ranges always overlap — the disjointness test then reports
+        // the band's own signature as "some other cause". Measured on EXC: accepted 150, refused
+        // 100 and 180-210, which is a band around 150 read as unrelated. Containment gets it right
+        // both ways, and still says "other" the moment a refusal lands among the accepted prices,
+        // which is the thing that genuinely rules the band out.
         verdict: !accepted.length ? 'never-accepted'
-          : rLo > aHi || rHi < aLo ? 'anchored-elsewhere'
+          : rejected.every(p => p < aLo || p > aHi) ? 'anchored-elsewhere'
           : 'other-refusal',
         // One sample either side is an anecdote: the split can be disjoint by luck. Said out loud
         // rather than folded into the verdict, because a thin reading is still worth seeing.

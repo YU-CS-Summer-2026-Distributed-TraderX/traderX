@@ -36,10 +36,19 @@ import { HelpTip } from './help';
           which the cloud manifest deliberately sets to 0 for throughput — a one-value edit turns it
           on. <b>Absence of refusals here is not evidence there are none</b>: with no journal to read,
           an empty screen and a clean rig look identical.</div>
+      } @else if (api.bandsState() === 'absent') {
+        <div class="banner warn-note">This gateway serves no regulatory route at all — the build
+          running here never registered it, which is a different thing from the projection being
+          switched off. Nothing to judge from, and nothing wrong.</div>
+      } @else if (api.bandsState() === 'stale-token') {
+        <div class="banner warn-note">The regulatory journal refused this console's admin token, and
+          a freshly minted one was refused too. An admin JWT lives 8 hours, so a console left open
+          outlives it — but a re-mint has already been tried, so this is credentials rather than
+          age. Nothing here is a statement about the rig.</div>
       } @else if (api.bandsState() === 'unreachable' || api.bandsState() === 'no-token') {
         <div class="banner warn-note">Could not read the regulatory journal
-          ({{ api.bandsState() === 'no-token' ? 'no admin token' : 'route unreachable' }}), so this
-          screen has nothing to judge from — which is not the same as nothing to report.</div>
+          ({{ api.bandsState() === 'no-token' ? 'no admin token could be minted' : 'route unreachable' }}),
+          so this screen has nothing to judge from — which is not the same as nothing to report.</div>
       } @else if (!api.bands().length) {
         <div class="faint">{{ busy() ? 'reading the journal…' : 'no refusals on record for this epoch' }}</div>
       } @else {
