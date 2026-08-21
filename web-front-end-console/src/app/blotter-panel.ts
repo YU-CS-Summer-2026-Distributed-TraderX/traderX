@@ -279,6 +279,42 @@ export class BlotterPanel implements OnInit, OnDestroy {
   toggle(t: BlotterTrade): void {
     this.tcaText.set('');
     this.openId.set(this.openId() === t.id ? null : t.id);
+    if (this.openId() === t.id) void this.ensureSourceOrders(t);
+  }
+
+  /**
+   * Terminal orders, fetched ONCE and only when a trade actually needs one, purely to join.
+   *
+   * A trade's source order is normally terminal — filling it is what produced the trade — so it is
+   * absent from the polled list, which asks for open orders only. Without this a trade from FIX or
+   * another browser shows no trace, which is the gap this whole column existed to close.
+   *
+   * NOT solved by polling `?status=all` and filtering for display. That request grows with an
+   * account's whole history — 19 rows against 3 on the rig already, 13 of them CANCELED — and the
+   * poll repeats on a timer and on every bus message. The open set is bounded by what is resting;
+   * the terminal set is not. It would also make the `all states` toggle a display filter, and the
+   * point of that toggle is that the default endpoint's status filter is the read model's, not ours.
+   *
+   * So: nothing on the poll path, one request the first time someone opens a trade whose order is
+   * not already loaded, cached until the account changes. Cheap because expanding a row is a
+   * deliberate act and the answer does not change.
+   */
+  private readonly sourceOrders = signal<Record<string, string>>({});
+  private sourceOrdersFor: number | null = null;
+
+  private async ensureSourceOrders(t: BlotterTrade): Promise<void> {
+    const src = t.sourceOrderId;
+    const id = Number(this.accountId());
+    if (!src || this.rawOpenOrders().some(o => o.orderId === src)) return;
+    if (this.sourceOrdersFor === id && this.sourceOrders()[src] !== undefined) return;
+    if (this.sourceOrdersFor !== id) { this.sourceOrders.set({}); this.sourceOrdersFor = id; }
+    const r = await this.api.load<any[]>(`/trade-processor/accounts/${id}/orders?status=all`);
+    if (r.status !== 200 || !Array.isArray(r.body)) return;
+    const map: Record<string, string> = {};
+    // '' rather than a missing key, so a second expansion knows the answer was "no trace" and does
+    // not re-request. An absent key means never asked; an empty one means asked and told nothing.
+    for (const row of r.body) map[String(row.id ?? row.orderId ?? '')] = row.traceId ?? '';
+    this.sourceOrders.set(map);
   }
 
   async settle(t: BlotterTrade): Promise<void> {
@@ -354,6 +390,10 @@ export class BlotterPanel implements OnInit, OnDestroy {
     if (src) {
       const row = this.rawOpenOrders().find(o => o.orderId === src);
       if (row?.traceId) return row.traceId;
+      // Terminal orders, loaded on expansion. Full `<epoch>-<ref>` both sides, so the match carries
+      // its epoch and cannot answer across a roll.
+      const joined = this.sourceOrders()[src];
+      if (joined) return joined;
     }
     return this.api.traceForOrderRef(orderRefOf(t));
   }
@@ -476,7 +516,12 @@ export class BlotterPanel implements OnInit, OnDestroy {
   }
   ngOnDestroy(): void { clearInterval(this.timer); this.unsub?.(); }
 
-  onAccount(): void { this.poll(); this.follow(); }
+  onAccount(): void {
+    this.sourceOrders.set({});
+    this.sourceOrdersFor = null;
+    this.poll();
+    this.follow();
+  }
 
   /** Subscribe this account's bus topics; any message triggers an immediate re-read. */
   private follow(): void {
