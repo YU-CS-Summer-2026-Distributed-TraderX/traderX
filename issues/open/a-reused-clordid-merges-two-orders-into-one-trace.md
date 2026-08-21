@@ -96,8 +96,21 @@ land in the projection, but `GET /accounts/{id}/orders` returns only `OPEN_STATU
 PARTIALLY_FILLED) unless asked with `?status=all`, and the blotter fetched without it — so the rows
 that most often carry a reused ClOrdID (rejects from a script) had no way to appear. That commit adds
 an opt-in `all states` toggle; it is deliberately **off** by default, because "Open orders" has to go
-on meaning open orders. Both console commits were unrolled when this was written — check what is
-serving before concluding the UI does or does not do the above.
+on meaning open orders.
+
+**Roll state goes stale faster than this document, so check it rather than reading it here** — the
+first version of this paragraph said both commits were unrolled and was wrong within the hour. Each
+of the two is independently detectable in the served bundle, with a marker introduced by that commit
+and no other (`git log -S` confirms both):
+
+| commit | marker in the bundle |
+|---|---|
+| `99d035bb` (names a multi-order trace) | `This trace covers` |
+| `c8f30fd3` (`all states` toggle) | `status=all` |
+
+Read the bundle name out of a cache-busted `/` and grep it. Take markers from the diff you are
+testing for, at the moment you test: an earlier commit's string can be revised away by a later one in
+the same roll, and then a correct build reads as a failed one.
 
 Note the shape of the near-miss, since it is the same one this project keeps paying for: the absence
 of REJECTED rows from the open list was read as "rejections do not persist", and the reading was
