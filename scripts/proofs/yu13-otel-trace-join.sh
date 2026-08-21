@@ -51,6 +51,21 @@ K="kubectl --context ${KCTX} -n ${NS}"
 ORDERS="${ORDERS:-3}"
 TAG="otel-$$-$(date +%s)"
 
+# The head-sampling mask this proof must PREDICT with, read from the rig rather than guessed. The
+# predictor below decides which of its own orders should have a trace; if it disagrees with the
+# engine the proof fails on orders that were never sampled, which reads as a broken join.
+# Empty read means the env var is absent from the spec, and SpanSink.sampleMaskFromEnv then uses
+# "127" — so 127 is the honest fallback here. (Its sibling yu13-otel-reject-trace-log-join.sh falls
+# back to 0 for a DIFFERENT quantity: the value to restore after the run.)
+# An explicit OTEL_SAMPLE_MASK in the environment still wins, for running against a rig you cannot
+# read.
+if [[ -z "${OTEL_SAMPLE_MASK:-}" ]]; then
+  OTEL_SAMPLE_MASK="$(${K} get deployment/cluster-gateway \
+    -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="OTEL_SAMPLE_MASK")].value}' 2>/dev/null || true)"
+  OTEL_SAMPLE_MASK="${OTEL_SAMPLE_MASK:-127}"
+fi
+export OTEL_SAMPLE_MASK
+
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
 
@@ -129,7 +144,7 @@ failures = []
 for i in range(1, orders + 1):
     clordid = f"{tag}-{i}"
     key = client_order_key(clordid)
-    if (mix(key ^ SAMPLE_SALT) & int(os.environ.get("OTEL_SAMPLE_MASK", "0"))) != 0:
+    if (mix(key ^ SAMPLE_SALT) & int(os.environ["OTEL_SAMPLE_MASK"])) != 0:
         print(f"[skip] {clordid} is not in the head sample")
         continue
     trace_id = f"{mix(key) or 1:016x}{mix(key ^ TRACE_SALT) or 1:016x}"
