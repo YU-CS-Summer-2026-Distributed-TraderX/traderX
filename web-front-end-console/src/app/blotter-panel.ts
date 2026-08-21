@@ -76,7 +76,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
         </select>
       </label>
       <label class="field find">Find by reference
-        <input [(ngModel)]="query" (keyup.enter)="find()" placeholder="order or trade id" spellcheck="false">
+        <input [(ngModel)]="query" (keyup.enter)="find()" placeholder="order, trade or trace id" spellcheck="false">
       </label>
       <button type="button" (click)="find()">Go</button>
       @if (findMsg(); as m) { <span class="pill" [class.good]="m.ok" [class.warn]="!m.ok">{{ m.text }}</span> }
@@ -304,17 +304,20 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   private async ensureSourceOrders(t: BlotterTrade): Promise<void> {
     const src = t.sourceOrderId;
+    if (src && !this.rawOpenOrders().some(o => o.orderId === src)) await this.loadSourceOrders();
+  }
+
+  /** Fetch this account's orders in every state, once. No-op once loaded. */
+  private async loadSourceOrders(): Promise<void> {
     const id = Number(this.accountId());
-    if (!src || this.rawOpenOrders().some(o => o.orderId === src)) return;
-    if (this.sourceOrdersFor === id && this.sourceOrders()[src] !== undefined) return;
-    if (this.sourceOrdersFor !== id) { this.sourceOrders.set({}); this.sourceOrdersFor = id; }
+    if (this.sourceOrdersFor === id) return;
     const r = await this.api.load<any[]>(`/trade-processor/accounts/${id}/orders?status=all`);
     if (r.status !== 200 || !Array.isArray(r.body)) return;
     const map: Record<string, string> = {};
-    // '' rather than a missing key, so a second expansion knows the answer was "no trace" and does
-    // not re-request. An absent key means never asked; an empty one means asked and told nothing.
+    // '' rather than a missing key: asked and told nothing, versus never asked.
     for (const row of r.body) map[String(row.id ?? row.orderId ?? '')] = row.traceId ?? '';
     this.sourceOrders.set(map);
+    this.sourceOrdersFor = id;
   }
 
   async settle(t: BlotterTrade): Promise<void> {
@@ -483,10 +486,48 @@ export class BlotterPanel implements OnInit, OnDestroy {
   readonly otc = new Section<OtcContract>(this.contracts, c => c.contractId);
   readonly trades = new Section<BlotterTrade>(this.rawTrades, t => t.id);
 
+  /**
+   * Resolve a 32-hex trace id to the row that carries it.
+   *
+   * Orders hold the id; a trade reaches it through `sourceOrderId`. Terminal orders are not in the
+   * polled list, so this loads them the same way the trade expander does — a search is a deliberate
+   * act, and the id came from somewhere the operator was already looking.
+   */
+  private async findTrace(id: string): Promise<void> {
+    await this.loadSourceOrders();
+    const orderId = this.rawOpenOrders().find(o => o.traceId?.toLowerCase() === id)?.orderId
+      ?? Object.entries(this.sourceOrders()).find(([, t]) => t.toLowerCase() === id)?.[0];
+    const trade = orderId ? this.rawTrades().find(t => t.sourceOrderId === orderId) : undefined;
+
+    // The order is known and terminal, so it is real but not on screen — the `all states` filter is
+    // ours, not the operator's problem. Turning it on is the answer to "where is this trace", not a
+    // message explaining why we will not show it.
+    if (orderId && !this.rawOpenOrders().some(o => o.orderId === orderId) && !this.showTerminal()) {
+      this.showTerminal.set(true);
+      await this.poll();
+    }
+
+    for (const [name, sec, rowId] of [
+      ['orders', this.openOrders, orderId], ['trades', this.trades, trade?.id],
+    ] as const) {
+      if (!rowId || !sec.reveal(rowId)) continue;
+      this.hit.set(rowId);
+      this.findMsg.set({ ok: true, text: `${name} · ${rowId} · page ${sec.cur() + 1}` });
+      return;
+    }
+    this.hit.set(null);
+    this.findMsg.set({ ok: false, text: orderId
+      ? `that trace belongs to order ${orderId}, not to a row in this account`
+      : 'no row in this account carries that trace id — it may be another account\'s' });
+  }
+
   /** Find a reference across every section and page straight to it. */
-  find(): void {
+  async find(): Promise<void> {
     const q = this.query.trim();
     if (!q) { this.findMsg.set(null); this.hit.set(null); return; }
+    // A trace id is not the id of any row, so id-matching could never find one. It became worth
+    // searching for the moment the panel started rendering trace ids with a copy button beside them.
+    if (/^[0-9a-f]{32}$/i.test(q)) { await this.findTrace(q.toLowerCase()); return; }
     const where: { name: string; sec: Section<any> }[] = [
       { name: 'open orders', sec: this.openOrders },
       { name: 'trades', sec: this.trades },
