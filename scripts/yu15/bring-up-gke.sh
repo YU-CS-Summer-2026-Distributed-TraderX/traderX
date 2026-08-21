@@ -200,14 +200,43 @@ fi
 # model is a different claim, and it is the one that matters — so book a real cross and look for it.
 say "proving the path end to end"
 BEFORE="$(sql 'SELECT COUNT(*) FROM trades;')"
-for acct in 22214 42422; do
-  curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${acct},\"tickers\":\"IBM\",\"price\":200.00}" >/dev/null || die "seed failed for ${acct}"
+# Two bugs lived in the four lines this replaces, and the second hid the first.
+#
+# 1. `curl -sf` with NO `|| die`. A refused order is HTTP 422, so -f failed, and under `set -e` the
+#    script exited with curl's code 22 having printed NOTHING after "proving the path end to end".
+#    A proof that dies mutely is worse than no proof: the operator sees the last happy line and a
+#    non-zero exit nobody reads. Every call below keeps its body and names what it got.
+#
+# 2. A HARDCODED 200.00. Under ADR-051 a /seed sets the mark only while no trade has printed, and
+#    the collar band anchors on the security's FIRST LIMIT INTO THE BOOK — engine state, not the
+#    mark. So on any epoch where something already touched IBM's book, 200.00 is outside the band
+#    and the proof cannot pass however healthy the rig is. Measured 2026-08-20: IBM took 150.00 and
+#    refused 180/190/192.40/195/200/210 while every member was healthy and a leader was elected.
+#
+# The fix for both: try candidates until one is ACCEPTED, and treat "every candidate refused" as a
+# real failure with the reasons attached. A security whose book is untouched this epoch anchors its
+# own band on our limit, which is why a list beats a cleverer single guess.
+XPX=200.00
+XSEC=""
+for cand in IBM MSFT AAPL ZTS GLD; do
+  for acct in 22214 42422; do
+    curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
+      -d "{\"accountId\":${acct},\"tickers\":\"${cand}\",\"price\":${XPX}}" >/dev/null 2>&1 || true
+  done
+  probe="$(curl -s -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":42422,\"ticker\":\"${cand}\",\"side\":\"Sell\",\"quantity\":1,\"limitPrice\":${XPX}}" 2>&1)"
+  case "${probe}" in
+    *'"kind":1'*) XSEC="${cand}"; break ;;
+    *) say "  ${cand} will not take a limit at ${XPX}: ${probe}" ;;
+  esac
 done
-curl -sf -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
-  -d '{"accountId":42422,"ticker":"IBM","side":"Sell","quantity":1,"limitPrice":200.00}' >/dev/null
-curl -sf -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
-  -d '{"accountId":22214,"ticker":"IBM","side":"Buy","quantity":1,"limitPrice":200.00}' >/dev/null
+[[ -n "${XSEC}" ]] || die "no candidate security accepted a limit at ${XPX} — the rig may be fine and the PRICE COLLAR simply anchored elsewhere, but this proof cannot conclude anything. Reasons are above."
+buy="$(curl -s -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
+  -d "{\"accountId\":22214,\"ticker\":\"${XSEC}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${XPX}}" 2>&1)"
+case "${buy}" in
+  *'"kind":1'*) say "  crossed ${XSEC} at ${XPX}" ;;
+  *) die "the resting sell was accepted but the crossing buy was not: ${buy}" ;;
+esac
 for _ in $(seq 1 20); do
   AFTER="$(sql 'SELECT COUNT(*) FROM trades;')"
   [[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] && break

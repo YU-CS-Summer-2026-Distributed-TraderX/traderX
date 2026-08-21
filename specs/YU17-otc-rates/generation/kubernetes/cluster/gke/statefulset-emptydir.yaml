@@ -217,7 +217,15 @@ spec:
                   name: auth-secrets
                   key: jwt-secret
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xms512m -Xmx1536m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              # Heap sized for the CATALOG, not for a handful of demo names. Admitting all 533
+              # reference-data instruments and touching each one allocates a YU13 book grid per
+              # security; at -Xmx1536m that threw OutOfMemoryError on the clustered-service thread
+              # of two members at once (2026-08-20). The service agent dies, the member stops
+              # applying, and an elected leader cannot finish joinLogAsLeader with a dead service --
+              # so the cluster came back leaderless and every gateway went NotReady.
+              # It is a POISON PILL: the trigger is a committed log event, so a plain restart
+              # re-OOMs on replay. The heap has to be raised BEFORE the members come back.
+              value: "-Xms1g -Xmx3g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
@@ -261,10 +269,10 @@ spec:
               # 148k/s soak: the orderRef index array OOM'd a 512m heap at ~33M cumulative
               # orders (engine bug, see implementation-status "sweep postmortem"), and a 201MB
               # replay publication could not fit in the 512Mi shm during the ensuing catch-up.
-              memory: 4Gi
+              memory: 8Gi
             limits:
               cpu: "3"
-              memory: 4Gi
+              memory: 8Gi
           volumeMounts:
             - name: data
               mountPath: /data
