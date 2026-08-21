@@ -242,6 +242,45 @@ say "restarting the gateways so no symbol cache predates this epoch"
 "${K[@]}" rollout restart deploy/cluster-gateway >/dev/null 2>&1 || true
 "${K[@]}" rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1 || true
 
+# ---- 3f. DIRECTORY vs COUNTERPARTY MAPPING ----------------------------------------------------
+# A THIRD registry that must agree with the account directory, and nothing checked it. The risk
+# extract joins each position to a counterparty and netting set from reference-data's
+# counterparties.csv, and FAILS CLOSED on an account it cannot map — correctly, since a regulatory
+# artifact must not emit a position with no counterparty or quietly guess one.
+#
+# Observed 2026-08-21: the directory carries 8 accounts, counterparties.csv carried 7. Account
+# 17017 ("U.S. Treasury Trading Account") could trade all day — steps 3b/3c happily admit it — and
+# then the FIRST end-of-day cut including it died with
+# `account 17017 has no counterparty mapping in reference data`. Prices published, PnL marked 48
+# rows, and the artifact never appeared, which reads as the extract being broken rather than one
+# missing row of reference data.
+#
+# Warn, do not fail: an unmapped account is a real trading rig with a broken end-of-day, which is
+# worth knowing at bring-up rather than at the cut.
+say "checking the account directory against the counterparty mapping"
+RX_POD="$("${K[@]}" get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+if [[ -z "${RX_POD}" || "${#ACCTS[@]}" -eq 0 ]]; then
+  say "  skipped (risk-extract pod or account directory unreadable)"
+else
+  MAPPED="$("${K[@]}" exec "${RX_POD}" -- cat /opt/app/classes/reference-data/counterparties.csv 2>/dev/null \
+    | tail -n +2 | cut -d, -f1 || true)"
+  if [[ -z "${MAPPED}" ]]; then
+    say "  could not read counterparties.csv — cannot tell whether every account maps"
+  else
+    unmapped=""
+    for a in "${ACCTS[@]}"; do
+      printf '%s\n' "${MAPPED}" | grep -qx "${a}" || unmapped="${unmapped} ${a}"
+    done
+    if [[ -n "${unmapped}" ]]; then
+      say "  WARNING: no counterparty mapping for:${unmapped}"
+      say "  these accounts can trade, and the FIRST EOD cut that includes one will fail closed."
+      say "  add them to specs/*/reference-data/counterparties.csv (accountId,counterpartyId,nettingSetId,currency)"
+    else
+      say "  all ${#ACCTS[@]} directory accounts have a counterparty and netting set"
+    fi
+  fi
+fi
+
 # ---- 4. PROVE IT, rather than report it -------------------------------------------------------
 # The check above can only say the ids no longer collide. Whether a trade actually reaches the read
 # model is a different claim, and it is the one that matters — so book a real cross and look for it.
