@@ -137,10 +137,13 @@ interface PosRow extends Position {
                   <span>updated <b>{{ t.updated.slice(0, 19).replace('T', ' ') }}</b></span>
                   @if (t.sourceOrderId) { <span>source order <b>{{ t.sourceOrderId }}</b></span> }
                   <span>notional <b>{{ (t.quantity * t.price).toLocaleString('en-US', { maximumFractionDigits: 2 }) }}</b></span>
-                  @if (t.state !== 'Settled' && !t.rejectionReason && api.adminToken()) {
+                  <!-- No longer gated on holding a token: the console holds none, and hiding a
+                       control the server merely refuses tells the operator it does not exist. It
+                       renders, marked, and the server decides. -->
+                  @if (t.state !== 'Settled' && !t.rejectionReason) {
                     <button (click)="settle(t); $event.stopPropagation()">Force settle</button> <gated />
                   }
-                  @if (api.adminToken()) { <button (click)="tca(t); $event.stopPropagation()">TCA</button> }
+                  <button (click)="tca(t); $event.stopPropagation()">TCA</button>
                 </div>
                 @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
               </td></tr>
@@ -200,7 +203,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   async settle(t: BlotterTrade): Promise<void> {
     const r = await this.api.load<void>(`/trade-processor/trades/${t.id}/settlement/force`, {
-      method: 'POST', headers: this.api.authHeaders(),
+      method: 'POST',
     });
     this.api.log({ kind: 'eod', ok: r.status === 200, summary: `force settle ${t.id} → HTTP ${r.status}` });
     this.poll();
@@ -220,7 +223,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   async tca(t: BlotterTrade): Promise<void> {
     const r = await this.api.load<{ benchmarkPrice: number; arrivalPrice: number; slippageBps: number; benchmarkSampleCount: number }>(
-      `/trade-processor/tca/report/${t.id}`, { headers: this.api.authHeaders() });
+      `/trade-processor/tca/report/${t.id}`);
     this.tcaText.set(r.status === 200 && r.body
       ? `TCA: execution ${t.price} vs benchmark ${r.body.benchmarkPrice} (arrival ${r.body.arrivalPrice}) · ${r.body.slippageBps} bps · ${r.body.benchmarkSampleCount} samples`
       : `TCA unavailable (HTTP ${r.status})`);

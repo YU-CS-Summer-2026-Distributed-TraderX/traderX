@@ -223,7 +223,7 @@ export class EodChain {
     try {
       const r = await this.api.load<{ version?: number; error?: string }>(
         `/trade-processor/eod/session/close`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json', ...this.api.authHeaders() },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ date: this.date }),
         });
       if (r.status === 401) {

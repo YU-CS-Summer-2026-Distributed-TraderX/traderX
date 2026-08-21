@@ -423,27 +423,26 @@ export class Api {
 
   // ---- admin token (shared by the EOD and Admin pages) ----------------------------------------
 
-  readonly adminToken = signal<string | null>(sessionStorage.getItem('traderx-console-eod-token'));
-
   /**
-   * Mint an admin JWT. Without a secret typed here the console's own back end supplies the master
-   * secret: proxy.conf.mjs reads it off the rig with kubectl, server.mjs reads it from the
-   * auth-secrets Secret mounted into its pod. Either way the browser never holds it.
+   * THERE IS NO CLIENT-HELD ADMIN TOKEN ANY MORE, deliberately.
+   *
+   * The console used to mint one from a master secret it was handed, and inject it on every
+   * /trade-processor call. That made it a confused deputy: it held a powerful credential and would
+   * issue a full admin:true JWT to anyone who loaded the page — a token that outlives the tab, works
+   * against anything sharing the JWT secret, and records nothing about who took it. The mint now
+   * answers 403 `mint_disabled` to everyone.
+   *
+   * The server authenticates on the caller's behalf instead, attaching Authorization to
+   * /trade-processor/* and /order-matcher/regulatory* itself, and OVERWRITING whatever the client
+   * sent. So reads stay open to anonymous viewers — which is the point, the read-only panels are
+   * for them — while changes stay gated by ADMIN_MUTATIONS, which refuses before the proxy runs.
+   *
+   * Consequence for this file: no adminToken, no mintAdminToken, no authHeaders, and nothing in the
+   * UI may gate on holding a token. Three panels did, and each rendered a dead end once minting
+   * stopped: an instruction to visit a page that would mint (it cannot), and a box asking the
+   * operator to paste the master secret (it would be refused, and the console should not be asking
+   * for one at all).
    */
-  async mintAdminToken(masterSecret?: string): Promise<boolean> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (masterSecret) headers['X-Auth-Master-Secret'] = masterSecret;
-    const r = await this.load<string>('/trade-processor/auth/dev-token', {
-      method: 'POST', headers,
-      body: JSON.stringify({ subject: 'ui-console', admin: true, ttlSeconds: 28800 }),
-    });
-    if (r.status === 200 && typeof r.body === 'string') {
-      sessionStorage.setItem('traderx-console-eod-token', r.body);
-      this.adminToken.set(r.body);
-      return true;
-    }
-    return false;
-  }
 
   // ---- book-band screen ------------------------------------------------------------------------
   //
@@ -451,9 +450,6 @@ export class Api {
   // percentage around the mark — so a book anchored by a stray order hours ago refuses every
   // realistic price for the rest of the epoch, and nothing repairs it in place: a /seed cannot move
   // a mark that has already printed (ADR-051), and the band is not derived from the mark anyway.
-  // Measured on this rig: every MSFT order ever accepted is at 180.00 and every order at a
-  // realistic MSFT price is refused. A demo driver typing a plausible MSFT order gets a refusal
-  // and no way to see why, which is why this screen exists.
   //
   // The method matters as much as the finding: a refused price INSIDE the accepted range means the
   // band cannot be what refused it (unknown account, credit, quantity), while refusals lying only
@@ -462,30 +458,24 @@ export class Api {
   // showing refusals are not mis-anchored, and reading "rejected" as "mis-anchored" would condemn
   // all of them.
   readonly bands = signal<BandCheck[]>([]);
+
   /**
    * Whether the screen can see at all. `disabled` is the regulatory projection being off — on the
    * cloud rig RECON_BLOTTER_CAPACITY is 0 by default, a deliberate throughput trade, and the route
    * answers 503. A panel that renders "no refusals on record" in that state is asserting an
    * all-clear it has no basis for.
    */
-  readonly bandsState = signal<'loading' | 'ok' | 'disabled' | 'no-token' | 'stale-token' | 'absent' | 'unreachable'>('loading');
+  readonly bandsState = signal<'loading' | 'ok' | 'disabled' | 'no-credential' | 'absent' | 'unreachable'>('loading');
   private bandsAt = 0;
 
-  /** Refresh at most once a minute; mints the admin token the regulatory report requires. */
+  /** Refresh at most once a minute. Sends no credential — the console's server attaches one. */
   async loadBands(force = false): Promise<void> {
     if (!force && Date.now() - this.bandsAt < 60_000) return;
-    if (!this.adminToken() && !(await this.mintAdminToken())) {
-      this.bandsState.set('no-token');
-      return;
-    }
-    let r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
-    // An admin JWT lives 8 hours, so a console left open outlives it — and the endpoint's answer to
-    // an expired one is a 401, which this used to fold into "unreachable" and report as a route
-    // problem. Mint once and retry before concluding anything: a token that simply aged out is not
-    // a fact about the rig.
-    if (r.status === 401 && await this.mintAdminToken()) {
-      r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report', { headers: this.authHeaders() });
-    }
+    // No credential is sent: the console's own server attaches one for this path. A 401 here is
+    // therefore a statement about the RIG (a tier whose server does not attach it), never about a
+    // token this page is holding — which is why the retry-after-mint that used to live here is gone
+    // rather than merely unused.
+    const r = await this.load<RegulatoryEvent[]>('/order-matcher/regulatory/report');
     if (r.status !== 200 || !Array.isArray(r.body)) {
       // WHY the distinction matters: with the projection off, an empty band list is not "no
       // mis-anchored books", it is "this console cannot see". Reporting the first when the truth is
@@ -494,12 +484,12 @@ export class Api {
       //
       // And WHICH way it cannot see is worth separating, because each sends the reader somewhere
       // different: 503 is the projection deliberately off, 404 is a build that never registered the
-      // route, 401 (after a retry) is credentials, and only what is left is actually the route
-      // being unreachable. "unreachable" for all four sent people to the network for a stale token.
+      // route, 401 means this rig's server did not attach a credential for the console, and only
+      // what is left is actually the route being unreachable.
       this.bandsState.set(
         r.status === 503 ? 'disabled'
         : r.status === 404 ? 'absent'
-        : r.status === 401 ? 'stale-token'
+        : r.status === 401 ? 'no-credential'
         : 'unreachable');
       this.bands.set([]);
       return;
@@ -545,14 +535,8 @@ export class Api {
     return this.bands().find(b => b.security === security);
   }
 
-  dropAdminToken(): void {
-    sessionStorage.removeItem('traderx-console-eod-token');
-    this.adminToken.set(null);
-  }
-
-  authHeaders(): Record<string, string> {
-    return { Authorization: `Bearer ${this.adminToken()}` };
-  }
+  /** Clear the token this console used to mint, in case a session still carries one. */
+  dropAdminToken(): void { sessionStorage.removeItem('traderx-console-eod-token'); }
 }
 
 /** Minimal NATS-protocol client over a browser WebSocket: subscribe-only, auto-reconnect. */

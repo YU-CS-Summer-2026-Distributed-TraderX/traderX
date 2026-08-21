@@ -31,8 +31,6 @@ interface ParentOrder {
     </div>
 
     @if (!open()) {
-    } @else if (!api.adminToken()) {
-      <div class="sub">Admin operations need a token — open the End of day page once to auto-mint it.</div>
     } @else {
       <label class="field acct">Account
         <select [(ngModel)]="accountId" (ngModelChange)="poll()">
@@ -162,8 +160,8 @@ export class AdminPanel implements OnInit, OnDestroy {
   private timer: ReturnType<typeof setInterval> | undefined;
 
   ngOnInit(): void {
-    if (!this.api.adminToken()) this.api.mintAdminToken().then(() => this.poll());
-    else this.poll();
+    // No token to obtain first: the console's server authenticates these reads on our behalf.
+    this.poll();
     this.timer = setInterval(() => this.poll(), 5000);
   }
   ngOnDestroy(): void { clearInterval(this.timer); }
@@ -182,14 +180,14 @@ export class AdminPanel implements OnInit, OnDestroy {
 
   async settle(t: BlotterTrade): Promise<void> {
     const r = await this.api.load<void>(`/trade-processor/trades/${t.id}/settlement/force`, {
-      method: 'POST', headers: this.api.authHeaders(),
+      method: 'POST',
     });
     this.api.log({ kind: 'eod', ok: r.status === 200, summary: `force settle ${t.id} → HTTP ${r.status}` });
     this.poll();
   }
 
   async tca(t: BlotterTrade): Promise<void> {
-    const r = await this.api.load<TcaReport>(`/trade-processor/tca/report/${t.id}`, { headers: this.api.authHeaders() });
+    const r = await this.api.load<TcaReport>(`/trade-processor/tca/report/${t.id}`);
     this.tcaReport.set(r.status === 200 ? r.body : null);
     if (r.status !== 200) this.api.log({ kind: 'eod', ok: false, summary: `tca ${t.id} → HTTP ${r.status}` });
   }
@@ -204,13 +202,13 @@ export class AdminPanel implements OnInit, OnDestroy {
   }
 
   async recon(): Promise<void> {
-    const r = await this.api.load<ReconStatus>('/trade-processor/recon/status', { headers: this.api.authHeaders() });
+    const r = await this.api.load<ReconStatus>('/trade-processor/recon/status');
     this.reconStatus.set(r.body ? JSON.stringify(r.body, null, 2) : `HTTP ${r.status}`);
   }
 
   async sweep(): Promise<void> {
     const r = await this.api.load<ReconStatus>('/trade-processor/recon/orphan-sweep', {
-      method: 'POST', headers: this.api.authHeaders(),
+      method: 'POST',
     });
     this.reconStatus.set(r.body ? JSON.stringify(r.body, null, 2) : `HTTP ${r.status}`);
   }

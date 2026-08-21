@@ -1,7 +1,7 @@
 // Dev proxy: everything the console needs from one `npm start`.
 //  - Spawns and babysits `kubectl port-forward svc/edge-proxy` so the rig is reachable without a
 //    separate terminal (the forward dies silently overnight otherwise).
-//  - Reads the rig's dev-token master secret (same method as the proof scripts) and injects it on
+//  - (removed) read the rig's dev-token master secret and injected it on
 //    /trade-processor requests, so the EOD panel's auto-mint works with no manual paste.
 //  - Proxies /nats-ws as a websocket for the live blotter feed.
 // Dev-rig convenience only; none of this exists in a real deployment.
@@ -47,17 +47,11 @@ if (REMOTE) {
   process.on('exit', () => pf?.kill());
 }
 
-let secret = process.env.AUTH_MASTER_SECRET ?? '';
-if (!secret) {
-  try {
-    secret = execSync(
-      `kubectl --context ${CTX} -n ${NS} get secret auth-secrets -o jsonpath='{.data.dev-token-master-secret}' | base64 -d`,
-      { shell: '/bin/sh' }).toString().trim();
-    console.log('[proxy] dev-token master secret loaded from the rig — EOD auto-mint enabled');
-  } catch {
-    console.log('[proxy] could not read auth-secrets — EOD panel will ask for the secret');
-  }
-}
+// The dev-token master secret used to be read off the rig here and injected on /trade-processor so
+// the console could mint itself an admin JWT. Both halves are gone: the mint answers 403 for
+// everyone, because a page holding that secret would issue admin:true tokens to anyone who loaded
+// it. Nothing in this file needs a credential now — the console's own server authenticates the
+// reads, and the writes want a sign-in.
 
 // ---- GCS bridge: read-only window onto the risk-extract archive bucket -----------------------
 // The EOD cut provenance (consensus seq, session date, price version) lives in gs:// objects and
@@ -298,8 +292,12 @@ export default [
   plain('/reference-data'),
   plain('/account-service'),
   plain('/position-service'),
-  { context: ['/trade-processor'], target, secure: false,
-    ...(secret ? { headers: { 'X-Auth-Master-Secret': secret } } : {}) },
+  // NO master-secret header any more. It existed so the console could mint itself an admin JWT,
+  // and that mint now answers 403 for everyone: handing a page the secret made it a confused
+  // deputy, issuing admin:true tokens to whoever loaded it. The server the console is served from
+  // authenticates these reads on the caller's behalf instead, and refuses the writes without a
+  // sign-in — so there is nothing here for a secret to do.
+  plain('/trade-processor'),
   plain('/m0'), plain('/m1'), plain('/m2'),
   { context: ['/nats-ws'], target, secure: false, ws: true },
   { context: ['/gcs'], target, secure: false, bypass: gcsBypass },

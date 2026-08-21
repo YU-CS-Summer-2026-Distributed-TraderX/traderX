@@ -45,14 +45,14 @@ import { HelpTip } from './help';
         <div class="banner warn-note">This gateway serves no regulatory route at all — the build
           running here never registered it, which is a different thing from the projection being
           switched off. Nothing to judge from, and nothing wrong.</div>
-      } @else if (api.bandsState() === 'stale-token') {
-        <div class="banner warn-note">The regulatory journal refused this console's admin token, and
-          a freshly minted one was refused too. An admin JWT lives 8 hours, so a console left open
-          outlives it — but a re-mint has already been tried, so this is credentials rather than
-          age. Nothing here is a statement about the rig.</div>
-      } @else if (api.bandsState() === 'unreachable' || api.bandsState() === 'no-token') {
+      } @else if (api.bandsState() === 'no-credential') {
+        <div class="banner warn-note">The regulatory journal refused the request for want of a
+          credential. This console holds none by design — the server it is served from attaches one
+          for this path — so a 401 here says that server did not, which is a fact about the rig
+          rather than about this page. Nothing below is a statement about the books.</div>
+      } @else if (api.bandsState() === 'unreachable') {
         <div class="banner warn-note">Could not read the regulatory journal
-          ({{ api.bandsState() === 'no-token' ? 'no admin token could be minted' : 'route unreachable' }}),
+          (route unreachable),
           so this screen has nothing to judge from — which is not the same as nothing to report.</div>
       } @else if (!api.bands().length) {
         <div class="faint">{{ busy() ? 'reading the journal…' : 'no refusals on record for this epoch' }}</div>
