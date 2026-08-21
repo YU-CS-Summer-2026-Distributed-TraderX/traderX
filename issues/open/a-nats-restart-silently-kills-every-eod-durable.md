@@ -257,3 +257,44 @@ description ("agreement on no-data reads"), and it was still shipped, by a sessi
 loaded. So the lesson is not "write the rule down" — the rule was written down. It is that **the guard
 has to be executable, in the script, not remembered**. Both fixed versions now assert a minimum input
 count before comparing, so "identical" can never mean "identically absent".
+
+---
+
+## Re-measured on a rig 2026-08-21 — the central symptom is FIXED, the residue is not
+
+A NATS wipe was driven deliberately on the cluster kind rig (delete the `nats` pod; its `data` volume
+is `emptyDir`, so JetStream goes with it). Both EOD durables came back on their own.
+
+**What this issue said would happen, and did not:**
+
+| Consumer | Durable | 2026-08-19 outcome | 2026-08-21 outcome |
+|---|---|---|---|
+| position-service `EodPnlConsumer` | `eod-pnl` | durable gone, never re-created, **logged nothing at all** | detected and re-subscribed, **with a log line** |
+| risk-extract `RiskExtractMain` | `risk-extract` | durable gone, never re-created | re-bound, logged `(re-bind)` |
+
+Post-wipe the broker reported `TRADERX_EOD consumers=2`, both durables present by name. The
+position-service line now reads:
+
+```
+WARN  EOD durable 'eod-pnl' is gone after a NATS reconnect (a broker restart recreates
+      JetStream state); re-subscribing
+```
+
+**This was already fixed before today, on a deployed image, and the issue never caught up.** The pod
+was running `:yu17-jsrebind` — started the previous day, not rolled for this test, and the tag names
+the fix. So the "never re-created" claim above describes a build that is no longer deployed.
+
+**What is still true, and is now the whole issue:** the re-bind restores the *subscription*, not the
+*messages*. `TRADERX_EOD` went from 2 messages to 0 across the wipe and nothing brought them back. A
+consumer that re-binds to an empty stream is a healthy consumer of nothing, which is a quieter
+failure than the original and still loses whatever `eod.prices.ready`/`eod.pnl.done` carried.
+
+**Do not close this on the re-bind.** Re-scope it to the message loss, or make the deliberate call
+that JetStream state is disposable here and close it as accepted — that decision belongs with the
+storage decision recorded in `issues/resolved/nats-jetstream-state-is-ephemeral-decide-deliberately.md`,
+which chose no PVC.
+
+**Method note.** The stream and consumer counts were read from the broker's own monitoring endpoint,
+`/jsz?streams=1&consumers=1`, reached on the **nats pod IP** — the `nats` Service publishes only
+`4222` and `8081`, so port `8222` is not reachable through it. Read the counts before *and* after; a
+post-wipe reading alone cannot tell a restored durable from one that was never lost.
