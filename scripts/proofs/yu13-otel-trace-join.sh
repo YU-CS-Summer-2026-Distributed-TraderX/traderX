@@ -43,7 +43,6 @@ if [ -z "${KCTX}" ]; then
   echo "[FAIL] neither KCTX nor CTX is set, so this proof does not know which rig to assert about." >&2
   echo "       It will NOT fall back to the ambient current-context (${AMBIENT:-<none>})." >&2
   echo "       Set one: CTX=kind-traderx-yu12-cluster  (the YU15 Aeron cluster rig)" >&2
-  echo "                CTX=kind-traderx-state-014     (the single-BLP tier)" >&2
   echo "                CTX=<gke context>              (to assert against GKE)" >&2
   exit 1
 fi

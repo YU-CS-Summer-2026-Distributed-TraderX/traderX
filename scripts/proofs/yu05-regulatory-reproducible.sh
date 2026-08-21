@@ -53,9 +53,7 @@ fi
 if [ "$_OM_CODE" = "404" ]; then
   echo "   ✘ $OM/regulatory/report -> 404"
   echo "   A member build predating ClusterRecon does not serve the journal-sourced regulatory"
-  echo "   surface. Rebuild (scripts/yu15/build-cluster-image.sh) and roll to a FRESH EPOCH, or"
-  echo "   run against the state-014 rig:"
-  echo "     ORDER_MATCHER_URL=http://localhost:8080/order-matcher bash $0"
+  echo "   surface. Rebuild (scripts/yu15/build-cluster-image.sh) and roll to a FRESH EPOCH."
   exit 2
 fi
 if [ "$_OM_CODE" = "503" ]; then
