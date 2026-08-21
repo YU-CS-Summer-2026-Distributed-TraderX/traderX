@@ -81,6 +81,28 @@ Consequences worth knowing before someone hits them live:
 - **The console does not and need not de-duplicate.** A trace opened from an order row may legitimately
   contain more than one order. The row → trace direction is always right; the trace → order direction
   is one-to-many whenever a key was reused.
+
+## How it surfaces in the console (so nobody builds a second mitigation)
+
+The console **names it rather than hiding it** — `99d035bb`: when a trace holds spans from more than
+one order it heads the panel *"This trace covers 2 orders — refs 72, 73"* and adds an order column,
+both suppressed in the ordinary single-order case. It reads the `traderx.order_ref` attribute that
+every span already carries (measured off the live payload, not assumed), so the separation is
+detectable rather than merely possible. Verified in the panel on `1-72`/`1-73`: five spans each,
+73 starting 86.8 ms after 72.
+
+Worth knowing that this case was **unreachable from the UI until `c8f30fd3`**. Rejected orders do
+land in the projection, but `GET /accounts/{id}/orders` returns only `OPEN_STATUSES` (NEW,
+PARTIALLY_FILLED) unless asked with `?status=all`, and the blotter fetched without it — so the rows
+that most often carry a reused ClOrdID (rejects from a script) had no way to appear. That commit adds
+an opt-in `all states` toggle; it is deliberately **off** by default, because "Open orders" has to go
+on meaning open orders. Both console commits were unrolled when this was written — check what is
+serving before concluding the UI does or does not do the above.
+
+Note the shape of the near-miss, since it is the same one this project keeps paying for: the absence
+of REJECTED rows from the open list was read as "rejections do not persist", and the reading was
+taken as a property of the system rather than of the query. Two sessions measured correctly and
+disagreed for an hour because they were asking different questions of the same table.
 - **This is not the wrong-id-space error** the same commit's `FLAG_RESTING_UPDATE` rule guards
   against. There, a row would carry a *different* order's id — a wrong answer that resolves and reads
   as convincing. Here every row carries the id its own key derives; the id is simply not unique
