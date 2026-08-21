@@ -18,6 +18,13 @@ interface OpenOrder {
   // somewhere to get "more detail" from, and this costs nothing: same request, same payload.
   status?: string; createdAt?: string; updatedAt?: string;
   lastExecutionPrice?: number; lastFillQuantity?: number;
+  /**
+   * The order's own trace id, stamped by the engine on the order's NEW egress and persisted by
+   * trade-processor's orderbook projection. Absent when the order had no client order id or was
+   * not sampled — and deliberately absent, never fabricated, on a resting order hit by someone
+   * else's aggressor, so a stranger's order cannot acquire the aggressor's trace.
+   */
+  traceId?: string;
 }
 
 interface PosRow extends Position {
@@ -321,16 +328,24 @@ export class BlotterPanel implements OnInit, OnDestroy {
   toggleOrder(id: string): void { this.expanded.update(m => ({ ...m, [id]: !m[id] })); }
 
   /**
-   * An open order's trace, from this browser session's own record of what it submitted.
+   * An open order's trace: the read model's own field first, this session's record second.
    *
-   * There is no other source. The read model's row carries no client order id, and a trace id is
-   * derived from the client order id — so an order placed over FIX, by the algo engine, or from a
-   * different browser has no link here and the expander says so rather than guessing an id.
+   * The row now carries `traceId`, stamped on the order's NEW egress and persisted by the
+   * projection — so an order placed over FIX, by the algo engine, or from another browser is
+   * traceable here, which it never was while the console's memory was the only source.
    *
-   * The orderId is "<epoch>-<ref>"; the map is keyed on the ref, which is what the submit path
-   * knows at the time it logs.
+   * The server's field is not merely preferred, it is BETTER EVIDENCE, and for a reason worth
+   * keeping: it arrives attached to the row, so it cannot be answering about a different epoch.
+   * The fallback map is keyed on a bare ref, and refs restart at 1 on a fresh epoch — which is why
+   * that map needs a guard (`Api.noteEpoch`) and this field does not.
+   *
+   * The fallback still earns its place: it covers an order this session submitted whose trace the
+   * engine did not stamp. Neither source is a guess — a row with no trace from either keeps the
+   * "cannot name the id" message rather than deriving one, which is the failure an earlier
+   * orderRef derivation already caused.
    */
-  traceForOrder(o: { orderId: string }): string | undefined {
+  traceForOrder(o: OpenOrder): string | undefined {
+    if (o.traceId) return o.traceId;
     const ref = Number(o.orderId.split('-').pop());
     return Number.isFinite(ref) ? this.api.traceForOrderRef(ref) : undefined;
   }
@@ -454,6 +469,11 @@ export class BlotterPanel implements OnInit, OnDestroy {
         status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
         lastExecutionPrice: row.lastExecutionPrice === null ? undefined : Number(row.lastExecutionPrice),
         lastFillQuantity: row.lastFillQuantity === null ? undefined : Number(row.lastFillQuantity),
+        // Accepting `traceid` as well as `traceId`: the projection's column is lower-case and
+        // whether it reaches JSON camel-cased depends on the serializer, not on this file. Same
+        // defensive shape as `row.id ?? row.orderId` two lines up, and it costs nothing to be
+        // wrong about which one arrives.
+        traceId: row.traceId ?? row.traceid ?? undefined,
       })));
     }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).

@@ -371,13 +371,19 @@ export class Api {
   }
 
   /**
-   * Order ref -> trace id, and the ONLY place a trace can be recovered for a resting order.
+   * Order ref -> trace id: the console's own record of what it submitted, and the FALLBACK behind
+   * the read model's own `traceId` column.
    *
-   * The open-order read model (trade-processor's orderbook projection) carries no client order id
-   * and no trace id — checked, its columns are orderid/accountid/security/side/quantity/
-   * remainingquantity/limitprice/status/createdat/updatedat/lastexecutionprice/lastfillquantity.
-   * A trace id is derived from the CLIENT order id, which the client invents and nothing
-   * downstream keeps, so no amount of reading the order back can produce one.
+   * It was once the only source. The orderbook projection carried no client order id and no trace
+   * id — orderid/accountid/security/side/quantity/remainingquantity/limitprice/status/createdat/
+   * updatedat/lastexecutionprice/lastfillquantity — and a trace id derives from the CLIENT order
+   * id, which the client invents and nothing downstream kept. The engine now stamps the derived id
+   * on the order's own egress and the projection persists it, so an order this browser never sent
+   * is traceable from its row. This map still covers the gap in the other direction: an order this
+   * session submitted that the engine did not stamp.
+   *
+   * Prefer the row's field where both exist. It arrives attached to the row and so cannot be
+   * answering about a different epoch, which is the hazard this map needs `noteEpoch` to guard.
    *
    * Persisted for the same reason `contracts` is: the activity log lives in memory and a refresh
    * emptied it, which took the trace link with it — the order was still resting, still had a
