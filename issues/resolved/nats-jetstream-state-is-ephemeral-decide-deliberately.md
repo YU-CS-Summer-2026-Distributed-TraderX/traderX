@@ -171,7 +171,8 @@ off-rig probe had no live parent to contradict it. Only a rig with something act
   only the sentence moved — but that is a claim about the diff, not an observation.
 - **`STREAM_EMPTY` and `LOG_LOST` fired; `CONSUMER_REPLAYED_NONE` and `UNDETERMINED` did not.**
   Neither has been seen on a rig. Both are covered by unit tests and by the off-rig probe only.
-- **The state-014 tier was never touched**, and neither was GKE. This is a cluster-tier result only.
+- **GKE was never touched.** This is a cluster-tier (kind) result only. (The state-014 single-BLP
+  tier was retired 2026-08-21 and is deliberately NOT listed as an outstanding residual.)
 - **The torn-log case was created and not examined.** After the wipe the engine kept appending to
   the recreated stream, so it now holds a tail whose parent-created events are missing. A later
   restart would replay that partial history. `AlgoOrderState.applySubmitted`/`applyFillObserved`
