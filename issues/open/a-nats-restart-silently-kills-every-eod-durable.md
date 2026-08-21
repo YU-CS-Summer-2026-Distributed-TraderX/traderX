@@ -154,6 +154,12 @@ algo-engine     algo-engine event-store consumer is gone after a NATS reconnect 
                 replayed 0 algo-engine events from TRADERX_ALGO_ENGINE
 ```
 
+That last line is a **2026-08-19 capture and no longer exists**. `replayed 0` was correct against
+an empty stream and was also exactly what state loss looked like, so the algo engine now says which
+(`STREAM_EMPTY` / `LOG_LOST` / `CONSUMER_REPLAYED_NONE` / `UNDETERMINED`) — see
+`issues/resolved/nats-jetstream-state-is-ephemeral-decide-deliberately.md`. Do not grep a current
+rig for the string above.
+
 `scripts/proofs/yu17-swap-netting.sh` then passed end to end, **exit 0**: cut at N=20209, 17
 contracts, identical sha from all three members, both artifacts reproducing from the cut alone, and
 a member destroyed to an empty disk re-rendering the same sha.

@@ -79,3 +79,54 @@ a fact about this consumer.
 
 Accepted, explicitly, as the cost of this choice: live algo parents in flight at the moment of a
 NATS wipe are lost. That is now a decision with a name on it rather than a silence.
+
+## Resolved 2026-08-21 — the observability half shipped (`529c20cc`)
+
+`AlgoEventStore` no longer logs one line for every replay. The replay is now classified against
+what the stream says about itself (`getStreamState()` — message count and last sequence) plus the
+one thing only this consumer knows: how many events it has already applied off that stream.
+
+| verdict | what it means | level |
+|---|---|---|
+| `REPLAYED` | the log was there and this consumer read it: `replayed N of M … (last sequence S)` | INFO |
+| `STREAM_EMPTY` | 0 messages, last sequence 0. Nothing was missed *by this consumer* — and the line SAYS a first boot and a wiped log are not separable from this side, instead of implying either | WARN |
+| `LOG_LOST` | 0 messages, but this process had already applied N events off it, or the stream's own last sequence is > 0. Definite loss, not an inference | WARN |
+| `CONSUMER_REPLAYED_NONE` | the stream still holds the log and this consumer read none of it — the gap is this subscription, not the broker's storage | WARN |
+| `UNDETERMINED` | the stream could not be inspected. Carries the broker's own error and rules out neither of the above, rather than quietly rendering as one of them | WARN |
+
+Verdict and operator-facing sentence are rendered from one place, so the classification and its
+description cannot drift apart.
+
+`STREAM_EMPTY` is a WARN deliberately. `replayed 0` is not a steady state — once any parent order
+exists the stream is non-empty for good — so this warns on a genuinely cold first boot and
+otherwise only when there is something to look at. It is the one branch that stays honestly
+ambiguous, and it says so in the log rather than reading as an all-clear.
+
+### What was proven, and how
+
+- Six tests in `AlgoEventStoreReplayTest` (`execution-algo-engine` 37 → 43). Each branch was
+  detonated in turn — `LOG_LOST`, `CONSUMER_REPLAYED_NONE`, `UNDETERMINED` each made unreachable —
+  and each failed **exactly its own tests** while the module's other 40 stayed green with the
+  defect in. No pre-existing test covered any of this.
+- Exercised end to end against a **real JetStream broker of the image the rigs run**
+  (`nats:2.14-alpine`), including a real wipe. Cold boot on an unused stream printed
+  `STREAM_EMPTY`; three appended parents replayed as `replayed 3 of 3 … (last sequence 3)`; the
+  broker was then destroyed and replaced at the same address, and the reconnect rebuild printed
+  `STATE LOST: … reports 0 messages and this process had already applied 3 events off it`. That is
+  the scenario this issue was filed about — and before the change all three of those printed the
+  same `replayed 0 algo-engine events from TRADERX_ALGO_ENGINE`.
+- `pipeline/generate-state.sh YU17-otc-rates`, then `engine-tests.sh hosted`, `service-tests.sh`,
+  `assert-suites-executed.sh` and its `--selftest`: all rc=0, 564 tests across 6 modules, no module
+  at zero. (Baseline 555; +6 here, +3 from concurrent trade-processor work by another lane.)
+
+### What was NOT proven
+
+- **Not run on either project rig.** The broker exercise above was a local container of the same
+  image, off-rig. The algo-engine image has not been rebuilt or rolled on the state-014 or cluster
+  tiers, so no operator has yet seen these lines come out of a deployed pod. That is the step this
+  record does not cover.
+- **`LOG_LOST` has never fired with live algo parents actually in flight.** The three events in the
+  probe were lost with nothing depending on them. The line's *claim* — that the parent orders those
+  events carried are gone — is what this engine's design says, not something that run measured.
+- **The storage decision is unchanged.** Still no PVC. Live algo parents in flight at the moment of
+  a wipe are still lost; that was the accepted cost, and this line makes it visible, not smaller.
