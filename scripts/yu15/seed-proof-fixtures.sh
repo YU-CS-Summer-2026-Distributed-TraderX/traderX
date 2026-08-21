@@ -65,7 +65,8 @@ if [[ "${FRESH_EPOCH:-0}" == "1" ]]; then
   echo "[fresh-epoch] clearing the SQL projection"
   left="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
     mariadb -utraderx -ptraderx traderx -N -B -e \
-    "DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;
+    "DROP TABLE IF EXISTS yu15_parked_trades; DROP TABLE IF EXISTS yu15_parked_positions;
+     DELETE FROM trades; DELETE FROM positions; DELETE FROM orderbook;
      SELECT (SELECT COUNT(*) FROM trades)+(SELECT COUNT(*) FROM positions)+(SELECT COUNT(*) FROM orderbook);" \
     2>/dev/null | tail -1)"
   if [[ "${left}" != "0" ]]; then
@@ -98,6 +99,57 @@ for acct in "${ACCOUNTS[@]}"; do
     -d "{\"accountId\":${acct},\"tickers\":\"${TICKERS}\",\"price\":${PRICE}}")"
   printf "   %-8s %s\n" "${acct}" "seed HTTP ${code}"
 done
+
+# LISTED OPTIONS -- the same enablement step, for the class the TICKERS list above does not name.
+#
+# BlpRiskState enables securities PER EPOCH and a fresh epoch starts with NONE enabled. This script
+# seeded equities only, so after every roll the whole YU14 option class was untradeable and every
+# option order came back UNKNOWN_SECURITY -- a reason code every reader parses as "wrong ticker".
+# Nothing on the surface contradicted that reading: /resolve still SUCCEEDED (reference data knows
+# the contract) and price-publisher still MARKED it, so the instrument looked live while only the
+# enablement was missing. scripts/proofs/seed-option-chain.sh does enable the chain, but nothing
+# called it -- so whether options worked depended on which proofs a human had run by hand that day.
+# (issues/resolved/an-epoch-roll-silently-drops-instrument-classes.md)
+#
+# THE CHAIN IS READ FROM THE FEED, NOT COPIED. price-publisher's /prices is the list of what this
+# tier actually quotes; a second hardcoded copy of the chain is a copy that drifts. kubectl exec
+# rather than a forward, like the DB calls above, so this does not depend on port 18100 being up.
+#
+# AND AT THE LIVE PREMIUM, NOT A ROUND NUMBER. POST /seed sends a PRICE_TICK at the price passed
+# and that becomes the risk anchor -- yu08-algo-slicing.sh passing 200 unconditionally is how IBM's
+# anchor sat at 200 while the feed had walked to ~185.
+#
+# SEEDING ONLY, DELIBERATELY NO CROSS. The price collar band is anchored by the first LIMIT into a
+# book (slotFor()), never by a price tick, so seeding cannot pin an option book -- crossing here
+# would, and yu15-option-persistence.sh must cross AAPL261218C00260000 at 2.40 against a live ~8.85.
+#
+# 24 contracts on top of the 20 tickers above is 44 securities: still inside the MAX_SECURITIES=64
+# of the historical builds yu13-stp-and-replace rolls the members onto.
+echo "[seed] listed options at live premiums"
+OPTION_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- \
+  wget -qO- http://localhost:18100/prices 2>/dev/null \
+  | python3 -c 'import sys, json, re
+for q in json.load(sys.stdin)["prices"]:
+    if re.fullmatch(r"[A-Z]+[0-9]{6}[CP][0-9]{8}", q["ticker"]) and q.get("price", 0) > 0:
+        print(q["ticker"], round(q["price"], 2))' 2>/dev/null)"
+# A silently-skipped enablement is the whole defect this block closes, so an unreadable feed is
+# exit 1 and not a warning: the alternative is a suite that runs green against a rig where the
+# option class does not exist.
+if [[ -z "${OPTION_PX}" ]]; then
+  echo "[fail] no option contracts readable from price-publisher /prices -- the option class would be"
+  echo "       left unenabled on this epoch, which surfaces as UNKNOWN_SECURITY on every option order"
+  exit 1
+fi
+opts=0
+while read -r otick opx; do
+  [[ -n "${otick}" ]] || continue
+  out="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${ACCOUNTS[0]},\"tickers\":\"${otick}\",\"price\":${opx}}")"
+  [[ "${out}" == *'"seeded":true'* ]] \
+    || { echo "[fail] option seed ${otick} @ ${opx}: ${out:-no answer from the matcher}"; exit 1; }
+  opts=$((opts + 1))
+done <<< "${OPTION_PX}"
+echo "   ${opts} contracts enabled at their live premiums"
 
 # yu06-consumer-halt and yu15-risk-extract need an account that provably HOLDS stock -- a seeded
 # account with no position proves nothing, and both scripts correctly refuse to run without one.

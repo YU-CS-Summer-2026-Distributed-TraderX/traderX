@@ -7,6 +7,13 @@
 # step: it seeds (register + enable + price) every contract through the sequenced /seed path,
 # then proves the book actually crosses one contract by watching the gateway fill counter.
 #
+# ENABLEMENT NO LONGER DEPENDS ON THIS SCRIPT BEING RUN BY HAND. scripts/yu15/seed-proof-fixtures.sh
+# now seeds the whole chain at live premiums on every fresh epoch, which is what closed
+# issues/resolved/an-epoch-roll-silently-drops-instrument-classes.md -- this script was referenced
+# by nothing but the README, so before that the option class was tradeable only on the days somebody
+# remembered to run it. What is still only here is the SMOKE: the proof that a contract actually
+# CROSSES. Keep that; do not re-add a second enablement path that can drift from the seeder's.
+#
 # Usage: MATCHER_URL=http://localhost:18110 ./seed-option-chain.sh
 set -euo pipefail
 

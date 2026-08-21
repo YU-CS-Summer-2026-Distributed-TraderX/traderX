@@ -33,7 +33,13 @@ EXPECTED_VALUE="99665.000000"  # face x fraction, exactly — the whole point of
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
-sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+# -c mariadb IS LOAD-BEARING, not tidiness. eod-price-db carries a schema-migrate initContainer,
+# so an exec without it makes kubectl print `Defaulted container "mariadb" out of: ...` on stderr --
+# which this 2>&1 folds into the value. Every $(sql ...) capture below then holds that sentence
+# followed by the answer, and a count compared against "2" reads as a mismatch forever. Measured
+# 2026-08-21: step 2's row count came back as the warning plus "0" and the proof failed claiming
+# rows had landed when none had. seed-proof-fixtures.sh already passes the flag; this did not.
+sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -c mariadb -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
 order() { # order <side> <account> <quantity> [ticker] [price] -> HTTP code on stdout

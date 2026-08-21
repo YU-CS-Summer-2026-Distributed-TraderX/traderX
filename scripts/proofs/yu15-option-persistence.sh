@@ -42,13 +42,20 @@ step() { echo; echo "=== $* ==="; }
 # Errors are surfaced, not swallowed: a silently failing ALTER would make the proof look like it
 # passed a step it never ran. The `|| true` is on the grep, which exits 1 when a statement
 # produces no output at all — which is the normal case for DELETE and ALTER.
-sql()  { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
+# -c mariadb IS LOAD-BEARING, not tidiness. eod-price-db carries a schema-migrate initContainer,
+# so an exec without it makes kubectl print `Defaulted container "mariadb" out of: ...` on stderr --
+# which this 2>&1 folds into the value. Every $(sql ...) capture below then holds that sentence
+# followed by the answer, and a count compared against "2" reads as a mismatch forever. Measured
+# 2026-08-21: step 2's row count came back as the warning plus "0" and the proof failed claiming
+# rows had landed when none had. seed-proof-fixtures.sh already passes the flag; this did not.
+sql()  { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -c mariadb -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
            | { grep -v "Using a password on the command line" || true; }; }
 
 widths() {
   sql "SELECT CONCAT(table_name,'.',column_name,'=',character_maximum_length)
        FROM information_schema.columns
        WHERE table_schema='traderx' AND column_name IN ('security','ticker')
+         AND table_name NOT LIKE 'yu15\\_parked\\_%'
        ORDER BY table_name;"
 }
 
@@ -95,6 +102,36 @@ step "1. narrow the columns back to an older state's widths"
 # the cause. Two columns rather than CONCAT(ticker, 0x09, name): mariadb batch mode escapes a
 # tab INSIDE a value as backslash-t, so only the real inter-column separator is a genuine tab.
 DOOMED="$(sql "SELECT ticker, company_name FROM stocks WHERE CHAR_LENGTH(ticker) > 16;")"
+
+# PARK THE OPTION BLOTTER TOO -- the trade and position rows, not just the stocks catalog.
+#
+# Every OCC symbol is longer than 15 characters, so the two DELETEs below take the WHOLE option
+# trade and position history with them, and nothing was putting it back. That is a second, entirely
+# independent way the option class disappears from a demo: the contracts stay tradeable (enablement
+# is engine state, not SQL), so it is invisible on the order path and shows only on read surfaces --
+# a UI option blotter goes empty with no error anywhere.
+# (issues/resolved/an-epoch-roll-silently-drops-instrument-classes.md)
+#
+# Park the exact rows rather than re-deriving them: they are a projection of a log that still holds
+# them, so putting the same rows back is what makes the projection true again. Wide-schema copies
+# taken BEFORE the narrowing below, so a 19-character symbol still fits.
+#
+# THE PROOF'S OWN TWO SYMBOLS ARE EXCLUDED, and that exclusion is load-bearing: step 2 proves
+# BEFORE_SYM must NOT persist, and step 4 asserts EXACTLY 2 trade rows for AFTER_SYM -- restoring an
+# earlier run's AFTER_SYM rows would make that count 4 and fail a proof about something else.
+#
+# INSERT IGNORE and no DROP until the restore succeeds, so a run that dies between here and step 3c
+# leaves the rows parked and the NEXT run carries them back. seed-proof-fixtures.sh's FRESH_EPOCH
+# clear drops the parked tables, because after a wipe those rows belong to a log that is gone.
+sql "CREATE TABLE IF NOT EXISTS yu15_parked_trades    LIKE trades;
+     CREATE TABLE IF NOT EXISTS yu15_parked_positions LIKE positions;
+     INSERT IGNORE INTO yu15_parked_trades    SELECT * FROM trades
+       WHERE CHAR_LENGTH(security) > 15 AND security NOT IN ('${BEFORE_SYM}','${AFTER_SYM}');
+     INSERT IGNORE INTO yu15_parked_positions SELECT * FROM positions
+       WHERE CHAR_LENGTH(security) > 15 AND security NOT IN ('${BEFORE_SYM}','${AFTER_SYM}');"
+PARKED="$(sql "SELECT (SELECT COUNT(*) FROM yu15_parked_trades)+(SELECT COUNT(*) FROM yu15_parked_positions);")"
+echo "[ok] parked ${PARKED} option trade/position row(s) the regression below would otherwise eat"
+
 sql "DELETE FROM eod_position_pnl WHERE CHAR_LENGTH(security) > 16;
      DELETE FROM eod_price_snapshot WHERE CHAR_LENGTH(security) > 16;
      DELETE FROM trades WHERE CHAR_LENGTH(security) > 15;
@@ -189,6 +226,23 @@ if [[ "${RESTORED}" -gt 0 ]]; then
   [[ "${QUIESCED}" == 1 ]] || fail "control feed never applied outbox version ${MAXV} to the cluster within 120s"
 fi
 echo "[ok] ${RESTORED} long-ticker universe rows restored (one outbox row each, applied through consensus; 0 restored is legal on a rig that never held them)"
+
+step "3c. put the parked option blotter back"
+# After the widen (a 19-character symbol cannot enter a VARCHAR(15) column) and before step 4's
+# cross, so the restored rows can never be confused with the ones step 4 is about to assert on.
+# Raw INSERT, unlike the stocks restore above: trades and positions have no control outbox and no
+# consumer downstream of them -- they ARE the projection, so writing the rows back is the whole
+# repair. VERIFIED, not logged: a restore that silently did nothing is the defect, not a warning.
+sql "INSERT IGNORE INTO trades    SELECT * FROM yu15_parked_trades;
+     INSERT IGNORE INTO positions SELECT * FROM yu15_parked_positions;"
+BACK="$(sql "SELECT (SELECT COUNT(*) FROM trades    WHERE CHAR_LENGTH(security) > 15
+                       AND security NOT IN ('${BEFORE_SYM}','${AFTER_SYM}'))
+                  + (SELECT COUNT(*) FROM positions WHERE CHAR_LENGTH(security) > 15
+                       AND security NOT IN ('${BEFORE_SYM}','${AFTER_SYM}'));")"
+[[ "${BACK}" == "${PARKED}" ]] \
+  || fail "parked ${PARKED} option blotter row(s) but only ${BACK} came back -- the suite has eaten option history"
+sql "DROP TABLE yu15_parked_trades; DROP TABLE yu15_parked_positions;"
+echo "[ok] ${BACK} option trade/position row(s) restored (0 is legal on a rig that held none)"
 
 step "4. book another option cross — it must land intact"
 cross "${AFTER_SYM}" "${PREMIUM}"
