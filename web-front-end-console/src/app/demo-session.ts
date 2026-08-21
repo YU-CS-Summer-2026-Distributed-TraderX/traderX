@@ -572,20 +572,17 @@ export class SessionDriver {
     @if (!d.running()) { <button class="add" (click)="d.add()">+ add an account</button> }
     @if (d.sent()) { <div class="sub tally" [class.neg]="d.tally().bad">{{ d.tally().text }}</div> }
 
-    <div class="sub note">Quantity <b>-1</b> draws a random size per order — a whole number of the
-      instrument's lot, up to 10,000.
+    <!-- Only what an operator needs to READ A CONTROL or predict a number on this screen. The
+         reasoning behind each behaviour (why accepted orders are not listed, what pause does to the
+         clock) is design rationale, and it belongs in the code, not permanently under the panel. -->
+    <div class="sub note">Quantity <b>-1</b> draws a random size per order, up to 10,000.
       @if (bondsInPool().length) {
-        <b>{{ bondsInPool().length }} instrument{{ bondsInPool().length === 1 ? '' : 's' }} in this
-        pool trade{{ bondsInPool().length === 1 ? 's' : '' }} in lots of 100</b> — the gateway refuses
-        a bond quantity below 100 or not a multiple of it, at the boundary, before the engine sees
-        the order. Random sizes are drawn in whole lots and a fixed size is rounded to one, so a
-        mixed pool does not spend half its orders on certain rejections.
-      } Rejections are logged individually to Activity &amp; rejections with their reason code —
-      accepted orders are only counted, because a session at these rates would otherwise push
-      everything else out of that list. Capped at {{ maxPerMin }}/min and {{ maxDuration }}s per
-      actor@if (d.batch()) { , {{ maxBatch }} orders per batch }. <b>Pause</b> holds the counters and
-      stops the clock, and each actor keeps the time it has left — so a resumed session is one
-      session, and the elapsed figure stays trading time rather than wall time.</div>
+        {{ bondsInPool().length }} instrument{{ bondsInPool().length === 1 ? '' : 's' }} here
+        trade{{ bondsInPool().length === 1 ? 's' : '' }} in lots of 100, and sizes are rounded to a
+        whole lot.
+      } Rejections are listed in Activity &amp; rejections; accepted orders are only counted.
+      Capped at {{ maxPerMin }}/min and {{ maxDuration }}s per
+      actor@if (d.batch()) { , {{ maxBatch }} orders per batch }.</div>
     }
   `,
   styles: `
