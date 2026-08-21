@@ -196,10 +196,20 @@ spec:
               value: "1"
             - name: OTEL_ENDPOINT
               value: "http://otel-collector:4318"
-            # 1 in 128. At ~190k orders/s a per-order span is its own performance problem; head
-            # sampling is what keeps tracing affordable at the rates this cluster actually runs.
+            # 0 = trace EVERY order. This tier is the demo/console rig, and the console's
+            # trade -> order -> trace button is only demonstrable if the order it is clicked on was
+            # sampled: at the old 127 (1 in 128) roughly one trade in 128 resolved and the rest 404'd,
+            # which reads as a broken button rather than as sampling. Rejections escalate past the
+            # mask, so the failure was invisible in exactly the case anyone tests first.
+            # BEFORE A THROUGHPUT RUN, PUT THIS BACK TO 127 on both the gateway and the members. At
+            # ~190k orders/s a per-order span is its own performance problem, and the banked GKE
+            # numbers were taken at 127. Measured here: 10 accepted orders emitted 30 spans, so the
+            # cost is ~3 spans per order, not one.
+            # The gateway's and the members' values MUST match — both sides derive the verdict
+            # independently from the same key, and a mismatch yields traces missing their cluster
+            # segment rather than an error.
             - name: OTEL_SAMPLE_MASK
-              value: "127"
+              value: "0"
             # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). PRESENT BUT OFF
             # here, same rule as KDB_TAP_DIR and OTEL_TRACES above: the live forward blotter
             # allocates per booked trade on the apply thread, and the banked GKE throughput numbers
