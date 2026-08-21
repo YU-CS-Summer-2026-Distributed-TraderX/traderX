@@ -94,16 +94,23 @@ function readToken(req) {
   return { user };
 }
 
-// Every CHANGE the admin page can make. Reads deliberately absent: /trade-processor/recon/status,
-// /trade-processor/tca/report/*, GET /algo/orders and the band scan stay open.
-// Order entry (/order-matcher/orders) is NOT here and that is on purpose — the trading page offers
-// it to anyone, so gating it on this path alone would be a fence with no field behind it.
+// OVERRIDES, not changes. The first cut of this list gated everything the admin page could mutate,
+// which sounded right and was drawn from the wrong map: three of those four actions live on the
+// TRADING page (cancel in activity-panel and blotter-panel, force-settle in blotter-panel, algo
+// create in ticket-panel). Only the orphan sweep is admin-only.
+//
+// Gating by "is it a change" therefore produced a cliff on a page nobody had in view: a plain order
+// went through signed-out and a TWAP/VWAP order on the SAME ticket 401'd, because algo create was
+// gated and order entry was not. yaakov's call, 2026-08-20: gate the OVERRIDES.
+//
+// The line that survives: an override makes the system depart from what it would have done by
+// itself. Force-settle jumps a trade past its settlement cycle; the orphan sweep rewrites
+// reconciliation state. Cancelling your own order and scheduling a TWAP are ordinary trading, and
+// the trading page offers both to anyone — so gating them there would be a fence with no field
+// behind it, which is the same reason order entry was never on this list.
 const ADMIN_MUTATIONS = [
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
-  { method: 'POST', re: /^\/order-matcher\/cancel$/ },
   { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
-  { method: 'POST', re: /^\/algo\/orders$/ },
-  { method: 'DELETE', re: /^\/algo\/orders\// },
 ];
 
 const needsAuth = (method, p) =>
@@ -408,7 +415,7 @@ const server = http.createServer(async (req, res) => {
   // ---- auth ----
   if (p === '/auth/me') {
     const s = readToken(req);
-    return s ? json(res, 200, { user: s.user }) : json(res, 401, { error: 'not signed in' });
+    return s ? json(res, 200, { user: s.user }) : json(res, 401, { code: 'signed_out', error: 'not signed in' });
   }
   if (p === '/auth/logout') {
     res.setHeader('Set-Cookie', `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
@@ -420,7 +427,7 @@ const server = http.createServer(async (req, res) => {
     try { body = JSON.parse(await readBody(req)); } catch { /* fall through to a 401 */ }
     if (!checkPassword(body.user, body.password)) {
       // One message for both failures. "No such user" tells an attacker which half to keep trying.
-      return json(res, 401, { error: 'invalid username or password' });
+      return json(res, 401, { code: 'bad_credentials', error: 'invalid username or password' });
     }
     // Secure is set from the proto the CLIENT saw, not from ours: the pod speaks plain HTTP behind
     // the load balancer, so hardcoding Secure would work on the rig and silently drop the cookie on
@@ -433,7 +440,12 @@ const server = http.createServer(async (req, res) => {
   // The gate itself. Placed before every proxy path below, so a change cannot reach the cluster by
   // any route this server offers.
   if (needsAuth(req.method, p) && !readToken(req)) {
-    return json(res, 401, { error: 'sign in as an administrator to make this change' });
+    // A STABLE marker, because the console has to tell this 401 apart from the risk-control 401 and
+    // was reduced to matching on the path. Prose is the worst possible discriminator: it is the part
+    // most likely to be reworded, and a reword would silently turn a sign-in prompt into a dead
+    // button. `code` is the contract; the message stays free to change.
+    res.setHeader('WWW-Authenticate', 'Cookie realm="traderx-console"');
+    return json(res, 401, { code: 'admin_auth_required', error: 'sign in as an administrator to make this change' });
   }
   if (p === '/gateways') return gatewaysBypass(req, res);
   // THE MEMBER COUNT IS ALSO A CONFIGURATION, not a constant. An Aeron cluster is normally 3 or 5;
