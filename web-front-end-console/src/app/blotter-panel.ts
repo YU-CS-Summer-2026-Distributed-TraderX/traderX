@@ -28,6 +28,25 @@ interface PosRow extends Position {
  * `<epoch>-<orderRef>` → the ref. Returns 0 for a market sweep (`<epoch>-0`), which has no
  * originating order by design, and null when there is nothing parseable to join on.
  */
+/**
+ * The epoch from the first `<epoch>-<n>` id in a list, or null.
+ *
+ * Exported for the spec: this is the guard that keeps a persisted trace map from answering across
+ * an epoch boundary, and a guard is worth a test that fails when it stops guarding. Skips blanks
+ * and market trades (`sourceOrderId` null) rather than treating them as a missing epoch — a list
+ * of nulls is no evidence about which epoch the rig is on.
+ */
+export const firstEpoch = (ids: unknown[]): number | null => {
+  for (const raw of ids) {
+    const m = /^(\d+)-\d+$/.exec(String(raw ?? ''));
+    if (m) {
+      const e = Number(m[1]);
+      if (Number.isFinite(e) && e > 0) return e;
+    }
+  }
+  return null;
+};
+
 const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
   const m = /^\d+-(\d+)$/.exec(String(t.sourceOrderId ?? ''));
   return m ? Number(m[1]) : null;
@@ -411,12 +430,21 @@ export class BlotterPanel implements OnInit, OnDestroy {
       this.api.load<any[]>(`/trade-processor/accounts/${id}/orders`),
     ]);
     if (p.status === 200 && Array.isArray(p.body)) this.rawPositions.set(p.body);
+    // The epoch arrives with the data and nowhere else — the submit path never learns it. Refs
+    // restart at 1 on a fresh epoch, so this is what stops a surviving sessionStorage map from
+    // answering epoch 2's order 7 with epoch 1's trace.
+    //
+    // Witnessed from EITHER response, and before either is rendered. Open orders alone is not
+    // enough: a fresh epoch starts with an EMPTY book, so the one load that most needs to clear
+    // the map is the one with no open order to read an epoch from — while its trades, which use
+    // the same map through traceOf(), arrive as soon as anything crosses. Taking whichever
+    // response has a row makes the witness fire in exactly that case.
+    const epoch = firstEpoch([
+      ...(Array.isArray(o.body) ? o.body.map((r: any) => r?.id ?? r?.orderId) : []),
+      ...(Array.isArray(t.body) ? t.body.map((r: any) => r?.sourceOrderId) : []),
+    ]);
+    if (epoch !== null) this.api.noteEpoch(epoch);
     if (o.status === 200 && Array.isArray(o.body)) {
-      // The epoch arrives with the data and nowhere else — the submit path never learns it. Refs
-      // restart at 1 on a fresh epoch, so this is what stops a surviving sessionStorage map from
-      // answering epoch 2's order 7 with epoch 1's trace.
-      const epoch = Number(String(o.body[0]?.id ?? o.body[0]?.orderId ?? '').split('-')[0]);
-      if (Number.isFinite(epoch)) this.api.noteEpoch(epoch);
       this.rawOpenOrders.set(o.body.map(row => ({
         orderId: String(row.id ?? row.orderId ?? ''),
         security: row.security, side: row.side,

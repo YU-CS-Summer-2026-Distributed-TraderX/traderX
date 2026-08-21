@@ -1,3 +1,4 @@
+import { firstEpoch } from './blotter-panel';
 import { TestBed } from '@angular/core/testing';
 import { Api, bridgeError, riskControlError } from './api';
 
@@ -132,5 +133,45 @@ describe('order trace map across an epoch roll', () => {
   it('never treats ref 0 — a market sweep — as a lookup', () => {
     api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 0, traceId: 'aaaa' });
     expect(api.traceForOrderRef(0)).toBeUndefined();
+  });
+});
+
+// ---- firstEpoch: the guard that stops a persisted trace map crossing an epoch boundary --------
+// These exist because the ORIGINAL fix witnessed the epoch only from open orders, and a fresh
+// epoch starts with an empty book — so the load that most needs to clear the map had nothing to
+// read an epoch from, while its trades used that same stale map.
+describe('firstEpoch', () => {
+  it('reads the epoch from an open-order id', () => {
+    expect(firstEpoch(['2-7'])).toBe(2);
+  });
+
+  it('falls through to a trade sourceOrderId when there are no open orders', () => {
+    // The fresh-epoch case: empty book, trades already arriving. Built the way the loader builds
+    // it — open-order ids first, then trade sourceOrderIds — so this fails if the trade half is
+    // ever dropped from the call site. Spreading a literal empty array would have tested nothing.
+    const openOrders: { id: string }[] = [];
+    const trades = [{ sourceOrderId: '3-14' }];
+    const ids = [...openOrders.map(r => r.id), ...trades.map(r => r.sourceOrderId)];
+    expect(ids.length).toBe(1);                 // the list really is trades-only
+    expect(firstEpoch(ids)).toBe(3);
+  });
+
+  it('prefers an open order when both are present, and agrees with the trades either way', () => {
+    const ids = [...[{ id: '4-1' }].map(r => r.id), ...[{ sourceOrderId: '4-9' }].map(r => r.sourceOrderId)];
+    expect(firstEpoch(ids)).toBe(4);
+  });
+
+  it('skips market trades and blanks rather than reading them as an epoch', () => {
+    expect(firstEpoch([null, undefined, '', '3-9'])).toBe(3);
+  });
+
+  it('returns null when nothing carries an epoch, so the map is left alone', () => {
+    // Not 0 and not 1: an absent witness must not be mistaken for "epoch 1", which would clear a
+    // valid map on every empty account.
+    expect(firstEpoch([null, ''])).toBeNull();
+  });
+
+  it('takes the FIRST id that has one, not the last', () => {
+    expect(firstEpoch(['5-1', '5-2'])).toBe(5);
   });
 });
