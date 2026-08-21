@@ -179,3 +179,21 @@ The rest of the module stayed green with each defect in, so nothing pre-existing
 - **`UNDETERMINED` swallows the orphan clause.** If the broker cannot be inspected AND the replay
   tore, the verdict reports the inspection failure and drops the orphan count. Reachable in
   principle, not seen; `UNDETERMINED` is already alarming, so the operator is already loud.
+
+---
+
+## Residuals dispositioned 2026-08-21 (yaakov)
+
+- **Recovery, not repair — DECIDED: do not auto-cancel orphaned children.** Cancelling live orders
+  automatically, because an engine lost its own memory, is a destructive action on incomplete
+  information. Closed as a question. Its consequence — the risk reservations those children hold and
+  nobody releases — is tracked separately in
+  `issues/open/orphaned-children-hold-risk-capacity-nobody-releases.md`.
+- **Single-BLP tier (state-014) — OUT OF SCOPE.** The project is no longer working with the single-BLP
+  tier, so "whether the same orphaning occurs there" is retired rather than open.
+- **Downstream effects — PROMOTED to its own issue**, above. Not idle: open orders hold reservations
+  in the risk gateway, so an order that never fills and is never cancelled leaks capacity permanently.
+- **`UNDETERMINED` swallows the orphan clause** — lifted to
+  `issues/open/undetermined-swallows-the-torn-log-clause.md`.
+
+Nothing from this issue is now recorded only here.
