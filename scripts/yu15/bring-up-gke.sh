@@ -195,6 +195,53 @@ else
   [[ "${sec_ok}" -eq "${SEC_N}" ]] || say "  WARNING: $((SEC_N - sec_ok)) instrument(s) will reject UNKNOWN_SECURITY"
 fi
 
+# ---- 3d. ADMIT THE OCC OPTION SYMBOLS ---------------------------------------------------------
+# Options are NOT in reference-data's 533 instruments — an OCC contract is enabled directly in the
+# engine's risk state and never listed as a catalog instrument. So step 3c cannot reach them and a
+# fresh epoch drops the entire class, silently: the Option preset answers UNKNOWN_SECURITY while
+# every equity and bond works, which reads as a broken preset rather than a dropped class.
+#
+# Source them from the price snapshot, which is where the feed records what it actually quoted —
+# the option chain is generated from its underlyings, so there is no static list to copy.
+say "admitting the OCC option chain to the engine's risk state"
+OPTS_FILE="$(mktemp)"
+sql "SELECT DISTINCT security FROM eod_price_snapshot WHERE security REGEXP '^[A-Z]+[0-9]{6}[CP][0-9]{8}$';" > "${OPTS_FILE}" 2>/dev/null || true
+OPT_N="$(grep -c . "${OPTS_FILE}" || true)"
+if [[ "${OPT_N:-0}" -eq 0 ]]; then
+  say "  no option symbols in any price snapshot yet — the Option preset will reject until one is priced"
+else
+  opt_ok=0
+  # `while read`, never `for t in $OPTS`: zsh does not word-split an unquoted variable, so the loop
+  # body runs ONCE with all 24 symbols as a single ticker. It cost a round here and a round on the
+  # account list this morning.
+  while read -r t; do
+    [[ -z "${t}" ]] && continue
+    curl -sf -m 20 -X POST "http://${GW}:18110/risk/control/security" \
+      -H 'Content-Type: application/json' \
+      -H "X-Risk-Control-Token: ${RISK_CONTROL_TOKEN:-dev-risk-control}" \
+      -H 'X-Risk-Operator: bring-up' \
+      -d "{\"ticker\":\"${t}\",\"enabled\":true}" >/dev/null 2>&1 && opt_ok=$((opt_ok + 1))
+  done < "${OPTS_FILE}"
+  rm -f "${OPTS_FILE}"
+  say "  admitted ${opt_ok}/${OPT_N} option contracts"
+fi
+
+# ---- 3e. RESTART THE GATEWAYS ----------------------------------------------------------------
+# A gateway caches ticker -> securityId in `idByTicker` on first sight and NEVER invalidates it. A
+# fresh epoch renumbers the engine's symbol table, so any gateway that outlives the roll keeps
+# resolving tickers to the PREVIOUS epoch's ids and submits orders against a different security.
+#
+# Observed 2026-08-21 and it is nastier than it sounds: of three gateways one held a stale entry, so
+# ~1 in 3 orders for that instrument failed while the other two succeeded — an intermittent, ticker-
+# specific rejection that looks like flakiness and is actually a silent mis-mapping. A rejection is
+# the LUCKY outcome; had the stale id pointed at an enabled security the order would have booked
+# against the wrong instrument with nothing to notice.
+#
+# Cheap and unconditional: bring-up is a cold-start path, so no session is worth preserving here.
+say "restarting the gateways so no symbol cache predates this epoch"
+"${K[@]}" rollout restart deploy/cluster-gateway >/dev/null 2>&1 || true
+"${K[@]}" rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1 || true
+
 # ---- 4. PROVE IT, rather than report it -------------------------------------------------------
 # The check above can only say the ids no longer collide. Whether a trade actually reaches the read
 # model is a different claim, and it is the one that matters — so book a real cross and look for it.
