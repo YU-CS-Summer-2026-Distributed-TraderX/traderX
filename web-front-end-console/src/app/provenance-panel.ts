@@ -1,5 +1,6 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { Api, bridgeError } from './api';
+import { NgTemplateOutlet } from '@angular/common';
 import { HelpTip } from './help';
 
 interface Artifact { kind: string; label: string; path: string; sha256: string; content: string; }
@@ -40,7 +41,7 @@ const headers = (content: string) =>
 
 @Component({
   selector: 'provenance-panel',
-  imports: [HelpTip],
+  imports: [HelpTip, NgTemplateOutlet],
   template: `
     <div class="card-head">
       <button type="button" class="card-tog" (click)="open.set(!open())">
@@ -51,17 +52,58 @@ const headers = (content: string) =>
 
     @if (open()) {
     @if (rigNote()) { <div class="banner warn-note">{{ rigNote() }}</div> }
-    @for (c of visible(); track c.key) {
-      <div class="cut-head">
-        <b>{{ c.date }}</b> <span class="pill">{{ c.version }}</span>
-        <span class="sub">seq {{ c.seq || '?' }} · {{ c.source }}</span>
+    @for (d of days(); track d.date) {
+      <!-- The day's row IS its latest cut: that is the official close, and the rest are the
+           correction cycle that produced it. The arrow is only offered when there is something
+           behind it, so a single-version day does not advertise a click that reveals nothing. -->
+      <div class="cut-head" [class.click]="d.older.length" (click)="d.older.length && toggleDay(d.date)">
+        @if (d.older.length) {
+          <span class="arrow">{{ expanded()[d.date] ? '▾' : '▸' }}</span>
+        } @else { <span class="arrow"></span> }
+        <b>{{ d.date }}</b> <span class="pill">{{ d.latest.version }}</span>
+        <span class="sub">seq {{ d.latest.seq || '?' }} · {{ d.latest.source }}</span>
+        @if (d.older.length) {
+          <span class="sub sup">{{ d.older.length }} superseded version{{ d.older.length === 1 ? '' : 's' }}</span>
+        }
         <span class="spacer"></span>
-        @if (c.reproducible === true) {
+        @if (d.latest.reproducible === true) {
           <span class="pill good">both artifacts reproduce from this cut</span>
-        } @else if (c.reproducible === false) {
+        } @else if (d.latest.reproducible === false) {
           <span class="pill bad">artifact names a different cut</span>
         }
       </div>
+      <ng-container [ngTemplateOutlet]="artifacts" [ngTemplateOutletContext]="{ c: d.latest }" />
+
+      @if (expanded()[d.date]) {
+        @for (o of d.older; track o.key) {
+          <div class="cut-head child">
+            <span class="arrow"></span>
+            <span class="pill">{{ o.version }}</span>
+            <span class="sub">seq {{ o.seq || '?' }} · superseded</span>
+            <span class="spacer"></span>
+            @if (o.reproducible === true) {
+              <span class="pill good">both artifacts reproduce from this cut</span>
+            } @else if (o.reproducible === false) {
+              <span class="pill bad">artifact names a different cut</span>
+            }
+          </div>
+          <ng-container [ngTemplateOutlet]="artifacts" [ngTemplateOutletContext]="{ c: o }" />
+        }
+      }
+    } @empty {
+      <div class="faint">{{ error() || (loaded() ? 'no cuts anywhere' : 'loading cuts…') }}</div>
+    }
+
+    @if (showAll() && proofs().length) {
+      @for (c of proofs(); track c.key) {
+        <div class="cut-head"><span class="arrow"></span><b>upload proof</b>
+          <span class="sub">{{ c.version }} · write-once check, not a session cut</span></div>
+        <ng-container [ngTemplateOutlet]="artifacts" [ngTemplateOutletContext]="{ c }" />
+      }
+    }
+
+    <!-- One artifact table, used by the day row and by each superseded version beneath it. -->
+    <ng-template #artifacts let-c="c">
       <table class="fixed">
         <thead><tr><th>artifact</th><th class="num">rows</th><th>sha-256</th><th></th></tr></thead>
         <tbody>
@@ -78,12 +120,11 @@ const headers = (content: string) =>
           }
         </tbody>
       </table>
-    } @empty {
-      <div class="faint">{{ error() || (loaded() ? 'no cuts anywhere' : 'loading cuts…') }}</div>
-    }
-    @if (hiddenCount() > 0 || showAll()) {
+    </ng-template>
+
+    @if (proofs().length) {
       <button class="more" (click)="showAll.set(!showAll())">
-        {{ showAll() ? 'show the latest session only' : 'show ' + hiddenLabel() }}
+        {{ showAll() ? 'hide upload proofs' : 'show ' + proofs().length + ' upload proof' + (proofs().length === 1 ? '' : 's') }}
       </button>
     }
     <!-- A row count here is small because the BOOK is small, not because the file is a sample.
@@ -117,6 +158,13 @@ const headers = (content: string) =>
            margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .err { margin-top: 10px; }
     .more { margin-top: 12px; font-size: 11.5px; }
+    .cut-head.click { cursor: pointer; }
+    .cut-head.click:hover { background: #f5f7fa; }
+    .cut-head .arrow { display: inline-block; width: 13px; font-size: 13px; line-height: 1; color: var(--muted); }
+    .sup { color: var(--faint); }
+    /* Indent plus shading is what says "these belong to the day above", same as service status. */
+    .cut-head.child { margin-left: 18px; }
+    .cut-head.child + table.fixed { margin-left: 18px; width: calc(100% - 18px); background: #f8f9fb; }
     .note { margin-top: 10px; max-width: 720px; }
     .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; margin-bottom: 6px; }
   `,
@@ -131,32 +179,32 @@ export class ProvenancePanel implements OnInit {
   readonly showAll = signal(false);
 
   /**
-   * Default view: the most recent session date only, without the write-once upload proofs.
+   * One row per DAY, showing that day's latest cut, with the superseded versions one click down.
    *
-   * The bucket accumulates — a July cut and a handful of `proof/<epochMillis>/` objects sit
-   * alongside today's — and an operator opening this page wants the session they just published,
-   * not the archive. Hidden rather than deleted, and the toggle SAYS HOW MANY are hidden: a view
-   * that quietly drops rows is the same failure as a counter that is not rendered.
+   * A day can carry several versions — an override mints a new one, so publishing after fixing a
+   * flagged instrument leaves v3, v4, v5, v6 all on the same date — and only the last of them is
+   * the session's official close. Listing them flat made a normal correction cycle look like six
+   * separate end-of-day runs. Same shape as the service-status panel: the summary answers the
+   * question you have, and the members that make it up are one click down for when it does not.
+   *
+   * Upload proofs are not a day's extract at all — they are write-once checks against the bucket —
+   * so they stay behind the toggle rather than appearing as a date.
    */
-  private readonly RECENT_DATES = 1;
-  readonly visible = computed(() => {
-    const all = this.cuts();
-    if (this.showAll()) return all;
-    const dates = [...new Set(all.filter(c => c.date !== 'upload proof').map(c => c.date))]
-      .sort((a, b) => b.localeCompare(a)).slice(0, this.RECENT_DATES);
-    return all.filter(c => dates.includes(c.date));
+  readonly days = computed(() => {
+    const sessions = this.cuts().filter(c => c.date !== 'upload proof');
+    const byDate = new Map<string, Cut[]>();
+    for (const c of sessions) byDate.set(c.date, [...(byDate.get(c.date) ?? []), c]);
+    return [...byDate.entries()]
+      .sort((a, b) => b[0].localeCompare(a[0]))
+      .map(([date, cuts]) => {
+        const ordered = order(cuts);          // newest version first
+        return { date, latest: ordered[0], older: ordered.slice(1) };
+      });
   });
-  readonly hiddenCount = computed(() => this.cuts().length - this.visible().length);
-  /** Named separately, because "older cuts" and "upload proofs" are different things to go looking for. */
-  readonly hiddenLabel = computed(() => {
-    const hidden = this.cuts().filter(c => !this.visible().includes(c));
-    const proofs = hidden.filter(c => c.date === 'upload proof').length;
-    const older = hidden.length - proofs;
-    const bits = [];
-    if (older) bits.push(`${older} older cut${older === 1 ? '' : 's'}`);
-    if (proofs) bits.push(`${proofs} upload proof${proofs === 1 ? '' : 's'}`);
-    return bits.join(' and ');
-  });
+  readonly proofs = computed(() => this.cuts().filter(c => c.date === 'upload proof'));
+
+  readonly expanded = signal<Record<string, boolean>>({});
+  toggleDay(date: string): void { this.expanded.update(m => ({ ...m, [date]: !m[date] })); }
 
   /**
    * What an empty LOCAL sink means depends on where this rig sends its cuts, and the answer differs
@@ -170,16 +218,17 @@ export class ProvenancePanel implements OnInit {
    * one I made: the previous wording asserted a PVC that only the kind rig has.
    */
   private explainEmptySink(): void {
-    if (!this.rigEmpty()) { this.rigNote.set(''); return; }
+    // ONLY the fault case gets a banner. An empty local sink on a rig whose extract writes to a
+    // bucket is ordinary, and the cuts are listed directly below it — a bubble saying "nothing is
+    // wrong here" is a permanent notice about the normal state, which is noise on every visit and
+    // trains the reader to skip the banner that does mean something.
     const archived = this.cuts().some(c => c.source !== 'rig cut sink');
-    this.rigNote.set(archived
-      ? 'The local sink on the risk-extract pod is empty, which is expected when the extract is '
-        + 'configured to write to a bucket — this rig\'s cuts are the archive rows below, not files '
-        + 'on the pod. Nothing is wrong here.'
-      : 'No cuts anywhere: the local sink on the risk-extract pod is empty and the archive has '
+    this.rigNote.set(this.rigEmpty() && !archived
+      ? 'No cuts anywhere: the local sink on the risk-extract pod is empty and the archive has '
         + 'nothing either. On a rig that writes locally this means the end-of-day chain has not '
         + 'produced a cut, which is worth chasing — check that the EOD durables are bound and that '
-        + 'a session has been published.');
+        + 'a session has been published.'
+      : '');
   }
   /** Set by {@link explainEmptySink} once BOTH sources have answered; empty when there is nothing to say. */
   readonly rigNote = signal('');
