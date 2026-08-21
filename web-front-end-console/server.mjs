@@ -432,7 +432,22 @@ const sqlQuery = (q) => execSync(
 function eodChain(req, res, url) {
   const date = (url.searchParams.get('date') ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: 'date=YYYY-MM-DD required' });
-  const out = { date, prices: null, pnl: null, extract: null, published: null };
+  // THE SERVER'S BUSINESS DATE, so the page never has to guess it. `/eod/session/close` defaults to
+  // the trade-processor JVM's LocalDate.now() — UTC in these containers — and the console was
+  // sending no sessionDate and then announcing its OWN browser date. After ~20:00 US Eastern those
+  // differ by a day: a session minted for 2026-08-21 was reported as "closed for 2026-08-20", which
+  // reads as a close that silently went to the wrong day, or did not save at all.
+  //
+  // Read from the trade-processor container rather than this one. They are both UTC today, and that
+  // is exactly the assumption worth not making — the date that decides the session is the one on the
+  // machine that mints it.
+  let businessDate = '';
+  try {
+    businessDate = execSync(
+      `kubectl -n ${NS} exec ${podByLabel('app=trade-processor')} -- date -u +%F`,
+      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+  } catch { /* absent is reported as absent; the page must not fall back to the browser's date */ }
+  const out = { date, businessDate, prices: null, pnl: null, extract: null, published: null };
 
   try {
     const rows = sqlQuery(
