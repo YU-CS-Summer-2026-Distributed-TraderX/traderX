@@ -83,10 +83,16 @@ export interface OtcContract {
 /**
  * One security's accepted-vs-refused price ranges, from the regulatory report.
  *
- * `anchored-elsewhere` means the two ranges are DISJOINT — every accepted price sits on one side
- * of every refused one, which is what a collar band anchored away from the market looks like.
- * `other-refusal` means they overlap, so the same price was both accepted and refused and the
- * refusal came from something other than the band. Note the report carries no reason code on
+ * `anchored-elsewhere` means no refused price lies INSIDE the accepted range — the signature of a
+ * collar band anchored away from the market. `other-refusal` means some refusal landed among the
+ * accepted prices, so the same region was both accepted and refused and the cause is not the band.
+ *
+ * This deliberately is NOT a disjointness test, and the difference is the whole point of the panel:
+ * a collar refuses on BOTH sides of its band, so the refused min/max straddles the accepted prices
+ * and the two ranges always overlap. Disjointness therefore reports a band's own signature as
+ * "some other cause" — measured on EXC (accepted 150, refused 100 and 180-210) it inverted the
+ * answer for exactly the case this panel exists to catch. Containment handles one-sided and
+ * two-sided bands alike. Note the report carries no reason code on
  * ORDER_REJECTED (accountId/orderId/security/side/quantity/price/seq/timestamp and nothing else),
  * so the engine's actual reason is not readable here — this is inference from prices, and it is
  * labelled as such rather than presented as the engine's own answer.

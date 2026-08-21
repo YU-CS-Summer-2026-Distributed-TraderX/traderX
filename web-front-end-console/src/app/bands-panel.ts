@@ -9,9 +9,14 @@ import { HelpTip } from './help';
  * ago" — is not one anybody wants to give.
  *
  * <p>The reading is three-part and the ORDER matters: no accepted orders means no verdict at all
- * (disjointness is trivially true against an empty set, so the naive rule condemns a security that
- * has simply never traded); too few samples means thin, because a split of one against one can be
- * disjoint by luck; and only then does disjoint mean the band and overlap mean another cause.
+ * (the containment test passes vacuously against an empty accepted range, so a naive rule condemns
+ * a security that has simply never traded); too few samples means thin, because a split of one
+ * against one can fall the right way by luck; and only then does the test decide.
+ *
+ * <p>The test is CONTAINMENT — no refused price inside the accepted range — not disjointness of the
+ * two ranges. A collar refuses on both sides of its band, so the ranges always overlap and a
+ * disjointness rule reports the band's own signature as "some other cause", inverting the answer
+ * for the exact case this panel exists to catch. See the BandCheck doc in api.ts.
  */
 @Component({
   selector: 'bands-panel',
