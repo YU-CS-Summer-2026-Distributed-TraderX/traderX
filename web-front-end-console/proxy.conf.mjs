@@ -317,6 +317,16 @@ export default [
   // fallthrough as /grafana above and /mN before it, third time in this file.
   // cookieDomainRewrite so the rig's Set-Cookie is scoped to localhost rather than the rig host.
   { context: ['/auth'], target, secure: false, changeOrigin: !!REMOTE, cookieDomainRewrite: '' },
+  // The EOD chain is served by the console's own server (it shells kubectl and gcloud), NOT by
+  // trade-processor — so dev must forward it or the page reads the SPA fallback as a chain. Fourth
+  // route in this file to need saying: /mN, /grafana, /auth, and now this one. The call is slow by
+  // construction (three kubectl execs and a bucket list), so nothing should poll it tightly.
+  // SCOPED TO /eod/chain, NOT /eod — "/eod" is also the console's own ROUTER PATH for the
+  // End-of-Day page, so proxying the prefix sends a page navigation to the rig and the browser
+  // gets the DEPLOYED console's production index.html back. It renders nothing and looks like a
+  // broken bootstrap: hashed asset names that 404 against the dev server, and an empty app-root.
+  // curl misses it entirely, because curl asks for / and for the API path and never for the route.
+  plain('/eod/chain'),
   // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
   // enough for the whole app — and without the route the dev server answers its SPA fallback with
   // a 200, which any "is it up?" check reads as healthy. Same fallthrough that made /mN lie.

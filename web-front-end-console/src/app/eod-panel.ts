@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api } from './api';
+import { Gated } from './gated';
 import { HelpTip } from './help';
 
 // Shapes from trade-processor's EodReport / EodPrice records.
@@ -15,7 +16,7 @@ interface EodReport {
 
 @Component({
   selector: 'eod-panel',
-  imports: [FormsModule, HelpTip],
+  imports: [FormsModule, HelpTip, Gated],
   template: `
     <div class="card-head">
       <h2>End-of-day session</h2>
@@ -43,6 +44,7 @@ interface EodReport {
           <button (click)="loadVersion(r.version - 1)" [disabled]="r.version <= 1">◀ v{{ r.version - 1 }}</button>
           <button (click)="loadVersion(r.version + 1)" [disabled]="r.version >= latestVersion()">v{{ r.version + 1 }} ▶</button>
           <button (click)="publish()" [disabled]="r.status === 'PUBLISHED' || !isLatest()">Publish</button>
+          <gated />
           <help-tip text="Publish asks the session to become the official close. If any instrument is still flagged, the quality gate refuses with HTTP 409 — the refusal you may see here is the control working, not an error." />
         }
         <span class="spacer"></span>
@@ -86,6 +88,7 @@ interface EodReport {
           <input type="number" [(ngModel)]="ovrPrice" step="0.000001" placeholder="price">
           <input [(ngModel)]="ovrReason" placeholder="reason (audit trail)">
           <button class="btn-primary" (click)="applyOverride()">Apply — creates v{{ latestVersion() + 1 }}</button>
+          <gated />
           <button (click)="overriding.set(null)">cancel</button>
         </div>
       }
@@ -203,6 +206,10 @@ export class EodPanel {
       this.report.set(r.body);
       this.latestVersion.set(r.body.version);
       this.api.log({ kind: 'eod', ok: true, summary: `published ${this.date} v${r.body.version}` });
+    } else if (r.status === 401) {
+      // Publishing is an override in the sense the server gates: it is the decision that starts the
+      // extract. "HTTP 401" reads as a fault; it is a missing signature.
+      this.gateMsg.set({ ok: false, text: 'publishing needs an administrator — sign in from the header, then publish again' });
     } else {
       this.gateMsg.set({ ok: false, text: `publish failed: HTTP ${r.status}` });
     }
