@@ -27,7 +27,14 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
     <div class="head">
       <button (click)="load()" [disabled]="busy()">
         {{ busy() ? 'fetching…' : spans() ? 'refresh trace' : 'View trace' }}</button>
-      @if (traceId()) { <span class="tid">{{ traceId()!.slice(0, 16) }}…</span> }
+      @if (traceId()) {
+        <span class="tid">{{ traceId()!.slice(0, 16) }}…</span>
+        <!-- The id is displayed TRUNCATED (16 of 32 chars) because the full one crowds the row,
+             which makes selecting it by hand not merely tedious but WRONG: a half id looks like an
+             id and Tempo answers 404. The button copies all 32. -->
+        <button type="button" class="copy" (click)="copy()" [title]="traceId()!">
+          {{ copied() ? 'copied' : 'copy id' }}</button>
+      }
     </div>
 
     @if (msg()) { <div class="faint note">{{ msg() }}</div> }
@@ -57,6 +64,7 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
   styles: `
     .head { display: flex; align-items: center; gap: 7px; }
     .tid { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+    .copy { font-size: 10.5px; padding: 1px 6px; margin-left: 6px; }
     .note { margin-top: 5px; max-width: 620px; }
     .spans { margin-top: 6px; }
     .spans td, .spans th { font-size: 11.5px; }
@@ -68,6 +76,40 @@ export class TraceView {
   readonly traceId = input<string | undefined>(undefined);
   /** What the id was derived from, so the message can say why a lookup is even possible. */
   readonly derivedFrom = input<string>('');
+
+  readonly copied = signal(false);
+
+  /**
+   * Copy the FULL trace id, not the truncated text on screen.
+   *
+   * navigator.clipboard is undefined on a non-secure origin, and the console is reachable over
+   * plain http on kind — so this falls back rather than throwing an unhandled rejection that
+   * leaves the button reading 'copy id' with no explanation.
+   */
+  async copy(): Promise<void> {
+    const id = this.traceId();
+    if (!id) return;
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(id);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = id;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      this.copied.set(true);
+      setTimeout(() => this.copied.set(false), 1500);
+    } catch {
+      // Say nothing rather than claim success: the title attribute still carries the full id, so
+      // there is a manual path that does not depend on this working.
+      this.copied.set(false);
+    }
+  }
 
   readonly spans = signal<SpanRow[] | null>(null);
 

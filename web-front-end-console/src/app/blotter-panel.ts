@@ -331,7 +331,30 @@ export class BlotterPanel implements OnInit, OnDestroy {
    * convinced me included "no trade id carries two sides", which is a non-discriminator, since trade
    * sequence also increments per side.)
    */
+  /**
+   * A trade's trace, via the order it came out of.
+   *
+   * THE ORDER ROW IS THE FIRST SOURCE, and matched on the FULL `<epoch>-<ref>` id rather than the
+   * bare ref. `sourceOrderId` on the trade and `id` on the order row are the same string, so the
+   * match carries its epoch and cannot answer across a roll — the same reason traceForOrder prefers
+   * the row's field over the map. Matching on the ref alone would reintroduce exactly the collision
+   * `Api.noteEpoch` exists to guard.
+   *
+   * Until the read model carried `traceId` this could only be answered from the console's own
+   * memory of what it submitted, so a trade from FIX, the algo engine or another browser had no
+   * trace at all — which is what the screenshot of trade 6060-S showed: `source order 1-3727`
+   * present, trace absent, because this session never sent 1-3727.
+   *
+   * The rows have to be LOADED for this to answer: a terminal order is only in the list when the
+   * 'all states' toggle is on. When it is not, the session map still answers for this browser's own
+   * orders, and a trade with neither keeps the honest message instead of a derived id.
+   */
   traceOf(t: BlotterTrade): string | undefined {
+    const src = t.sourceOrderId;
+    if (src) {
+      const row = this.rawOpenOrders().find(o => o.orderId === src);
+      if (row?.traceId) return row.traceId;
+    }
     return this.api.traceForOrderRef(orderRefOf(t));
   }
 
