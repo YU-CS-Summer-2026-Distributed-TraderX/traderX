@@ -67,7 +67,15 @@ export class TraceView {
   async load(): Promise<void> {
     const id = this.traceId();
     if (!id) {
-      this.msg.set('nothing to trace: this row carries no order reference to derive a trace id from');
+      // Naming the missing LINK, not the missing trace. A trade row carries no client order id and
+      // a null sourceOrderId, and trace ids are derived from the client order id — so there is
+      // nothing here to look up, and saying "not found" would blame Tempo for a gap in the data.
+      this.msg.set(this.derivedFrom() === 'trade'
+        ? 'A trade carries no reference to the order that produced it — no client order id, and '
+          + 'sourceOrderId is null — and trace ids are derived from the client order id. So there is '
+          + 'nothing to look up rather than nothing to find. Orders submitted from this console are '
+          + 'traceable on the Activity panel, which keeps the id it generated.'
+        : 'nothing to trace: this row carries no client order id to derive a trace id from');
       return;
     }
     this.busy.set(true);

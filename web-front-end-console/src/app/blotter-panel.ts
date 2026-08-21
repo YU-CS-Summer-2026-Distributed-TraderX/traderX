@@ -1,6 +1,6 @@
 import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, BlotterTrade, OtcContract, Position, parseOcc, traceIdFor } from './api';
+import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
 import { HelpTip } from './help';
 import { Gated } from './gated';
 import { TraceView } from './trace-view';
@@ -146,12 +146,8 @@ interface PosRow extends Position {
                   }
                   <button (click)="tca(t); $event.stopPropagation()">TCA</button>
                 </div>
-                <!-- The trade id is <orderRef>-<side>, so the trace id is derivable without a
-                     lookup: traceIdFor hashes the ref the same way the gateway does when it stamps
-                     the span. Evidence for the format: an order submitted here came back
-                     orderRef 2172 and appeared as open order "1-2172" (epoch-ref), and ref 2168
-                     shows as BOTH a trade and a resting order — a partial fill. No trade id carries
-                     two sides, which a trade-sequence id would. -->
+                <!-- A trade cannot be traced from its own row TODAY, and the button says so rather
+                     than looking up a hash of the wrong number. See traceOf(). -->
                 <div class="trace" (click)="$event.stopPropagation()">
                   <trace-view [traceId]="traceOf(t)" derivedFrom="trade" />
                 </div>
@@ -232,20 +228,29 @@ export class BlotterPanel implements OnInit, OnDestroy {
   }
 
   /**
-   * A trade's trace id, derived from the order reference embedded in its id.
+   * A trade's trace id — which is NOT DERIVABLE from a trade row today, so this returns undefined
+   * and the view says what is missing instead of guessing.
    *
-   * Trade ids are `<orderRef>-<B|S>`; open orders are `<epoch>-<orderRef>`. Confirmed against a live
-   * submission rather than assumed: an order posted from here returned orderRef 2172 and appeared as
-   * open order "1-2172", and ref 2168 shows as BOTH a trade and a resting order, which is a partial
-   * fill. No trade id carries two sides, which a trade-sequence id would.
+   * I first read the trade id `3580-S` as `<orderRef>-<side>` and shipped a derivation from it. It
+   * was wrong, and the way it was wrong is worth keeping. Measured afterwards: the engine's agreed
+   * trade counter is 4626 while the highest trade id is 4622 and a live order ref is 2719 — two
+   * counters, and the trade id follows the TRADE sequence. Tempo's own tag is `traderx.order_ref`,
+   * a different number.
    *
-   * Returns undefined when the id does not parse, so the button says it has nothing to derive from
-   * rather than looking up the hash of a NaN.
+   * The three things I took as evidence, and what each was actually worth:
+   *   - orderRef 2172 appearing as open order "1-2172" — true, but that is the OPEN ORDER id space
+   *     (`<epoch>-<orderRef>`), which says nothing about the trade id space.
+   *   - ref 2168 being both a trade and a resting order — coincidence. Two counters in overlapping
+   *     ranges at one instant; they have since diverged to 4626 and 2719.
+   *   - no trade id carrying two sides — a NON-DISCRIMINATOR. Trade sequence also increments per
+   *     side, so `4197-S` and `4198-B` is one cross. It was consistent with both readings and I
+   *     counted it for one.
+   *
+   * Trace ids come from the client order id, which a trade row does not carry, and `sourceOrderId`
+   * is null on every trade the service returns. Making this work needs the trade to carry the order
+   * that produced it — a gateway change, not arithmetic here.
    */
-  traceOf(t: BlotterTrade): string | undefined {
-    const ref = Number(String(t.id).split('-')[0]);
-    return Number.isFinite(ref) && ref > 0 ? traceIdFor(undefined, ref) : undefined;
-  }
+  traceOf(_t: BlotterTrade): string | undefined { return undefined; }
 
   async tca(t: BlotterTrade): Promise<void> {
     const r = await this.api.load<{ benchmarkPrice: number; arrivalPrice: number; slippageBps: number; benchmarkSampleCount: number }>(

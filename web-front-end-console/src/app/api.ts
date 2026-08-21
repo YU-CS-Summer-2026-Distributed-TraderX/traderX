@@ -140,10 +140,23 @@ function fnv64(s: string): bigint {
 const hex16 = (v: bigint) => v.toString(16).padStart(16, '0');
 const nonZero = (v: bigint) => (v === 0n ? 1n : v);
 
-export function traceIdFor(clientOrderId: string | undefined, orderRef?: number): string | undefined {
-  const key = clientOrderId ? fnv64(clientOrderId)
-    : orderRef && orderRef > 0 ? mix64(BigInt(orderRef)) : 0n;
-  if (key === 0n) return undefined;
+/**
+ * The trace id the gateway will stamp for an order, derived from the CLIENT ORDER ID.
+ *
+ * Verified end to end against Tempo once tracing was switched on: a rejected order submitted with
+ * clientOrderId `clord-check-1787286337815` produced trace `fc81f3c0f256ae46191ea232619e9b05`, which
+ * is exactly what this returns, and it resolves.
+ *
+ * The `orderRef` fallback is GONE, and deliberately returns undefined rather than a plausible id.
+ * Measured on the same rig: order ref 2720's real trace is `b12477501b62717b510f7069987442b5` while
+ * mix(2720) gives `d74f929ffa736c9545ab2aa44692ec76` — the gateway does not derive from the ref, so
+ * that branch produced ids for traces that never existed. A wrong id is worse than no id here,
+ * because the lookup 404s and the panel then blames head sampling for a broken derivation: an
+ * answer-is-no wearing a no-answer's clothes.
+ */
+export function traceIdFor(clientOrderId: string | undefined, _orderRef?: number): string | undefined {
+  if (!clientOrderId) return undefined;
+  const key = fnv64(clientOrderId);
   return hex16(nonZero(mix64(key))) + hex16(nonZero(mix64(key ^ TRACE_SALT)));
 }
 
