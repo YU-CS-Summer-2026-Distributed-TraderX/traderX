@@ -275,7 +275,7 @@ sweep timestamp, a cursor that moved, a row count that matched a reference. The 
 this instinct for latency — *a percentile without its n is an anecdote* — before anyone noticed it
 was the general rule.
 
-Two corollaries worth keeping:
+Corollaries worth keeping:
 
 - **After an environment switch, check the size and shape of what each source returns, not just
   that it returned something.** A dev bridge that shells out to the local cluster while everything
@@ -283,6 +283,18 @@ Two corollaries worth keeping:
   caught it was 38 KB of captures from a rig that should have had almost none.
 - **A counter named `_total` is a lifetime count** and answers a different question from the one a
   status panel is usually asking.
+- **Check the artifact the reader is looking at, and prove WHICH BUILD it is.** A fix here was
+  reported done off the dev server while yaakovseif.dev still served the old bundle; the user found
+  it first, and the honest report was "fixed locally, needs a roll". A string check is not enough on
+  its own either — `"Nothing is wrong here"` being absent passes on *any* rebuild, including one that
+  never contained the fix. What proves a roll is the **chunk fingerprint**: the hashed `main-….js`
+  extracted from the image and the one read back through the load balancer must be the same name and
+  the same bytes. Sweep every chunk, not just `main` — a lazy route's text lives elsewhere.
+- **This Dockerfile does `COPY . .` on the WORKTREE, not on HEAD.** `.dockerignore` drops only
+  `node_modules`, `dist`, `.angular` and `*.log`, so uncommitted edits are built into the image and
+  the tag then describes something no commit does — including, in the other direction, a fix that is
+  in the image but in nobody's history. Confirm `git status --porcelain web-front-end-console/` is
+  empty before building.
 
 ## If listed options reject with UNKNOWN_SECURITY
 
