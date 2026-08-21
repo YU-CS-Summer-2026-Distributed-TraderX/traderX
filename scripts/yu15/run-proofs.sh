@@ -29,7 +29,7 @@ K="kubectl --context ${CTX} -n ${NS}"
 # run everything else has a stable rig. yu08 is separated from the counter-exact proofs because the
 # algo engine's traffic moves next_order_ref underneath them (see seed-proof-fixtures.sh).
 PROOFS=(
-  yu03-risk-demo
+  yu03-risk-proof
   yu05-settlement
   yu05-recon
   yu05-regulatory-reproducible
