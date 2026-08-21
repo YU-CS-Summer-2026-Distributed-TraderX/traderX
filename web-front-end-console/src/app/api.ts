@@ -370,7 +370,44 @@ export class Api {
     });
   }
 
+  /**
+   * Order ref -> trace id, and the ONLY place a trace can be recovered for a resting order.
+   *
+   * The open-order read model (trade-processor's orderbook projection) carries no client order id
+   * and no trace id — checked, its columns are orderid/accountid/security/side/quantity/
+   * remainingquantity/limitprice/status/createdat/updatedat/lastexecutionprice/lastfillquantity.
+   * A trace id is derived from the CLIENT order id, which the client invents and nothing
+   * downstream keeps, so no amount of reading the order back can produce one.
+   *
+   * Persisted for the same reason `contracts` is: the activity log lives in memory and a refresh
+   * emptied it, which took the trace link with it — the order was still resting, still had a
+   * trace, and the page could no longer say which. sessionStorage, not localStorage: a trace only
+   * resolves while its epoch's spans are in Tempo, so surviving a browser restart would mostly
+   * offer links that 404.
+   */
+  readonly orderTraces = signal<Record<string, string>>(
+    JSON.parse(sessionStorage.getItem('traderx-console-order-traces') ?? '{}'));
+
+  /** The trace for an order ref, or undefined — never a guess. */
+  traceForOrderRef(ref: number | null | undefined): string | undefined {
+    if (ref === null || ref === undefined || ref === 0) return undefined;
+    return this.orderTraces()[String(ref)];
+  }
+
   log(e: Omit<ActivityEntry, 'at'>): void {
+    // Recorded HERE rather than at each submit site so a new caller cannot forget it: every path
+    // that already logs an order with both a ref and a trace persists the pair for free.
+    if (e.orderRef && e.traceId) {
+      this.orderTraces.update(m => {
+        const next = { ...m, [String(e.orderRef)]: e.traceId! };
+        // Bounded: a long demo session should not grow this without limit. Oldest-first by
+        // insertion order, which for a monotonic order ref is also oldest by age.
+        const keys = Object.keys(next);
+        for (const k of keys.slice(0, Math.max(0, keys.length - 500))) delete next[k];
+        sessionStorage.setItem('traderx-console-order-traces', JSON.stringify(next));
+        return next;
+      });
+    }
     this.activity.update(list => [{ at: new Date(), ...e }, ...list].slice(0, 200));
   }
 

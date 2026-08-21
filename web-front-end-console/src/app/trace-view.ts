@@ -72,9 +72,15 @@ export class TraceView {
       this.msg.set(this.derivedFrom() === 'trade'
         ? 'No trace id to look up for this trade. Trace ids come from the CLIENT ORDER ID, which the '
           + 'engine never sees and no trade row carries — so a trade reaches its trace only through '
-          + 'sourceOrderId, joined to an order THIS page submitted and still holds the generated id '
+          + 'sourceOrderId, joined to an order THIS browser session submitted and still holds the generated id '
           + 'for. A market sweep (no originating order), a trade from another client, or one from '
-          + 'before this page loaded has nothing on this side to join to.'
+          + 'before this browser session began has nothing on this side to join to.'
+        : this.derivedFrom() === 'order'
+        ? 'No trace id for this order. A trace id is derived from the CLIENT ORDER ID, and the open-'
+          + 'order read model carries none — so the link exists only for orders THIS browser session '
+          + 'submitted. An order sent over FIX, raised by the algo engine, or placed from another '
+          + 'browser has nothing on this side to derive from. It is being traced; this page just '
+          + 'cannot name the id.'
         : 'nothing to trace: this row carries no client order id to derive a trace id from');
       return;
     }

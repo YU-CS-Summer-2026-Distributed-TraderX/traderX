@@ -14,6 +14,10 @@ const mult = (security: string) => (parseOcc(security) ? 100 : 1);
 interface OpenOrder {
   orderId: string; security: string; side: string;
   quantity: number; remainingQuantity: number; limitPrice: number;
+  // Already in the read model's response and previously dropped on the floor. The expander needs
+  // somewhere to get "more detail" from, and this costs nothing: same request, same payload.
+  status?: string; createdAt?: string; updatedAt?: string;
+  lastExecutionPrice?: number; lastFillQuantity?: number;
 }
 
 interface PosRow extends Position {
@@ -87,16 +91,34 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
     </sec-head>
     @if (openOrders.open()) {
       <table>
-        <thead><tr><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
+        <thead><tr><th></th><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th><th></th></tr></thead>
         <tbody>
           @for (o of openOrders.view(); track o.orderId) {
-            <tr [class.hit]="hit() === o.orderId">
+            <tr [class.hit]="hit() === o.orderId" class="click" (click)="toggleOrder(o.orderId)">
+              <td class="arrow">{{ expanded()[o.orderId] ? '▾' : '▸' }}</td>
               <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
               <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
               <td class="num">{{ o.limitPrice }}</td>
-              <td><button class="cancel" (click)="cancelOrder(o)">cancel</button></td>
+              <!-- $event.stopPropagation: the row is now a toggle, and without this a cancel click
+                   also expands the row it just cancelled. -->
+              <td><button class="cancel" (click)="cancelOrder(o); $event.stopPropagation()">cancel</button></td>
             </tr>
-          } @empty { <tr><td colspan="7" class="faint">no resting orders</td></tr> }
+            @if (expanded()[o.orderId]) {
+              <tr class="detail">
+                <td></td>
+                <td colspan="7">
+                  <div class="kv">
+                    <span>status</span><b>{{ o.status || '—' }}</b>
+                    <span>filled</span><b>{{ o.quantity - o.remainingQuantity }} of {{ o.quantity }}</b>
+                    <span>last fill</span><b>{{ o.lastFillQuantity ? (o.lastFillQuantity + ' @ ' + fmt(o.lastExecutionPrice || 0)) : 'none yet' }}</b>
+                    <span>submitted</span><b>{{ o.createdAt || '—' }}</b>
+                    <span>updated</span><b>{{ o.updatedAt || '—' }}</b>
+                  </div>
+                  <trace-view [traceId]="traceForOrder(o)" derivedFrom="order" />
+                </td>
+              </tr>
+            }
+          } @empty { <tr><td colspan="8" class="faint">no resting orders</td></tr> }
         </tbody>
       </table>
       <sec-pager [s]="openOrders" />
@@ -179,6 +201,11 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
     .rowlink:hover td { background: #f5f7fa; }
     tr.hit td { background: var(--accent-soft); }
     td.det { background: #f8f9fb; }
+    tr.click { cursor: pointer; }
+    tr.click:hover { background: #f5f7fa; }
+    td.arrow { width: 16px; color: var(--muted); font-size: 12px; padding-right: 0; }
+    tr.detail > td { background: #fafbfc; border-top: 0; }
+    tr.detail .kv { margin-bottom: 8px; }
     .kv { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
     .kv b { color: var(--text); font-weight: 600; }
     .tca { margin-top: 5px; font-size: 12.5px; color: var(--accent); }
@@ -268,9 +295,25 @@ export class BlotterPanel implements OnInit, OnDestroy {
    * sequence also increments per side.)
    */
   traceOf(t: BlotterTrade): string | undefined {
-    const ref = orderRefOf(t);
-    if (ref === null || ref === 0) return undefined;
-    return this.api.activity().find(e => e.orderRef === ref && e.traceId)?.traceId;
+    return this.api.traceForOrderRef(orderRefOf(t));
+  }
+
+  readonly expanded = signal<Record<string, boolean>>({});
+  toggleOrder(id: string): void { this.expanded.update(m => ({ ...m, [id]: !m[id] })); }
+
+  /**
+   * An open order's trace, from this browser session's own record of what it submitted.
+   *
+   * There is no other source. The read model's row carries no client order id, and a trace id is
+   * derived from the client order id — so an order placed over FIX, by the algo engine, or from a
+   * different browser has no link here and the expander says so rather than guessing an id.
+   *
+   * The orderId is "<epoch>-<ref>"; the map is keyed on the ref, which is what the submit path
+   * knows at the time it logs.
+   */
+  traceForOrder(o: { orderId: string }): string | undefined {
+    const ref = Number(o.orderId.split('-').pop());
+    return Number.isFinite(ref) ? this.api.traceForOrderRef(ref) : undefined;
   }
 
   /** The originating order's ref, or null when the trade carries no usable link. */
@@ -375,6 +418,9 @@ export class BlotterPanel implements OnInit, OnDestroy {
         quantity: Number(row.quantity ?? 0),
         remainingQuantity: Number(row.remainingQuantity ?? 0),
         limitPrice: Number(row.limitPrice ?? 0),
+        status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt,
+        lastExecutionPrice: row.lastExecutionPrice === null ? undefined : Number(row.lastExecutionPrice),
+        lastFillQuantity: row.lastFillQuantity === null ? undefined : Number(row.lastFillQuantity),
       })));
     }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).
