@@ -36,10 +36,16 @@ final class TradeNatsPublisher {
         byte side;
         int qty;
         long tradePx;
+        int orderRef;
     }
 
     private final String url;
     private final String subject;
+    // Epoch, for the same reason OrderNatsPublisher carries one: an orderRef is unique only WITHIN
+    // an epoch, so a bare ref would collide across incarnations and silently join a trade to some
+    // previous epoch's order. `<epoch>-<orderRef>` is exactly the open-order read-model key, which
+    // is what makes the trade row joinable to the order row without a lookup table.
+    private final String epoch;
     private final OneToOneConcurrentArrayQueue<Rec> queue;
     private final AtomicLong published = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
@@ -47,9 +53,10 @@ final class TradeNatsPublisher {
     private Thread thread;
     private volatile Connection nats;
 
-    TradeNatsPublisher(final String url, final String subject, final int capacity) {
+    TradeNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
         this.url = url;
         this.subject = subject;
+        this.epoch = epoch == null || epoch.isBlank() ? "0" : epoch;
         this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
     }
 
@@ -61,12 +68,13 @@ final class TradeNatsPublisher {
 
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
     void offer(final long tradeSeq, final int accountId, final String security,
-               final byte side, final int qty, final long tradePx) {
+               final byte side, final int qty, final long tradePx, final int orderRef) {
         if (security == null) {
             return; // unresolved ticker — nothing the downstream can key on
         }
         final Rec r = new Rec();
         r.tradeSeq = tradeSeq;
+        r.orderRef = orderRef;
         r.accountId = accountId;
         r.security = security;
         r.side = side;
@@ -130,7 +138,12 @@ final class TradeNatsPublisher {
             sb.append((char) ('0' + (frac / div) % 10));
         }
         sb.append(",\"accountId\":").append(r.accountId)
-          .append(",\"side\":\"").append(buy ? "Buy" : "Sell").append("\"}}");
+          .append(",\"side\":\"").append(buy ? "Buy" : "Sell")
+          // sourceOrderId is already DECLARED on TradeOrder and already copied to Trade by
+          // TradeService, so this is a known property rather than an additive one — no
+          // FAIL_ON_UNKNOWN_PROPERTIES hazard, and no consumer change needed.
+          .append("\",\"sourceOrderId\":\"").append(epoch).append('-').append(r.orderRef)
+          .append("\"}}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 

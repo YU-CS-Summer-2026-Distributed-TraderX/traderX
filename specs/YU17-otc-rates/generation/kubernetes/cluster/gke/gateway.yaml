@@ -5,6 +5,11 @@ metadata:
   labels:
     app: cluster-gateway
 spec:
+  # LoadBalancer, and IN THE MANIFEST. This Service was a LoadBalancer on the rig and ClusterIP
+  # here, so the first `kubectl apply` of this file silently reverted it and GCP began tearing the
+  # forwarding rule down — external access gone, and bring-up dead at "gateway LoadBalancer has no
+  # external IP yet". Live-only configuration is configuration that one apply away from deletion.
+  type: LoadBalancer
   selector:
     app: cluster-gateway
   # Horizontal scale-out (burst-free ingress): each gateway replica holds its OWN AeronCluster
@@ -99,7 +104,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke4
           imagePullPolicy: Always
           command:
             - java

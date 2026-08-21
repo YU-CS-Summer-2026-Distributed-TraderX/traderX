@@ -413,11 +413,11 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         }
         final String bridgeUrl = System.getenv("TRADE_BRIDGE_NATS_URL");
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
-            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", 1 << 16);
-            tradeBridge.start();
             // Epoch-qualified order ids so the read-model key never collides across incarnations
             // (brief 05 item 0). Same value on every member via the manifest; bumped with a DB wipe.
             final String epoch = System.getenv("CLUSTER_EPOCH");
+            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, 1 << 16);
+            tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
                 epoch == null || epoch.isBlank() ? "1" : epoch, 1 << 16);
             orderBridge.start();
@@ -1231,7 +1231,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             if (out.kind == OutputEvent.KIND_TRADE_BOOKED && role == Cluster.Role.LEADER
                 && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
-                    out.side, out.tradeQty, out.tradePx);
+                    out.side, out.tradeQty, out.tradePx, out.orderRef);
             }
             // Leader-side order bridge: every order-state transition → NATS /orders → read model →
             // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as

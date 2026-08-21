@@ -104,7 +104,7 @@ spec:
               mountPath: /data
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke4
           imagePullPolicy: Always
           # sh wrapper keeps the JVM off PID 1 so a crash harness can SIGKILL it from a
           # kubectl exec (Linux blocks signals to PID 1 from inside the namespace) — a true
@@ -187,6 +187,11 @@ spec:
             # one member at a time and each rejoins from the quorum before the next is touched.
             # Tracing also carries ZERO bytes in the log — the trace id is derived from the
             # idempotency key rather than propagated — so it cannot alter applied state.
+            # Epoch-qualifies every order id the bridges emit. Unset, the trade bridge fell back
+            # to "0" while ClusterRecon's audit row used its own default of "1" — two ids for one
+            # epoch, from one process. Set it explicitly and both agree.
+            - name: CLUSTER_EPOCH
+              value: "1"
             - name: OTEL_TRACES
               value: "1"
             - name: OTEL_ENDPOINT

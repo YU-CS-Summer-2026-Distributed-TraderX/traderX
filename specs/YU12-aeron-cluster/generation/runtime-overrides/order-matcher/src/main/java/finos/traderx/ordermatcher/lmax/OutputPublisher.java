@@ -65,7 +65,7 @@ public final class OutputPublisher {
         try {
             writeOrderUpdate(ring.get(updateSlot), order, inputSeq, flags, true, marketPx, ingressNanos);
             writeTradeBooked(ring.get(tradeSlot), order.accountId, order.securityId, order.side, fillQty,
-                tradePx, tradeSeq, inputSeq, order.updatedAtMillis, ingressNanos);
+                tradePx, tradeSeq, inputSeq, order.updatedAtMillis, ingressNanos, order.orderRef);
             writePositionUpdated(ring.get(positionSlot), order.accountId, order.securityId, newPosition,
                 avgCostTicks, inputSeq, order.updatedAtMillis, ingressNanos);
         } finally {
@@ -81,8 +81,10 @@ public final class OutputPublisher {
         long tradeSlot = hi - 1;
         long positionSlot = hi;
         try {
+            // Market trade (FR-09B08): no order exists, so 0 is the honest answer rather than a
+            // borrowed ref.
             writeTradeBooked(ring.get(tradeSlot), accountId, securityId, side, qty, tradePx, tradeSeq,
-                inputSeq, eventTimeMillis, ingressNanos);
+                inputSeq, eventTimeMillis, ingressNanos, 0);
             writePositionUpdated(ring.get(positionSlot), accountId, securityId, newPosition, avgCostTicks,
                 inputSeq, eventTimeMillis, ingressNanos);
         } finally {
@@ -218,14 +220,20 @@ public final class OutputPublisher {
         };
     }
 
+    // orderRef: the order this trade came out of, or 0 for a market trade, which genuinely has
+    // none. It was never set, so EVERY trade event carried orderRef 0 — and ClusterRecon's audit
+    // row builds `epoch + "-" + out.orderRef` from exactly this event, so the audit trail has been
+    // emitting `<epoch>-0` for every trade against its own comment that "an audit trail whose order
+    // ids do not resolve in the read model is not an audit trail". The ORDER_FILLED event beside it
+    // carried the real ref the whole time, which is why nothing else noticed.
     private static void writeTradeBooked(OutputEvent e, int accountId, int securityId, byte side,
                                          int fillQty, long tradePx, long tradeSeq, long inputSeq,
-                                         long updatedAtMillis, long ingressNanos) {
+                                         long updatedAtMillis, long ingressNanos, int orderRef) {
         e.kind = OutputEvent.KIND_TRADE_BOOKED;
+        e.orderRef = orderRef;
         e.inputSeq = inputSeq;
         e.flags = 0;
         e.publishNats = false;
-        e.orderRef = 0;
         e.accountId = accountId;
         e.securityId = securityId;
         e.side = side;
