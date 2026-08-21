@@ -1,7 +1,9 @@
 # The trade payload cannot gain a field, and `sourceOrderId` is the field it needs
 
 **Raised 2026-08-21** while costing a request to populate `sourceOrderId` on trades, so the console
-can link a trade to its order's trace.
+can link a trade to its order's trace. **Fixed 2026-08-21** — both steps landed in the stated order
+and the field is live on the cloud rig. See *Resolution* below; the ordering argument is the part
+worth keeping, because the next payload extension faces the same trap.
 
 ## What is wanted, and why it looks trivial
 
@@ -46,10 +48,33 @@ once step 2 is out, rolling trade-processor *back* re-breaks it.
 this path still intolerant of an added field, and it is a latent trap for whoever next extends the
 payload for an unrelated reason — which is precisely how the 10,812 drops happened.
 
+## Resolution
+
+Both steps shipped, in the order above. Verified on the cloud rig 2026-08-21: every trade the engine
+books carries `"sourceOrderId":"<epoch>-<orderRef>"` (e.g. `1-4`), zero null, and the projection did
+not drop a single trade — the blotter, positions and read model stayed populated throughout.
+
+**It did NOT make the trace link work by itself, and the note that said it would was wrong.**
+`sourceOrderId` is a trade→ORDER link. Trace ids are derived from the CLIENT ORDER ID, which the
+engine never sees and no trade payload carries, so no field on a trade can reach a trace on its own.
+What closed the gap was a console-side join: the console generates the client order id for orders it
+submits and already keeps `orderRef` + `traceId` together in its activity log, so a trade reaches its
+trace as `sourceOrderId` → order ref → this page's own activity entry. That is a join across state
+the console happens to hold, not a derivation — a trade from FIX, from another browser, or from
+before this page loaded has nothing to join to, and the console says so rather than guessing a hash.
+
+Two consequences worth knowing before anyone reads a 404 as a regression:
+
+- The link is **per page load**. The activity log is in memory; a refresh drops every join.
+- A joined id **usually 404s on GKE anyway**, by design. GKE sets `OTEL_SAMPLE_MASK=127` (1 in 128)
+  where the kind manifests set `0` (trace everything). Measured: nine consecutive accepted orders all
+  404 while a rejected order's trace answered 200 within 15s from the same page and stayed available
+  for 90s. Rejections escalate past the mask; accepted orders — the only ones that become trades — do
+  not. So on the cloud rig expect roughly 1 trade in 128 to resolve, and on kind, all of them.
+
 ## Related
 
 The console's `traceIdFor` order-ref fallback was found the same day to derive ids the gateway never
-produces — 404s that read as head sampling. It has been changed to return undefined, so once
-`sourceOrderId` is populated the trace link starts working with no further console change.
+produces — 404s that read as head sampling. It has been changed to return undefined.
 
 Related: [[an-epoch-roll-silently-drops-instrument-classes]]

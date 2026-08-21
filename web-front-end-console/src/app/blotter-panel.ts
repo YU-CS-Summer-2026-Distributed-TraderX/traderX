@@ -20,6 +20,15 @@ interface PosRow extends Position {
   last?: number; dir: 1 | -1 | 0; value?: number; upnl?: number;
 }
 
+/**
+ * `<epoch>-<orderRef>` → the ref. Returns 0 for a market sweep (`<epoch>-0`), which has no
+ * originating order by design, and null when there is nothing parseable to join on.
+ */
+const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
+  const m = /^\d+-(\d+)$/.exec(String(t.sourceOrderId ?? ''));
+  return m ? Number(m[1]) : null;
+};
+
 @Component({
   selector: 'blotter-panel',
   imports: [FormsModule, HelpTip, SecHead, SecPager, Gated, TraceView],
@@ -146,8 +155,9 @@ interface PosRow extends Position {
                   }
                   <button (click)="tca(t); $event.stopPropagation()">TCA</button>
                 </div>
-                <!-- A trade cannot be traced from its own row TODAY, and the button says so rather
-                     than looking up a hash of the wrong number. See traceOf(). -->
+                <!-- Joined through sourceOrderId to this session's own activity entry, which is
+                     where the client order id and its trace live. Not derived from the trade — a
+                     trade row carries no client order id. See traceOf(). -->
                 <div class="trace" (click)="$event.stopPropagation()">
                   <trace-view [traceId]="traceOf(t)" derivedFrom="trade" />
                 </div>
@@ -228,29 +238,43 @@ export class BlotterPanel implements OnInit, OnDestroy {
   }
 
   /**
-   * A trade's trace id — which is NOT DERIVABLE from a trade row today, so this returns undefined
-   * and the view says what is missing instead of guessing.
+   * A trade's trace id, JOINED rather than derived.
    *
-   * I first read the trade id `3580-S` as `<orderRef>-<side>` and shipped a derivation from it. It
-   * was wrong, and the way it was wrong is worth keeping. Measured afterwards: the engine's agreed
-   * trade counter is 4626 while the highest trade id is 4622 and a live order ref is 2719 — two
-   * counters, and the trade id follows the TRADE sequence. Tempo's own tag is `traderx.order_ref`,
-   * a different number.
+   * `sourceOrderId` now links a trade to the order that produced it (`<epoch>-<orderRef>`), and the
+   * console already knows the client order id AND the trace id of every order IT submitted — so the
+   * path is trade → order ref → this session's own activity entry → trace id. Verified end to end:
+   * trade `8-B` carries `1-8`, and the entry for order ref 8 holds `console-…821` and trace
+   * `deea9ba9b453d31e124bb5938cb68aef`.
    *
-   * The three things I took as evidence, and what each was actually worth:
-   *   - orderRef 2172 appearing as open order "1-2172" — true, but that is the OPEN ORDER id space
-   *     (`<epoch>-<orderRef>`), which says nothing about the trade id space.
-   *   - ref 2168 being both a trade and a resting order — coincidence. Two counters in overlapping
-   *     ranges at one instant; they have since diverged to 4626 and 2719.
-   *   - no trade id carrying two sides — a NON-DISCRIMINATOR. Trade sequence also increments per
-   *     side, so `4197-S` and `4198-B` is one cross. It was consistent with both readings and I
-   *     counted it for one.
+   * NOT a derivation from the trade, and the distinction matters. Trace ids come from the CLIENT
+   * ORDER ID, which the engine never sees and no trade row can carry; `sourceOrderId` is a
+   * trade→order link, not a trace link. This works only because the console kept what it generated.
+   * A trade from any other source — FIX, another browser, a previous page load — has no entry to
+   * join to and gets no trace, which the view says plainly rather than guessing a hash.
    *
-   * Trace ids come from the client order id, which a trade row does not carry, and `sourceOrderId`
-   * is null on every trade the service returns. Making this work needs the trade to carry the order
-   * that produced it — a gateway change, not arithmetic here.
+   * `<epoch>-0` is a market sweep with no originating order (FR-09B08), and is not a missing join.
+   *
+   * A joined id still usually 404s, and that is the RIG, not this. GKE sets `OTEL_SAMPLE_MASK=127`
+   * — 1 in 128 — where the kind manifests set 0 (trace everything). Measured 2026-08-21 against the
+   * cloud rig: nine consecutive accepted orders all 404, while a rejected order's trace answered 200
+   * within 15s from the same page. Rejections escalate past the mask; accepted orders, which are the
+   * only ones that ever become trades, do not. So expect the button to resolve about 1 trade in 128
+   * here and every trade on a kind rig.
+   *
+   * (Before `sourceOrderId` existed I read the trade id `3580-S` as `<orderRef>-<side>` and derived
+   * from that. It was wrong — the numeric part is the engine's TRADE sequence, a different counter:
+   * measured at the time, trade counter 4626 against a live order ref of 2719. The evidence that
+   * convinced me included "no trade id carries two sides", which is a non-discriminator, since trade
+   * sequence also increments per side.)
    */
-  traceOf(_t: BlotterTrade): string | undefined { return undefined; }
+  traceOf(t: BlotterTrade): string | undefined {
+    const ref = orderRefOf(t);
+    if (ref === null || ref === 0) return undefined;
+    return this.api.activity().find(e => e.orderRef === ref && e.traceId)?.traceId;
+  }
+
+  /** The originating order's ref, or null when the trade carries no usable link. */
+  sourceRef(t: BlotterTrade): number | null { return orderRefOf(t); }
 
   async tca(t: BlotterTrade): Promise<void> {
     const r = await this.api.load<{ benchmarkPrice: number; arrivalPrice: number; slippageBps: number; benchmarkSampleCount: number }>(

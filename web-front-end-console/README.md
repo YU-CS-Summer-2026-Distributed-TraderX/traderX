@@ -108,8 +108,16 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
 Order details: click an activity entry to see orderRef, clientOrderId and the order's **trace** —
 the trace id is derived client-side with the same FNV/mix math as OrderTrace.java (verified
 byte-equal against a gateway reject log line), fetched from Tempo via the `/tempo/` route, and
-rendered as a span timeline. Rejects are always head-sampled, so a refusal's trace always exists.
-Blotter trade rows expand to details with inline TCA and force-settle.
+rendered as a span timeline. Rejects escalate past head sampling, so a refusal's trace always exists.
+
+Blotter trade rows expand to details with inline TCA, force-settle, the **source order** the trade
+came from, and that order's trace. The trace there is JOINED, not derived: a trade payload carries
+`sourceOrderId` (`<epoch>-<orderRef>`) but no client order id, and trace ids come from the client
+order id — so the console walks `sourceOrderId` → order ref → its own activity entry, which is where
+the id it generated lives. That means the link only exists for orders THIS page submitted, and a
+refresh drops it; anything else says so rather than guessing a hash. On GKE the joined id still
+usually 404s, because `OTEL_SAMPLE_MASK=127` traces 1 accepted order in 128 (kind sets `0` and traces
+every one) — the panel distinguishes that from Tempo holding nothing at all.
 
 Every panel carries a `?` hover explainer written for someone who doesn't know the system.
 
