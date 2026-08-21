@@ -175,7 +175,7 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # yu15-pre/yu15-stp predate the gateway's probe server (18111, /live) that the manifest's three
 # probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
 # defect was being older than the manifest. See
-# issues/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+# issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
 # THE IMAGE MUST BE ON THE NODES BEFORE ANYTHING IS DESTROYED. rebuild_fresh_epoch wipes the PVCs
 # first and discovers an unreachable image afterwards, at which point the epoch it would have fallen
 # back to no longer exists. `kind load` is start-cluster-kind.sh's job and this script never did it,
