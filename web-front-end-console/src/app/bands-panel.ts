@@ -91,7 +91,7 @@ import { HelpTip } from './help';
                     }
                   }
                   @if (b.thin) { <div class="sub thin">thin: {{ b.accepted }} accepted / {{ b.rejected }} refused —
-                    a split this small can be disjoint by luck</div> }
+                    a split this small can fall either way by luck</div> }
                 </td>
               </tr>
             }
