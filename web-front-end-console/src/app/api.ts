@@ -394,14 +394,45 @@ export class Api {
     return this.orderTraces()[String(ref)];
   }
 
+  /**
+   * Witness the epoch the rig is currently on, and DROP the map if it has changed.
+   *
+   * Order refs are not unique across epochs: `MatchingEngineClusteredService.nextOrderRef` starts
+   * at 1 and is restored only from a snapshot, and a fresh-epoch roll wipes the PVCs — so epoch 2
+   * issues ref 7 again. sessionStorage outlives a refresh, so without this a map keyed on the bare
+   * ref hands epoch 1's trace to epoch 2's order 7: a REAL trace for the WRONG order, which is
+   * worse than no link. A wrong id resolves, renders five convincing spans, and says nothing about
+   * the order you are looking at.
+   *
+   * Witnessed on READ rather than recorded on write because the console cannot know the epoch when
+   * it logs — the gateway's accept response carries `orderRef` and nothing else. Every order and
+   * trade it renders is `<epoch>-…`, so the epoch arrives with the data.
+   *
+   * Clearing is deliberately blunt: entries carry no epoch of their own, so the whole map goes.
+   * Losing a link the operator could still have used is the safe direction — the panel then says
+   * it cannot name the id, which is true.
+   */
+  noteEpoch(epoch: number): void {
+    if (!Number.isFinite(epoch) || epoch <= 0) return;
+    const known = Number(sessionStorage.getItem('traderx-console-order-trace-epoch') ?? 0);
+    if (known === epoch) return;
+    sessionStorage.setItem('traderx-console-order-trace-epoch', String(epoch));
+    if (!known) return;                                   // first sighting: adopt, do not discard
+    sessionStorage.removeItem('traderx-console-order-traces');
+    this.orderTraces.set({});
+  }
+
   log(e: Omit<ActivityEntry, 'at'>): void {
     // Recorded HERE rather than at each submit site so a new caller cannot forget it: every path
     // that already logs an order with both a ref and a trace persists the pair for free.
     if (e.orderRef && e.traceId) {
       this.orderTraces.update(m => {
         const next = { ...m, [String(e.orderRef)]: e.traceId! };
-        // Bounded: a long demo session should not grow this without limit. Oldest-first by
-        // insertion order, which for a monotonic order ref is also oldest by age.
+        // Bounded: a long demo session should not grow this without limit. Object.keys on
+        // integer-like keys enumerates ASCENDING NUMERICALLY, not by insertion — which happens to
+        // be oldest-first here because refs are monotonic within an epoch. Stated exactly because
+        // re-keying this map on anything non-numeric (e.g. "<epoch>-<ref>") silently switches it
+        // to insertion order and this line stops meaning what it says.
         const keys = Object.keys(next);
         for (const k of keys.slice(0, Math.max(0, keys.length - 500))) delete next[k];
         sessionStorage.setItem('traderx-console-order-traces', JSON.stringify(next));

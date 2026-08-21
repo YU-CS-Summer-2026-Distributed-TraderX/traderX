@@ -412,6 +412,11 @@ export class BlotterPanel implements OnInit, OnDestroy {
     ]);
     if (p.status === 200 && Array.isArray(p.body)) this.rawPositions.set(p.body);
     if (o.status === 200 && Array.isArray(o.body)) {
+      // The epoch arrives with the data and nowhere else — the submit path never learns it. Refs
+      // restart at 1 on a fresh epoch, so this is what stops a surviving sessionStorage map from
+      // answering epoch 2's order 7 with epoch 1's trace.
+      const epoch = Number(String(o.body[0]?.id ?? o.body[0]?.orderId ?? '').split('-')[0]);
+      if (Number.isFinite(epoch)) this.api.noteEpoch(epoch);
       this.rawOpenOrders.set(o.body.map(row => ({
         orderId: String(row.id ?? row.orderId ?? ''),
         security: row.security, side: row.side,

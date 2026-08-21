@@ -1,4 +1,5 @@
-import { bridgeError, riskControlError } from './api';
+import { TestBed } from '@angular/core/testing';
+import { Api, bridgeError, riskControlError } from './api';
 
 /**
  * The rule these three cases exist to hold: the bridge's own words win, and the console's own
@@ -82,5 +83,54 @@ describe('band verdict', () => {
 
   it('concludes nothing without an accepted order to compare against', () => {
     expect(verdict([], [100, 200])).toBe('never-accepted');
+  });
+});
+
+/**
+ * The persisted order-ref → trace map across an epoch roll.
+ *
+ * Worth committing because the failure is not a missing link, it is a CONFIDENT WRONG one. Order
+ * refs restart at 1 on a fresh epoch (nextOrderRef is restored only from a snapshot, and the roll
+ * wipes the PVCs) while sessionStorage survives a refresh — so a map keyed on the bare ref answers
+ * epoch 2's order 7 with epoch 1's trace. That id resolves in Tempo and renders five convincing
+ * spans belonging to a different order. Nothing on screen looks wrong.
+ */
+describe('order trace map across an epoch roll', () => {
+  let api: Api;
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    TestBed.configureTestingModule({});
+    api = TestBed.inject(Api);
+  });
+
+  it('recovers the trace of an order this session submitted', () => {
+    api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 7, traceId: 'aaaa' });
+    expect(api.traceForOrderRef(7)).toBe('aaaa');
+  });
+
+  it('adopts the first epoch it sees without discarding what is already recorded', () => {
+    api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 7, traceId: 'aaaa' });
+    api.noteEpoch(1);
+    expect(api.traceForOrderRef(7)).toBe('aaaa');
+  });
+
+  it('drops the map when the epoch changes, rather than answering with the old epoch\'s trace', () => {
+    api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 7, traceId: 'aaaa' });
+    api.noteEpoch(1);
+    api.noteEpoch(2);                       // fresh-epoch roll; ref 7 will be issued again
+    expect(api.traceForOrderRef(7)).toBeUndefined();
+  });
+
+  it('ignores a re-sighting of the same epoch', () => {
+    api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 7, traceId: 'aaaa' });
+    api.noteEpoch(1);
+    api.noteEpoch(1);
+    expect(api.traceForOrderRef(7)).toBe('aaaa');
+  });
+
+  it('never treats ref 0 — a market sweep — as a lookup', () => {
+    api.log({ kind: 'order', ok: true, summary: 'x', orderRef: 0, traceId: 'aaaa' });
+    expect(api.traceForOrderRef(0)).toBeUndefined();
   });
 });
