@@ -1,0 +1,102 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+# REGISTRY SETTLED 2026-08-17, and these refs were corrected against it. History, because the note
+# that used to sit here said the opposite and someone will want to know why it flipped:
+#
+#   * The project was traderx-501015, which the active credentials could not even list. It is a
+#     second account of yaakov's; he confirmed it, granted the active account read, and the images
+#     that were only there were copied across. Every ref below now names traderx-505400.
+#   * The three service tags were :yu15-extract — stale copies made at the YU16 cut, the same class
+#     as the kind-side tags fixed in a84ddaa5, still unrepaired here. :yu16 exists in the registry
+#     for all three, so they are now :yu16. reference-data was already :yu16 (it is new to YU16).
+#
+# Measured by the coordinator session, which has GAR access; NOT verifiable from this worktree, so
+# treat "exists" as its reading rather than mine.
+#
+# THE GCS BUCKETS MOVED TOO, but they needed a separate answer and got one. They share the project
+# id as a NAMING CONVENTION, not as a registry path, so the registry measurement said nothing about
+# them: a blanket project rewrite would have pointed the journal archive and the extract sink at
+# buckets nobody had shown existed, failing at write time rather than as an ImagePullBackOff. The
+# access yaakov granted on 501015 was READ, and both of these are WRITE paths, so staying put was
+# not an option either. Both destinations were then created on 505400 (2026-08-17, us-east1), so
+# the refs now name them:
+#   gs://traderx-505400-risk-extracts                 (created + populated)
+#   gs://traderx-505400-order-matcher-journal-archive (created, empty)
+#
+# WHAT DID NOT TRAVEL WITH THE NAME: the extract sink's immutability. On 501015 the bucket granted
+# the writer objectCreator+objectViewer only, so overwrite was impossible even with valid creds.
+# There is no workload identity on 505400 yet, so that binding has nothing to attach to and the
+# only remaining guarantee is client-side (RiskExtractGcsSink's no-clobber precondition). The
+# binding and its 403-on-overwrite proof belong to the GKE bring-up. See the comment at the sink
+# in risk-extract.yaml — do not quote the YU15 write-once guarantee for this project until then.
+#
+# STILL OPEN, deliberately, and it is the interesting one. The five cluster-node refs remain on
+# :yu15-idempfix. cluster-node:yu16 does exist in 505400, so pinning them is one sed away — but
+# which build the DETERMINISTIC CORE runs is not a tag edit, and it is not mine to make silently:
+#
+#   * Moving a cluster-node tag is an ENGINE ROLL, not manifest hygiene. A mixed-version window
+#     diverges the members permanently; the safe change is scale to zero, wipe the PVCs, mint a
+#     fresh epoch. That belongs to whoever brings the tier up and cannot ride along in a tag edit.
+#   * The failure mode is silent-wrong-build at its most expensive. A YU16 tier on a YU15 core comes
+#     up HEALTHY and prices bonds on the equity grid — ADR-060's ticker-derived grid is the one real
+#     engine change bonds needed. Nothing errors; the numbers are just wrong. That is strictly worse
+#     than an ImagePullBackOff, which at least announces itself.
+#   * Against that, :yu15-idempfix carries the idempotency tombstone fix and is the build this tier
+#     has actually been run on.
+#
+# NOT a reason, though it was offered as one: platform. cluster-node:yu16 in 505400 is linux/amd64,
+# verified with `buildx imagetools inspect` — the second index entry is buildx provenance
+# (unknown/unknown), not a second architecture. So :yu15prewedge-amd64 was someone being explicit,
+# NOT a convention marking the amd64 builds, and an unmarked tag is no evidence of arm64. All four
+# :yu16 service images pinned above are amd64 as well.
+#
+# So: whoever deploys the YU16 tier to GKE decides that one and moves all five together, as part of
+# a fresh epoch. A tag that is not there fails as ImagePullBackOff, this project's documented
+# recurring GKE trap (see deploy-gke). execution-algo-engine does not appear in this directory at
+# all — the kind copy pins it to :yu15 with its own note, and the registry holds no images for it
+# under any tag.
+#
+# The kind-side derivation in scripts/yu15/lib-state-image.sh covers kind only, for exactly the
+# reason this whole comment exists: there is nothing here to derive the answer from.
+#
+# YU15 GKE tier = the YU14 cluster set (emptyDir members, 4 gateways, C4D pool, all hardening)
+# plus the risk-extract chain: NATS (JetStream), the EOD price DB, trade-processor, the YU06 EOD
+# batch chain, and the risk-extract producer with a gs:// sink. Images: cluster-node:yu15-idempfix
+# (members/gateway/producer — one image, built from the YU15 branch, carries the idempotency
+# tombstone fix) and <service>:yu15-extract for the three Spring services, all built
+# --platform linux/amd64 and pushed to GAR at deploy time. `kubectl apply -k .` is the one-shot
+# deploy. Manifests do NOT inherit across states (render-state is a plain cp -R) — this dir is
+# YU15's own, not an overlay on YU14's.
+#
+# ^ That paragraph describes the YU15 tier and is kept as the lineage record. It is no longer what
+# the refs below say: the three Spring services moved to :yu16 today (see the top of this file).
+# The cluster-node half of it is still accurate, and still the open decision.
+#
+# c4d-node-system-config.yaml is deliberately NOT in `resources`: it is a kubelet config passed to
+# `gcloud container node-pools create --system-config-from-file` when creating blp-c4d-tuned-pool,
+# not a Kubernetes object. Listing it here fails the whole build with "missing Resource metadata".
+#
+# statefulset.yaml (PVC variant) is kept for reference only; the emptyDir variant is what runs.
+#
+# Applied separately by the deploy, NOT part of this kustomization (kustomize cannot reference a
+# file outside its root; referencing it in place keeps exactly one copy of the schema):
+#   ../../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
+#
+# No NetworkPolicy on the GKE tier (matching YU12-YU14). If one is ever added, the risk-extract
+# pod label MUST be in the member ingress allowlist — a missing allow surfaces as a marker ack
+# timeout, not a connection error (T-LOB16).
+resources:
+  - statefulset-emptydir.yaml
+  - gateway.yaml
+  - backup-cronjob.yaml
+  - seed-accounts-job.yaml
+  - nats.yaml
+  - eod-price-db.yaml
+  - trade-processor.yaml
+  - eod-chain.yaml
+  - risk-extract.yaml
+  # YU16: new to this tier. trade-processor's Treasury path resolves coupon and maturity through
+  # this service and fails closed without it — see the header of reference-data.yaml for what that
+  # looks like on a rig that appears entirely healthy.
+  - reference-data.yaml

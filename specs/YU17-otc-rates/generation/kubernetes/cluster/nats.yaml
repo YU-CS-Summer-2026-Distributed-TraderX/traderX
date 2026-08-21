@@ -1,0 +1,95 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels:
+    app: nats
+spec:
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: websocket
+      port: 8081
+      targetPort: 8081
+---
+# YU17 console: the browser blotter subscribes /accounts/{id}/trades|positions over the edge
+# proxy's /nats-ws route (which targets nats-broker:8081). A websocket listener cannot be enabled
+# by CLI flag — nats-server only accepts it from a config file — hence this ConfigMap. The
+# jetstream/http lines reproduce exactly what the args previously said; websocket is the only
+# addition. no_tls is deliberate: TLS terminates at the edge proxy, and this listener is
+# cluster-internal.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nats-server-config
+data:
+  nats.conf: |
+    jetstream {
+      store_dir: /data
+    }
+    http: 8222
+    websocket {
+      port: 8081
+      no_tls: true
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2.14-alpine
+          imagePullPolicy: IfNotPresent
+          # JetStream is required, not optional: eod.pnl.done is a durable stream event, and the
+          # producer's durable consumer is what makes a failed extract retry instead of vanish.
+          # Config moved from args into nats-server-config so the websocket listener (browser
+          # blotter feed) can exist — see the ConfigMap above. NOTE: /data is emptyDir, so this
+          # pod restarting wipes JetStream stream AND durable-consumer state. Both EOD consumers
+          # now re-create their durable on the reconnect that follows (2026-08-19: they did not,
+          # and the chain sat dead for ten hours with every pod healthy), but un-consumed messages
+          # at roll time are still gone.
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+            - name: websocket
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/nats
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: nats-server-config

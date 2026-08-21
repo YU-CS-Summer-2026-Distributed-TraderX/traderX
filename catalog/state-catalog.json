@@ -740,6 +740,52 @@
         "branch": "code/generated-state-YU15-eod-risk-extract",
         "tag": "generated/YU15-eod-risk-extract/v1"
       }
+    },
+    {
+      "id": "YU16-cdm-instruments",
+      "title": "CDM Instruments",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU16-cdm-instruments",
+      "previous": [
+        "YU15-eod-risk-extract"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU16-cdm-instruments",
+        "runtime": "./scripts/start-state-YU16-cdm-instruments-generated.sh"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU16-cdm-instruments",
+        "tag": "generated/YU16-cdm-instruments/v1"
+      }
+    },
+    {
+      "id": "YU17-otc-rates",
+      "title": "OTC Interest-Rate Swaps",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU17-otc-rates",
+      "previous": [
+        "YU16-cdm-instruments"
+      ],
+      "generation": {
+        "mode": "specified",
+        "entrypoint": "bash pipeline/generate-state.sh YU17-otc-rates",
+        "runtime": "./scripts/start-state-YU17-otc-rates-generated.sh"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU17-otc-rates",
+        "tag": "generated/YU17-otc-rates/v1"
+      }
     }
   ]
 }

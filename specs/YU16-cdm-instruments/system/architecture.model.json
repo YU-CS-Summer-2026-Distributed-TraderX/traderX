@@ -1,0 +1,86 @@
+{
+  "title": "YU16-cdm-instruments architecture",
+  "stateId": "YU16-cdm-instruments",
+  "parentState": "YU15-eod-risk-extract",
+  "description": "The CDM instrument model folded onto the cluster tier: reference-data serves CDM-shaped instruments (Equity, Fund, Debt) with FIGI identifiers while keeping /stocks and the YU04 durable control feed intact; price-publisher walks five U.S. Treasuries with a term-profiled correlated model and emits clean prices as fractions of par at six-decimal tick precision; the deterministic core is unchanged — bonds arrive as ordinary securities whose arithmetic is equity arithmetic because the stored price is a fraction of par and the contract multiplier stays 1; post-trade booking gains face-weighted average cost and a fail-closed Rejected landing; the risk extract joins instrument static to classify TREASURY rows and carry coupon and maturity at CSV schema 2.",
+  "inheritsFrom": "YU15-eod-risk-extract",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "instruments_csv",
+      "kind": "store",
+      "label": "instruments.csv (+FIGI, securityType, coupon, maturity)",
+      "description": "The seed and join static. One CSV gains identifier and bond-static columns; it seeds the reference-data service and, rendered into order-matcher resources, feeds the extract's classification join. FIGIs are baked offline — the runtime never calls a symbology provider."
+    },
+    {
+      "id": "reference_data",
+      "kind": "service",
+      "label": "reference-data (/instruments + retained /stocks)",
+      "description": "One store, two views: the CDM-shaped /instruments family (securityType, sub-type discriminators, AssetIdentifier lists, debtEconomics, matured) and the retained /stocks family the YU04 feed bootstraps from. /instruments/control-snapshot serves the identical snapshot contract over the same outbox watermark, so the bootstrap repoints by configuration."
+    },
+    {
+      "id": "control_feed",
+      "kind": "queue",
+      "label": "TRADERX_CONTROL_SECURITY (JetStream)",
+      "description": "The inherited YU04 durable control feed, unchanged in stream, subject and payload shape. The ten new instrument keys flow through it as ordinary {ticker, companyName} deltas — the engine registers ETFs and Treasuries with no new command type."
+    },
+    {
+      "id": "price_publisher",
+      "kind": "service",
+      "label": "price-publisher (+treasury-pricing)",
+      "description": "Inherited equity/option quoting plus the Treasury walk: per-batch shared roll (0.8) against a local roll (0.2), mean reversion toward the auction seed, a hard band clamp, and term profiles where longer maturity means larger steps and wider bands. Emits clean prices as fractions of par; Treasury binary ticks scale at six decimals, bypassing the 3-dp equity rounding. Solves YTM (safeguarded Newton, ACT/ACT ICMA); suppresses matured quotes; unknown UST- keys get 404, never a fallback."
+    },
+    {
+      "id": "gateway",
+      "kind": "service",
+      "label": "cluster gateway (UST face validation)",
+      "description": "Unchanged routing and ticker→security resolution. For UST- keys it rejects face amounts below 100 or not a multiple of 100 before submission, so a malformed bond order never reaches consensus. limitPrice for a bond is the fraction of par."
+    },
+    {
+      "id": "engine",
+      "kind": "service",
+      "label": "Aeron cluster engine (unchanged)",
+      "description": "Byte-identical deterministic core: price-time priority over integer ticks, per-security contract multiplier (1 for bonds), snapshot format 4. A bond position is quantity(face) × price(fraction ticks) × 1 — equity arithmetic — so no snapshot field, no format bump, no fresh epoch, no divergence window."
+    },
+    {
+      "id": "trade_processor",
+      "kind": "service",
+      "label": "trade-processor (face-weighted booking)",
+      "description": "Books cluster fills over the inherited durable /trades bridge. UST- routing resolves instrument metadata before the transaction (fail closed, configurable timeouts, no lookup for equities); Treasury average cost is face-weighted; validation failures persist a Rejected trade with its reason and publish it with no position update."
+    },
+    {
+      "id": "positions_db",
+      "kind": "store",
+      "label": "MariaDB (6-dp price columns)",
+      "description": "The read model. Trades gains the Rejected state, RejectionReason and SourceOrderId; price columns widen to DECIMAL(18,6) because three decimals on a fraction of par is one decimal of percentage. Seeds add the Treasury account 17017 with five settled fraction-priced positions."
+    },
+    {
+      "id": "frontend",
+      "kind": "service",
+      "label": "web-front-end (asset-class aware)",
+      "description": "Asset-class filter and grouped selectors; Treasury tickets labeled Face Amount and Limit Clean Price (% of par); clean value estimated as face × fraction; bond prices displayed as fraction × 100 with a % sign; coupon, maturity and publisher-solved YTM shown; rejected trades surface their reason."
+    },
+    {
+      "id": "risk_extract",
+      "kind": "service",
+      "label": "risk-extract (schema 2)",
+      "description": "The inherited byte-reproducible extract, with the classification join widened: instrumentType gains TREASURY (by join against the instrument static, never by prefix-parsing), Treasury rows carry coupon and maturityDate, and the delivered CSV announces schema 2. The .cut sidecar is untouched — it is engine state and the engine did not change."
+    }
+  ],
+  "edges": [
+    { "from": "instruments_csv", "to": "reference_data", "label": "seed load (CDM assertions throw on violation)" },
+    { "from": "reference_data", "to": "control_feed", "label": "outbox deltas (unchanged shape)" },
+    { "from": "control_feed", "to": "engine", "label": "SECURITY_CONTROL registration (ten new keys)" },
+    { "from": "reference_data", "to": "gateway", "label": "/instruments/control-snapshot bootstrap (repointed default)" },
+    { "from": "price_publisher", "to": "engine", "label": "fraction-of-par ticks at 1e6 (6 dp preserved)" },
+    { "from": "gateway", "to": "engine", "label": "validated orders (UST face rules pre-consensus)" },
+    { "from": "engine", "to": "trade_processor", "label": "durable /trades bridge (unchanged)" },
+    { "from": "reference_data", "to": "trade_processor", "label": "booking-time Treasury metadata (fail closed)" },
+    { "from": "trade_processor", "to": "positions_db", "label": "face-weighted positions, Rejected trades" },
+    { "from": "positions_db", "to": "frontend", "label": "per-account subjects (fraction × 100 display)" },
+    { "from": "price_publisher", "to": "frontend", "label": "Treasury payloads (cleanPrice, YTM, maturity)" },
+    { "from": "engine", "to": "risk_extract", "label": "cut at consensus N (unchanged format)" },
+    { "from": "instruments_csv", "to": "risk_extract", "label": "classification join (TREASURY, coupon, maturity)" }
+  ]
+}

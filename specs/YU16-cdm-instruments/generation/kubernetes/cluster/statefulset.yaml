@@ -1,0 +1,161 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-cluster
+  labels:
+    app: order-matcher-cluster
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: order-matcher-cluster
+  ports:
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher-cluster
+spec:
+  serviceName: order-matcher-cluster
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: order-matcher-cluster
+  template:
+    metadata:
+      labels:
+        app: order-matcher-cluster
+    spec:
+      terminationGracePeriodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: order-matcher-cluster
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: cluster-node
+          # PINNED TO THE B BUILD, deliberately, and NOT to the derived :yu16.
+          # The bare `:yu16` tag holds the preserved PRE-A before-arm — a historical artifact
+          # squatting on this state's canonical name. Declaring it here made `kubectl apply -k`
+          # a live footgun: it silently rolled members, gateway and risk-extract back across the
+          # pre-B/post-B ack-format boundary (32-byte egress acks -> 24-byte), which nothing
+          # detects because both builds start cleanly and only cross-wire under load.
+          # The `:yu16-ackB` tag is the current YU16 build (option B keyed ack correlation, rig-proven
+          # 2026-08-18). Do NOT "tidy" this back to :yu16 — that is the defect, not the fix.
+          # Wire rule: pre-B and post-B builds never mix, either direction, any branch.
+          # NOTE ON THE ODD WORDING ABOVE: tags are written `:yu16` / `:yu16-ackB` rather than as
+          # full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
+          # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above
+          # the image line becomes the declared image. Writing one here broke the deriver on
+          # 2026-08-18. Keep prose un-parseable; the image line is the only declaration.
+          image: traderx/cluster-node:yu16-ackB
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CLUSTER_HOSTNAMES
+              value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
+            - name: CLUSTER_PORT_BASE
+              value: "21800"
+            - name: CLUSTER_BASE_DIR
+              value: "/data"
+            - name: CLUSTER_AERON_DIR
+              value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). Leader-side, off-consensus,
+            # best-effort: this directory is NOT the Aeron Archive, holds nothing recovery needs,
+            # and can be wiped without touching correctness. Unset it and the tap never starts.
+            # It shares the volume with the Archive, so the tap caps itself (KDB_TAP_MAX_MB, 256
+            # default) rather than ever competing for the disk the consensus journal needs.
+            - name: KDB_TAP_DIR
+              value: "/data/kdb-capture"
+            # YU15: leader-side position-cut bridge. Unset leaves the marker inert (it still
+            # sequences and renders on every member, it just publishes nowhere).
+            - name: RISK_EXTRACT_NATS_URL
+              value: "nats://nats:4222"
+            # ADR-048 leader-side trade bridge: booked fills to NATS /trades, where
+            # trade-processor persists them. Options only reach SQL at all with this set.
+            - name: TRADE_BRIDGE_NATS_URL
+              value: "nats://nats:4222"
+            # OTEL-01: the member half of the trace. Only the LEADER emits (a follower's
+            # commit-to-apply is not the round-trip the client is waiting on), so all three carry
+            # the same config and the role decides. OTEL_SAMPLE_MASK MUST match the gateway's —
+            # both sides derive the sampling verdict independently from the idempotency key, so a
+            # mismatched mask yields member spans whose parent was never emitted.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
+            # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). The forward window
+            # a reconciliation sweep classifies against the projection; the full-history index and
+            # the audit export are built by replaying the Aeron Archive's log on demand and are not
+            # retained. Unset leaves every /recon and /regulatory route 503 and the apply path
+            # byte-for-byte what it was — the capability is opt-in, not a silent default.
+            - name: RECON_BLOTTER_CAPACITY
+              value: "500000"
+            # Refuse-rather-than-truncate ceilings. A truncated full-history index reports FALSE
+            # orphans, so exceeding this is an error, not a shorter answer. Sized for a 512Mi heap
+            # that is also running a consensus member: ~200k trades is ~40MB of shadow index.
+            - name: RECON_FULL_HISTORY_MAX
+              value: "200000"
+            - name: REGULATORY_MAX_RECORDS
+              value: "200000"
+            # These routes span every account, so the member validates the admin claim itself
+            # (ADR-025) rather than trusting the gateway that forwarded the request.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

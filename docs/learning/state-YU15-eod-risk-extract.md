@@ -8,7 +8,7 @@ title: "State YU15-eod-risk-extract: EOD Risk Extract"
 
 - Previous state(s): [YU14-listed-equity-options](/docs/learning/state-YU14-listed-equity-options)
 - Dotted-line parent(s): none
-- Next state(s): none
+- Next state(s): [YU16-cdm-instruments](/docs/learning/state-YU16-cdm-instruments)
 
 ## Convergence Metadata
 

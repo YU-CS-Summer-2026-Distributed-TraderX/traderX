@@ -133,6 +133,8 @@ module.exports = {
         'learning/state-YU13-limit-order-book',
         'learning/state-YU14-listed-equity-options',
         'learning/state-YU15-eod-risk-extract',
+        'learning/state-YU16-cdm-instruments',
+        'learning/state-YU17-otc-rates',
         'learning-paths/index',
         'spec-kit/spec-kit-learning-path-strategy',
         'spec-kit/state-transition-generation-plan',

@@ -54,6 +54,8 @@ it and are published from this repository: `YU01` continues from `009-order-mana
 - [code/generated-state-YU13-limit-order-book](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU13-limit-order-book)
 - [code/generated-state-YU14-listed-equity-options](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU14-listed-equity-options)
 - [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract)
+- [code/generated-state-YU16-cdm-instruments](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU16-cdm-instruments)
+- [code/generated-state-YU17-otc-rates](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU17-otc-rates)
 
 ## Why This Works
 

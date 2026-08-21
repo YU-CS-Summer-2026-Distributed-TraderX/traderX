@@ -1,0 +1,86 @@
+# YU12 GCS snapshot backup — periodically tars member-0's Aeron cluster+archive dirs (snapshots +
+# log) and uploads to GCS, reusing the existing journal-archive HMAC credentials. Restore path:
+# scripts/yu12/restore-from-gcs.sh + the RESTORE_FROM_GCS init on member-0.
+apiVersion: v1
+kind: ServiceAccount
+metadata: { name: yu12-backup, namespace: traderx }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: { name: yu12-backup, namespace: traderx }
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: { name: yu12-backup, namespace: traderx }
+subjects: [{ kind: ServiceAccount, name: yu12-backup, namespace: traderx }]
+roleRef: { kind: Role, name: yu12-backup, apiGroup: rbac.authorization.k8s.io }
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: yu12-snapshot-backup, namespace: traderx }
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      template:
+        spec:
+          serviceAccountName: yu12-backup
+          restartPolicy: Never
+          nodeSelector: { cloud.google.com/gke-nodepool: support-pool }
+          containers:
+            - name: backup
+              image: google/cloud-sdk:latest
+              resources:
+                requests: { cpu: 100m, memory: 256Mi }
+                limits: { cpu: 500m, memory: 512Mi }
+              env:
+                - name: GS_ID
+                  valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: access-key-id } }
+                - name: GS_SECRET
+                  valueFrom: { secretKeyRef: { name: order-matcher-journal-gcs-hmac, key: secret-access-key } }
+                - name: BKT
+                  value: "gs://traderx-505400-order-matcher-journal-archive/yu12-cluster-snapshots"
+                - name: KEEP
+                  value: "12"
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -uo pipefail
+                  TS=$(date +%Y%m%d-%H%M%S)
+                  echo "tar member-0 /data (sparse; live log tail may change — tar exit 1 tolerated) ..."
+                  rc=0
+                  kubectl exec order-matcher-cluster-0 -c cluster-node -- tar -czSf - --warning=no-file-changed -C /data cluster archive > /tmp/snap.tgz || rc=$?
+                  [ "$rc" -gt 1 ] && { echo "FATAL: tar exit $rc"; exit 1; }
+                  SZ=$(stat -c%s /tmp/snap.tgz)
+                  [ "$SZ" -lt 100000 ] && { echo "FATAL: backup only $SZ bytes"; exit 1; }
+                  tar tzf /tmp/snap.tgz cluster/recording.log >/dev/null 2>&1 || { echo "FATAL: no recording.log in backup"; exit 1; }
+                  export AWS_REQUEST_CHECKSUM_CALCULATION=when_required AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
+                  python3 -m pip install --break-system-packages --quiet boto3 >/dev/null 2>&1
+                  python3 - "$GS_ID" "$GS_SECRET" "$TS" "$SZ" "$KEEP" <<'PY'
+                  import sys, boto3
+                  kid, secret, ts, sz, keep = sys.argv[1:6]
+                  BK = "traderx-505400-order-matcher-journal-archive"; PFX = "yu12-cluster-snapshots/"
+                  from botocore.config import Config
+                  s3 = boto3.client("s3", endpoint_url="https://storage.googleapis.com",
+                                    aws_access_key_id=kid, aws_secret_access_key=secret,
+                                    config=Config(signature_version="s3v4", s3={"addressing_style":"path"}))
+                  for key in (f"{PFX}snap-{ts}.tgz", f"{PFX}latest.tgz"):
+                      s3.upload_file("/tmp/snap.tgz", BK, key)
+                  print(f"OK: {sz} bytes -> gs://{BK}/{PFX}snap-{ts}.tgz (+latest.tgz)")
+                  objs = sorted(o["Key"] for o in s3.list_objects_v2(Bucket=BK, Prefix=PFX+"snap-").get("Contents", []))
+                  drop = objs[:-int(keep)] if len(objs) > int(keep) else []
+                  for k in drop: s3.delete_object(Bucket=BK, Key=k)
+                  if drop: print(f"pruned {len(drop)} old backups")
+                  PY

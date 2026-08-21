@@ -1,0 +1,239 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw
+  labels:
+    app: cluster-gateway
+spec:
+  # LoadBalancer, and IN THE MANIFEST. This Service was a LoadBalancer on the rig and ClusterIP
+  # here, so the first `kubectl apply` of this file silently reverted it and GCP began tearing the
+  # forwarding rule down — external access gone, and bring-up dead at "gateway LoadBalancer has no
+  # external IP yet". Live-only configuration is configuration that one apply away from deletion.
+  type: LoadBalancer
+  selector:
+    app: cluster-gateway
+  # Horizontal scale-out (burst-free ingress): each gateway replica holds its OWN AeronCluster
+  # session + owner thread, and the cluster assigns order refs globally, so REST batches fan out
+  # across replicas with no coordination — N replicas = N× parallel batch submission, the real fix
+  # for sustaining ~134k without the single-owner-thread ceiling. REST is stateless per request so
+  # it round-robins freely (NO sessionAffinity here — k8s affinity is per-Service, not per-port,
+  # and ClientIP on this Service pinned all REST load from one client IP to ONE pod: 2 of 3
+  # gateways sat at 0 accepted orders, 41k via Service vs 64k direct). FIX needs stickiness, so it
+  # gets its own Service below (order-matcher-gw-fix).
+  ports:
+    - name: http
+      port: 18110
+      targetPort: 18110
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-gw-fix
+  labels:
+    app: cluster-gateway
+spec:
+  selector:
+    app: cluster-gateway
+  # FIX sessions are stateful per CompID (each replica is its own acceptor with its own sequence
+  # numbers) — a client bouncing between pods breaks the session. Keep FIX pinned here.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
+  ports:
+    - name: fix
+      port: 18130
+      targetPort: 18130
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cluster-gateway
+spec:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # 4 replicas is the retained tier (2026-07-21 C4D retest): on C3 the fourth gateway lost to
+  # three because the leader was apply-saturated (2.80/3 cores); on c4d-standard-8 the leader
+  # peaks ~1.8/3 cores and the fourth gateway banked 382-426k booked/s vs 320-343k for three at
+  # the same b1000/c64. Needs four non-member nodes (default pool + three std-pool).
+  # THREE, matching the three nodes of default-pool. The anti-affinity below is one gateway per
+  # node, so the replica count and the gateway pool's node count must line up exactly: ask for four
+  # and the fourth sits Pending for ever on "didn't match pod anti-affinity rules".
+  #
+  # It also has to line up for a second, quieter reason. The Service is externalTrafficPolicy:
+  # Local, so a node with no gateway pod fails the load balancer's health check and leaves
+  # rotation. Under-counting replicas silently shrinks the public front door rather than erroring.
+  replicas: 3
+  selector:
+    matchLabels:
+      app: cluster-gateway
+  template:
+    metadata:
+      labels:
+        app: cluster-gateway
+    spec:
+      # PINNED TO default-pool, which is the gateway pool on this rig (3 x n2-standard-4).
+      # Without the pin a gateway can land on support-pool and then every support service on the
+      # rig competes with a gateway owner thread for the same cores — the co-tenancy this shape was
+      # chosen to avoid. The members' pool stays reserved by its taint; support-pool is left
+      # untainted deliberately so kube-system (CoreDNS, konnectivity) always has somewhere to run.
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      # default-pool is tainted role=gateway:NoSchedule so ONLY gateways land there. Without the
+      # taint the nodeSelector is one-way: gateways stay on their pool, but every support service
+      # is free to schedule onto it too — observed on the first bring-up, where all eight support
+      # pods packed onto the three gateway nodes and the n2-standard-8 support node sat completely
+      # empty. That is 8 of the rig's 32 vCPU idle while gateways share cores with the database.
+      tolerations:
+        - key: role
+          operator: Equal
+          value: gateway
+          effect: NoSchedule
+      #
+      # Guarantee one gateway per node: each gateway's owner thread needs a real core. Preferred
+      # anti-affinity was observed packing replicas during rolling updates, invalidating runs.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app: cluster-gateway
+              topologyKey: kubernetes.io/hostname
+      containers:
+        - name: gateway
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6
+          imagePullPolicy: Always
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.ClusterGatewayMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: GATEWAY_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            - name: GATEWAY_HTTP_PORT
+              value: "18110"
+            - name: GATEWAY_EGRESS_PORT
+              value: "40470"
+            # PINNED, not left to the code default, even though the two agree today. Every probe on
+            # this tier reads 18111 and nothing here told the gateway that: the port was
+            # load-bearing on env("GATEWAY_PROBE_PORT", "18111") in ClusterGatewayMain alone, with
+            # no manifest backstop. The kind manifests already pin it — so a change to that default
+            # would keep every kind proof green while all five GKE tiers crashloop, because a
+            # failing startupProbe restarts the container rather than merely marking it NotReady.
+            # Local rig green while the cloud rig is dark is the divergence this project keeps
+            # paying for. Pinned for the same reason GATEWAY_HTTP_PORT above is.
+            - name: GATEWAY_PROBE_PORT
+              value: "18111"
+            - name: FIX_ACCEPTOR_PORT
+              value: "18130"
+            - name: FIX_SESSION_COMPIDS
+              value: "CLIENT1"
+            # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
+            # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
+            # deployed default and the "on" arm must be reachable without a rebuild. Flip
+            # OTEL_TRACES to "1" (both here and on the peer manifest) to take the "on" run.
+            # Tracing ON for the gateway. It shipped "0" because this GKE tier was cut from the
+            # kind manifests, where every throughput-costly switch is off by default — the same
+            # reason the kdb tap and the recon sweep had to be turned on here. The collector, the
+            # endpoint and the sample mask were all correctly configured the whole time; only the
+            # master switch was closed, so Tempo answered 200 with an empty result set and looked
+            # like a broken write path rather than an absent producer.
+            #
+            # The A/B for this was throughput-neutral on GKE, so there is no reason to keep it off
+            # on a demo rig. NOTE the members still carry "0": turning theirs on needs a rolling
+            # restart, which is safe here (same image, no mixed-version window, readiness gates on
+            # catch-up) but is a live-book decision rather than a config one.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            # 0 = trace EVERY order. This tier is the demo/console rig, and the console's
+            # trade -> order -> trace button is only demonstrable if the order it is clicked on was
+            # sampled: at the old 127 (1 in 128) roughly one trade in 128 resolved and the rest 404'd,
+            # which reads as a broken button rather than as sampling. Rejections escalate past the
+            # mask, so the failure was invisible in exactly the case anyone tests first.
+            # BEFORE A THROUGHPUT RUN, PUT THIS BACK TO 127 on both the gateway and the members. At
+            # ~190k orders/s a per-order span is its own performance problem, and the banked GKE
+            # numbers were taken at 127. Measured here, BOTH SIDES: 10 accepted orders emitted 30
+            # gateway spans and 20 member spans, so budget ~5 spans per order, not one. Counting
+            # only the gateway's counter gives 3 and understates the collector's load by 40%.
+            # The gateway's and the members' values MUST match — both sides derive the verdict
+            # independently from the same key, and a mismatch yields traces missing their cluster
+            # segment rather than an error.
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dsun.net.httpserver.nodelay=true -Xms256m -Xmx1g --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: http
+              containerPort: 18110
+            - name: fix
+              containerPort: 18130
+            - name: probe
+              containerPort: 18111
+          # PROBES READ 18111, NOT THE ORDER PORT. The order path's HTTP pool is exhaustible by
+          # construction — every in-flight order parks a thread for the full ack timeout — and a
+          # wedged gateway measurably stopped answering ALL HTTP on 18110 for eight minutes with
+          # zero load offered. A probe the server cannot answer is not a signal: Kubernetes acts on
+          # the timeout instead, which is indiscriminate and says nothing about what is wrong.
+          # 18111 is a separate HttpServer with a single-thread executor that only reads two
+          # volatiles. /ready and /live stay registered on 18110 too, so anything that curls the
+          # old address still works.
+          #
+          # THIS TIER NEEDS IT MOST. The wedge was first observed here, not on kind: one gateway
+          # behind a LoadBalancer with a single public IP, at replicas: 1 because the anti-affinity
+          # is one gateway per node. Readiness alone cannot heal that — there is nowhere else to
+          # route — so liveness is what ends the outage without a human.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 24
+          # Deliberately /live and not /ready: /live is 200 as soon as the process serves, so a
+          # cluster that is DOWN while this pod boots cannot hold startup open until the kubelet
+          # kills it. Its real job is to let the two below run at sane thresholds — without it,
+          # readiness needed failureThreshold 24 purely to tolerate a slow start, i.e. two minutes
+          # in which an unready gateway stayed in the Service.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 18111
+            periodSeconds: 5
+            failureThreshold: 3
+          # LIVENESS: ask for a restart once this gateway has told LIVE_NO_ACK_STREAK consecutive
+          # clients their orders failed (default 5x the readiness limit), sustained for 60s. The
+          # restart is the known cure, verified on both rigs, and the gateway is stateless so it
+          # costs only the in-flight orders. failureThreshold 6 x 10s is the storm guard: an
+          # election or a member roll clears long before it, and an IDLE gateway can never trip it
+          # because the streak only advances on a submit that got no ack.
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: 18111
+            periodSeconds: 10
+            failureThreshold: 6
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 640Mi
+            limits:
+              cpu: "2"
+              memory: 1536Mi
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

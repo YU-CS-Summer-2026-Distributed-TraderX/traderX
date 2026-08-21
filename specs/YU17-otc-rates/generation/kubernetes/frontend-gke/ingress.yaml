@@ -1,0 +1,75 @@
+# Public entry points:
+#   https://yaakovseif.dev         -> the new console
+#   https://grafana.yaakovseif.dev -> Grafana
+#
+# TWO ManagedCertificates, not one with two domains, DELIBERATELY. A ManagedCertificate's domain
+# list is immutable — editing it to add a host does not extend the certificate, it forces a new one,
+# and the live cert is torn down while the replacement provisions. Splitting them means adding a
+# host never puts the working site back into a certificate error.
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: traderx-cert
+spec:
+  domains:
+    - yaakovseif.dev
+---
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: traderx-cert-grafana
+spec:
+  domains:
+    - grafana.yaakovseif.dev
+---
+# Redirect HTTP to HTTPS. Enabled only AFTER traderx-cert reached ACTIVE (it did, 05:14:46Z, about
+# ten minutes after creation). Turning this on while a certificate is still provisioning makes the
+# site unreachable rather than merely untrusted, and removes the plain-HTTP fallback that is the
+# only way to see the site in the meantime.
+apiVersion: networking.gke.io/v1beta1
+kind: FrontendConfig
+metadata:
+  name: traderx-frontend
+spec:
+  redirectToHttps:
+    enabled: true
+    responseCodeName: MOVED_PERMANENTLY_DEFAULT
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: traderx
+  annotations:
+    kubernetes.io/ingress.class: "gce"
+    # Named, not literal, so re-creating the Ingress keeps the same public IP and DNS stays valid.
+    kubernetes.io/ingress.global-static-ip-name: "traderx-ip"
+    networking.gke.io/managed-certificates: "traderx-cert,traderx-cert-grafana"
+    networking.gke.io/v1beta1.FrontendConfig: "traderx-frontend"
+    kubernetes.io/ingress.allow-http: "true"
+spec:
+  defaultBackend:
+    service:
+      name: web-front-end-console
+      port:
+        number: 8080
+  rules:
+    - host: yaakovseif.dev
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: web-front-end-console
+                port:
+                  number: 8080
+    - host: grafana.yaakovseif.dev
+      http:
+        paths:
+          - path: /*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: grafana
+                port:
+                  number: 3000

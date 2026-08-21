@@ -1,0 +1,23 @@
+# YU17's own cluster layer, created 2026-08-18 as a copy of YU16's kind-level files with the
+# image pinned to this state's build. The gke/ and gke-505400/ overlays were DELIBERATELY not
+# copied: they pin registry refs for a tier nobody has deployed from YU17, and an uncopied
+# overlay is a loud absence where a stale copy would be a silent lie. Copy them when a YU17
+# GKE deploy is actually planned, pinning that day's refs.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: traderx
+resources:
+  - statefulset.yaml
+  - networkpolicy.yaml
+  - nats.yaml
+  - eod-price-db.yaml
+  - trade-processor.yaml
+  - eod-chain.yaml
+  - risk-extract.yaml
+  - execution-algo-engine.yaml
+  - reference-data.yaml
+# Applied separately by the start script, NOT part of this kustomization:
+#   - gateway.yaml (inherited from the YU12 kind layout)
+#   - ../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
+#     (kustomize cannot reference a file outside its root; referencing it in place keeps exactly
+#     one copy of the schema, so a proof taken here tests the DDL the state actually ships)

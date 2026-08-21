@@ -1,0 +1,164 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: edge-proxy-config
+  namespace: traderx
+data:
+  default.conf: |
+    server {
+        listen 8080;
+        server_name localhost;
+    
+        location = /health {
+            add_header Content-Type text/plain;
+            return 200 "ok\n";
+        }
+    
+        location = /@vite/client {
+            return 404;
+        }
+    
+        location ^~ /@fs/ {
+            return 404;
+        }
+    
+        location /reference-data/ {
+            proxy_pass http://reference-data:18085/;
+        }
+    
+        location /ng-cli-ws {
+            proxy_pass http://web-front-end-angular:18093/ng-cli-ws;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    
+        location /nats-ws {
+            proxy_pass http://nats-broker:8081;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+            proxy_set_header Host $http_host;
+        }
+    
+        location /people-service/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /people-service;
+            proxy_pass http://people-service:18089/;
+        }
+    
+        location /account-service/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /account-service;
+            proxy_pass http://account-service:18088/;
+        }
+    
+        location /position-service/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /position-service;
+            proxy_pass http://position-service:18090/;
+        }
+    
+        location /trade-service/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /trade-service;
+            proxy_pass http://trade-service:18092/;
+        }
+    
+        location /trade-processor/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /trade-processor;
+            proxy_pass http://trade-processor:18091/;
+        }
+    
+        location /price-publisher/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /price-publisher;
+            proxy_pass http://price-publisher:18100/;
+        }
+    
+        location /order-matcher/ {
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /order-matcher;
+            proxy_pass http://order-matcher:18110/;
+        }
+
+        # YU17 console: per-member cluster health. order-matcher-cluster is a HEADLESS Service
+        # (ClusterIP None), so each member's :8080 /health is per-pod DNS only — these three
+        # routes are the sole browser-reachable window onto it. Read-only by construction.
+        # proxy_pass MUST go through a variable + resolver: a static hostname is resolved once
+        # at config load and pinned, so a killed member's replacement pod (new IP) would be
+        # unreachable — during a leader-kill demo, exactly the moment this panel exists for.
+        # 10.96.0.10 is kube-dns on this rig's service CIDR.
+        location ~ ^/m([0-2])/(.*)$ {
+            resolver 10.96.0.10 valid=5s;
+            set $member_host order-matcher-cluster-$1.order-matcher-cluster.traderx.svc.cluster.local;
+            proxy_pass http://$member_host:8080/$2$is_args$args;
+        }
+
+        # YU17 console: algo parent-order API (the app's own ingress; children go through the
+        # gateway like any order) and read-only Tempo trace lookups for the order-details view.
+        location /algo/ {
+            proxy_set_header Host $http_host;
+            proxy_pass http://execution-algo-engine:18120/algo/;
+        }
+
+        location /tempo/ {
+            proxy_pass http://tempo:3200/;
+        }
+
+        location /grafana/ {
+            proxy_pass http://grafana:3000;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /grafana;
+        }
+    
+        location /prometheus/ {
+            proxy_pass http://prometheus:9090;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+        }
+    
+        location = /api/docs {
+            return 301 /api/docs/;
+        }
+    
+        location /api/docs/ {
+            proxy_pass http://api-explorer:8080/api/docs/;
+            proxy_http_version 1.1;
+            proxy_set_header Host $http_host;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Prefix /api/docs;
+        }
+    
+        location / {
+            proxy_pass http://web-front-end-angular:18093/;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    }

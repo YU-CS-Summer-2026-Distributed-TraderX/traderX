@@ -1,0 +1,51 @@
+ticker,type,underlying,expiry,callPut,strike,multiplier,currency,securityType,figi,couponRatePercent,maturityDate,issuer,creditRating,dayCount
+AAPL,equity,,,,,1,USD,Equity,BBG000B9XRY4,,,,,
+MSFT,equity,,,,,1,USD,Equity,BBG000BPH459,,,,,
+AAPL260918C00220000,option,AAPL,2026-09-18,C,220.000,100,USD,,,,,,,
+AAPL260918P00220000,option,AAPL,2026-09-18,P,220.000,100,USD,,,,,,,
+AAPL260918C00240000,option,AAPL,2026-09-18,C,240.000,100,USD,,,,,,,
+AAPL260918P00240000,option,AAPL,2026-09-18,P,240.000,100,USD,,,,,,,
+AAPL260918C00260000,option,AAPL,2026-09-18,C,260.000,100,USD,,,,,,,
+AAPL260918P00260000,option,AAPL,2026-09-18,P,260.000,100,USD,,,,,,,
+AAPL261218C00220000,option,AAPL,2026-12-18,C,220.000,100,USD,,,,,,,
+AAPL261218P00220000,option,AAPL,2026-12-18,P,220.000,100,USD,,,,,,,
+AAPL261218C00240000,option,AAPL,2026-12-18,C,240.000,100,USD,,,,,,,
+AAPL261218P00240000,option,AAPL,2026-12-18,P,240.000,100,USD,,,,,,,
+AAPL261218C00260000,option,AAPL,2026-12-18,C,260.000,100,USD,,,,,,,
+AAPL261218P00260000,option,AAPL,2026-12-18,P,260.000,100,USD,,,,,,,
+MSFT260918C00370000,option,MSFT,2026-09-18,C,370.000,100,USD,,,,,,,
+MSFT260918P00370000,option,MSFT,2026-09-18,P,370.000,100,USD,,,,,,,
+MSFT260918C00390000,option,MSFT,2026-09-18,C,390.000,100,USD,,,,,,,
+MSFT260918P00390000,option,MSFT,2026-09-18,P,390.000,100,USD,,,,,,,
+MSFT260918C00410000,option,MSFT,2026-09-18,C,410.000,100,USD,,,,,,,
+MSFT260918P00410000,option,MSFT,2026-09-18,P,410.000,100,USD,,,,,,,
+MSFT261218C00370000,option,MSFT,2026-12-18,C,370.000,100,USD,,,,,,,
+MSFT261218P00370000,option,MSFT,2026-12-18,P,370.000,100,USD,,,,,,,
+MSFT261218C00390000,option,MSFT,2026-12-18,C,390.000,100,USD,,,,,,,
+MSFT261218P00390000,option,MSFT,2026-12-18,P,390.000,100,USD,,,,,,,
+MSFT261218C00410000,option,MSFT,2026-12-18,C,410.000,100,USD,,,,,,,
+MSFT261218P00410000,option,MSFT,2026-12-18,P,410.000,100,USD,,,,,,,
+SPY,equity,,,,,1,USD,Fund,BBG000BDTBL9,,,,,
+QQQ,equity,,,,,1,USD,Fund,BBG000BSWKH7,,,,,
+IWM,equity,,,,,1,USD,Fund,BBG000CGC9C4,,,,,
+VTI,equity,,,,,1,USD,Fund,BBG000HR9779,,,,,
+GLD,equity,,,,,1,USD,Fund,BBG000CRF6Q8,,,,,
+UST-20280630,treasury,,,,,1,USD,Debt,BBG022ZR1Z79,4.125,2028-06-30,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20290715,treasury,,,,,1,USD,Debt,,4.125,2029-07-15,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20310630,treasury,,,,,1,USD,Debt,BBG022ZR1Z51,4.125,2031-06-30,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20330731,treasury,,,,,1,USD,Debt,,4.250,2033-07-31,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20360515,treasury,,,,,1,USD,Debt,BBG0221YLR31,4.375,2036-05-15,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20460515,treasury,,,,,1,USD,Debt,BBG0226BZH97,5.000,2046-05-15,United States Department of the Treasury,,ACT/ACT ICMA
+UST-20560515,treasury,,,,,1,USD,Debt,BBG0221YLR40,5.000,2056-05-15,United States Department of the Treasury,,ACT/ACT ICMA
+UST-BILL-20260910,treasury,,,,,1,USD,Debt,,0.000,2026-09-10,United States Department of the Treasury,,ACT/ACT ICMA
+UST-BILL-20261112,treasury,,,,,1,USD,Debt,,0.000,2026-11-12,United States Department of the Treasury,,ACT/ACT ICMA
+UST-BILL-20270211,treasury,,,,,1,USD,Debt,,0.000,2027-02-11,United States Department of the Treasury,,ACT/ACT ICMA
+UST-BILL-20270812,treasury,,,,,1,USD,Debt,,0.000,2027-08-12,United States Department of the Treasury,,ACT/ACT ICMA
+UST-STRIP-20280630,treasury,,,,,1,USD,Debt,,0.000,2028-06-30,United States Department of the Treasury,,ACT/ACT ICMA
+UST-STRIP-20310630,treasury,,,,,1,USD,Debt,,0.000,2031-06-30,United States Department of the Treasury,,ACT/ACT ICMA
+UST-STRIP-20360515,treasury,,,,,1,USD,Debt,,0.000,2036-05-15,United States Department of the Treasury,,ACT/ACT ICMA
+UST-STRIP-20560515,treasury,,,,,1,USD,Debt,,0.000,2056-05-15,United States Department of the Treasury,,ACT/ACT ICMA
+CORP-IBM-20330215,corporate,,,,,1,USD,Debt,,4.500,2033-02-15,International Business Machines Corporation,A-,30/360
+CORP-JPM-20310601,corporate,,,,,1,USD,Debt,,5.250,2031-06-01,JPMorgan Chase & Co.,A,30/360
+CORP-GS-20360315,corporate,,,,,1,USD,Debt,,5.750,2036-03-15,The Goldman Sachs Group Inc.,BBB+,30/360
+CORP-F-20320512,corporate,,,,,1,USD,Debt,,6.800,2032-05-12,Ford Motor Credit Company LLC,BB+,30/360

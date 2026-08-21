@@ -1,0 +1,161 @@
+<div class="p-4">
+    <div class="mb-3 row">
+        <label class="col-sm-2 col-form-label me-3">Account</label>
+        <div class="col-sm-8">
+            <input readonly disabled class="form-control" id="orderAccountLabel" [value]="account?.displayName" />
+        </div>
+    </div>
+    <div class="mb-3 row">
+        <label class="col-sm-2 col-form-label me-3">Security</label>
+        <div class="col-sm-8">
+            <input
+                id="order-stock-input"
+                [minLength]="1"
+                [(ngModel)]="selectedCompany"
+                [typeahead]="filteredStocks"
+                typeaheadOptionField="matchLabel"
+                (typeaheadOnSelect)="onSelect($event)"
+                (blur)="onBlur()"
+                placeholder="Search security, or type an OCC option symbol"
+                autocomplete="off"
+                autocapitalize="off"
+                autocorrect="off"
+                spellcheck="false"
+                class="form-control"
+            />
+        </div>
+    </div>
+
+    <div class="mb-3 row">
+        <label class="col-sm-2 col-form-label me-3">Live Price</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <ng-container *ngIf="ticket.security; else noSecuritySelected">
+                <span class="fw-semibold">{{ formatLivePrice() }}</span>
+                <small *ngIf="selectedPriceAsOf" class="text-muted ms-2">as of {{ formatAsOf() }}</small>
+            </ng-container>
+            <ng-template #noSecuritySelected>
+                <span class="text-muted">Select a security</span>
+            </ng-template>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="occTerms as occ">
+        <label class="col-sm-2 col-form-label me-3">Option</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <small class="text-muted">
+                {{ occ.underlying }} &middot; {{ occ.right }} &middot; Strike {{ occ.strike | number:'1.2-2' }}
+                &middot; Expires {{ occ.expiry }}
+                <span class="fst-italic"> &middot; derived from the symbol, not entered</span>
+            </small>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="estimatedOptionPremium != null">
+        <label class="col-sm-2 col-form-label me-3">Premium</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <span class="fw-semibold">{{ estimatedOptionPremium | currency:'USD':'symbol':'1.2-2' }}</span>
+            <small class="text-muted ms-2">contracts &times; premium &times; 100</small>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="isBondSelected">
+        <label class="col-sm-2 col-form-label me-3">Bond</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <small class="text-muted">
+                Coupon {{ couponLabel || 'n/a' }} &middot; Matures {{ maturityLabel || 'n/a' }}
+                <span *ngIf="ytmPercent != null"> &middot; YTM {{ ytmPercent | number:'1.3-3' }}%</span>
+                <span *ngIf="isMaturedSelected" class="text-danger fw-semibold"> &middot; MATURED</span>
+            </small>
+        </div>
+    </div>
+
+    <div class="mb-3 row">
+        <label class="col-sm-2 col-form-label me-3">Side</label>
+        <div class="col-sm-8">
+            <div class="btn-group">
+                <input type="radio" class="btn-check" name="orderSideButton" value="Buy" id="orderBuyButton" [(ngModel)]="ticket.side" checked #orderBuyButton />
+                <label class="btn" [ngClass]="orderBuyButton.checked ? 'btn-info btn-sm' : 'btn-secondary btn-sm'" for="orderBuyButton">Buy</label>
+                <input type="radio" class="btn-check" name="orderSideButton" value="Sell" id="orderSellButton" [(ngModel)]="ticket.side" #orderSellButton />
+                <label class="btn" [ngClass]="orderSellButton.checked ? 'btn-warning btn-sm' : 'btn-secondary btn-sm'" for="orderSellButton">Sell</label>
+            </div>
+        </div>
+    </div>
+
+    <div class="mb-3 row">
+        <label class="col-sm-2 col-form-label me-3">{{ quantityLabel }}</label>
+        <div class="col-sm-8">
+            <input class="form-control d-inline-block" id="orderQuantityField" type="number" [(ngModel)]="ticket.quantity" />
+            <small *ngIf="isBondSelected" class="text-muted">USD face; minimum 100, multiples of 100.</small>
+        </div>
+    </div>
+
+    <!-- YU17: execution mode. Direct sends one order to the book; TWAP/VWAP hand a parent to the
+         execution algo engine, which slices it into children through the same consensus path. -->
+    <div class="mb-3 row" *ngIf="isAlgoEligible">
+        <label class="col-sm-2 col-form-label me-3">Execution</label>
+        <div class="col-sm-8">
+            <select class="form-select d-inline-block" id="orderExecutionModeField"
+                    [(ngModel)]="executionMode" (ngModelChange)="onExecutionModeChange()">
+                <option value="Direct">Direct — straight to the book</option>
+                <option value="TWAP">TWAP — time-weighted slices</option>
+                <option value="VWAP">VWAP — volume-weighted slices</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="!isAlgoMode">
+        <label class="col-sm-2 col-form-label me-3">{{ limitPriceLabel }}</label>
+        <div class="col-sm-8">
+            <input class="form-control d-inline-block" id="orderStrikeField" type="number" [attr.step]="limitPriceStep" [(ngModel)]="ticket.limitPrice" />
+            <small *ngIf="isBondSelected" class="text-muted">{{ limitPriceAsPercent }}</small>
+        </div>
+    </div>
+
+    <ng-container *ngIf="isAlgoMode">
+        <div class="mb-3 row">
+            <div class="col-sm-10 alert alert-info py-2 mb-0">
+                The engine prices each child order off the live market as it submits it, so a parent
+                carries no limit price. Children rest in the book as live limit orders and appear in
+                the blotter as they are sliced.
+            </div>
+        </div>
+        <div class="mb-3 row">
+            <label class="col-sm-2 col-form-label me-3">Duration (s)</label>
+            <div class="col-sm-8">
+                <input class="form-control d-inline-block" id="orderAlgoDurationField" type="number" min="1" [(ngModel)]="durationSeconds" />
+            </div>
+        </div>
+        <div class="mb-3 row">
+            <label class="col-sm-2 col-form-label me-3">Bucket (s)</label>
+            <div class="col-sm-8">
+                <input class="form-control d-inline-block" id="orderAlgoBucketField" type="number" min="1" [(ngModel)]="bucketSeconds" />
+                <small class="text-muted">One child order per bucket.</small>
+            </div>
+        </div>
+    </ng-container>
+
+    <div class="mb-3 row" *ngIf="estimatedCleanValue != null">
+        <label class="col-sm-2 col-form-label me-3">Clean Value</label>
+        <div class="col-sm-8 d-flex align-items-center">
+            <span class="fw-semibold">{{ estimatedCleanValue | currency:'USD':'symbol':'1.2-2' }}</span>
+            <small class="text-muted ms-2">face &times; fraction; excludes accrued interest</small>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="!isAlgoMode">
+        <label class="col-sm-2 col-form-label me-3">Client Order ID</label>
+        <div class="col-sm-8">
+            <input class="form-control d-inline-block" id="orderClientOrderIdField" type="text" placeholder="Optional" [(ngModel)]="ticket.clientOrderId" />
+            <small class="text-muted">Optional -- retrying the same ID returns the original decision instead of double-submitting. Left blank, the ticket generates one, which is also what makes the order traceable.</small>
+        </div>
+    </div>
+
+    <div class="mb-3 row" *ngIf="validationMessage">
+        <div class="col-sm-10 alert alert-danger py-2 mb-0">{{ validationMessage }}</div>
+    </div>
+
+    <div class="mb-3 row">
+        <button class="btn btn-sm btn-primary col-sm-3 me-2" id="createOrderButton" (click)="onCreate()" [disabled]="isMaturedSelected">{{ isAlgoMode ? 'Start ' + executionMode : 'Create Order' }}</button>
+        <button class="btn btn-sm btn-secondary col-sm-3" id="cancelOrderButton" (click)="onCancel()">Close</button>
+    </div>
+</div>

@@ -1,0 +1,103 @@
+# The cut artifacts outlive the pod. `file:///data/risk-extracts` is the kind sink (the GKE
+# overlay swaps it for a gs:// URI, where durability is GCS's job) — and on an emptyDir that meant
+# rescheduling this Deployment silently erased every cut ever taken, with the console's provenance
+# panel then rendering empty and no error anywhere. A claim is the same shape the cluster members
+# already use for their `data` volume. strategy: Recreate below is what makes ReadWriteOnce safe:
+# no rollout ever overlaps two pods on this claim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: risk-extract-extracts
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: risk-extract
+spec:
+  replicas: 1
+  # Singleton bound to one JetStream durable: a rolling update overlaps old and new pods on the
+  # same durable and the new one is refused the bind ([SUB-90012]). Never run two at once.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: risk-extract
+  template:
+    metadata:
+      labels:
+        app: risk-extract
+    spec:
+      containers:
+        - name: risk-extract
+          # YU17's OWN declaration (layer created 2026-08-18; previously YU17 composed YU16's
+          # layer and the derive machinery REFUSED to guess an image — this layer is the durable
+          # fix its refusal message asked for). The `:yu17-ackB` tag is the current YU17 build
+          # (option B keyed ack correlation, rig-proven 2026-08-18). Do NOT "tidy" this to the
+          # derived `:yu17` — that local tag is a stale 4-day-old spare, not this state's build.
+          # Wire rule: pre-B and post-B builds never mix, either direction, any branch.
+          # NOTE ON WORDING: tags in these comments are written `:yu17` / `:yu17-ackB` rather than
+          # as full image refs ON PURPOSE. declared_cluster_image() greps this file for the FIRST
+          # traderx/cluster-node:<tag> and takes head -1, so a full ref inside a COMMENT above the
+          # image line becomes the declared image. That bit a coordinator on 2026-08-18.
+          # 2026-08-19: `:yu17-jsrebind` is `:yu17-ackB` plus ONE class. Measured on the
+          # artifacts, not inferred: a class-by-class md5 of both images gives 265 classes each
+          # and exactly one difference, RiskExtractMain — the EOD durable re-bind after a NATS
+          # reconnect. The deterministic core, the gateway and every member class are BYTE-
+          # IDENTICAL, which is why this rolled without minting a fresh epoch. Wire rule is
+          # unchanged: this is still a post-B build and never mixes with a pre-B one.
+          image: traderx/cluster-node:yu17-jsrebind
+          imagePullPolicy: IfNotPresent
+          # Same image as the node and the gateway, a different main — the cluster tier's
+          # established shape (ADR-047).
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.RiskExtractMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: CLUSTER_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            - name: RISK_EXTRACT_EGRESS_PORT
+              value: "40480"
+            - name: RISK_EXTRACT_NATS_URL
+              value: "nats://nats:4222"
+            - name: RISK_EXTRACT_JDBC_URL
+              value: "jdbc:mariadb://eod-price-db:3306/traderx"
+            - name: RISK_EXTRACT_JDBC_USER
+              value: "traderx"
+            - name: RISK_EXTRACT_JDBC_PASSWORD
+              value: "traderx"
+            # file:// on kind; the GKE overlay sets a gs:// URI plus the HMAC secret pair and
+            # nothing else changes (RiskExtractGcsSink enforces write-once server-side).
+            - name: RISK_EXTRACT_SINK_URI
+              value: "file:///data/risk-extracts"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms128m -Xmx256m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          volumeMounts:
+            - name: extracts
+              mountPath: /data/risk-extracts
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: extracts
+          persistentVolumeClaim:
+            claimName: risk-extract-extracts
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

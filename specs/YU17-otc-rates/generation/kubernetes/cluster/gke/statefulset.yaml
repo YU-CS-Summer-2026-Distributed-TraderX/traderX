@@ -1,0 +1,181 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-matcher-cluster
+  labels:
+    app: order-matcher-cluster
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: order-matcher-cluster
+  ports:
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: order-matcher-cluster
+spec:
+  serviceName: order-matcher-cluster
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: order-matcher-cluster
+  template:
+    metadata:
+      labels:
+        app: order-matcher-cluster
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: blp-c4d-tuned-pool
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: blp
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 10
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app: order-matcher-cluster
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: cluster-node
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6
+          imagePullPolicy: Always
+          env:
+            - name: CLUSTER_HOSTNAMES
+              value: "order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local,order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local"
+            - name: CLUSTER_PORT_BASE
+              value: "21800"
+            - name: CLUSTER_HEARTBEAT_INTERVAL_MS
+              value: "100"
+            - name: CLUSTER_HEARTBEAT_TIMEOUT_MS
+              value: "1000"
+            - name: CLUSTER_ELECTION_TIMEOUT_MS
+              value: "500"
+            # LATENCY-02 verdict, shipped: override Aeron's DEFAULT BackoffIdleStrategy (max park
+            # 1ms) with a 1us max park on every member agent (media driver, archive, consensus
+            # module, service container). Measured on the 2026-07-24 idle-strategy sweep: client
+            # RTT p50 4.85ms -> ~2.0ms (2.4x) for 0.34 core idle, ~9x less CPU than `yielding`;
+            # `busyspin` was DISQUALIFIED (4 spin agents on 3 pinned cores starved consensus,
+            # p99 363ms). The lever lives in ClusterNodeConfig.idleOverrideSupplier(); it had never
+            # been set in ANY deployment manifest, so every cluster tier ran the 1ms-park default
+            # while the recommendation existed only in the handoff docs. Do NOT set this on kind:
+            # it takes precedence over CLUSTER_IDLE_SLEEP_MS, which is the correct knob there
+            # (kind's idle CPU starvation needs MORE parking, not less).
+            - name: CLUSTER_IDLE_STRATEGY
+              value: "lowpark"
+            - name: CLUSTER_BASE_DIR
+              value: "/data"
+            - name: CLUSTER_AERON_DIR
+              value: "/dev/shm/aeron-cluster"
+            # Analytical capture for the KDB-X tick store (brief 06). OFF on GKE by default: the
+            # capture shares this volume with the Aeron Archive, and the banked throughput numbers
+            # were taken without it. Set KDB_TAP_DIR (and size KDB_TAP_MAX_MB against the disk) for
+            # a capture run — the tap caps itself at 256 MB either way so a flood cannot starve the
+            # Archive of disk. Deliberately a one-value edit, mirroring the OTEL overlay's rule.
+            # OTEL-01: tracing knobs. These MUST track gateway.yaml, which is SHARED between this
+            # PVC variant and the emptyDir one — the gateway is on (traces, mask 0) and a member
+            # left off here yields the silent failure: every trace complete on the gateway side,
+            # the cluster segment simply absent, nothing erroring anywhere. This file is
+            # reference-only today (kustomization deploys statefulset-emptydir.yaml) which is
+            # exactly why it has to be right: it is what someone copies when switching this tier
+            # to PVCs.
+            # For a TIMING run — the benchmark proving tracing costs nothing on the trade path is a
+            # timing claim and needs an honest "off" arm — set OTEL_TRACES to "0" HERE AND ON
+            # gateway.yaml together. Turning one side off is not the off arm; it is a broken join.
+            - name: OTEL_TRACES
+              value: "1"
+            - name: OTEL_ENDPOINT
+              value: "http://otel-collector:4318"
+            # 0 = trace every order, matching gateway.yaml. The verdict is DETERMINISTIC in the
+            # order's key (OrderTrace.sampled: mix(key ^ SALT) & mask == 0), which is how the two
+            # sides agree without carrying a decision between them — and equally why a mismatch is
+            # silent rather than an error. OrderTraceTest asserts the agreement.
+            # BEFORE A THROUGHPUT RUN, PUT 127 BACK ON BOTH SIDES. At ~190k orders/s a per-order
+            # span is its own performance problem and the banked GKE numbers were taken at 127.
+            # Measured on this tier, both sides: 10 accepted orders emitted 30 gateway spans and 20
+            # member spans, so budget ~5 spans per order. 127 is 1 in 128 DISTINCT KEYS, not a coin
+            # flip per order, so a resubmitted client order id reproduces its verdict.
+            - name: OTEL_SAMPLE_MASK
+              value: "0"
+            # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). PRESENT BUT OFF
+            # here, same rule as KDB_TAP_DIR and OTEL_TRACES above: the live forward blotter
+            # allocates per booked trade on the apply thread, and the banked GKE throughput numbers
+            # were taken without it. Set RECON_BLOTTER_CAPACITY to 500000 (and RECON_POLL_INTERVAL_MS
+            # to 10000 on trade-processor) for a reconciliation run — a one-value edit, no rebuild.
+            # The full-history index and the audit export are built by replaying the Aeron Archive's
+            # log on demand and are not retained, so nothing here enters the snapshot.
+            # UNVERIFIED ON GKE: proven on the kind cluster rig 2026-08-02; there was no GKE cluster
+            # to verify against when this landed.
+            - name: RECON_BLOTTER_CAPACITY
+              value: "0"
+            # Refuse-rather-than-truncate ceilings: a truncated full-history index reports FALSE
+            # orphans, so exceeding these is an error, not a shorter answer.
+            - name: RECON_FULL_HISTORY_MAX
+              value: "200000"
+            - name: REGULATORY_MAX_RECORDS
+              value: "200000"
+            # These routes span every account, so the member validates the admin claim itself
+            # (ADR-025) rather than trusting the gateway that forwarded the request. The secret is
+            # defined in trade-processor.yaml, which is in this same kustomization.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: auth-secrets
+                  key: jwt-secret
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard-rwo
+        resources:
+          requests:
+            storage: 1Gi
