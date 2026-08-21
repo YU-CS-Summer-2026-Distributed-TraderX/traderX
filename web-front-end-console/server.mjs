@@ -111,6 +111,20 @@ function readToken(req) {
 const ADMIN_MUTATIONS = [
   { method: 'POST', re: /^\/trade-processor\/trades\/[^/]+\/settlement\/force$/ },
   { method: null,   re: /^\/trade-processor\/recon\/orphan-sweep$/ },
+  // The end-of-day chain. These three are the clearest overrides in the system: closing a session
+  // mints the day's price version, an override replaces a price the system derived, and publishing
+  // emits `eod.prices.ready`, which starts a chain nobody can call back —
+  //   prices published -> position-service PnL -> eod.pnl.done -> a sequenced risk-extract cut
+  //   -> risk.extract.ready -> write-once to gs://…/risk-extracts (immutable: objectCreator only,
+  //   so a second write is a 403, not an overwrite).
+  //
+  // These endpoints already required a trade-processor admin JWT, which is why they LOOKED
+  // protected. They were not: the console mints that token itself from the master secret it is
+  // handed, so it was granted to anyone who loaded the page. An automatic credential authenticates
+  // the SERVICE, never the person — and this is the action that ends in an artifact an external
+  // consumer treats as the firm's official numbers.
+  { method: 'POST', re: /^\/trade-processor\/eod\/session\/close$/ },
+  { method: 'POST', re: /^\/trade-processor\/eod\/prices\/[^/]+\/(override|publish)$/ },
 ];
 
 const needsAuth = (method, p) =>
@@ -385,6 +399,143 @@ function serveStatic(req, res, url) {
   fs.createReadStream(file).pipe(res);
 }
 
+// ---- the EOD chain, as four stages the console can actually see ------------------------------
+// The day's two EOD artifacts are not two features, they are one pipeline, and until now no single
+// surface showed it. The price report is served over HTTP; the PnL stage has a repository and a
+// consumer and NO endpoint at all, so it exists only as rows; the extract lands on a pod volume;
+// the published copy lands in GCS. Four services, four different read mechanisms, and only this
+// process can reach all four.
+//
+// Read from SQL rather than proxying the price report, deliberately: that endpoint wants a
+// trade-processor admin JWT, which only the BROWSER mints today. Minting a second one here would
+// put a third 8-hour clock in the system and make a status read fail for a credential reason —
+// which is exactly the confusion the bands panel just spent a round untangling. The session table
+// is the same fact one layer down and needs no token.
+//
+// Every stage answers with a STATE, never a bare count, and `pending` is distinguishable from
+// `unreadable`. A chain view whose stages can only say "yes" or "nothing" reports a broken rig and
+// an idle one identically — and an idle rig is by far the more common reading.
+// Resolve the POD by label and exec on the pod, never `exec deploy/...`. This pod's Role grants
+// pods get/list and pods/exec create — it cannot read a Deployment, and `kubectl exec deploy/x`
+// must GET the Deployment first to pick a pod. Written from a laptop with cluster-admin it worked
+// perfectly and reported `unreadable` for both SQL stages the moment it ran in-cluster. Same shape
+// as every other "true where it was authored" defect: the privilege, not the code, was the thing
+// that differed.
+const podByLabel = (label) => execSync(
+  `kubectl -n ${NS} get pods -l ${label} --field-selector=status.phase=Running -o jsonpath='{.items[0].metadata.name}'`,
+  { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+
+const sqlQuery = (q) => execSync(
+  `kubectl -n ${NS} exec ${podByLabel('app=eod-price-db')} -- mariadb -utraderx -ptraderx traderx -N -B -e ${JSON.stringify(q)}`,
+  { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+
+function eodChain(req, res, url) {
+  const date = (url.searchParams.get('date') ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return json(res, 400, { error: 'date=YYYY-MM-DD required' });
+  const out = { date, prices: null, pnl: null, extract: null, published: null };
+
+  try {
+    const rows = sqlQuery(
+      `SELECT version, status, instrument_count, flagged_count, published_at FROM eod_price_session `
+      + `WHERE session_date='${date}' ORDER BY version DESC LIMIT 1;`);
+    if (!rows) {
+      out.prices = { state: 'pending', detail: 'no session for this date — close one to mint a version' };
+    } else {
+      const [version, status, instruments, flagged, publishedAt] = rows.split('\t');
+      out.prices = {
+        state: status === 'PUBLISHED' ? 'ok' : 'draft',
+        version: Number(version), status, instruments: Number(instruments), flagged: Number(flagged),
+        publishedAt: publishedAt === 'NULL' ? null : publishedAt,
+        // The gate is the point of the DRAFT state, so say what clears it rather than only that it exists.
+        detail: status === 'PUBLISHED' ? `v${version} published`
+          : Number(flagged) > 0 ? `v${version} draft — ${flagged} flagged instrument(s) must be overridden before it can publish`
+          : `v${version} draft — nothing flagged, ready to publish`,
+      };
+    }
+  } catch {
+    out.prices = { state: 'unreadable', detail: 'could not read eod_price_session' };
+  }
+
+  // ROW COUNT ALONE CANNOT ANSWER THIS. YU06's fail-safe HALTS an account whose positions include a
+  // security with no closing price, marks nothing for it, and still publishes eod.pnl.done — so a
+  // completed, correct, deliberately-refusing run and a run that never happened both leave zero
+  // rows. Reported as "pending" that reads as "still waiting", which is the one thing it is not.
+  // Observed live: 2 accounts halted on ZTS, 0 rows, chain finished.
+  //
+  // The count is the wrong instrument, so ask the service what it did. The summary line carries the
+  // verdict; only fall back to "pending" when there is genuinely no run to describe.
+  try {
+    const n = Number(sqlQuery(`SELECT COUNT(*) FROM eod_position_pnl WHERE session_date='${date}';`));
+    let summary = '';
+    try {
+      summary = execSync(
+        `kubectl -n ${NS} logs ${podByLabel('app=position-service')} --tail=4000 2>/dev/null `
+        + `| grep "eod pnl marked" | grep "date=${date}" | tail -1 || true`,
+        { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+    } catch { /* the log is a bonus signal; the row count still stands on its own */ }
+    const marked = Number(/accounts=(\d+)/.exec(summary)?.[1] ?? NaN);
+    const halted = Number(/halted=(\d+)/.exec(summary)?.[1] ?? NaN);
+    if (Number.isFinite(n) && n > 0) {
+      out.pnl = { state: 'ok', rows: n, halted: Number.isFinite(halted) ? halted : null,
+        detail: `${n} position PnL row(s)` + (halted > 0 ? `, ${halted} account(s) halted` : '') };
+    } else if (Number.isFinite(halted) && halted > 0) {
+      out.pnl = { state: 'halted', rows: 0, halted,
+        detail: `ran and refused: ${halted} account(s) halted on a position whose security has no `
+          + `closing price in this snapshot. The chain continued — this is the fail-safe working, `
+          + `not a stall.` };
+    } else if (summary) {
+      out.pnl = { state: 'ok', rows: 0, halted: 0, detail: 'ran with nothing to mark' };
+    } else {
+      out.pnl = { state: 'pending', rows: 0, detail: 'position-service has not marked this session yet' };
+    }
+  } catch {
+    out.pnl = { state: 'unreadable', detail: 'could not read eod_position_pnl' };
+  }
+
+  try {
+    const pod = execSync(`kubectl -n ${NS} get pods -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'`,
+      { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+    const listed = execSync(
+      `kubectl -n ${NS} exec ${pod} -- sh -c 'ls -1 /data/risk-extracts/${date}/*/* 2>/dev/null || true'`,
+      { shell: '/bin/sh', timeout: 25000 }).toString().trim();
+    const files = listed ? listed.split('\n').filter(Boolean) : [];
+    out.extract = files.length
+      ? { state: 'ok', pod, files, detail: `${files.length} artifact(s) cut on ${pod}` }
+      : { state: 'pending', pod, files: [], detail: 'no cut for this date yet — it follows eod.pnl.done' };
+  } catch {
+    out.extract = { state: 'unreadable', detail: 'could not read the risk-extract volume' };
+  }
+
+  try {
+    const listed = execSync(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 30000 }).toString();
+    const files = listed.split('\n').map(s => s.trim()).filter(s => s.includes(date) && !s.endsWith(':') && !s.endsWith('/'));
+    // "Nothing in the bucket" means two different things, and only one of them is waiting. If the
+    // sink is not pointed at gs:// then nothing will EVER arrive, however long anyone watches — so
+    // read the sink the extract is actually configured with rather than assuming it is this bucket.
+    let sink = '';
+    try {
+      sink = execSync(
+        `kubectl -n ${NS} get pod ${podByLabel('app=risk-extract')} -o jsonpath=`
+        + `'{.spec.containers[0].env[?(@.name=="RISK_EXTRACT_SINK_URI")].value}'`,
+        { shell: '/bin/sh', timeout: 20000 }).toString().trim();
+    } catch { /* fall through: an unknown sink is reported as unknown, not as gs:// */ }
+    out.published = files.length
+      ? { state: 'ok', bucket: BUCKET, sink, files, detail: `${files.length} object(s) in the bucket` }
+      : sink && !sink.startsWith('gs://')
+        ? { state: 'not-configured', bucket: BUCKET, sink, files: [],
+            detail: `the extract's sink is ${sink}, so the cut stays on the pod and nothing is `
+              + `published externally. Not a wait — point RISK_EXTRACT_SINK_URI at the bucket (and `
+              + `give it a real HMAC credential) to change that.` }
+        : { state: 'pending', bucket: BUCKET, sink, files: [],
+            detail: 'nothing written to the bucket for this date' };
+  } catch {
+    out.published = { state: 'unreadable', detail: 'could not list the bucket' };
+  }
+
+  return json(res, 200, out);
+}
+
 const [EDGE_HOST, EDGE_PORT] = EDGE.split(':');
 function proxyToEdge(req, res, rewrite) {
   const headers = { ...req.headers };
@@ -448,6 +599,7 @@ const server = http.createServer(async (req, res) => {
     return json(res, 401, { code: 'admin_auth_required', error: 'sign in as an administrator to make this change' });
   }
   if (p === '/gateways') return gatewaysBypass(req, res);
+  if (p === '/eod/chain') return eodChain(req, res, url);
   // THE MEMBER COUNT IS ALSO A CONFIGURATION, not a constant. An Aeron cluster is normally 3 or 5;
   // the console hardcoded exactly three member rows, so a 5-member cluster would have shown 3 and a
   // shrunk one would have shown two dead rows for ever. Same shape as the gateway bug, different

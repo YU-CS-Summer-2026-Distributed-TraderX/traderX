@@ -16,13 +16,24 @@ kind: Role
 metadata:
   name: web-front-end-console
 rules:
-  # get/list to find the risk-extract pod by label; exec to read the two file-only surfaces.
+  # get/list to find pods by label; exec to read the file-only surfaces and to run the EOD chain's
+  # SQL. Deliberately NO deployments permission — every kubectl call here resolves a POD by label
+  # rather than using `exec deploy/...`, which would have to GET the Deployment first. Written from
+  # a laptop with cluster-admin that distinction is invisible; in-cluster it is the difference
+  # between a working stage and one that reports "unreadable".
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list"]
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
+  # pods/log: the EOD chain's PnL stage has to tell "has not run" from "ran and HALTED accounts",
+  # and a row count cannot — a halted run marks zero rows and still completes the chain. The verdict
+  # is only in position-service's own summary line. Read-only, namespace-scoped, and strictly weaker
+  # than the pods/exec above, which this pod already has.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -53,7 +64,7 @@ spec:
         cloud.google.com/gke-nodepool: support-pool
       containers:
         - name: console
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke22
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console:yu17-gke24
           ports:
             - name: http
               containerPort: 8080

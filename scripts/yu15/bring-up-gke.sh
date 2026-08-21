@@ -218,7 +218,16 @@ BEFORE="$(sql 'SELECT COUNT(*) FROM trades;')"
 # own band on our limit, which is why a list beats a cleverer single guess.
 XPX=200.00
 XSEC=""
-for cand in IBM MSFT AAPL ZTS GLD; do
+# CANDIDATES MUST BE INSTRUMENTS THE PRICE FEED QUOTES. This list first read
+# `IBM MSFT AAPL ZTS GLD`, taken from the 533-name catalog, and ZTS is not one of the 44 names in
+# price-publisher's PRICE_TICKERS. On the one run where IBM/MSFT/AAPL were all collar-anchored the
+# proof crossed ZTS, which left a position in a security the EOD snapshot cannot price — and that
+# night's end-of-day HALTED every account holding it (`missing_or_flagged_closing_price`), marked
+# zero rows, and produced an empty risk extract.
+#
+# So this proof, whose whole job is to leave the rig usable, was quietly making the rig's end-of-day
+# unusable. Every name below is in PRICE_TICKERS; check any addition against it.
+for cand in IBM MSFT AAPL GLD SPY QQQ IWM VTI NVDA; do
   for acct in 22214 42422; do
     curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
       -d "{\"accountId\":${acct},\"tickers\":\"${cand}\",\"price\":${XPX}}" >/dev/null 2>&1 || true
