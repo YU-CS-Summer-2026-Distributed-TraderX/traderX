@@ -151,3 +151,111 @@ is not new work.
 
 Still standing from above, and not weakened by this: the full-history sweep remains the authoritative
 comparison. Do NOT let a reset counter become a reason to trust the incremental number more.
+
+---
+
+## Resolved 2026-08-21 — option 2 shipped
+
+`ReconciliationService` (YU05 layer, `trade-processor`) now resets the cursor and all three
+`LongAdder`s when it detects that order-matcher's trade counter has gone backwards.
+
+### How the roll is detected
+
+No new endpoint, no `/metrics` scrape, nothing tier-specific: the signal is read out of the blotter
+the sweep already polls, using the condition `scripts/yu15/run-proofs.sh` already trusts — **the
+engine's counter is BEHIND the high-water mark the projection recorded**.
+
+The blotter paginates *strictly greater than* `sinceSeq`. So the sweep now fetches from **one below
+its cursor** instead of from the cursor. That re-reads exactly one entry — the one the cursor points
+at — and the engine still holding it is the proof that this is still the epoch the counters were
+counted against. An empty page there means the engine holds nothing at or above the cursor, i.e. its
+counter restarted. That is the roll.
+
+The re-read entry is skipped rather than reclassified, or `matched` would climb by one every poll.
+
+Probing at the cursor rather than one below it would have been the natural-looking implementation
+and is wrong in a way that is easy to miss: at the cursor the engine answers with an empty page on
+**every quiet cycle**, so the reset would fire perpetually on an idle rig. There is a test whose only
+job is to fail if the probe moves back to the cursor.
+
+### The reset logs what it discarded
+
+```
+recon EPOCH_RESET order-matcher holds no trade at or above tradeSeq <N> -- its trade counter
+restarted, so the epoch these counters describe is gone. Discarding cursor=<N> matched=<M>
+missingInProjection=<K> fieldMismatch=<J>; reclassifying from 0. The full-history orphan sweep, not
+these counters, remains the authoritative comparison.
+```
+
+A counter that silently returns to zero is its own kind of untrustworthy: an operator watching
+`missingInProjection` drop needs to know whether that was a repair or a reset.
+
+### "Cannot determine the epoch" is not "the epoch changed"
+
+The unreachable arm resets **nothing**. Treating a failed fetch as a roll would let one network blip
+erase a real miss count — leaving the surface clean at exactly the moment least is known about it,
+which is the failure shape `.claude/skills/vacuous-pass-audit` exists for.
+
+Nor is it silently taken as "unchanged" forever: that cycle does not touch `lastSweepAt`, so a reader
+of `/recon/status` sees it stop advancing and can tell the counters are a stale reading rather than a
+current one. No new field was added for this — `lastSweepAt` already carries it, and it is the same
+field that refuted the staleness hypothesis recorded above.
+
+### The standing constraint is unchanged and restated in the code
+
+The full-history sweep is still the authoritative comparison. These tallies are still once-per-entry
+and forward-only; they are now merely **scoped to the live epoch** instead of spanning dead ones. The
+class javadoc and the reset log line both say so, so a reader arriving at either cannot take a
+freshly-zeroed counter as a reason to trust the incremental number more.
+
+### What was proven, and how
+
+- Three tests added to `ReconciliationServiceTest` (6 → 9). Each of the three mechanisms was
+  detonated against the **whole module** (86 tests) and failed **exactly one** test:
+
+  | inverse applied | failed | the other 85 |
+  |---|---|---|
+  | the reset block removed | `epochRollResetsTheCountersAndTheCursorAndReclassifiesTheNewEpoch` | green |
+  | probe moved back to the cursor | `idlePollWithNoNewTradesKeepsTheCountersAndTheCursor` | green |
+  | reset added to the unreachable arm | `unreachableOrderMatcherDoesNotCountAsAnEpochChange` | green |
+
+  Nothing pre-existing covered any of them: without these cases the bug ships.
+- The epoch test models the roll as it actually happens — the engine's highest `tradeSeq` drops
+  *below* the cursor and the same ids come back naming different trades — and asserts past the reset
+  that the next sweep reclassifies the new epoch on its own terms, so the reset re-enables
+  classification rather than merely zeroing.
+- The stub blotter was changed to honour `sinceSeq` the way `TradeBlotter.since()` does. It had to
+  be: a stub that ignores the query answers every probe alike and **cannot tell an idle poll from a
+  renumbered engine**, so the epoch tests would have been measuring the fixture.
+- `pipeline/generate-state.sh YU17-otc-rates`, then `engine-tests.sh hosted`, `service-tests.sh`,
+  `assert-suites-executed.sh`: all rc=0, 564 tests across 6 modules, 0 failures. (Baseline 555; +3
+  here, +6 from concurrent algo-engine work by another lane in the same worktree.)
+
+### What was NOT proven
+
+- **Never exercised on a rig.** No epoch roll has been driven against a live trade-processor
+  carrying this build; the image has not been rebuilt or rolled on either tier. Everything above is
+  unit-level against a stub blotter. The `EPOCH_RESET` line has never come out of a deployed pod.
+- **The mid-replay false positive was reasoned about, not constructed.** If order-matcher serves the
+  blotter before its journal replay has repopulated it, this reads as a roll. The consequence is one
+  full reclassification from seq 0, logged — the same remedy `scripts/proofs/yu05-recon.sh` performs
+  by hand today by restarting trade-processor — so it is benign in direction. That is an argument
+  about the code, not a measurement: no rig was put into that state to watch what the reset does.
+- **No hysteresis.** A single empty page triggers the reset; two consecutive were not required.
+  Deliberate, given the benign failure direction above, but it means one transient blotter gap costs
+  a reclassification.
+- **`lastOrphanSweep` is deliberately not reset.** It is a dated snapshot carrying its own `sweptAt`,
+  so it does not ratchet the way the adders did. Out of scope for the decision above; left alone.
+- **`/recon/status` gained no new field.** Nothing on that surface says "these counters were reset
+  at T" — only the log does. A console rendering the counters still cannot distinguish "0 because
+  clean" from "0 because just reset" without reading logs. Left out deliberately: adding a
+  `since`-style field is option 1's re-presentation, which was explicitly not chosen.
+- **`scripts/proofs/yu05-recon.sh` was not changed.** It still restarts trade-processor before it
+  will believe a forward-sweep verdict. That restart remains a valid way to force a from-zero
+  classification and the proof does not depend on this fix; rewriting a shared proof script was not
+  part of this work.
+- **Branch-local.** This landed on `YU17-otc-rates` only. Every branch from YU05 onward carries its
+  own copy of the YU05 layer, so `YU05` … `YU16` still have the ratcheting version. Whether to
+  hand-carry it (`.claude/skills/propagate-spec-fix`) is the coordinator's call, not assumed here.
+- **The six historical misses recorded above were not re-examined.** They were a `VARCHAR`
+  write-rejection event, resolved separately by the column widen; nothing here revisits them.
