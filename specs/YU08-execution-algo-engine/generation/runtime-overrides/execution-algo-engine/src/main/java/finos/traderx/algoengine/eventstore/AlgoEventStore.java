@@ -19,10 +19,12 @@ import io.nats.client.api.DeliverPolicy;
 import io.nats.client.api.StorageType;
 import io.nats.client.api.StreamConfiguration;
 import io.nats.client.api.StreamInfo;
+import io.nats.client.api.StreamState;
 import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,6 +65,10 @@ public class AlgoEventStore {
    * reports down for exactly that window. */
   private volatile JetStreamSubscription subscription;
   private volatile Consumer<AlgoEvent> applier;
+  /** Events this PROCESS has applied off the stream, across every replay and the live loop. It is
+   * the only thing this consumer knows that the broker cannot tell it, and it is what turns
+   * "the stream is empty" into "the log I was rebuilt from is gone" on the repair path. */
+  private final AtomicLong applied = new AtomicLong();
 
   public AlgoEventStore(@Value("${nats.address:nats://${NATS_BROKER_HOST:localhost}:4222}") String natsAddress) {
     this.natsAddress = natsAddress;
@@ -108,9 +114,108 @@ public class AlgoEventStore {
         .build();
     JetStreamSubscription sub = jetStream.subscribe(SUBJECT, pullOptions);
 
+    long appliedBefore = applied.get();
     int replayed = drain(sub, applier);
     subscription = sub;
-    log.info("replayed {} algo-engine events from {}", replayed, STREAM_NAME);
+    Recovery recovery = classifyRecovery(replayed, appliedBefore, jsm);
+    if (recovery.alarming()) {
+      log.warn("{}", recovery.message());
+    } else {
+      log.info("{}", recovery.message());
+    }
+  }
+
+  /** What a replay of zero events actually meant. `replayed 0` on its own is correct against an
+   * empty stream AND is exactly what permanent state loss looks like, and the accepted cost of
+   * running this broker on non-durable storage is that the second one really happens — decided
+   * 2026-08-21, recorded in issues/ as nats-jetstream-state-is-ephemeral-decide-deliberately.
+   * These are facts about
+   * different things — {@link #STREAM_EMPTY} and {@link #LOG_LOST} are about the broker's copy of
+   * the log, {@link #CONSUMER_REPLAYED_NONE} is about this consumer's subscription, and
+   * {@link #UNDETERMINED} is neither claim being available. */
+  enum Verdict {
+    /** The log was there and this consumer read it. The only quiet one. */
+    REPLAYED,
+    /** The stream holds nothing and has never held anything under this identity, so this consumer
+     * missed nothing — and a first boot is indistinguishable from a wiped log FROM HERE. Named,
+     * not resolved: the evidence that would separate them is not on this side. */
+    STREAM_EMPTY,
+    /** The stream holds nothing, but something this consumer can see says it once held messages —
+     * either this process already applied some, or the stream's own last sequence is non-zero.
+     * Definite loss, not an inference. */
+    LOG_LOST,
+    /** The stream holds messages and this consumer replayed none of them. The gap is on this
+     * side — the subscription — not in the broker's storage. */
+    CONSUMER_REPLAYED_NONE,
+    /** The stream could not be inspected, so no claim above can be made. Deliberately not folded
+     * into either of them: "could not determine" is a third answer, not a quiet version of one. */
+    UNDETERMINED;
+  }
+
+  /** One verdict and the one line an operator reads, rendered together so the two cannot drift. */
+  record Recovery(Verdict verdict, String message) {
+    boolean alarming() {
+      return verdict != Verdict.REPLAYED;
+    }
+  }
+
+  /** Asks the broker what the stream holds and classifies the replay against it. An inspection
+   * failure is carried through as {@link Verdict#UNDETERMINED} with the broker's own words rather
+   * than being retried or guessed at. */
+  private Recovery classifyRecovery(int replayed, long appliedBefore, JetStreamManagement jsm) {
+    try {
+      StreamState state = jsm.getStreamInfo(STREAM_NAME).getStreamState();
+      return classifyRecovery(replayed, state.getMsgCount(), state.getLastSequence(),
+          appliedBefore, null);
+    } catch (Exception ex) {
+      return classifyRecovery(replayed, -1, -1, appliedBefore, ex.toString());
+    }
+  }
+
+  /**
+   * Pure classifier, package-visible so each verdict can be exercised without a broker.
+   *
+   * @param replayed       events this replay applied
+   * @param msgCount       messages the stream reports holding, or any negative value when
+   *                       {@code inspectFailure} is set
+   * @param lastSequence   the stream's last sequence; 0 means this incarnation of the stream has
+   *                       never carried a message
+   * @param appliedBefore  events this process had already applied off the stream before this replay
+   * @param inspectFailure the broker's own description of why the stream could not be inspected,
+   *                       or null when it was
+   */
+  static Recovery classifyRecovery(int replayed, long msgCount, long lastSequence,
+      long appliedBefore, String inspectFailure) {
+    if (inspectFailure != null) {
+      return new Recovery(Verdict.UNDETERMINED, "replayed " + replayed + " algo-engine events from "
+          + STREAM_NAME + ", but the broker could not be asked what the stream holds, so whether "
+          + "this replay was complete is UNDETERMINED — treat neither an empty log nor a lost one "
+          + "as ruled out: " + inspectFailure);
+    }
+    if (msgCount == 0 && (appliedBefore > 0 || lastSequence > 0)) {
+      String evidence = appliedBefore > 0
+          ? "this process had already applied " + appliedBefore + " events off it"
+          : "its last sequence is " + lastSequence + ", so it has carried messages";
+      return new Recovery(Verdict.LOG_LOST, "STATE LOST: " + STREAM_NAME + " reports 0 messages and "
+          + evidence + ". This engine keeps no store other than that log, so every parent order "
+          + "those events carried is gone and no replay will bring it back.");
+    }
+    if (msgCount == 0) {
+      return new Recovery(Verdict.STREAM_EMPTY, "replayed 0 algo-engine events: " + STREAM_NAME
+          + " reports 0 messages and last sequence 0, so this consumer missed nothing that this "
+          + "incarnation of the stream ever carried. Whether no parent order was ever published or "
+          + "the stream was destroyed and recreated is NOT KNOWABLE from this side — a first boot "
+          + "and a wiped log look identical here. If parent orders were in flight, they are gone.");
+    }
+    if (replayed == 0) {
+      return new Recovery(Verdict.CONSUMER_REPLAYED_NONE, "replayed 0 algo-engine events although "
+          + STREAM_NAME + " reports " + msgCount + " messages (last sequence " + lastSequence
+          + ") — the log is still on the broker and this consumer read none of it, so the gap is "
+          + "in this consumer's subscription. Every parent order in those messages is missing from "
+          + "this engine until it replays them.");
+    }
+    return new Recovery(Verdict.REPLAYED, "replayed " + replayed + " of " + msgCount
+        + " algo-engine events from " + STREAM_NAME + " (last sequence " + lastSequence + ")");
   }
 
   /**
@@ -223,6 +328,7 @@ public class AlgoEventStore {
   private void apply(Message msg, Consumer<AlgoEvent> applier) throws Exception {
     AlgoEvent event = mapper.readValue(msg.getData(), AlgoEvent.class);
     applier.accept(event);
+    applied.incrementAndGet();
   }
 
   public void append(AlgoEvent event) throws Exception {
