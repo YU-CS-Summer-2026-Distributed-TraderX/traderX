@@ -72,3 +72,14 @@ Both fixed: the proof now tries candidate securities until one accepts, prints t
 for each that does not, and fails loudly with those reasons if none do.
 
 Related: [[securities-need-admission-like-accounts]], [[engine-roll-needs-snapshot-barrier]]
+
+---
+
+## Resolved 2026-08-21
+
+Heap raised to `-Xmx3g` (limit 8Gi) and the rig has since run a 1,920-order demo across 8 accounts
+and 6 instrument classes without incident. Steady state with all 533 admitted is ~360Mi.
+
+**Residual:** nothing bounds book-grid allocation, and `MAX_SECURITIES` (1024) is still nearly 2x the
+catalog — so the config that protects memory has no relationship to the config that decides how many
+instruments exist. Worth reasoning about together if the catalog grows.

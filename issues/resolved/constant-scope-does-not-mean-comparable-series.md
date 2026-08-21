@@ -67,3 +67,11 @@ At the same reading, `ack_unmatched` was 274 + 299 = 573 against 938 `ack_comple
 plausibly my own scale event stranding acks, which is the known correlation-offset behaviour. I have
 no before-baseline and am **not** claiming a defect — recorded only so the ratio is on file if it
 shows up again on an undisturbed rig.
+
+---
+
+## Resolved 2026-08-21
+
+The console's series-identity discriminator shipped and is live: it distinguishes narrowed scope
+(fewer pods answered), restarted series (same count, different pod names) and unexplained (same
+names, counter still fell), keyed on the pod name set rather than its cardinality.

@@ -61,3 +61,16 @@ and refused to infer a band from refusals alone. Recorded because it is the coun
 usual finding: the display was correct and the environment was the defect.
 
 Related: [[control-snapshot-carries-no-accounts]]
+
+---
+
+## Resolved 2026-08-21
+
+Fixed as bring-up step 3c, then CORRECTED the same day: the first cut admitted `PRICE_TICKERS`
+(44 names) while the console's picker loads `/reference-data/instruments` (533), so 489 instruments
+the UI offers stayed UNKNOWN_SECURITY after the fix was declared done. Step 3c now reads the catalog
+the UI offers. Verified live: 533/533 admitted, formerly-refused equities accepted, an off-catalog
+ticker still UNKNOWN_SECURITY — widened, not removed.
+
+**Residual, filed nowhere else:** `putSecurity()` still has no caller in the tree. Either dead or
+something was meant to call it.

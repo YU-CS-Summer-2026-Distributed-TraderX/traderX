@@ -63,3 +63,12 @@ the agreement is, and it needs its own check.** Three registries, three separate
 by a user rather than by the system, each fixed by adding the reconciliation nobody had written.
 
 Related: [[securities-need-admission-like-accounts]], [[an-epoch-roll-silently-drops-instrument-classes]]
+
+---
+
+## Resolved 2026-08-21
+
+Account 17017 mapped in both `counterparties.csv` layers; bring-up step 3f now reconciles the
+account directory against the mapping the risk-extract pod actually reads, warning per unmapped
+account. Verified: the failed `eod.pnl.done` redelivered on its own and v8 cut at consensus 3347
+with 48 rows and all 8 accounts.
