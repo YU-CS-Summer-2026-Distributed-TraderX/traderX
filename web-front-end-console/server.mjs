@@ -548,13 +548,72 @@ function eodChain(req, res, url) {
   return json(res, 200, out);
 }
 
+// ---- the console USES a credential; it never ISSUES one ---------------------------------------
+// This pod is handed AUTH_MASTER_SECRET so the EOD and regulatory panels can authenticate. It used
+// to inject that secret on every `/trade-processor` path — INCLUDING `/auth/dev-token`, the mint —
+// so a plain unauthenticated POST from any visitor returned a signed `admin:true` JWT. Measured
+// 2026-08-21: `curl -X POST https://…/trade-processor/auth/dev-token` -> 200 and an admin token.
+//
+// That is a confused deputy. The console held a powerful credential and handed it out to anyone who
+// asked, which is strictly worse than the endpoints it was protecting: a token outlives the page,
+// works against any service sharing the JWT secret, and carries no trace of who obtained it.
+//
+// The fix is not to gate the mint — the console's own READS need admin (the gateway answers
+// `{"error":"admin JWT required"}` on /regulatory), and gating it would take the admin page's
+// read-only panels away from the anonymous viewers we deliberately serve. The fix is that the
+// console mints for ITSELF, in-process, keeps the token here, and attaches it on the caller's
+// behalf. Reads stay open because the console does the authenticating; changes still need a login
+// because ADMIN_MUTATIONS refuses them BEFORE the proxy ever runs. The credential stops being an
+// ambient grant handed to the browser and becomes something this process spends on request.
+let INTERNAL_JWT = '';
+const JWT_TTL_S = 3600;
+
+function mintInternalToken() {
+  if (!MASTER_SECRET) return;
+  const body = JSON.stringify({ subject: 'console', accounts: [], admin: true, ttlSeconds: JWT_TTL_S });
+  const req = http.request({
+    host: EDGE_HOST, port: Number(EDGE_PORT), path: '/trade-processor/auth/dev-token', method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body),
+               'x-auth-master-secret': MASTER_SECRET },
+  }, (r) => {
+    const chunks = [];
+    r.on('data', (c) => chunks.push(c));
+    r.on('end', () => {
+      const t = Buffer.concat(chunks).toString().trim();
+      // Shape-test, don't truthiness-test: an error page is a non-empty string too, and storing one
+      // would send garbage as a Bearer token on every read for the next half hour.
+      if (r.statusCode === 200 && t.split('.').length === 3) INTERNAL_JWT = t;
+      else console.log(`[console] internal token mint failed: HTTP ${r.statusCode}`);
+    });
+  });
+  req.on('error', (e) => console.log(`[console] internal token mint unreachable: ${e.message}`));
+  req.end(body);
+}
+// Routes whose upstream demands an admin JWT. The console attaches its own on the caller's behalf;
+// a WRITE among them has already been refused by ADMIN_MUTATIONS unless the caller signed in.
+const NEEDS_INTERNAL_JWT = (p) =>
+  p.startsWith('/trade-processor/') || p.startsWith('/order-matcher/regulatory');
+
 const [EDGE_HOST, EDGE_PORT] = EDGE.split(':');
+
+mintInternalToken();
+// Refresh well inside the TTL. A token that expires mid-demo presents as a panel losing its data
+// for no visible reason, which is the failure this whole file keeps being written to avoid.
+setInterval(mintInternalToken, (JWT_TTL_S / 2) * 1000).unref?.();
+
 function proxyToEdge(req, res, rewrite) {
   const headers = { ...req.headers };
-  // Same injection the dev proxy does, on the same route.
-  if (MASTER_SECRET && (req.url ?? '').startsWith('/trade-processor')) {
-    headers['x-auth-master-secret'] = MASTER_SECRET;
+  // Attach the console's OWN token, overwriting anything the client sent. Overwriting is the point:
+  // a stale or forged Authorization header from the page must not decide what the upstream sees, and
+  // a client whose own token expired must not lose a read it is entitled to.
+  const reqPath = req.url ?? '';
+  if (INTERNAL_JWT && NEEDS_INTERNAL_JWT(reqPath)) {
+    headers['authorization'] = `Bearer ${INTERNAL_JWT}`;
+    delete headers['Authorization'];
   }
+  // The master secret is NEVER forwarded. It is this process's credential for minting its own
+  // token, not a header to sprinkle on proxied traffic.
+  delete headers['x-auth-master-secret'];
   const upstreamPath = rewrite ? rewrite(req.url ?? '/') : (req.url ?? '/');
   const up = http.request({ host: EDGE_HOST, port: Number(EDGE_PORT), path: upstreamPath, method: req.method, headers },
     (r) => { res.writeHead(r.statusCode ?? 502, r.headers); r.pipe(res); });
@@ -599,6 +658,15 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Set-Cookie', `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; `
       + `SameSite=Strict; Path=/; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secure ? '; Secure' : ''}`);
     return json(res, 200, { user: ADMIN_USER });
+  }
+  // The mint is not a route this console offers. It answered an unauthenticated POST with a signed
+  // admin JWT for as long as this file forwarded the master secret, and a token, once issued, is
+  // outside every control here — it works against any service sharing the JWT secret, for its full
+  // TTL, with nothing recording who asked. Refused for everyone, signed in or not: the console
+  // authenticates on your behalf now, so there is no reason for a browser to hold one.
+  if (p === '/trade-processor/auth/dev-token') {
+    return json(res, 403, { code: 'mint_disabled',
+      error: 'the console authenticates on your behalf; it does not issue tokens' });
   }
   // The gate itself. Placed before every proxy path below, so a change cannot reach the cluster by
   // any route this server offers.
