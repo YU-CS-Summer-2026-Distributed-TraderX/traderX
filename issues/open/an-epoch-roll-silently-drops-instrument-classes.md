@@ -152,25 +152,37 @@ MSFT                  2 orders,   1 px,  180.0            12 @ 384.11..386.695
 UST-BILL-20270812     5 orders,   1 px,  0.96             1  @ 0.96
 ```
 
-A band problem produces a **disjoint** accepted/rejected split. An overlap means the refusal came
-from something else (the IBM sample carries `accountId 99999` — the proofs' deliberate
-unknown-account arm). **Check the overlap before blaming the band.**
+A band problem shows as refusals that all sit **outside** the range the book has already accepted.
+A refusal from *inside* that range means the band cannot be the cause (the IBM sample carries
+`accountId 99999` — the proofs' deliberate unknown-account arm). **Check for a refusal inside the
+accepted range before blaming the band.**
 
-### Two guards the disjointness rule needs, or it over-claims on its own
+> **Superseded, 2026-08-21.** This section first said *"a band problem produces a disjoint
+> accepted/rejected split; an overlap means another cause"*, and that rule **inverts the answer for
+> the commonest case**. A collar refuses on BOTH sides of its band, so the refused min/max straddles
+> the accepted prices and the two ranges overlap *even when the band is exactly the cause* —
+> disjointness then reports a band's own signature as its absence. Measured on the cloud rig: EXC
+> accepted at 150 and refused at 100 and across 180–210, which the disjointness rule called "some
+> other cause". The console now tests **containment** — no refused price inside the accepted range —
+> which handles one-sided and two-sided bands alike. Kept rather than deleted because the wrong rule
+> is the intuitive one and will be re-derived by the next reader otherwise.
+
+### Two guards the containment rule needs, or it over-claims on its own
 
 Both found by the console lane building this into a screen, and both are cases the rule as first
 written gets WRONG:
 
-1. **Zero accepted orders is not disjointness.** `A` has never been accepted at all — one refusal at
-   price 0.0 and nothing else. "Disjoint" is trivially true of an empty set, so the bare rule
-   condemns it as mis-anchored; the lane's first pass did exactly that. A security with no accepted
-   orders supports **no verdict** — report "never accepted" and stop.
-2. **Count the samples before believing the split.** `AAPL260918P00220000` is disjoint at
-   **1 accepted vs 1 refused**. That is two data points, not evidence. Below roughly three either
-   side, mark the finding thin rather than confident — it can be flagged and uncertain at once.
+1. **Zero accepted orders supports no verdict.** `A` has never been accepted at all — one refusal at
+   price 0.0 and nothing else. "Every refusal is outside the accepted range" is trivially true of an
+   empty range, so the bare rule condemns it as mis-anchored; the lane's first pass did exactly that.
+   Report "never accepted" and stop.
+2. **Count the samples before believing the split.** `AAPL260918P00220000` separates at **1 accepted
+   vs 1 refused**. That is two data points, not evidence: a lone refusal can fall outside a lone
+   accepted price by luck rather than by a band. Below roughly three either side, mark the finding
+   thin rather than confident — it can be flagged and uncertain at once.
 
 So the usable rule is three-part, in order: *no accepted orders → no verdict; too few samples → thin;
-only then disjoint → band, overlap → other cause.*
+only then — every refusal outside the accepted range → band; any refusal inside it → other cause.*
 
 ### Read the column headings before quoting a number
 
