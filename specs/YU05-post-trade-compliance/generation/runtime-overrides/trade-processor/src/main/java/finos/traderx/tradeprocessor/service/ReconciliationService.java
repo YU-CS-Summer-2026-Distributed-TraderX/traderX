@@ -86,23 +86,76 @@ public class ReconciliationService {
 
     @Scheduled(fixedDelayString = "${recon.poll.interval-ms:10000}")
     public void sweep() {
+        // Fetch from one BELOW the cursor, not from the cursor: the blotter is strictly-greater-than
+        // paginated, so this re-reads the single entry the cursor points at, and the engine still
+        // holding it is the proof that we are counting against the epoch we counted against last
+        // cycle. Costs one redundant entry per poll and no extra call. (Re-read, not re-classified —
+        // see the skip below, or `matched` would climb by one every ten seconds.)
+        long sinceSeq = cursor > 0 ? cursor - 1 : 0;
         List<BlotterEntry> page;
         try {
-            page = fetchBlotterPage(cursor);
+            page = fetchBlotterPage(sinceSeq);
         } catch (Exception ex) {
+            // UNREACHABLE IS NOT ROLLED. "I cannot see the engine" and "the engine renumbered" are
+            // different verdicts, and treating the first as the second lets one network blip erase a
+            // real miss count. Nothing is reset here. Nor is it silently taken as "unchanged": the
+            // cycle does not touch lastSweepAt, so a reader of /recon/status sees it stop advancing
+            // and knows the counters are a stale reading rather than a current one.
             log.warn("Reconciliation sweep skipped this cycle (order-matcher unreachable): {}", ex.toString());
             return;
         }
+        // The engine holds nothing at or above our cursor, so its trade counter has gone BACKWARDS.
+        // That is the epoch roll -- the same condition scripts/yu15/run-proofs.sh already trusts when
+        // it compares member 0's tradeCounter against the highest trade id in SQL.
+        if (cursor > 0 && page.isEmpty()) {
+            resetForNewEpoch();
+            return;
+        }
         for (BlotterEntry entry : page) {
-            classify(entry);
-            if (entry.tradeSeq() > cursor) {
-                cursor = entry.tradeSeq();
+            if (entry.tradeSeq() <= cursor) {
+                continue; // the epoch-check entry; already classified on the cycle that advanced past it
             }
+            classify(entry);
+            cursor = entry.tradeSeq();
         }
         lastSweepAt = Instant.now();
         if (!page.isEmpty()) {
             log.info("Reconciliation sweep processed {} blotter entries; cursor now {}", page.size(), cursor);
         }
+    }
+
+    /**
+     * A fresh-epoch roll wipes the log and restarts the engine's trade counter at 1, so the cursor
+     * and the three tallies now describe a world that no longer exists. Trade ids are {@code
+     * <tradeSeq>-<side>} and carry no epoch qualification, so an id the cursor has already advanced
+     * past resolves to a DIFFERENT trade after the roll -- which is why re-checking misses in place
+     * would not be enough on its own; the stale id can match spuriously. Start over instead.
+     *
+     * <p>A false positive here (an order-matcher answering mid-replay, say) costs one full
+     * reclassification from seq 0 and says so in the log -- which is exactly the remedy
+     * {@code scripts/proofs/yu05-recon.sh} performs by hand today, by restarting trade-processor
+     * before it will believe a forward-sweep verdict.</p>
+     *
+     * <p>This does NOT make the incremental counters authoritative. The full-history orphan sweep
+     * re-examines current state and remains the comparison to cite; these tallies stay once-per-entry
+     * and forward-only, now merely scoped to the live epoch instead of spanning dead ones.</p>
+     */
+    private void resetForNewEpoch() {
+        // A counter that silently returns to zero is its own kind of untrustworthy: an operator
+        // watching missingInProjection drop needs to know whether that was a repair or a reset.
+        log.warn("recon EPOCH_RESET order-matcher holds no trade at or above tradeSeq {} -- its trade "
+                + "counter restarted, so the epoch these counters describe is gone. Discarding "
+                + "cursor={} matched={} missingInProjection={} fieldMismatch={}; reclassifying from 0. "
+                + "The full-history orphan sweep, not these counters, remains the authoritative "
+                + "comparison.",
+            cursor, cursor, matched.sum(), missingInProjection.sum(), fieldMismatch.sum());
+        cursor = 0L;
+        // LongAdder.reset() is only safe with no concurrent updates, and that holds here: sweep() is
+        // the sole writer of all three (classify() is called from nowhere else) and Spring runs the
+        // scheduled sweep on one thread, so this is on the writer thread with no sweep in flight.
+        matched.reset();
+        missingInProjection.reset();
+        fieldMismatch.reset();
     }
 
     private void classify(BlotterEntry entry) {
