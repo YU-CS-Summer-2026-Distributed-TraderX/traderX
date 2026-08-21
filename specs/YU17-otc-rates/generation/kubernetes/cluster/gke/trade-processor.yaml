@@ -56,7 +56,7 @@ spec:
     spec:
       containers:
         - name: trade-processor
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/trade-processor:yu17-gke
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/trade-processor:yu17-gke5
           imagePullPolicy: Always
           ports:
             - name: http

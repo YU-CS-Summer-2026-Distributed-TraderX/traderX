@@ -60,6 +60,15 @@ public class OrderRow implements Serializable {
   @Column(name = "lastfillquantity")
   private Integer lastFillQuantity;
 
+  /**
+   * The order's derived W3C trace id (brief 07) — persisted so a trace can be named for ANY order,
+   * not only one the asking client submitted. Written once off the NEW update and preserved by
+   * {@link finos.traderx.tradeprocessor.OrderFeedHandler} across later updates, which carry none.
+   * Null is the honest answer for an order with no derivable id; nothing fabricates one.
+   */
+  @Column(length = 32, name = "traceid")
+  private String traceId;
+
   public String getId() {
     return id;
   }
@@ -154,5 +163,13 @@ public class OrderRow implements Serializable {
 
   public void setLastFillQuantity(Integer lastFillQuantity) {
     this.lastFillQuantity = lastFillQuantity;
+  }
+
+  public String getTraceId() {
+    return traceId;
+  }
+
+  public void setTraceId(String traceId) {
+    this.traceId = traceId;
   }
 }

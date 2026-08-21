@@ -1,6 +1,7 @@
 package finos.traderx.ordermatcher.cluster;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -80,6 +81,34 @@ class OrderNatsPublisherTest {
     OrderNatsPublisher.Rec r = rec();
     r.limitPx = -1;
     assertTrue(encode("1", r).contains("\"limitPrice\":0.000000"), "Px.NONE must not leak a negative price");
+  }
+
+  /**
+   * The trace id is the ONLY carriage of an order's trace identity past the gateway (brief 07): it
+   * is derived from the client order id, which stops there, so if this field is not on the wire no
+   * later reader — a different browser, a FIX client, the algo engine's parent order — can ever
+   * name the trace of an order it did not submit.
+   */
+  @Test
+  void aKeyedRecordCarriesTheSame32HexIdTheSpansWereEmittedUnder() {
+    OrderNatsPublisher.Rec r = rec();
+    r.traceKey = 0x1234_5678_9ABC_DEF0L;
+    String expected = OrderTrace.traceIdHex(r.traceKey);
+    assertEquals(32, expected.length(), "a W3C trace id is 32 hex chars");
+    // Derived with the SAME helper the span emitter uses, not reimplemented here: a second
+    // implementation of the mixing is one constant away from publishing an id that resolves to
+    // nothing, which reads as a broken join rather than as a bug.
+    assertTrue(encode("1", r).contains("\"traceId\":\"" + expected + "\""), encode("1", r));
+  }
+
+  @Test
+  void anUnkeyedRecordOmitsTheFieldRatherThanEmittingAnEmptyOrFabricatedId() {
+    // key 0 = no client order id, or head sampling said no. Either way there is nothing to name.
+    // An empty string would persist as an empty string and render as a link to nowhere; the field
+    // must simply be absent, which OrderUpdate reads as null.
+    OrderNatsPublisher.Rec r = rec();
+    r.traceKey = 0L;
+    assertFalse(encode("1", r).contains("traceId"), encode("1", r));
   }
 
   @Test

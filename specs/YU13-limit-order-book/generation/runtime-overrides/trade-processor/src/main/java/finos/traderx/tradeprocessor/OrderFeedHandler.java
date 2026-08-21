@@ -89,7 +89,7 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   /** Package-private so the rejection signal is unit-testable with a throwing repository. */
   void persist(OrderUpdate update) {
     try {
-      orderRepository.save(toRow(update));
+      orderRepository.save(preserveTraceId(toRow(update)));
     } catch (Exception x) {
       long n = rejected.incrementAndGet();
       log.warn("orderbook write rejected for order {} (rejected={}): {}",
@@ -109,8 +109,31 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     row.setStatus(u.getStatus());
     row.setLastExecutionPrice(u.getLastExecutionPrice());
     row.setLastFillQuantity(u.getLastFillQuantity());
+    row.setTraceId(u.getTraceId());
     row.setCreatedAt(u.getCreatedAt() == null ? new Date() : new Date(u.getCreatedAt()));
     row.setUpdatedAt(u.getUpdatedAt() == null ? new Date() : new Date(u.getUpdatedAt()));
+    return row;
+  }
+
+  /**
+   * Keep the trace id a previous update already persisted.
+   *
+   * <p>{@link #toRow} builds a FRESH row from each update and {@code save()} writes it whole on the
+   * fixed primary key, so without this the very next status update after NEW — a partial fill, a
+   * cancel — silently overwrites traceid with null, and the feature undoes itself minutes after it
+   * lands. The bridge stamps the id exactly once, on the order's own NEW, precisely so that a later
+   * update cannot stamp a DIFFERENT order's trace here; the cost of that is that the read model,
+   * not the wire, owns keeping it.
+   *
+   * <p>Only ever fills a blank: an incoming id always wins, so a corrected or re-published NEW is
+   * not blocked by a stale row.
+   */
+  OrderRow preserveTraceId(OrderRow row) {
+    if (row.getTraceId() == null && row.getId() != null) {
+      orderRepository.findById(row.getId())
+          .map(OrderRow::getTraceId)
+          .ifPresent(row::setTraceId);
+    }
     return row;
   }
 }

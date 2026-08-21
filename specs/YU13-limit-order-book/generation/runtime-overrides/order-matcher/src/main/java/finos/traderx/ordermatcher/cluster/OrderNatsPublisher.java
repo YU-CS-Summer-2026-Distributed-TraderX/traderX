@@ -45,6 +45,10 @@ final class OrderNatsPublisher {
         int lastFillQty;
         long createdAtMillis;
         long updatedAtMillis;
+        // OrderTrace correlation key, or 0 for "this update names no trace". The KEY, not the
+        // rendered id: traceIdHex allocates a String and offer() runs on the deterministic apply
+        // thread, so the hex is rendered in encode() on this bridge's own thread instead.
+        long traceKey;
     }
 
     private final String url;
@@ -74,7 +78,7 @@ final class OrderNatsPublisher {
     void offer(final long orderRef, final int accountId, final String security, final byte side,
                final int quantity, final int remainingQty, final long limitPx, final byte status,
                final long lastExecPx, final int lastFillQty,
-               final long createdAtMillis, final long updatedAtMillis) {
+               final long createdAtMillis, final long updatedAtMillis, final long traceKey) {
         if (security == null) {
             return; // unresolved ticker — nothing the downstream can key on
         }
@@ -91,6 +95,7 @@ final class OrderNatsPublisher {
         r.lastFillQty = lastFillQty;
         r.createdAtMillis = createdAtMillis;
         r.updatedAtMillis = updatedAtMillis;
+        r.traceKey = traceKey;
         if (!queue.offer(r)) {
             final long n = dropped.incrementAndGet();
             // Rejection signal (brief 05 item 3): never a silent drop. Throttled so a flood WARNs
@@ -156,8 +161,20 @@ final class OrderNatsPublisher {
         appendPx(sb, r.lastExecPx);
         sb.append(",\"lastFillQuantity\":").append(r.lastFillQty)
           .append(",\"createdAt\":").append(r.createdAtMillis)
-          .append(",\"updatedAt\":").append(r.updatedAtMillis)
-          .append("}}");
+          .append(",\"updatedAt\":").append(r.updatedAtMillis);
+        // OTEL-01 (brief 07): the order's own 32-hex W3C trace id, so the read model can join a
+        // trace to an order NOBODY here submitted — over FIX, from the algo engine, from another
+        // browser. The id is DERIVED from the client idempotency key, which stops at the gateway,
+        // so persisting it once at NEW is the only way a later reader can name it.
+        //
+        // OMITTED, never empty or fabricated, when the key is 0: an order with no client key has
+        // no derivable id, and an unsampled one emitted no spans. A fabricated id is worse than
+        // none — it resolves to nothing and reads as a broken join. OrderUpdate ignores unknown
+        // fields, so an absent traceId is a null on the consumer, not a parse failure.
+        if (r.traceKey != 0L) {
+            sb.append(",\"traceId\":\"").append(OrderTrace.traceIdHex(r.traceKey)).append('"');
+        }
+        sb.append("}}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 

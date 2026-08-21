@@ -64,7 +64,11 @@ data:
       createdat DATETIME NOT NULL,
       updatedat DATETIME NOT NULL,
       lastexecutionprice DECIMAL(18,6),
-      lastfillquantity INTEGER
+      lastfillquantity INTEGER,
+      -- YU17 (brief 07): the order's derived 32-hex W3C trace id, written once off the NEW
+      -- update. A trace id is derived from the client order id, which stops at the gateway, so
+      -- without this column only the browser that submitted an order could ever name its trace.
+      traceid VARCHAR(32)
     );
     CREATE INDEX idx_orderbook_status ON orderbook(status);
     CREATE INDEX idx_orderbook_updatedat ON orderbook(updatedat);
@@ -281,7 +285,8 @@ data:
       createdat DATETIME NOT NULL,
       updatedat DATETIME NOT NULL,
       lastexecutionprice DECIMAL(18,6),
-      lastfillquantity INTEGER
+      lastfillquantity INTEGER,
+      traceid VARCHAR(32)
     );
     CREATE INDEX IF NOT EXISTS idx_orderbook_status ON orderbook(status);
     CREATE INDEX IF NOT EXISTS idx_orderbook_updatedat ON orderbook(updatedat);
@@ -425,3 +430,8 @@ data:
     ALTER TABLE trades ADD COLUMN IF NOT EXISTS sourceorderid VARCHAR(50);
     ALTER TABLE trades DROP CONSTRAINT IF EXISTS state;
     ALTER TABLE trades ADD CONSTRAINT state CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled', 'Rejected'));
+
+    -- YU17 (brief 07): orderbook.traceid. CREATE IF NOT EXISTS cannot add a column to a table that
+    -- already exists, and trade-processor runs ddl-auto=none, so a populated volume needs this
+    -- explicit ADD or every order write fails on an unknown column. Re-running it is a no-op.
+    ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS traceid VARCHAR(32);

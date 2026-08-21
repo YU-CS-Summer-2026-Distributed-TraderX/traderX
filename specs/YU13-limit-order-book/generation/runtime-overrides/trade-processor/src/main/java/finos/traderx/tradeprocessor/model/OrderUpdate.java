@@ -24,6 +24,14 @@ public class OrderUpdate {
   private Integer lastFillQuantity;
   private Long createdAt;
   private Long updatedAt;
+  /**
+   * The order's 32-hex W3C trace id, present ONLY on the order's own NEW update (brief 07). A
+   * trace id is derived from the client order id, which stops at the gateway, so this is the only
+   * carriage of it into the read model — and it is what lets a client name the trace of an order
+   * it did not submit. Null on every later update, and null for an order that has no derivable
+   * id; {@code OrderFeedHandler} therefore PRESERVES the persisted value rather than overwriting.
+   */
+  private String traceId;
 
   public String getId() {
     return id;
@@ -119,6 +127,14 @@ public class OrderUpdate {
 
   public void setUpdatedAt(Long updatedAt) {
     this.updatedAt = updatedAt;
+  }
+
+  public String getTraceId() {
+    return traceId;
+  }
+
+  public void setTraceId(String traceId) {
+    this.traceId = traceId;
   }
 
   @Override

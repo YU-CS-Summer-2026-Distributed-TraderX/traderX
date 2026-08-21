@@ -382,6 +382,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // rejected order into the trace sample in step with the gateway, off the identical byte, with
     // nothing exchanged. Telemetry-only: never read by the engine, never written to any output.
     private byte directAckKind;
+    // OTEL-01 (brief 07): the trace key of the order CURRENTLY being applied, carried to the drain
+    // loop for the order bridge to stamp on the read-model row — the same field trick applyRequestId
+    // already uses, because the drain is a separate method running inside this apply on this thread.
+    // Zero for everything that is not a traced NEW, and the drain zeroes it again for any output
+    // belonging to a DIFFERENT order (see the FLAG_RESTING_UPDATE note there). Telemetry-only: never
+    // read by the engine, never written to replicated state.
+    private long applyTraceKey;
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
     private TradeNatsPublisher tradeBridge;
@@ -543,6 +550,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // OTEL_TRACES=1. With tracing off traceKey is 0 and this path is byte-for-byte what the
         // allocation gates and the Epsilon-GC proofs have always measured.
         final boolean traceSampled = OrderTrace.sampled(traceKey, traceMask);
+        // Stamp the read-model row ONCE, on the order's own NEW. A CANCEL/REPLACE derives a
+        // DIFFERENT key (keyOf falls back to the target orderRef when there is no client key), so
+        // letting a later update stamp too would overwrite the accepted order's trace with the
+        // cancel's — a real id for the wrong span set. Later updates carry nothing and the read
+        // model preserves what it already has.
+        //
+        // Gated on the HEAD verdict alone, not on escalate(): escalation is only knowable after
+        // apply, and the drain has already published by then. So a rejected-but-unsampled order
+        // has spans and no id on its row. With OTEL_SAMPLE_MASK=0 (this rig) nothing is unsampled.
+        applyTraceKey = event.type == InputEvent.TYPE_ORDER_NEW && traceSampled ? traceKey : 0L;
         if (event.type == InputEvent.TYPE_ORDER_NEW) {
             // The generator is replicated state advanced by the committed message itself
             // (ADR-046). A duplicate retry also consumes a value — deterministic on every
@@ -1240,9 +1257,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // order is observable to its owner via this feed (brief 07).
             if (OutputEvent.isOrderLifecycleKind(out.kind) && role == Cluster.Role.LEADER
                 && orderBridge != null) {
+                // The trace id goes ONLY on the applying order's own egress. A resting order hit
+                // by an aggressor is a DIFFERENT order, and the key we hold is the aggressor's:
+                // stamping it would put a real, resolvable trace id on a stranger's row, which
+                // renders convincing spans for the wrong order — the worse half of the wrong-id-
+                // space error this codebase has already paid for twice.
                 orderBridge.offer(out.orderRef, out.accountId, tickerById[out.securityId],
                     out.side, out.quantity, out.remainingQty, out.limitPx, out.status,
-                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis);
+                    out.lastExecPx, out.lastFillQty, out.createdAtMillis, out.updatedAtMillis,
+                    (out.flags & OutputEvent.FLAG_RESTING_UPDATE) != 0 ? 0L : applyTraceKey);
             }
             // Analytical capture (brief 06), same leader-only non-blocking discipline, separate
             // queue. Deliberately in the same drain loop rather than a new emission point: the tap
