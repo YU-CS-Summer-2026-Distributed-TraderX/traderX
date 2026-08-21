@@ -203,8 +203,9 @@ spec:
             # mask, so the failure was invisible in exactly the case anyone tests first.
             # BEFORE A THROUGHPUT RUN, PUT THIS BACK TO 127 on both the gateway and the members. At
             # ~190k orders/s a per-order span is its own performance problem, and the banked GKE
-            # numbers were taken at 127. Measured here: 10 accepted orders emitted 30 spans, so the
-            # cost is ~3 spans per order, not one.
+            # numbers were taken at 127. Measured here, BOTH SIDES: 10 accepted orders emitted 30
+            # gateway spans and 20 member spans, so budget ~5 spans per order, not one. Counting
+            # only the gateway's counter gives 3 and understates the collector's load by 40%.
             # The gateway's and the members' values MUST match — both sides derive the verdict
             # independently from the same key, and a mismatch yields traces missing their cluster
             # segment rather than an error.
