@@ -177,8 +177,18 @@ spec:
             # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
             # deployed default and the "on" arm must be reachable without a rebuild. Flip
             # OTEL_TRACES to "1" (both here and on the peer manifest) to take the "on" run.
+            # Tracing ON for the members too, so a trace carries its CLUSTER segment and not just
+            # the client->gateway hop. Off since this GKE tier was cut from the kind manifests,
+            # where every throughput-costly switch defaults off — the same reason the kdb tap and
+            # the recon sweep had to be turned on here. The A/B was throughput-neutral.
+            #
+            # Safe to roll: same image on all three, so no mixed-version window and no divergence
+            # risk; readiness gates on catch-up (failureThreshold 120 x 5s), so RollingUpdate takes
+            # one member at a time and each rejoins from the quorum before the next is touched.
+            # Tracing also carries ZERO bytes in the log — the trace id is derived from the
+            # idempotency key rather than propagated — so it cannot alter applied state.
             - name: OTEL_TRACES
-              value: "0"
+              value: "1"
             - name: OTEL_ENDPOINT
               value: "http://otel-collector:4318"
             # 1 in 128. At ~190k orders/s a per-order span is its own performance problem; head
