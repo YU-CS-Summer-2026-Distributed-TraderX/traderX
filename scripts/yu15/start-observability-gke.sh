@@ -59,6 +59,24 @@ echo "[patch] promtail tolerates all taints, so member and gateway logs are coll
 "${K[@]}" patch daemonset promtail --type merge \
   -p '{"spec":{"template":{"spec":{"tolerations":[{"operator":"Exists"}]}}}}' >/dev/null
 
+# Grafana's root_url is "%(protocol)s://%(domain)s/grafana/" and NOTHING sets %(domain)s, so it
+# falls back to Grafana's default — `localhost`. Everything that reaches Grafana on a path already
+# under /grafana/ works, which is every route the console proxies, so the defect is invisible from
+# the app. But the DEDICATED HOST is broken at its root: https://grafana.yaakovseif.dev/ answers
+# 301 -> http://localhost/grafana/, and anyone who types the hostname lands nowhere.
+#
+# A config value true where it was authored (a laptop, where localhost IS the host) and false where
+# it runs. Setting the domain fixes the bare host and — verified on the rig, both arms — leaves the
+# console-proxied path untouched, because that one is already inside the sub-path and Grafana emits
+# a relative redirect for it.
+#
+# PROTOCOL stays http on purpose: GF_SERVER_PROTOCOL is the LISTENER's protocol, not the scheme in
+# generated URLs. Setting it to https makes Grafana try to terminate TLS itself and fail. The LB
+# terminates TLS and its own http->https redirect upgrades the one intermediate hop.
+GRAFANA_DOMAIN="${GRAFANA_DOMAIN:-grafana.yaakovseif.dev}"
+echo "[patch] grafana root_url domain -> ${GRAFANA_DOMAIN} (else the bare host 301s to localhost)"
+"${K[@]}" set env deployment/grafana "GF_SERVER_DOMAIN=${GRAFANA_DOMAIN}" >/dev/null
+
 for d in otel-collector tempo prometheus loki grafana; do
   "${K[@]}" rollout status "deployment/${d}" --timeout=300s >/dev/null && echo "   ${d} ready"
 done
