@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
         - name: risk-extract
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke5
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6
           imagePullPolicy: Always
           # Same image as the node and the gateway, a different main — the cluster tier's
           # established shape (ADR-047).

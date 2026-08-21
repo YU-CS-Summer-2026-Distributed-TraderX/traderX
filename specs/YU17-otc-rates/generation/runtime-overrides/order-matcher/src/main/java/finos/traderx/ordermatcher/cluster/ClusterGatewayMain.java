@@ -633,6 +633,24 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                     .egressListener(egressListener));
                 connectRotation = (connectRotation + 1) % endpointEntries.length;
                 sessionLost = false;   // a fresh session: whatever killed the last one is behind us
+                // ticker -> securityId ids are PER-EPOCH engine state, and this cache had no
+                // invalidation at all. A fresh epoch renumbers the symbol table, so a gateway that
+                // outlived the roll kept resolving tickers to the previous epoch's ids: measured
+                // across three gateways on one ReplicaSet, UST-BILL-20270812 was 415 on two and 6
+                // on the third. The rejection users saw was the LUCKY case -- security 6 happened
+                // not to be tradable, so the risk gate refused. Pointed at an enabled security the
+                // order books against the WRONG INSTRUMENT with no rejection and no log line.
+                //
+                // Session establishment is the trigger because an epoch roll cannot preserve a
+                // session -- the members are wiped, so every session dies with them. The converse
+                // does not hold: a wedge heal rebuilds the session within one epoch and clears a
+                // cache that was still valid. That direction costs one sequenced symbol-register
+                // round trip per distinct ticker on the owner thread and is the safe way to be
+                // wrong, which is the whole reason to trigger on the coarse signal rather than
+                // teach the gateway to track epochs.
+                //
+                // Owner thread, same as resolveSecurityId, so the plain HashMap needs no guard.
+                idByTicker.clear();
                 connected = true;
                 return;
             } catch (final Exception e) {
@@ -2214,7 +2232,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
 
     // ----- symbol resolution (owner thread only) ---------------------------------------------
 
-    /** ticker -> securityId via the sequenced registration path (matrix F2); cached forever.
+    /** ticker -> securityId via the sequenced registration path (matrix F2). Cached for the life of
+     *  the CLUSTER SESSION, not of the process: the ids are per-epoch engine state, so connectCycling
+     *  clears this on every (re)connect. It said "cached forever" and meant it, which is the defect.
      *  A "#<n>" pseudo-ticker is a pre-resolved securityId passthrough (REST securityId path). */
     private int resolveSecurityId(final String ticker) {
         if (ticker.startsWith("#")) {

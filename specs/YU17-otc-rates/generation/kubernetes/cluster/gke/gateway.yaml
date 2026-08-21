@@ -104,7 +104,7 @@ spec:
               topologyKey: kubernetes.io/hostname
       containers:
         - name: gateway
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke5
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6
           imagePullPolicy: Always
           command:
             - java

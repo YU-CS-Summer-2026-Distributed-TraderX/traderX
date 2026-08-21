@@ -49,7 +49,7 @@ spec:
                 topologyKey: kubernetes.io/hostname
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke5
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6
           imagePullPolicy: Always
           env:
             - name: CLUSTER_HOSTNAMES
