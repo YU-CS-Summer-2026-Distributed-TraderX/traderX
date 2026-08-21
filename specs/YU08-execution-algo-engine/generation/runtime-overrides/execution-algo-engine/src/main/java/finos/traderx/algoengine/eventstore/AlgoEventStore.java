@@ -24,8 +24,10 @@ import jakarta.annotation.PreDestroy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -65,6 +67,9 @@ public class AlgoEventStore {
    * reports down for exactly that window. */
   private volatile JetStreamSubscription subscription;
   private volatile Consumer<AlgoEvent> applier;
+  /** Reads the applier's set of parent ids it has been asked about but never created. Snapshotted
+   * on each side of a replay so a recovery verdict speaks only about that replay. */
+  private volatile Supplier<Set<String>> orphanedParents = Set::of;
   /** Events this PROCESS has applied off the stream, across every replay and the live loop. It is
    * the only thing this consumer knows that the broker cannot tell it, and it is what turns
    * "the stream is empty" into "the log I was rebuilt from is gone" on the repair path. */
@@ -76,8 +81,10 @@ public class AlgoEventStore {
 
   /** Blocks until the entire event log has been replayed and applied, then starts a background
    * thread that keeps applying new events as they are appended. */
-  public synchronized void replayAndSubscribe(Consumer<AlgoEvent> applier) throws Exception {
+  public synchronized void replayAndSubscribe(Consumer<AlgoEvent> applier,
+      Supplier<Set<String>> orphanedParents) throws Exception {
     this.applier = applier;
+    this.orphanedParents = orphanedParents;
     connection = Nats.connect(new Options.Builder()
         .server(natsAddress)
         .connectionTimeout(Duration.ofSeconds(10))
@@ -115,9 +122,16 @@ public class AlgoEventStore {
     JetStreamSubscription sub = jetStream.subscribe(SUBJECT, pullOptions);
 
     long appliedBefore = applied.get();
+    Set<String> orphanedBefore = orphanedParents.get();
     int replayed = drain(sub, applier);
+    // Diff, not the whole set: an orphaned apply can also happen to live traffic, and a recovery
+    // verdict that swept those in would be describing something other than this replay.
+    List<String> orphaned = orphanedParents.get().stream()
+        .filter(id -> !orphanedBefore.contains(id))
+        .sorted()
+        .toList();
     subscription = sub;
-    Recovery recovery = classifyRecovery(replayed, appliedBefore, jsm);
+    Recovery recovery = classifyRecovery(replayed, appliedBefore, orphaned, jsm);
     if (recovery.alarming()) {
       log.warn("{}", recovery.message());
     } else {
@@ -136,6 +150,12 @@ public class AlgoEventStore {
   enum Verdict {
     /** The log was there and this consumer read it. The only quiet one. */
     REPLAYED,
+    /** The log was there and this consumer read all of it, and events in it named parents no
+     * {@code ParentOrderCreated} in that log ever created — the log is TORN. Arithmetically this
+     * is indistinguishable from {@link #REPLAYED}: a wipe resets stream sequencing, so a surviving
+     * tail reports first_seq=1, last_seq=N, messages=N exactly as a complete log does. The tear is
+     * visible only from the applier, which is asked for a parent that is not there. */
+    REPLAYED_WITH_ORPHANS,
     /** The stream holds nothing and has never held anything under this identity, so this consumer
      * missed nothing — and a first boot is indistinguishable from a wiped log FROM HERE. Named,
      * not resolved: the evidence that would separate them is not on this side. */
@@ -162,13 +182,14 @@ public class AlgoEventStore {
   /** Asks the broker what the stream holds and classifies the replay against it. An inspection
    * failure is carried through as {@link Verdict#UNDETERMINED} with the broker's own words rather
    * than being retried or guessed at. */
-  private Recovery classifyRecovery(int replayed, long appliedBefore, JetStreamManagement jsm) {
+  private Recovery classifyRecovery(int replayed, long appliedBefore, List<String> orphanedParents,
+      JetStreamManagement jsm) {
     try {
       StreamState state = jsm.getStreamInfo(STREAM_NAME).getStreamState();
       return classifyRecovery(replayed, state.getMsgCount(), state.getLastSequence(),
-          appliedBefore, null);
+          appliedBefore, orphanedParents, null);
     } catch (Exception ex) {
-      return classifyRecovery(replayed, -1, -1, appliedBefore, ex.toString());
+      return classifyRecovery(replayed, -1, -1, appliedBefore, orphanedParents, ex.toString());
     }
   }
 
@@ -181,11 +202,14 @@ public class AlgoEventStore {
    * @param lastSequence   the stream's last sequence; 0 means this incarnation of the stream has
    *                       never carried a message
    * @param appliedBefore  events this process had already applied off the stream before this replay
+   * @param orphanedParents distinct parent ids THIS replay's events named that it never
+   *                       reconstructed; only reachable when {@code replayed > 0}, since an
+   *                       orphan is recorded by applying an event
    * @param inspectFailure the broker's own description of why the stream could not be inspected,
    *                       or null when it was
    */
   static Recovery classifyRecovery(int replayed, long msgCount, long lastSequence,
-      long appliedBefore, String inspectFailure) {
+      long appliedBefore, List<String> orphanedParents, String inspectFailure) {
     if (inspectFailure != null) {
       return new Recovery(Verdict.UNDETERMINED, "replayed " + replayed + " algo-engine events from "
           + STREAM_NAME + ", but the broker could not be asked what the stream holds, so whether "
@@ -221,8 +245,20 @@ public class AlgoEventStore {
           + "in this consumer's subscription. Nothing this engine holds came from those messages "
           + "until it replays them.");
     }
-    return new Recovery(Verdict.REPLAYED, "replayed " + replayed + " of " + msgCount
-        + " algo-engine events from " + STREAM_NAME + " (last sequence " + lastSequence + ")");
+    String replayedLine = "replayed " + replayed + " of " + msgCount + " algo-engine events from "
+        + STREAM_NAME + " (last sequence " + lastSequence + ")";
+    // Say "may still be", not "are". This engine can observe that the parents were never
+    // reconstructed; it cannot see the book, so whether their children are still resting there is
+    // not a fact available on this side. The sibling branch above was reworded for over-claiming
+    // exactly once already (2026-08-21) — do not walk this one back up.
+    if (!orphanedParents.isEmpty()) {
+      return new Recovery(Verdict.REPLAYED_WITH_ORPHANS, replayedLine + ", but "
+          + orphanedParents.size() + " parent order(s) named by those events were never "
+          + "reconstructed: no ParentOrderCreated for them appeared in this replay, so the log is "
+          + "TORN. Child orders those parents submitted may still be live in the book, and this "
+          + "engine now holds no parent that will cancel, resize or finish them: " + orphanedParents);
+    }
+    return new Recovery(Verdict.REPLAYED, replayedLine);
   }
 
   /**
