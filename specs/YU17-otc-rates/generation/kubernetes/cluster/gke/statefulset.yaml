@@ -83,18 +83,31 @@ spec:
             # were taken without it. Set KDB_TAP_DIR (and size KDB_TAP_MAX_MB against the disk) for
             # a capture run — the tap caps itself at 256 MB either way so a flood cannot starve the
             # Archive of disk. Deliberately a one-value edit, mirroring the OTEL overlay's rule.
-            # OTEL-01: tracing knobs, present-but-off on GKE. The benchmark that proves this
-            # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
-            # deployed default and the "on" arm must be reachable without a rebuild. Flip
-            # OTEL_TRACES to "1" (both here and on the peer manifest) to take the "on" run.
+            # OTEL-01: tracing knobs. These MUST track gateway.yaml, which is SHARED between this
+            # PVC variant and the emptyDir one — the gateway is on (traces, mask 0) and a member
+            # left off here yields the silent failure: every trace complete on the gateway side,
+            # the cluster segment simply absent, nothing erroring anywhere. This file is
+            # reference-only today (kustomization deploys statefulset-emptydir.yaml) which is
+            # exactly why it has to be right: it is what someone copies when switching this tier
+            # to PVCs.
+            # For a TIMING run — the benchmark proving tracing costs nothing on the trade path is a
+            # timing claim and needs an honest "off" arm — set OTEL_TRACES to "0" HERE AND ON
+            # gateway.yaml together. Turning one side off is not the off arm; it is a broken join.
             - name: OTEL_TRACES
-              value: "0"
+              value: "1"
             - name: OTEL_ENDPOINT
               value: "http://otel-collector:4318"
-            # 1 in 128. At ~190k orders/s a per-order span is its own performance problem; head
-            # sampling is what keeps tracing affordable at the rates this cluster actually runs.
+            # 0 = trace every order, matching gateway.yaml. The verdict is DETERMINISTIC in the
+            # order's key (OrderTrace.sampled: mix(key ^ SALT) & mask == 0), which is how the two
+            # sides agree without carrying a decision between them — and equally why a mismatch is
+            # silent rather than an error. OrderTraceTest asserts the agreement.
+            # BEFORE A THROUGHPUT RUN, PUT 127 BACK ON BOTH SIDES. At ~190k orders/s a per-order
+            # span is its own performance problem and the banked GKE numbers were taken at 127.
+            # Measured on this tier, both sides: 10 accepted orders emitted 30 gateway spans and 20
+            # member spans, so budget ~5 spans per order. 127 is 1 in 128 DISTINCT KEYS, not a coin
+            # flip per order, so a resubmitted client order id reproduces its verdict.
             - name: OTEL_SAMPLE_MASK
-              value: "127"
+              value: "0"
             # YU05 recon + regulatory audit on this tier (FR-PTC04/05/10/20/21). PRESENT BUT OFF
             # here, same rule as KDB_TAP_DIR and OTEL_TRACES above: the live forward blotter
             # allocates per booked trade on the apply thread, and the banked GKE throughput numbers
