@@ -25,10 +25,6 @@ interface PosRow extends Position {
 }
 
 /**
- * `<epoch>-<orderRef>` → the ref. Returns 0 for a market sweep (`<epoch>-0`), which has no
- * originating order by design, and null when there is nothing parseable to join on.
- */
-/**
  * The epoch from the first `<epoch>-<n>` id in a list, or null.
  *
  * Exported for the spec: this is the guard that keeps a persisted trace map from answering across
@@ -47,6 +43,10 @@ export const firstEpoch = (ids: unknown[]): number | null => {
   return null;
 };
 
+/**
+ * `<epoch>-<orderRef>` → the ref. Returns 0 for a market sweep (`<epoch>-0`), which has no
+ * originating order by design, and null when there is nothing parseable to join on.
+ */
 const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
   const m = /^\d+-(\d+)$/.exec(String(t.sourceOrderId ?? ''));
   return m ? Number(m[1]) : null;
