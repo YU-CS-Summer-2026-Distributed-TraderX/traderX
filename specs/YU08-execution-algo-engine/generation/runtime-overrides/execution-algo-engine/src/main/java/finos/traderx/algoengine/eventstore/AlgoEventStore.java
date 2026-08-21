@@ -192,13 +192,20 @@ public class AlgoEventStore {
           + "this replay was complete is UNDETERMINED — treat neither an empty log nor a lost one "
           + "as ruled out: " + inspectFailure);
     }
+    // Say UNRECOVERABLE, not gone. Measured on the kind rig 2026-08-21: after a broker wipe with a
+    // TWAP parent in flight, this line printed AND the parent was still RUNNING — it submitted its
+    // next bucket 72s later. Nothing resets the applier's state before a replay, so a wipe destroys
+    // the broker's copy of the log while the process keeps its own in-memory schedule and keeps
+    // working it. An earlier draft claimed the orders were "gone", which would send an operator
+    // hunting for a parent that is still slicing. What actually died is the ability to rebuild them.
     if (msgCount == 0 && (appliedBefore > 0 || lastSequence > 0)) {
       String evidence = appliedBefore > 0
           ? "this process had already applied " + appliedBefore + " events off it"
           : "its last sequence is " + lastSequence + ", so it has carried messages";
       return new Recovery(Verdict.LOG_LOST, "STATE LOST: " + STREAM_NAME + " reports 0 messages and "
           + evidence + ". This engine keeps no store other than that log, so every parent order "
-          + "those events carried is gone and no replay will bring it back.");
+          + "those events carried is now UNRECOVERABLE: this process still holds them and keeps "
+          + "running them, and nothing will rebuild them if it restarts.");
     }
     if (msgCount == 0) {
       return new Recovery(Verdict.STREAM_EMPTY, "replayed 0 algo-engine events: " + STREAM_NAME
@@ -211,8 +218,8 @@ public class AlgoEventStore {
       return new Recovery(Verdict.CONSUMER_REPLAYED_NONE, "replayed 0 algo-engine events although "
           + STREAM_NAME + " reports " + msgCount + " messages (last sequence " + lastSequence
           + ") — the log is still on the broker and this consumer read none of it, so the gap is "
-          + "in this consumer's subscription. Every parent order in those messages is missing from "
-          + "this engine until it replays them.");
+          + "in this consumer's subscription. Nothing this engine holds came from those messages "
+          + "until it replays them.");
     }
     return new Recovery(Verdict.REPLAYED, "replayed " + replayed + " of " + msgCount
         + " algo-engine events from " + STREAM_NAME + " (last sequence " + lastSequence + ")");
