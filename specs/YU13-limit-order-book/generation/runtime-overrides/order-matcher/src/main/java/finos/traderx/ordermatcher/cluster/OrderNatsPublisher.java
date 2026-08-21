@@ -75,6 +75,16 @@ final class OrderNatsPublisher {
     }
 
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
+    /** Pre-traceKey form, for the ancestor states whose overrides predate the read-model trace id
+     *  (bfc3ace8). 0 means "no trace", which is exactly what those states emit. */
+    void offer(final long orderRef, final int accountId, final String security, final byte side,
+               final int quantity, final int remainingQty, final long limitPx, final byte status,
+               final long lastExecPx, final int lastFillQty,
+               final long createdAtMillis, final long updatedAtMillis) {
+        offer(orderRef, accountId, security, side, quantity, remainingQty, limitPx, status,
+              lastExecPx, lastFillQty, createdAtMillis, updatedAtMillis, 0L);
+    }
+
     void offer(final long orderRef, final int accountId, final String security, final byte side,
                final int quantity, final int remainingQty, final long limitPx, final byte status,
                final long lastExecPx, final int lastFillQty,

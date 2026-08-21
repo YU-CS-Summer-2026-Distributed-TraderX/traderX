@@ -53,6 +53,23 @@ final class TradeNatsPublisher {
     private Thread thread;
     private volatile Connection nats;
 
+    /**
+     * Pre-epoch form, kept so the ANCESTOR STATES still compile.
+     *
+     * This class lives in the YU12 layer and is therefore shared by every state from YU12 up, but
+     * only YU17's MatchingEngineClusteredService was updated when the epoch parameter was added
+     * (cf0f6f9a). The YU12-YU16 overrides on this branch still call the three-argument form, so
+     * generating any of those states from this worktree failed to compile — the tip could no longer
+     * render its own ancestors, which is the thing carrying every ancestor pack is FOR.
+     *
+     * A compatibility overload rather than updating five callers, deliberately: changing them would
+     * give YU12-YU16 epoch-qualified trade ids, i.e. silently alter what those states demonstrate.
+     * "0" is what CLUSTER_EPOCH-unset already produced, so this preserves their behaviour exactly.
+     */
+    TradeNatsPublisher(final String url, final String subject, final int capacity) {
+        this(url, subject, "0", capacity);
+    }
+
     TradeNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
         this.url = url;
         this.subject = subject;
@@ -67,6 +84,13 @@ final class TradeNatsPublisher {
     }
 
     /** Service (apply) thread — non-blocking, never throws, allocates one small Rec. */
+    /** Pre-orderRef form, for the ancestor callers described on the constructor above. 0 is the
+     *  same value writeTradeBooked emitted before it learned the originating order. */
+    void offer(final long tradeSeq, final int accountId, final String security,
+               final byte side, final int qty, final long tradePx) {
+        offer(tradeSeq, accountId, security, side, qty, tradePx, 0);
+    }
+
     void offer(final long tradeSeq, final int accountId, final String security,
                final byte side, final int qty, final long tradePx, final int orderRef) {
         if (security == null) {
