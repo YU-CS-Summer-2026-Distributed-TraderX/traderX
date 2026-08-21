@@ -100,3 +100,14 @@ For a surface whose purpose is a reproducible regulatory audit, "refused, reason
 weaker claim than the surface implies. Same decision as the OTC question above: either the reason
 belongs in the projection, or the report's scope should say plainly that it is an order-lifecycle
 trace and not a decision record.
+
+## DECIDED 2026-08-21 by yaakov: IN SCOPE — the projection gains an OTC event kind
+
+The open question above is answered: a regulatory audit surface that silently omits an entire
+instrument class is the defect, not an acceptable boundary. The YU05-era projection was written
+before an instrument class existed that has no orders at all; that is an explanation, not a
+justification.
+
+Work: the regulatory projection gains an OTC booking event so a reader with admin credentials can
+enumerate booked OTC contracts BETWEEN EOD cuts, alongside orders. The contracts artifact remains,
+but it stops being the only way to see them.

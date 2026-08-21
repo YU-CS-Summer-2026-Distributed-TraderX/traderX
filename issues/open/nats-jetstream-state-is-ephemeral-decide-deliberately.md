@@ -58,3 +58,17 @@ storage supports. Node loss still takes them.
 **And there is no `lost+found`** — the local-path provisioner hands out a plain directory rather than a
 formatted filesystem. Anyone expecting one on a fresh PVC (a reasonable ext4 assumption, and one this
 project briefly held) should not read its absence as evidence the mount is wrong.
+
+## DECIDED 2026-08-21 by yaakov: stay ephemeral, and fix the tell
+
+No PVC. The re-bind fix already reduces a NATS restart to a self-healing gap measured under 30s,
+and consumers must self-heal from state loss however caused — so the storage is not the lever.
+
+**The work this creates is the observability half, not the storage half.** The execution-algo-engine
+logs `rebuilding … replayed 0 events` on restart, which is correct against an empty stream and is
+also exactly what permanent state loss looks like. Those two must stop being indistinguishable: the
+engine should say which one happened — an empty stream is a fact about the broker, a lost cursor is
+a fact about this consumer.
+
+Accepted, explicitly, as the cost of this choice: live algo parents in flight at the moment of a
+NATS wipe are lost. That is now a decision with a name on it rather than a silence.

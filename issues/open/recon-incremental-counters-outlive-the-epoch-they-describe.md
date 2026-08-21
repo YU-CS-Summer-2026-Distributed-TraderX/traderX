@@ -128,3 +128,16 @@ effect and options store correctly.
 So: **historical, resolved, non-recurring — and a genuine write-rejection event rather than a timing
 artifact.** The six recon misses are its surviving trace. "The numbers were never wrong" is true of the
 counter's semantics; it would be wrong to conclude the six recorded nothing real.
+
+## DECIDED 2026-08-21 by yaakov: option 2 — reset the counters and cursor on an epoch change
+
+Not the cheapest option, deliberately. Renaming them to lifetime tallies would make the surface
+honest, but it would leave the numbers describing an epoch that no longer exists and put the burden
+on every reader to remember that.
+
+The signal already exists and is already trusted elsewhere: `scripts/yu15/run-proofs.sh` compares the
+engine trade counter against the highest SQL trade id for exactly this purpose, so detecting the roll
+is not new work.
+
+Still standing from above, and not weakened by this: the full-history sweep remains the authoritative
+comparison. Do NOT let a reset counter become a reason to trust the incremental number more.

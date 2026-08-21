@@ -149,3 +149,13 @@ Its job was explaining an empty sink, and what an empty sink *means* changed rat
 before it meant "someone rescheduled the pod"; now it means "the EOD chain has not produced a cut".
 Ambiguous before, diagnostic now. The README bullet is struck through and dated rather than deleted,
 so the history of the condition stays readable.
+
+## DECIDED 2026-08-21 by yaakov: read GCS when deployed, keep the exec bridge on kind
+
+Confirms the reframing above. NO HTTP file server in risk-extract — that would solve only the local
+case, at the cost of giving a deliberately-headless component an ingress.
+
+- **Deployed console** reads `gs://traderx-…-risk-extracts` directly: the same source the external
+  consumer uses, already durable, already a URL.
+- **Local/kind console** keeps the dev-proxy `kubectl exec` bridge, which is the right shape for a
+  dev bridge and costs nothing.
