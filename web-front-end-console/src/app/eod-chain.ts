@@ -35,6 +35,12 @@ interface Stage {
 
 interface Chain {
   date: string;
+  /**
+   * The date the TRADE-PROCESSOR thinks it is — read from that container, which is the machine whose
+   * clock decides which session a close lands on. Not the console's clock and emphatically not the
+   * browser's: those containers run UTC, so at 23:22 EDT the rig is already on tomorrow.
+   */
+  businessDate?: string;
   prices: Stage;
   pnl: Stage;
   extract: Stage;
@@ -90,6 +96,12 @@ const localDate = () => {
         @if (c.date !== date) {
           <div class="banner warn-note">Asked about {{ date }}; the server answered about
             {{ c.date }}. Everything below describes <b>{{ c.date }}</b>.</div>
+        }
+        @if (c.businessDate && c.businessDate !== c.date) {
+          <div class="banner warn-note">This is <b>{{ c.date }}</b>, but the rig's current business
+            date is <b>{{ c.businessDate }}</b> — the trade-processor's clock decides which session a
+            close lands on, and it runs UTC. Closing now would land on
+            <b>{{ c.businessDate }}</b> unless a date is sent with it.</div>
         }
 
         <div class="chain">
@@ -169,13 +181,21 @@ export class EodChain {
   readonly actMsg = signal<{ ok: boolean; text: string } | null>(null);
 
   /**
-   * The LOCAL calendar date, not `new Date().toISOString()`. ISO gives the UTC date, which after
-   * about 19:00 local is already tomorrow — so a console opened in the evening asks about a day
-   * with no session and renders the whole chain as "pending", which reads as "nothing ran today"
-   * when the truth is "you asked about tomorrow". Editable, and the answer is labelled with the
-   * date the SERVER used rather than the one requested.
+   * Seeded from the browser only as a BOOTSTRAP, then replaced by the rig's own business date.
+   *
+   * The browser's date is the wrong authority twice over. `toISOString()` gives UTC, which after
+   * ~19:00 local is tomorrow; and the local calendar date is not it either, because the session a
+   * close lands on is decided by the trade-processor's clock, and those containers run UTC. Measured:
+   * rig 2026-08-21 03:22 UTC, operator 2026-08-20 23:22 EDT, and every session row in the database
+   * on 2026-08-21. An operator who closes a session at 11pm and is told "closed for 2026-08-20"
+   * reasonably concludes it did not save.
+   *
+   * So the chain is asked once with the browser's guess, the answer carries `businessDate`, and the
+   * picker adopts it. The guess is only ever wrong by a day, and being wrong costs one extra read.
    */
   date = localDate();
+  /** True once the picker holds the rig's date rather than this browser's guess. */
+  readonly adopted = signal(false);
 
   good(s: StageState): boolean { return GOOD.has(s); }
   bad(s: StageState): boolean { return BAD.has(s); }
@@ -210,6 +230,13 @@ export class EodChain {
       }
       this.chain.set(r.body);
       this.readAt.set(new Date().toLocaleTimeString());
+      // Adopt the rig's business date once. Only re-reads when the browser's guess was a day out,
+      // which is exactly the case that used to render an entire green chain as "pending".
+      const bd = r.body.businessDate;
+      if (bd && !this.adopted()) {
+        this.adopted.set(true);
+        if (bd !== this.date) { this.date = bd; await this.refresh(); }
+      }
     } finally { this.busy.set(false); }
   }
 
@@ -221,17 +248,24 @@ export class EodChain {
     this.busy.set(true);
     this.actMsg.set(null);
     try {
-      const r = await this.api.load<{ version?: number; error?: string }>(
-        `/trade-processor/eod/session/close`, {
+      // sessionDate as a QUERY PARAM, which is what the endpoint reads. Without it the close
+      // defaults to LocalDate.now() in the trade-processor's zone and the picker has no effect —
+      // every close landed on the rig's UTC date whatever was selected.
+      const r = await this.api.load<{ version?: number; sessionDate?: string; error?: string }>(
+        `/trade-processor/eod/session/close?sessionDate=${encodeURIComponent(this.date)}`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ date: this.date }),
         });
       if (r.status === 401) {
         this.actMsg.set({ ok: false, text: 'closing a session needs an administrator — sign in from the header, then try again' });
       } else if (r.status === 200 || r.status === 201) {
-        const v = r.body && typeof r.body === 'object' ? r.body.version : undefined;
-        this.actMsg.set({ ok: true, text: `session closed for ${this.date}${v ? ` — price version v${v} minted` : ''}. Publish it below to start the extract.` });
-        this.api.log({ kind: 'eod', ok: true, summary: `EOD session closed for ${this.date}` });
+        const b = r.body && typeof r.body === 'object' ? r.body : {};
+        // The date the SERVER recorded, never the one this page asked for. Announcing the requested
+        // date is what made a correct close read as a failed one: the banner said 2026-08-20 while
+        // the row went in at 2026-08-21, and the panel below then loaded the row the banner denied.
+        const landed = b.sessionDate ?? this.chain()?.businessDate ?? '(the rig\'s business date)';
+        const v = b.version;
+        this.actMsg.set({ ok: true, text: `session closed for ${landed}${v ? ` — price version v${v} minted` : ''}. Publish it below to start the extract.` });
+        this.api.log({ kind: 'eod', ok: true, summary: `EOD session closed for ${landed}` });
       } else {
         const msg = r.body && typeof r.body === 'object' && r.body.error ? r.body.error : `HTTP ${r.status}`;
         this.actMsg.set({ ok: false, text: `close refused: ${msg}` });

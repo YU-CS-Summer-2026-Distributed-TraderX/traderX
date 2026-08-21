@@ -1,4 +1,4 @@
-import { Component, OnInit, inject, signal } from '@angular/core';
+import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { Api, bridgeError } from './api';
 import { HelpTip } from './help';
 
@@ -17,6 +17,24 @@ interface Cut {
 const kv = (text: string): Record<string, string> =>
   Object.fromEntries([...text.matchAll(/(\w+)=(\S+)/g)].map(m => [m[1], m[2]]));
 
+/**
+ * Newest first, and upload proofs last whatever their date.
+ *
+ * The two sources arrive independently — the rig sink and the bucket resolve in whichever order the
+ * network gives them — so ordering has to be applied to the COMBINED list every time either lands,
+ * not sorted within one source and concatenated. That is why this is a function rather than a sort
+ * at the end of each loader.
+ *
+ * `proof/<epochMillis>/` objects are write-once checks, not session cuts. They carry no session date
+ * and sink to the bottom rather than sorting as "?" among real cuts.
+ */
+const order = (cuts: Cut[]): Cut[] => [...cuts].sort((a, b) => {
+  const pa = a.date === 'upload proof', pb = b.date === 'upload proof';
+  if (pa !== pb) return pa ? 1 : -1;
+  if (a.date !== b.date) return b.date.localeCompare(a.date);
+  return b.version.localeCompare(a.version, undefined, { numeric: true });
+});
+
 const headers = (content: string) =>
   kv(content.split('\n').filter(l => l.startsWith('#')).join(' '));
 
@@ -33,7 +51,7 @@ const headers = (content: string) =>
 
     @if (open()) {
     @if (rigNote()) { <div class="banner warn-note">{{ rigNote() }}</div> }
-    @for (c of cuts(); track c.key) {
+    @for (c of visible(); track c.key) {
       <div class="cut-head">
         <b>{{ c.date }}</b> <span class="pill">{{ c.version }}</span>
         <span class="sub">seq {{ c.seq || '?' }} · {{ c.source }}</span>
@@ -63,6 +81,17 @@ const headers = (content: string) =>
     } @empty {
       <div class="faint">{{ error() || (loaded() ? 'no cuts anywhere' : 'loading cuts…') }}</div>
     }
+    @if (hiddenCount() > 0 || showAll()) {
+      <button class="more" (click)="showAll.set(!showAll())">
+        {{ showAll() ? 'show the latest session only' : 'show ' + hiddenLabel() }}
+      </button>
+    }
+    <!-- A row count here is small because the BOOK is small, not because the file is a sample.
+         Two rows read as truncation to yaakov, which is the right instinct about a number with no
+         stated grain — so the grain is stated. -->
+    <div class="sub note">One row per <b>account and security</b> holding a non-zero position, and
+      the file is not netted across accounts — so the row count is the size of the book at that
+      consensus sequence, whole. Two rows means two positions, not two of many.</div>
     @if (cuts().length && error()) { <div class="sub err">{{ error() }}</div> }
     }
   `,
@@ -87,6 +116,8 @@ const headers = (content: string) =>
            border-radius: 6px; padding: 8px; max-height: 260px; overflow-y: auto; overflow-x: hidden;
            margin: 4px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
     .err { margin-top: 10px; }
+    .more { margin-top: 12px; font-size: 11.5px; }
+    .note { margin-top: 10px; max-width: 720px; }
     .warn-note { background: var(--warn-soft); color: var(--warn); font-size: 12.5px; margin-bottom: 6px; }
   `,
 })
@@ -97,6 +128,35 @@ export class ProvenancePanel implements OnInit {
   readonly loaded = signal(false);
   readonly open = signal(true);
   readonly rigEmpty = signal(false);
+  readonly showAll = signal(false);
+
+  /**
+   * Default view: the most recent session date only, without the write-once upload proofs.
+   *
+   * The bucket accumulates — a July cut and a handful of `proof/<epochMillis>/` objects sit
+   * alongside today's — and an operator opening this page wants the session they just published,
+   * not the archive. Hidden rather than deleted, and the toggle SAYS HOW MANY are hidden: a view
+   * that quietly drops rows is the same failure as a counter that is not rendered.
+   */
+  private readonly RECENT_DATES = 1;
+  readonly visible = computed(() => {
+    const all = this.cuts();
+    if (this.showAll()) return all;
+    const dates = [...new Set(all.filter(c => c.date !== 'upload proof').map(c => c.date))]
+      .sort((a, b) => b.localeCompare(a)).slice(0, this.RECENT_DATES);
+    return all.filter(c => dates.includes(c.date));
+  });
+  readonly hiddenCount = computed(() => this.cuts().length - this.visible().length);
+  /** Named separately, because "older cuts" and "upload proofs" are different things to go looking for. */
+  readonly hiddenLabel = computed(() => {
+    const hidden = this.cuts().filter(c => !this.visible().includes(c));
+    const proofs = hidden.filter(c => c.date === 'upload proof').length;
+    const older = hidden.length - proofs;
+    const bits = [];
+    if (older) bits.push(`${older} older cut${older === 1 ? '' : 's'}`);
+    if (proofs) bits.push(`${proofs} upload proof${proofs === 1 ? '' : 's'}`);
+    return bits.join(' and ');
+  });
 
   /**
    * What an empty LOCAL sink means depends on where this rig sends its cuts, and the answer differs
@@ -190,8 +250,7 @@ export class ProvenancePanel implements OnInit {
         artifacts, open: '',
       });
     }
-    cuts.sort((a, b) => (a.date === b.date ? a.version.localeCompare(b.version) : a.date.localeCompare(b.date)));
-    this.cuts.update(list => [...cuts.reverse(), ...list]);
+    this.cuts.update(list => order([...cuts, ...list]));
   }
 
   /** The uploaded GCS archive: older cuts, and no contracts artifact — it predates YU17. */
@@ -212,7 +271,7 @@ export class ProvenancePanel implements OnInit {
         open: '',
       } as Cut;
     });
-    this.cuts.update(list => [...list, ...cuts]);
+    this.cuts.update(list => order([...list, ...cuts]));
     for (const c of cuts) this.enrichArchive(c);
   }
 
@@ -221,9 +280,9 @@ export class ProvenancePanel implements OnInit {
       `/gcs/read?path=${encodeURIComponent(c.artifacts[0].path)}`);
     if (r.status !== 200 || !r.body) return;
     const h = headers(r.body.content);
-    this.cuts.update(list => list.map(x => x.key === c.key ? {
+    this.cuts.update(list => order(list.map(x => x.key === c.key ? {
       ...x, seq: h['seq'] ?? '', rows: h['rows'] ?? '', cutSha: r.body!.sha256,
       artifacts: [{ ...x.artifacts[0], sha256: r.body!.sha256, content: r.body!.content }],
-    } : x));
+    } : x)));
   }
 }
