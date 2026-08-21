@@ -1,7 +1,7 @@
-import { Component, inject, input, signal } from '@angular/core';
+import { Component, computed, inject, input, signal } from '@angular/core';
 import { Api } from './api';
 
-interface SpanRow { service: string; name: string; startNs: bigint; durUs: number; }
+interface SpanRow { service: string; name: string; startNs: bigint; durUs: number; ref?: string; }
 
 /**
  * One trace, fetched from Tempo and rendered as a span table.
@@ -33,11 +33,20 @@ interface SpanRow { service: string; name: string; startNs: bigint; durUs: numbe
     @if (msg()) { <div class="faint note">{{ msg() }}</div> }
     @if (spans(); as ss) {
       @if (ss.length) {
+        @if (refs().length > 1) {
+          <div class="faint note">This trace covers {{ refs().length }} orders — refs {{ refs().join(', ') }}.
+            A trace id is a pure function of the CLIENT order id, so orders that reused one share a
+            trace. Every span below is real; they are not all this row's.</div>
+        }
         <table class="spans">
-          <thead><tr><th>service</th><th>span</th><th class="num">start +µs</th><th class="num">duration µs</th></tr></thead>
+          <thead><tr>
+            @if (refs().length > 1) { <th>order</th> }
+            <th>service</th><th>span</th><th class="num">start +µs</th><th class="num">duration µs</th></tr></thead>
           <tbody>
             @for (s of ss; track $index) {
-              <tr><td>{{ s.service }}</td><td>{{ s.name }}</td>
+              <tr>
+                @if (refs().length > 1) { <td>{{ s.ref ?? '—' }}</td> }
+                <td>{{ s.service }}</td><td>{{ s.name }}</td>
                   <td class="num">{{ rel(s, ss) }}</td><td class="num">{{ s.durUs.toFixed(0) }}</td></tr>
             }
           </tbody>
@@ -61,6 +70,19 @@ export class TraceView {
   readonly derivedFrom = input<string>('');
 
   readonly spans = signal<SpanRow[] | null>(null);
+
+  /**
+   * The distinct order refs in this trace, and the reason the table has an "order" column at all.
+   *
+   * A trace id is derived from the CLIENT order id, so two orders that reuse one get the SAME trace
+   * — measured: a reused ClOrdID produced a single id holding 10 spans, 5 per order. A panel that
+   * says "this order's trace" and then lists somebody else's spans without saying so is the same
+   * failure as showing a wrong id: everything on screen is real, and the whole is misleading.
+   * Every span carries `traderx.order_ref`, so this is detectable rather than merely possible.
+   *
+   * Stays hidden in the ordinary one-order case, where a constant column teaches nothing.
+   */
+  readonly refs = computed(() => [...new Set((this.spans() ?? []).map(s => s.ref).filter(Boolean))] as string[]);
   readonly msg = signal('');
   readonly busy = signal(false);
 
@@ -120,21 +142,31 @@ export class TraceView {
 interface OtlpTrace {
   batches?: {
     resource?: { attributes?: { key: string; value?: { stringValue?: string } }[] };
-    scopeSpans?: { spans?: { name: string; startTimeUnixNano?: string; endTimeUnixNano?: string }[] }[];
+    scopeSpans?: { spans?: {
+      name: string; startTimeUnixNano?: string; endTimeUnixNano?: string;
+      attributes?: { key: string; value?: { stringValue?: string; intValue?: string } }[];
+    }[] }[];
   }[];
 }
 
-/** OTLP → flat rows in start order. Service name lives in a resource attribute, not on the span. */
-function parseSpans(body: OtlpTrace): SpanRow[] {
+/**
+ * OTLP → flat rows in start order. Service name lives in a resource attribute, not on the span.
+ *
+ * Exported for the spec: the order-ref attribute it carries is what lets the panel notice a trace
+ * holding more than one order, and that is worth a test that fails if the attribute stops arriving.
+ */
+export function parseSpans(body: OtlpTrace): SpanRow[] {
   const rows: SpanRow[] = [];
   for (const b of body.batches ?? []) {
     const service = b.resource?.attributes?.find(a => a.key === 'service.name')?.value?.stringValue ?? '?';
     for (const ss of b.scopeSpans ?? []) {
       for (const sp of ss.spans ?? []) {
+        const refAttr = sp.attributes?.find(a => a.key === 'traderx.order_ref')?.value;
         rows.push({
           service, name: sp.name,
           startNs: BigInt(sp.startTimeUnixNano ?? 0),
           durUs: Number(BigInt(sp.endTimeUnixNano ?? 0) - BigInt(sp.startTimeUnixNano ?? 0)) / 1000,
+          ref: refAttr?.stringValue ?? refAttr?.intValue,
         });
       }
     }
