@@ -237,12 +237,30 @@ fi
 # READ THE BACKING, do not assert it. This line used to say "emptyDir — it returns with no disk"
 # unconditionally; yu17-swap-netting.sh already records that as stale for this StatefulSet, and a
 # pod delete against a PVC-backed member returns it WITH its disk. Say what the rig actually has.
+#
+# AND DELETE THE CLAIM, not just the pod. The StatefulSet declares a volumeClaimTemplates entry, so
+# the claim outlives the pod: a pod-only delete brings the member back holding the disk it had a
+# moment ago, where it reads its OWN snapshot and replays only the tail it missed. The identity
+# assertion below passes either way -- which is why this drifted for so long -- but a tail replay
+# and a from-nothing rebuild are different claims about the system, and this proof is named after
+# the second one. Same order as yu17-swap-netting.sh: PVC first (--wait=false, the pvc-protection
+# finalizer holds it until the pod is gone), then the pod.
 BACKING="$(${K} get sts order-matcher-cluster -o jsonpath='{.spec.volumeClaimTemplates[*].metadata.name}' 2>/dev/null)"
+# The two readings that tell a wipe from a tail replay APART, taken while the old disk still exists:
+# the claim's uid, and how old the oldest file on the disk is. WIPE_AT comes off the member's own
+# clock because the mtimes it is compared against are written by that clock, not by this host's.
+WIPE_AT="$(${K} exec "order-matcher-cluster-${VICTIM}" -c cluster-node -- date +%s 2>/dev/null)"
+PVC=""; PVC_UID_BEFORE=""
 if [[ -n "${BACKING}" ]]; then
+  PVC="${BACKING}-order-matcher-cluster-${VICTIM}"
+  PVC_UID_BEFORE="$(${K} get pvc "${PVC}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
   echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (PVC-backed '${BACKING}' — the"
-  echo "  claim outlives the pod, so it returns with its disk and replays only the tail)"
+  echo "  claim would outlive the pod and return it WITH its disk, so delete ${PVC} first and the"
+  echo "  member comes back with nothing and must rebuild from the other two)"
+  ${K} delete pvc "${PVC}" --wait=false >/dev/null
 else
-  echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (emptyDir — it returns with no disk)"
+  echo "  leader is member ${LDR}; rebuilding follower ${VICTIM} (emptyDir — the pod delete alone"
+  echo "  empties the disk)"
 fi
 ${K} delete pod "order-matcher-cluster-${VICTIM}" --wait=true >/dev/null
 # `kubectl wait --for=condition=Ready` does NOT wait for a pod to be CREATED. Against a name that
@@ -256,6 +274,29 @@ for _ in $(seq 1 150); do
   sleep 2
 done
 ${K} wait --for=condition=Ready "pod/order-matcher-cluster-${VICTIM}" --timeout=600s >/dev/null
+
+# THE DISK WAS ACTUALLY EMPTY. Without this the step is unfalsifiable: the identity assertion below
+# holds for a tail replay too, so a green run would not distinguish the rebuild this proof is named
+# after from the member simply reopening its own recording. Both readings below were run against
+# the pod-only delete first and reported the opposite answer there, so they discriminate.
+if [[ -n "${PVC_UID_BEFORE}" ]]; then
+  PVC_UID_AFTER="$(${K} get pvc "${PVC}" -o jsonpath='{.metadata.uid}' 2>/dev/null)"
+  [[ -n "${PVC_UID_AFTER}" && "${PVC_UID_AFTER}" != "${PVC_UID_BEFORE}" ]] \
+    || fail "${PVC} still has uid ${PVC_UID_BEFORE} — the claim survived, so the member came back
+  on the same disk and this step measured a tail replay, not a rebuild."
+  echo "  claim ${PVC} is a NEW one (${PVC_UID_BEFORE:0:8} -> ${PVC_UID_AFTER:0:8}), freshly provisioned"
+fi
+# An unreadable disk must not read as an empty one: require a number, or this is a vacuous pass.
+OLDEST="$(${K} exec "order-matcher-cluster-${VICTIM}" -c cluster-node -- \
+  sh -c 'find /data -type f -printf "%T@\n" 2>/dev/null | sort -n | head -1' 2>/dev/null | cut -d. -f1)"
+[[ "${OLDEST}" =~ ^[0-9]+$ && "${WIPE_AT}" =~ ^[0-9]+$ ]] \
+  || fail "could not read the age of member ${VICTIM}'s disk (oldest='${OLDEST}' wipe_at='${WIPE_AT}')
+  — this check cannot tell an empty disk from an unreadable one, so the step below proves nothing."
+[[ "${OLDEST}" -ge "${WIPE_AT}" ]] \
+  || fail "member ${VICTIM} came back holding a file written $(( WIPE_AT - OLDEST ))s BEFORE the wipe
+  — its disk survived, so it resumed its own recent state instead of rebuilding from nothing."
+echo "  nothing on member ${VICTIM}'s disk predates the wipe (oldest file +$(( OLDEST - WIPE_AT ))s),"
+echo "  so everything it now holds was rebuilt from the other two members"
 
 POST_STATE="$(identity_consensus)"
 [[ "${POST_STATE}" == "${PRE}" ]] \
