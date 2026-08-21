@@ -531,7 +531,8 @@ export class Api {
         verdict: !accepted.length ? 'never-accepted'
           : rejected.every(p => p < aLo || p > aHi) ? 'anchored-elsewhere'
           : 'other-refusal',
-        // One sample either side is an anecdote: the split can be disjoint by luck. Said out loud
+        // One sample either side is an anecdote: with one accepted and one refused price, the
+        // refusal can fall outside the accepted range by luck rather than by a band. Said out loud
         // rather than folded into the verdict, because a thin reading is still worth seeing.
         thin: Math.min(accepted.length, rejected.length) < 3,
       });
