@@ -42,17 +42,19 @@ FAILED=0
 vlog(){ (( VERBOSE )) && printf '%s\n' "$@" >&2 || true; }
 
 order(){ # $1=label  $2=expected ("NEW" | "REJECTED·REASON")  $3=json body
-  local r st rs got
+  local r rc st rs got
   CHECKS=$((CHECKS + 1))
   vlog "      → POST ${U}/orders" "        ${3}" "        expect: ${2//·/ · }"
-  r=$(curl -s -m8 "$U/orders" -H "Content-Type: application/json" -d "$3")
+  r=$(curl -s -m8 "$U/orders" -H "Content-Type: application/json" -d "$3"); rc=$?
   vlog "      ← ${r:-<empty>}"
-  # An empty body is a dead port-forward or a gateway that is not serving, NOT a risk verdict.
+  # An empty body means nothing answered at $U at all, NOT a risk verdict. curl's rc says which
+  # transport failure it was; what should be listening there is a fact about the rig, so this
+  # prints the rc and the URL and leaves the remedy to whoever knows which rig they are on.
   # Reported separately on purpose: the whole failure class this proof exists to catch is a
   # rejection reason being wrong, and a connection problem rendered as "expected REJECTED, got
   # nothing" would read as a gateway defect. Say which one it is.
   if [[ -z "${r}" ]]; then
-    printf "   %-26s ✘ UNREACHABLE — no response from %s (is the port-forward up?)\n" "$1" "$U"
+    printf "   %-26s ✘ UNREACHABLE — no response from %s (curl rc=%s; 7=nothing listening, 28=timed out)\n" "$1" "$U" "$rc"
     FAILED=$((FAILED + 1)); return
   fi
   # Two response shapes. The Spring matcher answers {"status":...}; the cluster gateway answers

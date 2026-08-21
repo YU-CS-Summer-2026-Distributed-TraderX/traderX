@@ -80,9 +80,10 @@ need_obs() { # url  name  port-forward-target
     if [[ ${rc} -eq 7 ]]; then break; fi
     sleep 2
   done
-  echo "[FAIL] $2 unreachable at $1 — the observability stack is not up, or not forwarded." >&2
-  echo "[hint] bash scripts/yu15/start-observability-kind.sh" >&2
-  echo "[hint] ${K} port-forward $3 &" >&2
+  echo "[FAIL] $2 is not reachable at $1 (curl rc=${rc}; 7=nothing listening, 28=timed out)." >&2
+  echo "[hint] bring the stack up for the rig you are on — start-observability-kind.sh and" >&2
+  echo "       start-observability-gke.sh, both under scripts/yu15/. If that rig reaches these" >&2
+  echo "       endpoints through a forward, this is the one: ${K} port-forward $3 &" >&2
   exit 1
 }
 need_obs "${TEMPO_URL}/ready" Tempo "svc/tempo 3200:3200"
@@ -104,7 +105,12 @@ cleanup() {
   ${K} set env statefulset/order-matcher-cluster "OTEL_SAMPLE_MASK=${ORIG_MASK}" >/dev/null
   ${K} rollout status deployment/cluster-gateway --timeout=300s >/dev/null || true
   ${K} rollout status statefulset/order-matcher-cluster --timeout=300s >/dev/null || true
-  echo "[note] your own gateway port-forward died with the rolled pod — restart it:"
+  # Conditioned, not asserted: a kubectl port-forward binds ONE pod, so it dies with the roll —
+  # but only a reader who reaches the gateway that way has one. On a rig where the gateway is a
+  # LoadBalancer there is no forward in the path at all, and telling them to restart one is a
+  # remedy for a fault they do not have.
+  echo "[note] this rolled the gateway pod. If you reach ${MATCHER_URL} through a kubectl"
+  echo "       port-forward of your own, it bound that pod and died with it — restart it:"
   echo "       ${K} port-forward svc/order-matcher 18110:18110 &"
 }
 trap cleanup EXIT
@@ -198,7 +204,7 @@ if [[ "${SEED_CODE}" != 2* ]]; then
   echo "[FAIL] the seed did not take: HTTP ${SEED_CODE} $(cat /tmp/yu13-otel-seed 2>/dev/null)" >&2
   echo "       Everything below asserts on an account and a security this was supposed to create," >&2
   echo "       so it would report UNKNOWN_ACCOUNT / UNKNOWN_SECURITY as if the order path were at" >&2
-  echo "       fault. 000 = no answer at all (a dead port-forward or a gateway not yet serving)," >&2
+  echo "       fault. 000 = nothing answered at ${MATCHER_URL} at all — the transport," >&2
   echo "       which is a different fault from a gateway that answered with an error." >&2
   exit 1
 fi

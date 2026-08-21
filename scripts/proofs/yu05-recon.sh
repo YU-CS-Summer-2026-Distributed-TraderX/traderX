@@ -27,14 +27,19 @@ echo "── RECONCILIATION (journal ↔ projection) ──"
 # One call, code and body together: the reindex replays the whole log, so probing with a throwaway
 # request first would pay for it twice.
 RESP=$(curl -s -m600 -w $'\n%{http_code}' -X POST "$OM/recon/full-history/reindex" \
-  -H "Authorization: Bearer $ADMIN")
+  -H "Authorization: Bearer $ADMIN"); RI_RC=$?
 RI_CODE=$(printf '%s' "$RESP" | tail -1)
 RI=$(printf '%s' "$RESP" | sed '$d')
 case "$RI_CODE" in
   000)
     # Unreachable is an error, not a green light: treating it as "capability present" let this
     # script run on to report matched=0 against a matcher it never contacted.
-    echo "   ✘ $OM unreachable (curl 000) — port-forward svc/order-matcher 18110:18110?"; exit 1 ;;
+    # No remedy named here on purpose: how $OM is reached differs per rig (a forward on kind, a
+    # LoadBalancer with a public IP on GKE), so naming one sends half the readers to build
+    # something that is not in their path while the real cause goes unexamined.
+    echo "   ✘ the order-matcher is not reachable at $OM (curl rc=$RI_RC — 7 is nothing"
+    echo "     listening, 28 is a timeout). Nothing answered, so this is the transport, not recon."
+    exit 1 ;;
   404)
     echo "   ✘ $OM/recon/full-history/reindex -> 404"
     echo "   CONTRACT (from ReconciliationService, YU05 layer) — this tier must serve all three:"

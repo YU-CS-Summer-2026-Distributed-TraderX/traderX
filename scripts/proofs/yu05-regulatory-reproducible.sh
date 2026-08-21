@@ -42,9 +42,12 @@ vlog "   endpoints: OM=${OM}  TP=${TP}  ctx=${CTX}"
 # "capability present" let the script sail past this check and produce a pass against a matcher it
 # never contacted, which is precisely the vacuous result this guard exists to prevent.
 _OM_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m10 "$OM/regulatory/report" \
-  -H "Authorization: Bearer $ADMIN")"
+  -H "Authorization: Bearer $ADMIN")"; _OM_RC=$?
 if [ "$_OM_CODE" = "000" ]; then
-  echo "   ✘ $OM unreachable (curl 000) — port-forward svc/order-matcher 18110:18110?"
+  # No remedy named here on purpose — see the same branch in yu05-recon.sh. How $OM is reached
+  # is a fact about the rig, and this script is on the side that does not know it.
+  echo "   ✘ the order-matcher is not reachable at $OM (curl rc=$_OM_RC — 7 is nothing"
+  echo "     listening, 28 is a timeout). Nothing answered, so this is the transport."
   exit 1
 fi
 if [ "$_OM_CODE" = "404" ]; then
