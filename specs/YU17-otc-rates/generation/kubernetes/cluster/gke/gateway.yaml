@@ -135,8 +135,19 @@ spec:
             # costs nothing on the trade path is a TIMING claim, so the "off" arm must be the
             # deployed default and the "on" arm must be reachable without a rebuild. Flip
             # OTEL_TRACES to "1" (both here and on the peer manifest) to take the "on" run.
+            # Tracing ON for the gateway. It shipped "0" because this GKE tier was cut from the
+            # kind manifests, where every throughput-costly switch is off by default — the same
+            # reason the kdb tap and the recon sweep had to be turned on here. The collector, the
+            # endpoint and the sample mask were all correctly configured the whole time; only the
+            # master switch was closed, so Tempo answered 200 with an empty result set and looked
+            # like a broken write path rather than an absent producer.
+            #
+            # The A/B for this was throughput-neutral on GKE, so there is no reason to keep it off
+            # on a demo rig. NOTE the members still carry "0": turning theirs on needs a rolling
+            # restart, which is safe here (same image, no mixed-version window, readiness gates on
+            # catch-up) but is a live-book decision rather than a config one.
             - name: OTEL_TRACES
-              value: "0"
+              value: "1"
             - name: OTEL_ENDPOINT
               value: "http://otel-collector:4318"
             # 1 in 128. At ~190k orders/s a per-order span is its own performance problem; head
