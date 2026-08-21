@@ -211,7 +211,18 @@ class EodPnlConsumerTest {
 
         assertEquals(1.0, registry.get("traderx_eod_pnl_accounts_marked").counter().count());
         assertEquals(1.0, registry.get("traderx_eod_pnl_halted").counter().count());
-        assertEquals(3, registry.getMeters().size());
+        // Names, not a count. This assertion was `assertEquals(3, ...)` and went red on 2026-08-19
+        // when the durable-resubscribe fix added traderx_eod_pnl_subscribed -- a legitimate meter,
+        // reported as "expected: <3> but was: <4>", which names neither the meter nor whether it
+        // should be there. A count says something changed; the set says WHAT, so the next addition
+        // arrives as a readable diff instead of an arithmetic puzzle.
+        assertEquals(
+            java.util.Set.of("traderx_eod_pnl_accounts_marked", "traderx_eod_pnl_halted",
+                "traderx_eod_pnl_last_completed_millis", "traderx_eod_pnl_subscribed"),
+            registry.getMeters().stream().map(m -> m.getId().getName())
+                .collect(java.util.stream.Collectors.toSet()));
+        // The point of the test: FIXED CARDINALITY. Untagged meters cannot fan out per account,
+        // which is what would turn an EOD run over thousands of accounts into a metrics incident.
         assertTrue(registry.getMeters().stream().allMatch(m -> m.getId().getTags().isEmpty()));
     }
 
