@@ -62,8 +62,10 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   book anchored by a stray order refuses every realistic price for the rest of the epoch and
   nothing repairs it in place (a seed cannot move a mark that has printed, and the band is not
   derived from the mark anyway). The screen compares accepted against refused prices per security
-  from the regulatory journal: **disjoint ranges are the signature of a mis-anchored book; an
-  overlap means the refusal came from something else and says nothing about the band.** That
+  from the regulatory journal: **a refused price inside the accepted range means the band cannot be
+  what refused it; refusals only outside that range are the band's signature.** It is deliberately
+  not a disjointness test — a collar refuses on both sides, so the ranges overlap even when the
+  band is exactly the cause, and disjointness reports that as "some other reason". That
   distinction is the whole value — this rig shows refusals on seven securities and exactly one is
   mis-anchored. The order ticket carries the same warning inline, so a doomed order is flagged
   before it is sent rather than explained afterwards.

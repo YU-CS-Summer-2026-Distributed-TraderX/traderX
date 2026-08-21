@@ -315,8 +315,8 @@ export class TicketPanel {
 
   /**
    * Warn before the refusal rather than explaining it afterwards. Only for books measured
-   * mis-anchored (accepted and refused prices disjoint) — an overlap means refusals came from
-   * something else and would make this a false alarm.
+   * mis-anchored — every refusal outside the range the book has already accepted. A refusal from
+   * INSIDE that range means the band is not the cause, and warning about it would be a false alarm.
    */
   readonly bandWarning = computed(() => {
     const b = this.api.band(this.currentTicker());

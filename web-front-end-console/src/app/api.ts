@@ -455,10 +455,12 @@ export class Api {
   // realistic MSFT price is refused. A demo driver typing a plausible MSFT order gets a refusal
   // and no way to see why, which is why this screen exists.
   //
-  // The method matters as much as the finding. A band problem produces a DISJOINT accepted/rejected
-  // price split; an overlap means the refusal came from something else entirely (unknown account,
-  // credit, quantity) and says nothing about the band. Six securities on this rig show refusals and
-  // only one is mis-anchored — reading "rejected" as "mis-anchored" would have condemned all seven.
+  // The method matters as much as the finding: a refused price INSIDE the accepted range means the
+  // band cannot be what refused it (unknown account, credit, quantity), while refusals lying only
+  // outside that range are the band's own signature. NOT a disjointness test — a collar refuses on
+  // both sides, so the ranges overlap even when the band is exactly the cause. Most securities
+  // showing refusals are not mis-anchored, and reading "rejected" as "mis-anchored" would condemn
+  // all of them.
   readonly bands = signal<BandCheck[]>([]);
   /**
    * Whether the screen can see at all. `disabled` is the regulatory projection being off — on the

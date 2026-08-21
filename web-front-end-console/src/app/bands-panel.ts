@@ -26,7 +26,7 @@ import { HelpTip } from './help';
       <button type="button" class="card-tog" (click)="open.set(!open())">
         <span class="arrow">{{ open() ? '▾' : '▸' }}</span><h2>Book bands &amp; refusals</h2>
       </button>
-      <help-tip text="The price collar is a band anchored on the first limit order that entered a security's book — not a percentage around the current mark. A book anchored by a stray order refuses every realistic price for the rest of the epoch, and nothing repairs it in place: a price seed cannot move a mark that has already printed, and the band is not derived from the mark anyway. This screen reads the regulatory journal and compares, per security, the prices that were accepted against the prices that were refused. Disjoint ranges are the signature of a mis-anchored book; overlapping ranges mean the refusal came from something else and say nothing about the band." />
+      <help-tip text="The price collar is a band anchored on the first limit order that entered a security's book — not a percentage around the current mark. A book anchored by a stray order refuses every realistic price for the rest of the epoch, and nothing repairs it in place: a price seed cannot move a mark that has already printed, and the band is not derived from the mark anyway. This screen reads the regulatory journal and compares, per security, the prices that were accepted against the prices that were refused. A collar refuses on BOTH sides of its band, so the test is not whether the two ranges sit apart — they rarely do — but whether any refused price falls INSIDE the accepted range. None inside is the band's own signature; one inside means the band cannot be what refused it, and the cause is elsewhere." />
       <span class="spacer"></span>
       @if (api.bandsState() !== 'ok') { <span class="pill warn">cannot see</span> }
       @else if (bad().length) { <span class="pill bad">{{ bad().length }} mis-anchored</span> }
@@ -85,8 +85,9 @@ import { HelpTip } from './help';
                     }
                     @default {
                       <span class="pill">refused for another reason</span>
-                      <div class="sub">the ranges overlap, so the same price was both accepted and
-                        refused — account, credit or quantity, not the band</div>
+                      <div class="sub">a refused price sits inside the range this book has already
+                        accepted, so the band cannot be what refused it — account, credit or
+                        quantity</div>
                     }
                   }
                   @if (b.thin) { <div class="sub thin">thin: {{ b.accepted }} accepted / {{ b.rejected }} refused —
