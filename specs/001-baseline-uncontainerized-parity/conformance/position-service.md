@@ -4,6 +4,7 @@ This pack defines requirement and verification gates for `position-service`.
 
 ## User Stories
 - `US-002`
+- `US-004`
 - `US-007`
 - `US-008`
 
@@ -11,6 +12,7 @@ This pack defines requirement and verification gates for `position-service`.
 - `SYS-FR-001`
 - `SYS-FR-003`
 - `SYS-FR-011`
+- `SYS-FR-012`
 
 ## Non-Functional Requirements
 - none
@@ -19,9 +21,11 @@ This pack defines requirement and verification gates for `position-service`.
 - `AC-001`
 - `AC-003`
 - `AC-009`
+- `AC-010`
 
 ## Flows
 - `F2`
+- `F4`
 - `STARTUP`
 
 ## Contract Gates
@@ -30,3 +34,4 @@ This pack defines requirement and verification gates for `position-service`.
 ## Verification References
 - `scripts/start-base-uncontainerized-generated.sh`
 - `scripts/test-position-service-overlay.sh`
+- `scripts/test-realtime-account-stream-overlay.sh`

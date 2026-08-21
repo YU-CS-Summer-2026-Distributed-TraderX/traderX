@@ -9,6 +9,7 @@ This pack defines requirement and verification gates for `trade-feed`.
 ## Functional Requirements
 - `SYS-FR-001`
 - `SYS-FR-004`
+- `SYS-FR-012`
 
 ## Non-Functional Requirements
 - `SYS-NFR-004`
@@ -16,9 +17,11 @@ This pack defines requirement and verification gates for `trade-feed`.
 ## Acceptance Criteria
 - `AC-001`
 - `AC-003`
+- `AC-010`
 
 ## Flows
 - `F2`
+- `F4`
 - `STARTUP`
 
 ## Contract Gates
@@ -27,4 +30,5 @@ This pack defines requirement and verification gates for `trade-feed`.
 ## Verification References
 - `scripts/start-base-uncontainerized-generated.sh`
 - `scripts/stop-base-uncontainerized-generated.sh`
+- `scripts/test-realtime-account-stream-overlay.sh`
 - `scripts/test-trade-feed-overlay.sh`
