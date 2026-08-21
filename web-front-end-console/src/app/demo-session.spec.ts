@@ -128,10 +128,25 @@ describe('SessionDriver tally', () => {
     expect(d.tally().text).toContain('3 in flight');
   });
 
-  it('calls the same shortfall UNACCOUNTED once stopped, and flags it', () => {
+  it('calls the same shortfall UNACCOUNTED once stopped AND nothing is outstanding', () => {
     withCounts({ sent: 20, accepted: 15, rejected: 0, noPrice: 2 });
     d.stop('operator');
+    expect(d.inFlight()).toBe(0);
     expect(d.tally().bad).withContext('at rest nothing more can arrive').toBeTrue();
+    expect(d.tally().text).toContain('3 UNACCOUNTED');
+  });
+
+  it('still calls it in flight when requests are outstanding at the stop instant', () => {
+    // The measured case: N actors stopping together each leave their final request unanswered, so
+    // the gap equals the actor count on EVERY healthy run and clears within ~200ms. Keying on
+    // running() alone reported that as loss; keying on outstanding requests does not.
+    withCounts({ sent: 20, accepted: 15, rejected: 0, noPrice: 2 });
+    d.inFlight.set(3);
+    d.stop('finished');
+    expect(d.tally().bad).withContext('answers are still owed').toBeFalse();
+    expect(d.tally().text).toContain('3 in flight');
+    d.inFlight.set(0);
+    expect(d.tally().bad).withContext('now nothing can answer').toBeTrue();
     expect(d.tally().text).toContain('3 UNACCOUNTED');
   });
 

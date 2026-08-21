@@ -126,6 +126,18 @@ export class SessionDriver {
    */
   readonly skipped = computed(() => this.actors().reduce((s, a) => s + a.noPrice, 0));
 
+  /**
+   * Requests issued and not yet answered. This is the real predicate for "is the shortfall
+   * explained", and keying the tally on `running()` instead was subtly wrong: a request outstanding
+   * at the stop instant is still outstanding one millisecond later, when running() has gone false.
+   *
+   * Measured: 8 actors stopping together leave a gap of exactly 8 — one final request each — which
+   * clears in under 200ms as the answers land. The session was fine and the arithmetic was fine;
+   * only the label was wrong, and `stop()` froze it into the activity log where it looked permanent.
+   * An anomaly bucket that fills on every healthy run has mislabelled a normal event.
+   */
+  readonly inFlight = signal(0);
+
   /** Selected catalog instruments plus anything typed in Extra symbols (OCC contracts, mostly). */
   readonly pool = computed(() => [
     ...this.picked(),
@@ -160,10 +172,14 @@ export class SessionDriver {
         + `not add up, which should be impossible: ${sum}` };
     }
     if (!gap) return { bad: false, text: `${offered} ${unit} sent = ${sum}` };
+    // Outstanding requests explain the gap regardless of running state — see inFlight. UNACCOUNTED
+    // is reserved for a gap with nothing left that could still answer it, which is the only case
+    // that means anything.
+    const pending = this.inFlight() > 0;
     return {
-      bad: !this.running(),
+      bad: !this.running() && !pending,
       text: `${offered} ${unit} sent = ${sum} + ${gap} `
-        + (this.running() ? 'in flight' : 'UNACCOUNTED — no answer ever arrived'),
+        + (this.running() || pending ? 'in flight' : 'UNACCOUNTED — no answer ever arrived'),
     };
   });
 
@@ -288,9 +304,25 @@ export class SessionDriver {
     this.running.set(false);
     this.paused.set(false);
     this.actors.update(l => l.map(a => ({ ...a, running: false })));
-    this.api.log({ kind: 'algo', ok: true,
-      summary: `live session ${why} after ${this.elapsed()}s of trading time · ${this.tally().text}` });
+    // Log AFTER the outstanding requests settle. Writing it here froze the transient shortfall into
+    // the activity log — the screen corrected itself within 200ms while the permanent record kept
+    // saying "8 UNACCOUNTED", which is the copy anyone reads afterwards.
+    this.logWhenSettled(why, this.elapsed());
     this.bankedSec = 0;
+  }
+
+  /**
+   * Wait for the answers still owed, then write the session's line.
+   *
+   * Bounded: if something genuinely never answers, the line is written anyway and says so, because
+   * a log entry that never appears is worse than one that reports a real gap. The wait is the whole
+   * point — at the stop instant every actor has exactly one request outstanding, so the unsettled
+   * numbers are wrong by exactly the actor count, every single run.
+   */
+  private async logWhenSettled(why: string, elapsed: number): Promise<void> {
+    for (let i = 0; i < 100 && this.inFlight() > 0; i++) await new Promise(r => setTimeout(r, 50));
+    this.api.log({ kind: 'algo', ok: true,
+      summary: `live session ${why} after ${elapsed}s of trading time · ${this.tally().text}` });
   }
 
   private retire(i: number): void {
@@ -336,9 +368,10 @@ export class SessionDriver {
     const o = this.order(a, a.sent);
     if (!o) { this.patch(i, { noPrice: a.noPrice + 1 }); return; }
     const clientOrderId = nextClientOrderId();
+    this.inFlight.update(n => n + 1);
     const r = await this.api.post<OrderResult>('/order-matcher/orders', {
       accountId: Number(a.accountId), ...o, clientOrderId,
-    });
+    }).finally(() => this.inFlight.update(n => n - 1));
     const cur = this.actors()[i];
     if (!cur) return;
     if (r.status === 200) {
@@ -370,8 +403,9 @@ export class SessionDriver {
     }
     if (skipped) this.patch(i, { noPrice: this.actors()[i].noPrice + skipped });
     if (!orders.length) return;
+    this.inFlight.update(n => n + 1);
     const r = await this.api.post<{ accepted?: number; total?: number; error?: string }>(
-      '/order-matcher/orders/batch', orders);
+      '/order-matcher/orders/batch', orders).finally(() => this.inFlight.update(n => n - 1));
     const cur = this.actors()[i];
     if (!cur) return;
     if (r.status === 201 && typeof r.body?.accepted === 'number') {
