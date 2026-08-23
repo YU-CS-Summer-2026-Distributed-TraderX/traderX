@@ -73,19 +73,34 @@ An automated poll feeding a public demo is squarely outside that. Redistribution
 *Caveat recorded because it may change the answer:* the on-chain feeds are a different distribution
 path (public chain data), and were not assessed here.
 
-### Massive — UNVERIFIED, and the document that looks like an answer is not one
+### Massive — personal/non-commercial on the individual tier, and the governing document is STILL unread
 
-The Website Terms of Service **explicitly defer** on this point:
+Two documents reviewed, and **each one defers to another**:
 
+**Website ToS** — explicitly not the answer:
 > *"these Terms are in addition to any other terms of service or separately executed agreement between
 > you and Massive that govern your use of the … **market data** provided by Massive (which, in the
 > event of a conflict with these Terms and conditions, **shall govern**)"*
 
-So the site terms — including their broad §5 prohibition on automated extraction — describe the
-**website**, and the market-data terms are a separate, unseen agreement that overrides them.
-**Read "Massive for Businesses" before assuming anything.** Treating the website ToS as the answer
-would be reading the wrong document confidently, which is a failure mode this project has paid for
-elsewhere.
+**Massive for Individuals ToS** (2025-07-18) — narrows the grant sharply:
+> §2 — *"we grant you a … limited right to access and use the Services … solely for your own
+> **personal, non-commercial, and non-business** purposes."*
+
+> Preamble — *"If you are using the Services for business or commercial purposes, you may not use any
+> of the Services labeled for individual or personal use."*
+
+Also relevant: §6.1(f)(ix) bars use *"for any commercial or unauthorized purpose"* without written
+consent, and §6.1(d)(iii) bars *"making unauthorized copies of any content made available on or
+through the Services"*.
+
+**And it defers again.** §1 makes Market Data subject to a separate **Market Data Terms of Service**
+"incorporated herein by reference" — and **§15.2's order of precedence puts those Additional Terms
+ABOVE these Terms**. So the document that actually governs market-data usage has still not been read,
+and it outranks both documents that have been.
+
+**Assessment:** a university teaching project is plausibly non-commercial, but a conference
+presentation and a public repository are not obviously *personal* or *non-business*. That is the
+clause to resolve before anything external is displayed publicly — not the rate limit.
 
 ### FRED — usable, with three concrete obligations
 
@@ -112,6 +127,33 @@ and stripping proprietary notices.
 
 Free instrument identifiers — reference data, not prices. Worth having for the reference-data service
 independently of this decision.
+
+## Interim position (yaakov, 2026-08-23): use now, revert before anything public
+
+**Decision: integrate against these services during development, and disable them before any public
+demo or recorded talk.** That is a sound posture *only because rule 1 makes the revert real* — with
+`synthetic` as a sufficient default, turning an external source off is a config change, not a
+rewrite, and the system keeps working.
+
+**The rule that makes "revert later" actually possible — and the way it fails:**
+
+> **External data must never become durable.** It may live in memory and on the wire. It may not be
+> committed to the repository, baked into fixtures or seed files, cached to disk in a tracked path, or
+> embedded in recorded or published material.
+
+Deleting an integration later removes *future* calls. It does not un-publish a recorded talk, and it
+does not remove a price that got committed into a fixture six weeks earlier. **The reversible part is
+the code; the irreversible part is anything that escaped.** If a vendor price ever needs to be
+persisted, it must be replaced by a synthetic value first — the same shape as the fixture seeder
+reading live prices at run time rather than hardcoding them.
+
+Two consequences worth stating so they are not discovered later:
+
+- **The demo must be rehearsed in synthetic mode**, not merely capable of it. A path that is only
+  exercised at the moment it is needed is untested; this project has paid for that repeatedly.
+- **Provenance is what makes the switch auditable.** Rule 2 already requires a price to carry whether
+  it is real or invented. Without it, nobody can answer "was that number from a vendor?" after the
+  fact — which is exactly the question that would matter.
 
 ## What this is explicitly NOT
 
