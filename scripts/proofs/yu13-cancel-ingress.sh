@@ -83,8 +83,8 @@ ACCOUNT="${ACCOUNT:-99001}"
 # proof then fails for a reason that has nothing to do with cancel ingress. IBM is crossed by
 # seed-proof-fixtures.sh and books reliably. Override TICKER to use something else.
 TICKER="${TICKER:-IBM}"
-# The book carries a price collar anchored on the security's first limit; an order far off the
-# seeded price is rejected as PRICE_COLLAR before it can ever rest. Seed and rest at the same price.
+# The book carries a price collar centred on the security's market reference (ADR-066: the feed
+# price); an order far off it is rejected as PRICE_COLLAR before it can ever rest. Rest at the feed.
 # Track the live feed rather than pinning a number. price-publisher streams real prices for its
 # universe, so ANY fixed price eventually drifts far enough from the reference to be rejected
 # PRICE_COLLAR -- which fails the proof for a reason that has nothing to do with cancel ingress.

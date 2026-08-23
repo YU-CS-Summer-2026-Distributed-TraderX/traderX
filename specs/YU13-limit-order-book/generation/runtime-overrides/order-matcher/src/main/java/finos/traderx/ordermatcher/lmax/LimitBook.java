@@ -10,9 +10,12 @@ package finos.traderx.ordermatcher.lmax;
  *       ({@code 10_000} = one cent at the Px x1e6 scale). Limit prices must be exact grid
  *       multiples — the engine rejects off-grid limits, so a level's price IS every resting
  *       order's exact limit price and execution at level price never violates a limit.</li>
- *   <li>The book covers a band of {@code levels} consecutive ticks anchored when the
- *       security's first limit order arrives: slot 0 = {@code baseLevel} absolute ticks,
- *       anchored so the first price sits mid-band. Limits outside the band are rejected
+ *   <li>The book covers a band of {@code levels} consecutive ticks: slot 0 = {@code baseLevel}
+ *       absolute ticks, anchored so a reference price sits mid-band. The engine anchors on the
+ *       security's market reference (feed price, else mark, else the first limit) and may
+ *       {@link #rebase re-anchor} a band the market has walked away from — a re-index of every
+ *       occupied slot, so a resting order whose new slot falls outside the band has nowhere to
+ *       live and is cancelled by the engine first. Limits outside the band are rejected
  *       (PRICE_COLLAR) — deterministic, and exactly what a venue's price collar does.</li>
  *   <li>Per side: head/tail entry per level (FIFO = arrival order = consensus-log order,
  *       the YU12 time-priority source), an aggregate open-quantity per level (plain long[]
@@ -94,10 +97,88 @@ public final class LimitBook {
     public int slotFor(long limitPx) {
         final long absLevel = limitPx / tickTicks;
         if (baseLevel < 0) {
-            baseLevel = Math.max(0, absLevel - (levels >> 1));
+            baseLevel = baseCentredOn(absLevel);
         }
         final long slot = absLevel - baseLevel;
         return slot < 0 || slot >= levels ? NO_LEVEL : (int) slot;
+    }
+
+    /** Anchor an un-anchored band so {@code centrePx} sits mid-band. No-op once anchored. */
+    public void anchorAround(long centrePx) {
+        if (baseLevel < 0) {
+            baseLevel = baseCentredOn(centrePx / tickTicks);
+        }
+    }
+
+    /** The slot 0 anchor that puts {@code absLevel} mid-band (clamped at price zero). */
+    public long baseCentredOn(long absLevel) {
+        return Math.max(0, absLevel - (levels >> 1));
+    }
+
+    /** True when {@code limitPx} would sit inside a band anchored at {@code base}. */
+    public boolean fitsAt(long base, long limitPx) {
+        final long slot = limitPx / tickTicks - base;
+        return slot >= 0 && slot < levels;
+    }
+
+    /** Next occupied slot strictly below {@code fromExclusive} on {@code side}, or NO_LEVEL. */
+    public int occupiedBelow(byte side, int fromExclusive) {
+        return scanDown(side == InputEvent.SIDE_BUY ? bidBits : askBits, fromExclusive);
+    }
+
+    /** Next occupied slot strictly above {@code fromExclusive} on {@code side}, or NO_LEVEL. */
+    public int occupiedAbove(byte side, int fromExclusive) {
+        return scanUp(side == InputEvent.SIDE_BUY ? bidBits : askBits, fromExclusive);
+    }
+
+    /**
+     * Re-anchor the band: slot 0 becomes {@code newBaseLevel} and every occupied level is
+     * re-indexed in place (its orders keep their FIFO order and move with it). Every occupied
+     * level MUST fit the new band — the caller cancels stranded orders first; a level that does
+     * not fit fails closed. Cold path (a collar refusal the market disagrees with), O(open orders).
+     */
+    public void rebase(long newBaseLevel) {
+        final long delta = baseLevel - newBaseLevel;   // new slot = old slot + delta
+        if (delta == 0) {
+            return;
+        }
+        if (delta < Integer.MIN_VALUE || delta > Integer.MAX_VALUE) {
+            throw new IllegalStateException("rebase: band moved further than the slot index spans");
+        }
+        shift(bidHead, bidTail, bidQty, bidBits, (int) delta);
+        shift(askHead, askTail, askQty, askBits, (int) delta);
+        if (bestBid != NO_LEVEL) {
+            bestBid += (int) delta;
+        }
+        if (bestAsk != NO_LEVEL) {
+            bestAsk += (int) delta;
+        }
+        baseLevel = newBaseLevel;
+    }
+
+    private void shift(RestingOrder[] head, RestingOrder[] tail, long[] qty, long[] bits, int delta) {
+        // Walk towards the move so a source is never overwritten before it is read: levels move
+        // down (delta < 0) ascending, up (delta > 0) descending. Each moved level clears its own
+        // bit and sets the target's, which the scan never revisits.
+        int slot = delta < 0 ? scanUp(bits, -1) : scanDown(bits, levels);
+        while (slot != NO_LEVEL) {
+            final int target = slot + delta;
+            if (target < 0 || target >= levels) {
+                throw new IllegalStateException("rebase: an occupied level falls outside the new band");
+            }
+            head[target] = head[slot];
+            tail[target] = tail[slot];
+            qty[target] = qty[slot];
+            head[slot] = null;
+            tail[slot] = null;
+            qty[slot] = 0;
+            bits[slot >> 6] &= ~(1L << (slot & 63));
+            bits[target >> 6] |= 1L << (target & 63);
+            for (RestingOrder o = head[target]; o != null; o = o.bookNext) {
+                o.bookLevel = target;
+            }
+            slot = delta < 0 ? scanUp(bits, slot) : scanDown(bits, slot);
+        }
     }
 
     /** Exact price (Px ticks) of a level slot. */

@@ -28,12 +28,15 @@
 // A taker that finds no depth rests instead, and the mark correctly does not move.
 //
 // TRAPS THIS SCRIPT IS BUILT AROUND — all of them observed on this rig:
-//   * PRICE_COLLAR is the book BAND, not a percentage. LimitBook anchors a band of BOOK_LEVELS
-//     (1<<17) ticks of 0.001 on a security's FIRST limit order of the epoch, with that price
-//     mid-band — so ~±$65.5 around wherever the security first traded, forever, until a fresh
-//     epoch. seed-proof-fixtures.sh crosses AAPL/IBM/NVDA at 200, so NVDA (published ~$903) cannot
-//     be quoted at its real level at all. Hence probeAnchor(): every symbol is probed at its
-//     published price before the session and dropped, loudly, if the band refuses it. Never assume.
+//   * PRICE_COLLAR is the book BAND, not a percentage. LimitBook holds a band of BOOK_LEVELS
+//     (1<<17) ticks of 0.001 — ~±$65.5 — centred on the security's market reference (the feed
+//     price, else the mark, else its first limit). Since ADR-066 the band follows the feed: a
+//     limit within ±$65.5 of the feed is admitted and the band re-centres, cancelling resting
+//     orders the new band cannot hold (reason PRICE_COLLAR on their ack). Before ADR-066 it was
+//     pinned on the security's FIRST limit of the epoch, forever — seed-proof-fixtures.sh crosses
+//     AAPL/IBM/NVDA at 200, so NVDA (published ~$903) could not be quoted at its real level at
+//     all. probeAnchor() stays: every symbol is probed at its published price before the session
+//     and dropped, loudly, if the band refuses it. Never assume.
 //   * ADR-051: a price tick seeds a security's mark only until a trade prints; after that the last
 //     TRADE price is the mark. These agents' trades therefore become the marks, so a runaway agent
 //     would walk a mark somewhere absurd and collar everything after it. --max-move clamps the

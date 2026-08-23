@@ -1,9 +1,52 @@
 # A book's price band is anchored by its first order, so a security can be permanently untradeable
 
 **Lifted 2026-08-21** out of `issues/resolved/an-epoch-roll-silently-drops-instrument-classes.md`,
-where it was filed 2026-08-19 as a related section. That issue is now resolved; this is not, and
-nobody reads `issues/resolved/` looking for open work. **Open. Nothing here was re-measured today** —
-the values are the 2026-08-19 record, on an epoch that has since been rolled twice.
+where it was filed 2026-08-19 as a related section. **Resolved 2026-08-23** — the band now follows
+the market (ADR-066, `specs/YU17-otc-rates/system/adr-066-price-band-follows-the-market.md`). See
+*Resolution* at the end. The mechanism and the diagnostic rule below are kept as written: the
+diagnostic is still how to read a refusal table, and the mechanism is what the fix replaced.
+
+## Resolution (2026-08-23)
+
+yaakov chose the full re-anchoring collar in the engine over two smaller options — in particular
+over crossing the demo equities at live prices in the seeder, which would have left the mechanism
+intact (a stray order could still poison a book mid-epoch) and forced every IBM-at-200 proof to move.
+
+**What changed.** `LimitBook` can `rebase()` — re-index every occupied slot to a new `baseLevel`
+(cold path, O(open orders)). `MatchingEngine.bandSlot()` replaces the bare `slotFor()` on the new-
+order and replace paths: a new book anchors on the security's *reference* (the sequenced feed price
+in `BlpRiskState.lastPrice[]`, else the mark, else — only when neither exists — the first limit, the
+old rule kept as the floor); a limit the band refuses is re-judged against a band centred on the
+reference, and if that admits it the book re-anchors there, cancelling first any resting order the
+new band cannot hold, through the STP unsolicited-cancel path (`FLAG_CANCEL | FLAG_RESTING_UPDATE`,
+reason `PRICE_COLLAR` on the ack). A replace may not strand the order it is replacing (refused, the
+order stands). Lazy on purpose: a tick never touches a book, and the band moves only when moving it
+changes a refusal into an acceptance — so it cannot thrash. Counters `traderx_band_reanchors` and
+`traderx_band_stranded_cancels` per member. `SNAPSHOT_FORMAT` stays 7 (reasoned at the constant).
+
+**Measured on the cluster rig, the same sequence one image apart** (`scripts/proofs/yu17-band-follows-market.sh`,
+fresh ticker, `/seed` @180 → BUY @180 rests → `/seed` @388 → SELL @385 → SELL @480 → BUY @385):
+
+| build | SELL @385 | SELL @480 | BUY @385 | trades | stray 180 bid |
+|---|---|---|---|---|---|
+| `yu17-otcaudit` (pre) | REFUSED PRICE_COLLAR | REFUSED PRICE_COLLAR | REFUSED PRICE_COLLAR | +0 | still resting |
+| `yu17-band` (post) | ACCEPTED | REFUSED PRICE_COLLAR | ACCEPTED, crossed | +1 | cancelled (stranded=1) |
+
+Three members agreed on book digest and counters both times. The falsification arm (480, $92 off the
+market) refuses on both builds: the collar still collars. The MSFT shape itself was re-run on the
+new epoch: MSFT seeded at the feed (388.15) → order at 388.15 ACCEPTED (re-anchor from a stray 180
+that had got in first), stray 180 now REFUSED.
+
+**Carried.** `yu03-risk-proof` seeded BAC at 200 and traded it at 40 — it passed before only because
+the band ignored the seed; it now seeds each ticker at the price it trades. `yu13-otel-trace-join`
+posted AAPL at a hardcoded 150 and `curl -s` without `-f` swallowed the 422, so it "passed" over
+rejections; it now quotes at the live price and fails on a refusal. Engine + service suites 581/6
+modules green; six new tests in `LimitOrderBookTest`, four of which fail on the old behaviour
+(the other two are anti-thrash guards and pass on both by design).
+
+**Left open, in its own file:** `issues/open/the-cluster-rig-sequences-no-live-ticks.md` — on this
+rig only `/seed` puts a `PRICE_TICK` into the log (the ADR-045 feed adapter is not deployed), so the
+band follows the seeded reference, not the publisher's walk. NVDA seeded at 200 refuses 893.
 
 ## The mechanism
 

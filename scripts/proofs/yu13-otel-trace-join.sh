@@ -100,13 +100,24 @@ need_obs "${TEMPO_URL}/ready" Tempo "svc/tempo 3200:3200"
 ref_before="$(curl -s --max-time 5 "${MATCHER_URL}/metrics" | awk '/traderx_gateway_pipeline_total\{stage="ack_completed"\}/{print $2}')"
 ref_before="${ref_before:-0}"
 
-echo "[run] submitting ${ORDERS} orders tagged ${TAG}"
+# Quote at the live price, not a constant. This used to submit AAPL at a hardcoded 150.0 — the same
+# trap its sibling yu13-otel-reject-trace-log-join.sh was already fixed for — and `curl -s` without
+# -f treats a 422 as success, so every order could be refused PRICE_COLLAR and the proof would still
+# report "acked". Rejections do carry a trace, which is why nothing was observed failing; but a
+# trace-join proof that never books is weaker than it claims. Since ADR-066 the band follows the
+# feed, so the live price is exactly what the book admits.
+TICKER="${TICKER:-AAPL}"
+PX="${PX:-$(${K} exec deploy/price-publisher -- wget -qO- "http://localhost:18100/prices/${TICKER}" 2>/dev/null \
+  | python3 -c "import sys,json;print(round(json.load(sys.stdin)['price'],2))" 2>/dev/null)}"
+PX="${PX:-150.0}"
+echo "[run] submitting ${ORDERS} orders tagged ${TAG} (${TICKER} @ ${PX})"
 for i in $(seq 1 "${ORDERS}"); do
-  curl -s --max-time 15 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":22214,\"ticker\":\"AAPL\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":150.0,\"clientOrderId\":\"${TAG}-${i}\"}" \
-    >/dev/null || fail "order ${i} was not acked"
+  code="$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
+    -d "{\"accountId\":22214,\"ticker\":\"${TICKER}\",\"side\":\"Buy\",\"quantity\":10,\"limitPrice\":${PX},\"clientOrderId\":\"${TAG}-${i}\"}")" \
+    || fail "order ${i} was not acked"
+  [[ "${code}" == 2* ]] || fail "order ${i} was refused (HTTP ${code}) — the join below would be over rejections, not orders"
 done
-ok "${ORDERS} orders acked by the cluster"
+ok "${ORDERS} orders accepted by the cluster"
 
 # The exporter batches on a flush interval (OTEL_FLUSH_MS, default 1s) and Tempo needs a moment
 # to make the trace queryable. This wait is the ONLY thing in the pipeline that is allowed to be

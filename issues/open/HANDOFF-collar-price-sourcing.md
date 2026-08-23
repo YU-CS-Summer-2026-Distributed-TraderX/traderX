@@ -1,6 +1,19 @@
 # HANDOFF — where prices come from: split the collar reference from the valuation mark
 
 **Status:** not started. **Rig:** kind only (`kind-traderx-yu12-cluster`) — no GCP credits.
+
+> **Premise corrected 2026-08-23.** This handoff says the collar reference *"is the random walk"*.
+> It was not: the book band read **no** price at all — it was pinned on the security's first limit
+> (`LimitBook.slotFor`), which is why re-seeding never moved it. Two sessions reasoned from the
+> wrong model before `issues/resolved/a-books-price-band-is-anchored-by-its-first-order.md`
+> established it. Since ADR-066 the band follows the **sequenced** feed price in
+> `BlpRiskState.lastPrice[]` (else the mark, else the first limit). On the kind rig the only
+> sequenced ticks come from `POST /seed` — the ADR-045 feed adapter is not deployed — so today the
+> collar follows the seeder, not price-publisher's walk; see
+> `issues/open/the-cluster-rig-sequences-no-live-ticks.md`. The "collar can be walked by trading"
+> hazard below does not apply to the band: it follows the feed, not the book. The *gateway's*
+> percentage pre-screen (`GatewayReplicaStore`, 50% off the recorded price) is a separate check and
+> is what the rest of this document is really about.
 **Related:** `HANDOFF-agent-flow-generator.md` — realistic flow changes what a good answer looks
 like here, so read that first if both are being picked up.
 

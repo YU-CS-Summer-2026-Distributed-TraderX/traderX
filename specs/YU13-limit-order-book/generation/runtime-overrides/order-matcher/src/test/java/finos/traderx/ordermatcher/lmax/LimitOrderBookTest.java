@@ -483,6 +483,139 @@ class LimitOrderBookTest {
         assertEquals(1, engine.book(SEC).openOrders(), "only the untouched order is left resting");
     }
 
+    // ----- the band follows the market (ADR-066) ---------------------------------------------
+
+    private static final long PX180 = 180_000_000L;
+    private static final long PX385 = 388_000_000L - 10 * CENT;   // inside a 64-cent band on 388
+    private static final long PX388 = 388_000_000L;
+
+    /** The MSFT shape from the 2026-08-19 record: a stray first order anchors the band far
+     *  from the market; once the feed says where the market is, a realistic limit is accepted
+     *  and the stray resting order is cancelled with the reason on its ack. */
+    @Test
+    void staleBandReanchorsOnTheFeedAndCancelsWhatItStrands() {
+        newEngine(true);
+        engine.setBookGeometry(64, CENT);
+        int stray = limit(ACCT, InputEvent.SIDE_BUY, 100, PX180);   // anchors at 180 (no reference yet)
+        drain();
+        tick(PX388);                                                 // the feed: the market is at 388
+        int real = limit(ACCT2, InputEvent.SIDE_SELL, 100, PX385);
+        List<Emitted> events = drain();
+
+        Emitted accepted = lastOrderUpdate(events, real);
+        assertNotEquals(OutputEvent.KIND_ORDER_REJECTED, accepted.kind());
+        assertEquals(RestingOrder.STATUS_NEW, accepted.status());
+        Emitted cancelled = lastOrderUpdate(events, stray);
+        assertEquals(OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_RESTING_UPDATE, cancelled.flags());
+        assertEquals(RestingOrder.STATUS_CANCELED, cancelled.status());
+        assertEquals((byte) RiskReason.PRICE_COLLAR.ordinal(), cancelled.riskReason());
+        // The cancel reaches the client BEFORE the new order's own ack (it is unsolicited).
+        assertTrue(events.indexOf(cancelled) < events.indexOf(accepted));
+        assertEquals(1, engine.bandReanchors());
+        assertEquals(1, engine.bandStrandedCancels());
+        assertEquals(1, engine.book(SEC).openOrders());
+        assertEquals(PX388 / CENT - 32, engine.book(SEC).baseLevel());   // centred on the feed
+        // The stray order's reservation was released: the account can take the whole limit again.
+        assertNotEquals(OutputEvent.KIND_ORDER_REJECTED,
+            lastOrderUpdate(drain_(limit(ACCT, InputEvent.SIDE_BUY, 100, PX388)), orderRefCounter).kind());
+    }
+
+    private List<Emitted> drain_(int ignored) {
+        return drain();
+    }
+
+    /** With a reference already known, the first order anchors on the MARKET, not on itself —
+     *  so the stray order is the one refused, and the book never needs repairing. */
+    @Test
+    void firstOrderAnchorsOnTheReferenceWhenOneExists() {
+        newEngine(true);
+        engine.setBookGeometry(64, CENT);
+        tick(PX388);
+        int stray = limit(ACCT, InputEvent.SIDE_BUY, 100, PX180);
+        Emitted rejected = lastOrderUpdate(drain(), stray);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, rejected.kind());
+        assertEquals((byte) RiskReason.PRICE_COLLAR.ordinal(), rejected.riskReason());
+        assertEquals(PX388 / CENT - 32, engine.book(SEC).baseLevel());
+        assertEquals(0, engine.bandReanchors());
+    }
+
+    /** A limit outside the market's collar is a genuine refusal: no re-anchor, nothing cancelled. */
+    @Test
+    void limitOutsideTheMarketCollarIsRefusedWithoutMovingTheBand() {
+        newEngine(true);
+        engine.setBookGeometry(64, CENT);
+        tick(PX388);
+        limit(ACCT, InputEvent.SIDE_BUY, 100, PX388);
+        drain();
+        int far = limit(ACCT2, InputEvent.SIDE_SELL, 100, PX388 + 40 * CENT);   // > half-band away
+        Emitted rejected = lastOrderUpdate(drain(), far);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, rejected.kind());
+        assertEquals((byte) RiskReason.PRICE_COLLAR.ordinal(), rejected.riskReason());
+        assertEquals(0, engine.bandReanchors());
+        assertEquals(1, engine.book(SEC).openOrders());
+    }
+
+    /** Orders that survive a re-anchor keep their level, their FIFO order and their matchability. */
+    @Test
+    void reanchorPreservesSurvivingLevelsAndTheirTimePriority() {
+        newEngine(true);
+        engine.setBookGeometry(64, CENT);
+        int first = limit(ACCT, InputEvent.SIDE_SELL, 100, PX180 + 20 * CENT);    // anchors: band [179.88, 180.52)
+        int second = limit(ACCT2, InputEvent.SIDE_SELL, 100, PX180 + 20 * CENT);  // same level, behind
+        int stranded = limit(ACCT, InputEvent.SIDE_SELL, 100, PX180 - 10 * CENT); // in band now, not after
+        drain();
+        tick(PX180 + 30 * CENT);   // market drifted up: a band centred here is [179.98, 180.62)
+        int taker = limit(ACCT3, InputEvent.SIDE_BUY, 150, PX180 + 60 * CENT);   // refused by the old band
+        List<Emitted> events = drain();
+        assertEquals(1, engine.bandReanchors());
+        assertEquals(RestingOrder.STATUS_CANCELED, lastOrderUpdate(events, stranded).status());
+        // The taker crossed the surviving level in FIFO order: first fully, second partially.
+        assertEquals(RestingOrder.STATUS_FILLED, lastOrderUpdate(events, first).status());
+        assertEquals(50, lastOrderUpdate(events, second).remainingQty());
+        assertEquals(RestingOrder.STATUS_FILLED, lastOrderUpdate(events, taker).status());
+        assertEquals(PX180 + 20 * CENT, lastOrderUpdate(events, taker).marketPx());
+        assertEquals(1, engine.book(SEC).openOrders());
+        long[] px = new long[4];
+        long[] qty = new long[4];
+        assertEquals(1, engine.book(SEC).depth(InputEvent.SIDE_SELL, px, qty, 4));
+        assertEquals(PX180 + 20 * CENT, px[0]);
+        assertEquals(50, qty[0]);
+    }
+
+    /** A replace may not strand the order it is replacing: refused, the order stands where it was. */
+    @Test
+    void replaceThatWouldStrandItselfIsRefusedAndTheBandStays() {
+        newEngine(true);
+        engine.setBookGeometry(64, CENT);
+        int mine = limit(ACCT, InputEvent.SIDE_BUY, 100, PX180);
+        drain();
+        tick(PX388);
+        replace(mine, 100, PX385);   // admissible on the market's band, which cannot hold 180
+        Emitted rejected = lastOrderUpdate(drain(), mine);
+        assertEquals(OutputEvent.KIND_ORDER_REJECTED, rejected.kind());
+        assertEquals((byte) RiskReason.PRICE_COLLAR.ordinal(), rejected.riskReason());
+        assertEquals(RestingOrder.STATUS_NEW, rejected.status());
+        assertEquals(0, engine.bandReanchors());
+        assertEquals(PX180 / CENT - 32, engine.book(SEC).baseLevel());
+        assertEquals(1, engine.book(SEC).openOrders());
+    }
+
+    /** Without a feed, the mark (a seeding tick, ADR-051) is the reference; without either the
+     *  first limit still anchors — the pre-ADR-066 rule survives as the fallback. */
+    @Test
+    void markIsTheReferenceWhenThereIsNoFeed() {
+        newEngine(false);
+        engine.setBookGeometry(64, CENT);
+        int stray = limit(ACCT, InputEvent.SIDE_BUY, 100, PX180);   // nothing known: anchors itself
+        assertEquals(PX180 / CENT - 32, engine.book(SEC).baseLevel());
+        tick(PX388);                                                 // seeds the mark (no print yet)
+        int real = limit(ACCT2, InputEvent.SIDE_SELL, 100, PX385);
+        List<Emitted> events = drain();
+        assertNotEquals(OutputEvent.KIND_ORDER_REJECTED, lastOrderUpdate(events, real).kind());
+        assertEquals(RestingOrder.STATUS_CANCELED, lastOrderUpdate(events, stray).status());
+        assertEquals(PX388 / CENT - 32, engine.book(SEC).baseLevel());
+    }
+
     @Test
     void rejectedReplaceLeavesTheOriginalOrderExactlyAsItWas() {
         newEngine(false);

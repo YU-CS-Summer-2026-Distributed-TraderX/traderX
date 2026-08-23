@@ -103,6 +103,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long tradesNew;
     private long controlEvents;
     private long selfTradesPrevented;   // ADR-057: resting orders cancelled by cancel-oldest STP
+    private long bandReanchors;         // ADR-066: bands re-centred on the market reference
+    private long bandStrandedCancels;   // ADR-066: resting orders cancelled by a band re-anchor
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
     private volatile int pinCpu = -1;   // perf profile: BLP CPU to pin on start (<0 = unpinned)
@@ -573,7 +575,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 reject(o, e, RiskReason.INVALID);
                 return;
             }
-            restSlot = book.slotFor(e.limitPx);   // anchors the band on the security's first limit
+            restSlot = bandSlot(book, e.securityId, e.limitPx, null, e);
             if (restSlot == LimitBook.NO_LEVEL) {
                 reject(o, e, RiskReason.PRICE_COLLAR);
                 return;
@@ -760,18 +762,94 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * other resting orders, but can never itself be removed by it.
      */
     private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
+        selfTradesPrevented++;
+        cancelUnsolicited(r, e, book, RiskReason.SELF_TRADE_PREVENTED);
+    }
+
+    /** The venue cancels a resting order the client did not ask to cancel: STP, or stranded by a
+     *  band re-anchor. {@code reason} reaches the client on the ack; FLAG_RESTING_UPDATE keeps the
+     *  gateway's first-direct-ack correlation from answering the input being applied with it. */
+    private void cancelUnsolicited(RestingOrder r, InputEvent e, LimitBook book, RiskReason reason) {
         book.remove(r);   // unlink while remaining is still open qty (the level aggregate subtracts it)
         if (risk != null) {
             risk.release(r.accountId, r.securityId, r.side, r);   // released exactly once (FR-IMRG16)
         }
         r.status = RestingOrder.STATUS_CANCELED;
         r.remaining = 0;
-        r.riskReason = (byte) RiskReason.SELF_TRADE_PREVENTED.ordinal();
+        r.riskReason = (byte) reason.ordinal();
         r.updatedAtMillis = e.eventTimeMillis;
         markTerminal(r.orderRef);
-        selfTradesPrevented++;
         out.emitOrderUpdate(r, e.seq, OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_RESTING_UPDATE,
             true, lastPxBySecurity[r.securityId], e.ingressNanos);
+    }
+
+    // ----- price band follows the market (ADR-066) ------------------------------------------
+
+    /**
+     * The price the collar is judged against: the sequenced feed price the risk gate holds
+     * (it keeps ticking after the book prints, unlike the mark), else the mark (last trade,
+     * or the seeding tick when nothing printed — ADR-051), else {@link Px#NONE}. Every input
+     * is replicated and snapshotted, so the anchor it yields is identical on every member and
+     * on replay.
+     */
+    private long collarReferencePx(int securityId) {
+        if (risk != null) {
+            final long feed = risk.lastPrice(securityId);
+            if (feed > 0L) {
+                return feed;
+            }
+        }
+        return lastPxBySecurity[securityId];
+    }
+
+    /**
+     * Book slot for a limit, letting the band follow the market. An un-anchored book anchors
+     * on the reference (the limit only when nothing has ticked or printed — the pre-ADR-066
+     * rule, kept as the fallback). A limit the current band refuses is re-judged against a
+     * band centred on the reference: if that band admits it, the book is re-anchored there —
+     * lazily, only when it changes the answer, so a band the market still sits inside never
+     * pays — and resting orders the new band cannot hold are cancelled (reason PRICE_COLLAR)
+     * before the re-index. {@code keep} is a replace's own resting order: re-anchoring may not
+     * strand the order being replaced, so a replace that would is refused and the order stands.
+     */
+    private int bandSlot(LimitBook book, int securityId, long limitPx, RestingOrder keep, InputEvent e) {
+        final long ref = collarReferencePx(securityId);
+        if (!book.anchored()) {
+            book.anchorAround(ref != Px.NONE ? ref : limitPx);
+        }
+        final int slot = book.slotFor(limitPx);
+        if (slot != LimitBook.NO_LEVEL || ref == Px.NONE) {
+            return slot;
+        }
+        final long newBase = book.baseCentredOn(ref / book.tickTicks());
+        if (newBase == book.baseLevel() || !book.fitsAt(newBase, limitPx)) {
+            return LimitBook.NO_LEVEL;   // outside the market's collar too: a genuine refusal
+        }
+        if (keep != null && keep.isResting() && !book.fitsAt(newBase, keep.limitPx)) {
+            return LimitBook.NO_LEVEL;
+        }
+        cancelStranded(book, InputEvent.SIDE_BUY, newBase, e);
+        cancelStranded(book, InputEvent.SIDE_SELL, newBase, e);
+        book.rebase(newBase);
+        bandReanchors++;
+        return book.slotFor(limitPx);
+    }
+
+    /** Cancel every resting order on {@code side} whose level a band anchored at {@code newBase}
+     *  cannot hold. Occupied levels are walked top-down so cancels arrive in a fixed order. */
+    private void cancelStranded(LimitBook book, byte side, long newBase, InputEvent e) {
+        int slot = book.occupiedBelow(side, book.levels());
+        while (slot != LimitBook.NO_LEVEL) {
+            final int next = book.occupiedBelow(side, slot);
+            if (!book.fitsAt(newBase, book.priceAt(slot))) {
+                RestingOrder r;
+                while ((r = book.headAt(side, slot)) != null) {
+                    bandStrandedCancels++;
+                    cancelUnsolicited(r, e, book, RiskReason.PRICE_COLLAR);
+                }
+            }
+            slot = next;
+        }
     }
 
     /** Cancel a market order's unfilled remainder in place: market orders never rest (FR-LOB04). */
@@ -886,7 +964,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             out.emitRequestRejected(o, e.seq, (byte) RiskReason.INVALID.ordinal(), px, e.ingressNanos);
             return;
         }
-        final int newSlot = book.slotFor(newLimitPx);
+        final int newSlot = bandSlot(book, o.securityId, newLimitPx, o, e);
         if (newSlot == LimitBook.NO_LEVEL) {
             out.emitRequestRejected(o, e.seq, (byte) RiskReason.PRICE_COLLAR.ordinal(), px, e.ingressNanos);
             return;
@@ -1049,7 +1127,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         LimitBook book = booksBySecurity[securityId];
         if (book == null) {
             // Cold path: first order for the security. Log-driven, so creation (and the band
-            // anchor chosen by the first limit price) is identical on every member and replay.
+            // anchor, chosen from replicated state by bandSlot) is identical on every member and replay.
             // YU16 (ADR-060): a per-security derived grid wins over the global one - the same
             // derivation ran on every member and on restore, so geometry stays config identity.
             final long tickPx = bookTickPxBySecurity[securityId] != 0L
@@ -1217,6 +1295,18 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long countSelfTradesPrevented() {
         readFence();
         return selfTradesPrevented;
+    }
+
+    /** ADR-066: how many times a book's band was re-centred on the market reference. */
+    public long bandReanchors() {
+        readFence();
+        return bandReanchors;
+    }
+
+    /** ADR-066: resting orders cancelled because a re-anchored band could not hold them. */
+    public long bandStrandedCancels() {
+        readFence();
+        return bandStrandedCancels;
     }
 
     /** The authoritative risk state (null when risk is disabled). Edge readers must quiesce or

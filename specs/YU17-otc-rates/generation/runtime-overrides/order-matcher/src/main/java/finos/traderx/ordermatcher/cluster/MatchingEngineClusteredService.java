@@ -169,6 +169,14 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * on a quiet rig succeeds and the identical rollback fails the moment the 65th security exists.
      * A version number makes that hazard unconditional and legible at the header instead of latent.
      * Bump this for any change to what the records can CONTAIN, not merely to their shape.
+     *
+     * <p>NOT bumped for ADR-066 (the band follows the market), deliberately: T_BOOK still carries
+     * {securityId, baseLevel} with the same domain (any anchor >= 0), and the reference the new
+     * anchor is derived from (T_SECURITY's feed price, T_PRICE's mark) was already captured. Only
+     * the RULE that picks baseLevel changed; a format-7 snapshot written by either build restores
+     * exactly in the other, and a first-limit anchor restored into this build is simply re-centred
+     * lazily the first time the market disagrees with it. Mixed-version members still diverge —
+     * that is the deterministic-core roll rule, not a snapshot-readability question.
      */
     static final int SNAPSHOT_FORMAT = 7;
     /**

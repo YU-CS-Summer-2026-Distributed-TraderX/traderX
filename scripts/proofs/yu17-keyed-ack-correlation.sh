@@ -40,7 +40,11 @@ MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 ACCT="${ACCT:-42422}"
 TICKER="${TICKER:-KAC$(date +%H%M%S)}"
 PRICE="${PRICE:-110.00}"          # seeded mark
-BUY_PX="${BUY_PX:-10.00}"         # far below the mark: rests, can never cross (oracle constraint)
+# Below the mark so it rests and can never cross (oracle constraint) — but INSIDE the book's band.
+# This was 10.00 against a 110.00 seed, which worked only while the band anchored on the first limit;
+# since ADR-066 the band is centred on the seeded reference (±65.5), and 10.00 is collared, so nothing
+# rested and the proof reported itself vacuous. Nobody sells a fresh ticker, so any in-band bid rests.
+BUY_PX="${BUY_PX:-50.00}"
 ORDERS_PER_ROUND="${ORDERS_PER_ROUND:-50}"
 STAGGER_S="${STAGGER_S:-0.06}"
 KILL_AFTER_N="${KILL_AFTER_N:-15}"

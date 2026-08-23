@@ -312,6 +312,11 @@ public final class ClusterNodeMain {
                 // gateway tally silently undercounts exactly when the number matters.
                 + "# TYPE traderx_stp_cancels counter\ntraderx_stp_cancels" + m
                 + (started ? service.engine().countSelfTradesPrevented() : 0L) + "\n"
+                // ADR-066: bands re-centred on the market, and resting orders that cancelled for it.
+                + "# TYPE traderx_band_reanchors counter\ntraderx_band_reanchors" + m
+                + (started ? service.engine().bandReanchors() : 0L) + "\n"
+                + "# TYPE traderx_band_stranded_cancels counter\ntraderx_band_stranded_cancels" + m
+                + (started ? service.engine().bandStrandedCancels() : 0L) + "\n"
                 // OTEL-01: span-sink health. Dropped spans mean telemetry shed load to keep the apply
                 // path free — the designed outcome, and the number that tells a supporter their trace
                 // sample is thin rather than their system is broken.

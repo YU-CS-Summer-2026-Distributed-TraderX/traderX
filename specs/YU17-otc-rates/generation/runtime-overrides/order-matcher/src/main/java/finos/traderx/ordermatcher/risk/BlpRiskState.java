@@ -171,6 +171,11 @@ public final class BlpRiskState {
         entitlementEnabled[slot] = (byte) (enabled ? 1 : 0);
     }
 
+    /** Latest sequenced feed price for a security (Px ticks), or 0 when none has arrived. */
+    public long lastPrice(int securityId) {
+        return securityId >= 0 && securityId < lastPrice.length ? lastPrice[securityId] : 0L;
+    }
+
     public void onPrice(int securityId, long priceTicks, long sourceTimeMillis) {
         if (securityId >= 0 && securityId < lastPrice.length) {
             lastPrice[securityId] = priceTicks;

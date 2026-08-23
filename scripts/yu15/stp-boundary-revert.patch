@@ -26,6 +26,9 @@
 #   * handleReplace() -- the ROUTE is what makes /replace answer; with the context unregistered,
 #     HttpServer has no "/" catch-all (see the createContext list) and returns a real 404, which
 #     is what step 3 asserts.
+#   * cancelUnsolicited() -- since ADR-066 the STP cancel and the band re-anchor's stranded cancel
+#     share it. It is the unlink/release/emit bookkeeping, not the STP decision; preventSelfTrade()
+#     (the decision's only caller) is what goes. Re-cut 2026-08-23 for exactly this refactor.
 #
 # APPLIED WITH: patch -p1 -d <copy-of-order-matcher> --forward < this file
 # The order-matcher root is the -p1 root, so paths below start at src/.
@@ -34,7 +37,7 @@
 # boundary and not a failure. Re-cut it against the current tree; do not force it.
 --- a/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
 +++ b/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
-@@ -667,18 +667,6 @@
+@@ -669,18 +669,6 @@
                  break;
              }
              final RestingOrder r = book.headAt(restingSide, opp);
@@ -53,7 +56,7 @@
              final int fillQty = Math.min(a.remaining, r.remaining);
              lastPxBySecurity[a.securityId] = levelPx;   // the last trade price is a matching OUTPUT
              applyMatchFill(r, fillQty, levelPx, e, OutputEvent.FLAG_RESTING_UPDATE, book);
-@@ -739,40 +727,6 @@
+@@ -741,31 +729,6 @@
              e.seq, flags, lastPxBySecurity[o.securityId], e.ingressNanos);
      }
  
@@ -78,22 +81,13 @@
 -     * other resting orders, but can never itself be removed by it.
 -     */
 -    private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
--        book.remove(r);   // unlink while remaining is still open qty (the level aggregate subtracts it)
--        if (risk != null) {
--            risk.release(r.accountId, r.securityId, r.side, r);   // released exactly once (FR-IMRG16)
--        }
--        r.status = RestingOrder.STATUS_CANCELED;
--        r.remaining = 0;
--        r.riskReason = (byte) RiskReason.SELF_TRADE_PREVENTED.ordinal();
--        r.updatedAtMillis = e.eventTimeMillis;
--        markTerminal(r.orderRef);
 -        selfTradesPrevented++;
--        out.emitOrderUpdate(r, e.seq, OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_RESTING_UPDATE,
--            true, lastPxBySecurity[r.securityId], e.ingressNanos);
+-        cancelUnsolicited(r, e, book, RiskReason.SELF_TRADE_PREVENTED);
 -    }
- 
-     /** Cancel a market order's unfilled remainder in place: market orders never rest (FR-LOB04). */
-     private void cancelRemainder(RestingOrder o, InputEvent e) {
+-
+     /** The venue cancels a resting order the client did not ask to cancel: STP, or stranded by a
+      *  band re-anchor. {@code reason} reaches the client on the ack; FLAG_RESTING_UPDATE keeps the
+      *  gateway's first-direct-ack correlation from answering the input being applied with it. */
 --- a/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
 +++ b/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
 @@ -335,7 +335,6 @@

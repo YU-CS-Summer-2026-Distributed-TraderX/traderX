@@ -96,9 +96,15 @@ IBM='{"accountId":22214,"security":"IBM","side":"Buy","quantity":10,"limitPrice"
 # /seed is idempotent and is the same sequenced control path the proof then exercises, so seeding
 # here costs nothing and makes the script self-contained on a fresh rig. Skipped silently if the
 # endpoint is absent (the Spring matcher seeds from its database instead).
+# Each ticker is seeded AT THE PRICE THE PROOF TRADES IT. This used to seed BAC at 200 alongside
+# IBM and then order BAC at 40, which worked only because the band ignored the seed and anchored
+# on the first limit. Since ADR-066 the band is centred on the seeded reference, so a BAC seeded
+# at 200 refuses 40 as PRICE_COLLAR (160 off) — which is the collar being right about a wrong seed.
 for acct in 52355 22214; do
-  curl -s -m8 -o /dev/null -X POST "$U/seed" -H "Content-Type: application/json" \
-    -d "{\"accountId\":$acct,\"tickers\":\"IBM,BAC\",\"price\":200}" || true
+  for pair in IBM:200 BAC:40; do
+    curl -s -m8 -o /dev/null -X POST "$U/seed" -H "Content-Type: application/json" \
+      -d "{\"accountId\":$acct,\"tickers\":\"${pair%%:*}\",\"price\":${pair##*:}}" || true
+  done
 done
 
 restriction(){

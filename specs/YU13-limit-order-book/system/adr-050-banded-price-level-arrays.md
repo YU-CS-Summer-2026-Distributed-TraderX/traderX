@@ -2,7 +2,11 @@
 
 ## Status
 
-Accepted
+Accepted. **Anchoring rule superseded 2026-08-23 by ADR-066**
+(`specs/YU17-otc-rates/system/adr-066-price-band-follows-the-market.md`, YU17 tip): the band is
+centred on the security's sequenced market reference and re-centres lazily when the market walks
+away from it; "first limit price sits mid-band" below is now only the fallback when no reference
+exists. The array geometry, grid and everything else here stand.
 
 ## Context
 

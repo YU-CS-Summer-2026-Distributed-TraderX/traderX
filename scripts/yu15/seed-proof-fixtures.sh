@@ -216,8 +216,8 @@ hold 22214 42422 IBM  10 200     # yu05 recon/settlement have something to recon
 
 # Clear positions in the throwaway instruments other proofs mint.
 #
-# yu13-clordid-suppression and yu13-stp-and-replace each trade a time-derived ticker (DUP…, RM…,
-# STP…) so their runs cannot collide. Those instruments are never in an EOD price universe, and a
+# yu13-clordid-suppression, yu13-stp-and-replace and yu17-band-follows-market each trade a
+# time-derived ticker (DUP…, RM…, STP…, BND…) so their runs cannot collide. Those instruments are never in an EOD price universe, and a
 # position row in one -- even at quantity zero -- halts that account's end-of-day P&L forever.
 # yu15-risk-extract then fails with "an unpriced holding blocks its P&L", which is a true statement
 # about a fixture no one intended to keep.
@@ -228,9 +228,9 @@ hold 22214 42422 IBM  10 200     # yu05 recon/settlement have something to recon
 echo "[clean] positions in generated throwaway instruments"
 kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   mariadb -utraderx -ptraderx traderx -N -B -e \
-  "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';
+  "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z|BND)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
-     WHERE security REGEXP '^(DUP|RM|STP|Z)[0-9]';" 2>/dev/null
+     WHERE security REGEXP '^(DUP|RM|STP|Z|BND)[0-9]';" 2>/dev/null
 
 # YU17 FX-rate fix: the credit gate values swap notionals in USD off SEQUENCED rates, which are
 # replicated state and die with the epoch. Until rates are re-sequenced, every non-USD swap
