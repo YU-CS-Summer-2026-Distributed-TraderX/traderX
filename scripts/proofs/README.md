@@ -121,9 +121,12 @@ runner's order by hand.
 
 1. **Is the forward alive?** `curl -s -o /dev/null -w '%{http_code}' localhost:18110/ready` — a
    `000` is a dead tunnel, not a defect. Anything run after a roller needs its forward remade.
-2. **Is the image the baseline?** A leftover `traderx/cluster-node:yu15-stp` or `:yu15-pre` from an
-   interrupted run makes proofs report a *different build's* behaviour, truthfully. Check both the
-   StatefulSet and the gateway.
+2. **Is the image the baseline?** A leftover historical build from an interrupted run makes proofs
+   report a *different build's* behaviour, truthfully. Check both the StatefulSet and the gateway.
+   The builds that can be left behind today are `traderx/cluster-node:yu15-pre-1k` / `:yu15-stp-1k`,
+   which `yu13-stp-and-replace` rolls onto deliberately and restores on EXIT — an interrupted run is
+   how one survives. (The bare `:yu15-pre` / `:yu15-stp` tags were removed 2026-08-22 and cannot be
+   left behind any more; if you see one named anywhere, that text is stale.)
 3. **Has a previous proof moved a security's mark?** The last trade price IS the mark (ADR-051), so
    a proof that crossed the same ticker at a different price can drift the reference until a later
    proof's limit falls outside the collar. Seen live: `yu10-fix-session` rejected **1410 of 1426**

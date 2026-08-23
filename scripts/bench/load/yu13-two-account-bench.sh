@@ -16,8 +16,16 @@
 # start from a wiped epoch. That is what makes "same rig" true rather than asserted.
 #
 # Usage:
-#   ./yu13-two-account-bench.sh --image traderx/cluster-node:yu15-pre --label pre-STP
-#   ./yu13-two-account-bench.sh --image traderx/cluster-node:yu15-stp --label post-STP
+#   ./yu13-two-account-bench.sh --image traderx/cluster-node:yu15-pre-1k --label pre-STP
+#   ./yu13-two-account-bench.sh --image traderx/cluster-node:yu15-stp-1k --label post-STP
+#
+#   The bare :yu15-pre / :yu15-stp tags NO LONGER EXIST (removed 2026-08-22). They named
+#   64-security builds, and rolling one onto today's epochs -- the fixture seeder now enables 68 --
+#   dies during snapshot restore as "snapshot corrupt: symbol id 64" while the pods stay READY: a
+#   false accusation with every engine dead. The -1k pair is the same two builds with
+#   MAX_SECURITIES grafted 64 -> 1024 and nothing else changed, so the pre/post-STP comparison this
+#   bench makes is unaffected. The originals survive as :yu15-pre-orig64 / :yu15-stp-orig64 for
+#   provenance and must not be rolled.
 #   ...--no-roll   reuse the cluster as-is (second run against the same image)
 set -euo pipefail
 
