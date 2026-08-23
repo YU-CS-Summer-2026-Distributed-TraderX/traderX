@@ -46,3 +46,38 @@ After it runs: watch `/risk/control/snapshot` count climb toward 541, then
 
 `issues/open/a-nats-restart-silently-kills-every-eod-durable.md` — the broker's state is a single
 point whose loss is silent; this is the control-feed instance of it.
+
+---
+
+## RESOLVED 2026-08-23 — the repair ran and the universe is back
+
+yaakov ran the `UPDATE stocks_control_outbox SET published=0;` above. Verified end to end by the
+coordinator, not relayed:
+
+| Layer | Before | After |
+|---|---|---|
+| gateway `/risk/control/snapshot` | count **10** | count **542** |
+| JetStream `TRADERX_CONTROL_SECURITY` | truncated | 1113 msgs, consumer acked all, 0 pending, 0 redelivered |
+| gateway log | — | **1122** `CONTROL-FEED applied` lines, through version 1223 |
+| `run-proofs.sh yu04` | 2 skipped | **2 passed, 0 skipped, 0 failed** |
+
+The gateway's replica reaching 542 matches the 542 **distinct tickers** in the outbox (1073 rows are
+versioned updates of those 542), so the replica is complete, not merely larger.
+
+### The measurement trap this hid behind, worth keeping
+
+**The outbox table alone cannot tell you whether the repair worked.** Before: 1073 rows, all
+`published=1`. After: 1073 rows, all `published=1` — byte-identical readings for "never ran" and
+"ran and fully republished", because `markPublished` runs on a successful publish and there is no
+`updated_at` column. The discriminators that do work are all *downstream*: the stream's message
+count, the consumer's ack floor, the gateway's replica count, the `CONTROL-FEED applied` line count.
+
+A second trap sat behind the first: **`deploy/order-matcher` does not exist on this rig** —
+`svc/order-matcher` fronts `cluster-gateway`. `kubectl logs deploy/order-matcher` returns empty and
+exits 0, which reads exactly like "the gateway logged nothing about securities." It is already in
+`CLAUDE.md`; it still cost a step here.
+
+The republish was *not* swallowed by JetStream dedupe, which was the live risk — the publisher sends
+`Nats-Msg-Id: security:<version>` and the stream's `duplicate_window` is 120s, far shorter than the
+age of the original publishes, so the replays were accepted rather than discarded. Had the window
+been longer than the gap, the rows would still have flipped to `published=1` with nothing delivered.
