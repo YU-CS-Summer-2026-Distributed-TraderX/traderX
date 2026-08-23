@@ -258,9 +258,12 @@ EOF
 fi
 echo "[state] $(state_pack "${ROOT}") -> baseline image ${BASELINE_IMAGE}"
 # Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh -- read the block there for what
-# the -1k suffix is. Short version: the same historical build with MAX_SECURITIES grafted 64 -> 1024,
-# so the epoch minted here can carry the full instrument universe.
-STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre-1k}"
+# the pair is. Short version: SYNTHESIZED from this tree by scripts/yu15/build-stp-boundary-images.sh
+# as of 2026-08-23, replacing two unrebuildable July builds. `pre` is today's engine with the
+# cancel-rather-than-cross branch and the /replace route removed by a recorded patch; `fix` is
+# today's engine untouched. Rebuild both whenever the tip moves -- the boundary is supposed to
+# track the system, and a tag named for the current tree goes stale silently.
+STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:stp-boundary-pre}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 
 # The only safe way to swap the engine build OR to recover a wedged rig: take the cluster down,
@@ -340,10 +343,18 @@ fail_hard() { echo "[fail] $*" >&2; exit 1; }
 # gateway would make it faithfully restore a historical gateway at the end of the suite -- the
 # restore-what-you-found latch that cost three proofs once already.
 #
-# The historical builds carry no CONTROL_FEED_SUBSCRIBER at all (verified by javap: zero references
-# in their ClusterGatewayMain), so the borrowed gateway cannot replay the YU04 universe into the new
-# epoch -- the hazard the env-var dance above exists to prevent is absent for the borrowed window,
-# not merely disabled.
+# CORRECTED 2026-08-23, because this paragraph is now false and it was load-bearing. It used to
+# read: "the historical builds carry no CONTROL_FEED_SUBSCRIBER at all (verified by javap), so the
+# hazard the env-var dance above exists to prevent is ABSENT for the borrowed window, not merely
+# disabled." That was true of the July builds and is not true of the synthesized pair, which is
+# built from this tree and carries the subscriber like every current build.
+#
+# The hazard is now merely DISABLED, which is weaker and is enough only because of the ordering
+# below: `set env CONTROL_FEED_SUBSCRIBER=0` lands on the Deployment and its rollout is awaited
+# BEFORE the epoch is minted, and stp_borrow_gateway patches only image+probes, so the borrowed
+# gateway inherits the 0. Do not reorder the borrow above the `set env`: a borrowed gateway with
+# the subscriber still on replays the YU04 control feed's 510-security universe straight into the
+# brand-new epoch, which is exactly what the wait above exists to prevent.
 STP_GW_BORROWED=0
 STP_GW_IMAGE=""
 STP_GW_PROBES=""

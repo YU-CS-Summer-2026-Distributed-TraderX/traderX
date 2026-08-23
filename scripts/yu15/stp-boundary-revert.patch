@@ -1,0 +1,106 @@
+# stp-boundary-revert.patch — removes the member bundle's BEHAVIOUR from a copy of the generated
+# order-matcher tree, so scripts/yu15/build-stp-boundary-images.sh can build a `pre` image that
+# genuinely lacks self-trade prevention (ADR-057) and atomic replace ingress (ADR-058).
+#
+# WHY A PATCH AND NOT A FLAG. This is the apparatus for yu13-stp-and-replace, which crosses a
+# version boundary. The boundary used to be two opaque images built 2026-07-22 from a working tree
+# with uncommitted changes -- unrebuildable, receding from the system by a week every week, and
+# expensive out of all proportion (an ASM bytecode graft to lift MAX_SECURITIES inside the
+# binaries, a seeding gap that hid for months). The cheap alternative -- a build-time flag on the
+# production code -- was rejected on the same day and for a reason that has not changed: a switch
+# that can turn self-trade prevention OFF is a worse liability than the problem it solves. So the
+# removal lives here, outside the shipped source, applied to a throwaway copy at build time.
+# (issues/resolved/the-stp-proof-crosses-a-boundary-frozen-in-july.md)
+#
+# IT IS APPLIED TO A COPY, NEVER TO generated/ ITSELF. That tree is one shared unlocked output
+# directory other lanes build from; a patch left applied there ships a no-STP engine under a
+# perfectly ordinary tag. build-stp-boundary-images.sh rsyncs it aside first.
+#
+# WHAT IS REMOVED IS THE DECISION, NOT THE BOOKKEEPING. The behaviour under proof is cross()'s
+# choice to CANCEL the resting order rather than fill against it. That is the one branch in the
+# match loop plus the method it calls. Deliberately LEFT in place:
+#   * `selfTradesPrevented` and countSelfTradesPrevented() -- ClusterNodeMain publishes them as
+#     traderx_stp_cancels, so removing them breaks the build for a counter the proof reads only
+#     on the `fix` side anyway. On `pre` it exists and stays 0, which is the honest reading.
+#   * RiskReason.SELF_TRADE_PREVENTED -- an unreachable enum constant is not a behaviour.
+#   * handleReplace() -- the ROUTE is what makes /replace answer; with the context unregistered,
+#     HttpServer has no "/" catch-all (see the createContext list) and returns a real 404, which
+#     is what step 3 asserts.
+#
+# APPLIED WITH: patch -p1 -d <copy-of-order-matcher> --forward < this file
+# The order-matcher root is the -p1 root, so paths below start at src/.
+#
+# IF THIS STOPS APPLYING, the engine moved underneath it -- which is the point of a synthesized
+# boundary and not a failure. Re-cut it against the current tree; do not force it.
+--- a/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
++++ b/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
+@@ -667,18 +667,6 @@
+                 break;
+             }
+             final RestingOrder r = book.headAt(restingSide, opp);
+-            // Self-trade prevention, cancel-oldest (ADR-057). One int compare against replicated
+-            // state on the apply thread, so every member and every replay reaches it identically.
+-            // Cancel-oldest is not a preference: cross() re-reads headAt each iteration, so a
+-            // policy that SKIPS a self order without removing it returns the same order forever
+-            // and the apply loop never terminates — on all three members and on replay. Removing
+-            // the head is what lets the loop advance, and it is also the only policy that lets the
+-            // aggressor reach genuine counterparties queued BEHIND its own stale quote.
+-            if (r.accountId == a.accountId) {
+-                preventSelfTrade(r, e, book);
+-                opp = buy ? book.bestAskSlot() : book.bestBidSlot();
+-                continue;
+-            }
+             final int fillQty = Math.min(a.remaining, r.remaining);
+             lastPxBySecurity[a.securityId] = levelPx;   // the last trade price is a matching OUTPUT
+             applyMatchFill(r, fillQty, levelPx, e, OutputEvent.FLAG_RESTING_UPDATE, book);
+@@ -739,40 +727,6 @@
+             e.seq, flags, lastPxBySecurity[o.securityId], e.ingressNanos);
+     }
+ 
+-    /**
+-     * Cancel a resting order the aggressor would otherwise have self-traded against (ADR-057).
+-     *
+-     * Mechanically identical to {@link #onCancel} — unlink, release the reservation exactly once,
+-     * mark terminal, emit — with two differences that are the whole client-facing contract:
+-     *
+-     * <ul>
+-     *   <li>{@code riskReason = SELF_TRADE_PREVENTED}, which reaches the client on egress ack byte
+-     *       22. It is what distinguishes "the venue cancelled this to prevent a self-trade" from
+-     *       "my own cancel succeeded" (reason ACCEPTED) and from a rejection (a different kind).</li>
+-     *   <li>{@code FLAG_RESTING_UPDATE}, because this is an UNSOLICITED cancel of an order that is
+-     *       not the input being applied. Without it the gateway's first-direct-ack correlation
+-     *       would answer the aggressor's own offer with a CANCELED ack for a different order, and
+-     *       the batch outstanding count would go wrong (FR-LOB07).</li>
+-     * </ul>
+-     *
+-     * The aggressor is never the one cancelled, which is what makes the compound case with an
+-     * atomic replace decidable: a replace's new order can trigger this against the participant's
+-     * other resting orders, but can never itself be removed by it.
+-     */
+-    private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
+-        book.remove(r);   // unlink while remaining is still open qty (the level aggregate subtracts it)
+-        if (risk != null) {
+-            risk.release(r.accountId, r.securityId, r.side, r);   // released exactly once (FR-IMRG16)
+-        }
+-        r.status = RestingOrder.STATUS_CANCELED;
+-        r.remaining = 0;
+-        r.riskReason = (byte) RiskReason.SELF_TRADE_PREVENTED.ordinal();
+-        r.updatedAtMillis = e.eventTimeMillis;
+-        markTerminal(r.orderRef);
+-        selfTradesPrevented++;
+-        out.emitOrderUpdate(r, e.seq, OutputEvent.FLAG_CANCEL | OutputEvent.FLAG_RESTING_UPDATE,
+-            true, lastPxBySecurity[r.securityId], e.ingressNanos);
+-    }
+ 
+     /** Cancel a market order's unfilled remainder in place: market orders never rest (FR-LOB04). */
+     private void cancelRemainder(RestingOrder o, InputEvent e) {
+--- a/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
++++ b/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
+@@ -335,7 +335,6 @@
+         // orderRef. A cancel that silently books an order is the worst available failure mode; a
+         // sibling path 404s on old replicas instead.
+         server.createContext("/cancel", this::handleCancel);
+-        server.createContext("/replace", this::handleReplace);
+         server.createContext("/trades", this::handleTrade);
+         server.createContext("/swaps", this::handleSwapBook);
+         server.createContext("/swaptions", this::handleSwaptionBook);

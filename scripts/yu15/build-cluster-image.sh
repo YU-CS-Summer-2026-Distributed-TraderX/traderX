@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
-OM="${ROOT}/generated/code/target-generated/order-matcher"
+# OM_DIR overrides the source tree, and exists for exactly one caller:
+# build-stp-boundary-images.sh builds the `pre` side of yu13-stp-and-replace's version
+# boundary from a PATCHED COPY of the generated tree. The copy is what keeps the shared
+# generated/ directory -- which other lanes build from, with no lock -- from ever holding a
+# tree with self-trade prevention removed. Everything else uses the default and should.
+OM="${OM_DIR:-${ROOT}/generated/code/target-generated/order-matcher}"
 # DERIVED, like everything else that answers "which build is this". The default used to be a
 # literal traderx/cluster-node:yu15, so running this from the YU16 worktree built YU16 code and
 # stamped it :yu15 — overwriting the YU15 image in the local daemon with something that is not

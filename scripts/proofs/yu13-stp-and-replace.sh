@@ -10,24 +10,29 @@
 #
 # The members are rolled with their PVCs INTACT, deliberately, so the before/after runs are against
 # the same state machine lineage rather than two different clusters. TWO separate guarantees make
-# that safe, and conflating them is how this comment went stale once already:
+# that safe, and conflating them is how this comment went stale twice already:
 #
-#   * FORMAT IDENTITY across the step under proof. Both pinned builds write SNAPSHOT_FORMAT 3, so
-#     the pre -> stp roll is 3 -> 3 and the epoch carries over untouched. This is the original
-#     reason and it still holds exactly as written.
-#   * A WIPED EPOCH AT BOTH ENDS, which is what keeps the tip's format out of this entirely. The
-#     tip is no longer format 3 -- the YU17 layer writes 7 -- so this proof neither runs on a
-#     tip-authored epoch nor hands one back. run-proofs.sh's stp prep wipes the PVCs and mints this
-#     epoch fresh AT FORMAT 3 on IMAGE_PRE before the proof starts, and its restore wipes again
-#     (rebuild_fresh_epoch "${BASELINE_IMAGE}") when it puts the baseline back. No snapshot ever
-#     crosses the 3/7 line in either direction.
+#   * FORMAT IDENTITY across the step under proof. The pair is now SYNTHESIZED from one tree (see
+#     IMAGE_PRE below), so both sides write the SAME SNAPSHOT_FORMAT -- 7 today -- and the
+#     pre -> fix roll cannot change format at all. It is the same guarantee the pinned pair gave at
+#     format 3; it is now structural rather than a property of two frozen builds, and it moves with
+#     the tree instead of receding from it.
+#   * A WIPED EPOCH AT BOTH ENDS, which keeps whatever the rig was carrying out of this entirely.
+#     run-proofs.sh's stp prep wipes the PVCs and mints this epoch fresh on IMAGE_PRE before the
+#     proof starts, and its restore wipes again (rebuild_fresh_epoch "${BASELINE_IMAGE}") when it
+#     puts the baseline back. That is still required -- not for format now, but because the epoch
+#     must hold only this proof's fixtures, with the control feed off.
 #
-# READER TOLERANCE IS DELIBERATELY NOT RELIED ON, and saying so is the point: the tip carries
-# MIN_READABLE_SNAPSHOT_FORMAT = 3 and so COULD restore a format-3 epoch, but nothing in this flow
-# exercises that and nothing here should start depending on it. The other direction is not a choice
-# at all -- the pinned builds carry no MIN_READABLE field, it postdates them, so their reader is a
-# strict equality on 3 and they cannot read a newer epoch under any circumstances. That asymmetry
-# is the whole precondition in step 0 below.
+# READER TOLERANCE IS DELIBERATELY NOT RELIED ON, and saying so is still the point: both sides
+# carry MIN_READABLE_SNAPSHOT_FORMAT = 3 and could restore an older epoch, but nothing in this flow
+# exercises that and nothing here should start depending on it. What HAS changed is the asymmetry
+# the old pinned pair had: those builds predated the MIN_READABLE field entirely, so their reader
+# was a strict equality on 3 and could not read a newer epoch under any circumstances. The
+# synthesized pair has no such hole -- but it has a new one, in the same place, and step 0 below is
+# still the guard: a pair built BEFORE a tip that has since advanced its format meets a snapshot
+# NEWER than it can read. That fails with the build's own explicit "snapshot format N is NEWER
+# than this build" refusal rather than the "snapshot corrupt: symbol id N" false accusation the
+# pinned pair produced, which is an improvement in the message and not in the hazard.
 #
 # Assertion ends, honestly stated:
 #   * trades  -> the ENGINE's own trade counter, on ALL THREE members. MariaDB `trades` is reported
@@ -42,30 +47,49 @@
 # Usage: bash scripts/yu15/run-proofs.sh yu13-stp-and-replace
 #
 # NOT `./yu13-stp-and-replace.sh` against whatever epoch is on the rig, which is what this line used
-# to offer. This proof never mints its own epoch -- the runner does, fresh, on IMAGE_PRE -- and
-# roll_to rolls with PVCs intact by design, so a tip-authored epoch walks straight into the
-# format-3-reader/format-7-snapshot failure described above. Step 0 refuses that rather than
-# producing it. Both images must also be present locally.
+# to offer. This proof never mints its own epoch -- the runner does, fresh, on IMAGE_PRE, with the
+# control feed off and the fixture universe seeded through a matched gateway. Step 0 refuses to run
+# without that rather than assert against an epoch it did not get.
+#
+# Both images must be present locally: bash scripts/yu15/build-stp-boundary-images.sh
 set -euo pipefail
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
-# THE -1k PAIR, NOT THE BARE :yu15-pre / :yu15-stp. Same two builds, with MAX_SECURITIES grafted
-# from 64 to 1024 directly onto the compiled MatchingEngineClusteredService -- five inlined use
-# sites plus the ConstantValue attribute, nothing else in either image touched. The 64-capacity
-# originals are kept as :yu15-pre-orig64 / :yu15-stp-orig64 for provenance and must NOT be used
-# here: they cap the whole suite's tradeable universe at 64 securities, which is what kept the
-# fixture seeder from enabling bonds and ETFs.
+# A SYNTHESIZED BOUNDARY, BUILT FROM THIS TREE. Both tags come out of
+# scripts/yu15/build-stp-boundary-images.sh: `fix` is today's generated order-matcher untouched,
+# `pre` is the same tree with scripts/yu15/stp-boundary-revert.patch applied to a throwaway copy,
+# removing the cancel-rather-than-cross branch in MatchingEngine.cross() and the gateway's
+# /replace route. Rebuild them whenever the tip moves:
+#     bash scripts/yu15/build-stp-boundary-images.sh
 #
-# The version boundary this proof exists to cross is UNCHANGED by the graft: the same 15 classes
-# differ between the -1k pair as between the originals, because the identical transform was applied
-# to both sides. `pre` still has no SELF_TRADE_PREVENTED in RiskReason and no /replace route in the
-# gateway; `stp` still has both. A pair rebuilt from today's tree would roll X to X and pass while
-# proving nothing -- that is the failure mode this pinning avoids.
-IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre-1k}"
-IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-stp-1k}"
+# WHAT THIS REPLACED. Until 2026-08-23 the pair was pinned to traderx/cluster-node:yu15-pre-1k and
+# :yu15-stp-1k -- two opaque builds from 2026-07-22 that no tree can rebuild, because they came
+# from a working tree carrying uncommitted changes. The boundary they crossed receded from the
+# system by a week every week, so this proof exercised an upgrade nobody will ever perform while
+# tip -> tip+1 went untested; and being unrebuildable is what forced an ASM bytecode graft to lift
+# MAX_SECURITIES 64 -> 1024 inside the binaries and hid a seeding gap for months.
+# (issues/resolved/the-stp-proof-crosses-a-boundary-frozen-in-july.md)
+#
+# THE OLD PAIR IS NOT DELETED and must not be: :yu15-pre-1k / :yu15-stp-1k and the un-grafted
+# :yu15-pre-orig64 / :yu15-stp-orig64 are the only surviving evidence of what the boundary was, and
+# they cannot be re-derived. Repointing this proof is not disposing of them.
+#
+# THE OBVIOUS FAILURE MODE OF A SYNTHESIZED PAIR is two IDENTICAL images: they pass every assertion
+# below -- step 6 included -- while crossing no boundary at all. That is why the pair is never
+# hand-built. build-stp-boundary-images.sh diffs the two class trees and refuses to finish unless
+# they differ in exactly MatchingEngine.class and ClusterGatewayMain.class.
+#
+# NOT PROVEN BY A SYNTHESIZED PAIR, and nothing else covers it: recovery across a real historical
+# format-and-capacity gap. Both sides here write SNAPSHOT_FORMAT 7 and hold MAX_SECURITIES 1024, so
+# the roll is 7 -> 7 with an identical symbol table -- the BEHAVIOURAL boundary and nothing more.
+# The July pair spanned four snapshot formats and a 16x capacity change, which is where a real
+# long-delayed upgrade actually gets hurt.
+# (issues/open/nothing-proves-recovery-across-a-real-format-and-capacity-gap.md)
+IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:stp-boundary-pre}"
+IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:stp-boundary-fix}"
 SELF="${SELF:-42422}"      # the account that trades against itself
 OTHER="${OTHER:-22214}"    # the genuine counterparty
 TICKER="${TICKER:-STP$(date +%H%M%S)}"
@@ -187,38 +211,50 @@ restore_image() {
   roll_to "${ORIGINAL_IMAGE}" || echo "[warn] could not restore ${ORIGINAL_IMAGE} -- do it before running other proofs"
 }
 
-# THE PROBES BELONG TO THE CURRENT BUILD, AND THIS PROOF DEPLOYS OLDER ONES.
+# THE PROBES BELONG TO THE CURRENT BUILD, AND THIS PROOF USED TO DEPLOY OLDER ONES.
 #
-# The manifest points three probes -- startup and liveness at /live, readiness at /ready -- at the
-# gateway's probe port 18111, served by a dedicated single-thread server. Both bundles this proof
-# rolls to PREDATE that server: verified 2026-08-14, ClusterGatewayMain.class in yu15-pre and
-# yu15-stp contains no /live and no GATEWAY_PROBE_PORT at all, and serves 18110 only. The kubelet
-# therefore fails the STARTUP probe and crash-loops a gateway whose only defect is being older than
-# the manifest -- and the symptom is `rollout status` timing out, which reads as "slow" rather than
-# "incompatible", above a completely clean pod log.
+# NO LONGER NECESSARY AS OF 2026-08-23, AND DELIBERATELY STILL HERE. Read this before deleting it.
 #
-# So for as long as this proof owns the deployment it probes the one endpoint every build has
-# served: /ready on 18110, exactly what the manifest declared before the probe server existed.
-# Startup and liveness are dropped, because on these builds they have no endpoint to ask; readiness
-# carries failureThreshold 24 for the reason the manifest's own comment gives -- with no startup
-# probe a gateway needs ~2 minutes of slack for JVM + media driver + awaitConnected. Nothing here is
-# under proof: this proof asserts on the engine's trade counter, the replicated book digest, and the
-# gateway's /replace STATUS CODE, never on a probe verdict.
+# What it was for: the manifest points three probes -- startup and liveness at /live, readiness at
+# /ready -- at the gateway's probe port 18111, served by a dedicated single-thread server. The
+# PINNED July bundles this proof used to roll to predated that server (verified 2026-08-14:
+# ClusterGatewayMain.class in yu15-pre and yu15-stp contains no /live and no GATEWAY_PROBE_PORT at
+# all, and serves 18110 only). The kubelet failed the STARTUP probe and crash-looped a gateway
+# whose only defect was being older than the manifest -- surfacing as `rollout status` timing out,
+# which reads as "slow" rather than "incompatible", above a completely clean pod log.
 #
-# The same accommodation, for the same reason, is in scripts/proofs/yu13-cancel-ingress.sh -- both
-# proofs deliberately deploy a gateway older than the manifest that describes it. Kept as two local
-# copies rather than a shared lib because every proof in this directory is standalone and readable
-# on its own; if a third one needs it, extract then.
+# Why it is now inert: IMAGE_PRE/IMAGE_FIX are synthesized from THIS tree, so both sides serve
+# 18111 and /live exactly like the tip, and the manifest's own probes would work unchanged.
+#
+# Why it stays anyway. It is not load-bearing and it is not harmful: /ready is registered on the
+# main port as well as the probe port (see the "Registered on the main port as well" comment in
+# ClusterGatewayMain), so probing /ready:18110 is a real readiness signal on every build this proof
+# can deploy, past or present. Removing it is a separate change from repointing the pair, it would
+# ride into a functional commit as a cleanup, and it would delete the one thing that lets this proof
+# still be pointed at the retired :yu15-pre-1k / :yu15-stp-1k pair by hand -- which is the only way
+# left to look at those images at all. Remove it deliberately, on its own, or leave it.
+#
+# Startup and liveness are dropped and readiness carries failureThreshold 24 for the reason the
+# manifest's own comment gives -- with no startup probe a gateway needs ~2 minutes of slack for JVM
+# + media driver + awaitConnected. Nothing here is under proof: this proof asserts on the engine's
+# trade counter, the replicated book digest, and the gateway's /replace STATUS CODE, never on a
+# probe verdict.
+#
+# The same accommodation is in scripts/proofs/yu13-cancel-ingress.sh, which still rolls a genuinely
+# historical gateway and where it is therefore still live. Kept as two local copies rather than a
+# shared lib because every proof in this directory is standalone and readable on its own.
 GW_CONTAINER="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null)"
 GW_ORIGINAL_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"
 GW_ORIGINAL_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' 2>/dev/null \
   | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
-# initialDelaySeconds MATTERS HERE AND IS NOT DECORATION. YU15's own gateway manifest -- the one
-# these historical builds were actually deployed against -- carried `initialDelaySeconds: 5` on this
-# probe. Dropping it lets the kubelet probe from t=0 and mark the pod Ready the moment the socket
-# answers, which on these builds is `connected:true` -- "my session opened", not "I can commit".
-# That is the shallow readiness YU16 replaced for exactly this reason, and reinstating a build that
-# predates the fix means reinstating the delay it shipped with.
+# initialDelaySeconds MATTERS HERE AND IS NOT DECORATION -- less than it did, and still not zero.
+# YU15's own gateway manifest, the one the retired historical builds were actually deployed
+# against, carried `initialDelaySeconds: 5` on this probe. Dropping it lets the kubelet probe from
+# t=0 and mark the pod Ready the moment the socket answers, which on THOSE builds was
+# `connected:true` -- "my session opened", not "I can commit" -- the shallow readiness YU16
+# replaced. The synthesized pair carries YU16's deeper /ready (connected AND noAckStreak under the
+# limit), so the delay is no longer covering a shallow signal; it is now just slack in front of a
+# JVM that needs a couple of minutes, which is what the manifest gives anyway.
 GW_HISTORICAL_PROBES='"startupProbe":null,"livenessProbe":null,"readinessProbe":{"httpGet":{"path":"/ready","port":18110},"initialDelaySeconds":5,"periodSeconds":5,"failureThreshold":24}'
 # The manifest's own form (specs/*/generation/kubernetes/cluster/gateway.yaml). Used ONLY when the
 # live capture above is degenerate -- the floor a restore can always reach, never the source of
@@ -460,23 +496,30 @@ ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 step "0. preflight"
 # THE RUNNER MINTS THIS PROOF'S EPOCH, AND THIS PROOF REFUSES TO RUN WITHOUT IT.
 #
-# roll_to below rolls the members with their PVCs INTACT. That is only safe onto an epoch the pinned
-# builds can actually READ, and their reader is a strict equality on SNAPSHOT_FORMAT 3 (no
-# MIN_READABLE field -- see the header). The tip writes 7. Point this proof at a tip-authored epoch
-# and the members die inside onSnapshotRecord with "snapshot corrupt: symbol id N" -- a FALSE
-# accusation, the snapshot being intact and the reader simply too old -- while the consensus modules
-# stay up and the pods stay READY. The rig then looks healthy with every engine dead, and the
-# restore path hangs on a snapshot barrier a dead engine can never take.
+# KEPT DELIBERATELY THROUGH THE MOVE TO A SYNTHESIZED PAIR, with a smaller job than it had. The
+# hazard it was written for is mostly gone: the pinned builds predated MIN_READABLE_SNAPSHOT_FORMAT,
+# so their reader was a strict equality on 3, and a tip-authored format-7 epoch killed them inside
+# onSnapshotRecord with "snapshot corrupt: symbol id N" -- a FALSE accusation -- while the pods
+# stayed READY. The synthesized pair is built from the same tree as the tip, so in the ordinary case
+# it reads the tip's own format and that specific failure cannot occur.
 #
-# The members' CURRENT image is the available proxy for "who authored this epoch": run-proofs.sh's
-# stp prep wipes the PVCs and mints on IMAGE_PRE, so in the supported path the members are already
-# sitting on IMAGE_PRE when this starts.
+# It is NOT gone entirely, which is why this stays rather than being cleaned up alongside the
+# repointing. A pair built before the tip advances its SNAPSHOT_FORMAT meets a snapshot NEWER than
+# it can read; the build refuses that explicitly ("snapshot format N is NEWER than this build"),
+# so the message is honest now, but the engines are just as dead and the restore path still hangs
+# on a snapshot barrier a dead engine can never take.
 #
-# THIS IS NOT COVERED BY THE STALENESS CHECK BELOW, which compares image BUILD DATES. That heuristic
-# was defeated on 2026-08-22, when IMAGE_PRE/IMAGE_FIX were rebuilt to graft MAX_SECURITIES=1024
-# onto them: the -1k pair is now NEWER than the deployed tip while its snapshot reader is still
-# format-3-only. Build date stopped tracking reader capability the moment those images were touched,
-# so the date check can no longer see this hazard and this one has to.
+# What it enforces UNCONDITIONALLY, and the reason it would be worth keeping even if the format
+# hazard vanished outright: this proof does not mint its own epoch and cannot seed its own universe.
+# The runner wipes the PVCs, mints on IMAGE_PRE with the control feed OFF so the log holds only
+# these fixtures, and seeds through a gateway matched to the members. A run that starts anywhere
+# else is asserting against an epoch it did not get. The members' CURRENT image is the available
+# proxy for "who authored this epoch".
+#
+# THE STALENESS CHECK BELOW DOES NOT COVER THIS, and the two are not redundant. That one compares
+# image BUILD DATES, which is a good proxy for "the pair is behind the tree" and no proxy at all for
+# "the pair authored this epoch" -- an epoch minted by a NEWER build than IMAGE_PRE passes every
+# date comparison here.
 if [[ "${ORIGINAL_IMAGE}" != "${IMAGE_PRE}" && "${ORIGINAL_IMAGE}" != "${IMAGE_FIX}" ]]; then
   fail "the members are on ${ORIGINAL_IMAGE}, so this epoch was not minted on ${IMAGE_PRE}.
   This proof does not mint its own epoch -- the runner does. Run it as:
@@ -490,43 +533,70 @@ fi
 # three busy-spinning Aeron members already burn ~150-200% CPU each, that load can take longer than
 # the whole proof. SKIP_KIND_LOAD=1 when the nodes demonstrably already have both tags.
 # PRESENT IS NOT CONTEMPORANEOUS.
-# `docker image inspect` passes any tag that exists, including one stranded by an earlier generation
-# of the rig -- and build-cluster-image.sh rebuilds the rig's own tag but NOT these two proof-only
-# tags, so every rebuild of the rig strands them a little further behind the state on disk.
+# `docker image inspect` passes any tag that exists, including one left behind by an earlier
+# generation of the tree -- and build-cluster-image.sh rebuilds the rig's own tag but NOT these two
+# proof-only tags, so every rebuild of the rig strands them a little further behind the source.
+#
+# THE SYNTHESIZED PAIR MADE THIS MORE IMPORTANT, NOT LESS. A pinned pair was ALWAYS behind and
+# everyone knew it. A pair named for the current tree LOOKS current, and goes stale silently the
+# next time anything rebuilds the tip -- at which point the boundary being crossed is no longer the
+# boundary the tags claim. The remedy is now one command, which is the whole point:
+#     bash scripts/yu15/build-stp-boundary-images.sh
 #
 # Rolling the deterministic core BACK to a build older than the state it must recover is not a
-# controlled experiment, it is a corrupt-snapshot event. Observed 2026-08-05 on this rig, with
-# IMAGE_PRE from 2026-07-22 and the deployed image rebuilt 2026-08-04: loading the barrier snapshot
-# the newer build had just written threw, inside onSnapshotRecord,
+# controlled experiment, it is a snapshot the reader cannot take. Observed 2026-08-05 on this rig,
+# with IMAGE_PRE from 2026-07-22 and the deployed image rebuilt 2026-08-04: loading the barrier
+# snapshot the newer build had just written threw, inside onSnapshotRecord,
 #     java.lang.IllegalStateException: snapshot corrupt: symbol id 64
-# (MAX_SECURITIES is 64, so ids run 0..63) which killed the service agent on all three members with
+# (MAX_SECURITIES was 64 on those builds, so ids ran 0..63) which killed the service agent on all
+# three members with
 #     AgentTerminationException: failed to start service=0
 # The consensus modules stayed alive and the pods stayed READY, so the rig LOOKED healthy while
 # every engine was dead -- and the restore path then hung on a snapshot barrier a dead engine can
-# never take. Rebuild both tags from a pre-change tree, or point IMAGE_PRE/IMAGE_FIX at builds that
-# are at least as new as what is deployed.
-DEPLOYED_CREATED="$(docker image inspect "${ORIGINAL_IMAGE}" --format '{{.Created}}' 2>/dev/null || true)"
-STALE_IMAGES=""
+# never take. Today's builds refuse a too-new snapshot with an explicit message instead of that
+# false accusation, but they still refuse it and the engines are still dead.
+# IS THE PAIR STILL THE CURRENT BOUNDARY? A synthesized boundary has exactly one way to go wrong
+# quietly, and this is it.
+#
+# The pinned pair was ALWAYS behind the tree and everyone knew it. A pair named for the current
+# tree LOOKS current and rots silently: change the engine, do not rebuild, and this proof goes on
+# crossing yesterday's boundary while reporting today's. So compare the images against the SOURCE
+# they claim to be built from, and refuse rather than assert against a stale boundary. The remedy
+# is one command, which is the entire reason the pinning was given up.
+#
+# THIS REPLACED A BUILD-DATE COMPARISON AGAINST THE DEPLOYED IMAGE (2026-08-23), which had become
+# vacuous and then actively harmful. It read `IMG_CREATED < DEPLOYED_CREATED` -- but the runner
+# mints this proof's epoch ON IMAGE_PRE, so the deployed image IS one of the pair and the check
+# compared the pair against itself. Whichever side was built second made the other one "stale". It
+# then set SKIP_REGRESSION=1, which ran steps 5-9 against the deployed build -- i.e. asserted that
+# self-trade prevention works against IMAGE_PRE, the build with self-trade prevention REMOVED. That
+# path could not pass in the supported flow and has been removed rather than repaired: with the
+# pair rebuildable by one command there is no such thing as a run that legitimately lacks a
+# pre-change image, only a run that has not built one. Observed on the first synthesized run --
+# "[skip] stale: ...stp-boundary-fix" followed by "[FAIL] member 0 booked a self-trade under STP".
+#
+# python3 rather than `find -newermt` or `date -d`: both spell this differently on BSD and GNU, and
+# this proof already depends on python3 elsewhere.
+STP_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/generated/code/target-generated/order-matcher/src"
 for img in "${IMAGE_PRE}" "${IMAGE_FIX}"; do
   IMG_CREATED="$(docker image inspect "${img}" --format '{{.Created}}' 2>/dev/null || true)"
-  [[ -n "${DEPLOYED_CREATED}" && -n "${IMG_CREATED}" ]] || continue
-  if [[ "${IMG_CREATED}" < "${DEPLOYED_CREATED}" ]]; then
-    STALE_IMAGES="${STALE_IMAGES}${STALE_IMAGES:+, }${img} (built ${IMG_CREATED%%T*})"
-  fi
+  [[ -n "${IMG_CREATED}" ]] || continue   # a missing image is caught by the inspect below
+  [[ -d "${STP_SRC}" ]] || break          # no generated tree here: nothing to compare against
+  NEWER="$(python3 -c '
+import os, sys, datetime
+built = datetime.datetime.fromisoformat(sys.argv[1].replace("Z", "+00:00")).timestamp()
+for root, _, files in os.walk(sys.argv[2]):
+    for f in files:
+        if f.endswith(".java") and os.path.getmtime(os.path.join(root, f)) > built:
+            print(os.path.relpath(os.path.join(root, f), sys.argv[2]))
+            sys.exit(0)
+' "${IMG_CREATED}" "${STP_SRC}")"
+  [[ -z "${NEWER}" ]] || fail "${img} was built ${IMG_CREATED%%T*} and the generated source has moved
+  since (e.g. ${NEWER}). This proof would cross a boundary that is no longer the system's. Rebuild:
+      bash scripts/yu15/build-stp-boundary-images.sh
+  A regenerate that changed nothing still rewrites mtimes and trips this; the rebuild is cheap and
+  the alternative is a green run about an engine nobody is shipping."
 done
-
-# A stale pre-change image costs the REGRESSION half, not the whole proof. Steps 5-9 assert what
-# the bundle actually claims — STP cancels the oldest rather than booking a wash trade, replace is
-# atomic under the same orderRef — and the deployed build CARRIES the bundle, so they can be
-# asserted against it directly with no roll at all. Same shape as yu13-cancel-ingress.
-#
-# What is lost is real and is reported as lost: without a pre-change build, "no wash trade" is not
-# contrasted against a run that DID book one. Step 6's two-account falsification arm still runs, so
-# the claim is not vacuous — an inert book fails it — but the before/after story is not shown.
-SKIP_REGRESSION=0
-if [[ -n "${STALE_IMAGES}" ]]; then
-  SKIP_REGRESSION=1
-fi
 
 # Only now pay for the load — kind re-copies 194MB into four nodes every time (see below), which is
 # a minute of work to reach a refusal the check above can reach in a second.
@@ -603,30 +673,6 @@ await_trades() { # await_trades <want-delta>
   return 1
 }
 
-if [[ "${SKIP_REGRESSION}" == "1" ]]; then
-echo
-echo "=== 1-4. SKIPPED: no pre-change image contemporaneous with the deployed build ==="
-echo "[skip] stale: ${STALE_IMAGES}"
-echo "[skip] deployed: ${ORIGINAL_IMAGE} (built ${DEPLOYED_CREATED%%T*})"
-echo "[skip] build-cluster-image.sh rebuilds the rig's tag but NOT these proof-only tags, so every"
-echo "[skip] rig rebuild strands them further behind the state on disk. Rolling the core back to one"
-echo "[skip] hands it a snapshot a newer build wrote; it fail-closes and its service agent dies on"
-echo "[skip] all three members while the pods stay READY."
-echo "[skip]"
-echo "[skip] NOT DEMONSTRATED: the pre-change half — that this same self-cross USED to book a wash"
-echo "[skip] trade, and that /replace USED to 404. Steps 5-9 below still assert the forward claims"
-echo "[skip] against the deployed build, which carries the bundle, and step 6's two-account arm"
-echo "[skip] still falsifies an inert book. Rebuild IMAGE_PRE from the current tree with the bundle"
-echo "[skip] reverted to get the before/after story back."
-# roll_to() is what normally opens the port-forward and seeds this proof's accounts and ticker.
-# The skip path never calls it, so a skipped run reached step 5 with no tunnel and died on curl's
-# exit 7 ("failed to connect") having printed nothing at all — a connection failure wearing the
-# costume of a proof result.
-start_pf
-seed
-echo "  gateway forwarded and fixtures seeded; book agreed at [$(digest_consensus)]"
-STP0_0="$(stp_count 0)"; STP0_1="$(stp_count 1)"; STP0_2="$(stp_count 2)"
-else
 step "1. roll BACK to the pre-change members (${IMAGE_PRE})"
 roll_to "${IMAGE_PRE}"
 [[ "$(rows)" == "0" ]] || fail "${TICKER} already has trade rows; pick a fresh ticker"
@@ -656,7 +702,6 @@ echo "  POST /replace -> ${PRE_REPLACE}"
 step "4. roll FORWARD to the member bundle (${IMAGE_FIX})"
 roll_to "${IMAGE_FIX}"
 STP0_0="$(stp_count 0)"; STP0_1="$(stp_count 1)"; STP0_2="$(stp_count 2)"
-fi
 
 step "5. the SAME self-cross now books nothing and cancels the resting order instead"
 await_trades_agree   # a consistent cut, not three separate snapshots — see step 2
@@ -736,16 +781,14 @@ RESTARTS1="$(${K} get pods -l app=order-matcher-cluster \
   || fail "a member restarted mid-proof (${RESTARTS0} -> ${RESTARTS1}); results are not trustworthy"
 
 echo
-# The verdict must not claim the half that was skipped. "Proven against the pre-change failure" on
-# a run that never rolled to a pre-change image is the same defect yu13-cancel-ingress carried: an
-# [ok] line asserting the opposite of what the run did.
-if [[ "${SKIP_REGRESSION}" == "1" ]]; then
-echo "[PASS] self-trade prevention and atomic replace, asserted against the DEPLOYED build."
-echo "       NOT proven here: the pre-change contrast (steps 1-4 skipped — reason printed above)."
-echo "       Step 6's two-account arm did run, so an inert book would have failed this."
-else
+# The verdict must claim only what the run did. There is no longer a half that can be skipped --
+# steps 1-4 are unconditional -- so this line is unconditional too.
 echo "[PASS] self-trade prevention and atomic replace, proven against the pre-change failure."
-fi
+echo "       The boundary is SYNTHESIZED from this tree (see IMAGE_PRE at the top), so what is"
+echo "       proven is the BEHAVIOURAL boundary: today's engine with the bundle against today's"
+echo "       engine without it. NOT proven, here or anywhere else in this suite: recovery across a"
+echo "       real format-and-capacity gap, which the retired July pair crossed incidentally."
+echo "       (issues/open/nothing-proves-recovery-across-a-real-format-and-capacity-gap.md)"
 echo "       Known limitation: order state has no SQL effect end (the orderbook table holds 0 rows"
 echo "       for every order ever submitted), so order assertions are against the three members'"
 echo "       agreed book digest. Trade assertions are in MariaDB."
