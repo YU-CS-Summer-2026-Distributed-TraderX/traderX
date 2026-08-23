@@ -132,7 +132,10 @@ kubectl --context "${CTX}" -n traderx rollout status statefulset/order-matcher-c
 # price-publisher and position-service were missing from this list even though eod-chain.yaml
 # deploys them, so the script could report the tier "up" while the EOD chain was still coming
 # round -- and the extract's only trigger is that chain.
-for d in nats eod-price-db trade-processor cluster-gateway risk-extract \
+# feed-adapter is in this list and is currently replicas: 0 -- `rollout status` on a scaled-to-zero
+# Deployment returns immediately, so it costs nothing, and the day it is scaled to 1 the wait is
+# already here rather than being remembered.
+for d in nats eod-price-db trade-processor cluster-gateway risk-extract feed-adapter \
          price-publisher position-service execution-algo-engine reference-data; do
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s

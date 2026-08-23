@@ -519,6 +519,20 @@ if [[ -n "$(producer_image)" && "$(producer_image)" != "${BASELINE_IMAGE}" ]]; t
   ${K} rollout status deployment/risk-extract --timeout=600s >/dev/null
 fi
 
+# THE FEED ADAPTER IS THE THIRD DEPLOYMENT RUNNING THE CLUSTER-NODE IMAGE, and the lesson above is
+# stated as "check every Deployment that runs the cluster-node image, not the StatefulSet alone" --
+# so it gets the same repin rather than becoming the next instance of it. It is a cluster CLIENT
+# speaking AeronReplicationCodec on the ingress, so a stale build here is a wire mismatch, not a
+# cosmetic tag. Cheap and silent when it is scaled to 0, which is where it sits today
+# (issues/open/the-feed-adapter-parses-the-wrong-level-of-the-pricing-envelope.md).
+adapter_image() { ${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+if [[ -n "$(adapter_image)" && "$(adapter_image)" != "${BASELINE_IMAGE}" ]]; then
+  echo "[baseline] feed-adapter is on $(adapter_image); repinning to ${BASELINE_IMAGE}"
+  ${K} set image deployment/feed-adapter \
+    "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${BASELINE_IMAGE}" >/dev/null
+  ${K} rollout status deployment/feed-adapter --timeout=600s >/dev/null
+fi
+
 # The EXTRACT PRODUCER runs the same cluster-node image and was pinned by nothing. Its tag never
 # changes, so `kubectl apply` leaves a pod running whatever bits that tag meant when it started --
 # observed on 2026-08-10 with a producer six days stale while the members ran a fresh build. The

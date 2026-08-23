@@ -1,0 +1,126 @@
+# ADR-045's feed adapter, given the Deployment it never had (2026-08-23).
+#
+# WHY IT SUDDENLY MATTERS. Until ADR-066 the price collar was anchored by whichever LIMIT reached a
+# book first, so the sequenced feed price was read by nothing and an undeployed adapter cost nothing
+# visible. ADR-066 made the band follow BlpRiskState.lastPrice[] — the sequenced feed price — and the
+# only thing that writes it is `POST /seed`. "The band follows the market" therefore means "the band
+# follows the seeder", and NVDA seeded at 200 by the fixtures refuses its published ~899 while the
+# collar behaves exactly as specified.
+# (issues/open/the-cluster-rig-sequences-no-live-ticks.md)
+#
+# Same image, different main — the cluster tier's established shape (ADR-047), identical to
+# risk-extract.yaml next door. Nothing was built for this: FeedAdapterMain has shipped inside
+# traderx/cluster-node since the YU12 layer and was simply never deployed.
+#
+# ############################################################################################
+# REPLICAS 0, DELIBERATELY. Everything in this file is verified except the adapter itself: on
+# 2026-08-23 it came up, connected to the cluster, subscribed `pricing.>` and received 2,862 NATS
+# messages while sequencing EXACTLY ZERO ticks. FeedAdapterMain reads `price` at the TOP level of
+# the message; price-publisher wraps every quote in the house envelope
+# {topic, payload:{ticker,price,…}, date, from, type}, so `node.get("price")` is null, `.asDouble()`
+# throws, and its own `catch (Exception ignore)` swallows every tick. It has never worked against
+# this feed. Scaling this to 1 gets you a Running pod that closes nothing — the exact shape this
+# tier keeps paying for — so it stays at 0 until the parse is fixed and an image carrying the fix
+# is built. See issues/open/the-feed-adapter-parses-the-wrong-level-of-the-pricing-envelope.md.
+# ############################################################################################
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: feed-adapter
+spec:
+  replicas: 0
+  # Two adapters is not a hot spare, it is double the consensus traffic: each holds its own
+  # conflation map and each flushes the whole quoted universe on its own timer, so an overlapping
+  # rollout doubles the log rate for the overlap window. Recreate keeps it a singleton through a
+  # roll. Same posture as risk-extract, different reason.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: feed-adapter
+  template:
+    metadata:
+      labels:
+        app: feed-adapter
+    spec:
+      containers:
+        - name: feed-adapter
+          # Tracks the members' build. This is a cluster CLIENT speaking AeronReplicationCodec on
+          # the ingress, so it must be the same codec generation as the members — treat it exactly
+          # like the gateway and risk-extract when repinning (run-proofs.sh does).
+          image: traderx/cluster-node:yu17-jsrebind
+          imagePullPolicy: IfNotPresent
+          command:
+            - java
+            - -cp
+            - /opt/app/classes:/opt/app/lib/*
+            - finos.traderx.ordermatcher.cluster.FeedAdapterMain
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NATS_URL
+              value: "nats://nats:4222"
+            - name: FEED_INGRESS_ENDPOINTS
+              value: "0=order-matcher-cluster-0.order-matcher-cluster.traderx.svc.cluster.local:21802,1=order-matcher-cluster-1.order-matcher-cluster.traderx.svc.cluster.local:21902,2=order-matcher-cluster-2.order-matcher-cluster.traderx.svc.cluster.local:22002"
+            # Egress ports are hand-allocated per cluster client on this tier: gateway 40470,
+            # risk-extract 40480, this 40490. They are UDP endpoints the members dial back on, so a
+            # collision is two clients silently receiving each other's egress.
+            - name: FEED_EGRESS_PORT
+              value: "40490"
+            # FEED_EGRESS_HOST is deliberately unset: FeedAdapterMain falls back to POD_IP, which is
+            # what a pod-network egress endpoint has to be.
+            #
+            # ---- FEED_FLUSH_MS IS THE LOG-VOLUME BOUND, and it is the only real decision here ----
+            #
+            # Every flush emits one TYPE_PRICE_TICK per instrument that moved. Each is a 64-byte SBE
+            # input (96 bytes framed) sequenced through consensus, applied by all three members and
+            # written to each member's Aeron Archive on a 1Gi PVC, forever. The adapter conflates per
+            # ticker between flushes (latest wins), so the interval IS the ceiling: at most one entry
+            # per instrument per interval.
+            #
+            # MEASURED on this rig 2026-08-23 by capturing 4,770 real `pricing.>` messages over 299s
+            # (69 instruments, 15.96 ticks/s, each instrument quoted every 4.32s mean) and replaying
+            # the adapter's exact conflation over them:
+            #
+            #   FEED_FLUSH_MS   log entries/hr   journal/day   vs 50ms   1Gi PVC lasts
+            #           50          57,448          132 MB      1.00x       ~7.8 days
+            #         1000          56,797          131 MB      1.01x       ~7.8 days
+            #         5000          36,636           84 MB      1.57x        ~12 days
+            #        15000          16,367           38 MB      3.51x        ~27 days
+            #        30000           8,310           19 MB      6.91x        ~54 days
+            #        60000           4,155           10 MB     13.83x       ~108 days
+            #
+            # ANYTHING BELOW ~4.3s IS PURE WASTE: that is the publisher's own per-instrument period,
+            # so 50ms and 1000ms produce the same log volume for 20x the wakeups. The default 50ms is
+            # not "fresher", it is the same data at 3.5x the disk.
+            #
+            # WHAT STALENESS COSTS, measured the same way (3,816 quotes over 240s): the largest move
+            # ANY of the 69 instruments made inside a 15s window was $9.87 (NVDA), which is 15% of the
+            # collar's +/-$65.50 half-width. At 30s it is $13.45 (21%), at 60s $16.98 (26%). So a
+            # 15s-stale reference and a live one admit the same orders — the freshness the smaller
+            # intervals buy is not freshness the collar can spend.
+            #
+            # 15000 is where the curve turns: 3.5x cheaper than any sub-5s value, with drift the band
+            # cannot notice. Raise it toward 30000 if archive growth ever becomes the complaint; do
+            # NOT lower it expecting freshness, because below the publisher's 4.3s period the
+            # publisher, not this knob, is the bound.
+            - name: FEED_FLUSH_MS
+              value: "15000"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms96m -Xmx192m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          volumeMounts:
+            - name: shm
+              mountPath: /dev/shm
+          resources:
+            requests:
+              cpu: 100m
+              memory: 160Mi
+            limits:
+              memory: 384Mi
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 256Mi

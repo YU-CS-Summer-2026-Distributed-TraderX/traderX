@@ -23,6 +23,12 @@ spec:
         - podSelector:
             matchLabels:
               app: risk-extract
+        # ADR-045 feed adapter: a cluster CLIENT like the gateway and risk-extract, so it dials the
+        # members' ingress on the same UDP range. Without this line it connects to nothing and
+        # AeronCluster.connect times out after 60s with no hint that a policy dropped the packets.
+        - podSelector:
+            matchLabels:
+              app: feed-adapter
       ports:
         - protocol: UDP
           port: 21800

@@ -16,6 +16,7 @@ resources:
   - risk-extract.yaml
   - execution-algo-engine.yaml
   - reference-data.yaml
+  - feed-adapter.yaml
 # Applied separately by the start script, NOT part of this kustomization:
 #   - gateway.yaml (inherited from the YU12 kind layout)
 #   - ../../runtime-overrides/kubernetes-runtime/manifests/base/database-init-configmap.yaml
