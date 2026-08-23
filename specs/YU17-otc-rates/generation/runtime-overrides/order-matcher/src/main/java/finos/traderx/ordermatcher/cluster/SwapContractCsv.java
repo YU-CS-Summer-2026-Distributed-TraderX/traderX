@@ -64,7 +64,9 @@ final class SwapContractCsv {
         + "effectiveDate,maturityDate,paymentFrequency,dayCount,currency,counterpartyId,nettingSetId,"
         + "productType,expiryDate,exerciseStyle";
 
-    private static final int RATE_SCALE = 6;
+    /** Package-private: {@code ClusterRecon.otcAuditRow} renders the same rate on the
+     *  regulatory report and the two surfaces must not drift apart. */
+    static final int RATE_SCALE = 6;
 
     private SwapContractCsv() {
     }
