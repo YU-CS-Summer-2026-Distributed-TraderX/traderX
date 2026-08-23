@@ -1,4 +1,5 @@
-import { Component } from '@angular/core';
+import { Component, inject } from '@angular/core';
+import { Api } from './api';
 import { ClusterPanel } from './cluster-panel';
 import { TicketPanel } from './ticket-panel';
 import { BlotterPanel } from './blotter-panel';
@@ -77,14 +78,35 @@ export class EodPage {}
   imports: [AdminPanel, DemoSession, BandsPanel],
   template: `
     <div class="stack">
-      <section class="card"><demo-session /></section>
+      <!-- Signed-in only. The session driver submits live orders at a chosen rate, so it is the one
+           control on this page that changes the rig on its own after you walk away. This is a UI
+           guard, NOT a server one: plain order entry is deliberately ungated (see gated.ts), so the
+           same orders can still be posted directly. It stops an accident, not an adversary — do not
+           let this read as a security boundary.
+           A session ALREADY running is unaffected: SessionDriver is root-provided and the header
+           carries its own live pill with Pause/Stop on every page, so signing out cannot strand one
+           with no way to stop it. -->
+      @if (api.authUser()) {
+        <section class="card"><demo-session /></section>
+      } @else {
+        <section class="card">
+          <h2>Live trading session</h2>
+          <p class="muted">Submits live orders. Sign in to use it.</p>
+          <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
+        </section>
+      }
       <section class="card"><bands-panel /></section>
       <section class="card"><admin-panel /></section>
     </div>
   `,
-  styles: `.stack { display: grid; gap: 14px; max-width: 980px; }`,
+  styles: `
+    .stack { display: grid; gap: 14px; max-width: 980px; }
+    .muted { color: var(--muted); margin: 4px 0 10px; }
+  `,
 })
-export class AdminPage {}
+export class AdminPage {
+  readonly api = inject(Api);
+}
 
 @Component({
   selector: 'accounts-page',
