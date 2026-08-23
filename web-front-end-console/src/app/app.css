@@ -63,3 +63,14 @@ nav a.on { background: var(--accent-soft); color: var(--accent); }
 .site .ext { font-size: 11px; opacity: .7; margin-left: -1px; }
 
 main { max-width: 1400px; margin: 0 auto; padding: 18px 20px 40px; }
+
+/* The FRED attribution strip. Muted but not hidden: the terms ask for prominence, and a footer
+   the eye can actually land on is the honest reading of that. */
+footer.attrib {
+  max-width: 1400px; margin: 0 auto; padding: 14px 20px 28px;
+  border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 11.5px; line-height: 1.6;
+}
+footer.attrib strong { font-weight: 600; color: var(--text); }
+footer.attrib a { color: var(--muted); }
+footer.attrib a:hover { color: var(--text); }

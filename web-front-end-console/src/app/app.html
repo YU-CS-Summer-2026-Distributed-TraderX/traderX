@@ -52,3 +52,23 @@
 <main>
   <router-outlet />
 </main>
+
+<!-- FRED® API attribution (ADR-068). This is a TERMS requirement, not a courtesy, and the terms
+     call for it to be PROMINENT in the application rather than buried in a README — so it lives in
+     the shell, under every page, not on one panel.
+
+     Three obligations, all three here: the attribution string VERBATIM (it must not be reworded),
+     a link to the Terms of Use, and the statement that anyone using this console is bound by them
+     too. The wording is deliberately conditional on rates being sourced externally, because the
+     default build sources nothing: with no FRED_API_KEY the price-publisher stays synthetic and
+     reports `priceSource.provider = "none"` on /health. Over-stating the attribution is harmless;
+     under-stating it is the breach, which is why this is static rather than fetched — a footer
+     that disappears when a health call fails is a footer that fails open. -->
+<footer class="attrib">
+  <span>Rates instruments, when sourced externally, price off the U.S. Treasury constant-maturity
+    curve (H.15, Board of Governors of the Federal Reserve System) retrieved via the FRED® API.
+    <strong>This product uses the FRED® API but is not endorsed or certified by the Federal Reserve
+    Bank of St. Louis.</strong> Use of this application is subject to the
+    <a href="https://fred.stlouisfed.org/docs/api/terms_of_use.html" target="_blank" rel="noopener">FRED®
+    API Terms of Use<span class="ext" aria-hidden="true">&#8599;</span></a>.</span>
+</footer>

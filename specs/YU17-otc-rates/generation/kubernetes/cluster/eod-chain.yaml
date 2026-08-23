@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: traderx/price-publisher:yu16
+          image: traderx/price-publisher:yu17-fred
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -64,6 +64,29 @@ spec:
               value: "0.25"
             - name: PRICE_OPTION_RATE
               value: "0.04"
+            # YU17 (ADR-068): the real U.S. Treasury constant-maturity curve, via the FRED API.
+            #
+            # `optional: true` IS rule 1's mechanism, not a nicety. With no `fred-api` secret in the
+            # namespace the variable is simply unset, the pod starts exactly as before and Treasury
+            # prices stay synthetic — which is the arm that has to work on a conference wifi with no
+            # network, no key and no account. A required secretKeyRef would turn a missing key into
+            # CreateContainerConfigError and take the whole EOD chain down with it.
+            #
+            # The key is a human step and is NEVER committed:
+            #   kubectl --context kind-traderx-yu12-cluster -n traderx \
+            #     create secret generic fred-api --from-literal=apiKey=<key>
+            # Deleting that secret and restarting the pod is the whole "revert before anything
+            # public" story — see ADR-068's interim position.
+            - name: FRED_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: fred-api
+                  key: apiKey
+                  optional: true
+            # Constant-maturity yields are published ONCE A DAY. Polling faster buys nothing and
+            # spends someone else's rate limit.
+            - name: FRED_POLL_MINUTES
+              value: "15"
           readinessProbe:
             httpGet:
               path: /health

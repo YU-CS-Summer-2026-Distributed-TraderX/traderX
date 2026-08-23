@@ -5,6 +5,7 @@ const { connect } = require('nats');
 const yahooFinance = require('yahoo-finance2').default;
 const { parseOcc, quoteOption } = require('./option-quotes');
 const treasury = require('./treasury-pricing');
+const fred = require('./fred-curve');
 
 const PORT = Number(process.env.PRICE_PUBLISHER_PORT || '18100');
 const NATS_URL = process.env.NATS_ADDRESS || `nats://${process.env.NATS_BROKER_HOST || 'localhost'}:4222`;
@@ -44,6 +45,11 @@ const OPTION_CONTRACTS = (process.env.PRICE_OPTION_CONTRACTS ?? DEFAULT_OPTION_C
 const OPTION_IV = Number(process.env.PRICE_OPTION_IV || '0.25');
 const OPTION_RATE = Number(process.env.PRICE_OPTION_RATE || '0.04');
 const OPTION_MIN_PREMIUM = Number(process.env.PRICE_OPTION_MIN_PREMIUM || '0.01');
+
+// YU17 (ADR-068 rule 2): the provenance a price carries. `simulated` is the boolean nobody can
+// misread; this is the human-legible half of the same fact. Without both, "was that number from a
+// vendor?" is unanswerable after the fact, which is the question that would actually matter.
+const CURVE_SOURCE = 'fred-us-treasury-cmt-curve';
 
 const SNAPSHOT_PATH = path.join(__dirname, '..', 'data', 'snapshot-prices.json');
 
@@ -152,6 +158,12 @@ function normalizeTreasuryQuote(instrumentKey, snapshotEntry) {
     creditRating: snapshotEntry.creditRating,
     officialSeedCleanPrice: Number(snapshotEntry.officialCleanPrice),
     simulated: true,
+    // Stashed, not just used: a tick flips `source` between this and CURVE_SOURCE as the curve
+    // comes and goes, and reconstructing the synthetic string from assetClass at every tick is
+    // the kind of duplicated branch that drifts.
+    syntheticSource: snapshotEntry.assetClass === 'CORPORATE_BOND'
+      ? 'simulated-corporate-credit-spread'
+      : 'simulated-us-treasury-auction-seed',
     source: snapshotEntry.assetClass === 'CORPORATE_BOND'
       ? 'simulated-corporate-credit-spread'
       : 'simulated-us-treasury-auction-seed'
@@ -314,6 +326,36 @@ async function bootstrapPrices() {
   }
 }
 
+// YU17 (ADR-068): the clean price implied by the REAL constant-maturity curve, or null to walk.
+//
+// This is the whole integration, and it is three lines of substance because the model was already
+// right: interpolate the curve at the bond's REMAINING term, then hand that yield to the existing
+// cleanPriceFromYield — the exact inverse of the ytmPercent solve toPayload already publishes. No
+// bond math is added, replaced or duplicated here.
+//
+// Remaining term, not originalTermYears: a 2026-issued 30Y and a seasoned one maturing next year
+// are the same point on a curve keyed by original term, and that is not a small error.
+//
+// CORPORATES ARE EXCLUDED DELIBERATELY, and it is a licensing decision rather than an omission: a
+// corporate needs a credit spread over this curve, and every free spread series on FRED is
+// third-party and copyright-marked (ICE BofA, Moody's — checked 2026-08-23). They keep walking.
+function curveCleanPercent(quote, ts) {
+  // Defaulted the same way toPayload defaults it. A seeded quote with no assetClass IS a Treasury
+  // by that convention, and two places disagreeing about it would put a bond on the curve in the
+  // payload while pricing it off the walk — consistent-looking and wrong.
+  if ((quote.assetClass || 'US_TREASURY') !== 'US_TREASURY') {
+    return null;
+  }
+  const yearsToMaturity = (Date.parse(`${quote.maturityDate}T00:00:00.000Z`) - ts)
+    / (365.2425 * 86400000);
+  const curveYield = fred.yieldForYears(yearsToMaturity);
+  if (curveYield === null) {
+    return null;
+  }
+  const clean = treasury.cleanPriceFromYield(quote, new Date(ts), curveYield, quote.dayCount);
+  return clean === null ? null : treasury.round3(clean);
+}
+
 function updateTick(ticker, sharedRoll) {
   const contract = state.optionContracts.get(ticker);
   if (contract) {
@@ -331,14 +373,25 @@ function updateTick(ticker, sharedRoll) {
       // Matured: report without advancing state; publishTick suppresses it (FR-CDM21).
       return { ...treasuryQuote, matured: true, quoteTimestamp: new Date(ts).toISOString() };
     }
+    // YU17: the real curve if there is one, the random walk if there is not. Note what does NOT
+    // apply on the real path: the term profile's seed +/- maxDistance clamp. That band exists to
+    // keep an invented walk plausible; clamping a REAL price to a synthetic seed's neighbourhood
+    // would silently discard the very thing being integrated.
+    const fromCurve = curveCleanPercent(treasuryQuote, ts);
     const localRoll = Math.random() * 2 - 1;
-    const nextPercent = treasury.updateTreasuryCleanPrice(
+    const nextPercent = fromCurve !== null ? fromCurve : treasury.updateTreasuryCleanPrice(
       treasuryQuote, Number.isFinite(sharedRoll) ? sharedRoll : Math.random() * 2 - 1, localRoll);
     const next = {
       ...treasuryQuote,
       cleanPercent: nextPercent,
       price: treasury.pctToFraction(nextPercent),
-      matured: false
+      matured: false,
+      simulated: fromCurve === null,
+      // `|| .source` so a quote seeded without syntheticSource (the unit tests do exactly that)
+      // keeps its own provenance rather than publishing `undefined`.
+      source: fromCurve === null
+        ? (treasuryQuote.syntheticSource || treasuryQuote.source)
+        : CURVE_SOURCE
     };
     state.prices.set(ticker, next);
     return next;
@@ -386,7 +439,10 @@ function toPayload(quote) {
       quoteTimestamp: asOf,
       maturityDate: quote.maturityDate,
       matured: Boolean(quote.matured),
-      simulated: true,
+      // Was a hardcoded `true`. It is now the actual provenance of THIS price (ADR-068 rule 2):
+      // false means the number came off the real curve, and a hardcoded true would have made the
+      // integration invisible on the wire — the one place it has to be visible.
+      simulated: Boolean(quote.simulated),
       officialSeedCleanPrice: quote.officialSeedCleanPrice
     };
   }
@@ -521,6 +577,10 @@ app.get('/health', (_req, res) => {
       dayCounts: [treasury.DAY_COUNT.ACT_ACT_ICMA, treasury.DAY_COUNT.THIRTY_360],
       solver: 'newton-with-bisection-fallback'
     },
+    // YU17 (ADR-068): where Treasury yields are actually coming from right now, the per-series
+    // copyright check that let them in, and the FRED attribution string. `provider: 'none'` is the
+    // synthetic default and is not a degraded state.
+    priceSource: fred.status(),
     publish: normalizePublishConfig(),
     volatilityBands: profileCounts
   });
@@ -541,6 +601,10 @@ app.get('/prices/:ticker', (req, res) => {
 });
 
 async function main() {
+  // Deliberately not awaited: rule 1 says the system starts with no network. The first ticks are
+  // synthetic and flip to the curve when the first poll lands, and `simulated` on the wire says
+  // exactly which is which at every instant.
+  fred.start();
   await bootstrapPrices();
   bootstrapOptionContracts();
   assignStartupVolatilityBands();

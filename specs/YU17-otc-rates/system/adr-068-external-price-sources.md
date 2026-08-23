@@ -2,13 +2,32 @@
 
 ## Status
 
-**Proposed** (2026-08-23). **Not implemented.** Depends on
+**Partially implemented** (2026-08-23) — the **rates slice only**. Everything else in this ADR is
+still **Proposed**. Depends on
 [ADR-067](adr-067-market-data-derived-from-the-book.md), which defines *where price comes from inside
 the system*. This ADR is the narrower question underneath it: **where the external reference comes
 from**, and what that costs in licensing.
 
 Not legal advice. This records what published terms say, verbatim where it matters, so the decision
 is made with the constraint visible. Anything shown publicly needs a real review before it ships.
+
+### What is built, and what is not
+
+**Built (2026-08-23), `price-publisher` only:** `src/fred-curve.js` polls the H.15 Treasury
+constant-maturity series (`DGS1MO`…`DGS30`) into memory, interpolates linearly at a bond's
+**remaining** term, and hands that yield to the **existing** `treasury-pricing.js`
+`cleanPriceFromYield`. The bond model is untouched — only `updateTreasuryCleanPrice`'s random walk is
+displaced, and only for `US_TREASURY`. Provenance rides on the wire as `simulated` (a boolean that
+had been hardcoded `true`) plus a `source` of `fred-us-treasury-cmt-curve`, and `/health` reports
+`priceSource`. The FRED attribution string, a link to the Terms of Use, and the statement that users
+of the console are bound by them are in the console shell footer, under every page.
+
+**Not built:** equities and ETFs (still the walk), options (synthetic by decision), swaps (computed),
+and **corporates — a licensing outcome, not an omission**. See the ICE BofA / Moody's finding below.
+
+**Not proven:** the with-key arm has never run on a rig, because no key exists yet. Off-rig, a
+stubbed FRED driving the real modules gives real curve levels, a bill near par and a 30Y STRIP at
+~24% of par. See `issues/open/the-treasury-proofs-assert-the-synthetic-seed-not-a-treasury.md`.
 
 ## Context
 
@@ -123,6 +142,23 @@ From the [FRED® API Terms of Use](https://fred.stlouisfed.org/docs/api/terms_of
 Also prohibited and easy to trip: `FRED` in a hostname, their marks or logo, implying endorsement,
 and stripping proprietary notices.
 
+**Per-series check performed 2026-08-23, and this is what decided corporates.**
+
+| series | source | notes carry `Copyright`? | used |
+|---|---|---|---|
+| `DGS1MO` … `DGS30` (11 constant maturities) | Board of Governors of the Federal Reserve System, H.15 | no | **yes** |
+| `BAMLC0A0CM` (US Corporate Index OAS) | ICE Data Indices, LLC | **yes** — *"Copyrighted: Pre-Approval Required"* | no |
+| `AAA` / `BAA` (Seasoned Corporate Bond Yield) | Moody's | **yes** — *"Copyrighted: Citation Required"*, and Moody's information *"may not be copied, reproduced, repackaged, transmitted, transferred, disseminated, redistributed or resold"* without prior written consent | no |
+
+So a corporate cannot get a real credit spread from any free FRED series, and corporates stay
+synthetic. That is obligation 2 producing an answer, not a corner being cut.
+
+**The check is enforced in code, not remembered.** `fred-curve.js` reads each series' `notes` through
+`fred/series` and refuses any matching `/copyright/i` **before** reading a single observation,
+recording the verdict per series on `/health`. It is fail-closed: an unreadable note is not a clean
+series. A one-time human check protects the series that existed on the day someone looked; a gate
+protects the next one somebody adds.
+
 ### OpenFIGI
 
 Free instrument identifiers — reference data, not prices. Worth having for the reference-data service
@@ -177,7 +213,17 @@ Two consequences worth stating so they are not discovered later:
 - Provenance becomes explicit: the system can state whether a price is real or invented.
 - The polling limit is a non-issue — measured this week, 15s of staleness moves the collar's reference
   by at most ~15% of its half-width, so a 10–12s free-tier poll is **already inside** a tolerance we
-  proved rather than assumed.
+  proved rather than assumed. For rates it is not even close: constant-maturity yields are published
+  **once a day**, and the implementation polls every 15 minutes.
+
+**Added by the implementation**
+
+- Provenance turned out to be a **one-field change with a hardcoded lie in it**: `toPayload` emitted
+  `simulated: true` as a literal. Any integration would have been invisible on the wire — the single
+  place it has to be visible — and nothing would have failed.
+- The proofs that cover Treasuries assert the *synthetic seed's* band, so a correct real price fails
+  them. Filed, not papered over:
+  `issues/open/the-treasury-proofs-assert-the-synthetic-seed-not-a-treasury.md`.
 
 **Costly / risky**
 
@@ -193,9 +239,14 @@ Two consequences worth stating so they are not discovered later:
    usually the expensive clause. Internal-only use is materially easier to license.
 2. **Delayed or real-time?** Delayed is nearly always more permissive and is entirely sufficient here.
    Assume delayed unless something needs otherwise.
-3. **What happens when a source is unreachable mid-run?** Rule 1 says degrade to synthetic — but a
-   book anchored on a real price and then handed a synthetic one has a reference discontinuity, which
-   is exactly what ADR-066 re-anchors on. Decide the transition, not just the fallback.
+3. ~~**What happens when a source is unreachable mid-run?**~~ **Answered for the rates slice
+   (2026-08-23): it does not degrade.** A failed poll keeps the last good curve in memory and a
+   partial poll keeps the points that succeeded, so a transient failure costs the curve *freshness*,
+   never its *level*. Constant-maturity yields update daily, so a curve stale by one poll — or by one
+   day — is a far smaller error than the reference discontinuity that flipping back to a synthetic
+   seed would hand ADR-066's band. Only a process that never reached a first successful poll runs
+   synthetic, and `simulated` on the wire says which regime every individual tick was in. Still open
+   for the other classes, whose sources are not daily.
 4. **Is the vendor's identifier space ours?** Tickers are not unique across venues and asset classes;
    this is where OpenFIGI stops being optional.
 
