@@ -255,8 +255,10 @@ EOF
   exit 1
 fi
 echo "[state] $(state_pack "${ROOT}") -> baseline image ${BASELINE_IMAGE}"
-# Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh.
-STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre}"
+# Must match IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh -- read the block there for what
+# the -1k suffix is. Short version: the same historical build with MAX_SECURITIES grafted 64 -> 1024,
+# so the epoch minted here can carry the full instrument universe.
+STP_IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre-1k}"
 current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 
 # The only safe way to swap the engine build OR to recover a wedged rig: take the cluster down,
@@ -291,6 +293,36 @@ ensure_image_on_nodes() { # ensure_image_on_nodes <image>
 }
 
 fail_hard() { echo "[fail] $*" >&2; exit 1; }
+
+# A SWALLOWED SEEDER IS A SUITE THAT ASSERTS AGAINST A RIG IT NEVER SET UP.
+#
+# The three call sites below used to be `>/dev/null 2>&1` with no status check. A seeder that died
+# part way -- unreachable matcher, a class missing from the feed, a symbol table it could not fit --
+# left the epoch PARTLY enabled and every later proof ran against it. Proofs that mint their own
+# ticker still pass, so the suite stays green while the instrument classes the seeder exists to
+# enable are simply absent: the same vacuous-pass shape this file refuses everywhere else. Measured
+# 2026-08-22 while widening the seeder to the whole quoted universe -- the run that proved the
+# widening worked could not distinguish "68 instruments enabled" from "the seeder exited at 3".
+#
+# Not fatal to the suite by itself (a partly-seeded rig can still answer some proofs honestly), but
+# it must be VISIBLE and it must be attributable to the seeder rather than to whichever proof trips
+# over it three steps later.
+SEED_N=0
+seed_fixtures() { # seed_fixtures [fresh]  -- "fresh" clears the projection for a new epoch
+  local log fresh=0
+  [[ "${1:-}" == "fresh" ]] && fresh=1
+  SEED_N=$((SEED_N + 1))
+  log="/tmp/proofrun/seed-${SEED_N}.log"
+  if FRESH_EPOCH="${fresh}" bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >"${log}" 2>&1; then
+    grep -E 'feed census|instruments enabled' "${log}" | sed 's/^ */  [seed] /' || true
+    return 0
+  fi
+  echo "[fail] seed-proof-fixtures exited nonzero (${log}). The rig is only PARTLY enabled and every"
+  echo "       proof after this point asserts against it. Last lines:"
+  tail -5 "${log}" | sed 's/^/       /'
+  return 1
+}
+
 
 # GATE ON THE FACT, NOT ON THE COMMAND RETURNING. Both rollout waits used to redirect stdout only,
 # so their failure text reached the terminal while their EXIT STATUS was discarded — the function
@@ -596,7 +628,7 @@ for p in "${PROOFS[@]}"; do
     # path clears after its rebuilds; this wrap forgot to, and stp failed in-suite on exactly the
     # guard that exists to catch it.
     start_forwards || { echo "[fail] no forwards for the stp fresh-epoch clear"; break; }
-    FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
+    seed_fixtures fresh || echo "[warn] the stp epoch is only partly seeded -- see above"
     STP_RESTORE_FEED=1
   fi
 
@@ -632,7 +664,7 @@ for p in "${PROOFS[@]}"; do
   fi
 
   start_forwards || { echo "[fail] could not establish forwards before ${p}"; break; }
-  bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
+  seed_fixtures || echo "[warn] ${p} runs against a partly-seeded rig -- see above"
 
   printf "%-34s " "${p}"
   bash "${script}" > "/tmp/proofrun/${p}.log" 2>&1
@@ -659,7 +691,7 @@ for p in "${PROOFS[@]}"; do
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
     ${K} rollout restart deploy/cluster-gateway >/dev/null
     ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
-    start_forwards && FRESH_EPOCH=1 bash "${ROOT}/scripts/yu15/seed-proof-fixtures.sh" >/dev/null 2>&1
+    start_forwards && { seed_fixtures fresh || echo "[warn] restored epoch only partly seeded -- see above"; }
     if [[ "${STP_RESTORE_OBS:-0}" == "1" ]]; then
       echo "[stp-prep] restoring the observability stack"
       for d in grafana loki tempo prometheus otel-collector; do

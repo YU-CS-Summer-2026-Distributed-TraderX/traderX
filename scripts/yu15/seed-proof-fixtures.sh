@@ -100,7 +100,15 @@ for acct in "${ACCOUNTS[@]}"; do
   printf "   %-8s %s\n" "${acct}" "seed HTTP ${code}"
 done
 
-# LISTED OPTIONS -- the same enablement step, for the class the TICKERS list above does not name.
+# EVERY OTHER QUOTED INSTRUMENT -- the same enablement step, for every class TICKERS does not name.
+#
+# WIDENED 2026-08-22 from listed options only to the WHOLE quoted universe (options, ETFs,
+# treasuries, bills, strips, corporates). Seeding one class at a time reproduced the very defect
+# the option block was added to close, one class further along: bonds and treasuries were enabled
+# only because yu16-bond-position.sh and yu16-treasury-pricing.sh each POST /seed their own
+# instrument as a setup step, so the tradeable set depended on which proofs had happened to run --
+# and ETFs, which no proof seeds, were never enabled at all.
+# (issues/open/the-fixture-seeder-enables-only-equities-and-options.md)
 #
 # BlpRiskState enables securities PER EPOCH and a fresh epoch starts with NONE enabled. This script
 # seeded equities only, so after every roll the whole YU14 option class was untradeable and every
@@ -123,33 +131,70 @@ done
 # book (slotFor()), never by a price tick, so seeding cannot pin an option book -- crossing here
 # would, and yu15-option-persistence.sh must cross AAPL261218C00260000 at 2.40 against a live ~8.85.
 #
-# 24 contracts on top of the 20 tickers above is 44 securities: still inside the MAX_SECURITIES=64
-# of the historical builds yu13-stp-and-replace rolls the members onto.
-echo "[seed] listed options at live premiums"
-OPTION_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- \
+# THE CAPACITY THAT USED TO BOUND THIS IS GONE, which is what makes seeding the whole feed possible.
+# The historical builds yu13-stp-and-replace rolls the members onto held MAX_SECURITIES=64, so the
+# 20 tickers + 24 contracts seeded here (44) were already most of the budget and the remaining 24
+# instruments could not be added without breaking that proof. Those two images now carry 1024, same
+# as every current build -- see IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh. The assertion
+# below is what keeps that from being rediscovered as a {"seeded":false} two proofs later.
+echo "[seed] the rest of the quoted universe at live prices"
+# FULL PRECISION, NOT 2dp. This block used to round to cents, which is right for an option premium
+# and destroys a bond: UST-BILL-20260910 quotes 0.9968 and rounds to 1.0, UST-STRIP-20560515 quotes
+# 0.21969 and rounds to 0.22. POST /seed sends a PRICE_TICK at the price passed and that becomes the
+# risk anchor, so a rounded bond is a wrong anchor on every bond in the universe.
+FEED_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- \
   wget -qO- http://localhost:18100/prices 2>/dev/null \
   | python3 -c 'import sys, json, re
+seeded = set("'"${TICKERS}"'".split(","))
+opt = re.compile(r"[A-Z]+[0-9]{6}[CP][0-9]{8}")
+rows, census = [], {"option": 0, "bond": 0, "etf": 0}
 for q in json.load(sys.stdin)["prices"]:
-    if re.fullmatch(r"[A-Z]+[0-9]{6}[CP][0-9]{8}", q["ticker"]) and q.get("price", 0) > 0:
-        print(q["ticker"], round(q["price"], 2))' 2>/dev/null)"
+    t, px = q["ticker"], q.get("price", 0)
+    if t in seeded or px <= 0:
+        continue
+    # Shape, not a reference-data lookup: options match the OCC symbol, everything hyphenated is a
+    # UST/CORP debt instrument, and the rest are the plain-ticker ETFs.
+    census["option" if opt.fullmatch(t) else "bond" if "-" in t else "etf"] += 1
+    rows.append("%s %.6f" % (t, px))
+# A CLASS THAT VANISHES FROM THE FEED MUST FAIL HERE, not surface as UNKNOWN_SECURITY in a proof.
+# Seeding whatever the feed happens to quote is what removes the hardcoded per-class lists; it also
+# removes the per-class guard those lists gave for free, so assert the classes back explicitly.
+absent = [k for k, n in census.items() if n == 0]
+if absent:
+    sys.exit("[fail] no instruments of class(es) %s in price-publisher /prices" % ",".join(absent))
+sys.stderr.write("   feed census: %s\n" % census)
+print("\n".join(rows))')"
 # A silently-skipped enablement is the whole defect this block closes, so an unreadable feed is
 # exit 1 and not a warning: the alternative is a suite that runs green against a rig where the
 # option class does not exist.
-if [[ -z "${OPTION_PX}" ]]; then
-  echo "[fail] no option contracts readable from price-publisher /prices -- the option class would be"
-  echo "       left unenabled on this epoch, which surfaces as UNKNOWN_SECURITY on every option order"
+if [[ -z "${FEED_PX}" ]]; then
+  echo "[fail] nothing readable from price-publisher /prices beyond the equities above -- the option,"
+  echo "       bond and ETF classes would be left unenabled on this epoch, which surfaces as"
+  echo "       UNKNOWN_SECURITY on every order against them"
   exit 1
 fi
-opts=0
+# ASSERT THE COUNT AGAINST THE ENGINE'S CAPACITY. Seeding the feed rather than a fixed list means
+# this script's own footprint now grows with instruments.csv, and the failure mode at the far end is
+# a fast 422 {"seeded":false} in whichever proof happens to mint a ticker next -- a symptom that
+# points nowhere near here. MAX_SECURITIES is 1024 on every build the suite runs, including the two
+# historical ones; the headroom left over is for the tickers the proofs mint themselves.
+FEED_COUNT="$(grep -c . <<< "${FEED_PX}")"
+TOTAL=$(( FEED_COUNT + $(tr ',' '\n' <<< "${TICKERS}" | grep -c .) ))
+if [[ "${TOTAL}" -gt 900 ]]; then
+  echo "[fail] this epoch would seed ${TOTAL} securities against MAX_SECURITIES=1024 -- too little"
+  echo "       headroom for the tickers the proofs mint on top. Narrow the feed or raise capacity."
+  exit 1
+fi
+seeded_n=0
 while read -r otick opx; do
   [[ -n "${otick}" ]] || continue
   out="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
     -d "{\"accountId\":${ACCOUNTS[0]},\"tickers\":\"${otick}\",\"price\":${opx}}")"
   [[ "${out}" == *'"seeded":true'* ]] \
-    || { echo "[fail] option seed ${otick} @ ${opx}: ${out:-no answer from the matcher}"; exit 1; }
-  opts=$((opts + 1))
-done <<< "${OPTION_PX}"
-echo "   ${opts} contracts enabled at their live premiums"
+    || { echo "[fail] seed ${otick} @ ${opx}: ${out:-no answer from the matcher}"; exit 1; }
+  seeded_n=$((seeded_n + 1))
+done <<< "${FEED_PX}"
+echo "   ${seeded_n} instruments enabled at their live prices (${TOTAL} securities this epoch)"
 
 # yu06-consumer-halt and yu15-risk-extract need an account that provably HOLDS stock -- a seeded
 # account with no position proves nothing, and both scripts correctly refuse to run without one.

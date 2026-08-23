@@ -29,8 +29,20 @@ CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
-IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre}"
-IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-stp}"
+# THE -1k PAIR, NOT THE BARE :yu15-pre / :yu15-stp. Same two builds, with MAX_SECURITIES grafted
+# from 64 to 1024 directly onto the compiled MatchingEngineClusteredService -- five inlined use
+# sites plus the ConstantValue attribute, nothing else in either image touched. The 64-capacity
+# originals are kept as :yu15-pre-orig64 / :yu15-stp-orig64 for provenance and must NOT be used
+# here: they cap the whole suite's tradeable universe at 64 securities, which is what kept the
+# fixture seeder from enabling bonds and ETFs.
+#
+# The version boundary this proof exists to cross is UNCHANGED by the graft: the same 15 classes
+# differ between the -1k pair as between the originals, because the identical transform was applied
+# to both sides. `pre` still has no SELF_TRADE_PREVENTED in RiskReason and no /replace route in the
+# gateway; `stp` still has both. A pair rebuilt from today's tree would roll X to X and pass while
+# proving nothing -- that is the failure mode this pinning avoids.
+IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:yu15-pre-1k}"
+IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-stp-1k}"
 SELF="${SELF:-42422}"      # the account that trades against itself
 OTHER="${OTHER:-22214}"    # the genuine counterparty
 TICKER="${TICKER:-STP$(date +%H%M%S)}"
