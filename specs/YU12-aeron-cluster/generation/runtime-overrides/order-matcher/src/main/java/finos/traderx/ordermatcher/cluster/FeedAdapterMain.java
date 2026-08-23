@@ -50,8 +50,20 @@ public final class FeedAdapterMain {
 
     private AeronCluster client;
 
-    public static void main(final String[] args) throws Exception {
-        new FeedAdapterMain().run();
+    public static void main(final String[] args) {
+        try {
+            new FeedAdapterMain().run();
+        } catch (final Throwable fatal) {
+            fatal.printStackTrace();
+        } finally {
+            // run() never returns on the happy path, so reaching here means failure. The exit is
+            // load-bearing: the NATS and Aeron client threads are non-daemon, so a throw out of
+            // main leaves the JVM alive with NO flush loop -- 1/1 Running, sequencing nothing.
+            // Measured 2026-08-24: the session-lost throw during a member roll did exactly that,
+            // and the pod sat wedged for two hours. Die visibly; the kubelet restarts a clean
+            // connect (verified: a fresh pod re-registers and resumes within one flush).
+            System.exit(1);
+        }
     }
 
     private void run() throws Exception {

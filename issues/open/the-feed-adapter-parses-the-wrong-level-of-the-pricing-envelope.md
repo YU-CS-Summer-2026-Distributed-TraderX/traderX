@@ -88,3 +88,44 @@ Deployment this issue ships alongside is pinned at `replicas: 0` with the reason
 3. Before that lands, read
    `issues/open/a-live-feed-refuses-the-fixture-seeders-nvda-crossing.md` — the fixtures break
    deterministically the moment ticks flow, and it is a two-line fix in the seeder.
+
+---
+
+## 2026-08-24: FIXED, deployed, and proven under the full suite — plus the second defect the fix exposed
+
+**The parse is fixed** (commit `a7ec2c8b`): `parsePriceTicks()` reads `payload.price` with a bare
+top-level `price` fallback, extracted as a static so `FeedAdapterParseTest` can drive it with the
+wire-captured envelopes. The test fails exactly the two envelope cases against the old read and
+passes the malformed ones — discriminating. Drops are now counted, the first unparseable message is
+printed with its bytes, and a `FEED received= dropped= sequenced= symbols=` line prints per minute.
+
+**Fixing the parse exposed a SECOND lifelong defect.** The adapter never sends a session keepalive
+and slept the whole `FEED_FLUSH_MS` between polls. The consensus module expires an idle session
+(the gateway's own keepalive comment records the identical finding), after which `offer()` answers
+CLOSED forever and `register()`'s bare `while (offer < 0)` spun silently — measured as one status
+line then nothing, `received=0`, while NATS had delivered 2,556 messages. At the 50ms default this
+was masked (every flush was traffic); at the measured-and-chosen 15s it was fatal. Fixed in the same
+commit: egress poll + keepalive every 1s, flush on the interval, and a lost session throws out of
+`main` so the kubelet restarts a clean connect instead of leaving a wedge reading `1/1 Running`.
+
+**Deployed and measured** on `traderx/cluster-node:yu17-tick` (= `:yu17-band` + FeedAdapterMain
+only), `replicas: 1`, all four cluster-node workloads on the one tag, manifests declaring it:
+
+```
+FEED received=2074 dropped=0 sequenced=531 symbols=68 pendingRegistrations=0
+```
+
+68 instruments registered through sequenced `SymbolRegisterMessage`, ~264 ticks/min sequenced —
+within 4% of the capture-replay prediction for `FEED_FLUSH_MS=15000`. Three members agree on
+`applied` throughout.
+
+**The full suite ran twice with ticks flowing.** Run 2: **25 passed / 2 skipped / 2 failed**, and
+no failure was price-shaped — every one traced to disk-crash fallout (service images pruned off
+kind nodes; a stale stp boundary pair; NATS's lost control stream). The seeder now crosses
+NVDA/AAPL/IBM at live prices (`hold NVDA 25 @ 945.25` where 200 was refused), and
+`yu06-consumer-halt`, `yu05-recon` and `yu15-risk-extract` all passed on the holdings that
+crossing produces.
+
+Remains open here: nothing about the adapter. Residuals live in their own files —
+the seeder finding is resolved by the same commit; the yu04 skip is NATS crash damage
+(outbox republish blocked by the permission classifier; command handed to the coordinator).

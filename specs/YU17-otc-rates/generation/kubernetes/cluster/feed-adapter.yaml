@@ -12,23 +12,21 @@
 # risk-extract.yaml next door. Nothing was built for this: FeedAdapterMain has shipped inside
 # traderx/cluster-node since the YU12 layer and was simply never deployed.
 #
-# ############################################################################################
-# REPLICAS 0, DELIBERATELY. Everything in this file is verified except the adapter itself: on
-# 2026-08-23 it came up, connected to the cluster, subscribed `pricing.>` and received 2,862 NATS
-# messages while sequencing EXACTLY ZERO ticks. FeedAdapterMain reads `price` at the TOP level of
-# the message; price-publisher wraps every quote in the house envelope
-# {topic, payload:{ticker,price,…}, date, from, type}, so `node.get("price")` is null, `.asDouble()`
-# throws, and its own `catch (Exception ignore)` swallows every tick. It has never worked against
-# this feed. Scaling this to 1 gets you a Running pod that closes nothing — the exact shape this
-# tier keeps paying for — so it stays at 0 until the parse is fixed and an image carrying the fix
-# is built. See issues/open/the-feed-adapter-parses-the-wrong-level-of-the-pricing-envelope.md.
-# ############################################################################################
+# Two defects had to fall before replicas could be 1, both found deploying this (2026-08-23/24):
+# the envelope parse (it read `price` a level above where price-publisher's envelope puts it, and
+# its catch-all ate the NPE per tick — five states of silent zero) and the session keepalive (it
+# slept the whole flush interval, the consensus module expired the idle session, and offer()'s
+# CLOSED spun a wordless retry loop). Both fixed in FeedAdapterMain (YU12 layer) with
+# FeedAdapterParseTest against wire-captured envelopes; the adapter now also prints a FEED
+# counters line a minute, and dies on a lost session so the kubelet restarts a clean connect
+# rather than leaving a wedge reading 1/1 Running.
+# (issues/open/the-feed-adapter-parses-the-wrong-level-of-the-pricing-envelope.md)
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: feed-adapter
 spec:
-  replicas: 0
+  replicas: 1
   # Two adapters is not a hot spare, it is double the consensus traffic: each holds its own
   # conflation map and each flushes the whole quoted universe on its own timer, so an overlapping
   # rollout doubles the log rate for the overlap window. Recreate keeps it a singleton through a
@@ -48,7 +46,7 @@ spec:
           # Tracks the members' build. This is a cluster CLIENT speaking AeronReplicationCodec on
           # the ingress, so it must be the same codec generation as the members — treat it exactly
           # like the gateway and risk-extract when repinning (run-proofs.sh does).
-          image: traderx/cluster-node:yu17-jsrebind
+          image: traderx/cluster-node:yu17-tick2
           imagePullPolicy: IfNotPresent
           command:
             - java

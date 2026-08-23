@@ -58,7 +58,14 @@ spec:
           # reconnect. The deterministic core, the gateway and every member class are BYTE-
           # IDENTICAL, which is why this rolled without minting a fresh epoch. Wire rule is
           # unchanged: this is still a post-B build and never mixes with a pre-B one.
-          image: traderx/cluster-node:yu17-jsrebind
+                    # `:yu17-tick` (2026-08-24) is `:yu17-band` plus ONE class, FeedAdapterMain -- the ADR-045
+          # adapter's envelope parse (payload.price) and session keepalive, neither of which the
+          # deterministic core loads. Measured on the artifacts for the parse-only predecessor
+          # (`:yu17-feed`): a class-by-class md5 against `:yu17-band` gave 266 classes each and
+          # exactly one difference, so the core, gateway and every member class are byte-identical
+          # and this rolls without semantic change (the suite still mints a fresh epoch on a tag
+          # mismatch, which is fine). Wire rule unchanged: post-B, never mixes with pre-B.
+          image: traderx/cluster-node:yu17-tick2
           imagePullPolicy: IfNotPresent
           env:
             # lowpark is the latency campaign's SHIPPED recommendation (2026-07-24: RTT p50
