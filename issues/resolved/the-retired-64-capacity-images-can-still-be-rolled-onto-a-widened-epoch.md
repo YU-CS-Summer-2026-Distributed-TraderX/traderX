@@ -58,3 +58,44 @@ now enables 68 on every epoch, that condition is no longer occasional. It is alw
    about what it can restore.
 
 Not taken unilaterally because deleting a historical artifact is not this session's call.
+
+---
+
+## Resolved 2026-08-22 — a fifth option: drop the BARE tags, keep the provenance ones
+
+**yaakov's decision.** None of the three options above was taken, because the tags turned out to be
+two names for the same artifacts:
+
+```
+traderx/cluster-node:yu15-pre        9b104d2f479f
+traderx/cluster-node:yu15-pre-orig64 9b104d2f479f
+traderx/cluster-node:yu15-stp        d5e6be59cd42
+traderx/cluster-node:yu15-stp-orig64 d5e6be59cd42
+```
+
+So `docker rmi` on the bare tags drops a *name*, not an image. Done:
+
+```
+Untagged: traderx/cluster-node:yu15-pre
+Untagged: traderx/cluster-node:yu15-stp
+```
+
+No `Deleted:` lines — the layers are intact and both artifacts still resolve under
+`:yu15-pre-orig64` / `:yu15-stp-orig64`, verified by id after the removal.
+
+**What this buys.** The route this file named — a stale `IMAGE_PRE=traderx/cluster-node:yu15-pre …`
+copied out of an older issue or proof log — now fails immediately with *no such image* instead of
+silently rolling a 64-capacity build onto a 68-security epoch and dying as `snapshot corrupt: symbol
+id 64` with the pods still `READY`. **A loud failure at the point of the mistake replaces a false
+accusation three layers downstream.**
+
+**What it does not buy, stated plainly.** The hazard as this file defines it — *the existence of a
+rollable 64-capacity image* — is not removed. `:yu15-pre-orig64` can still be rolled. What changed is
+that reaching it now requires typing a name that says what it is, which turns an accident into a
+deliberate act. Option 1 (delete the artifacts) remains available if that is ever judged
+insufficient; the reason it was not taken is that these two images are the only evidence of what the
+pair was before the graft, and re-deriving them is not possible from any tree.
+
+Closing on the accidental route being shut, not on the hazard being gone. If anyone ever needs the
+originals rolled deliberately, seed fewer than 64 securities first — the failure is data-dependent
+and below the cap the restore is clean.
