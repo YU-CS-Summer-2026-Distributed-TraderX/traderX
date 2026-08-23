@@ -137,7 +137,7 @@ done
 # instruments could not be added without breaking that proof. Those two images now carry 1024, same
 # as every current build -- see IMAGE_PRE in scripts/proofs/yu13-stp-and-replace.sh. The assertion
 # below is what keeps that from being rediscovered as a {"seeded":false} two proofs later.
-echo "[seed] the rest of the quoted universe at live prices"
+echo "[seed] the whole quoted universe at live prices"
 # FULL PRECISION, NOT 2dp. This block used to round to cents, which is right for an option premium
 # and destroys a bond: UST-BILL-20260910 quotes 0.9968 and rounds to 1.0, UST-STRIP-20560515 quotes
 # 0.21969 and rounds to 0.22. POST /seed sends a PRICE_TICK at the price passed and that becomes the
@@ -147,14 +147,18 @@ FEED_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- 
   | python3 -c 'import sys, json, re
 seeded = set("'"${TICKERS}"'".split(","))
 opt = re.compile(r"[A-Z]+[0-9]{6}[CP][0-9]{8}")
-rows, census = [], {"option": 0, "bond": 0, "etf": 0}
+rows, census = [], {"equity": 0, "option": 0, "bond": 0, "etf": 0}
 for q in json.load(sys.stdin)["prices"]:
     t, px = q["ticker"], q.get("price", 0)
-    if t in seeded or px <= 0:
+    if px <= 0:
         continue
     # Shape, not a reference-data lookup: options match the OCC symbol, everything hyphenated is a
     # UST/CORP debt instrument, and the rest are the plain-ticker ETFs.
-    census["option" if opt.fullmatch(t) else "bond" if "-" in t else "etf"] += 1
+    # The equities are NOT excluded any more (2026-08-23): the block above enabled them at a flat
+    # 200, and once the ADR-045 feed adapter sequences live ticks that 200 is a lie the collar
+    # (ADR-066) believes for up to one flush -- and believes FOREVER on a rig with the adapter off.
+    # Re-seeding them here at the live price is the same enablement the other classes get.
+    census["equity" if t in seeded else "option" if opt.fullmatch(t) else "bond" if "-" in t else "etf"] += 1
     rows.append("%s %.6f" % (t, px))
 # A CLASS THAT VANISHES FROM THE FEED MUST FAIL HERE, not surface as UNKNOWN_SECURITY in a proof.
 # Seeding whatever the feed happens to quote is what removes the hardcoded per-class lists; it also
@@ -200,19 +204,33 @@ echo "   ${seeded_n} instruments enabled at their live prices (${TOTAL} securiti
 # account with no position proves nothing, and both scripts correctly refuse to run without one.
 # Cross a real trade rather than writing a row: the position has to arrive the way every other
 # position does, through the book.
+# A refused leg is FATAL here. This used to `-o /dev/null` both legs and print "holds" regardless,
+# so a PRICE_COLLAR on either side reported a position that did not exist and the proof that needed
+# it failed three steps later with a message about itself. The engine's ack carries kind=2 plus a
+# reason on a refusal; read it.
 hold() { # hold <buyer> <seller> <ticker> <qty> <px>
+  local out
   for body in \
     "{\"accountId\":$2,\"ticker\":\"$3\",\"side\":\"Sell\",\"quantity\":$4,\"limitPrice\":$5}" \
     "{\"accountId\":$1,\"ticker\":\"$3\",\"side\":\"Buy\",\"quantity\":$4,\"limitPrice\":$5}"; do
-    curl -s -m20 -o /dev/null -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}"
+    out="$(curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}")"
+    [[ "${out}" == *'"kind":2'* ]] && { echo "[fail] hold $3 x$4 @ $5 refused: ${out}"; exit 1; }
   done
-  printf "   %-8s holds %s x%s\n" "$1" "$3" "$4"
+  printf "   %-8s holds %s x%s @ %s\n" "$1" "$3" "$4" "$5"
 }
 
-echo "[seed] positions"
-hold 10031 42422 NVDA 25 200     # yu06-consumer-halt: the held security it excludes from the universe
-hold 44044 42422 AAPL 10 200     # a control account marked in the same version
-hold 22214 42422 IBM  10 200     # yu05 recon/settlement have something to reconcile
+# AT THE LIVE PRICE, NOT 200. The collar band is +/-$65.50 around the security's sequenced
+# reference (ADR-066), and with the feed adapter live that reference is the publisher's price, not
+# this script's. NVDA quoted ~916 on 2026-08-23: both legs of `hold NVDA 25 200` were refused
+# PRICE_COLLAR and 10031 held nothing, which yu06-consumer-halt correctly refuses to run without.
+# Deterministic, not a flake -- the publisher quotes every instrument every ~4s and this script
+# takes longer than that to get here. AAPL (Δ38) and IBM (Δ13) happened to fit; the fix is the
+# same for all three. (issues/open/a-live-feed-refuses-the-fixture-seeders-nvda-crossing.md)
+live_px() { awk -v t="$1" '$1==t {print $2; f=1} END {if (!f) print "200"}' <<< "${FEED_PX}"; }
+echo "[seed] positions (crossed at the live price)"
+hold 10031 42422 NVDA 25 "$(live_px NVDA)"   # yu06-consumer-halt: the held security it excludes from the universe
+hold 44044 42422 AAPL 10 "$(live_px AAPL)"   # a control account marked in the same version
+hold 22214 42422 IBM  10 "$(live_px IBM)"    # yu05 recon/settlement have something to reconcile
 
 # Clear positions in the throwaway instruments other proofs mint.
 #

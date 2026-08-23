@@ -19,8 +19,15 @@ EDGE="${EDGE:-http://localhost:8080}"
 FIX_LOCAL_PORT="${FIX_LOCAL_PORT:-18130}"
 # fix-load.mjs defaults to JPM at a hardcoded 190. On this rig JPM's price reference drifts into
 # rejecting every order PRICE_COLLAR whatever the limit, so the sender completed nothing and the
-# proof blamed FIX ingress. IBM at 200 is what seed-proof-fixtures.sh crosses and books reliably.
+# proof blamed FIX ingress. IBM used to be pinned at 200 here because that was what
+# seed-proof-fixtures.sh crossed -- a number that was only ever inside the collar because nothing
+# moved the reference. With the ADR-045 feed adapter live the reference IS the publisher's walk
+# (IBM ~187 on 2026-08-23, $52 of band left and shrinking on a random walk), so read the price the
+# way yu13-cancel-ingress does and fall back to the constant only when the feed is unreadable.
 FIX_TICKERS="${FIX_TICKERS:-IBM}"
+FIX_PX="${FIX_PX:-$(kubectl --context "${CTX:-kind-traderx-yu12-cluster}" -n "${NS:-traderx}" exec deploy/price-publisher -- \
+  wget -qO- "http://localhost:18100/prices/${FIX_TICKERS%%,*}" 2>/dev/null \
+  | python3 -c "import sys,json;print(round(json.load(sys.stdin)['price'],2))" 2>/dev/null)}"
 FIX_PX="${FIX_PX:-200}"
 ACCOUNT="${ACCOUNT:-11413}"          # BENCH01 -> 11413 in the kind manifest FIX_SESSION_ACCOUNTS
 # Read the CompID the deployed acceptor is actually configured for rather than assuming BENCH01.
