@@ -25,8 +25,6 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 REF="${REF:-http://localhost:18085}"
 PP="${PP:-http://localhost:18100}"
 UST="${UST:-UST-20280630}"
-SEED_PERCENT="99.878"          # the auction-derived seed, as TreasuryDirect quotes it
-BAND_PERCENT="0.15"            # the 2Y term profile's total band (FR-CDM18)
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -61,7 +59,7 @@ EOF
 [[ "${HAS_BBGTICKER}" == "false" ]] || fail "a Debt instrument must not claim BBGTICKER (FR-CDM05)"
 echo "[ok] ${UST}: Debt / US_TREASURY, coupon ${COUPON}%, matures ${MATURITY}, no BBGTICKER"
 
-step "2. the quote is a FRACTION of par, not a percentage"
+step "2. the quote is a FRACTION of par, and the CURVE has the shape a curve must have"
 QUOTE="$(curl -sf -m8 "${PP}/prices/${UST}")"
 vlog "      ${QUOTE}"
 read -r PRICE CLEAN SEMANTICS YTM Q_MATURED <<EOF
@@ -76,16 +74,121 @@ EOF
 [[ "${SEMANTICS}" == "CLEAN_FRACTION_OF_PAR" ]] || fail "priceSemantics is '${SEMANTICS}', expected CLEAN_FRACTION_OF_PAR"
 [[ "${CLEAN}" == "${PRICE}" ]] || fail "cleanPrice ${CLEAN} disagrees with price ${PRICE} — they are the same number by contract"
 [[ "${Q_MATURED}" == "false" ]] || fail "a matured bond must not be quoted at all (FR-CDM21)"
-# The property, not a substring: the value must lie in the fraction band the term profile allows,
-# which is disjoint from the percentage band — a leaked percentage (99.x) fails this, and so does
-# a zero, a null-coerced 0.0, and a fraction from a different bond.
-python3 - "$PRICE" "$SEED_PERCENT" "$BAND_PERCENT" <<'EOF' || fail "price ${PRICE} is outside the seed's fraction band — a percentage or a wrong instrument would land here"
-import sys
-price, seed_pct, band_pct = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
-low, high = (seed_pct - band_pct) / 100.0, (seed_pct + band_pct) / 100.0
-sys.exit(0 if low <= price <= high else 1)
+
+# WHAT THIS USED TO ASSERT, AND WHY IT WAS REPLACED (2026-08-23, ADR-068).
+#
+# It asserted that the price sat inside 99.878% +/- 0.15 — the auction SEED out of
+# price-publisher/data/snapshot-prices.json, plus TREASURY_PROFILE_BY_TERM[2].maxDistance, the
+# random walk's own clamp. Both numbers came from the simulation. So the check was "this price came
+# out of our walk, and the walk stayed near the number we invented for it", written in the
+# vocabulary of "this is a plausible Treasury". Those were the same claim for exactly as long as
+# nothing in the system could contradict the fiction.
+#
+# ADR-068 put a real constant-maturity curve behind the Treasury tier, and a CORRECT real price for
+# this bond lands outside that band. The lazy repair — widen the band, or branch on whether a key is
+# set — preserves the fiction and asserts even less. So the step now asserts properties OF THE
+# CURVE, which hold under any curve, invented or real, and which a wrong pricer cannot satisfy by
+# accident. This is the fourth instance of this exact shape found this week (the fixture seeder's
+# IBM at 200, yu10-fix-session's FIX_PX=200, a proof passing over its own 422s, and this) — the
+# pattern is worth more than any one fix: a proof that pins a NUMBER a simulation chose is testing
+# the simulation.
+#
+# Deliberately NOT asserted here: round-trip (cleanPriceFromYield -> yieldFromCleanPrice returns the
+# input) and monotonicity in yield. Both are already asserted, over a wide range and to 1e-9, in
+# test/treasury-pricing.test.js — they are properties of a pure function and need no rig. Asserting
+# them again through HTTP would need a SECOND bond model living in this script, and two models
+# drift.
+PRICES="$(curl -sf -m10 "${PP}/prices")" || fail "could not read ${PP}/prices"
+printf '%s' "${PRICES}" | python3 - "${UST}" <<'EOF' || fail "the published curve fails a property every curve must have — see the message above"
+import json, sys
+
+target = sys.argv[1]
+rows = {r["ticker"]: r for r in json.load(sys.stdin)["prices"]}
+bonds = {k: v for k, v in rows.items() if k.startswith("UST-") or k.startswith("CORP-")}
+if not bonds:
+    print("no bond rows in /prices at all — this step would otherwise pass vacuously", file=sys.stderr)
+    sys.exit(1)
+
+def die(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(1)
+
+# (a) EVERY bond is on the fraction scale, not one spot-checked instrument. A leaked percentage
+#     (99.878 rather than 0.998780) is a 100x error that still looks like a price; the old band
+#     caught it for one bond, this catches it for all of them, in any arm.
+for k, r in sorted(bonds.items()):
+    p = r.get("price")
+    if not isinstance(p, (int, float)) or not (0.05 <= p <= 1.60):
+        die(f"{k}: price {p!r} is not a par-scale fraction — a percentage, a zero or a null landed here")
+
+# (b) THE ZERO CURVE IS MONOTONE. Four STRIPs, one issuer, no coupons: with positive yields a
+#     longer zero is worth strictly less than a shorter one. True on any curve anyone can draw, and
+#     false the moment discounting is wrong — which is the whole point of asserting it instead of a
+#     level.
+strips = sorted((k for k in bonds if k.startswith("UST-STRIP-")), key=lambda k: k[-8:])
+if len(strips) < 3:
+    die(f"only {len(strips)} STRIP(s) quoted — too few for the monotonicity check to mean anything")
+for near, far in zip(strips, strips[1:]):
+    if not bonds[near]["price"] > bonds[far]["price"]:
+        die(f"zero curve is not monotone: {near} {bonds[near]['price']} <= {far} {bonds[far]['price']}")
+
+# (c) SHAPE, the file's own claim finally asserted: a near-dated bill prices just under par, a 30Y
+#     STRIP deep below it. The old band could never say this — it only knew one 2Y note.
+bills = sorted((k for k in bonds if k.startswith("UST-BILL-")), key=lambda k: k[-8:])
+if not bills:
+    die("no bills quoted — the near-par end of the curve is untested")
+bill = bonds[bills[0]]["price"]
+if not (0.90 <= bill < 1.00):
+    die(f"{bills[0]}: a near-dated bill at {bill} is not a discount instrument just under par")
+longest = strips[-1]
+if not (0.05 < bonds[longest]["price"] < 0.45):
+    die(f"{longest}: a 30Y zero at {bonds[longest]['price']} is not the deep discount a 30Y zero is")
+
+# (d) A COUPON BOND IS WORTH MORE THAN ITS OWN STRIP. Same issuer, same maturity date, the only
+#     difference is the coupons — so this fails if coupons are being dropped from the cash flows,
+#     which is a defect that leaves every price individually plausible.
+pairs = [(k, "UST-STRIP-" + k[len("UST-"):]) for k in bonds if k.startswith("UST-") and
+         not k.startswith("UST-BILL-") and not k.startswith("UST-STRIP-")]
+compared = 0
+for coupon_key, strip_key in pairs:
+    if strip_key in bonds:
+        compared += 1
+        if not bonds[coupon_key]["price"] > bonds[strip_key]["price"]:
+            die(f"{coupon_key} {bonds[coupon_key]['price']} is not worth more than its own zero "
+                f"{strip_key} {bonds[strip_key]['price']} — coupons are missing from the cash flows")
+if compared == 0:
+    die("no coupon-bond/STRIP pair shares a maturity — check (d) would pass having compared nothing")
+
+# (e) EVERY bond carries a finite, plausible yield on the STATED basis. A yield without its basis is
+#     not a quote, and a null one means the UI is computing its own (FR-CDM20).
+for k, r in sorted(bonds.items()):
+    y = r.get("ytmPercent")
+    if not isinstance(y, (int, float)) or not (0.0 < y < 15.0):
+        die(f"{k}: ytmPercent {y!r} is absent or implausible")
+    if r.get("yieldConvention") != "SEMIANNUAL_BOND":
+        die(f"{k}: yieldConvention is {r.get('yieldConvention')!r} — the points are not comparable")
+
+# (f) PROVENANCE IS COHERENT (ADR-068 rule 2). `simulated` and `source` are two halves of one fact
+#     and must never disagree: a real price labelled simulated, or an invented one labelled real, is
+#     worse than no label. This holds in BOTH arms — it asserts agreement, not which arm we are in.
+for k, r in sorted(bonds.items()):
+    sim, src = r.get("simulated"), r.get("source")
+    if not isinstance(sim, bool) or not isinstance(src, str) or not src:
+        die(f"{k}: provenance is missing — simulated={sim!r} source={src!r}")
+    if sim != src.startswith("simulated-"):
+        die(f"{k}: provenance disagrees with itself — simulated={sim} but source={src!r}")
+
+# (g) WHAT THE SEED IS STILL GOOD FOR: that the instrument was BOOTSTRAPPED from an auction quote,
+#     not what it is worth today. It is carried at percent scale and stays there.
+seed = rows[target].get("officialSeedCleanPrice")
+if not isinstance(seed, (int, float)) or not (5.0 <= seed <= 160.0):
+    die(f"{target}: officialSeedCleanPrice {seed!r} is absent or off the percent scale — the "
+        f"instrument does not record what it was bootstrapped from")
+
+print(f"    {len(bonds)} bonds on the fraction scale; zero curve monotone across "
+      f"{len(strips)} STRIPs; {compared} coupon/zero pair(s) ordered correctly", file=sys.stderr)
 EOF
-echo "[ok] price ${PRICE} is a fraction of par inside the ${SEED_PERCENT}% ± ${BAND_PERCENT} band (= ${SEED_PERCENT}% of par displayed)"
+echo "[ok] ${PRICE} is a fraction of par, and the whole published curve holds its shape — monotone zeros, a bill under par, a 30Y zero deep below it, coupons worth more than their strips, provenance self-consistent"
 
 step "3. six decimals survive to the wire tick"
 # The tick is round(fraction x 1e6). If the inherited 3dp equity rounding applied, the tick would
