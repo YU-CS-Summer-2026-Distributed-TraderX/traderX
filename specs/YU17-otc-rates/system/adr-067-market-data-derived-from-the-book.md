@@ -2,7 +2,10 @@
 
 ## Status
 
-**Proposed** (2026-08-23). **Not implemented.** Drafted at yaakov's request from a design question
+**Partially implemented** (2026-08-23). Questions 2 and 3 below are **decided and shipped**
+(`01318795`): the book now exports its own BBO and mark on each member's health server at `/bbo`,
+beside consensus. Questions 1 and 4 — the ones that would change what the collar references and
+what drives the demo — remain **open and unbuilt**. Nothing consumes `/bbo` yet. Drafted from a design question
 raised while reviewing [ADR-066](adr-066-price-band-follows-the-market.md) and the feed adapter:
 *if a real venue derives its price from resting and trading orders, why does this system inject an
 artificial random walk instead?*
@@ -115,12 +118,19 @@ version and it is wrong, for three reasons that should be recorded so they are n
    ADR changes *what publishes* and *what things are called*, and leaves ADR-066's reference exactly
    where it is. The most expensive version re-points the collar at a book-derived price. These are
    very different amounts of work and risk.
-2. **What is the BBO when one side is empty?** One-sided books are normal and a reference derived
-   from a single side is not a midpoint.
-3. **Does derived market data go through consensus, or beside it?** It is a *product* of applying the
-   log, so it can be emitted on egress without being sequenced. Sequencing it would grow the log for
-   data every member can already compute — the same trap [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md)'s
+2. **What is the BBO when one side is empty?** — **DECIDED: report each side independently, omit the
+   absent one, never synthesize a midpoint.** One-sided books are normal and a reference derived from a
+   single side is not a midpoint. `/bbo` omits the missing field entirely rather than emitting a zero or
+   a one-sided mid, so a consumer cannot mistake absence for a price. Verified on the rig: a bid-only
+   book answers `{"ticker":...,"bid":99.5,"mark":100.0}` with no `ask` key at all.
+3. **Does derived market data go through consensus, or beside it?** — **DECIDED: beside it.** It is a
+   *product* of applying the log, so it is emitted on egress without being sequenced. Sequencing it would
+   grow the log for data every member can already compute — the same trap [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md)'s
    conflation exists to bound.
+   Each member computes it independently and they agree: at one applied position all three answered
+   byte-identically across 69 books. The response carries `applied` so a consumer can tell whether two
+   scrapes are comparable. The read is unsynchronized and off-thread, the same posture as
+   `recoveryDigest` — it is a sample, not a sequenced fact.
 4. **Does `price-publisher` keep driving the demo?** If the book becomes the price, something must
    still generate order flow, and today the session driver takes its cue from the publisher.
 
