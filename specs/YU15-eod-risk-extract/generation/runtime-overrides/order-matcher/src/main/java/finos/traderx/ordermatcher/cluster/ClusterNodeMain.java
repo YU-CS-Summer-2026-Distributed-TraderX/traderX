@@ -283,6 +283,54 @@ public final class ClusterNodeMain {
         readySampler.start();
         server.createContext("/ready", exchange ->
             respond(exchange, readyFlag.get() ? 200 : 503, readyBody.get()));
+        // Book-derived market data (ADR-067's undisputed slice): the BBO and mark each member can
+        // compute from its own applied state, exported BESIDE consensus -- nothing here is
+        // sequenced, because every member already holds it and all three answer identically at one
+        // applied position (which is why `applied` rides along: two scrapes agree only when it
+        // does). A one-sided book reports the side it has; absent sides are omitted, and no
+        // midpoint is synthesized -- a midpoint of one side is not a midpoint (ADR-067 q2).
+        // Prices are emitted at the full 6dp tick scale, NOT Px.toBigDecimal's 3dp edge rounding:
+        // a Treasury's fraction-of-par carries six decimals (ADR-057) and 3dp destroys it.
+        // Cold path, same posture as the digest in /metrics: scrape deliberately.
+        server.createContext("/bbo", exchange -> {
+            if (service.engine() == null) {
+                respond(exchange, 503, "{\"error\":\"engine not started\"}");
+                return;
+            }
+            final StringBuilder sb = new StringBuilder(4096);
+            sb.append("{\"member\":").append(memberId)
+              .append(",\"applied\":").append(service.appliedSeq())
+              .append(",\"books\":[");
+            boolean first = true;
+            for (int id = 0; ; id++) {
+                final String ticker = service.tickerFor(id);
+                if (ticker == null) {
+                    break;
+                }
+                final long bid = service.engine().bestBidPx(id);
+                final long ask = service.engine().bestAskPx(id);
+                final long mark = service.engine().markPx(id);
+                if (bid == 0L && ask == 0L && mark == 0L) {
+                    continue; // never quoted, never traded, nothing resting: no row at all
+                }
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                sb.append("{\"ticker\":\"").append(ticker).append('"');
+                if (bid != 0L) {
+                    sb.append(",\"bid\":").append(java.math.BigDecimal.valueOf(bid, 6).toPlainString());
+                }
+                if (ask != 0L) {
+                    sb.append(",\"ask\":").append(java.math.BigDecimal.valueOf(ask, 6).toPlainString());
+                }
+                if (mark != 0L) {
+                    sb.append(",\"mark\":").append(java.math.BigDecimal.valueOf(mark, 6).toPlainString());
+                }
+                sb.append('}');
+            }
+            respond(exchange, 200, sb.append("]}").toString());
+        });
         // Prometheus scrape surface (Grafana YU12 dashboard): each member exports its own signals
         // labelled by memberId, so Prometheus scraping all three renders per-node role/lag/snapshots.
         server.createContext("/metrics", exchange -> {

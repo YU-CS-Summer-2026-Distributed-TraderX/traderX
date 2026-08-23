@@ -721,4 +721,28 @@ class LimitOrderBookTest {
         MatchingEngine.RecoveryDigest d = engine.recoveryDigest();
         return new long[] { d.orderHash(), d.positionHash(), d.openOrders(), d.tradeCounter() };
     }
+
+    // ----- ADR-067: book-derived BBO and mark, the read-only export --------------------------
+
+    @Test
+    void bboReportsEachSideIndependentlyAndNeverInventsAMidpoint() {
+        newEngine(false);
+        assertEquals(Px.NONE, engine.bestBidPx(SEC));   // no book at all
+        assertEquals(Px.NONE, engine.bestAskPx(SEC));
+        assertEquals(Px.NONE, engine.markPx(SEC));
+
+        limit(ACCT, InputEvent.SIDE_BUY, 5, PX150);     // one-sided: a bid and nothing else
+        assertEquals(PX150, engine.bestBidPx(SEC));
+        assertEquals(Px.NONE, engine.bestAskPx(SEC));   // the empty side stays absent (q2)
+
+        limit(ACCT2, InputEvent.SIDE_SELL, 5, PX150 + 2 * CENT);
+        assertEquals(PX150, engine.bestBidPx(SEC));
+        assertEquals(PX150 + 2 * CENT, engine.bestAskPx(SEC));
+        assertEquals(Px.NONE, engine.markPx(SEC));      // quoted is not traded
+
+        limit(ACCT3, InputEvent.SIDE_BUY, 5, PX150 + 2 * CENT);   // cross: prints at the ask
+        assertEquals(PX150 + 2 * CENT, engine.markPx(SEC));       // the mark is the print (ADR-051)
+        assertEquals(Px.NONE, engine.bestAskPx(SEC));             // the ask side emptied
+        assertEquals(PX150, engine.bestBidPx(SEC));               // the resting bid remains
+    }
 }

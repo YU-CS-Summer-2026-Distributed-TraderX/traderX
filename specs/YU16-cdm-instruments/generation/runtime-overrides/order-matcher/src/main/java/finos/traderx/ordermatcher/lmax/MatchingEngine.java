@@ -783,6 +783,44 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             true, lastPxBySecurity[r.securityId], e.ingressNanos);
     }
 
+    // ----- book-derived market data (ADR-067's undisputed slice) ----------------------------
+    //
+    // The book already knows its best bid, best ask and mark; until now none of it was exported
+    // anywhere, and the console drew a synthetic price it was handed. These are READ-ONLY
+    // accessors for the member's HTTP surface -- beside consensus, never sequenced: every member
+    // computes them from applied state, so sequencing them would grow the log for data each
+    // member already holds. Same unsynchronized off-thread read posture as recoveryDigest():
+    // a torn read costs one stale scrape, never engine state. Px.NONE (0) = absent -- a one-sided
+    // book reports the side it has and nothing else; no midpoint is synthesized here or anywhere.
+
+    /** Best resting bid in Px ticks, or {@link Px#NONE} when there is no book or the side is empty. */
+    public long bestBidPx(int securityId) {
+        final LimitBook book = securityId >= 0 && securityId < booksBySecurity.length
+            ? booksBySecurity[securityId] : null;
+        if (book == null) {
+            return Px.NONE;
+        }
+        final int slot = book.bestBidSlot();
+        return slot == LimitBook.NO_LEVEL ? Px.NONE : book.priceAt(slot);
+    }
+
+    /** Best resting ask in Px ticks, or {@link Px#NONE} when there is no book or the side is empty. */
+    public long bestAskPx(int securityId) {
+        final LimitBook book = securityId >= 0 && securityId < booksBySecurity.length
+            ? booksBySecurity[securityId] : null;
+        if (book == null) {
+            return Px.NONE;
+        }
+        final int slot = book.bestAskSlot();
+        return slot == LimitBook.NO_LEVEL ? Px.NONE : book.priceAt(slot);
+    }
+
+    /** The mark in Px ticks (last trade, else the seeding tick -- ADR-051), or {@link Px#NONE}. */
+    public long markPx(int securityId) {
+        return securityId >= 0 && securityId < lastPxBySecurity.length
+            ? lastPxBySecurity[securityId] : Px.NONE;
+    }
+
     // ----- price band follows the market (ADR-066) ------------------------------------------
 
     /**
