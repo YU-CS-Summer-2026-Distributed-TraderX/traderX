@@ -178,7 +178,9 @@ FORWARDS=(
 # forward to bind a port kept it for the whole suite, and a stale tunnel to a dead gateway pod
 # would have survived every re-establish while the replacements silently lost the bind.
 kill_forwards() { pkill -f "kubectl.*port-forward" 2>/dev/null; sleep 1; }
-trap kill_forwards EXIT
+# stp_return_gateway first: a run killed mid-borrow must hand the gateway back before the forwards
+# it would need to verify that go away. No-ops unless a borrow is actually outstanding.
+trap 'declare -F stp_return_gateway >/dev/null && stp_return_gateway; kill_forwards' EXIT
 
 start_forwards() {
   kill_forwards
@@ -267,16 +269,27 @@ current_image() { ${K} get sts order-matcher-cluster -o jsonpath='{.spec.templat
 # old engine and some under the new, and the state machines diverge PERMANENTLY. Not theoretical:
 # pinning by bare `set image` produced [61 ...] [62 ...] [62 ...], member 0 a full order behind and
 # STILL behind after 180s, plus a risk-extract cut the members could not agree on.
-# THE MEMBERS ONLY. The gateway is deliberately left on whatever build it is already running.
+# THE MEMBERS ONLY, AND THIS HAS NOT CHANGED. The gateway is deliberately left on whatever build
+# it is already running.
 #
-# It used to be repinned here alongside the StatefulSet, and that is what made the stp prep block
-# below take the GATEWAY historical too -- which nothing wanted. The gateway is stateless and holds
-# no epoch, so it has no reason to share the members' build; the baseline block above already pins
-# it to ${BASELINE_IMAGE} and this function has no business undoing that. It cost two proofs:
+# The gateway is stateless and holds no epoch, so it has no reason to share the members' build; the
+# baseline block above already pins it to ${BASELINE_IMAGE} and this function has no business
+# undoing that. It used to be repinned here alongside the StatefulSet, and the bug was precisely
+# that a general-purpose function acquired a side effect exactly one caller wanted: the stp prep
+# block below silently took the GATEWAY historical too, announcing only "fresh epoch minted ON ...".
+# A runner repinning a component a PROOF is making claims about is how a change becomes invisible.
+# Do not reintroduce that here. If a caller needs a matched pair, the caller borrows it and gives
+# it back, in view -- see stp_borrow_gateway below.
+#
+# The OTHER half of the original warning is now stale and is recorded here so it is not re-argued:
 # yu15-pre/yu15-stp predate the gateway's probe server (18111, /live) that the manifest's three
 # probes point at, so the kubelet failed the startup probe and crash-looped a gateway whose only
-# defect was being older than the manifest. See
-# issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md.
+# defect was being older than the manifest
+# (issues/resolved/HANDOFF-issue-historical-gateway-images-fail-the-probe-port.md). That is handled
+# now: GW_HISTORICAL_PROBES -- the pre-probe-server form, /ready on 18110 with the
+# initialDelaySeconds:5 those builds shipped with -- exists in scripts/proofs/yu13-stp-and-replace.sh
+# and yu13-cancel-ingress.sh, and both proofs already roll historical gateways with it. Rolling a
+# historical gateway is no longer the hazard it was; doing it from INSIDE this function still is.
 # THE IMAGE MUST BE ON THE NODES BEFORE ANYTHING IS DESTROYED. This function wipes the PVCs first
 # and discovers an unreachable image afterwards, at which point the epoch it would have fallen back
 # to no longer exists. `kind load` is start-cluster-kind.sh's job and this script never did it, so
@@ -307,6 +320,80 @@ fail_hard() { echo "[fail] $*" >&2; exit 1; }
 # Not fatal to the suite by itself (a partly-seeded rig can still answer some proofs honestly), but
 # it must be VISIBLE and it must be attributable to the seeder rather than to whichever proof trips
 # over it three steps later.
+# BORROWING THE GATEWAY FOR THE SEEDING STEP, AND GIVING IT BACK.
+#
+# POST /seed does not complete when a TIP gateway sits in front of HISTORICAL members: measured
+# 2026-08-22, all seven account seeds 422 and the first instrument {"seeded":false}, on two
+# consecutive suite runs. It is not a readiness race and not a capacity refusal -- varying only the
+# gateway, with the same seeder and the same fresh-epoch procedure, settles it:
+#     members yu15-pre-1k + gateway yu17-jsrebind (tip)             -> every seed refused
+#     members yu15-pre-1k + gateway yu15-pre-1k + historical probes -> all 68 enabled
+# So the stp epoch had NEVER carried the fixture universe -- not 20 tickers, not 44, not 68. It hid
+# because yu13-stp-and-replace's own roll_to puts the gateway on the same historical build before
+# the proof seeds its own ticker, so the proof never saw the mismatch it runs underneath.
+# (issues/open/the-stp-prep-seeds-through-a-tip-gateway-onto-historical-members.md)
+#
+# Scoped to this ONE caller on purpose. rebuild_fresh_epoch stays members-only; the seeding step is
+# the only thing here that needs a matched pair, so it borrows the gateway around itself and returns
+# it before the proof starts. Returning it BEFORE the proof is not tidiness: yu13-stp-and-replace
+# captures the gateway's image on entry and restores that on EXIT, so handing it a historical
+# gateway would make it faithfully restore a historical gateway at the end of the suite -- the
+# restore-what-you-found latch that cost three proofs once already.
+#
+# The historical builds carry no CONTROL_FEED_SUBSCRIBER at all (verified by javap: zero references
+# in their ClusterGatewayMain), so the borrowed gateway cannot replay the YU04 universe into the new
+# epoch -- the hazard the env-var dance above exists to prevent is absent for the borrowed window,
+# not merely disabled.
+STP_GW_BORROWED=0
+STP_GW_IMAGE=""
+STP_GW_PROBES=""
+
+# Read the probe forms out of the proof that owns them rather than keeping a third copy. Every
+# script in scripts/proofs is standalone and sources nothing -- a property worth more than the
+# duplication between the two proofs -- but the runner is not a proof, and a third copy free to
+# drift from the two that matter is strictly worse than reading theirs.
+gw_probe_form() { # gw_probe_form <VAR_NAME>
+  local v
+  v="$(sed -n "s/^$1='\(.*\)'\$/\1/p" "${ROOT}/scripts/proofs/yu13-stp-and-replace.sh")"
+  [[ -n "${v}" ]] || fail_hard "could not read $1 out of scripts/proofs/yu13-stp-and-replace.sh"
+  printf '%s' "${v}"
+}
+
+stp_borrow_gateway() { # stp_borrow_gateway <image>
+  local image="$1" container
+  container="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}')"
+  STP_GW_IMAGE="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}')"
+  STP_GW_PROBES="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0]}' \
+    | python3 -c 'import sys,json;c=json.load(sys.stdin);print(",".join(json.dumps(k)+":"+json.dumps(c.get(k)) for k in ("startupProbe","readinessProbe","livenessProbe")))')"
+  # A CAPTURE OF AN ALREADY-BROKEN DEPLOYMENT IS NOT THE THING TO RESTORE. A run that died between
+  # a patch and its restore leaves the probes stripped; capturing THAT as "original" latches the
+  # damage into every later run, which then reports a successful restore. Same guard, same reason,
+  # as the one in yu13-stp-and-replace.sh.
+  if [[ "${STP_GW_PROBES}" == *'"startupProbe":null'* || "${STP_GW_PROBES}" == *'"livenessProbe":null'* ]]; then
+    echo "[stp-prep] [warn] the gateway already carries no startup or liveness probe, so an earlier run"
+    echo "[stp-prep] [warn] died before its restore. Returning the MANIFEST form, not this capture."
+    STP_GW_PROBES="$(gw_probe_form GW_MANIFEST_PROBES)"
+  fi
+  STP_GW_BORROWED=1
+  echo "[stp-prep] borrowing the gateway onto ${image} for the seeding step only (it was ${STP_GW_IMAGE})"
+  ${K} patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${image}\",$(gw_probe_form GW_HISTORICAL_PROBES)}]}}}}" >/dev/null
+  ${K} rollout status deploy/cluster-gateway --timeout=600s >/dev/null \
+    || { echo "[stp-prep] [fail] the borrowed gateway never settled on ${image}"; return 1; }
+}
+
+stp_return_gateway() {
+  [[ "${STP_GW_BORROWED}" == "1" ]] || return 0
+  local container
+  container="$(${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].name}' 2>/dev/null)"
+  echo "[stp-prep] returning the gateway to ${STP_GW_IMAGE} and the probes it had"
+  ${K} patch deploy cluster-gateway --type=strategic \
+    -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"${container}\",\"image\":\"${STP_GW_IMAGE}\",${STP_GW_PROBES}}]}}}}" >/dev/null 2>&1
+  ${K} rollout status deploy/cluster-gateway --timeout=600s >/dev/null 2>&1 \
+    || echo "[stp-prep] [warn] the gateway did not settle back on ${STP_GW_IMAGE} -- check it before the next run"
+  STP_GW_BORROWED=0
+}
+
 SEED_N=0
 seed_fixtures() { # seed_fixtures [fresh]  -- "fresh" clears the projection for a new epoch
   local log fresh=0
@@ -591,7 +678,11 @@ for p in "${PROOFS[@]}"; do
     # roll_to() in scripts/proofs/yu13-stp-and-replace.sh -- read the comment there before
     # attributing that shape to anything on this line.
     #
-    # Seeding after this registers ~20 tickers, comfortably inside the historical 64 limit.
+    # Seeding after this registers the whole quoted universe -- 68 securities as of 2026-08-22 (20
+    # equities, 24 listed options, 19 treasuries/bills/strips/corporates, 5 ETFs). That fits because
+    # the two historical builds now carry MAX_SECURITIES=1024 like every current build; the 64-cap
+    # originals are :yu15-pre-orig64 / :yu15-stp-orig64 and refuse at the 65th security. The seeder
+    # asserts its own total against capacity, so this is checked rather than assumed.
     # Quiet the box first. This proof rolls all three members TWICE and needs consensus to re-form
     # after each roll; on a contended kind node it instead logs "leader heartbeat timeout" and
     # "quorum position went backwards" and the members never agree. It passed standalone before the
@@ -613,10 +704,12 @@ for p in "${PROOFS[@]}"; do
     # brings the members up, and it replays the YU04 control feed's 510-security universe straight
     # into the brand-new epoch.
     #
-    # That is fatal on the historical builds this prep exists to serve: MAX_SECURITIES is 64 there
-    # against 1024 today, so the table is exhausted in the first 13% of the replay and every symbol
-    # registration after that is refused with id = -1 -- which surfaces as
-    # yu13-stp-and-replace failing its seed with a FAST `422 {"seeded":false}`.
+    # It used to be FATAL on the historical builds this prep exists to serve, when MAX_SECURITIES was
+    # 64 there against 1024 today: the table was exhausted in the first 13% of the replay and every
+    # symbol registration after that was refused with id = -1, surfacing as yu13-stp-and-replace
+    # failing its seed with a FAST `422 {"seeded":false}`. Those builds now carry 1024, so a 510-
+    # security replay would fit -- but it is still 510 securities of someone else's reference data
+    # in an epoch that is supposed to hold only this proof's fixtures, so the subscriber stays off.
     #
     # Measured 2026-08-14. At failure the epoch carried applied=655 on all three members, against
     # ~130 for seed-proof-fixtures alone; the ~510 excess is the universe. Intermittent precisely
@@ -627,8 +720,29 @@ for p in "${PROOFS[@]}"; do
     # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
     # path clears after its rebuilds; this wrap forgot to, and stp failed in-suite on exactly the
     # guard that exists to catch it.
-    start_forwards || { echo "[fail] no forwards for the stp fresh-epoch clear"; break; }
-    seed_fixtures fresh || echo "[warn] the stp epoch is only partly seeded -- see above"
+    # Borrow the gateway so it MATCHES the members for the seeding step, then give it back before
+    # the proof runs. Without the match nothing seeds at all -- see stp_borrow_gateway above.
+    if stp_borrow_gateway "${STP_IMAGE_PRE}"; then
+      # Every gateway rollout tears the forwards down, so re-establish on both sides of the borrow.
+      if start_forwards; then
+        # STP_PREP_SEEDED gates the per-proof seed below. This epoch can only be seeded through the
+        # matched pair borrowed just above, and by the time that generic call runs the gateway is
+        # back on the baseline while the members are still historical -- the very mismatch this
+        # block exists to work around. Letting it run again does no damage (the epoch is already
+        # seeded) but it fails, and reports "runs against a partly-seeded rig" about a rig that is
+        # fully seeded. A false alarm in the one place a reader checks for a real one.
+        if seed_fixtures fresh; then STP_PREP_SEEDED=1; else
+          echo "[warn] the stp epoch is only partly seeded -- see above"
+        fi
+      else
+        echo "[warn] no forwards after borrowing the gateway -- the stp epoch is NOT seeded"
+      fi
+    else
+      echo "[warn] could not borrow the gateway; the stp epoch will NOT be seeded (tip gateway in"
+      echo "       front of historical members refuses every /seed)"
+    fi
+    stp_return_gateway
+    start_forwards || { echo "[fail] no forwards after returning the gateway"; break; }
     STP_RESTORE_FEED=1
   fi
 
@@ -664,7 +778,12 @@ for p in "${PROOFS[@]}"; do
   fi
 
   start_forwards || { echo "[fail] could not establish forwards before ${p}"; break; }
-  seed_fixtures || echo "[warn] ${p} runs against a partly-seeded rig -- see above"
+  if [[ "${STP_PREP_SEEDED:-0}" == "1" ]]; then
+    echo "  [seed] already seeded by the stp prep through a matched gateway; not re-running"
+    STP_PREP_SEEDED=0
+  else
+    seed_fixtures || echo "[warn] ${p} runs against a partly-seeded rig -- see above"
+  fi
 
   printf "%-34s " "${p}"
   bash "${script}" > "/tmp/proofrun/${p}.log" 2>&1

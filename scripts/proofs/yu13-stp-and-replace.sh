@@ -8,9 +8,26 @@
 #   * POST /replace 404s, because no such ingress exists.
 # Then it rolls the members and gateway forward and shows the same two scenarios behave correctly.
 #
-# The members are rolled with their PVCs INTACT, deliberately: snapshot format 3 is unchanged by
-# this bundle, so the cluster recovers its epoch across the image change and the before/after runs
-# are against the same state machine lineage rather than two different clusters.
+# The members are rolled with their PVCs INTACT, deliberately, so the before/after runs are against
+# the same state machine lineage rather than two different clusters. TWO separate guarantees make
+# that safe, and conflating them is how this comment went stale once already:
+#
+#   * FORMAT IDENTITY across the step under proof. Both pinned builds write SNAPSHOT_FORMAT 3, so
+#     the pre -> stp roll is 3 -> 3 and the epoch carries over untouched. This is the original
+#     reason and it still holds exactly as written.
+#   * A WIPED EPOCH AT BOTH ENDS, which is what keeps the tip's format out of this entirely. The
+#     tip is no longer format 3 -- the YU17 layer writes 7 -- so this proof neither runs on a
+#     tip-authored epoch nor hands one back. run-proofs.sh's stp prep wipes the PVCs and mints this
+#     epoch fresh AT FORMAT 3 on IMAGE_PRE before the proof starts, and its restore wipes again
+#     (rebuild_fresh_epoch "${BASELINE_IMAGE}") when it puts the baseline back. No snapshot ever
+#     crosses the 3/7 line in either direction.
+#
+# READER TOLERANCE IS DELIBERATELY NOT RELIED ON, and saying so is the point: the tip carries
+# MIN_READABLE_SNAPSHOT_FORMAT = 3 and so COULD restore a format-3 epoch, but nothing in this flow
+# exercises that and nothing here should start depending on it. The other direction is not a choice
+# at all -- the pinned builds carry no MIN_READABLE field, it postdates them, so their reader is a
+# strict equality on 3 and they cannot read a newer epoch under any circumstances. That asymmetry
+# is the whole precondition in step 0 below.
 #
 # Assertion ends, honestly stated:
 #   * trades  -> the ENGINE's own trade counter, on ALL THREE members. MariaDB `trades` is reported
@@ -22,7 +39,13 @@
 #   There is NO order read model: `orderbook` holds 0 rows for every order ever submitted, so
 #   order-state assertions have no SQL effect end today. That gap is named, not papered over.
 #
-# Usage: ./yu13-stp-and-replace.sh            (needs both images present locally)
+# Usage: bash scripts/yu15/run-proofs.sh yu13-stp-and-replace
+#
+# NOT `./yu13-stp-and-replace.sh` against whatever epoch is on the rig, which is what this line used
+# to offer. This proof never mints its own epoch -- the runner does, fresh, on IMAGE_PRE -- and
+# roll_to rolls with PVCs intact by design, so a tip-authored epoch walks straight into the
+# format-3-reader/format-7-snapshot failure described above. Step 0 refuses that rather than
+# producing it. Both images must also be present locally.
 set -euo pipefail
 
 CTX="${CTX:-kind-traderx-yu12-cluster}"
@@ -435,6 +458,33 @@ ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight"
+# THE RUNNER MINTS THIS PROOF'S EPOCH, AND THIS PROOF REFUSES TO RUN WITHOUT IT.
+#
+# roll_to below rolls the members with their PVCs INTACT. That is only safe onto an epoch the pinned
+# builds can actually READ, and their reader is a strict equality on SNAPSHOT_FORMAT 3 (no
+# MIN_READABLE field -- see the header). The tip writes 7. Point this proof at a tip-authored epoch
+# and the members die inside onSnapshotRecord with "snapshot corrupt: symbol id N" -- a FALSE
+# accusation, the snapshot being intact and the reader simply too old -- while the consensus modules
+# stay up and the pods stay READY. The rig then looks healthy with every engine dead, and the
+# restore path hangs on a snapshot barrier a dead engine can never take.
+#
+# The members' CURRENT image is the available proxy for "who authored this epoch": run-proofs.sh's
+# stp prep wipes the PVCs and mints on IMAGE_PRE, so in the supported path the members are already
+# sitting on IMAGE_PRE when this starts.
+#
+# THIS IS NOT COVERED BY THE STALENESS CHECK BELOW, which compares image BUILD DATES. That heuristic
+# was defeated on 2026-08-22, when IMAGE_PRE/IMAGE_FIX were rebuilt to graft MAX_SECURITIES=1024
+# onto them: the -1k pair is now NEWER than the deployed tip while its snapshot reader is still
+# format-3-only. Build date stopped tracking reader capability the moment those images were touched,
+# so the date check can no longer see this hazard and this one has to.
+if [[ "${ORIGINAL_IMAGE}" != "${IMAGE_PRE}" && "${ORIGINAL_IMAGE}" != "${IMAGE_FIX}" ]]; then
+  fail "the members are on ${ORIGINAL_IMAGE}, so this epoch was not minted on ${IMAGE_PRE}.
+  This proof does not mint its own epoch -- the runner does. Run it as:
+      bash scripts/yu15/run-proofs.sh yu13-stp-and-replace
+  Rolling ${IMAGE_PRE} onto an epoch authored by ${ORIGINAL_IMAGE} puts a strict-equality format-3
+  snapshot reader in front of a newer snapshot. That fails as \"snapshot corrupt: symbol id N\" with
+  every engine dead and the pods still READY -- a false accusation this refusal exists to prevent."
+fi
 # kind compares the DOCKER manifest digest against containerd's config digest, so it decides an
 # image is "not yet present" every single time and re-copies 194MB into four nodes. On a host where
 # three busy-spinning Aeron members already burn ~150-200% CPU each, that load can take longer than
