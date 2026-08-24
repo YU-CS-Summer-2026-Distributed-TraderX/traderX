@@ -26,8 +26,24 @@ const root = process.argv[2];
 const stateId = process.argv[3];
 const specsRoot = path.join(root, 'specs');
 
+// The YU lineage forks off after 014 and its ids carry no leading digits, so the numeric match
+// below returned null for every one of them. currentNum was null, the script exited 0, and the
+// shell wrapper then printed "no prune manifests apply" -- a parse failure that reads exactly like
+// a legitimate outcome, so every removal an ancestor declared stayed silently in the generated
+// tree for YU02..YU15.
+//
+// Rank YU01..YU15 as 101..115: above the whole numbered lineage, so every ancestor manifest still
+// applies to a YU state, and order-preserving within YU, so a manifest declared at YU11 reaches
+// YU11..YU15 and not YU02..YU10. Both the current state and each manifest go through this, which
+// is what makes that containment hold. Same 101..115 rank used across the publish pipeline.
+//
+// No apostrophes in this block: it sits inside a command substitution, where a lone quote breaks
+// the shell parse even though the heredoc is quoted.
 const parseStateNum = (value) => {
-  const match = String(value || '').match(/^(\d+)/);
+  const text = String(value || '');
+  const yu = text.match(/^YU(\d{2})/);
+  if (yu) return 100 + Number.parseInt(yu[1], 10);
+  const match = text.match(/^(\d+)/);
   if (!match) return null;
   return Number.parseInt(match[1], 10);
 };
