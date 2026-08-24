@@ -108,9 +108,11 @@ runs, so if any gate there composes a YU11+ tree and compiles tests, it fails fo
 earlier branches pair YU02's test with a `ReplicationFollower` that still has the nested enum. YU05
 was verified building and running (`AuditLogHandlerTest` 6/6).
 
-## Worth fixing while nearby
+## Done while nearby
 
-The fixed script's comment says *"Rank YU01..YU15 as 101..115"* and *"a manifest declared at YU11
-reaches YU11..YU15"*. The **code** is generic (`/^YU(\d{2})/` → `100 + N`, so YU16→116, YU17→117);
-only the prose is dated. Harmless today, misleading to the next reader deciding whether the mechanism
-covers the tip.
+The fixed script carried a dated comment — *"Rank YU01..YU15 as 101..115"*, *"a manifest declared at
+YU11 reaches YU11..YU15"* — while the code is generic (`/^YU(\d{2})/` → `100 + nn`, so YU16→116,
+YU17→117). Rewritten to state the arithmetic rather than the range that happened to exist, and
+carried to all **7** branches holding the fixed script (`76bc6be6` … `ce02c790`). Comment-only, and
+prune was re-run afterwards rather than assumed: the block sits inside a command substitution where
+the file itself warns that a lone apostrophe breaks the shell parse.
