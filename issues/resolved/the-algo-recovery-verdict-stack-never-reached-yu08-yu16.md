@@ -82,3 +82,27 @@ the four-by-nine above; do not bundle the decisions.
 - `.claude/skills/propagate-spec-fix` — the lineage rule, and the reason its worktree table must be
   regenerated rather than believed.
 - `issues/HANDOFF-issue-spec-layer-propagation-gaps.md` — the running incident list this belongs on.
+
+
+---
+
+## RESOLVED 2026-08-24 — carried to all nine branches
+
+All four commits carried together to YU08–YU16, verbatim rather than cherry-picked: every target
+held byte-identical copies of all four files, so `target == pre-change source` and a copy carries
+exactly this change and nothing else. Source re-hashed immediately before copying.
+
+Carried as one unit because the stack is **broken if half-done** — `2b40524d` does not compile
+against the pre-`529c20cc` file, which is why a partial carry would have been worse than none.
+
+Verified at **both ends of the range** rather than at one: composed trees generated through
+`pipeline/generate-state.sh` and the `execution-algo-engine` suite run on **YU08** (the layer's
+owner) and **YU16** (the deepest branch, most overlaid content). Both **48 tests, 0 failures**, with
+`AlgoEventStoreReplayTest` present — matching the 48 the change was authored against on YU17. The
+seven branches between carry the identical four files but their composed suites were not run.
+
+Commits: YU08 `a0e87dfd`, YU09 `1600ba61`, YU10 `e5bc807f`, YU11 `d513e776`, YU12 `b6528606`,
+YU13 `b18ab078`, YU14 `f001846a`, YU15 `b71815e4`, YU16 `4fafc03f`.
+
+**Still open, and deliberately not fixed here:** `issues/` itself is not carried to YU08–YU16. That
+is the separate propagation gap this issue named as an open question, and it remains one.

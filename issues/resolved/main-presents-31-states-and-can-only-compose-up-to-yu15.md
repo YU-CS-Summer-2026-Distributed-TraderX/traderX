@@ -79,3 +79,31 @@ complete. Nothing on `main` composes a YU16 or YU17 tree as part of a gate, so a
 presented and wholly ungeneratable at the same time without a single check going red. That is the
 same shape as the prune bug it was found next to: a silent skip that reads exactly like a legitimate
 outcome.
+
+
+---
+
+## RESOLVED 2026-08-24 — both installers carried
+
+`main` now generates YU16 and YU17. Both files carried verbatim after confirming each diff against
+the tip was **purely** the YU16/YU17 extension — every hunk adds the two ids to an existing
+alternation or adds their copy block; nothing removed, nothing unrelated.
+
+- `pipeline/install-generated-runtime-harness.sh` — YU16/YU17 added to four state alternations and
+  the env-wrapper case, plus their lifecycle copy blocks. This was the `[fail] missing mandatory
+  runtime scripts for env wrappers`.
+- `pipeline/install-generated-ci-assets.sh` — the two missing `state_allowed_roots` arms. This is the
+  one inside the "not a flag to flip" landmine: it feeds `allowed_roots_for_state`, which
+  `validate-root-spec-kit-gates` and `verify-spec-coverage` both read on every push to `main`.
+
+Verified: `generate-state.sh YU17-otc-rates` and `YU16-cdm-instruments` both exit 0 on `main`
+(previously exit 1). All seven root gates exit 0. The working tree carried only those two paths
+before and after, so `run-all-conformance-packs` did not rewrite the 001 packs on this run.
+
+**Not verified:** the Docusaurus site build was not run — this change touches two shell scripts and
+no markdown, sidebar or catalog entry, so it has no MDX surface. Commit `main` `b2643e81`.
+
+**The shape worth keeping:** both installers enumerate states explicitly instead of deriving them, so
+every new state must be added to them by hand and nothing fails until someone tries to generate it.
+That is the same class as `a-prefix-is-not-a-category` — a hardcoded membership list standing in for
+a category — and it will recur at YU18.

@@ -206,3 +206,47 @@ control. Filed separately as
 [main-presents-31-states-and-can-only-compose-up-to-yu15](../open/main-presents-31-states-and-can-only-compose-up-to-yu15.md).
 It is why the composed-tree forcing function above tops out at YU15 on `main` rather than at the tip
 state.
+
+
+---
+
+## FULLY CLOSED 2026-08-24 — the nine-branch sweep ran, and YU01 turned out not to need it
+
+The remaining nine branches (YU02–YU10) are carried. Each was verified by generating **its own**
+state through `pipeline/generate-state.sh` into a scratch `TRADERX_GENERATED_ROOT` — not by trusting
+the YU10 probe, whose caveat was that it exercised those branches' *layers* but not their own
+`scripts/`/`pipeline/` content.
+
+All nine exit 0, and the count of YU layers running prune increments exactly with lineage depth:
+
+| branch | YU layers pruned+verified |
+|---|---|
+| YU02 | 1 |
+| YU03 | 2 |
+| YU04 | 3 |
+| YU05 | 4 |
+| YU06 | 5 |
+| YU07 | 6 |
+| YU08 | 7 |
+| YU09 | 8 |
+| YU10 | 9 |
+
+That increment is the point: a uniform "all green" would not have distinguished "prune ran everywhere"
+from "prune ran nowhere and said nothing". The reading discriminates.
+
+### YU01 needs nothing — it had an independent fix all along
+
+YU01 was recorded as a third divergent variant requiring a hand-merge. It is divergent, but **not
+stale**: it carries its own, earlier solution to the same defect. Where the carried fix parses a YU
+rank arithmetically (`/^YU(\d{2})/` → `100 + nn`), YU01 resolves it from the catalog — walking
+`previous` until a numbered ancestor appears — with a comment describing the identical failure
+("parseStateNum returns null and the whole prune step exits 0 ... so nothing looks wrong while every
+removal an ancestor declared is quietly retained").
+
+Verified: `generate-state.sh YU01-lmax-sequencer` exits 0 and reports
+`[ok] pruned removed artifacts and verified post-prune invariants for YU01-lmax-sequencer`.
+
+**So the lineage now holds two different working mechanisms for one defect**, and nobody decided that
+— it is what independent repair looks like when a fix does not propagate. Unifying them is optional
+and is *not* filed as work; the note exists so the next person to diff YU01 against its siblings does
+not "fix" a file that already works.
