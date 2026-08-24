@@ -112,12 +112,22 @@ version and it is wrong, for three reasons that should be recorded so they are n
 - **Demo realism may drop before it rises.** A thinly-traded demo book produces a jumpy, wide,
   occasionally empty BBO. The random walk looks smoother precisely because it is fictional.
 
-## Open questions — decide before building
+## Open questions — ALL FOUR NOW DECIDED (2, 3 on filing; 1, 4 on 2026-08-24)
 
-1. **Does the collar's reference change, or only its inputs' clarity?** The cheapest version of this
-   ADR changes *what publishes* and *what things are called*, and leaves ADR-066's reference exactly
-   where it is. The most expensive version re-points the collar at a book-derived price. These are
-   very different amounts of work and risk.
+1. **Does the collar's reference change, or only its inputs' clarity?** — **DECIDED 2026-08-24
+   (yaakov): the collar RE-POINTS at the book-derived price.** The expensive version, taken
+   deliberately over the cheap one. The cheap version would have changed what publishes and what
+   things are called while leaving ADR-066's reference where it is; that was the lower-risk path and
+   it was declined, because a reference that is not the book is the reason
+   `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md` exists at all — the
+   absolute `BOOK_LEVELS x BOOK_TICK_PX` window is +/-7.3% on NVDA and +/-30,400% on a 30Y STRIP, so
+   the same collar is a real constraint on one instrument and no constraint at all on another.
+   Renaming its inputs would have left that untouched.
+
+   **Consequence, accepted with the decision:** this is a deterministic-core change. It cannot be
+   rolled gradually — a mixed-version window diverges members permanently — so it needs a fresh epoch
+   and a `SNAPSHOT_FORMAT` bump (7 -> 8 on this branch). **It shares ONE epoch mint with ADR-069's
+   pre-open queue** rather than taking its own; see that ADR's "Epoch consequence" section.
 2. **What is the BBO when one side is empty?** — **DECIDED: report each side independently, omit the
    absent one, never synthesize a midpoint.** One-sided books are normal and a reference derived from a
    single side is not a midpoint. `/bbo` omits the missing field entirely rather than emitting a zero or
@@ -131,8 +141,15 @@ version and it is wrong, for three reasons that should be recorded so they are n
    byte-identically across 69 books. The response carries `applied` so a consumer can tell whether two
    scrapes are comparable. The read is unsynchronized and off-thread, the same posture as
    `recoveryDigest` — it is a sample, not a sequenced fact.
-4. **Does `price-publisher` keep driving the demo?** If the book becomes the price, something must
-   still generate order flow, and today the session driver takes its cue from the publisher.
+4. **Does `price-publisher` keep driving the demo?** — **DECIDED 2026-08-24 (yaakov): yes, but
+   demoted from price AUTHORITY to flow GENERATOR.** It keeps producing order flow, because
+   something must, and the session driver keeps taking its cue from it. What it stops being is the
+   thing that says what a price *is* — that is the book, per decision 1 above.
+
+   The two roles were only ever conflated because one component did both. Separating them is what
+   makes this question upstream of ADR-069 rather than tangled with it: once the publisher is a flow
+   generator, "where does the opening price come from" is answered entirely by ADR-069's previous-close
+   rule, and replacing or removing the publisher later does not move that question.
 
 ## Related
 

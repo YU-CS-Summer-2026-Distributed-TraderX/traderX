@@ -371,27 +371,57 @@ opening price of their own and must not be given one from a stored close, which 
 re-price. Equities and ETFs are covered by the hierarchy. Treasuries are covered and then superseded
 by FRED, as intended.
 
-## Open questions — decide before building
+## Decisions — settled 2026-08-24 (yaakov)
 
-1. **What happens on the first session ever, and after a gap in sessions?** First-ever start has no
-   prior close and must use the seed — that is rule 1 and is settled. Less settled: if the last
-   published close is *weeks* old, is it still the right open, or is a stale close worse than a
-   fresh seed? A staleness bound would need a stated reason, and a bound with no reason is a knob.
-2. **Does the read-side belong to trade-processor or reference-data?** The close lives behind
-   trade-processor's `/eod` surface, which is where version and DRAFT/PUBLISHED semantics already
-   are — an argument for putting the previous-session resolution there. But `price-publisher`
-   already talks to reference-data for instrument static, and adding a second upstream to a
-   bootstrap path adds a second thing that can be down at start-up.
-3. **What commands the session transition, and on what schedule?** Decision 5 fixes *where* the halt
-   is enforced, not *what* triggers it. Today `EodController.close()` is an on-demand HTTP call
-   defaulting to `LocalDate.now()`, which is why one date carries fifty versions. A sequenced halt
-   needs a command on the ingress path, and someone has to decide whether a calendar/clock drives it
-   or a human does. **A clock is not obviously right here** — a demo rig that halts itself overnight
-   is a rig that looks broken every morning.
-4. **Does a halted book reject order ingress, or accept and queue it for the open?** Real venues
-   accept pre-open orders and hold them for the auction. Rejecting is far simpler and is the
-   assumption in decision 5. If orders are ever queued instead, the queue is *sequenced state* and
-   inherits the snapshot-format consequence above.
+All four were "decide before building". They are decided; the reasoning is kept because the shape of
+the argument is what a later reader needs, not the verdict alone.
+
+**1. No staleness bound on an old close.** The last published close is the open regardless of age.
+The open carries the close's *date*, so staleness is visible to anyone reading it, but nothing
+refuses to use it. This ADR argued that a bound would need a stated reason and that a bound with no
+reason is a knob — that argument holds, and no reason exists yet. If a stale open ever causes harm,
+that incident is the evidence from which to size a bound; inventing one first would be picking a
+number to feel safe.
+
+**2. The read-side belongs to `trade-processor`.** The close already lives behind its `/eod` surface,
+together with the version and DRAFT/PUBLISHED semantics the resolution depends on, so the logic sits
+next to the state it reads. Decisive against `reference-data`: it would add a second upstream to a
+**bootstrap** path — a second thing that can be down at start-up, on the one path with no fallback.
+
+**3. Session transition is a SEQUENCED COMMAND, issued by a human by default.** A clock may be an
+opt-in *producer* of that command, off on the demo rig. The ADR's own note settles the default: a rig
+that halts itself overnight looks broken every morning.
+
+**4. A halted book's behaviour is PHASE-GATED — `PRE_OPEN` queues, `CLOSED` rejects.** Real venues
+accept pre-open orders for the auction, and this now does too, but only inside a phase the log has
+entered.
+
+### The constraint that shapes 3 and 4 together, and it is not negotiable
+
+The original phrasing of 4 was "queue if after 6:30am EST, reject otherwise". **A wall-clock
+comparison must never be evaluated per member.** `MatchingEngine` is clock-free today — verified
+2026-08-24, no `System.currentTimeMillis`, no `Instant.now` anywhere in the cluster apply path — and
+that is load-bearing, not incidental. Two members evaluating `now() > 06:30` against their own clocks
+will disagree for one order at the boundary and **diverge permanently**; a deterministic-core
+divergence cannot be rolled back gradually (`CLAUDE.md`), it is repaired only by a wipe and a fresh
+epoch.
+
+So the engine holds a phase enum — `CLOSED` / `PRE_OPEN` / `OPEN` — and **never knows what time it
+is**. The 6:30 ET boundary is expressed as *when the `PRE_OPEN` command is issued*, upstream and
+outside the core. Every member applies that command at the same log position and therefore agrees by
+construction.
+
+This is why 3 and 4 are one mechanism, not two: a single sequenced command stream drives the phase,
+and "human or clock" is only a question about what *produces* those commands. A scheduler and an
+operator emit the identical command; the core cannot tell them apart and does not need to.
+
+### Epoch consequence — shared with ADR-067
+
+The queue is **sequenced state**: it must survive snapshot and failover, so it bumps
+`SNAPSHOT_FORMAT` (7 → 8 on this branch). ADR-067's collar re-point is also a deterministic-core
+change. **Both land in ONE epoch mint**, not two — one PVC wipe, one proof run, one mixed-version
+window to avoid. The cost is that both must be right before minting; the alternative was two full
+wipe-and-remint cycles with the rig unusable across each.
 
 ## Related
 
