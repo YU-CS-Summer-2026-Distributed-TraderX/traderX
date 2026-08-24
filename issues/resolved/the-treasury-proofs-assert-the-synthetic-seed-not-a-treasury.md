@@ -136,3 +136,45 @@ reference moves for the first time.
   follows the reference, so a Treasury whose price now moves for real moves its own band with it.
 - `issues/open/a-live-feed-refuses-the-fixture-seeders-nvda-crossing.md` — the same class, one
   instrument tier over.
+
+---
+
+## RESOLVED 2026-08-23 — the proof asserts the curve, and FRED is live behind it
+
+Two commits, and a third defect found on the way.
+
+**`6f781558`** replaced the seed band with properties **of the curve** — true under any curve anyone
+can draw, invented or real, and unsatisfiable by accident: every bond on the fraction scale (not one
+spot-checked instrument), the zero curve monotone across the STRIPs, a near bill just under par, a
+30Y zero deep below it, and each coupon bond worth more than its own same-maturity strip.
+
+**`2cc5f210`** fixed the rewrite's own defect: it fetched `/prices` and piped it into
+`python3 - "${UST}" <<'EOF'`. `python3 -` takes its **program** from stdin and the heredoc supplies
+it, so the pipe was discarded — under bash the program parses and `sys.stdin` reads **0 bytes**. The
+step could not pass for any input, and it failed in the vocabulary of a real curve defect, which
+sends you to look at the prices rather than at the plumbing. zsh resolves the same construct a third
+way (data and program concatenated, python dies on a syntax error), so the shape is not portable in
+either direction. The payload now travels in the environment; stdin belongs to the heredoc.
+
+Swept: this construct appears **exactly once** in `scripts/`. Every other proof uses `python3 -c`
+with the program as an argument, which leaves stdin free. Not a class, a one-off.
+
+### Verified live
+
+`FRED_API_KEY` is set on the rig, `price-publisher` runs `:yu17-fred`, and `/health.priceSource`
+reports `provider=FRED, points=11/11, asOf=2026-08-20, lastError=null`, with all eleven CMT series
+recorded `ok` by the ADR-068 obligation-2 copyright check.
+
+The prediction in this issue held. It estimated a real 30Y zero near 0.22–0.24; the rig prices
+`UST-STRIP-20560515` at **0.21558**. The published discount curve now reads
+0.927 → 0.810 → 0.638 → 0.216 out to 2056, and divergence from the synthetic walk grows with
+maturity exactly as it must: +0.05 pts at the 2Y, **-2.84 pts at the 30Y**.
+
+`run-proofs.sh yu16` — **6 passed, 0 skipped, 0 failed.**
+
+### Worth keeping
+
+**A vacuous FAIL is as expensive as a vacuous pass and is easier to trust.** A check that cannot pass
+looks like a discovery; nobody audits a red. The tell is the same one as ever — the reading does not
+discriminate. This step reported identical failure for live FRED data, synthetic data, and no data at
+all. `vacuous-pass-audit` covers checks that cannot fail; this is the mirror and belongs beside it.
