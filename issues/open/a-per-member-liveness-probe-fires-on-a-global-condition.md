@@ -11,8 +11,10 @@ of each other, at least four rounds in one night).
 
 The cluster StatefulSet's liveness probe was `httpGet /health` with the Kubernetes default
 `timeoutSeconds: 1`. Under node-wide CPU contention (kind workers at 105–148% with the full
-observability stack co-resident), `/health` answers **slowly rather than not at all** — measured
-under flood at up to 3.6 s total time while the member was demonstrably alive and converging. To a
+observability stack co-resident), `/health` answers **slowly rather than not at all**. The whole
+case in one line, measured under flood: **/health HTTP total reached 3.6 s on members that were
+alive and answering 200, while TCP connect on those SAME samples stayed ≤ 13 ms** — the old probe
+was reading a live member as dead, so this is a fix, not a loosened threshold. To a
 1-second-timeout probe, a slow answer and a dead process are the same observation. Sixty seconds of
 slowness (failureThreshold 6 × periodSeconds 10) reads as death.
 
