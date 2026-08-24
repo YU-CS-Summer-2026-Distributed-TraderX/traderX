@@ -96,7 +96,7 @@ public class AlgoOrderService {
 
   @PostConstruct
   void start() throws Exception {
-    eventStore.replayAndSubscribe(this::applyAndIndex);
+    eventStore.replayAndSubscribe(this::applyAndIndex, state::orphanedParents);
   }
 
   private void applyAndIndex(AlgoEvent event) {
