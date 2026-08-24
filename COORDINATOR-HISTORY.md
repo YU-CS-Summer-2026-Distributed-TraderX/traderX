@@ -72,3 +72,40 @@ most. Not an argument to break the exclusion rule; an argument to say it loudly 
 Also directed: one forward-pointing line on this morning's resolved issue, so its "RESOLVED" does not
 read as "this script is now sound". A closed issue that overstates its completeness is how the next
 person stops looking.
+
+## 2026-08-24 — APPROVED: the format-8 mint scope, with one claim pulled
+
+Lane `local_10cc06cc-…` delivered the design pass. Verified before approving.
+
+**The result of the pass is a term change, not a plan**: `MIN_READABLE_SNAPSHOT_FORMAT` must go 3→8,
+its first raise (confirmed at MECS:190, with SNAPSHOT_FORMAT=7 at :181). If `T_BOOK`'s baseLevel is
+denominated in the derived tick, changing the derivation makes a from-scratch replay disagree with the
+epoch's own history — so old epochs are **unrestorable-correctly**, the fresh epoch is **mandatory
+rather than budgeted**, and the standing kind-rig epoch cannot roll forward onto the new build.
+Recorded as **reasoned, not measured** — the lane read it rather than demonstrated it, and the doc must
+say what would demonstrate it.
+
+**Strengthened one claim with live data.** The lane argued the option case from a typical ~$3 premium.
+The rig's `/bbo` right now: `AAPL260918P00220000` at **0.504**, `AAPL260918C00260000` at 1.096,
+through `MSFT261218P00410000` at 35.177. Options here span **$0.50 to $35** against a ±$65.54 band —
+the cheapest is two orders of magnitude inside it. Measured, not estimated.
+
+**Confirmed the STRIP correction**: `UST-STRIP-20560515` marks 0.215580 and matches `UST-`, so the
+tick-1 grid gives ~±30% and the collar binds. Only the listed-option row of the filed issue's table
+survives.
+
+**PULLED: the FNMA claim.** The lane reported "an EQUITY seeded at $1.12, live in the universe" as a
+new uncovered instrument. **FNMA marks 200.000000 on the rig** — the same default as every other
+seeded equity — and there is no source for 1.12 anywhere I can find: no hit near FNMA in any
+json/csv/ts/sh/java under `specs/YU17` or `scripts/`, no FNMA reference row, no per-ticker seed price
+table at all. FNMA the *ticker* is real (three proof scripts); the *price* is not sourced. Likely
+real-world knowledge that Fannie Mae trades near a dollar — legitimate as a forecast, not as a
+measurement.
+
+It is load-bearing: if no live instrument is a low-priced equity, `OccSymbol.isOption` covers every
+uncovered instrument that actually exists, and the lane's decision (f) residual is **hypothetical
+rather than live** — which changes what yaakov is being asked to accept. Told the lane to source it or
+restate it, while keeping the underlying argument, which stands without the example: *a ticker
+convention cannot see a price*.
+
+Seven decisions (a–g) go to yaakov; I am not deciding them. Nothing committed yet.
