@@ -141,14 +141,35 @@ spec:
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
+            # /ready reads a cached flag off a MAX_PRIORITY handler thread, so 2s covers
+            # scheduling jitter under contention; misclassifying ready is recoverable (traffic
+            # shed, next probe corrects), so short is safe HERE in a way it is not for liveness.
+            timeoutSeconds: 2
             failureThreshold: 24
+          # Liveness must catch a DEAD member, not a BUSY one. The httpGet /health form killed all
+          # three members SIMULTANEOUSLY on kind (2026-08-24, restarts 9/10/11 overnight): the k8s
+          # default timeoutSeconds=1 makes a slowly-answering member read identically to a dead
+          # one, and CPU contention is node-global, so a per-member guard fired as a quorum kill —
+          # then each restart lost a race with its own Aeron mark file, costing 2-3 restarts per
+          # kill. Same failure already measured and fixed on the GKE flood tier
+          # (gke/statefulset-emptydir.yaml); this is that stanza. A tcpSocket probe is answered by
+          # the KERNEL from the accept backlog regardless of whether the JVM thread schedules, so
+          # busy-but-alive passes while a dead/exited JVM (socket closed) still fails instantly.
+          # A wedged-but-alive member is handled by Raft (voted out) and readiness (traffic shed),
+          # not by liveness.
           livenessProbe:
-            httpGet:
-              path: /health
+            tcpSocket:
               port: 8080
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            failureThreshold: 6
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            # 5s dial + 20 misses ≈ 5 min of continuous saturation tolerated before restart. Even
+            # a tcpSocket probe can i/o-timeout when saturation starves the node's network
+            # softirq; a truly dead JVM still fails instantly. Erring long here only delays
+            # restarting a zombie process (main dead, non-daemon threads holding the pod up) —
+            # Raft + readiness already contain it meanwhile — while erring short is the measured
+            # quorum kill. Both gradients checked, long side wins.
+            timeoutSeconds: 5
+            failureThreshold: 20
           resources:
             requests:
               cpu: 250m
