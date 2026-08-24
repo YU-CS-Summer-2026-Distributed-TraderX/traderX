@@ -81,6 +81,9 @@ class ClusterReconOtcTest {
         assertEquals("RECEIVE_FIXED", row.side());
         assertEquals(NOTIONAL, row.quantity(), "quantity is the notional, per contract, unnetted");
         assertEquals(new BigDecimal("0.042000"), row.price(), "price is the fixed rate");
+        assertEquals("ACCEPTED", row.riskReason(),
+            "a contract only reaches the store because the credit gate passed it; a REFUSED "
+                + "booking produces no row at all to carry a reason");
         assertEquals(timestamp, row.timestampMillis(),
             "the booking time is the cluster time of the message that applied it");
     }

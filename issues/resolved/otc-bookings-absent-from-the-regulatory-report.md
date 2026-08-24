@@ -243,6 +243,9 @@ nowhere near close, but the number now means "records", not "order records".
   replicated state, so projecting it needs an emit-side hook that was not decided here. It is the
   same decision as the rejection-reason gap below.
   → [[a-refused-otc-booking-leaves-no-audit-trace]]
-- The rejection-reason gap this file documented under *"Related content gap in the same surface"* is
-  **still undecided** and was deliberately NOT implemented. Assessment for whoever decides it:
+- ~~The rejection-reason gap this file documented under *"Related content gap in the same surface"*
+  is **still undecided** and was deliberately NOT implemented.~~ **Decided and shipped 2026-08-23**:
+  every row now carries a `riskReason`, `ACCEPTED` on the non-rejections, and it is not gated on
+  `ORDER_REJECTED` (a cancel carries one too). Verified on the rig — an unknown account and a
+  good account outside the band render as two different strings.
   → [[the-audit-surface-records-that-an-order-was-refused-not-why]]

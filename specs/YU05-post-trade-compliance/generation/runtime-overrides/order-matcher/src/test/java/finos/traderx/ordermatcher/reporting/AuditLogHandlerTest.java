@@ -1,11 +1,13 @@
 package finos.traderx.ordermatcher.reporting;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import finos.traderx.ordermatcher.lmax.OutputEvent;
 import finos.traderx.ordermatcher.lmax.Px;
 import finos.traderx.ordermatcher.lmax.SymbolTable;
+import finos.traderx.ordermatcher.risk.RiskReason;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -84,6 +86,63 @@ class AuditLogHandlerTest {
         assertEquals(first, second);
         assertEquals(List.of("ORDER_REJECTED", "TRADE_BOOKED", "ORDER_CANCELED"),
             first.stream().map(AuditRecord::kind).toList());
+    }
+
+    /**
+     * The whole point of carrying a reason: two refusals with genuinely DIFFERENT causes must read
+     * differently. A check that renders the same string for both would pass while proving nothing,
+     * which is the exact defect this column exists to fix — so the assertion is that they DIFFER,
+     * not merely that each is non-empty.
+     */
+    @Test
+    void twoRejectionsWithDifferentCausesRenderDifferently() {
+        SymbolTable symbols = new SymbolTable(16);
+        int securityId = symbols.idFor("IBM");
+        List<AuditRecord> sink = new ArrayList<>();
+        AuditLogHandler handler = new AuditLogHandler(sink, symbols, 0L, 0L);
+
+        handler.onEvent(rejection(1L, securityId, RiskReason.UNKNOWN_ACCOUNT), 0, true);
+        handler.onEvent(rejection(2L, securityId, RiskReason.PRICE_COLLAR), 1, true);
+        handler.onEvent(orderEvent(OutputEvent.KIND_ORDER_ACCEPTED, 3L, securityId), 2, true);
+
+        assertEquals("UNKNOWN_ACCOUNT", sink.get(0).riskReason());
+        assertEquals("PRICE_COLLAR", sink.get(1).riskReason());
+        assertNotEquals(sink.get(0).riskReason(), sink.get(1).riskReason(),
+            "the risk gate refusing an unknown account and the collar refusing a good one are "
+                + "the two causes this column exists to tell apart");
+        // Ordinal 0 IS RiskReason.ACCEPTED, so a non-rejection carries the engine's own byte
+        // rather than a blank or a synthesized NONE.
+        assertEquals("ACCEPTED", sink.get(2).riskReason());
+    }
+
+    /**
+     * A reason appended by a later build decodes here as an out-of-range ordinal. It must render
+     * as one odd column, never throw — the report is produced in one pass, so an exception would
+     * blank every row in the range over one byte of one of them.
+     */
+    @Test
+    void anUnknownReasonOrdinalIsNamedOpaquelyNotFatal() {
+        SymbolTable symbols = new SymbolTable(16);
+        int securityId = symbols.idFor("IBM");
+        List<AuditRecord> sink = new ArrayList<>();
+        AuditLogHandler handler = new AuditLogHandler(sink, symbols, 0L, 0L);
+
+        OutputEvent fromALaterBuild = orderEvent(OutputEvent.KIND_ORDER_REJECTED, 1L, securityId);
+        fromALaterBuild.riskReason = (byte) (RiskReason.values().length + 3);
+        handler.onEvent(fromALaterBuild, 0, true);
+        OutputEvent corrupt = orderEvent(OutputEvent.KIND_ORDER_REJECTED, 2L, securityId);
+        corrupt.riskReason = (byte) -1;
+        handler.onEvent(corrupt, 1, true);
+
+        assertEquals(2, sink.size());
+        assertTrue(sink.get(0).riskReason().startsWith("UNKNOWN_"), sink.get(0).riskReason());
+        assertTrue(sink.get(1).riskReason().startsWith("UNKNOWN_"), sink.get(1).riskReason());
+    }
+
+    private static OutputEvent rejection(long inputSeq, int securityId, RiskReason reason) {
+        OutputEvent e = orderEvent(OutputEvent.KIND_ORDER_REJECTED, inputSeq, securityId);
+        e.riskReason = (byte) reason.ordinal();
+        return e;
     }
 
     private static List<AuditRecord> replay(List<OutputEvent> events, SymbolTable symbols,

@@ -50,5 +50,12 @@ retained. The EOD contracts artifact cannot help — it lists contracts, and thi
 ## Related
 
 - [[otc-bookings-absent-from-the-regulatory-report]] — the booked half, decided and shipped.
-- [[the-audit-surface-records-that-an-order-was-refused-not-why]] — the same question for orders, and
-  strictly easier: there the reason IS already on the replayed event and is merely not rendered.
+- [[the-audit-surface-records-that-an-order-was-refused-not-why]] — the same question for orders.
+  **Shipped 2026-08-23**, because there the reason was already on the replayed event and merely not
+  rendered. That closes the asymmetry in the OTHER direction and makes this file's gap sharper, not
+  smaller: a refused ORDER now says why on the audit surface, and a refused BOOKING still says
+  nothing at all. Re-measured on the rig after that change — `POST /swaps` on account 999123 →
+  `{"booked":false,"reason":"UNKNOWN_ACCOUNT"}`, and the report over the bracketing range carries one
+  row for the booking that succeeded (`SWAP_BOOKED SW-3655`, `riskReason=ACCEPTED`) and zero for the
+  one that was refused. Nothing about the rendering fix reaches this; it still needs the emit-side
+  change or the second read-side tap described above.

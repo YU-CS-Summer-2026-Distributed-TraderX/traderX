@@ -5,6 +5,7 @@ import finos.traderx.ordermatcher.lmax.Px;
 import finos.traderx.ordermatcher.lmax.SwapConventions;
 import finos.traderx.ordermatcher.lmax.TradeBlotter;
 import finos.traderx.ordermatcher.model.OrderSide;
+import finos.traderx.ordermatcher.risk.RiskReason;
 import io.aeron.Aeron;
 import io.aeron.FragmentAssembler;
 import io.aeron.Image;
@@ -109,10 +110,23 @@ final class ClusterRecon {
      *  <p>YU17 reuses these ten columns for an OTC booking rather than widening the record: a new
      *  component would appear as a null on every one of the thousands of ORDER rows, changing the
      *  shape of a surface whose whole claim is reproducibility, to carry a term the EOD contracts
-     *  artifact already publishes in full. See {@link #otcAuditRow} for the mapping. */
+     *  artifact already publishes in full. See {@link #otcAuditRow} for the mapping.
+     *
+     *  <p>{@code riskReason} is the exception, and it is widened rather than reused because there
+     *  is no spare column: on a rejection every other component is already carrying that order's
+     *  own value. It is present on EVERY row and never null — {@code RiskReason} ordinal 0 IS
+     *  {@code ACCEPTED}, and the publisher sets 0 on the accepted paths, so a non-rejection row
+     *  renders the engine's own byte rather than a placeholder. A blank or a synthesized
+     *  {@code NONE} would be a value the enum does not have, and would be indistinguishable from
+     *  "the reason byte could not be read" — see {@link #reasonName}.
+     *
+     *  <p>It is NOT gated on {@code ORDER_REJECTED}: a cancel carries a reason too
+     *  ({@code SELF_TRADE_PREVENTED} today, the session transition under ADR-069 next), and a
+     *  surface that only explains rejections would have to be widened again to say why an order
+     *  vanished at the open. */
     record AuditRow(String kind, long inputSeq, String orderId, String tradeId, int accountId,
                     String security, String side, int quantity, BigDecimal price,
-                    long timestampMillis) { }
+                    long timestampMillis, String riskReason) { }
 
     /** Outcome of one full-log replay, reported so a proof can assert the replay was REAL: an
      *  index that reproduces the live engine's trade population is a replay; one that does not is
@@ -474,7 +488,8 @@ final class ClusterRecon {
             OrderSide.values()[out.side].name(),
             trade ? out.tradeQty : out.quantity,
             Px.toDecimalOrZero(trade ? out.tradePx : out.limitPx),
-            out.updatedAtMillis);
+            out.updatedAtMillis,
+            reasonName(out.riskReason));
     }
 
     /**
@@ -513,7 +528,10 @@ final class ClusterRecon {
             contract[2] != 0L ? "PAY_FIXED" : "RECEIVE_FIXED",
             (int) contract[3],
             BigDecimal.valueOf(contract[4], SwapContractCsv.RATE_SCALE),
-            timestampMillis);
+            timestampMillis,
+            // A contract only reaches the store because the credit gate passed it. A REFUSED
+            // booking produces no row at all to carry a reason — that gap is its own issue.
+            RiskReason.ACCEPTED.name());
     }
 
     private static boolean isReportableKind(final byte kind) {
@@ -523,6 +541,20 @@ final class ClusterRecon {
             || kind == OutputEvent.KIND_ORDER_FILLED
             || kind == OutputEvent.KIND_ORDER_CANCELED
             || kind == OutputEvent.KIND_TRADE_BOOKED;
+    }
+
+    /**
+     * The rejection/cancel reason as its enum name, bounds-checked.
+     *
+     * <p>The ordinal comes off the wire and is serialized into snapshots, so a row written by a
+     * build that appended a reason this build does not know decodes to an out-of-range byte. That
+     * must NOT throw: the projection renders the whole report in one pass, and one unknown byte
+     * would blank every row in the range instead of one column of one of them. Same
+     * {@code UNKNOWN_<n>} shape as {@link #kindName}, and for the same reason.
+     */
+    static String reasonName(final byte reason) {
+        final RiskReason[] all = RiskReason.values();
+        return reason >= 0 && reason < all.length ? all[reason].name() : "UNKNOWN_" + reason;
     }
 
     private static String kindName(final byte kind) {
