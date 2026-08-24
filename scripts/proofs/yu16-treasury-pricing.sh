@@ -99,11 +99,17 @@ EOF
 # them again through HTTP would need a SECOND bond model living in this script, and two models
 # drift.
 PRICES="$(curl -sf -m10 "${PP}/prices")" || fail "could not read ${PP}/prices"
-printf '%s' "${PRICES}" | python3 - "${UST}" <<'EOF' || fail "the published curve fails a property every curve must have — see the message above"
-import json, sys
+# The payload arrives in the ENVIRONMENT, not on stdin. `python3 -` takes its PROGRAM from stdin,
+# and the heredoc is what supplies it, so a `printf ... |` pipe into this command is silently
+# discarded: under bash the program parses fine and `sys.stdin` reads 0 bytes, making the step fail
+# for every possible input. (zsh resolves the same construct differently again — it concatenates,
+# and python dies on a syntax error.) A check that cannot pass is as useless as one that cannot
+# fail, and this one had the additional charm of looking like a real curve failure.
+PRICES_JSON="${PRICES}" python3 - "${UST}" <<'EOF' || fail "the published curve fails a property every curve must have — see the message above"
+import json, os, sys
 
 target = sys.argv[1]
-rows = {r["ticker"]: r for r in json.load(sys.stdin)["prices"]}
+rows = {r["ticker"]: r for r in json.loads(os.environ["PRICES_JSON"])["prices"]}
 bonds = {k: v for k, v in rows.items() if k.startswith("UST-") or k.startswith("CORP-")}
 if not bonds:
     print("no bond rows in /prices at all — this step would otherwise pass vacuously", file=sys.stderr)
