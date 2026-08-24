@@ -6,6 +6,35 @@
 the collar lane was reasoning about equities, the rates lane about bonds, and the defect lives in the
 ratio between them.
 
+## CORRECTED 2026-08-24 — most of the table was computed from the wrong constant
+
+The table below was computed from the **global** `BOOK_TICK_PX` and did not account for ADR-060,
+which shipped on the same branch: `MatchingEngineClusteredService` derives a **tick-1 grid** for
+every ticker matching `UST-` or `CORP-`, and band width is `levels × tick`, so those rows get a
+$0.131 window (±$0.0655), not $131.
+
+- **Treasury note (~0.99): WRONG — binds.** ±$0.0655 is ~±6.6%.
+- **30Y STRIP: WRONG — binds.** STRIP tickers are `UST-STRIP-…` (bills `UST-BILL-…`); both match
+  `UST-`. Measured on the rig 2026-08-24: `UST-STRIP-20560515` marks 0.215580 → ±30%.
+- **Listed options: RIGHT, on live numbers.** OCC tickers match no prefix and get the equity
+  grid. `/bbo` premiums measured 2026-08-24 span $0.504 (`AAPL260918P00220000`) to $35.177
+  (`MSFT261218P00410000`) — the cheapest is two orders of magnitude inside the ±$65.54 band.
+- **Missing row: `FNMA`, an equity.** The publisher's committed bootstrap seed prices it at
+  1.12/1.145 (`price-publisher/data/snapshot-prices.json:70`, operative carrier YU16). The rig
+  currently marks it 200.000000 only because `scripts/yu15/seed-proof-fixtures.sh` POSTs a flat
+  `PRICE:-200` for every fixture ticker — the fixture constant, not the instrument (ADR-067's
+  NVDA defect with the sign flipped). No ticker convention can classify a low-priced equity, so
+  the category is **price scale, not instrument class**, and any ticker-derived fix carries a
+  stated residual here.
+- **The "another gate may refuse it first" caveat is resolved for the cluster tier**: the cluster
+  gateway screens nothing (ADR-047, verified in `ClusterGatewayMain`) — the ±50% percentage
+  pre-screen (`GatewayReplicaStore`) is the retired Spring tier only. On the one rig the engine
+  band is the sole price gate for orders; only the bond face-quantity rule (bonds only) sits in
+  front of it.
+
+The fix is scoped in `specs/YU17-otc-rates/system/format-8-mint-scope.md` §2 and rides the
+SNAPSHOT_FORMAT 7→8 epoch mint (ADR-069, "Epoch consequence").
+
 ## The arithmetic
 
 `LimitBook` covers `BOOK_LEVELS` (1<<17 = 131,072) consecutive ticks of `BOOK_TICK_PX` (0.001) —
@@ -19,8 +48,9 @@ That half-width is an **absolute price distance**, and it is the same for every 
 |---|---|---|---|
 | equity | ~200 | ~134 … ~265 | **yes** — a fat finger at 2,000 is refused |
 | listed option | ~3 | ~−62 … ~68 | **no** — 20× the premium is inside the band |
-| Treasury note (fraction of par) | ~0.99 | ~−64 … ~66 | **no** — 50× par is inside the band |
-| 30Y STRIP | ~0.22 | ~−65 … ~66 | **no** |
+| Treasury note (fraction of par) | ~0.99 | ~−64 … ~66 | ~~no~~ **YES — see the 2026-08-24 correction (ADR-060 grid)** |
+| 30Y STRIP | ~0.22 | ~−65 … ~66 | ~~no~~ **YES — see the 2026-08-24 correction (ADR-060 grid)** |
+| FNMA (equity, seeded 1.12) | ~1.15 | ~−64 … ~67 | **no** — added 2026-08-24; no prefix can ever match it |
 
 A price cannot be negative, so for anything trading below roughly $65 **the band's lower half is
 unreachable and its upper half is far beyond any plausible error.** The collar is structurally
