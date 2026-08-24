@@ -1,8 +1,15 @@
 # Issue: the gateway silently stops committing after a leader kill, and every probe says it is fine
 
-**Status: THE WEDGE NOW SELF-HEALS (2026-08-14).** Diagnosed to a line of code, fixed, and the cure
-verified end to end on kind. §5's HTTP-serving hang is a separate defect and remains open — see the
-bottom of this file.
+**Status: RESOLVED 2026-08-18.** The wedge was diagnosed to a line of code and fixed (2026-08-14, cure
+verified on kind); the ack-correlation class behind it was closed by **Option B**, landed and rig-proven
+on YU15/YU16/YU17 and carried to YU13/YU14, which replaces positional matching with a keyed request id
+so neither the election trigger nor the drop trigger can strand a correlation. A's `onNewLeaderResync`
+was deleted along with it, deliberately.
+
+**§5 was NOT resolved with this issue and has been split out** to
+`issues/open/gateway-http-executor-never-drains.md` so it is not buried by this file's closure. That
+defect — the gateway serving no HTTP at all and never draining — is open, and nobody has re-run its
+repro on a B build.
 
 **The line of code.** `AeronCluster.Context.egressListener(this::onEgress)` was a METHOD REFERENCE.
 It satisfies `EgressListener`'s single abstract method and leaves `onSessionEvent` and `onNewLeader`
@@ -292,189 +299,6 @@ That makes the single-gateway rig the *useful* configuration for this bug, not a
    which is a fair caution about *timing* — but this defect is not a timing claim, and it shows up
    on both rigs identically.
 
-## §5. A worse failure hiding inside it: the gateway stops serving HTTP entirely
-
-Found 2026-08-13 while building the readiness proof. Drive a wedged gateway hard enough — an
-unbounded generator, roughly 20 orders/sec — and it stops answering **any** HTTP request, `/ready`
-and `/health` included. Not 503. No response at all, connection accepted and never served.
-
-**It does not recover.** Measured: eight minutes with zero load offered, polling every 30 seconds,
-still 000 every time. The JVM was alive (PID 1, 23 minutes uptime), the Aeron side was alive (the
-control feed kept applying and logging), and TCP kept accepting. Only a restart cleared it.
-
-The mechanism is almost certainly the HTTP executor: every in-flight order parks one of the 64 pool
-threads for the full `ACK_TIMEOUT_MS` (10s) plus slack, and under a wedge none of them complete
-early. `gateway.yaml` already carries a comment about exactly this shape — the pool was raised from
-8 to 64 because "the readiness probe starved behind them and k8s pulled the gateway out of the
-Service mid-bench". 64 only moves the cliff; it does not remove it. What is NOT explained is why it
-never drains after load stops, which is the part worth investigating: a bounded 12s wait per request
-should clear thousands of queued requests in minutes, and it did not clear in eight.
-
-**Why this matters more than the wedge.** It defeats any probe-based fix. A readiness signal the
-server cannot serve is not a signal — the pod does go NotReady, but by probe *timeout*, which is
-what the old build did too, so nothing is gained and nothing is diagnosable. Under load the honest
-503 from §1's fix never gets sent.
-
-**The probe half is fixed, 2026-08-13.** `/ready`, `/health` and `/live` are now also served by a
-separate `HttpServer` on `GATEWAY_PROBE_PORT` (18111) with its own single-thread executor, and every
-probe in `gateway.yaml` reads that port. They stay registered on 18110 too, so the proofs and
-benches that curl it are untouched. Asserted directly rather than assumed: step 2 of
-`yu16-liveness-restarts-wedge.sh` takes the reading *while* 80 concurrent orders (the pool is 64)
-are parked on acks that will never arrive, and the probe port answered 200/503 throughout. So the
-verdict Kubernetes now acts on is the gateway's own, not a timeout.
-
-**The hang itself is NOT fixed and is still not diagnosed** — the order path still fills up and
-still does not drain after load stops. What changed is that it is now survivable without a human:
-liveness fails on the streak (or, if the JVM itself is gone, on timeout) and the kubelet restarts
-the container, which is the only known cure. The open question is unchanged and still worth
-answering: why a bounded 12s wait per request never clears in eight minutes.
-
-**And the liveness proof does not answer it — do not read it as if it did.** Its step 4 commits an
-order after a 160-order drive, which looks like evidence the backlog drains; it is not, because the
-restart under test kills the owner queue first and step 4 always meets a fresh JVM. §6 has the
-reasoning.
-
-### THE WEDGE REPRODUCED ON KIND, 2026-08-14 — and it is NOT a session close
-
-Run on `traderx/cluster-node:yu17wedge`, the build carrying the full `EgressListener`, so a session
-event would now be visible if one arrived. Route: `scripts/proofs/yu12-gke-failover-transparency.sh`
-against kind with the gateway at `replicas: 1` — i.e. a leader kill UNDER a live order stream, which
-is the one condition neither of the other two scenarios covers.
-
-The proof failed at its own assertion, which is the wedge arriving:
-
-```
-stream done: 739 acked, 0 needed retries, 1 gave up
-[FAIL] 1 orders were never acknowledged even after retries — the outage was not transparent
-```
-
-and the gateway was left in §1's signature exactly — all three members `1/1`, a new leader elected,
-and:
-
-```
-/ready : {"connected":true,"noAckStreak":1,"noAckLimit":20}
-POST /orders -> {"error":"no committed ack"}
-```
-
-**The session was never closed.** The full listener logged only:
-
-```
-CLUSTER-SESSION-EVENT code=OK session=3 leader=2 term=12
-CLUSTER-NEW-LEADER leader=2 term=12 session=3
-```
-
-**non-OK session event count: 0**, across the kill and after it.
-
-#### What this settles
-
-1. **The wedge is not a closed or errored session.** With the events now visible, none arrived. So
-   the `sessionLost` reconnect trigger added above **cannot cure this wedge** — it is wired for a
-   condition that does not occur here. The logging half of that change is what earned its keep: it
-   is how this was measurable at all.
-2. **§1's divergence, confirmed at 1:1 with the cluster's own witness.** One HTTP request, measured
-   cleanly:
-
-   ```
-   code 504, body 28 bytes {"error":"no committed ack"}
-   traderx_cluster_next_order_ref 881 -> 882   (delta 1)
-   ```
-
-   One request, one ref consumed, one client told its order failed. The book moves while the client
-   is told nothing happened.
-3. **It does NOT support §4's internal-resubmission hypothesis** — at least not under a full wedge.
-   §4 speculated that "the gateway resubmits internally when an ack does not arrive", from 55
-   unexplained refs. Under a total wedge the ratio is exactly one ref per client request. (Caveat:
-   §4's reading was taken during a *transparent-failover* run, not a wedge, so this measures a
-   different regime rather than refuting it.)
-4. **The remaining direction is §2, narrowed.** Ingress still works — the cluster sequences and
-   consumes a ref for every order. The session is open and `code=OK`. Aeron's `onNewLeader` fires
-   and recreates the ingress publication. So the break is specifically the EGRESS path to this
-   client after a leader change, which is precisely what §1 describes and what §2 asked about.
-
-#### The cure, and why it was not attempted here
-
-A `rollout restart` still clears it instantly, which means a fresh session is sufficient. The
-obvious next move is to trigger `connectCycling()` from the no-ack STREAK rather than from a session
-event — the streak is already computed for readiness and liveness.
-
-**That was deliberately not done, and the reason is a real hazard rather than caution.**
-`connectCycling()` loops `while (running)` until it connects. Firing it on streak during a QUORUM
-LOSS — where the streak also climbs, and where the cluster is unreachable by construction — would
-park the owner thread inside the reconnect loop and make a recoverable outage permanently worse.
-Any streak-triggered reconnect needs a bounded attempt count and a way to distinguish "my session is
-bad" from "the cluster is down", and it must be re-proven against `yu16-ready-tracks-commit` (whose
-step 3 asserts `/ready` stays 503 across a RESTORED quorum) and `yu16-liveness-restarts-wedge`.
-
-### Quorum loss does NOT close the session — measured 2026-08-14, and it narrows §5
-
-Run on `traderx/cluster-node:yu17wedge` (the build carrying the full `EgressListener`, so a session
-event would now be visible if one arrived). Members 3 → 1, 40 concurrent orders driven into a
-cluster that cannot commit, then quorum restored.
-
-| | reading |
-|---|---|
-| `/ready` under quorum loss | `{"connected":true,"noAckStreak":30,"noAckLimit":20}` — correctly failing |
-| `/live` under quorum loss | `{"noAckStreak":30,"noAckLimit":100}` — correctly not yet restarting |
-| **session events, during** | **none. non-OK count 0** |
-| **session events, after** | **none. non-OK count 0** |
-| commit after quorum returned | `{"orderRef":69,"kind":1}` — recovered unaided |
-
-**The session stays OPEN through quorum loss.** Nothing closes, nothing errors, and the gateway
-recovers on its own once quorum returns — so `sessionLost` correctly never fires here, and this
-route cannot be used to exercise the reconnect trigger.
-
-**What that rules out for §5.** Three scenarios now measured on this build:
-
-| scenario | session event | outcome |
-|---|---|---|
-| plain leader kill, no load | `CLUSTER-NEW-LEADER` + `code=OK` | recovers, commits normally |
-| quorum loss under load | none at all | recovers when quorum returns |
-| leader kill UNDER SUSTAINED LOAD | — | §5's wedge |
-
-The wedge is therefore **not** a closed or errored session, and not merely "the cluster cannot
-commit" — both of those recover unaided. That leaves §2's hypothesis as the live one: the egress
-subscription after a leader change. The gateway follows the new leader for INGRESS (Aeron's
-`onNewLeader` recreates the ingress publication, and orders demonstrably still commit), so the
-asymmetry is on the EGRESS side — which is exactly what §1 describes: "the cluster sequences and
-books it. Only the ack path back to the gateway is gone."
-
-### The drain experiment, run 2026-08-13 — and what it does and does not settle
-
-Run on kind with `LIVE_NO_ACK_STREAK=100000` so no restart could intervene: lose quorum, drive
-2 × 80 concurrent orders (streak reached exactly 160), restore quorum, then stop **all** load and
-watch. Result:
-
-> **First committed order at +0s after quorum returned, `restarts=0`, streak already back to 0.**
-
-So on the pipelined tier, under quorum loss, **the abandoned-task backlog is not self-sustaining**.
-160 abandoned tasks did not cost 160 × `ACK_TIMEOUT_MS` of owner-thread time, because the per-task
-10s is spent only while the cluster refuses the offer — once quorum is back each queued task offers
-in microseconds and the queue evaporates. The "queue that cannot drain" hypothesis is dead for this
-shape.
-
-**It is NOT an answer to §5, and must not be read as one.** §5's hang was the leader-kill WEDGE
-under a sustained generator, in which the gateway stopped answering *all* HTTP and had not
-recovered after eight minutes with zero load offered. Quorum loss induces the same *property*
-(nothing can commit) but evidently not the same *mechanism* — this run recovered instantly where
-that one never did. §5's mechanism remains unreproduced and unexplained. What is now known is
-narrower and still worth having: whatever §5 is, it is **not** simply a deep owner queue.
-
-### The side finding, which is worth more than the drain answer: §1 has a DETERMINISTIC repro
-
-The same run reproduced the invisible-orders defect exactly, in about 90 seconds, with no leader
-kill and no race:
-
-| witness | reading |
-|---|---|
-| submits that got no committed ack | **160** (the gateway's own `noAckStreak`, so every one of those clients was answered 504) |
-| `traderx_book_open_orders` | 51 → **211** |
-| `traderx_cluster_next_order_ref` | **212** |
-| member agreement | all three identical: `applied=7568 open=211 nextRef=212 hash=-734721819140448701` |
-
-**159 of the 160 orders every client was told had failed are resting in the book.** (One did not
-consume a ref — its offer never cleared before the deadline.) That is §1, on demand, without the
-1-in-4 wedge race the rest of this document is built around. Anyone working on §1 should use quorum
-loss to produce the divergence and stop hunting the wedge for it; the wedge is only needed for §5.
 
 ## §6. Where the fix has actually run, and where it still has not
 
