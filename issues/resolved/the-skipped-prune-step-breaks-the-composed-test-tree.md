@@ -177,10 +177,27 @@ GEN_EXIT=0
 ```
 
 Every YU layer from YU02 to YU10 ran the previously-skipped invariant verification and **passed**,
-generation exit 0. YU10 is the deepest of the nine, so its composed tree exercises all of their
-layers at once. **The sweep is nine verbatim copies with no door to open behind it**, not an
-unknown-size investigation. It still wants its own task, because each branch should be regenerated
-to clear rather than assumed.
+generation exit 0. YU10 is the deepest of the nine, so one tree exercised all nine spec layers.
+
+**What that probe does and does not cover.** It exercises YU02–YU09's spec layers *as YU10's
+worktree holds them*, rendered by *YU10's* `pipeline/`. Each of the nine also has its own `specs/`
+and its own `pipeline/`, and those are not identical — `pipeline/` is a per-branch copy, so nothing
+about YU10's run is evidence about theirs. Spot-measured, and most of the apparent divergence is
+benign lineage rather than drift:
+
+- YU05 vs YU10, `pipeline/`: 11 differing entries, of which **10 are just the YU06–YU10 per-state
+  generate/render scripts** that YU05 correctly does not carry. The **one** real difference is
+  `publish-generated-state-branch.sh` — which holds its own copy of the same
+  `missing mandatory runtime scripts for env wrappers` check, so it is exactly the sort of file
+  the probe says nothing about.
+- YU05's own `specs/YU05-post-trade-compliance` layer carries a
+  `trade-processor/.../tradeprocessor/config` directory that YU10's copy of that same layer does
+  not. So YU05's own composed tree renders content YU10's never did.
+
+So: **scoped, not unknown-size** — the probe rules out the one thing worth fearing, a check switched
+on for the first time going red across the lineage. But it is not a clearance. Each of the nine
+still needs its own generation run, and "regenerate rather than assume" in the sentence above is
+doing real work, not being polite.
 
 ## Found while landing this
 
