@@ -202,3 +202,22 @@ YU16 and YU17**, byte-identical at `043e9c6f036a`. All fifteen other worktrees r
 sha — **`main` included**, and `main` is not a propagation target regardless. YU13/YU14 are in the
 CI matrix but do not carry the script, so the workflow's gate step is a no-op on their legs today;
 unchanged by this work.
+
+---
+
+### Forward pointer (2026-08-24, same day): RESOLVED here does not mean the gate was sound
+
+This issue closed the reduced-run hole and the result-tier hole. Hours later a **third hole of the
+same shape** was found in the same script: source discovery looked at `src/test` /
+`src/integrationTest` only, ignoring the module's own `sourceSets { test { java.srcDirs = … } }`, so
+the gate was silently blind to `generated/…/account-service` — eight test classes, no `src/test` at
+all, never mentioned in the gate's output. Fixed under
+`issues/resolved/three-ci-scripts-assert-execution-at-three-different-strengths.md`, which is the
+current home for this script's state. Read that one before trusting this one's "RESOLVED".
+
+Two corrections to the Carry section above while it is being read:
+
+- The workflow's gate step is **not** "a no-op on their legs" — `bash` on a path that does not exist
+  exits 127, so those YU13/YU14 matrix legs fail that step rather than skipping it.
+- YU13 and YU14 now carry `assert-suites-executed.sh`, added by the issue named above, because their
+  `service-tests.sh` calls it.
