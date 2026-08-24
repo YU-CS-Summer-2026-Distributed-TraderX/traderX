@@ -435,18 +435,50 @@ The band-width fix (`issues/open/the-collar-is-inert-for-every-instrument-priced
 folded in by decision rather than drifting in: it is a deterministic-core edit and would otherwise
 force a second wipe weeks later.
 
-**Its blast radius is larger than the reference re-point it replaced, and should be scoped before the
-mint, not during it.** `BOOK_LEVELS` (1<<17) and `BOOK_TICK_PX` (0.001) are ADR-050's constants and
-`LimitBook` is a banded array indexed `slot = absolute tick − baseLevel`. Making the band relative to
-price — or the tick size per instrument class — changes that arithmetic, and therefore:
+**Its blast radius is SMALLER than first written — corrected 2026-08-24 by measurement.** The first
+version of this section said the width fix re-architects `LimitBook`. It does not: **the per-security
+tick mechanism already exists and works**, shipped in YU16 under ADR-060. `LimitBook(levels,
+tickTicks)` takes tick size per instance, `MatchingEngine.bookTickPxBySecurity[]` /
+`overrideBookTickPx()` install it, and `MatchingEngineClusteredService` derives it both at symbol
+registration and on snapshot restore, so it is already deterministic across members and replay.
 
-- the book's **snapshot layout** (already bumping, so this is free here and expensive later);
-- its **memory footprint**, which is why `BOOK_LEVELS` is what it is;
-- **ADR-066's re-anchoring**, which is a re-index by `oldBase − newBase` — that subtraction assumes a
-  single tick size, and stops meaning what it means if tick size varies by class;
-- **every collar proof**, all of which are equity-priced (`yu03-risk-proof`, `yu10-fix-session`,
-  `yu13-cancel-ingress`, `yu13-stp-and-replace`) — the classes where the collar does not bind are
-  exactly the ones no proof covers, so new proofs are part of the work, not a follow-up.
+Band width is `levels x tick`, so tick size already *is* the width lever:
+
+| grid | tick | window | applies to |
+|---|---|---|---|
+| global | 1000 (=$0.001) | $131.07, ±$65.54 | equities, **listed options**, anything unmatched |
+| bond (ADR-060) | 1 (=$0.000001) | $0.13, ±$0.0655 | tickers matching `UST-` or `CORP-` |
+
+**The entire defect is the derivation's gate**, a two-entry prefix allowlist:
+
+```java
+private static final String[] FRACTION_OF_PAR_TICKER_PREFIXES = { "UST-", "CORP-" };
+private static long derivedBookTickPxFor(String ticker) {
+    return isFractionOfParTicker(ticker) ? BOND_BOOK_TICK_PX : 0L;  // 0 = fall back to the equity grid
+}
+```
+
+A `startsWith` allowlist standing in for the category *"priced as a fraction of par, or in single
+digits"* — the `a-prefix-is-not-a-category` pattern exactly. Every class outside those two prefixes
+silently inherits the equity grid.
+
+**This also corrects the filed issue**
+(`issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`): its table says the
+collar does not bind for a Treasury note. It does — `UST-` matches, so a note at 0.99 gets ±$0.0655,
+about ±6.6%. Every row in that table was computed from the global constant without accounting for
+ADR-060, which shipped on the same branch. The row that is unambiguously right is **listed options**,
+which match no prefix and get the equity grid. The strip row depends on what strip tickers actually
+look like and is unverified.
+
+What still makes this core, and therefore epoch work: changing a live security's tick changes its book
+geometry and every resting order's slot. A fresh epoch starts with empty books, which is what makes
+the change free here and expensive later.
+
+**The proof gap is the real cost, not the code.** Every existing collar proof is equity-priced
+(`yu03-risk-proof`, `yu10-fix-session`, `yu13-cancel-ingress`, `yu13-stp-and-replace`) — the classes
+where the collar does not bind are exactly the ones no proof covers, which is why this survived. An
+inert guard accepts everything, which is indistinguishable from a guard that works. New proofs must
+exist before the mint, and must be shown to FAIL on the current build.
 
 ## Related
 
