@@ -415,13 +415,38 @@ This is why 3 and 4 are one mechanism, not two: a single sequenced command strea
 and "human or clock" is only a question about what *produces* those commands. A scheduler and an
 operator emit the identical command; the core cannot tell them apart and does not need to.
 
-### Epoch consequence — shared with ADR-067
+### Epoch consequence — one mint, and what actually rides it
 
 The queue is **sequenced state**: it must survive snapshot and failover, so it bumps
-`SNAPSHOT_FORMAT` (7 → 8 on this branch). ADR-067's collar re-point is also a deterministic-core
-change. **Both land in ONE epoch mint**, not two — one PVC wipe, one proof run, one mixed-version
-window to avoid. The cost is that both must be right before minting; the alternative was two full
-wipe-and-remint cycles with the rig unusable across each.
+`SNAPSHOT_FORMAT` (7 → 8 on this branch). Yaakov's call is **one epoch mint, not two** — one PVC
+wipe, one proof run, one mixed-version window to avoid. The cost is that everything riding it must be
+right before minting.
+
+**What rides this epoch, corrected 2026-08-24 after ADR-067 Q1 was re-decided:**
+
+| change | core? | why it is here |
+|---|---|---|
+| Pre-open queue + phase machine (this ADR, 3 and 4) | **yes** | queued orders are sequenced state |
+| Band **width** fix — the below-par inertness | **yes** | `LimitBook`'s slot arithmetic and layout |
+| Collar **reference** re-point | **NO — dropped** | ADR-067 Q1 now splits: the collar keeps ADR-066's exogenous reference, so nothing changes here |
+| Market data published from the book | no | egress-side, beside consensus, `/bbo` already ships |
+
+The band-width fix (`issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`) was
+folded in by decision rather than drifting in: it is a deterministic-core edit and would otherwise
+force a second wipe weeks later.
+
+**Its blast radius is larger than the reference re-point it replaced, and should be scoped before the
+mint, not during it.** `BOOK_LEVELS` (1<<17) and `BOOK_TICK_PX` (0.001) are ADR-050's constants and
+`LimitBook` is a banded array indexed `slot = absolute tick − baseLevel`. Making the band relative to
+price — or the tick size per instrument class — changes that arithmetic, and therefore:
+
+- the book's **snapshot layout** (already bumping, so this is free here and expensive later);
+- its **memory footprint**, which is why `BOOK_LEVELS` is what it is;
+- **ADR-066's re-anchoring**, which is a re-index by `oldBase − newBase` — that subtraction assumes a
+  single tick size, and stops meaning what it means if tick size varies by class;
+- **every collar proof**, all of which are equity-priced (`yu03-risk-proof`, `yu10-fix-session`,
+  `yu13-cancel-ingress`, `yu13-stp-and-replace`) — the classes where the collar does not bind are
+  exactly the ones no proof covers, so new proofs are part of the work, not a follow-up.
 
 ## Related
 

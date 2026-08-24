@@ -115,19 +115,35 @@ version and it is wrong, for three reasons that should be recorded so they are n
 ## Open questions — ALL FOUR NOW DECIDED (2, 3 on filing; 1, 4 on 2026-08-24)
 
 1. **Does the collar's reference change, or only its inputs' clarity?** — **DECIDED 2026-08-24
-   (yaakov): the collar RE-POINTS at the book-derived price.** The expensive version, taken
-   deliberately over the cheap one. The cheap version would have changed what publishes and what
-   things are called while leaving ADR-066's reference where it is; that was the lower-risk path and
-   it was declined, because a reference that is not the book is the reason
-   `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md` exists at all — the
-   absolute `BOOK_LEVELS x BOOK_TICK_PX` window is +/-7.3% on NVDA and +/-30,400% on a 30Y STRIP, so
-   the same collar is a real constraint on one instrument and no constraint at all on another.
-   Renaming its inputs would have left that untouched.
+   (yaakov): SPLIT THEM.** ADR-067's hierarchy governs what the system *publishes* — `/bbo`, the
+   console, market data generally: last trade, then book-derived BBO, then external reference. **The
+   collar keeps ADR-066's exogenous-first reference unchanged** (feed price, else mark, else first
+   limit).
 
-   **Consequence, accepted with the decision:** this is a deterministic-core change. It cannot be
-   rolled gradually — a mixed-version window diverges members permanently — so it needs a fresh epoch
-   and a `SNAPSHOT_FORMAT` bump (7 -> 8 on this branch). **It shares ONE epoch mint with ADR-069's
-   pre-open queue** rather than taking its own; see that ADR's "Epoch consequence" section.
+   **Why they diverge, which is the whole point of the decision:** publishing and collaring are
+   different jobs with different failure modes. Publishing wants the truest available current price,
+   and the book is the best source of that. A collar exists to answer *"has our book detached from
+   the world?"* — this ADR's own framing — and **a check derived from the thing being checked is not
+   a check.** Point the collar at the book and the book determines its own guard rail: a book that
+   drifts walks its band along with it, which is the failure the collar exists to prevent. ADR-066
+   chose exogenous-first deliberately ("the feed is exogenous and keeps ticking after the book
+   prints") and that reasoning survives this ADR intact.
+
+   **This decision was made twice.** The first answer, on the same day, was to re-point the collar at
+   the book-derived price. It was taken on a stated rationale that did not hold — that re-pointing
+   would fix
+   `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`. **It would not.** That
+   issue is about the band's *width* (±$65.54, an absolute distance identical for every instrument),
+   not about where the band is *centred*; the issue says so explicitly, and centring a $131 window
+   perfectly on a Treasury at 0.99 leaves it exactly as inert. The coordinator asserted the
+   connection and it was wrong. Recorded here because the wrong reason is more instructive than the
+   right verdict: **"where the band sits" and "how wide the band is" are independent, and a fix to
+   one is not a fix to the other.**
+
+   **Consequence:** the collar reference is now *unchanged* by this ADR, so this question contributes
+   **no deterministic-core change**. What remains core is ADR-069's pre-open queue and the separately
+   decided band-width fix; see ADR-069's "Epoch consequence".
+
 2. **What is the BBO when one side is empty?** — **DECIDED: report each side independently, omit the
    absent one, never synthesize a midpoint.** One-sided books are normal and a reference derived from a
    single side is not a midpoint. `/bbo` omits the missing field entirely rather than emitting a zero or
