@@ -82,6 +82,31 @@ primitive and fatal for a naive definition of "yesterday's close": there is no s
 one is chosen deliberately. **Defining "the previous close" is a prerequisite of this ADR, not a
 detail of it.**
 
+### There is no overnight, so the discontinuity is a RESTART artifact, not a gap
+
+Measured 2026-08-23, and it reframes this ADR. **Nothing in this system halts trading.** There is no
+market-open/closed state, no trading calendar and no halt: every `isOpen` in the tree is *order*
+state (unfilled), never market state. `price-publisher` has no knowledge that a close occurred. The
+feed adapter, the publisher and consensus all run continuously.
+
+Today's close was cut at `00:05:12`. **24 trades executed after it**, the most recent at `00:07:32`,
+and the feed never paused. So `EodController.close()` is a *cut taken from a running market*, not a
+halt — the same primitive as a photograph, and equally non-interrupting.
+
+The consequence: **the discontinuity this ADR fixes is not an overnight gap. It is a restart
+artifact.** It appears only when the publisher process restarts and rewinds to
+`snapshot-prices.json`. A rig that runs continuously has no discontinuity at all, and one that
+restarts has one whose size depends on how stale the committed seed has become — which is a property
+of the deployment, not of the market.
+
+This is why the framing is **restart continuity** rather than session modelling, and why "should the
+open gap?" is not a question this ADR can answer. A gap is not created at an open; it is the visible
+residue of price discovery that happened in a venue you were not watching. Nothing here stops
+watching, so there is no residue to inherit. Were a genuine closed period ever introduced — ingress
+halted between close and open — the question would become real, and the only honest way to fill the
+gap would be an external source that kept trading (option A in open question 1), never a fabricated
+draw.
+
 ## Decision (proposed)
 
 **A session opens where the last session closed**, when a prior close exists, and the bootstrap
@@ -120,9 +145,9 @@ FRED. Opening source joins it. See the trap below — this is not optional polis
 
 - **Not a change to how close is computed.** ADR-051 (last trade is the mark) and the YU06 chain are
   untouched. This ADR only reads what they already write.
-- **Not a claim that open should equal close.** Real markets gap overnight on news. Opening *at* the
-  prior close builds a market that never gaps, which is a different fiction from the current one and
-  should be chosen knowingly — see open question 2.
+- **Not a model of an overnight gap.** There is no overnight to gap across — see the section below.
+  Opening at the prior close is not a simplification of a session model; it is the only continuous
+  answer for a market that never stopped.
 - **Not a durability change.** The close is already durable; the seed is already committed. Nothing
   here makes external data durable, which ADR-068's interim position forbids.
 - **Not a session scheduler.** This ADR does not decide *when* a session starts or ends. It decides
@@ -165,10 +190,25 @@ price that silently came from the seed looks exactly like one that came from a c
 
 ## Open questions — decide before building
 
-1. **Does the open equal the close exactly, or gap?** Opening at the close is the simplest rule and
-   the easiest to verify. A modelled overnight gap is more faithful and immediately raises "gap
-   against what?", since the thing that would justify a gap (news, an external open) does not exist
-   in this system. Recommend equality, named as a choice, with the gap deferred.
+1. **~~Does the open equal the close exactly, or gap?~~ — CLOSED as malformed, 2026-08-23.** The
+   question presumes a closed period, and there is not one (see above): 24 trades executed after
+   today's close was cut. The open equals the close because nothing happened in between, not as a
+   simplifying choice.
+
+   Recorded here because the reasoning generalises. **A gap cannot be *detected*; it is *inherited*
+   from a source that kept trading while your venue did not.** That leaves exactly three options, and
+   only two are honest:
+
+   - **Inherit it.** With an external source the gap costs no code at all — close at T, poll at T+1,
+     and the difference already contains whatever the world did. **This is live today for
+     Treasuries**, because FRED publishes H.15 daily. It is unavailable for everything else only
+     because ADR-068 is blocked on licensing, not because it is hard.
+   - **Fabricate it** (`open = close * (1 + draw)`). One line, and a correctness regression: a
+     fabricated gap is **indistinguishable downstream from a real one**, so every gap-risk figure
+     would be measuring the RNG's variance and reporting it as risk. If it is ever wanted anyway, the
+     only defensible form is a *labelled* one — the payload already carries `simulated` and `source`,
+     so a gap-originated open must carry its own provenance and let risk consumers exclude it.
+   - **Have none**, which is the current and correct state for a market that never closes.
 2. **What happens on the first session ever, and after a gap in sessions?** First-ever start has no
    prior close and must use the seed — that is rule 1 and is settled. Less settled: if the last
    published close is *weeks* old, is it still the right open, or is a stale close worse than a
