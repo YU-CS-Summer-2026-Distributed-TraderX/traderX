@@ -168,7 +168,13 @@ public class AlgoEventStore {
      * side — the subscription — not in the broker's storage. */
     CONSUMER_REPLAYED_NONE,
     /** The stream could not be inspected, so no claim above can be made. Deliberately not folded
-     * into either of them: "could not determine" is a third answer, not a quiet version of one. */
+     * into either of them: "could not determine" is a third answer, not a quiet version of one.
+     *
+     * <p>This one is about the BROKER, so it carries the torn-log clause too rather than
+     * displacing it: the orphan set comes from the replay, not from stream state, so it is known
+     * whether or not the broker could be asked anything. Ranking the two used to drop the
+     * actionable one — an operator told only that inspection failed goes and looks at the broker,
+     * never at the book. */
     UNDETERMINED;
   }
 
@@ -214,7 +220,7 @@ public class AlgoEventStore {
       return new Recovery(Verdict.UNDETERMINED, "replayed " + replayed + " algo-engine events from "
           + STREAM_NAME + ", but the broker could not be asked what the stream holds, so whether "
           + "this replay was complete is UNDETERMINED — treat neither an empty log nor a lost one "
-          + "as ruled out: " + inspectFailure);
+          + "as ruled out: " + inspectFailure + tornClause(". ", orphanedParents));
     }
     // Say UNRECOVERABLE, not gone. Measured on the kind rig 2026-08-21: after a broker wipe with a
     // TWAP parent in flight, this line printed AND the parent was still RUNNING — it submitted its
@@ -247,18 +253,31 @@ public class AlgoEventStore {
     }
     String replayedLine = "replayed " + replayed + " of " + msgCount + " algo-engine events from "
         + STREAM_NAME + " (last sequence " + lastSequence + ")";
-    // Say "may still be", not "are". This engine can observe that the parents were never
-    // reconstructed; it cannot see the book, so whether their children are still resting there is
-    // not a fact available on this side. The sibling branch above was reworded for over-claiming
-    // exactly once already (2026-08-21) — do not walk this one back up.
     if (!orphanedParents.isEmpty()) {
-      return new Recovery(Verdict.REPLAYED_WITH_ORPHANS, replayedLine + ", but "
-          + orphanedParents.size() + " parent order(s) named by those events were never "
-          + "reconstructed: no ParentOrderCreated for them appeared in this replay, so the log is "
-          + "TORN. Child orders those parents submitted may still be live in the book, and this "
-          + "engine now holds no parent that will cancel, resize or finish them: " + orphanedParents);
+      return new Recovery(Verdict.REPLAYED_WITH_ORPHANS,
+          replayedLine + tornClause(", but ", orphanedParents));
     }
     return new Recovery(Verdict.REPLAYED, replayedLine);
+  }
+
+  /** The torn-log fact, worded once and appended to every verdict that can carry it — empty when
+   * the replay was intact, so a healthy recovery is untouched. It lives apart from the verdict
+   * because it is independent of it: the orphan set comes from the replay, the verdict from the
+   * broker, and whichever of the two happens to be selected must not decide whether the other
+   * gets said. {@code connector} is only the join to the sentence before it.
+   *
+   * <p>Say "may still be", not "are". This engine can observe that the parents were never
+   * reconstructed; it cannot see the book, so whether their children are still resting there is
+   * not a fact available on this side. This wording was reworded for over-claiming exactly once
+   * already (2026-08-21) — do not walk it back up. */
+  private static String tornClause(String connector, List<String> orphanedParents) {
+    if (orphanedParents.isEmpty()) {
+      return "";
+    }
+    return connector + orphanedParents.size() + " parent order(s) named by those events were never "
+        + "reconstructed: no ParentOrderCreated for them appeared in this replay, so the log is "
+        + "TORN. Child orders those parents submitted may still be live in the book, and this "
+        + "engine now holds no parent that will cancel, resize or finish them: " + orphanedParents;
   }
 
   /**

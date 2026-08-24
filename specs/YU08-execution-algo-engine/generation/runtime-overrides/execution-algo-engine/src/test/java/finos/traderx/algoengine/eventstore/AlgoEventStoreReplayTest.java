@@ -172,6 +172,52 @@ class AlgoEventStoreReplayTest {
   }
 
   @Test
+  void anUninspectableBrokerStillNamesTheParentsThisReplayLost() {
+    // Both conditions at once: the broker answered enough to stream a replay but not enough to
+    // report stream state, AND that replay tore. These are facts about different things — the
+    // orphan set comes from the replay, so it is known either way — and the actionable one is the
+    // orphan clause. Ranking them dropped it, and an operator handed only a broker-inspection
+    // problem goes and looks at the broker, never at the book.
+    Recovery r = classify(5, -1, -1, 0, List.of("torn-a", "torn-b"),
+        "IOException: connection reset");
+
+    assertEquals(Verdict.UNDETERMINED, r.verdict());
+    assertTrue(r.alarming());
+    // The broker's own words survive: the side that knows still does the talking.
+    assertTrue(r.message().contains("connection reset"), r.message());
+    assertTrue(r.message().contains("UNDETERMINED"), r.message());
+    // ...and so does the fact somebody has to act on.
+    assertTrue(r.message().contains("2 parent order(s)"), r.message());
+    assertTrue(r.message().contains("torn-a") && r.message().contains("torn-b"), r.message());
+    assertTrue(r.message().contains("may still be live"), r.message());
+  }
+
+  @Test
+  void theTornClauseNeedsATearAndFiresOnNeitherConditionAlone() {
+    // A clause that appeared whenever the broker was uninspectable would be asserting nothing:
+    // half these inputs have no tear in them. Both halves have to discriminate.
+    Recovery uninspectableButIntact = classify(5, -1, -1, 0, List.of(), "IOException: reset");
+    assertEquals(Verdict.UNDETERMINED, uninspectableButIntact.verdict());
+    assertFalse(uninspectableButIntact.message().contains("parent order(s)"),
+        uninspectableButIntact.message());
+    assertFalse(uninspectableButIntact.message().contains("TORN"),
+        uninspectableButIntact.message());
+
+    Recovery tornButInspectable = classify(5, 5, 5, 0, List.of("torn-a"), null);
+    assertEquals(Verdict.REPLAYED_WITH_ORPHANS, tornButInspectable.verdict());
+    assertFalse(tornButInspectable.message().contains("UNDETERMINED"),
+        tornButInspectable.message());
+    // The loud-but-inspectable line is the one the rig run in issues/ quotes: sharing the clause
+    // with UNDETERMINED must not have moved a byte of it.
+    assertEquals("replayed 5 of 5 algo-engine events from TRADERX_ALGO_ENGINE (last sequence 5), "
+        + "but 1 parent order(s) named by those events were never reconstructed: no "
+        + "ParentOrderCreated for them appeared in this replay, so the log is TORN. Child orders "
+        + "those parents submitted may still be live in the book, and this engine now holds no "
+        + "parent that will cancel, resize or finish them: [torn-a]",
+        tornButInspectable.message());
+  }
+
+  @Test
   void aBucketIndexThatDoesNotExistIsNotATear() {
     AlgoOrderState state = new AlgoOrderState();
     Instant now = Instant.parse("2026-07-15T12:00:00Z");
