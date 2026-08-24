@@ -33,3 +33,42 @@ asserting measured behaviour as I required, and reported that the `git mv` first
 also audited its own commits both directions after the fact and reported the result as **"clean, but by
 luck, not by method"** — it had used bare `git commit` three times in a shared worktree before my rule
 arrived. That is the most useful sentence any lane sent today.
+
+## 2026-08-24 — APPROVED: the three-CI-scripts design, and a THIRD instance inside this morning's fix
+
+Lane `local_d70b2306-…` paused with a design and a finding that outweighs it. Verified before
+approving: account-service has **no `src/test`** — eight test classes at `src/main/test/java` behind
+an explicit `sourceSets { test { java.srcDirs = ['src/main/test/java'] } }`; carry sets re-derived by
+hash (`service-tests.sh` identical on YU13–YU17 **and main**; `baseline-tests.sh` on YU15–YU17 **and
+main**; the gate on YU15–YU17 only).
+
+**The gate we shipped as fixed this morning has a third hole of the same shape.** It closed the
+reduced-run hole and the result-tier hole and left a **source**-tier one: `src/test`-only discovery,
+so any module whose test sourceSet is redirected is not exempt, not failed — **unmentioned**.
+account-service, eight classes, invisible to the very gate whose founding story is a suite silently
+never running. Three instances of one defect in one script in one day.
+
+**The distinction that makes the fix correct rather than merely thorough**, and it is the lane's:
+composed `trade-service` has a class at `src/main/test` with **no** srcDirs override, so it is
+genuinely dormant and uncompiled. A blanket "also walk `src/main/test`" would demand a result for a
+class gradle never builds — wrong in a way that looks like diligence. Deriving the roots from each
+module's own build.gradle gets account-service and trade-service right with one rule.
+
+**(d) is worse than reported.** `engine-tests.yml`'s matrix comment at line 39 reasons explicitly
+about *which scripts a leg's checkout contains* — and the gate step was added later without extending
+that reasoning. The YU13/YU14 legs run a script their checkout does not have. The break sits adjacent
+to its own documented cause.
+
+**Directed (A)** on the YU13/YU14 question, with a stronger argument than the lane's own: those legs
+are already broken, so carrying the gate cannot regress them — an unexercised-but-present gate fails
+loud naming a module, versus today's exit 127 on a missing path. Declined (B) on **collision**
+grounds, not cost: two full branch renders into shared `generated/` while two peer lanes are live.
+
+**The consequence the lane did not flag, now required in the issue:** `main` carries both runners and
+not the gate, so when the family moves and main is excluded, **main is the one branch still running
+the weak check — and main is where CI runs.** The weak assertion survives exactly where it matters
+most. Not an argument to break the exclusion rule; an argument to say it loudly with the PR as remedy.
+
+Also directed: one forward-pointing line on this morning's resolved issue, so its "RESOLVED" does not
+read as "this script is now sound". A closed issue that overstates its completeness is how the next
+person stops looking.
