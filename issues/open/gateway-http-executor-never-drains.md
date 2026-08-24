@@ -1,5 +1,10 @@
 # The gateway's HTTP executor stops serving and never drains
 
+> **The "never drains" in that title is FALSE on the tip** and has been since Option B. It stops
+> serving — that part is still true and still easy to reproduce — and then it drains, in seconds.
+> The title is kept because every cross-reference in the repo uses it. Read *THE REPRO RE-RUN ON A
+> B BUILD* below before acting on anything in this file.
+
 > **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
 > (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
 > measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the
@@ -12,21 +17,221 @@ resolved. **This half was NOT resolved with it** and is extracted so it does not
 covered ack correlation, which Option B closed on every branch YU13 and up. This is a different defect
 with a different mechanism.
 
-**Status: OPEN.** The probe half is fixed (probes moved to their own `HttpServer` on
-`GATEWAY_PROBE_PORT` 18111 with a single-thread executor). The main HTTP server's behaviour is not.
+**Status: OPEN, NARROWED — re-run on a B build 2026-08-23; see the section immediately below.**
+The probe half is fixed (probes moved to their own `HttpServer` on `GATEWAY_PROBE_PORT` 18111 with a
+single-thread executor) and that split was re-verified on the tip. §5's *signature* — 18110 accepts
+TCP and never answers — still reproduces on every leader kill under load. §5's *defining claim* —
+that it never drains — does not: measured 6 s to recover with load removed, and 8–61 s with load
+still running. The mechanism is no longer the correlation offset; it is owner-thread head-of-line
+blocking in the offer spin for the duration of the election. **Everything below this line predates
+that re-run.** Read the section headed *THE REPRO RE-RUN ON A B BUILD* first; the older sections
+are still accurate about the A-era build they were measured on and are kept for the reasoning.
 
-**The unexplained part is the important part.** A bounded ~12s wait per request should drain thousands
-of queued requests in minutes. Measured: eight minutes with **zero load offered**, polling every 30
+**The unexplained part was the important part — and it is now explained and gone. A-ERA READING,
+kept for the shape:** a bounded ~12s wait per request should drain thousands of queued requests in
+minutes. Measured *on the A-era build*: eight minutes with **zero load offered**, polling every 30
 seconds, still no response at all — connection accepted, never served — while the JVM was alive, the
 Aeron side kept applying and logging, and TCP kept accepting. Only a restart cleared it. Raising the
-pool 8 → 64 moved the cliff; it did not remove it, and it does not explain the non-drain.
+pool 8 → 64 moved the cliff; it did not remove it, and it did not explain the non-drain. The GKE arm
+later found the non-drain was a finite drain at ~5.1 req/s; the 2026-08-23 re-run found no standing
+backlog to drain at all.
 
 **Note on what changed underneath this since it was written:** Option B replaced positional ack
 correlation with keyed correlation and deleted A's `onNewLeaderResync` drain. In-flight orders now
 complete by key or are reaped by the deadline sweep, so the specific "all 64 threads parked for the
-full `ACK_TIMEOUT_MS` because no ack ever matches" pathway may no longer arise the same way. **That is a
-hypothesis, not a finding — nobody has re-run this repro on a B build.** Doing so is step one, and it
-may close the issue outright or narrow it usefully.
+full `ACK_TIMEOUT_MS` because no ack ever matches" pathway may no longer arise the same way.
+**~~That is a hypothesis, not a finding — nobody has re-run this repro on a B build.~~ RE-RUN
+2026-08-23 on the tip. The hypothesis was half right**, and the half that was wrong is the half that
+matters for anyone reading this to plan work: the 64 threads still all park in
+`CompletableFuture.get`, for a *different* reason. Findings in the next section.
+
+---
+
+## THE REPRO RE-RUN ON A B BUILD — 2026-08-23, kind. VERDICT: REPRODUCES DIFFERENTLY
+
+**Short form.** §5's *signature* is alive and easy: drive the gateway and kill the leader, and 18110
+accepts the TCP connection and never answers — `/ready` and `/metrics` included, not a 503, no
+response at all. §5's *defining claim* is dead: it is not a permanent hang. Every collapse cleared
+itself, in-band, with **no restart** (`restartCount` never moved off 2 across nine leader kills), and
+with all load removed mid-collapse the port answered again **6 seconds later**. The mechanism has
+also changed: it is no longer the FIFO correlation offset, and the thread dump says where it went.
+
+### Build identity, confirmed on the rig before anything was measured
+
+Gateway `traderx/cluster-node:yu17-bbo`, `replicas: 1`, on `kind-traderx-yu12-cluster`; members and
+`price-publisher` untouched. Option B verified **in the running container**, not in the source tree:
+`strings` on `/opt/app/classes/.../ClusterGatewayMain$Inflight.class` shows `pending`
+(`Long2ObjectHashMap`), `byOffer`, `reapAtMillis`, `sweepOverdue` — and no `lastInputSeq`. The
+operative source layer is YU17 (2592 lines), pool still 64, `ACK_TIMEOUT_MS` still 10 000,
+`MAX_INFLIGHT` 4096 unset by any overlay. The tip additionally carries the **wedge self-heal**
+(`WEDGE_RECONNECT_STREAK`, default 20), which the GKE arm deliberately did not have — see *what was
+not isolated* below.
+
+### What was driven
+
+Unbounded generators (fire at a fixed rate, never wait for a response) running **inside the kind
+node containers against the gateway's pod IP** — no `port-forward` in the path, and the pod IP
+bypasses the readiness eviction that would otherwise stop the traffic the measurement needs.
+
+| run | offered | kills | purpose |
+|---|---|---|---|
+| baseline | 20/s, 40 s | none | healthy control + baseline thread dump |
+| 1 | ~20/s, 240 s | 1 | §5's own documented recipe |
+| 2 | ~90/s, 300 s | 4 | ratchet attempt — the GKE route that drove K to 51 |
+| 3–4 | ~90–150/s | 5 | hold the collapse open long enough to stop load inside it |
+| 5 | ~150/s | 3 | the drain test, with the backlog quantified |
+
+Aggregate over the session: **66 595 offers, ~66 600 orders, nine leader kills**, 5 400+ client-side
+`000`s. The gateway was genuinely saturated, not merely busy: **all 64 pool threads** were parked in
+every one of 24 thread dumps taken inside the collapses.
+
+### §5's signature reproduces, exactly, and cheaply
+
+One leader kill at 20/s was enough. At ~90/s, from the 2-second probe (`main-` is 18110,
+`probe-` is 18111):
+
+```
+1787536883|main-ready |200|connect=0.000392|total=0.000392   <- healthy
+1787536891|main-ready |000|connect=0.000098|total=6.002165   <- accepted, never served
+1787536920|main-ready |000|connect=0.000765|total=6.002127
+1787536942|main-ready |200|connect=0.000548|total=0.000548   <- back, unaided
+```
+
+`connect` is non-zero on every `000`: **the TCP handshake completed and no byte of response ever
+came.** That is §5 and nothing else — it is not a 503 and not a refused connection.
+
+Inside the three long dark windows of run 2 (171 s in total):
+
+| port | samples | answered |
+|---|---|---|
+| **18110** `/ready` | 12 | **0** — every one `000` |
+| **18110** `/metrics` | 12 | 3 |
+| 18111 `/ready` | 12 | **12** (4×200, 8×503) |
+| 18111 `/live` | 12 | **12** (7×200, 5×503) |
+
+**The probe-port split earns its keep on the tip too**: 24 of 24 probe-port samples answered while
+the order port was dark. Take readings on 18110 or you measure the fix.
+
+### But it always recovers, unaided, and the kubelet never did it
+
+Every dark window, bounded by the last 200 before and the first 200 after, **with the generator still
+running at full rate throughout**:
+
+| run | rate | dark windows |
+|---|---|---|
+| 1 | ~20/s | ≤14 s |
+| 2 | ~90/s | ≤59 s, ≤56 s, ≤61 s, ≤17 s |
+| 3–4 | ~90–150/s | 9 s, 35 s, 9 s, 8 s |
+| 5 | ~150/s | 33 s, 8 s |
+
+`noAckStreak` peaked at **192** — over the liveness bar of 100 — and `/live` did return 503 on five
+samples, but never for the six consecutive periods the probe needs, so **no container restart fired
+in any run** (`restartCount` 2 → 2). The recovery is the gateway's own, not the kubelet's.
+
+### The drain question, answered with the backlog measured
+
+Run 5. ~150 orders/s, leader killed, **18110 confirmed dark for 40 continuous seconds**, then every
+generator and every client `curl` killed outright — zero offered from that instant. The members'
+`next_order_ref` is the witness, because one offer burns exactly one ref, and it is read from the
+cluster, not from the port under test:
+
+```
+1787538017   LOAD STOPPED, 18110 dark 40s        refs = 65008
+1787538023   +6s   18110 /ready -> 200           refs = 66232      restarts=2
+1787538087   +70s  18110 /ready -> 200           refs = 66232 66232 66232 (all three agree)
+```
+
+**+1 224 orders were offered after the last client request was sent, and the port was serving again
+6 seconds later.** That backlog is the queued HTTP work draining. Under the rate this document
+measured on the A-era build — 64 requests per `ACK_TIMEOUT_MS + 2 s`, ≈5.1/s — those same 1 224
+requests would have taken about **four minutes**. §5's headline reading (eight minutes, zero load,
+still `000`, only a restart cleared it) does not arise on this build.
+
+### The mechanism changed, and the thread dump names the new one
+
+`kill -3` to PID 1 (no `jcmd`/`jstack` in `eclipse-temurin:21-jre`; SIGQUIT goes to stdout where
+`kubectl logs` picks it up). 24 dumps inside the collapses, against a healthy-load baseline dump
+taken first, in which all 64 threads were idle on the work queue.
+
+Wedged, every dump, all 64 threads, one identical stack:
+
+```
+"pool-1-thread-N"  TIMED_WAITING (parking)
+    java.util.concurrent.CompletableFuture.timedGet / .get
+    ClusterGatewayMain.submitPipelined0(:1064) -> submitPipelined(:1005)
+    -> submitOrder(:918) -> handleOrder(:1336)
+```
+
+Frames in `Inflight.acquire` / `Semaphore.tryAcquire`: **0**, across all 24 dumps — the permit window
+is not the bottleneck, exactly as on GKE. `HTTP-Dispatcher` RUNNABLE in `EPoll.wait` throughout:
+still accepting, which is the "accepted and never served" seen from the server side.
+
+**The difference is the owner thread, and it is the whole finding.** On GKE the owner was RUNNABLE
+inside `ownerLoop` and the defect was correlation. Here it is RUNNABLE inside the Aeron offer
+backpressure spin:
+
+```
+"cluster-client-owner"  RUNNABLE
+    ClusterGatewayMain.offerPipelined(ClusterGatewayMain.java:1129)
+    ClusterGatewayMain.lambda$submitPipelined0$0(:1063)
+    ... ClusterGatewayMain.ownerLoop(:453)
+```
+
+`:1129` is inside `while (client.offer(...) < 0)`. During an election the ingress will not take the
+message, so the owner sits in that one order's spin until its `ACK_TIMEOUT_MS` deadline — **and the
+owner is the only thread that runs the task queue**, so one un-offerable order head-of-line blocks
+every order behind it for up to 10 s. All 64 pool threads then time out at 12 s, the JDK
+`HttpServer`'s *unbounded* queue absorbs everything else, and the port goes dark for as long as the
+cluster is unavailable, plus the drain. The corroborating counter is `offer_backpressure`, which read
+**667 078 027** over the session: that is a spin-iteration counter, not a per-order one (it lives
+inside the retry loop), and its size is the owner thread burning CPU in that spin rather than
+blocking. *Do not read it as 667 M failed orders.*
+
+### The Option-B counters, which are the direct evidence that the old mechanism is gone
+
+Cumulative over the whole session — 66 595 offers, nine leader kills:
+
+| counter | reading | what it settles |
+|---|---|---|
+| `ack_unmatched` | **0** | no ack ever arrived naming a request the gateway was not holding. Under the positional pop every one of these was a misattribution; there are none. |
+| `inflight_orders` (depth) | **0** at rest after every kill | **K does not ratchet.** GKE measured `0 → 21 → 36 → 51`, permanent, across three kills. Nine kills here and it returns to 0 each time. |
+| `reaped` | **896** | the deadline sweep is what frees strands, and it closes the books: `offer_success 66 587 − ack_completed 65 689 = 898`, against 896 reaped (±2 in flight at the sample). |
+
+Read together: the strand still happens on every election, keyed correlation refuses to let a foreign
+ack complete it, and the sweep returns it 12 s later. Nothing accumulates. **The permanent
+correlation offset that this document diagnosed as §5's cause is not present on the tip.**
+
+### What is left, stated narrowly
+
+A leader change under load still takes the order port out entirely for the duration of the election.
+The cause is now named — one un-offerable order pins the single owner thread for up to
+`ACK_TIMEOUT_MS`, behind a 64-thread pool with an unbounded queue — and the outage is bounded by the
+cluster's own unavailability window rather than being permanent. That is a smaller and different
+defect from the one this file was opened for. It is still worth fixing and it is still not fixed;
+what it is **not** any more is unexplained or unrecoverable.
+
+The obvious lever, named so nobody has to rediscover it: the owner's per-offer deadline is
+`ACK_TIMEOUT_MS` (10 s) and it is spent on *one* order while every other order waits. Nothing here
+argues for a bigger pool — `gateway.yaml`'s own comment about 64 only moving the cliff remains true.
+
+### What was NOT run, and what it would settle
+
+- **The self-heal was left enabled**, because the two `kubectl` routes to change the deployment's env
+  (`set env`, `patch`) were both refused by this session's tool classifier. So the tip's recovery is
+  the *combination* of Option B and `WEDGE_RECONNECT_STREAK`, and this run **cannot attribute** it to
+  one or the other. `GATEWAY-WEDGE-SUSPECTED` fired on every collapse (at streaks 20, 40, 60) and
+  rebuilt the session. The structural argument that Option B alone suffices is that `sweepOverdue`
+  reaps each strand at `offer + ACK_TIMEOUT_MS + 2 s` regardless of any reconnect, and `reaped`
+  accounting for the entire offer/ack gap is that argument measured — but it is an argument, not the
+  experiment. **The experiment is one run with `WEDGE_RECONNECT_STREAK=1000000`**, same recipe,
+  watching whether `depth` returns to 0. Anyone with permission to patch the deployment can settle it
+  in ten minutes.
+- **The cross-wired `orderRef` prediction was not tested** and does not need to be on this build:
+  it was a consequence of the positional pop, and `ack_unmatched 0` with a keyed lookup leaves it no
+  route. It remains a live question only for pre-B builds.
+- **GKE was not used.** Election timing on kind's starved CPUs is not the system's timing, so the
+  *durations* in the table above are kind's, not production's. The signature, the thread states and
+  the counter readings do not depend on that.
 
 ---
 
