@@ -1,72 +1,116 @@
-# The prune step that never runs leaves a stale test that breaks the composed tree
+# The prune fix reached the tip and never came back, and four branches could not compile their tests
 
-**Found 2026-08-23** by the coordinator, while running the composed suite on YU13 as the forcing
-function for an unrelated carry (`propagate-spec-fix` §"force the exercise"). The carry was clean;
-this was already there.
+**Found 2026-08-23** by the coordinator, while running the composed suite on YU13 as
+`propagate-spec-fix`'s forcing function for an unrelated carry. **Fixed the same night on
+YU11–YU14; still open for `main`.**
 
-Generation's **prune step has never run for the YU-prefixed states** — the id is parsed as a number,
-a non-numeric `YUxx` yields null, and the step exits 0 with a reassuring log line. That was known.
-What was missing is a measured consequence, because "a deletion did not happen" sounds harmless.
+## What was actually wrong
 
-## The consequence, measured
+Not "the prune step never runs" — that was the first diagnosis and it was wrong. Commit `a7bd36f2`
+(2026-08-03, *"YU11: retire the inherited NATS phase-0 test, and make prune actually run for YU
+states"*) **did** fix it. It changed two things together:
 
-`generated/code/target-generated/order-matcher` **does not compile its test sources on YU13**:
+- `pipeline/prune-generated-state-removed-assets.sh` — YU ids carry no leading digits, so the
+  numeric parse returned null, the script exited 0, and the wrapper printed *"no prune manifests
+  apply"*. A parse failure that reads exactly like a legitimate outcome. Now `YU(\d{2})` ranks as
+  `100 + N`, above the whole numbered lineage and order-preserving within YU.
+- Added `specs/YU11-aeron-replication/generation/prune-manifest.json` — **the only YUxx prune
+  manifest that exists in the repo.**
+
+**That commit reached YU15, YU16, YU17 — and nothing else.** Not YU12/13/14, and not YU11, the
+branch that *owns* the manifest. `pipeline/` is a per-branch copy, so nothing carries it implicitly.
+
+This is the ancestor-miss shape `propagate-spec-fix` documents: the carry ran *forward* from where it
+was authored rather than across every branch holding the pack. The habit runs downward because a
+missing spec layer is loud on a descendant; a `pipeline/` miss on an ancestor is silent until someone
+runs the thing.
+
+## What it cost
+
+YU11 replaced the nested `ReplicationFollower.AckMode` with a standalone `ReplicationAckMode` and
+**correctly** marked the now-stale YU02-layer test for deletion. Without the manifest that test
+survives into the composed tree — and because the test is at the **YU02** layer while the rename is
+at **YU11**, no overlay can ever fix it. **Deletion is the only mechanism.**
 
 ```
 > Task :compileTestJava FAILED
 NatsReplicationPhase0Test.java:46: error: cannot find symbol
-    assertEquals(ReplicationFollower.AckMode.ONRING, ReplicationFollower.AckMode.parse(null));
+    assertEquals(ReplicationFollower.AckMode.ONRING, ...)
   symbol: variable AckMode   location: class ReplicationFollower
 28 errors
 ```
 
-The mechanism is exactly the one the prune manifest exists to prevent:
+Not a failing test — **a test tree that cannot be compiled**, so the suite fails before running
+anything, including tests unrelated to replication. That is indistinguishable from "the suite is red"
+and sends you hunting in the wrong place. It also means the composed suite could not serve as
+`propagate-spec-fix`'s forcing function on those branches, which is how it was found.
 
-- **YU11** replaced the nested `ReplicationFollower.AckMode` with a standalone `ReplicationAckMode`
-  enum (`026bb9ba`, "YU11: add Aeron replication transport core").
-- YU11 **correctly** listed the now-stale test for deletion — it is the **only** entry in
-  `specs/YU11-aeron-replication/generation/prune-manifest.json`.
-- The test itself lives at the **YU02** layer, which YU11 does not and cannot overwrite: the two
-  files are in different layers, so an overlay can never fix this. **Deletion is the only mechanism,
-  and deletion is the step that does not run.**
-- So every branch from YU11 up composes YU11's refactored main class with YU02's stale test, and the
-  test tree cannot build.
+## Measured, before and after
 
-Verified pre-existing, not caused by the carry that found it: with the carried files reverted to
-their pre-change versions and the tree regenerated, the build fails **identically** — 28 errors, all
-`ReplicationFollower.AckMode`.
+| branch | before | after |
+|---|---|---|
+| YU11 | 28 errors | prune line present, `compileTestJava` **exit 0, 0 errors** |
+| YU12 | 28 errors | **exit 0, 0 errors** |
+| YU13 | 28 errors | **exit 0, 0 errors** |
+| YU14 | 28 errors | **exit 0, 0 errors** |
 
-## Why this is worse than a broken test
+Confirmed pre-existing rather than caused by the carry that found it: with the carried files reverted
+and the tree regenerated, YU13 failed **identically**.
 
-**It is not a failing test. It is a test tree that cannot be compiled**, so `./gradlew test` on the
-composed tree fails before running anything — including tests that have nothing to do with
-replication. Any suite invoked against a composed YU11–YU16 tree reports a build failure rather than
-a result, which is indistinguishable from "the suite is red" and invites a hunt in the wrong place.
-It also means **the composed suite cannot be used as the forcing function** `propagate-spec-fix`
-prescribes for carries onto those branches, which is how it was found.
+Carried in `53e7013e` / `f689058a` / `27f02902` / `83fd5ee4`. Every target was byte-identical to the
+pre-fix source beforehand, so the copy carried exactly this change.
 
-## What is NOT established
+## The entry-point trap, which cost an hour and looked exactly like a second bug
 
-- **The tip may be unaffected.** `NatsReplicationPhase0Test.java` is absent from YU17's generated
-  tree — either pruned there, or that tree was composed by a different path. Not chased.
-- **YU05 is fine**: its composed tree builds and runs (`AuditLogHandlerTest` 6/6, 0 failures). The
-  break begins at YU11, where the rename happened.
-- Which of YU11/12/13/14/15/16 are individually affected was inferred from the layer layout (the
-  test is at YU02 on all of them and `ReplicationAckMode` at YU11), **measured only on YU13**.
-- Whether anything in CI or `run-proofs.sh` actually builds a composed test tree on these branches.
-  If nothing does, this is latent rather than active — but latent is exactly why it survived.
+**Run `bash pipeline/generate-state.sh <state-id>`, never `bash pipeline/generate-state-<state-id>.sh`.**
 
-## The cheap fix, and the real one
+The per-state script is an **internal hook**. `generate-state.sh` dispatches to it and *then* runs the
+prune and validation tail. Invoking the hook directly renders the layer and silently skips the prune —
+which presents as "prune ran for YU02…YU10 but not for YU11", i.e. as a plausible second defect in
+which a state's own manifest is never applied. It isn't. The same tree pruned correctly the moment it
+was generated through the real entry point:
 
-**Cheap:** delete `NatsReplicationPhase0Test.java` from the YU02 layer on YU11 and up, by hand, on
-each branch. Restores the composed build immediately. Does nothing for the next manifest entry
-anyone writes.
+```
+[info] pruned target artifact (nats-replication-phase0-test): .../NatsReplicationPhase0Test.java
+[ok] pruned removed artifacts and verified post-prune invariants for YU11-aeron-replication
+```
 
-**Real:** make the prune step run for `YUxx` ids. It is fixed on YU01 only; propagation was
-deliberately deferred. This issue is the argument for undeferring it — the manifests are being
-written correctly and silently ignored, so the project is accruing prune debt it believes it has
-already paid.
+## The full manifest sweep — clean
 
-**Before fixing, check what else is being ignored**: sweep every `specs/*/generation/prune-manifest.json`
-across every branch and confirm which listed paths still exist in a composed tree. YU11's manifest has
-exactly one entry and that entry breaks the build; nobody has checked the others.
+Every `prune-manifest.json` on every branch. Three exist, no divergence (one hash each across all
+branches carrying them), and on a properly generated tree **all three apply completely**:
+
+| manifest | artifact | status on a composed tree |
+|---|---|---|
+| `004-containerized-compose-runtime` | `legacy-node-edge-proxy` | all paths gone |
+| `006-messaging-nats-replacement` | `legacy-trade-feed` | all paths gone |
+| `YU11-aeron-replication` | `nats-replication-phase0-test` | gone (after this fix) |
+
+Two things that look like findings and are not, recorded so nobody re-derives them:
+
+- **`forbiddenScriptPatterns` are scoped to the GENERATED tree.** The check scans
+  `${TARGET_ROOT}/scripts` plus a handful of generated top-level files — **not** the repo's own
+  `scripts/`. The three `start|stop|status-state-002-edge-proxy-generated.sh` in the repo are source
+  scripts and correctly out of scope. Scanning wider than the tool produces six false violations.
+- **The manifest schema is `removedArtifacts[].{targetPaths, componentsPaths, forbiddenScriptPatterns}`.**
+  A naive "collect every string containing a dot" walk misses `006` entirely (its paths have no dots)
+  and mistakes `004`'s regex patterns for literal paths. Both errors read as "nothing to prune".
+
+## Still open
+
+**`main` is affected and was not carried.** It has the YU11 generate/render scripts, a
+`YU11-aeron-replication` catalog entry, both the rename and the stale test, and **neither** the fixed
+prune script nor the manifest. Per `propagate-spec-fix`, main is carried by **PR**, not by copy — so
+it is deliberately excluded here and named rather than left silently different. main is also where CI
+runs, so if any gate there composes a YU11+ tree and compiles tests, it fails for this reason.
+
+`YU02-lmax-kubernetes-blp-ha`, `YU03`–`YU10` and `YU01` are unaffected: the rename is at YU11, so
+earlier branches pair YU02's test with a `ReplicationFollower` that still has the nested enum. YU05
+was verified building and running (`AuditLogHandlerTest` 6/6).
+
+## Worth fixing while nearby
+
+The fixed script's comment says *"Rank YU01..YU15 as 101..115"* and *"a manifest declared at YU11
+reaches YU11..YU15"*. The **code** is generic (`/^YU(\d{2})/` → `100 + N`, so YU16→116, YU17→117);
+only the prose is dated. Harmless today, misleading to the next reader deciding whether the mechanism
+covers the tip.
