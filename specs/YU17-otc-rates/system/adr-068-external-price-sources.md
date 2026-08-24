@@ -252,6 +252,11 @@ Two consequences worth stating so they are not discovered later:
 
 ## Related
 
+- [ADR-069](adr-069-the-session-opens-where-the-last-one-closed.md) — the session opens where the
+  last one closed. Adds one rung beneath this hierarchy (**external > prior published close >
+  static seed**) and inherits rule 1 unchanged: with no source and no prior close, synthetic still
+  opens the session.
+
 - [ADR-067](adr-067-market-data-derived-from-the-book.md) — market data derived from the book. This
   ADR supplies the reference tier that one defines.
 - [ADR-066](adr-066-price-band-follows-the-market.md) — the band follows the reference.
