@@ -214,8 +214,14 @@ Deriving the tick from the collar reference at `bookFor` time (and storing it in
 cover FNMA too — it is the only rule that can. Rejected for this mint, on three costs:
 
 - **Ordering-sensitive**: a book created by an order that beats the first tick falls back to the
-  global grid *permanently for the epoch* (the stored tick freezes the accident). Fixtures do
-  exactly this today.
+  global grid *permanently for the epoch* (the stored tick freezes the accident). ~~Fixtures do
+  exactly this today.~~ **Measured false 2026-08-25** (design doc §1.1): `/seed` sequences
+  register→enable→tick per ticker before any order flow, and the feed adapter live-sequences the
+  whole universe, so the reference precedes the first order on every supported flow; the real
+  window is a book created by a *rejected* order on a never-ticked ticker (`bookFor` runs before
+  `decideAndReserve`), and the design's empty-book re-derivation makes it last one occupancy, not
+  an epoch. The seeder's ~line-130 "anchored by the first LIMIT, never by a price tick" comment is
+  stale pre-ADR-066 prose — delete it in the implementation pass.
 - **T_BOOK grows a column** and restore forks on format — more moving parts in the one record
   whose misreading is silent (§3).
 - The scale→tick map needs the same sizing work as the option constant anyway.
@@ -411,7 +417,10 @@ conflate two unrelated things.
 
 **e. `OPTION_BOOK_TICK_PX`: NOT DECIDED — do the §2.3 sizing replay first.** Picking the number before
 measuring is precisely what `size-a-configuration-bound` exists to prevent. It is a pre-mint task, not
-a decision, and it now composes with (f) below.
+a decision, and it now composes with (f) below. **DISCHARGED 2026-08-25: the sizing replay is the
+69-instrument table in `format-8-price-derived-grid-design.md` §3, and its answer is that no constant
+ships at all — the reference-derived map covers options off their live premiums (settled by yaakov
+2026-08-24; design doc §8).**
 
 **f. Price-derived ticks are PULLED INTO SCOPE. ⚠ This overrides the recommendation and is the
 largest change to this document.**
@@ -427,6 +436,10 @@ a live instrument on a system whose stated direction is a sell-side OMS.
 - **Derive the tick at book construction** (`bookFor()`, the cold path) from the replicated reference
   price, falling back to the category function (options / fraction-of-par), falling back to the global
   default. Static per book, so nothing about `LimitBook`'s slot arithmetic changes.
+  **Corrected by the design (2026-08-25, `format-8-price-derived-grid-design.md` §1.3): the category
+  must OUTRANK the reference for fraction-of-par tickers** — the bond grid is about six-decimal quote
+  granularity, not width, and CORP-JPM-20310601 trades above par live, where a reference-derived tick
+  would refuse legal bond quotes as off-grid. The design is the operative statement of this mechanism.
 - **Determinism is already argued**: `BlpRiskState.lastPrice[]` is replicated (arrives through the
   consensus log) and snapshotted, which is exactly the property ADR-066 relies on for the band anchor.
   A tick derived from the same reference is identical on every member and on replay for the same
