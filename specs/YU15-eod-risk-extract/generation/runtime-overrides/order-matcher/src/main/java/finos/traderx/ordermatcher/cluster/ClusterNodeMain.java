@@ -54,16 +54,54 @@ public final class ClusterNodeMain {
         if (recon != null) {
             service.outputSink(out -> recon.onLiveOutput(out, service.tickerFor(out.securityId)));
         }
-        final ClusterNodeConfig.Contexts contexts =
-            ClusterNodeConfig.contexts(memberId, hostnames, portBase, aeronDir, baseDir, service, false);
-        contexts.consensusModule().terminationHook(() -> {
-            System.err.println("Consensus module terminated; exiting for pod restart");
-            Runtime.getRuntime().halt(70);
-        });
-
-        final ClusteredMediaDriver driver = ClusteredMediaDriver.launch(
-            contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
-        final ClusteredServiceContainer container = ClusteredServiceContainer.launch(contexts.container());
+        // A killed member restarts faster than its own Aeron mark files go stale: the heartbeat
+        // stops on kill, but until each file's liveness timeout (<=10s) elapses,
+        // MarkFile.mapNewOrExistingMarkFile reads it as another live process and launch dies with
+        // "active mark file detected" (observed on kind 2026-08-24: every liveness kill cost 2-3
+        // restarts instead of 1, on all three members). Same class as the DNS race above: a
+        // transient startup condition to wait out, bounded, not crash on. Retrying the launch
+        // itself re-evaluates exactly the check that throws, whichever of the four mark files
+        // (archive, consensus, service, driver) it is; contexts are rebuilt per attempt because
+        // a concluded context cannot be reused. 60s = 6x the mark-file liveness timeout, margin
+        // for the CPU starvation that caused the kill; past that, an active mark file means
+        // another LIVE process owns the dirs, which waiting cannot fix — terminal.
+        ClusteredMediaDriver launchedDriver = null;
+        ClusteredServiceContainer launchedContainer = null;
+        final long markFileDeadline = System.currentTimeMillis() + 60_000;
+        while (true) {
+            final ClusterNodeConfig.Contexts contexts =
+                ClusterNodeConfig.contexts(memberId, hostnames, portBase, aeronDir, baseDir, service, false);
+            contexts.consensusModule().terminationHook(() -> {
+                System.err.println("Consensus module terminated; exiting for pod restart");
+                Runtime.getRuntime().halt(70);
+            });
+            try {
+                launchedDriver = ClusteredMediaDriver.launch(
+                    contexts.mediaDriver(), contexts.archive(), contexts.consensusModule());
+                launchedContainer = ClusteredServiceContainer.launch(contexts.container());
+                break;
+            } catch (final RuntimeException e) {
+                if (e.getMessage() == null || !e.getMessage().contains("active mark file")) {
+                    throw e;
+                }
+                CloseHelper.quietCloseAll(launchedContainer, launchedDriver);
+                launchedContainer = null;
+                launchedDriver = null;
+                if (System.currentTimeMillis() > markFileDeadline) {
+                    // halt, not throw: a throw out of main leaves surviving non-daemon threads
+                    // holding the pod Running-with-no-health-server (the zombie the liveness
+                    // probe then takes ~5min to clear); halt guarantees the fast restart path.
+                    System.err.println("mark file still active after 60s of waiting -- another"
+                        + " live process owns " + baseDir + "; not a restart race");
+                    e.printStackTrace();
+                    Runtime.getRuntime().halt(1);
+                }
+                System.out.println("Waiting for mark file release: " + e.getMessage());
+                Thread.sleep(2_000);
+            }
+        }
+        final ClusteredMediaDriver driver = launchedDriver;
+        final ClusteredServiceContainer container = launchedContainer;
         final HttpServer health = healthServer(healthPort, memberId, hostnames, service, recon);
         startSnapshotTrigger(aeronDir, service);
         startElectionPhaseWatcher(aeronDir);
