@@ -30,12 +30,16 @@ const specsRoot = path.join(root, 'specs');
 // below returned null for every one of them. currentNum was null, the script exited 0, and the
 // shell wrapper then printed "no prune manifests apply" -- a parse failure that reads exactly like
 // a legitimate outcome, so every removal an ancestor declared stayed silently in the generated
-// tree for YU02..YU15.
+// tree for every YU state.
 //
-// Rank YU01..YU15 as 101..115: above the whole numbered lineage, so every ancestor manifest still
+// Rank YUnn as 100 + nn: above the whole numbered lineage, so every ancestor manifest still
 // applies to a YU state, and order-preserving within YU, so a manifest declared at YU11 reaches
-// YU11..YU15 and not YU02..YU10. Both the current state and each manifest go through this, which
-// is what makes that containment hold. Same 101..115 rank used across the publish pipeline.
+// YU11 and every later YU state, and not YU02..YU10. Both the current state and each manifest go
+// through this, which is what makes that containment hold.
+//
+// The rule is the arithmetic, not a fixed range. It read YU01..YU15 when written because those
+// were the states that existed; YU16, YU17 and anything after are covered with no change here.
+// Same 100 + nn rank used across the publish pipeline.
 //
 // No apostrophes in this block: it sits inside a command substitution, where a lone quote breaks
 // the shell parse even though the heredoc is quoted.
