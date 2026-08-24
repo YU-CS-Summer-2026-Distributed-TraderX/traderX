@@ -888,3 +888,70 @@ real blast radius and is yaakov's call, not something to slip in behind a diagno
 *The GKE arm's raw working record — full timelines, thread dumps and the retraction history — is
 `issues/open/YU15-s5-gke-fifo-correlation-offset.md`, which exists on the `YU15-eod-risk-extract`
 branch only. This section is self-contained and does not depend on it.*
+
+---
+
+### The self-heal isolation — RUN 2026-08-23 by the coordinator. The sweep is what recovers it.
+
+The S5 lane could not run this arm (its tool classifier refused `kubectl set env`/`patch` on
+`deploy/cluster-gateway`) and correctly flagged its structural argument as an argument rather than
+the experiment. yaakov asked for the experiment; here it is.
+
+**Setup.** `WEDGE_RECONNECT_STREAK=1000000` on `deploy/cluster-gateway` — the self-heal's rebuild at
+`ClusterGatewayMain:1023` is unreachable at that threshold. Verified **in the running container**
+(`WEDGE_RECONNECT_STREAK=[1000000]`), not merely in the Deployment spec: the first `exec` after the
+`set env` landed on the *terminating* pod and reported the value empty, which would have invalidated
+the whole run had it been believed. Same rig, same harness the lane left behind
+(`/root/s5drive.sh`, `/root/s5probe.sh`), same pod-IP target, same 61k-order polluted book.
+
+**Arm 1 — 20/s, one leader kill. No collapse, and it isolates NOTHING.** 18110 answered `200`
+throughout; 2,542 orders, 16 × `504`; `offer_success 3084 / ack_completed 3068 / reaped 16 /
+ack_unmatched 0`, `inflight_orders` back to `0`. Recorded because it is a trap, not a result:
+`noAckStreak` never approached 20, so **the self-heal would not have fired here even if enabled**.
+An arm that never reaches the precondition cannot discriminate between two mechanisms, and reporting
+it as "no collapse with the self-heal off" would have been a vacuous pass.
+
+**Arm 2 — ~150/s (90 + 60 from two nodes), two leader kills. Collapses, and recovers unaided.**
+
+| | dark from | dark until | first `200` | window |
+|---|---|---|---|---|
+| kill 1 (m2) | t+9s | t+50s | **t+56s** | ~47s |
+| kill 2 (m0) | t+10s | t+42s | **t+57s** | ~47s |
+
+Every `000` carried `time_connect > 0` — accepted, never served, consistent with §5's signature and
+distinguishable from a refusal.
+
+**The precondition was reached, so the isolation is real.** During the dark windows 18110 could not
+report on itself, so the streak was read from **18111**, which stayed up: **`noAckStreak` peaked at
+189** against `noAckLimit` 20. (The trigger counter is the sibling `offeredUnackedStreak`; the lane
+observed `GATEWAY-WEDGE-SUSPECTED` firing at 20/40/60 under this same recipe.) The gateway was deep
+inside the condition that fires the self-heal, repeatedly, and the self-heal was switched off.
+
+**The self-heal never fired and nothing restarted**: `GATEWAY-WEDGE-SUSPECTED` = **0** for the whole
+session, `restartCount` = **0**, and `WEDGE_RECONNECT_STREAK=[1000000]` still set in the running
+container at the end.
+
+**The sweep accounts for the entire gap.** `offer_success 18728 / ack_completed 18646 / reaped 80 /
+inflight_orders 2` — a gap of 82 = 80 reaped + 2 still live. `ack_unmatched` **0**.
+
+**No divergence across three kills.** All three members ended identical: `book_open_orders` 92,118,
+`cluster_trades` 114, and byte-identical `/bbo` across 80 books (`sha256 b8c2e95b…`).
+
+#### What this settles, and what it does not
+
+**Settled: the recovery is Option B's deadline sweep, not the wedge self-heal.** The lane's "it
+always drains, unaided" survives isolation and is now measured rather than argued. The self-heal
+contributed nothing to recovery in two collapses that would have triggered it many times over.
+
+**Raised, and not settled here:** if the sweep alone restores service, what is the self-heal *for*?
+It rebuilds the cluster session on a threshold that a normal election exceeds by 9×, and that rebuild
+is not free. Worth asking whether it is earning its keep or adding a second disruption on top of the
+election — but that is a new question and it needs its own experiment, not an inference from this one.
+
+**Unchanged:** the outage itself. A leader change under load still takes 18110 out entirely for the
+election's duration, ~47s at ~150/s on kind. Bounded and self-recovering, but not benign. Timings are
+kind's; the signature and counters are not.
+
+**Rig restored**: `WEDGE_RECONNECT_STREAK` removed and the default confirmed empty in the running
+container, drivers killed, members agreeing. The book carries ~92k resting `S5PROBE` orders — mint a
+fresh epoch before using this rig for anything that reads the book.
