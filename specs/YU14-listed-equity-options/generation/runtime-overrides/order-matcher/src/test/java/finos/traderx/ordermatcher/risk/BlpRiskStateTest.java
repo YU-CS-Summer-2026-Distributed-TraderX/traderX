@@ -194,6 +194,57 @@ class BlpRiskStateTest {
         assertEquals(originalIdempotency.size(), restored.idempotencyTuples().size());
     }
 
+    // ----- why a live order's reservation cannot be released without cancelling it -------------
+    // issues/resolved/orphaned-children-hold-risk-capacity-nobody-releases.md asks whether the
+    // capacity an ORPHANED child holds can be handed back while the child keeps resting — the one
+    // option that respects the 2026-08-21 decision not to auto-cancel orphans. It cannot, and these
+    // two tests are the measurement that closed it, kept because the throwaway probe that first took
+    // it is gone and a decision resting on a number nobody can re-run is not a record. They pin the
+    // CURRENT coupling, which is correct: a reservation and its live order are one thing. If either
+    // stops holding, that issue's reasoning has expired and needs re-deciding, not re-deriving.
+
+    @Test
+    void aReservationReleasedWhileItsOrderIsStillLiveLosesThatOrdersFillEntirely() {
+        assertEquals(RiskReason.ACCEPTED, decide(71L, 100, PX));
+        assertEquals(100L * PX, risk.reservedNotional(ACCT));
+
+        // The tempting move: hand the capacity back, leave the order resting in the book.
+        risk.release(ACCT, SEC, (byte) 0, order);
+        assertEquals(0L, risk.reservedNotional(ACCT));
+
+        // ...and now that still-live order fills, for real, all 100 of it.
+        risk.consume(ACCT, SEC, (byte) 0, order, 100, PX);
+
+        // Nothing is booked. consume() opens `if (reservedQty <= 0) return;` — its exactly-once
+        // guard — and release() already zeroed the holder. The credit gate reads
+        // executedNotional + reservedNotional, so releasing a live order's reservation does not
+        // trade a leak for nothing: it trades a bounded, conservative over-hold for an unbounded
+        // UNDER-count of exposure the account really took on.
+        assertEquals(0L, risk.executedNotional(ACCT),
+            "a fill worth " + (100L * PX) + " booked nothing: release() and consume() are coupled "
+                + "through the holder, so capacity cannot be released from an order left live");
+    }
+
+    @Test
+    void anAggregateOnlyReleaseIsRebuiltFromTheOrderAtSnapshotRestore() {
+        assertEquals(RiskReason.ACCEPTED, decide(72L, 100, PX));
+
+        // The other tempting move: decrement the account aggregate only and leave the holder
+        // intact, so a later fill still books. Restore rebuilds the aggregates FROM the holders
+        // (bootstrapOrder -> reaccumulateReservation for every open order), so the capacity comes
+        // straight back — an aggregate-only release survives exactly until the next restore, which
+        // also settles the question that issue left open: the reservation of an orphaned child
+        // survives snapshot restore and failover, because risk never knew it had a parent.
+        BlpRiskState restored = new BlpRiskState(64, 16, 1024, 128, CREDIT, 10_000, CREDIT,
+            30_000L, new RiskMetrics());
+        restored.reaccumulateReservation(ACCT, SEC, (byte) 0, order.reservedNotional(),
+            order.reservedQty());
+
+        assertEquals(100L * PX, restored.reservedNotional(ACCT),
+            "the aggregate is rebuilt from the order's own reservation, so decrementing the "
+                + "aggregate alone is undone by the next snapshot restore");
+    }
+
     // ----- YU14: contract-multiplier-aware notional (FR-LEO03) -------------------------------
 
     private static final int OPT = 5;   // a second security carrying multiplier 100
