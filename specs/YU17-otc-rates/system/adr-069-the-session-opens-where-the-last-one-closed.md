@@ -205,6 +205,59 @@ scheduled arrival date.
 than fabricated, and it costs nothing to implement, because `price-publisher` already has no
 knowledge of the book's existence.
 
+The mechanism is available because the feed does not send **orders**. `FeedAdapterMain.offerTick()`
+emits `InputEvent.TYPE_PRICE_TICK`, a distinct event type from an order. So a halt that gates
+*order* events can let price ticks through untouched, `BlpRiskState.lastPrice[]` keeps advancing,
+and the ADR-066 band re-anchors across the halt with no special case.
+
+**7. Resting orders are re-validated at the open, and what is stale is cancelled** (yaakov,
+2026-08-23). Two checks, and they answer different questions — running only one of them is the
+trap:
+
+| check | question | yardstick | status |
+|---|---|---|---|
+| **grid** | can this order still be *represented*? | the re-anchored band | **already exists** — the re-anchor forces a cancel for orders with no slot |
+| **staleness** | would this order be *picked off*? | the opening reference | **new**, and it is the one this decision is about |
+
+**The band cannot serve as the staleness yardstick, and assuming it could was the original error in
+this ADR.** It is a fixed absolute window — `BOOK_LEVELS` (1<<17) x `BOOK_TICK_PX` ($0.001) = a
+$131.07 span, so ±$65.54 regardless of what the instrument costs. Its *relative* width is therefore
+an accident of price level:
+
+| instrument | price | band as % of price |
+|---|---|---|
+| `UST-STRIP-20560515` | 0.2156 | ±30,400% |
+| `UST-20280630` | 0.9993 | ±6,558% |
+| `AAPL` | 246.64 | ±26.6% |
+| `META` | 482.42 | ±13.6% |
+| `NVDA` | 892.68 | ±7.3% |
+
+An overnight gap is 0.1–5%. **A band re-validation would cancel nothing, for any instrument, on any
+realistic gap** — a check returning one answer for every input, which is the vacuous shape this
+project keeps paying for, and it would have been discovered as a proof that never goes green. Same
+root cause as `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`: an
+absolute window standing in for a relative one.
+
+**The staleness rule, stated precisely: cancel any resting order that is *through* the opening
+reference** — an ask below the opening mark, a bid above it. That is exactly the set that would be
+swept at a stale price, it needs **no threshold to tune**, and unlike a percentage band it
+discriminates identically at $0.21 and $892. Orders on the correct side of the mark are ordinary
+resting liquidity and survive; they were never the harm.
+
+Rejected alternatives, and why:
+
+- **Cancel everything at the close.** Safe and trivial, but discards the GTC-survives-overnight
+  property a real OMS has, which is part of what this system is meant to demonstrate.
+- **Carry them and let the engine sweep.** Cheapest, and it hands free money to whoever arrives
+  first at the open. This is the defect the decision exists to prevent.
+- **An opening auction.** Correct, and a much larger change — single-price discovery, order
+  accumulation during a pre-open phase, an uncrossing algorithm. Worth revisiting if the demo ever
+  needs to *show* price discovery rather than just survive a halt.
+
+**Note what this is not**: a gap does **not** cross the book. Resting orders keep their prices, so a
+price move cannot put a bid above an ask. The harm is adverse selection against stale liquidity, not
+an uncrossed book, and the rule above is aimed at exactly that.
+
 ## What this is explicitly NOT
 
 - **Not a change to how close is computed.** ADR-051 (last trade is the mark) and the YU06 chain are
@@ -261,6 +314,11 @@ knowledge of the book's existence.
   say *why* an order was refused (`issues/open/the-audit-surface-records-that-an-order-was-refused-not-why.md`),
   and adding a third refusal reason to an undifferentiated counter makes that issue worse rather
   than merely unchanged.
+- **The open now cancels orders, so the open is an event with effects.** Re-validation at the open
+  emits cancels into the log, which means the opening transition is not a flag flip — it produces
+  order-lifecycle events that the read model, the audit surface and any client watching an order
+  will see. A cancel issued by the session transition must be distinguishable from a user cancel and
+  from a collar cancel, or the audit surface inherits a third indistinguishable reason (see above).
 - **The collar keeps re-anchoring through the halt**, because the feed keeps ticking and ADR-066
   follows `lastPrice[]`. That is the desired behaviour — the band tracks the overnight move so the
   session opens with a band centred where the market actually is, rather than where it was at the
@@ -330,25 +388,7 @@ by FRED, as intended.
    needs a command on the ingress path, and someone has to decide whether a calendar/clock drives it
    or a human does. **A clock is not obviously right here** — a demo rig that halts itself overnight
    is a rig that looks broken every morning.
-4. **What happens to resting orders across a halt?** This is the sharp one, and it is a *correctness*
-   question rather than a modelling one. Real venues cancel day orders at the close and open with an
-   auction, precisely because resting orders plus an overnight move produce a **crossed book at the
-   open** — bids above asks, which a continuous matching engine will then sweep at stale prices the
-   moment it reopens. This system has GTC-style resting orders, `BOOK_LEVELS` of resting depth, and
-   no auction. Options, none chosen:
-   - **Cancel all resting orders at the close.** Simplest and safest; loses the "GTC survives
-     overnight" property that a real OMS has.
-   - **Carry them and accept a crossed open**, letting the engine sweep. Cheapest to build and
-     almost certainly wrong — it hands free money to whoever left a stale order.
-   - **Carry them and re-validate at the open** against the new band (ADR-066 will have re-anchored
-     through the halt), cancelling what no longer has a slot. This is closest to the collar's
-     existing re-anchor behaviour, which already forces a cancel for out-of-band orders — so the
-     mechanism exists and would be reused rather than invented.
-   - **An opening auction.** Correct, and much larger than this ADR.
-
-   Whatever is chosen, note that decision 6 *guarantees* the price will have moved across a halt of
-   any length. A halt with a stationary price would hide this question; this design cannot.
-5. **Does a halted book reject order ingress, or accept and queue it for the open?** Real venues
+4. **Does a halted book reject order ingress, or accept and queue it for the open?** Real venues
    accept pre-open orders and hold them for the auction. Rejecting is far simpler and is the
    assumption in decision 5. If orders are ever queued instead, the queue is *sequenced state* and
    inherits the snapshot-format consequence above.
