@@ -69,6 +69,19 @@ mechanism took the kind rig's quorum out overnight. Same class as
 `issues/HANDOFF-issue-spec-layer-propagation-gaps.md`: a fix applied to one manifest variant is
 inert in the others, and the variant that is safe to be wrong today is the one that fires tomorrow.
 
+What made this one invisible for thirty-six days: **nothing was broken in between.** The emptydir
+variant is not what either rig runs day-to-day, so the fixed copy was never exercised — it proved
+nothing about the deployed variants — and the unfixed copies never looked wrong, because the gap
+only opens under contention. This is the shadowed-copy failure mode arriving one directory over
+from where the lineage rule usually bites: a *variant*, not a *layer*. `propagate-spec-fix`
+documents the sibling direction ("the reference-only variant is the one that gets skipped" — a fix
+landing on the deployed variant and missing the unexercised one); this incident is the inverse,
+a fix landing ONLY on the unexercised variant. Both directions have now cost this project, so when
+a knob changes in any manifest variant, grep for the knob's name across every variant — deployed,
+reference, and per-environment — and either carry the change or write down why the variants must
+differ. The kind statefulset's httpGet had been untouched since the file's creation (`236acebb`);
+a stanza that has never been revisited is not a stanza that was ever re-decided.
+
 ## What the probe change does NOT claim
 
 **Neither the old httpGet probe nor the new tcpSocket probe has ever detected a
