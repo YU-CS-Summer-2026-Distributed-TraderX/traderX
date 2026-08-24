@@ -1,0 +1,12 @@
+{
+  "stateId": "YU11-aeron-replication",
+  "appliesToDescendants": true,
+  "removedArtifacts": [
+    {
+      "id": "nats-replication-phase0-test",
+      "targetPaths": [
+        "order-matcher/src/test/java/finos/traderx/ordermatcher/lmax/NatsReplicationPhase0Test.java"
+      ]
+    }
+  ]
+}
