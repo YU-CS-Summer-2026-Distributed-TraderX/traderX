@@ -56,6 +56,48 @@ selected between by nothing but whether the trigger condition is local or global
   `active mark file detected`, modelled on `awaitDns`, with a halt-not-throw terminal path.
   Carried to the YU12, YU13 and YU15 layer copies.
 
+## This incident was a propagation gap firing, not a new discovery
+
+Commit `c9ffb5eb` (2026-07-19, "YU12: harden health server so 134k flood is sustainable") diagnosed
+the **identical** failure mode on the GKE flood tier — "k8s SIGKILLed alive members (exit 137) →
+leader loss → crash-loop → recovery death-spiral" — and fixed it with the **identical** tcpSocket
+change. That fix landed on `gke/statefulset-emptydir.yaml` only; the kind `cluster/statefulset.yaml`
+and the PVC `gke/statefulset.yaml` at every layer kept httpGet for five more weeks, until the same
+mechanism took the kind rig's quorum out overnight. Same class as
+`issues/HANDOFF-issue-spec-layer-propagation-gaps.md`: a fix applied to one manifest variant is
+inert in the others, and the variant that is safe to be wrong today is the one that fires tomorrow.
+
+## What the probe change does NOT claim
+
+**Neither the old httpGet probe nor the new tcpSocket probe has ever detected a
+wedged-but-alive consensus.** The health server is a separate thread pool that answers regardless
+of whether the apply loop makes progress — a member can sit at `applied=-1` while 3/3 Running and
+both probe forms read it as healthy (observed on kind under Aeron starvation). So tcpSocket does
+not relax detection we had; it removes the false positive on contended-but-alive and nothing else.
+Wedged-applied liveness remains the job of Raft (vote-out) and readiness (traffic shed).
+
+Whether anything SHOULD catch wedged-applied liveness — e.g. a probe on applied-sequence
+progress — is an open question, and the answer is constrained by this very issue: **a
+progress-based per-member probe is itself the defect being fixed here**, because an apply stall is
+usually cluster-global (quorum loss, snapshot barrier, log-tail replay), so a globally-stalled-but-
+recoverable cluster would be triple-killed by it. Any progress probe would need quorum-aware
+suppression, which stock kubelet probes cannot express.
+
+**Why tcpSocket rather than the gateway's dedicated-probe-port pattern**
+(`yu16-liveness-restarts-wedge.sh`, probe answerable on 18110 while the order path saturates, with
+a negative control that oversubscribes the HTTP pool and asserts no restart): the two tiers want
+different probes because restart means different things. The gateway is stateless and a restart is
+the documented remedy for its wedge, so its `/live` is deliberately *meaningful* ("restart me
+helps") and must be answerable under load — hence the port separation. Restarting a cluster
+MEMBER is never a remedy for a consensus wedge (it costs a mark-file race plus a recovery replay
+and can strand the tail), so member liveness should assert the *minimum* — process dead — and the
+member health server already carries the in-JVM half of the gateway pattern (dedicated
+MAX_PRIORITY pool, cached /ready). The overnight measurement shows that in-JVM half is not enough
+under node saturation (/health total hit 3.6 s on a MAX_PRIORITY pool); only the kernel-answered
+SYN takes the JVM out of the probe path entirely. The member-tier equivalent of the wedge proof's
+negative control was run by hand on 2026-08-24 (180 s flood, 3.66M orders, zero restarts, probes
+green); a committed proof of that shape does not yet exist for members.
+
 ## What is still open
 
 - The liveness probe still cannot distinguish "zombie on THIS member" from "sockets closed on ALL
