@@ -129,3 +129,31 @@ crossing produces.
 Remains open here: nothing about the adapter. Residuals live in their own files —
 the seeder finding is resolved by the same commit; the yu04 skip is NATS crash damage
 (outbox republish blocked by the permission classifier; command handed to the coordinator).
+
+---
+
+## RESOLVED — fixed in `a7ec2c8b`, live on the rig 2026-08-23
+
+`FeedAdapterMain` reads `payload.price` (not the top-level `price` that never existed), keeps the
+consensus session alive across flush intervals, and **counts what it drops** instead of swallowing
+malformed ticks in a bare `catch`. `FeedAdapterParseTest` covers the envelope shape.
+
+Measured on the live rig, with the FRED-backed publisher upstream:
+
+```
+FEED received=39384 dropped=0 sequenced=11082 symbols=69 pendingRegistrations=0
+```
+
+Zero drops across 39,384 ticks, all 69 instruments registered, and `applied` advances continuously
+on all three members. The counter is what makes this checkable at a glance — the old code could not
+have told you the difference between "nothing to do" and "discarding everything", which is precisely
+how it stayed broken from the day it was written.
+
+### Residual, filed separately rather than left in here
+
+The adapter **fail-fasts on a failed cluster connect and does not recover from backoff**. That is
+correct on a cold start, but it means any event that briefly makes the members' pod DNS unresolvable
+— notably a proof-suite run, which rolls the cluster — leaves the adapter in CrashLoopBackOff long
+after the cluster is healthy again. Observed 2026-08-23 at 8 restarts with DNS and all three
+endpoints verified good; `kubectl delete pod` fixed it immediately. See
+`issues/open/the-feed-adapter-does-not-come-back-after-the-cluster-rolls.md`.
