@@ -6,6 +6,11 @@
 rig bring-up and seeding: *session close already produces a snapshot — what does session **start**
 do with it?*
 
+Two decisions are **taken** (yaakov, 2026-08-23) and recorded here rather than left open: the
+session **halts in consensus**, not at the gateway (decision 5), and the **feed keeps running
+through the halt** (decision 6), which is what makes the overnight gap real rather than fabricated.
+Everything else remains proposed.
+
 Sits underneath [ADR-068](adr-068-external-price-sources.md), which decides **where an external
 reference comes from**. This ADR is the question beside it: **where the opening price comes from
 when there is no external source**, which today is every instrument except Treasuries.
@@ -82,30 +87,73 @@ primitive and fatal for a naive definition of "yesterday's close": there is no s
 one is chosen deliberately. **Defining "the previous close" is a prerequisite of this ADR, not a
 detail of it.**
 
-### There is no overnight, so the discontinuity is a RESTART artifact, not a gap
+### There is no halt MECHANISM, and the continuous trading on the rig is a testing pattern
 
-Measured 2026-08-23, and it reframes this ADR. **Nothing in this system halts trading.** There is no
-market-open/closed state, no trading calendar and no halt: every `isOpen` in the tree is *order*
-state (unfilled), never market state. `price-publisher` has no knowledge that a close occurred. The
-feed adapter, the publisher and consensus all run continuously.
+Measured 2026-08-23, with a correction attached — the two must not be conflated.
 
-Today's close was cut at `00:05:12`. **24 trades executed after it**, the most recent at `00:07:32`,
-and the feed never paused. So `EodController.close()` is a *cut taken from a running market*, not a
-halt — the same primitive as a photograph, and equally non-interrupting.
+**Verified about the code:** nothing in this system *can* halt trading. There is no market-open or
+market-closed state, no trading calendar, no halt primitive. Every `isOpen` in the tree is *order*
+state (unfilled), never market state. `price-publisher` has no knowledge that a close occurred.
 
-The consequence: **the discontinuity this ADR fixes is not an overnight gap. It is a restart
-artifact.** It appears only when the publisher process restarts and rewinds to
-`snapshot-prices.json`. A rig that runs continuously has no discontinuity at all, and one that
-restarts has one whose size depends on how stale the committed seed has become — which is a property
-of the deployment, not of the market.
+**Observed on the rig:** today's close was cut at `00:05:12`, **24 trades executed after it** (the
+most recent at `00:07:32`), and the feed never paused.
 
-This is why the framing is **restart continuity** rather than session modelling, and why "should the
-open gap?" is not a question this ADR can answer. A gap is not created at an open; it is the visible
-residue of price discovery that happened in a venue you were not watching. Nothing here stops
-watching, so there is no residue to inherit. Were a genuine closed period ever introduced — ingress
-halted between close and open — the question would become real, and the only honest way to fill the
-gap would be an external source that kept trading (option A in open question 1), never a fabricated
-draw.
+**What that observation does NOT establish**, and an earlier draft of this ADR wrongly inferred:
+that the system is *designed* to run continuously. It is not — yaakov is trading past EOD and
+re-publishing **because he is testing**, deliberately not following OMS procedure. A real deployment
+**halts at EOD and does not continue trading**. So the absence of a halt is a **missing mechanism**,
+not a design position, and "what should the open be?" is a real question rather than a malformed one.
+
+The distinction matters for what this ADR is. Today's measured discontinuity is a **restart
+artifact** — the publisher rewinding to `snapshot-prices.json` — and that is worth fixing on its own.
+But once a halt exists, a *second* and more interesting discontinuity appears, and it is the one a
+real OMS has: the market moved while the book could not respond.
+
+### The venue halts; the market does not. That is where the gap comes from.
+
+A real overnight gap is not created at the open. It is the visible residue of price discovery that
+continued **somewhere the halted venue was not**: futures, other time zones, ADRs, news repricing a
+closed book. The exchange stopped; the market did not.
+
+This system already has that separation, and it is [ADR-067](adr-067-market-data-derived-from-the-book.md)'s
+own architecture: `price-publisher` is the **reference/feed**, the book is the **venue**, and they
+are completely decoupled — the publisher holds no reference to the gateway, the cluster or the book.
+
+So the feed can keep running while the book is halted, and **that is the gap**. It is endogenous,
+real within the system, and needs no external source and no fabricated draw.
+
+The difference from a fabricated gap is not cosmetic. With a draw stamped on the open, nobody can say
+what the price *did* overnight — there is a number and nothing behind it. With the feed running
+through the halt, the overnight path is reconstructable tick by tick, from the same feed, carrying
+the same `source` and `simulated` provenance as every daytime tick. **It is auditable**, which is the
+property a drawn gap can never have, and auditability is the whole point of the system this is part of.
+
+### An external overnight source for single-name equities does not exist on our terms
+
+Checked 2026-08-23 against the live FRED API, using this project's own obligation-2 copyright check:
+
+| series | title | our check |
+|---|---|---|
+| `SP500` | S&P 500 | **copyright-marked → REFUSED** |
+| `NASDAQ100` | NASDAQ-100 | **copyright-marked → REFUSED** |
+| `DJIA` | Dow Jones Industrial Average | **copyright-marked → REFUSED** |
+| `VIXCLS` | CBOE Volatility Index: VIX | **copyright-marked → REFUSED** |
+| `NASDAQCOM` | NASDAQ Composite | **copyright-marked → REFUSED** |
+| `DTWEXBGS` | Nominal Broad U.S. Dollar Index | ok (the Fed produces it) |
+
+The pattern is clean and it generalises: **series the Federal Reserve produces are usable; series a
+private index provider licenses to FRED are not.** S&P, Nasdaq, Dow Jones and CBOE all fall in the
+second group, which is the entire equity-index and equity-volatility surface.
+
+That closes the textbook route — decompose an overnight move into a systematic component inherited
+from a real index observation plus an idiosyncratic residual. The systematic component is exactly
+what we cannot license. Combined with ADR-068's findings (Pyth forbids it; Massive's free tier is
+personal/non-commercial), **there is no free, redistributable overnight source for single-name US
+equities.**
+
+The halt-the-book approach is what makes that survivable: it produces a gap **without** an external
+source. An external source is needed only for a *true* gap, and today only Treasuries have one — and
+already use it, since FRED publishes H.15 daily.
 
 ## Decision (proposed)
 
@@ -141,17 +189,38 @@ that resolves rule 2 server-side, where the version and status semantics already
 **4. Report which source won, per instrument class.** `/health` already carries `priceSource` for
 FRED. Opening source joins it. See the trap below — this is not optional polish.
 
+**5. The session halts, and it halts IN CONSENSUS** (yaakov, 2026-08-23). Session state becomes a
+sequenced transition — a command enters the log, every member applies `OPEN`/`CLOSED` at the same
+position, and a halted book rejects order ingress.
+
+The alternative was enforcing the halt at the gateway, which is far cheaper: no deterministic-core
+change, no epoch mint. It was rejected on a single argument. **A halt that a restart can bypass is
+not a halt.** A gateway-level gate lives in a process that is restarted routinely, is not part of the
+replicated state machine, and is invisible to the audit log — so a restarted gateway during a halt
+admits orders the members accept, and nothing in the record says the market was supposed to be
+closed. For a system claiming OMS correctness that is not a shortcut, it is a defect with a
+scheduled arrival date.
+
+**6. The feed does NOT halt.** Only the venue does. This is what makes the gap real (above) rather
+than fabricated, and it costs nothing to implement, because `price-publisher` already has no
+knowledge of the book's existence.
+
 ## What this is explicitly NOT
 
 - **Not a change to how close is computed.** ADR-051 (last trade is the mark) and the YU06 chain are
   untouched. This ADR only reads what they already write.
-- **Not a model of an overnight gap.** There is no overnight to gap across — see the section below.
-  Opening at the prior close is not a simplification of a session model; it is the only continuous
-  answer for a market that never stopped.
+- **Not a fabricated gap.** No draw, no distribution, no `open = close * (1 + noise)`. The gap is
+  whatever the feed walked during the halt — a real path, reconstructable tick by tick. A fabricated
+  gap is indistinguishable downstream from an observed one, which would make every gap-risk figure a
+  measurement of the RNG's variance reported as risk.
 - **Not a durability change.** The close is already durable; the seed is already committed. Nothing
   here makes external data durable, which ADR-068's interim position forbids.
-- **Not a session scheduler.** This ADR does not decide *when* a session starts or ends. It decides
-  what the opening price is, given that one has started.
+- **Not a session scheduler.** The session halts *in consensus* (decision 5), but this ADR does not
+  decide **when** — no calendar, no clock, no exchange hours. What commands the transition, and on
+  what schedule, is open question 4.
+- **Not an opening auction.** Decision 5 halts and resumes a continuous book. It does **not**
+  introduce single-price opening-auction mechanics, which is a much larger change — and open
+  question 5 is the reason someone will ask for one.
 
 ## Consequences
 
@@ -171,6 +240,33 @@ FRED. Opening source joins it. See the trap below — this is not optional polis
   closed a session. Any proof pinning an opening *level* needs the same treatment
   `yu16-treasury-pricing` just received: assert a property, not a number a simulation chose.
 
+### Consequences specific to halting in consensus (decision 5)
+
+- **This is a deterministic-core change, with everything that implies.** Session state enters the
+  replicated state machine, so it **cannot be rolled gradually** — a mixed-version window diverges
+  the members permanently. Safe roll is the standing one: scale to zero, wipe the PVCs, mint a fresh
+  epoch. Budget an epoch mint, not a rolling update.
+- **The snapshot format must carry session state, or recovery reopens a closed market.** The
+  operative `SNAPSHOT_FORMAT` is **7** (YU17); this makes it **8**. A member that snapshots while
+  `CLOSED` and recovers without the flag comes back `OPEN` and starts accepting orders into a halted
+  market — a silent correctness failure of exactly the kind
+  `traderx-snapshot-completeness-audit` exists to catch. The format bump is not bookkeeping; it is
+  the mechanism that makes the halt survive a restart, which was the entire argument for choosing
+  consensus over the gateway.
+- **A halt is now auditable.** The transition is in the log at a known position, so "was the market
+  open when this order arrived?" is answerable from the record rather than from a gateway's memory.
+  That is the property the gateway alternative could not provide at any price.
+- **Rejects need a reason that is true.** An order refused because the market is closed must say so,
+  and must not be conflated with a risk refusal or a band refusal — the audit surface already cannot
+  say *why* an order was refused (`issues/open/the-audit-surface-records-that-an-order-was-refused-not-why.md`),
+  and adding a third refusal reason to an undifferentiated counter makes that issue worse rather
+  than merely unchanged.
+- **The collar keeps re-anchoring through the halt**, because the feed keeps ticking and ADR-066
+  follows `lastPrice[]`. That is the desired behaviour — the band tracks the overnight move so the
+  session opens with a band centred where the market actually is, rather than where it was at the
+  close. It also means the band moves while no order can possibly test it, so any proof of
+  re-anchoring must not assume a trade is available to trigger it.
+
 ## The trap to build in from the first commit
 
 **A failed close-read is indistinguishable from a successful one.** If the HTTP call fails, times
@@ -188,40 +284,74 @@ without reading logs or this file.
 Corollary for whoever implements it: the **absence** of a continuity signal must be loud. An opening
 price that silently came from the seed looks exactly like one that came from a close.
 
+## Answered while drafting
+
+**Does the open equal the close exactly, or gap? — ANSWERED: it gaps, and the gap is endogenous.**
+An earlier draft closed this as malformed, on the inference that the system has no closed period.
+That inference was wrong: the continuous trading measured on the rig is yaakov **testing**, not a
+design position, and a real deployment halts at EOD. With decisions 5 and 6 the answer falls out —
+the venue halts, the feed does not, and the open is wherever the feed walked to. Reconstructable
+tick by tick, carrying the same provenance as any daytime tick, and requiring no external source.
+
+The general rule is worth keeping, because it is what rules out the cheap alternative: **a gap
+cannot be *detected*; it is *inherited* from something that kept moving while your venue could not.**
+Three ways to obtain one, and only two are honest:
+
+- **Inherit it externally.** Close at T, poll at T+1, and the difference already contains whatever
+  the world did. **Live today for Treasuries**, since FRED publishes H.15 daily. Unavailable for
+  everything else — see the licensing table above, which closes it for equities specifically.
+- **Inherit it internally** — the feed runs through the halt. This is decision 6, it is free, and it
+  is the only route available for instruments with no licensable source.
+- **Fabricate it** (`open = close * (1 + draw)`). One line, and a correctness regression: a
+  fabricated gap is **indistinguishable downstream from a real one**, so every gap-risk figure would
+  measure the RNG's variance and report it as risk. Rejected.
+
+**Which instruments does this cover? — ANSWERED for options.** Verified in `main.js`: an option is
+"*derived: re-price from the underlying's current tick. No band, no drift of its own.*" So options
+**inherit any underlying gap automatically, through the model they already use** — they need no
+opening price of their own and must not be given one from a stored close, which would fight the
+re-price. Equities and ETFs are covered by the hierarchy. Treasuries are covered and then superseded
+by FRED, as intended.
+
 ## Open questions — decide before building
 
-1. **~~Does the open equal the close exactly, or gap?~~ — CLOSED as malformed, 2026-08-23.** The
-   question presumes a closed period, and there is not one (see above): 24 trades executed after
-   today's close was cut. The open equals the close because nothing happened in between, not as a
-   simplifying choice.
-
-   Recorded here because the reasoning generalises. **A gap cannot be *detected*; it is *inherited*
-   from a source that kept trading while your venue did not.** That leaves exactly three options, and
-   only two are honest:
-
-   - **Inherit it.** With an external source the gap costs no code at all — close at T, poll at T+1,
-     and the difference already contains whatever the world did. **This is live today for
-     Treasuries**, because FRED publishes H.15 daily. It is unavailable for everything else only
-     because ADR-068 is blocked on licensing, not because it is hard.
-   - **Fabricate it** (`open = close * (1 + draw)`). One line, and a correctness regression: a
-     fabricated gap is **indistinguishable downstream from a real one**, so every gap-risk figure
-     would be measuring the RNG's variance and reporting it as risk. If it is ever wanted anyway, the
-     only defensible form is a *labelled* one — the payload already carries `simulated` and `source`,
-     so a gap-originated open must carry its own provenance and let risk consumers exclude it.
-   - **Have none**, which is the current and correct state for a market that never closes.
-2. **What happens on the first session ever, and after a gap in sessions?** First-ever start has no
+1. **What happens on the first session ever, and after a gap in sessions?** First-ever start has no
    prior close and must use the seed — that is rule 1 and is settled. Less settled: if the last
    published close is *weeks* old, is it still the right open, or is a stale close worse than a
    fresh seed? A staleness bound would need a stated reason, and a bound with no reason is a knob.
-3. **Which instruments does this cover?** Equities and ETFs, clearly. Options are *derived* from
-   their underlying rather than walked independently, so opening them from a stored close may
-   conflict with the model recomputing them — needs checking against `option-quotes.js` before it is
-   assumed. Treasuries are covered but immediately superseded by FRED, which is intended.
-4. **Does the read-side belong to trade-processor or reference-data?** The close lives behind
+2. **Does the read-side belong to trade-processor or reference-data?** The close lives behind
    trade-processor's `/eod` surface, which is where version and DRAFT/PUBLISHED semantics already
    are — an argument for putting the previous-session resolution there. But `price-publisher`
    already talks to reference-data for instrument static, and adding a second upstream to a
    bootstrap path adds a second thing that can be down at start-up.
+3. **What commands the session transition, and on what schedule?** Decision 5 fixes *where* the halt
+   is enforced, not *what* triggers it. Today `EodController.close()` is an on-demand HTTP call
+   defaulting to `LocalDate.now()`, which is why one date carries fifty versions. A sequenced halt
+   needs a command on the ingress path, and someone has to decide whether a calendar/clock drives it
+   or a human does. **A clock is not obviously right here** — a demo rig that halts itself overnight
+   is a rig that looks broken every morning.
+4. **What happens to resting orders across a halt?** This is the sharp one, and it is a *correctness*
+   question rather than a modelling one. Real venues cancel day orders at the close and open with an
+   auction, precisely because resting orders plus an overnight move produce a **crossed book at the
+   open** — bids above asks, which a continuous matching engine will then sweep at stale prices the
+   moment it reopens. This system has GTC-style resting orders, `BOOK_LEVELS` of resting depth, and
+   no auction. Options, none chosen:
+   - **Cancel all resting orders at the close.** Simplest and safest; loses the "GTC survives
+     overnight" property that a real OMS has.
+   - **Carry them and accept a crossed open**, letting the engine sweep. Cheapest to build and
+     almost certainly wrong — it hands free money to whoever left a stale order.
+   - **Carry them and re-validate at the open** against the new band (ADR-066 will have re-anchored
+     through the halt), cancelling what no longer has a slot. This is closest to the collar's
+     existing re-anchor behaviour, which already forces a cancel for out-of-band orders — so the
+     mechanism exists and would be reused rather than invented.
+   - **An opening auction.** Correct, and much larger than this ADR.
+
+   Whatever is chosen, note that decision 6 *guarantees* the price will have moved across a halt of
+   any length. A halt with a stationary price would hide this question; this design cannot.
+5. **Does a halted book reject order ingress, or accept and queue it for the open?** Real venues
+   accept pre-open orders and hold them for the auction. Rejecting is far simpler and is the
+   assumption in decision 5. If orders are ever queued instead, the queue is *sequenced state* and
+   inherits the snapshot-format consequence above.
 
 ## Related
 
