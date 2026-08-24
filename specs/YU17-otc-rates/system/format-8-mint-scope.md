@@ -381,24 +381,68 @@ proof; (iv) a proof that passes vacuously — mitigated by every red half being 
 
 ---
 
-## 7. Decisions needed from yaakov before build
+## 7. Decisions — SETTLED 2026-08-24 (yaakov)
 
-a. **Fresh-epoch default phase**: recommend **OPEN** (every existing proof and fixture assumes a
-   trading book; CLOSED-until-commanded is the "real OMS" posture but breaks the entire suite on
-   day one — opt into it later by issuing the command in bring-up).
-b. **PRE_OPEN → CLOSED with a non-empty queue**: recommend the transition *cancels the queue*
-   (each order CANCELED with a session reason — needs one more appended RiskReason) rather than
-   refusing the transition; a halt that can be blocked by pending orders is not a halt.
-c. **Cancels during CLOSED**: recommend reject MARKET_CLOSED (v1; venues' GTC-cancel-overnight is
-   an OMS courtesy this tier doesn't owe yet). PRE_OPEN allows cancel (queued and resting),
-   rejects replace.
-d. **Do swap/swaption bookings halt with the session?** Recommend **no** — the halt is the
-   venue's book; OTC bookings are bilateral desk business and never touch the book. But it is a
-   product question, not an engineering one.
-e. **OPTION_BOOK_TICK_PX** — confirm 100 after the §2.3 measurement, or direct otherwise.
-f. **FNMA-class residual** — accept-and-state (recommended), or pull §2.2 into scope now.
-g. **STATUS_QUEUED rendering** — console shows queued orders as their own state; confirm the
-   small UI touch is in scope for the mint window.
+Six decided; (e) is a measurement, not a decision. **Two went against the recommendation and both
+widened the work — record the reasoning, not just the verdict.**
+
+**a. Fresh-epoch default phase: OPEN.** As recommended. Every proof and fixture assumes a trading
+book; CLOSED-until-commanded is the faithful posture and remains available by issuing the command
+during bring-up. Nothing is foreclosed.
+
+**b. PRE_OPEN → CLOSED with a non-empty queue: CANCEL THE QUEUE.** As recommended. Each queued order
+CANCELED with a session reason (one appended `RiskReason`). This is ADR-069 decision 5's principle
+applied one level out — *a halt a restart can bypass is not a halt*, and a halt that pending client
+orders can block is not one either.
+
+**c. Cancels during CLOSED: ALLOWED. ⚠ This overrides the recommendation.**
+The recommendation was reject `MARKET_CLOSED`, on the grounds that GTC-cancel-overnight is an OMS
+courtesy this tier does not owe. The deciding argument the other way: **a cancel only ever REDUCES
+exposure.** It cannot cross, cannot trade, cannot move a price, and cannot re-open a halted book — so
+permitting it during a halt is *safer* than forbidding it, not laxer. Forbidding it locks a client
+into a resting order until the open, where ADR-069 decision 7 re-validates against the mark and may
+fill or cancel it on terms the client never saw and could not act on. The machinery is already being
+built for (b).
+PRE_OPEN is unchanged: cancel allowed (queued and resting), replace rejected.
+
+**d. OTC swap/swaption bookings do NOT halt with the session.** As recommended. The halt is the
+*venue's book*; bilateral desk business never touches it, and one session concept spanning both would
+conflate two unrelated things.
+
+**e. `OPTION_BOOK_TICK_PX`: NOT DECIDED — do the §2.3 sizing replay first.** Picking the number before
+measuring is precisely what `size-a-configuration-bound` exists to prevent. It is a pre-mint task, not
+a decision, and it now composes with (f) below.
+
+**f. Price-derived ticks are PULLED INTO SCOPE. ⚠ This overrides the recommendation and is the
+largest change to this document.**
+The recommendation was accept-and-state. Rejected because the residual is **not hypothetical**: FNMA
+is committed at `openPrice 1.12 / closePrice 1.145` in the publisher's bootstrap seed (YU16 layer,
+`snapshot-prices.json:70-73`), the feed adapter has been carrying ticks since 2026-08-24, and the
+collar's reference is feed-first — so **FNMA walks to ~$1.15 without anyone deciding to**, at which
+point it holds the inert equity grid. Accept-and-state would mean knowingly shipping a dead guard for
+a live instrument on a system whose stated direction is a sell-side OMS.
+
+*Design constraints, derived and checked 2026-08-24 — these are what make it tractable:*
+
+- **Derive the tick at book construction** (`bookFor()`, the cold path) from the replicated reference
+  price, falling back to the category function (options / fraction-of-par), falling back to the global
+  default. Static per book, so nothing about `LimitBook`'s slot arithmetic changes.
+- **Determinism is already argued**: `BlpRiskState.lastPrice[]` is replicated (arrives through the
+  consensus log) and snapshotted, which is exactly the property ADR-066 relies on for the band anchor.
+  A tick derived from the same reference is identical on every member and on replay for the same
+  reason.
+- **VERIFIED: `T_PRICE` is already emitted BEFORE `T_BOOK`** in the snapshot writer (lines 63 and 68),
+  so restore can re-derive the tick before reconstructing the book. **No snapshot reordering is
+  needed** — the constraint this decision depends on is already satisfied.
+- **The genuinely open part**: a security whose price later moves orders of magnitude outside the grid
+  its tick implied. ADR-066 re-anchors *position*, never *width*; a re-tick is a re-index at a
+  different scale and is materially harder than a rebase. Scope call for whoever builds — accept it
+  (an instrument that moves 100x needs an epoch) or design the re-tick. **Say which; do not leave it
+  discovered at the mint.**
+
+**g. `STATUS_QUEUED` console rendering: IN SCOPE.** Without it a pre-open order reads as either missing
+or indistinguishable from a live resting order to anyone watching — and this rig's audience is people
+watching.
 
 ## Related
 
