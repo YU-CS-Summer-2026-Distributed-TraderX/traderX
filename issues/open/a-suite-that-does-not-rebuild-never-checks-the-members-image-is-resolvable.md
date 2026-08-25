@@ -1,7 +1,7 @@
 # A suite that does not rebuild never checks the members' image is resolvable
 
 **Found 2026-08-25** on `kind-traderx-yu12-cluster`, after a node-level tag cleanup left the
-members' image content present on every node under **no name**. Filed rather than fixed: the
+members' image content present on every node with **no resolvable tag**. Filed rather than fixed: the
 remedy touches `run-proofs.sh`, and that file was being executed by another lane's suite at the
 time of writing.
 
@@ -13,12 +13,12 @@ time of writing.
 ## What happened
 
 `kind load docker-image` imports content under kind's own reference and any tag it is given, and
-containerd **dedupes by content** — so two tags on the same bits are two names on one image record,
-not two images. A throwaway tag created for an arm check (`:yu17-format8-armcheck`, a `docker tag`
+containerd **dedupes by content** — so two tags on the same bits are two references to one
+image, not two images. A throwaway tag created for an arm check (`:yu17-format8-armcheck`, a `docker tag`
 of `:yu17-format8`, then `kind load`) therefore shared a record with the tag the rig actually runs.
 
 Tidying the throwaway tag away at node level took the real tag with it. The content stayed —
-running containers held it — but the name did not:
+running containers held it — but the tag did not:
 
 - members 0 and 1 kept running, because their containers already existed and **the tag only matters
   when a pod starts**;
@@ -55,12 +55,13 @@ deletes **every reference carrying it**.
 ## Not verified — this is a hypothesis with a test, not a finding
 
 The mechanism above is **inferred from the two outputs and from CRI semantics, and has not been
-executed.** The test below has no blast radius: it uses content that is *already* unnamed, so the
-worst case leaves it unnamed, and removing a name cannot reclaim content a running container holds.
+executed.** The test below runs against content that is **already tagless and unused**, so the
+worst case is that it ends tagless again; removing a reference cannot reclaim content a running
+container holds, and nothing holds these.
 
 ```bash
 N=traderx-yu12-cluster-worker2
-B=sha256:<one of the already-unnamed blobs listed under Corroboration>
+B=sha256:<one of the three tagless blobs listed under Corroboration>
 
 docker exec $N ctr -n k8s.io images tag $B tmp/nametest:a
 docker exec $N ctr -n k8s.io images tag $B tmp/nametest:b
@@ -74,22 +75,39 @@ docker exec $N crictl images | grep nametest
 #   b gone                 -> record-scoped; confirmed
 #   a still there / ENOENT -> crictl never resolved it; THE TEST DID NOT RUN
 
+# A FOURTH READING, free once the framing above is corrected: does the blob's PRE-EXISTING
+# `docker.io/library/import-2026-08-25` reference survive the rmi?  If it disappears alongside
+# tmp/nametest:b, that is record-scoped removal confirmed a second time, on a reference this test
+# did not create.  Note this is also the honest worst case -- the blob can lose that reference and
+# is NOT restorable to exactly its prior state, which costs nothing here only because nothing uses it.
+docker exec $N crictl images | grep import-2026-08-25
+
 docker exec $N ctr -n k8s.io images rm tmp/nametest:a tmp/nametest:b 2>/dev/null || true
 ```
 
 **The third branch is not a nicety.** The CRI image store is the plugin's own view, populated at
-startup and from containerd events; a blob unnamed for days is not in it, and a `ctr images tag`
+startup and from containerd events; a blob left tagless for days may not be in it, and a `ctr images tag`
 may not surface in `crictl` before the removal runs. Without the precondition assertion, "no such
 image" is indistinguishable from "b survived", and the test reports a **refutation it did not
 earn** — the same defect as a pass that was not earned, and harder to notice, because a refutation
 feels like rigour.
 
-**One observation the hypothesis does not yet explain**, recorded rather than smoothed over: the
-content was left resolvable under kind's own import reference (`docker.io/library/import-2026-08-25`,
-which the members' pods already carried as their `imageID` *before* any cleanup) while the
-`traderx/...` tag was gone. If `RemoveImage` deletes every reference for an ID, that survivor needs
-an account — a repo *digest* rather than a repo tag is the obvious candidate. The test above does
-not settle it.
+**An observation that looked like a hole in the hypothesis, and was a category error — RESOLVED
+2026-08-25, kept because writing it down is why it took one read instead of surviving as folklore.**
+
+It was recorded here as: *the content was left resolvable under kind's own import reference
+(`docker.io/library/import-2026-08-25`, which the members' pods carried as their `imageID` before
+any cleanup) while the `traderx/...` tag was gone, so if `RemoveImage` deletes every reference for
+an ID, that survivor needs an account.*
+
+**There is no survivor to account for.** `containerStatuses[].imageID` is written by the kubelet
+when the container is CREATED and then persists in pod status regardless of what the image store
+holds afterwards. It is a historical string, not a live store reference, so reading it as evidence
+about the store is structurally incapable of answering the question — the same shape as a digest
+comparison that can only ever return one answer. A read of the rig (by the lane holding it,
+2026-08-25) confirms the three store entries carrying that repo name are **not** the members'
+image. Every `traderx/...` name for that record went, and nothing survived that the mechanism has
+to explain.
 
 ## The ruling: leave node-level tags alone
 
@@ -101,13 +119,27 @@ genuinely name-scoped, as the output above shows.
 Re-running `kind load` for the real tag afterwards restores the name, but that is a **recovery
 step, not the rule**: repairs get forgotten, and a rule that can be half-followed is not one.
 
-## Corroboration: it has happened before, silently
+## Corroboration: it has happened before, silently, on every worker
 
-`traderx-yu12-cluster-worker2` carries **three further pieces of unnamed content** —
-`cd116ff5345cf`, `b69bc29a9e385`, `1cea996d7fe7e` (reported by the lane that inspected the node).
-Nothing noticed, because those three are unused: **name-stripping is invisible until the stripped
-name is the one a pod needs**, which is exactly why the live one sat unnamed until a member
-happened to restart.
+**All three workers** — `worker`, `worker2` and `worker3` — carry the same three further pieces of
+content with a repo name and **no tag** (reported by the lane that inspected the nodes,
+2026-08-25):
+
+```
+docker.io/library/import-2026-08-25   <none>   cd116ff5345cf
+docker.io/library/import-2026-08-25   <none>   b69bc29a9e385
+docker.io/library/import-2026-08-25   <none>   1cea996d7fe7e
+```
+
+**They are not "unnamed", and the distinction is the failure mode itself.** They carry a repo name
+with `<none>` for the tag — which is exactly what `repoTags: []` reports, and exactly the shape
+kind's import leaves behind. What goes missing is the **tag on a named repo**, never the content
+and never the repo. A probe asking "is this content present?" answers yes throughout.
+
+Identical IDs on all three workers make this a repeated, cluster-wide pattern rather than one
+node's peculiarity. Nothing noticed, because those three are unused: **a stripped tag is invisible
+until it is the tag a pod needs**, which is why the live one sat that way until a member happened
+to restart.
 
 ## The gap, and why it is a separate fact
 
