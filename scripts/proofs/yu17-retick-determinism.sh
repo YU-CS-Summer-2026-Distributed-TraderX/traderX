@@ -210,6 +210,16 @@ LDR="$(leader)" || fail "no leader found"
 # DIFFERENT pod uid AND an applied sequence at or past where the cluster stood before the kill.
 # Both halves are needed -- the uid alone lets the outgoing container answer, and the sequence
 # alone is satisfied by the very pod being killed, which had already applied it.
+#
+# WHAT IT STILL CATCHES, because a wait that cannot fail is this family's own failure mode: a
+# member that never returns as a new pod (Pending, ImagePullBackOff, a wedged StatefulSet) never
+# changes uid and times out; one that returns but cannot rejoin consensus -- stuck in election,
+# diverged, replaying forever -- never reaches PRE_SEQ and times out. Both are the conditions step
+# 6 exists to run against, so failing here is the honest verdict, not a flake.
+#
+# WHAT IT DOES NOT CLAIM: that the member is Ready or serving traffic, only that it has APPLIED
+# past PRE_SEQ. That is deliberate -- readiness is the reading that lied here in the first place --
+# and the replicated claim is carried by step 6's digest agreement across all three members.
 OLD_UID="$(member_pod_uid "${LDR}")"
 [[ -n "${OLD_UID}" ]] || fail "cannot read member ${LDR}'s pod uid before killing it"
 SURV=$(( (LDR + 1) % 3 ))

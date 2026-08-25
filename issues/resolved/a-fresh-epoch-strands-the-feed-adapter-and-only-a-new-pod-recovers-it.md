@@ -148,8 +148,11 @@ was observed down and repaired immediately; nobody waited out the cap. This make
    to 0 (the stp prep deliberately does that — see below);
 2. repins it to the members' build if it has drifted, because it is a cluster client speaking the
    ingress codec and a stale one cannot round-trip anything;
-3. `rollout restart` + `rollout status` — a new pod, whose backoff starts at zero, so recovery is
-   immediate and deterministic instead of "within five minutes, unobserved";
+3. `rollout restart` + `rollout status` — a new pod, whose backoff starts at zero. **This buys
+   latency, not recovery**, and the distinction matters for whoever reads this next: left alone the
+   adapter comes back by itself within five minutes, so the roll is not load-bearing for
+   correctness. What it removes is a five-minute window in which the rig has no price feed on the
+   state where that feed is the collar's reference and the price grid's input;
 4. **asserts the round trip.** This is the part that matters. "The pod is Ready" is worth nothing
    here: the Deployment carries no readinessProbe, so a container that starts and then times out
    connecting is Ready for its whole doomed life. The gate waits for the pod UID to CHANGE and

@@ -598,7 +598,14 @@ ${states}"
 #      A rollout restart is the remedy because a NEW POD's backoff starts at ZERO, not because pod
 #      identity matters -- the original issue read it as "only a new pod recovers it" and that is
 #      measurably false (`dirDeleteOnStart(true)` is already set, and a fresh pod against absent
-#      members crash-loops identically). The load-bearing half is the ASSERTION below.
+#      members crash-loops identically).
+#
+#      SO THE ROLL BUYS LATENCY, NOT RECOVERY. Left alone the adapter comes back by itself, within
+#      five minutes. Do not read the `rollout restart` below as load-bearing for correctness: it
+#      closes a five-minute hole in which this rig has no price feed, on the state where that feed
+#      is the collar's reference and the price grid's input, and where every other reading still
+#      looks fine. The load-bearing half is the ASSERTION after it, which is the only thing here
+#      that can tell a working feed from a dead one at all.
 #      (issues/resolved/a-fresh-epoch-strands-the-feed-adapter-and-only-a-new-pod-recovers-it.md)
 #
 # Both gates below assert the FACT rather than the command returning, and both are satisfiable and
