@@ -154,14 +154,41 @@ own_tp_forward(){
   done
 }
 recon_status(){ curl -s -m8 "$TP/recon/status" -H "Authorization: Bearer $ADMIN"; }
-fresh_classification(){ # restart TP, re-own the forward, echo the from-zero classification΄s status
+# WAIT FOR THE SWEEP TO FINISH, NOT FOR IT TO START.
+#
+# This returned on the first poll where matched > 0 — i.e. MID-SWEEP — and that is a race whose
+# probability grows with the epoch. Measured 2026-08-25 on a 42-trade epoch: the status came back
+# `matched 22` against `engine trades / SQL rows 42 / 42`, so classification had covered half the
+# projection when it was read. 3b plants its mismatch on `SELECT id FROM trades ORDER BY id LIMIT 1`
+# — the OLDEST row — which the sweep reaches last, so the control read fieldMismatch=0 and the proof
+# failed with "a PLANTED persistent mismatch was NOT caught". Nothing was wrong with the classifier.
+# On a smaller epoch the whole sweep fit inside one 2s poll and it passed, which is why this only
+# appeared once the suite had been run twice on one epoch.
+#
+# Returning early is worse for 3b than for the verdict it guards: a half-finished sweep reports
+# fieldMismatch=0, which is exactly what a CLEAN projection reports. The control cannot tell "no
+# mismatch" from "not looked yet", so the negative control silently stops being one.
+#
+# The gate is QUIESCENCE, the same rule the cross-member readings use: hold until the whole triple
+# (matched / missingInProjection / fieldMismatch) is unchanged across three consecutive reads. It
+# still fails loudly if classification never runs at all (matched stays 0 through the timeout), so
+# nothing is weakened — a mismatch that IS present is now guaranteed to have been looked for.
+fresh_classification(){ # restart TP, re-own the forward, echo the SETTLED from-zero classification
   $K rollout restart deploy/trade-processor >/dev/null 2>&1
   $K rollout status deploy/trade-processor --timeout=300s >/dev/null 2>&1 || return 1
   own_tp_forward || return 1
-  local s m
-  for _ in $(seq 1 60); do
-    s=$(recon_status); m=$(num "$(printf '%s' "$s" | jfield "d['matched']")")
-    [ -n "$m" ] && [ "$m" -gt 0 ] && { printf '%s' "$s"; return 0; }
+  local s m triple prev="" stable=0
+  for _ in $(seq 1 90); do
+    s=$(recon_status)
+    m=$(num "$(printf '%s' "$s" | jfield "d['matched']")")
+    triple="$(printf '%s' "$s" | jfield "str(d['matched'])+'/'+str(d['missingInProjection'])+'/'+str(d['fieldMismatch'])" 2>/dev/null)"
+    if [ -n "$m" ] && [ "$m" -gt 0 ] && [ -n "$triple" ] && [ "$triple" = "$prev" ]; then
+      stable=$((stable + 1))
+      [ "$stable" -ge 2 ] && { printf '%s' "$s"; return 0; }
+    else
+      stable=0
+    fi
+    prev="$triple"
     sleep 2
   done
   return 1

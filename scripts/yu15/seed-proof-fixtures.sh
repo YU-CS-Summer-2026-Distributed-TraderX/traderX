@@ -239,21 +239,31 @@ hold 22214 42422 IBM  10 "$(live_px IBM)"    # yu05 recon/settlement have someth
 
 # Clear positions in the throwaway instruments other proofs mint.
 #
-# yu13-clordid-suppression, yu13-stp-and-replace and yu17-band-follows-market each trade a
-# time-derived ticker (DUP…, RM…, STP…, BND…) so their runs cannot collide. Those instruments are never in an EOD price universe, and a
-# position row in one -- even at quantity zero -- halts that account's end-of-day P&L forever.
-# yu15-risk-extract then fails with "an unpriced holding blocks its P&L", which is a true statement
-# about a fixture no one intended to keep.
+# Several proofs each trade a time-derived ticker so their runs cannot collide. Those instruments
+# are never in an EOD price universe, and a position row in one -- even at quantity zero -- halts
+# that account's end-of-day P&L forever. yu15-risk-extract then fails with "an unpriced holding
+# blocks its P&L", which is a true statement about a fixture no one intended to keep.
 #
-# Deliberately scoped to those generated prefixes. It does NOT touch real tickers, because a real
-# holding with no published price is a genuine halt condition -- and proving exactly that is what
-# yu06-consumer-halt exists for. Widening this would quietly disarm that proof.
+# THE LIST HAS TO TRACK THE PROOFS THAT MINT, and it had fallen behind by nine prefixes. It read
+# DUP|RM|STP|Z|BND while the suite was also minting CSR, HSF, KAC, PQO, RJT, RPL, RTD and RTK --
+# and three of those BOOK TRADES: yu17-halt-survives-failover (HSF) fills a queued order at the
+# open, yu17-retick-determinism (RTD) crosses its resting bid, yu17-preopen-queue-open (PQO) books
+# one match. Measured 2026-08-25 on the format-8 mint: a suite run left those positions behind and
+# the NEXT run's yu15-risk-extract reported `accounts=3 halted=2` at position 13, long before the
+# proofs that created them ran again. Standalone on a clean projection the same proof reports
+# `accounts=4 halted=0`. The failure is a full suite-length away from its cause, which is why it
+# reads as a risk-extract defect and is not one.
+#
+# Still deliberately scoped to GENERATED prefixes followed by a digit. It does NOT touch real
+# tickers, because a real holding with no published price is a genuine halt condition -- and proving
+# exactly that is what yu06-consumer-halt exists for. Widening this to real symbols would quietly
+# disarm that proof.
 echo "[clean] positions in generated throwaway instruments"
 kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   mariadb -utraderx -ptraderx traderx -N -B -e \
-  "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z|BND)[0-9]';
+  "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z|BND|CSR|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
-     WHERE security REGEXP '^(DUP|RM|STP|Z|BND)[0-9]';" 2>/dev/null
+     WHERE security REGEXP '^(DUP|RM|STP|Z|BND|CSR|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';" 2>/dev/null
 
 # YU17 FX-rate fix: the credit gate values swap notionals in USD off SEQUENCED rates, which are
 # replicated state and die with the epoch. Until rates are re-sequenced, every non-USD swap

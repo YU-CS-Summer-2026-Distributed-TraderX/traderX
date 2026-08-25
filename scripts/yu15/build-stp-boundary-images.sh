@@ -66,12 +66,17 @@ patch -p1 -d "${WORK}/order-matcher" --forward < "${PATCH}"
 # tree it is pointed at, so ordering is not load-bearing -- but building the unmodified side first
 # means a failure here is a plain build break rather than something to blame on the patch.
 echo
+# DOCKER_NO_CACHE on BOTH sides. The `fix` side is today's tree unmodified, so its jar is usually
+# byte-identical to whatever tip image was built last and docker hands back that image — Created and
+# all. yu13-stp-and-replace's preflight then reads a Created older than the sources and refuses the
+# pair it just asked for, which is a rebuild loop that never terminates. `pre` gets it too so the
+# two sides are built the same way and neither can be the odd one out.
 echo "[stp-boundary] building ${FIX_TAG} (today's tree, unmodified)"
-CLUSTER_IMAGE="${FIX_TAG}" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
+DOCKER_NO_CACHE=1 CLUSTER_IMAGE="${FIX_TAG}" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
 
 echo
 echo "[stp-boundary] building ${PRE_TAG} (today's tree, STP + /replace removed)"
-CLUSTER_IMAGE="${PRE_TAG}" OM_DIR="${WORK}/order-matcher" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
+DOCKER_NO_CACHE=1 CLUSTER_IMAGE="${PRE_TAG}" OM_DIR="${WORK}/order-matcher" bash "${ROOT}/scripts/yu15/build-cluster-image.sh"
 
 # ---------------------------------------------------------------------------------------------
 # THE PAIR MUST DIFFER, AND ONLY IN THE BEHAVIOUR. This is not a tidiness check.

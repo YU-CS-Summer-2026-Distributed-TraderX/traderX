@@ -544,10 +544,38 @@ for the phase. The fixture seed now retries for 60s; the assertions are untouche
 that the gateway's 503 catch-all reports `e.getClass().getSimpleName()` and logs nothing, so a
 log capture across all three reproductions caught no exception at all.
 
+**Two more, found only because the suite was run twice on one epoch.** Both passed on the first
+run and failed on the second, which is the signature of state a proof leaves behind rather than of
+anything the mint changed.
+
+- **`yu15-risk-extract`** reported `accounts=3 halted=2` — "an unpriced holding blocks its P&L" —
+  at suite position 13, while standalone on a clean projection it reports `accounts=4 halted=0`.
+  The cause is a full suite-length away from the symptom: `seed-proof-fixtures.sh` clears positions
+  in generated throwaway instruments, but its prefix list had fallen behind the proofs by nine
+  (`DUP|RM|STP|Z|BND` against a suite also minting CSR, HSF, KAC, PQO, RJT, RPL, RTD, RTK, SES).
+  Three of those book trades — `yu17-halt-survives-failover` fills a queued order at the open,
+  `yu17-retick-determinism` crosses its resting bid, `yu17-preopen-queue-open` books one match — so
+  the format-8 proof set is itself what began leaking positions the cleaner did not know about. The
+  list now tracks the proofs, still scoped to generated prefixes followed by a digit so
+  `yu06-consumer-halt`'s genuine halt condition is untouched.
+- **`yu05-recon`**'s negative control failed: "a PLANTED persistent mismatch was NOT caught by a
+  fresh classification". `fresh_classification()` returned on the first poll where `matched > 0` —
+  mid-sweep. On a 42-trade epoch it read `matched 22` against `42/42` rows, and 3b plants its
+  mismatch on the OLDEST projection row, which the sweep reaches last. So the control read
+  `fieldMismatch=0`, which is exactly what a clean projection reads: it could not tell "no mismatch"
+  from "not looked yet", and the epoch only had to grow past one poll's worth of sweep for the
+  negative control to stop being one. Now gated on quiescence of the whole
+  matched/missing/fieldMismatch triple, the same rule the cross-member readings use.
+
 **`yu13-stp-and-replace`** — its own preflight refused, correctly: `traderx/cluster-node:
 stp-boundary-pre` was built 2026-08-23 and the generated source has moved since, so the proof would
 have crossed a version boundary that is no longer the system's. Pre-existing drift, unrelated to the
-mint; remedied by `bash scripts/yu15/build-stp-boundary-images.sh`. Worth noting what that rebuild
+mint. The rebuild then had to be made honest before it took: `stp-boundary-fix` is today's tree
+unmodified, so its jar was byte-identical to `:yu17-format8` and Docker handed back that image
+**with its original `Created` of `06:17:54Z`** — older than the generated sources at `06:47Z`, so
+the preflight refused the pair it had just asked for, and would have done so for ever. Both sides
+now build with `--no-cache` (`DOCKER_NO_CACHE`), because `Created` is load-bearing for that guard
+and a cache hit makes it a lie. The guard was right every time; the build was not. Worth noting what that rebuild
 now means: both sides of the synthesized pair are built from today's tree, so the boundary it
 crosses is format 8 → format 8 with STP and `/replace` removed on the `pre` side. It is the
 BEHAVIOURAL boundary and nothing else — a real format-and-capacity gap is still uncovered

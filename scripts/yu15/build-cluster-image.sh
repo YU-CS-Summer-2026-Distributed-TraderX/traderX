@@ -42,7 +42,16 @@ echo "[build] docker image ${IMAGE} from ${JAR}"
 # YU14_PLATFORM, so setting YU15_PLATFORM=linux/amd64 passed `--platform` with an EMPTY value
 # — invisible on kind (arm64 host, arm64 nodes) and fatal on the first amd64 GKE build, which
 # is the project's recurring ImagePullBackOff "no match for platform" trap.
-docker build ${YU15_PLATFORM:+--platform ${YU15_PLATFORM}} -f "${OM}/Dockerfile.cluster" \
+# DOCKER_NO_CACHE=1 forces a fresh image CONFIG, not just fresh layers, and it exists for one
+# reason: `Created` is a lie on a cache hit. A rebuild whose jar is byte-identical to an image
+# already in the daemon reuses that image wholesale and KEEPS ITS ORIGINAL Created timestamp — so
+# yu13-stp-and-replace's freshness guard, which compares the boundary images' Created against the
+# generated sources' mtimes, refuses a pair that was in fact rebuilt seconds ago. Measured
+# 2026-08-25: stp-boundary-fix came back Created 06:17:54Z, identical to :yu17-format8 (the same
+# unmodified tree), against generated sources stamped 06:47Z — the guard called it stale, correctly
+# by its own rule and wrongly about the world. The guard is not the thing to loosen; the build is
+# the thing to make honest.
+docker build ${DOCKER_NO_CACHE:+--no-cache} ${YU15_PLATFORM:+--platform ${YU15_PLATFORM}} -f "${OM}/Dockerfile.cluster" \
   --build-arg JAR_FILE="build/libs/$(basename "${JAR}")" \
   -t "${IMAGE}" "${OM}"
 
