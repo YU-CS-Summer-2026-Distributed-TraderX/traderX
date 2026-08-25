@@ -137,11 +137,39 @@ The issue's closing requirement — *"a collar proof must cover a non-equity ins
 `yu17-option-collar` and `yu17-fnma-collar`, with `yu17-fine-grid` and `yu17-book-retick` covering
 the grid itself and `yu17-retick-determinism` covering cross-member agreement.
 
-**Still open until the mint.** The build is on `YU17-otc-rates` and tagged
-`traderx/cluster-node:yu17-format8`; nothing is deployed, and the five proofs above are red by
-design until the format-8 epoch is minted. Move this file to `issues/resolved/` when they go green —
-and check the commit's stat line when you do, because `git mv` stages the index blob and a resolve
-can otherwise land as a pure rename with the body missing.
+## RESOLVED 2026-08-25 — the format-8 epoch is minted and all five proofs are green
+
+`traderx/cluster-node:yu17-format8` is deployed on `kind-traderx-yu12-cluster`: fresh epoch, members'
+PVCs wiped, all six cluster-node components repinned, `SNAPSHOT_FORMAT` 8 / `MIN_READABLE` 8. The
+guard the collar could not provide now binds, and it binds off each instrument's own reference
+rather than a category constant:
+
+| proof | what it now measures |
+|---|---|
+| `yu17-fnma-collar` | FNMA (~$1.15, the instrument this issue exists for): a 20× order refused `PRICE_COLLAR`, where the inert ±$65.54 equity band admitted it |
+| `yu17-option-collar` | a listed option premium: same 20× refusal, off the live premium — scope decision (e) discharged by the reference-derived map, with no `OPTION_BOOK_TICK_PX` shipped at all |
+| `yu17-fine-grid` | a sub-dollar instrument gets a grid fine enough to quote on: a limit the tick-1000 grid refused as off-grid is admitted at tick 10 |
+| `yu17-book-retick` | the decade crossing end to end: provisional grid `tickPx` 1000 → book empties → tick at $1.15 → re-derive to `tickPx` 10 (`traderx_book_reticks` +1), 20× probe refused `PRICE_COLLAR`, inside-band limit rests |
+| `yu17-retick-determinism` | the re-derivation is replicated, not member-local: exactly one re-derivation counted on each of the three members, digest-identical across a snapshot barrier and a leader kill |
+
+**The re-tick question this issue left open is answered by mechanism, not by acceptance.** The
+scope's §7(f) closing note asked whoever built it to say which way they went — "accept it (an
+instrument that moves 100x needs an epoch) or design the re-tick". It was designed: an empty book
+re-derives its grid on the next admission (`MatchingEngine.rederiveIfEmpty`), so an instrument that
+walks orders of magnitude self-heals at the next quiet moment instead of holding a dead guard until
+the next epoch.
+
+**Gate V4 held on the rig, which is what makes the above a measurement rather than a coincidence.**
+A deliberately-detonated build — today's tree minus the single line `rederiveIfEmpty(book,
+e.securityId);` — was deployed on its own epoch, and `yu17-book-retick` went red on exactly the
+re-derivation step (`SELL @22.00 -> kind=1`, the 20× probe accepted) with `traderx_book_reticks`
+exported and standing at 0 beside `traderx_band_reanchors` at 1: the old mechanism answering because
+the new one was absent.
+
+That detonator run also found two assertions in `yu17-book-retick` that could not discriminate — one
+that could never pass, one that could never fail — both repaired before the mint. Without that, this
+issue would have been closed on a proof whose grid readings were broken. See
+[`the-book-retick-tickpx-assertions-could-neither-pass-nor-fail`](the-book-retick-tickpx-assertions-could-neither-pass-nor-fail.md).
 
 ## Related
 

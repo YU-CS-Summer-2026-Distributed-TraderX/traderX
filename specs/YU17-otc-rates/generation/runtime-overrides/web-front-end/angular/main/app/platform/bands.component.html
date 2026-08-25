@@ -1,0 +1,43 @@
+<div class="platform-page p-4">
+    <h2>Price bands</h2>
+    <p class="text-muted small mb-3">
+        Per security, the prices the engine accepted against the prices it refused. A refusal inside
+        the accepted range means the band is not what refused it.
+    </p>
+
+    <button class="btn btn-sm btn-outline-primary mb-3" type="button" (click)="load()" [disabled]="loading">
+        {{ loading ? 'Reading journal...' : 'Refresh' }}
+    </button>
+
+    <div class="alert alert-warning py-2 px-3" *ngIf="error">
+        Cannot read the regulatory journal: {{ error }}
+    </div>
+
+    <div class="table-responsive" *ngIf="!error">
+        <table class="table table-sm table-striped align-middle">
+            <thead>
+                <tr>
+                    <th>Security</th>
+                    <th>Verdict</th>
+                    <th class="text-end">Accepted</th>
+                    <th class="text-end">Accepted range</th>
+                    <th class="text-end">Refused</th>
+                    <th class="text-end">Refused range</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr *ngFor="let c of checks">
+                    <td>{{ c.security }}</td>
+                    <td><span class="status-pill" [ngClass]="verdictClass(c.verdict)">{{ verdictText(c.verdict) }}</span></td>
+                    <td class="text-end">{{ c.accepted }}</td>
+                    <td class="text-end">{{ c.accepted ? (c.acceptedLo | number:'1.2-4') + ' - ' + (c.acceptedHi | number:'1.2-4') : '-' }}</td>
+                    <td class="text-end">{{ c.rejected }}</td>
+                    <td class="text-end">{{ c.rejectedLo | number:'1.2-4' }} - {{ c.rejectedHi | number:'1.2-4' }}</td>
+                </tr>
+                <tr *ngIf="checks.length === 0">
+                    <td colspan="6" class="text-muted">No refusals on record for this epoch.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>

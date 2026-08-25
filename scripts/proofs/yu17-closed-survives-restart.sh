@@ -111,6 +111,10 @@ ok "control: SELL @${PROBE_PX} rests and cancels while OPEN"
 
 echo "--- 1. CLOSE, and confirm the refusal BEFORE the restart"
 RESP="$(set_phase CLOSED)"; [[ "${RESP%% *}" == 2* ]] || fail "CLOSED answered ${RESP%% *}"
+# The sequence the halt landed at. This is the gate step 3 waits on — see await_member_restored in
+# lib-consensus-readings.sh for why "wait until ready" and "retry until it answers" are both wrong.
+HALT_SEQ="$(field "${RESP#* }" sequence)"
+[[ "${HALT_SEQ}" =~ ^[0-9]+$ ]] || fail "POST /session did not return the sequence its halt landed at (got '${RESP#* }') — without it the post-restart read cannot be gated on the member having replayed the halt, and every reading after the restart is a race"
 PHASE_TOUCHED=1
 REFS0="$(quiesced_order_refs)"; T0="$(quiesced_trades)"
 P1="$(order Sell "${PROBE_PX}" pre)"
@@ -125,15 +129,14 @@ echo "--- 2. snapshot barrier"
 snapshot_barrier
 
 echo "--- 3. restart member ${MEMBER}"
+# The uid is captured BEFORE the delete on purpose: `ready` stays true on the terminating pod for
+# several seconds, so the old wait-for-ready loop broke instantly and read a dead container.
+OLD_UID="$(member_pod_uid "${MEMBER}")"
+[[ -n "${OLD_UID}" ]] || fail "could not read member ${MEMBER}'s pod uid before the restart"
 "${K[@]}" delete pod "order-matcher-cluster-${MEMBER}" --wait=false >/dev/null
-sleep 5
-for i in $(seq 1 90); do
-  [[ "$("${K[@]}" get pod "order-matcher-cluster-${MEMBER}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)" == "true" ]] && break
-  sleep 2
-done
-[[ "$("${K[@]}" get pod "order-matcher-cluster-${MEMBER}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)" == "true" ]] \
-  || fail "member ${MEMBER} did not come back ready within 180s"
-ok "member ${MEMBER} restarted and is ready"
+await_member_restored "${MEMBER}" "${OLD_UID}" "${HALT_SEQ}" 300 \
+  || fail "member ${MEMBER} did not come back and replay past the halt sequence ${HALT_SEQ} within 300s — this is a restart that did not complete, NOT a verdict about whether the phase survived it"
+ok "member ${MEMBER} restarted and has replayed past the halt (sequence ${HALT_SEQ})"
 
 echo "--- 4. it came back CLOSED"
 for m in 0 1 2; do

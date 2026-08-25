@@ -41,7 +41,7 @@ TICKER="${TICKER:-PQO$(date +%H%M%S)}"
 SEED_PX="${SEED_PX:-150}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
-red() { echo "[RED] $*  <- EXPECTED RED until the format-8 mint (design §5)"; }
+red() { echo "[RED] $*  <- the pre-mint defect, banked against :yu17-markwait2 (design §5)"; }
 field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''))" <<<"$1"; }
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
@@ -156,7 +156,7 @@ case "${EXPECT}" in
     # is absent". Ordering is what guarantees the reader sees the behaviour first.
     # From the library, never hand-rolled: see the header.
     assert_order_effects "${REFS0}" "${REFS1}" 3 "${T0}" "${T1}" 0 "orders queued during PRE_OPEN"
-    [[ "${QD}" == "3" ]] || fail "nothing traded, but queueDepth reads '${QD:-<absent>}', not 3 — EXPECTED RED until the format-8 mint (design §5): scope §1.7 requires the depth beside the phase, and without it a halt is not a named log position"
+    [[ "${QD}" == "3" ]] || fail "nothing traded, but queueDepth reads '${QD:-<absent>}', not 3 — scope §1.7 requires the depth beside the phase, and without it a halt is not a named log position"
     ok "nothing traded while queued: 3 orders sequenced, 0 trade legs, queueDepth 3"
     # decision (g): the queued order must be visible OUTSIDE the engine, and as QUEUED — not
     # missing, and not indistinguishable from a live resting order.
@@ -223,9 +223,9 @@ fi
 # Deferred from steps 0 and 2: the phase surface must EXIST. Asserted last so the stillness verdict
 # above is always the red a reader sees first, and an API-shaped red can never stand in for it.
 if [[ "${EXPECT}" == "after" ]]; then
-  [[ -n "${PHASE0}" ]] || fail "the member's /health reports no phase/queueDepth — EXPECTED RED until the format-8 mint (design §5), scope §1.7"
+  [[ -n "${PHASE0}" ]] || fail "the member's /health reports no phase/queueDepth — scope §1.7 requires both"
   (( PHASE_TOUCHED == 1 )) || [[ "${CODE}" == "2"* ]] \
-    || fail "POST /session answered ${CODE} — EXPECTED RED until the format-8 mint (design §5): TYPE_SESSION_CONTROL and its gateway route do not exist on this build"
+    || fail "POST /session answered ${CODE} — format 8 ships TYPE_SESSION_CONTROL and its gateway route (design §5)"
 fi
 
 for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
@@ -237,7 +237,7 @@ for i in $(seq 1 45); do
   D0="$(digest 0)"; D1="$(digest 1)"; D2="$(digest 2)"
   if [[ "${D0}" =~ ^[0-9]+\ -?[0-9]+$ && "${D0}" == "${D1}" && "${D1}" == "${D2}" ]]; then
     ok "all three members agree on the book digest: ${D0}"
-    [[ "${EXPECT}" == "before" ]] && { echo; echo "[RED] yu17-preopen-queue-open: the red half is BANKED. EXPECTED RED until the format-8 mint (design §5)."; }
+    [[ "${EXPECT}" == "before" ]] && { echo; echo "[RED] yu17-preopen-queue-open: the red half is BANKED against :yu17-markwait2 (design §5)."; }
     exit 0
   fi
   sleep 2

@@ -104,7 +104,7 @@ case "${EXPECT}" in
     ok "the defect, live: a ${TICKER} limit at ${PX20} (~20x the ${REF} reference) RESTS today (ack reason byte: none — accepted)"
     ;;
   after)
-    [[ "${PROBE_KIND}" == "2" ]] || { CLEANUP_REFS+=("$(field "${PROBE}" orderRef)"); fail "the 20x probe was ACCEPTED (kind=${PROBE_KIND}) — EXPECTED RED until the format-8 mint (design §5): this build's collar admits it. ${PROBE}"; }
+    [[ "${PROBE_KIND}" == "2" ]] || { CLEANUP_REFS+=("$(field "${PROBE}" orderRef)"); fail "the 20x probe was ACCEPTED (kind=${PROBE_KIND}) — the format-8 collar must refuse it (design §5). ${PROBE}"; }
     [[ "${PROBE_REASON}" == "PRICE_COLLAR" ]] \
       || fail "refused, but by the WRONG gate: engine ack reason byte says ${PROBE_REASON:-<none>}, not PRICE_COLLAR — a vacuous red, not the band"
     ok "the 20x probe is refused PRICE_COLLAR by the engine — the band binds at ±\$0.655"

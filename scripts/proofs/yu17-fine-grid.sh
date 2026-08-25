@@ -99,7 +99,7 @@ case "${EXPECT}" in
     ;;
   after)
     [[ "${FINE_KIND}" == "1" ]] \
-      || fail "${P_FINE} was refused (kind=${FINE_KIND} reason=${FINE_REASON:-<none>}) — EXPECTED RED until the format-8 mint (design §5): the tick-10 grid it needs does not exist on this build"
+      || fail "${P_FINE} was refused (kind=${FINE_KIND} reason=${FINE_REASON:-<none>}) — the format-8 price-derived grid must admit it at tick 10 (design §5)"
     CLEANUP_REFS+=("$(field "${FINE}" orderRef)")
     ROW="$(bbo_row "${TICKER}")"
     python3 -c "import sys; sys.exit(0 if abs(float('${ROW%% *}' or 0) - ${P_FINE}) < 1e-7 else 1)" 2>/dev/null \

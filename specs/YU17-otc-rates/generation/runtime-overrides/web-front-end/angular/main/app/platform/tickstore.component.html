@@ -1,0 +1,33 @@
+<div class="platform-page p-4">
+    <h2>Tick capture</h2>
+    <p class="text-muted small mb-3">
+        The kdb tap, per cluster member. Members see the same committed output, so captures should agree.
+    </p>
+
+    <button class="btn btn-sm btn-outline-primary mb-3" type="button" (click)="load()" [disabled]="loading">
+        {{ loading ? 'Reading...' : 'Refresh' }}
+    </button>
+
+    <div class="alert alert-warning py-2 px-3" *ngIf="error">
+        Cannot read the capture tap: {{ error }}
+    </div>
+
+    <div class="alert alert-danger py-2 px-3" *ngIf="!error && uneven">
+        Some members captured and others did not.
+    </div>
+
+    <div class="table-responsive" *ngIf="!error">
+        <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>Member</th><th>Capture</th></tr></thead>
+            <tbody>
+                <tr *ngFor="let m of members">
+                    <td>{{ m.member }}</td>
+                    <td class="small font-monospace">{{ m.capture || 'none' }}</td>
+                </tr>
+                <tr *ngIf="members.length === 0">
+                    <td colspan="2" class="text-muted">No members reported.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</div>

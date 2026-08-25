@@ -269,3 +269,60 @@ assert_band_effects() { # <r-before> <c-before> <r-after> <c-after> <reanchors-e
     || fail "${what}: ${wc} resting order(s) should have been stranded by the re-anchor, ${ca} - ${cb} =
   $(( ca - cb )) were (stranded_cancels ${cb} -> ${ca})."
 }
+
+# --- reading a member that has just been restarted ---------------------------------------------
+#
+# A PROOF THAT RESTARTS A MEMBER AND THEN READS IT IMMEDIATELY IS READING THE WRONG THING TWICE.
+# Both traps measured 2026-08-25 on the format-8 mint, against a rig behaving correctly:
+#
+#   1. `kubectl get pod -o jsonpath='{...containerStatuses[0].ready}'` IS STILL TRUE FOR THE POD
+#      YOU JUST DELETED. For ~6s after `delete pod --wait=false` the API still serves the
+#      TERMINATING pod's status, so a `wait until ready` loop breaks instantly, and the `exec`
+#      that follows lands on a container that is going away:
+#          2s ready=true  execrc=4 phase=<none>     <- the OLD pod, still "ready"
+#          4s ready=true  execrc=4 phase=<none>
+#          8s ready=false execrc=1 phase=<none>     <- now the new one is starting
+#      The empty read then renders as `phase=<absent>`, which reads like "the phase was lost" and
+#      is really "nobody answered". That is how yu17-closed-survives-restart and
+#      yu17-halt-survives-failover both failed on their FIRST EVER live run, on a build whose
+#      phase machine was working.
+#
+#   2. ONCE IT DOES ANSWER, `phase` IS READABLE BEFORE IT IS CORRECT. A member that has not yet
+#      replayed the session command serves the FRESH-EPOCH DEFAULT, which is OPEN (scope decision
+#      a). Measured, venue CLOSED throughout:
+#          14s phase=OPEN    engineApplied=-1
+#          ...  (24 seconds of OPEN on a halted venue)
+#          38s phase=CLOSED  engineApplied=-1       <- converged
+#      So "retry until it answers" turns the assertion into a coin flip, and "retry until it says
+#      CLOSED" deletes the assertion entirely — it could then never fail.
+#
+# THE GATE THAT IS NEITHER: wait until the member has APPLIED THE SEQUENCE THAT CARRIED THE HALT.
+# POST /session returns it ({"phase":"CLOSED","sequence":2229}), and `applied` is the same counter.
+# A member past that sequence has replayed the command; if it still reads OPEN, the phase genuinely
+# did not survive and the proof must go red. The check keeps its teeth.
+#
+# The old pod's uid is required, not optional: the OLD pod had already applied the halt sequence,
+# so `applied >= seq` alone is satisfied by the container you are trying to get rid of — trap 1
+# wearing trap 2's clothes. Capture the uid BEFORE deleting.
+
+member_pod_uid() { # member_pod_uid <member-ordinal>
+  _k get pod "order-matcher-cluster-${1}" -o jsonpath='{.metadata.uid}' 2>/dev/null
+}
+
+await_member_restored() { # await_member_restored <member> <old-pod-uid> <sequence> [timeout-seconds]
+  local m="${1:?member ordinal}" old="${2:?old pod uid}" seq="${3:?sequence}" timeout="${4:-240}"
+  local waited=0 uid ap
+  while (( waited < timeout )); do
+    uid="$(member_pod_uid "${m}")"
+    if [[ -n "${uid}" && "${uid}" != "${old}" ]]; then
+      ap="$(applied_seq "${m}")"
+      if [[ "${ap}" =~ ^[0-9]+$ ]] && (( ap >= seq )); then
+        echo "    member-${m} restored: new pod, applied ${ap} >= halt sequence ${seq} (${waited}s)"
+        return 0
+      fi
+    fi
+    sleep 2; waited=$((waited + 2))
+  done
+  echo "    member-${m} did NOT reach applied >= ${seq} within ${timeout}s (uid=${uid:-<none>} applied=${ap:-<none>})"
+  return 1
+}

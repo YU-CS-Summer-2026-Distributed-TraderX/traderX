@@ -38,7 +38,7 @@ TICKER="${TICKER:-SES$(date +%H%M%S)}"
 SEED_PX="${SEED_PX:-150}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
-red() { echo "[RED] $*  <- EXPECTED RED until the format-8 mint (design §5)"; }
+red() { echo "[RED] $*  <- the pre-mint defect, banked against :yu17-markwait2 (design §5)"; }
 field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''))" <<<"$1"; }
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
@@ -136,7 +136,7 @@ case "${EXPECT}" in
     CLEANUP_REFS+=("$(field "${PROBE}" orderRef)")
     red "THE OBSERVABLE DEFECT: with the venue supposed to be CLOSED, the probe was ACCEPTED, kind 1 (orderRef $(field "${PROBE}" orderRef)) and RESTS. Ack reason byte: none — accepted. Claim says MARKET_CLOSED." ;;
   after)
-    [[ "${PROBE_KIND}" == "2" ]] || { CLEANUP_REFS+=("$(field "${PROBE}" orderRef)"); fail "the probe was ACCEPTED (kind=${PROBE_KIND}) while CLOSED — EXPECTED RED until the format-8 mint (design §5). ${PROBE}"; }
+    [[ "${PROBE_KIND}" == "2" ]] || { CLEANUP_REFS+=("$(field "${PROBE}" orderRef)"); fail "the probe was ACCEPTED (kind=${PROBE_KIND}) while CLOSED — format 8 must refuse it MARKET_CLOSED (design §5). ${PROBE}"; }
     [[ "${PROBE_REASON}" == "MARKET_CLOSED" ]] \
       || fail "refused, but by the WRONG gate: the engine ack reason byte says '${PROBE_REASON:-<none>}', not MARKET_CLOSED. The control at this exact price rested moments ago, so this is not the collar and not a risk cap — a session rejection that arrives wearing another gate's reason is the audit-surface defect ADR-069 forbids"
     ok "the probe is refused MARKET_CLOSED by the engine (ack byte 22), distinct from PRICE_COLLAR and from every risk reason" ;;
@@ -163,12 +163,34 @@ CLEANUP_REFS=("${CLEANUP_REFS[@]:1}")   # the control is gone; do not re-cancel 
 # a session, and a booking is a durable contract on a shared epoch — so on the before arm this is
 # recorded as not-run rather than mutating the epoch to learn nothing.
 if [[ "${EXPECT}" == "after" ]]; then
+  # THE PAYLOAD IS THE ONE THE GATEWAY ACTUALLY TAKES, and it was not before.
+  #
+  # This arm posted {"payFixed":true,"currency":"USD","tenorMonths":60} — a shape POST /swaps has
+  # never accepted. `ClusterGatewayMain`'s handler requires accountId, payReceive ("Pay"|"Receive"),
+  # notional, fixedRate, effectiveDate, maturityDate and conventions, and 400s on the first one
+  # missing. So the booking came back {"error":"payReceive required"} and the arm failed — on every
+  # build, since long before the mint. It went unnoticed because the `before` arm records decision
+  # (d) as NOT EXERCISED rather than running it, so the format-8 mint (2026-08-25) was the first
+  # time this line ever executed.
+  #
+  # What made the failure expensive is the message, not the payload: "the session halted bilateral
+  # desk business, which §7d says it must not" reported a SESSION defect from a 400 that a field
+  # name caused, and would have done so identically on a perfectly correct phase machine. The
+  # request is now the same shape yu17-swap-netting books with (that proof passes, which is what
+  # identified the drift), and the failure text below distinguishes the two causes.
   BEFORE="$(quiesced_seq)"
   SW="$(curl -s -m20 -X POST "${MATCHER_URL}/swaps" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${ACCT},\"notional\":1000000,\"fixedRate\":0.04,\"payFixed\":true,\"currency\":\"USD\",\"tenorMonths\":60}")"
+    -d "{\"clientOrderId\":\"${TICKER}-SWAP\",\"accountId\":${ACCT},\"payReceive\":\"Pay\",\"notional\":1000000,\"fixedRate\":0.04,\"effectiveDate\":\"2026-08-17\",\"maturityDate\":\"2031-08-17\",\"conventions\":\"USD-SOFR-1Y-ACT360\"}")"
   AFTER="$(quiesced_seq)"
   CID="$(field "${SW}" contractId)"
-  [[ -n "${CID}" ]] || fail "decision (d): the swap booking returned no contract while CLOSED (${SW}) — the session halted bilateral desk business, which §7d says it must not"
+  # A 400 naming a field is THIS SCRIPT being wrong about the API; anything else while CLOSED is
+  # the claim failing. Conflating them is what cost the mint run an hour.
+  if [[ -z "${CID}" ]]; then
+    case "${SW}" in
+      *required*|*"must be"*) fail "decision (d): POST /swaps REFUSED THE REQUEST, not the booking (${SW}) — this is a malformed swap payload in this proof, NOT the session halting bilateral business. Fix the payload against ClusterGatewayMain's required list; do not read it as a §7d verdict." ;;
+      *) fail "decision (d): the swap booking returned no contract while CLOSED (${SW}) — the session halted bilateral desk business, which §7d says it must not" ;;
+    esac
+  fi
   assert_sequenced_in_window "${BEFORE}" "${AFTER}" "swap-while-closed=${CID}"
   ok "decision (d): a swap booked and reached consensus (contract ${CID}) while the venue's book is CLOSED"
 else
@@ -192,15 +214,15 @@ CLEANUP_REFS=()
 # a reader sees first, and an API-shaped red can never stand in for it.
 if [[ "${EXPECT}" == "after" ]]; then
   [[ -n "${PHASE0}" ]] \
-    || fail "the member's /health reports no phase — EXPECTED RED until the format-8 mint (design §5): scope §1.7 requires phase and queueDepth beside /bbo, and decision (a) is unverifiable without it"
+    || fail "the member's /health reports no phase — scope §1.7 requires phase and queueDepth beside /bbo, and decision (a) is unverifiable without it"
   (( PHASE_TOUCHED == 1 )) || [[ "${CODE}" == "2"* ]] \
-    || fail "POST /session answered ${CODE} — EXPECTED RED until the format-8 mint (design §5): TYPE_SESSION_CONTROL and its gateway route do not exist on this build"
+    || fail "POST /session answered ${CODE} — format 8 ships TYPE_SESSION_CONTROL and its gateway route (design §5)"
 fi
 for i in $(seq 1 30); do
   D0="$(digest 0)"; D1="$(digest 1)"; D2="$(digest 2)"
   if [[ "${D0}" =~ ^[0-9]+\ -?[0-9]+$ && "${D0}" == "${D1}" && "${D1}" == "${D2}" ]]; then
     ok "all three members agree on the book digest: ${D0}"
-    [[ "${EXPECT}" == "before" ]] && { echo; echo "[RED] yu17-session-closed-rejects: the red half is BANKED. EXPECTED RED until the format-8 mint (design §5)."; }
+    [[ "${EXPECT}" == "before" ]] && { echo; echo "[RED] yu17-session-closed-rejects: the red half is BANKED against :yu17-markwait2 (design §5)."; }
     exit 0
   fi
   sleep 2

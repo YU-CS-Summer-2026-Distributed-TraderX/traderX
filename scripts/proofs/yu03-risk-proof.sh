@@ -87,7 +87,31 @@ ctl(){ # $1=label  $2=endpoint  $3=json body   (control-plane mutations must ans
     FAILED=$((FAILED + 1))
   fi
 }
-BAC='{"accountId":52355,"security":"BAC","side":"Buy","quantity":11,"limitPrice":40}'
+# BAC IS PRICED OFF THE LIVE FEED, NOT A LITERAL. It used to rest at a literal 40, seeded at 40.
+# That was safe only while the band was +/-$65.54 wide. Format 8 derives BAC's grid from its own
+# reference (~$43 -> tick 100), which narrows the band to +/-$6.55, and the feed adapter has been
+# re-sequencing the publisher's BAC since 2026-08-24 -- so the literal became a bet that the
+# publisher's walk stays inside [33.45, 46.55], about $4.85 of headroom against the committed
+# close of 41.70. A coin flip per week, and it would surface as a PRICE_COLLAR rejection on the
+# arm that expects NEW: the collar being right, blamed on the restriction control.
+# (specs/YU17-otc-rates/system/format-8-producer-sweep.md section 1)
+#
+# Reading the publisher directly is the same source seed-proof-fixtures.sh's live_px uses, via the
+# 18100 forward run-proofs.sh owns. Standalone with no forward it falls back to the old literal,
+# which is no worse than what this line said before.
+PUB=${PRICE_PUBLISHER_URL:-http://localhost:18100}
+BAC_PX="$(curl -s -m8 "$PUB/prices" 2>/dev/null \
+  | python3 -c 'import sys,json
+try:
+    for q in json.load(sys.stdin)["prices"]:
+        if q["ticker"] == "BAC" and q.get("price", 0) > 0:
+            print(q["price"]); break
+    else:
+        print(40)
+except Exception:
+    print(40)' 2>/dev/null)"
+[[ "${BAC_PX}" =~ ^[0-9.]+$ ]] || BAC_PX=40
+BAC="{\"accountId\":52355,\"security\":\"BAC\",\"side\":\"Buy\",\"quantity\":11,\"limitPrice\":${BAC_PX}}"
 IBM='{"accountId":22214,"security":"IBM","side":"Buy","quantity":10,"limitPrice":190}'
 
 # On the cluster tier an account and a security only exist once they have been sequenced, and an
@@ -100,8 +124,14 @@ IBM='{"accountId":22214,"security":"IBM","side":"Buy","quantity":10,"limitPrice"
 # IBM and then order BAC at 40, which worked only because the band ignored the seed and anchored
 # on the first limit. Since ADR-066 the band is centred on the seeded reference, so a BAC seeded
 # at 200 refuses 40 as PRICE_COLLAR (160 off) — which is the collar being right about a wrong seed.
+#
+# CORRECTED 2026-08-25 (format-8 mint): the sentence above said the seed PINS the reference. The
+# feed adapter revoked that on 2026-08-24 — it re-sequences the publisher's price within one flush,
+# so for a ticker the publisher quotes, the seed is a starting point the feed then walks away from.
+# That is why BAC is priced off the publisher above rather than seeded at a number of our choosing;
+# IBM at 200 survives because the mint leaves its ±$65.54 band alone and Δ ≤ 15.4 fits inside it.
 for acct in 52355 22214; do
-  for pair in IBM:200 BAC:40; do
+  for pair in IBM:200 "BAC:${BAC_PX}"; do
     curl -s -m8 -o /dev/null -X POST "$U/seed" -H "Content-Type: application/json" \
       -d "{\"accountId\":$acct,\"tickers\":\"${pair%%:*}\",\"price\":${pair##*:}}" || true
   done

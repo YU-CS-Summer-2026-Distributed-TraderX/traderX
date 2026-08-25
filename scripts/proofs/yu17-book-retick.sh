@@ -102,7 +102,13 @@ case "${EXPECT}" in
     [[ "${ROW}" != *'"tickPx"'* ]] || fail "current build should have NO tickPx surface, but /bbo says: ${ROW} — already on the format-8 build? run EXPECT=after"
     ok "rests on the (invisible) global grid — no tickPx surface today: ${ROW}" ;;
   after)
-    [[ "${ROW}" == *'"tickPx":1000'* ]] || fail "no tickPx:1000 on the /bbo row — EXPECTED RED until the format-8 mint (design §5): the tickPx surface and re-derivation ship with the mint; got: ${ROW}"
+    # READ THE VALUE, DO NOT SUBSTRING THE ROW. This was `${ROW} == *'"tickPx":1000'*` and could
+    # never match: bbo_json builds the row with json.dumps' DEFAULT separators, which emit
+    # `"tickPx": 1000` WITH a space. The after arm was therefore unsatisfiable — it went red on the
+    # pre-mint build for the right reason and would have gone red on the minted build too, saying
+    # the same thing. Found 2026-08-25 by the on-rig detonator run this proof's header demands,
+    # which is the only thing that could have found it.
+    [[ "$(field "${ROW}" tickPx)" == "1000" ]] || fail "the /bbo row does not carry tickPx 1000 — format 8 exports the provisional grid on /bbo (design §5); got: ${ROW}"
     ok "rests on the provisional grid, visibly: ${ROW}" ;;
   *) fail "EXPECT must be before|after" ;;
 esac
@@ -145,7 +151,10 @@ O3="$(order Buy "${IN_PX}")"
 CLEANUP_REFS+=("$(field "${O3}" orderRef)")
 if [[ "${EXPECT}" == "after" ]]; then
   ROW="$(bbo_json)"
-  [[ "${ROW}" == *'"tickPx":10'* ]] || fail "after the re-derivation /bbo must show tickPx:10; got: ${ROW}"
+  # EXACT, NOT A PREFIX. This was `${ROW} == *'"tickPx":10'*`, which is a substring of
+  # `"tickPx":1000` — so the single assertion that had to catch a book whose grid never re-derived
+  # was satisfied by exactly that book. Vacuous in the direction that mattered.
+  [[ "$(field "${ROW}" tickPx)" == "10" ]] || fail "after the re-derivation /bbo must show tickPx 10; got: ${ROW}"
   T2="$(metric 0 traderx_book_reticks)"
   [[ "${T2}" -eq "${T1}" ]] || fail "an admission that does not change the tick must not count as a retick (${T1} -> ${T2})"
   ok "admits at the new scale, visibly (tickPx 10), and the counter counts only CHANGED ticks"

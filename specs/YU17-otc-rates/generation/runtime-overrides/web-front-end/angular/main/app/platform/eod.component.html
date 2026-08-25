@@ -1,0 +1,61 @@
+<div class="platform-page p-4">
+    <h2>End of day</h2>
+    <p class="text-muted small mb-3">
+        The four stages are one pipeline. Each stage reads in the light of the one before it.
+    </p>
+
+    <div class="row g-2 align-items-end mb-3">
+        <div class="col-auto">
+            <label class="form-label small mb-1" for="eodDate">Session date</label>
+            <input id="eodDate" type="date" class="form-control form-control-sm" [(ngModel)]="date" name="eodDate">
+        </div>
+        <div class="col-auto">
+            <button class="btn btn-sm btn-outline-primary" type="button" (click)="load()" [disabled]="loading">
+                {{ loading ? 'Loading...' : 'Load' }}
+            </button>
+        </div>
+        <div class="col-auto" *ngIf="businessDate">
+            <span class="small text-muted">Rig business date: <strong>{{ businessDate }}</strong></span>
+        </div>
+    </div>
+
+    <div class="alert alert-warning py-2 px-3" *ngIf="chainError">
+        Cannot read the chain: {{ chainError }}
+    </div>
+
+    <div class="table-responsive" *ngIf="!chainError">
+        <table class="table table-sm table-striped align-middle">
+            <thead>
+                <tr><th>Stage</th><th>State</th><th>Detail</th><th class="text-end">Rows</th></tr>
+            </thead>
+            <tbody>
+                <tr *ngFor="let s of stages">
+                    <td>{{ s.name }}</td>
+                    <td><span class="status-pill" [ngClass]="stageClass(s.stage)">{{ s.stage.state || '-' }}</span></td>
+                    <td class="small">{{ s.stage.detail || '-' }}</td>
+                    <td class="text-end">{{ s.stage.rows != null ? s.stage.rows : '-' }}</td>
+                </tr>
+                <tr *ngIf="stages.length === 0">
+                    <td colspan="4" class="text-muted">No chain for this date.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <h4 class="mt-4">Cut provenance</h4>
+    <p class="text-muted small">Cuts written to the archive bucket, newest first.</p>
+
+    <div class="alert alert-warning py-2 px-3" *ngIf="cutsError">
+        Cannot list the archive: {{ cutsError }}
+    </div>
+
+    <div class="table-responsive" *ngIf="!cutsError">
+        <table class="table table-sm table-striped align-middle">
+            <thead><tr><th>Object</th></tr></thead>
+            <tbody>
+                <tr *ngFor="let c of cuts"><td class="small font-monospace">{{ c }}</td></tr>
+                <tr *ngIf="cuts.length === 0"><td class="text-muted">No cuts in the archive.</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>

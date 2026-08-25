@@ -74,13 +74,21 @@ The other twelve disrupt nothing.
   applied since it started: members 0 and 1 read 2 where member 2, restarted 61 minutes later, read
   4 — on a cluster in perfect agreement on the book digest. Cross-member equality of the absolutes
   is a false assertion; the per-member *delta* is the replicated one.
-- **Some proofs are RED ON PURPOSE until the format-8 mint.** The eight `yu17-*` format-8 proofs
-  (`fnma-collar`, `option-collar`, `fine-grid`, `book-retick`, `retick-determinism`,
-  `session-closed-rejects`, `preopen-queue-open`, plus the two `DESTRUCTIVE=0` durability ones)
-  default to `EXPECT=after`, which states the POST-mint claim. Every red line they print ends
-  `EXPECTED RED until the format-8 mint (design §5)`. That text is the tell: it is a banked red
-  half, not a regression to chase. Run `EXPECT=before` to see the defect measured on the current
-  build instead.
+- **The format-8 proofs are GREEN as of the mint (2026-08-25) — the deliberate-red convention has
+  retired.** The nine `yu17-*` format-8 proofs (`fnma-collar`, `option-collar`, `fine-grid`,
+  `book-retick`, `retick-determinism`, `session-closed-rejects`, `preopen-queue-open`,
+  `halt-survives-failover`, `closed-survives-restart`) default to `EXPECT=after` and that is now
+  simply the claim, asserted normally: **a red is a regression to chase, like any other.** The
+  `EXPECTED RED until the format-8 mint (design §5)` text those proofs used to print is gone from
+  all of them. `EXPECT=before` still re-measures the defect against a pre-mint build and remains
+  the banked red half; its lines now say so (`banked against :yu17-markwait2`) rather than
+  implying a mint that has not happened.
+- **The two durability proofs need arming.** `yu17-halt-survives-failover` and
+  `yu17-closed-survives-restart` default to `DESTRUCTIVE=0` and SKIP: every step of each is the
+  destructive part (one kills a leader, the other restarts a member), so there is no safe prefix.
+  Run them `DESTRUCTIVE=1 EXPECT=after`. `yu17-closed-survives-restart` also takes `MEMBER=` — the
+  default `2` exercises the restore path only, and the **leader** must be run separately because
+  that additionally triggers an election.
 - **`yu08-algo-slicing` poisons every counter-exact proof.** It starts continuous algo traffic, and
   `yu13-readmodel-effect-end` asserts `next_order_ref` moves by *exactly 2*. The algo engine has
   been observed moving it by 24 mid-proof, failing a proof about a system that was behaving
@@ -238,6 +246,30 @@ scripts and hardened so every claim hard-fails. Each injects `EOD_UNIVERSE` and 
 | [`seed-option-chain.sh`](seed-option-chain.sh) | YU14 setup + smoke: seeds the packaged listed-equity-option chain into the running gateway and smoke-proves one option cross books. (Setup helper for the two proofs below.) | `SeedOptionChainTest` / gateway option-cross tests |
 | [`yu15-option-persistence.sh`](yu15-option-persistence.sh) | Listed options reach the SQL read model, and the shipped migration fixes a database created by an older state. | `RiskExtractTest`, `TradeProcessorPersistenceIT` (integration) |
 | [`yu15-risk-extract.sh`](yu15-risk-extract.sh) | The EOD risk-extract acceptance proof end-to-end: sequenced cut, byte-identical across members, quiescence, write-once (gs://-aware on GKE). | `RiskExtractTest`, `RiskReplayDeterminismTest`, `RiskExtractGcsSinkLiveProofTest` |
+
+### Session phase machine & price-derived grid (YU17, format 8)
+
+The nine proofs that rode the `SNAPSHOT_FORMAT` 7 → 8 mint. Every one was written **before** the
+build, run red against `:yu17-markwait2` to bank its red half, and turned green by the mint on
+2026-08-25. `EXPECT=after` is the default on all nine, so the suite states the post-mint claim;
+`EXPECT=before` re-measures the defect on a pre-mint build and is the banked half.
+
+| Script | What it proves | CI counterpart |
+|---|---|---|
+| [`yu17-session-closed-rejects.sh`](yu17-session-closed-rejects.sh) | The venue can be **CLOSED**, and a CLOSED venue refuses an order `kind 2 / MARKET_CLOSED` — while a **cancel still succeeds** (decision (c): a cancel only ever reduces exposure) and an **OTC swap booking still completes** (decision (d): the halt is the venue's book, not bilateral desk business). `/health` carries `phase`, `POST /session` carries the command. | `SessionPhaseGateTest`, `SessionSnapshotRestoreTest` |
+| [`yu17-preopen-queue-open.sh`](yu17-preopen-queue-open.sh) | **PRE_OPEN queues without trading**: three orders that would cross are held (`queueDepth` 3, trade counter flat across a window in which exactly those three were sequenced), then the open releases them and they match. A close with a non-empty queue **cancels the queue** with `SESSION_CANCELED` (decision (b)), and the queued rows render as `QUEUED` in the read model (decision (g)). | `SessionPhaseGateTest`, `QueuedOrderSizingTest` |
+| [`yu17-halt-survives-failover.sh`](yu17-halt-survives-failover.sh) | **A halt a failover cannot bypass.** CLOSE the venue, kill the leader, and the new leader is still CLOSED — the phase rides `T_SESSION` through the election, not the dead leader's memory. `DESTRUCTIVE=1` required; every step is the destructive part. | `SessionSnapshotRestoreTest` |
+| [`yu17-closed-survives-restart.sh`](yu17-closed-survives-restart.sh) | **A halt a restart cannot bypass.** CLOSE the venue, restart a member, and it restores CLOSED with its queue intact — the phase and the queue are snapshot records, not process state. Run against a follower (`MEMBER=2`, restore only) **and against the leader** (election *and* restore). `DESTRUCTIVE=1` required. | `SessionSnapshotRestoreTest`, `SnapshotCompletenessAuditTest` |
+| [`yu17-book-retick.sh`](yu17-book-retick.sh) | **The empty-book re-derivation, end to end across a decade crossing.** A ticker minted with no price rests on the provisional grid (`/bbo` `tickPx` 1000); the book empties; a tick at $1.15 crosses decades; the next admission **re-derives** (`traderx_book_reticks` +1) and the 20× probe is refused `PRICE_COLLAR` while a limit inside the new band rests at `tickPx` 10. Gate V4's detonator target — see [the assertion issue](../../issues/resolved/the-book-retick-tickpx-assertions-could-neither-pass-nor-fail.md) for why its two grid readings had to be repaired first. | `PriceDerivedGridTest`, `LimitBookRetickTest`, `BookGridDerivationTest` |
+| [`yu17-retick-determinism.sh`](yu17-retick-determinism.sh) | A re-derivation is **replicated, not local**: the re-tick survives a leader kill and all three members agree on the book digest afterwards, with the per-member `traderx_book_reticks` delta identical. The counter is a lifetime, per-process field, so the reading is a delta — never an absolute. | `PriceDerivedGridTest`, `GridRestoreFormatTest` |
+| [`yu17-fine-grid.sh`](yu17-fine-grid.sh) | A sub-dollar instrument gets a **grid fine enough to quote on**: a limit the pre-mint tick-1000 grid refused as off-grid is admitted at tick 10. | `BookGridDerivationTest` |
+| [`yu17-fnma-collar.sh`](yu17-fnma-collar.sh) | The collar **binds on FNMA** (~$1.15, the instrument the mint scope §7(f) exists for): a 20× order is refused `PRICE_COLLAR` where the inert ±$65.54 equity band admitted it. | `PriceDerivedGridTest`, `BookGridDerivationTest` |
+| [`yu17-option-collar.sh`](yu17-option-collar.sh) | The collar **binds on a listed option premium**: same 20× refusal, off the option's live premium rather than a category constant — scope decision (e), discharged by the reference-derived map rather than an `OPTION_BOOK_TICK_PX`. | `BookGridDerivationTest`, `AllocationGateTest` |
+
+**Not yet tabulated**: the seven `yu16-*` proofs and `yu17-band-follows-market`,
+`yu17-swap-netting`, `yu17-swaption-terms`, `yu17-fx-credit`, `yu17-keyed-ack-correlation` have no
+rows here. They predate this section and belong to other lanes' work; the gap is recorded rather
+than silently filled.
 
 ### Observability (OTEL-01)
 

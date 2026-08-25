@@ -119,6 +119,11 @@ ok "control: the ticker trades at ${SEED_PX} while OPEN"
 
 echo "--- 1. PRE_OPEN, and a queue built in a known order"
 RESP="$(set_phase PRE_OPEN)"; [[ "${RESP%% *}" == 2* ]] || fail "PRE_OPEN answered ${RESP%% *}"
+# The sequence the halt landed at — step 4's gate. See await_member_restored in
+# lib-consensus-readings.sh: reading a just-killed member's phase without it is a race in both
+# directions (no answer, then the fresh-epoch default OPEN, before the replayed value).
+HALT_SEQ="$(field "${RESP#* }" sequence)"
+[[ "${HALT_SEQ}" =~ ^[0-9]+$ ]] || fail "POST /session did not return the sequence its halt landed at (got '${RESP#* }') — without it the post-failover read cannot be gated on the restarted member having replayed the halt"
 PHASE_TOUCHED=1
 REFS0="$(quiesced_order_refs)"; T0="$(quiesced_trades)"
 A1="$(order "${ACCT}"  Buy  10 "${SEED_PX}" a1)"; A1_REF="$(field "${A1}" orderRef)"
@@ -140,14 +145,21 @@ snapshot_barrier
 echo "--- 3. kill the leader"
 LDR="$(leader)" || fail "no leader found"
 echo "    killing leader member ${LDR}"
+# Captured BEFORE the delete: the terminating pod keeps reporting ready for several seconds, which
+# is what made the old loop exit immediately and exec into a container that was going away.
+OLD_UID="$(member_pod_uid "${LDR}")"
+[[ -n "${OLD_UID}" ]] || fail "could not read leader ${LDR}'s pod uid before the kill"
 "${K[@]}" delete pod "order-matcher-cluster-${LDR}" --wait=false >/dev/null
 for i in $(seq 1 90); do
-  NEW="$(leader || true)"
-  [[ -n "${NEW}" && "$("${K[@]}" get pod "order-matcher-cluster-${LDR}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)" == "true" ]] && break
+  NEW="$(leader || true)"; [[ -n "${NEW}" && "${NEW}" != "${LDR}" ]] && break
   sleep 2
 done
-[[ -n "${NEW:-}" ]] || fail "no leader re-elected and member ${LDR} ready within 180s"
+[[ -n "${NEW:-}" && "${NEW}" != "${LDR}" ]] || fail "no NEW leader re-elected within 180s (leader reads '${NEW:-<none>}') — the failover did not happen, so nothing below is a verdict about the halt"
 ok "leader ${LDR} killed; leader is now ${NEW}"
+# The killed member has to be back AND past the halt before step 4 reads its phase, or the read is
+# a race rather than a measurement.
+await_member_restored "${LDR}" "${OLD_UID}" "${HALT_SEQ}" 300 \
+  || fail "member ${LDR} did not come back and replay past the halt sequence ${HALT_SEQ} within 300s — an incomplete restart, NOT a verdict about whether the halt survived the failover"
 
 echo "--- 4. the halt survived, on EVERY member — including the one that came back from disk"
 for m in 0 1 2; do

@@ -49,7 +49,7 @@ spec:
           # unchanged: this is still a post-B build and never mixes with a pre-B one.
                     # `:yu17-tick` (2026-08-24): `:yu17-band` plus FeedAdapterMain only (envelope parse +
           # session keepalive); gateway classes byte-identical. See the note in statefulset.yaml.
-          image: traderx/cluster-node:yu17-bbo
+          image: traderx/cluster-node:yu17-format8
           imagePullPolicy: IfNotPresent
           command:
             - java

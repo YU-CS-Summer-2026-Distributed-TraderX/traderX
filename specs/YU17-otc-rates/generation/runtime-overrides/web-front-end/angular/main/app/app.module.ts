@@ -1,0 +1,36 @@
+/**
+ * YU17: pulled into this layer to register PlatformModule — the read-model views this state added.
+ * Nothing else about the upstream module is changed.
+ */
+import { BrowserModule } from '@angular/platform-browser';
+import { NgModule } from '@angular/core';
+import { AppComponent } from './app.component';
+import { TradeModule } from './trade/trade.module';
+import { provideHttpClient, withInterceptorsFromDi, withJsonpSupport } from '@angular/common/http';
+import { CommonModule } from '@angular/common';
+import { AgGridModule } from 'ag-grid-angular';
+import { HeaderComponent } from './header/header.component';
+import { AccountsModule } from './accounts/accounts.module';
+import { RouterModule } from '@angular/router';
+import { routes } from './routing';
+import { PageNotFoundComponent } from './page-not-found.component';
+import { OrderAdminComponent } from './admin/order-admin.component';
+import { AlertModule } from 'ngx-bootstrap/alert';
+import { PlatformModule } from './platform/platform.module';
+
+@NgModule({
+    declarations: [AppComponent, HeaderComponent, PageNotFoundComponent, OrderAdminComponent],
+    bootstrap: [AppComponent],
+    imports: [
+        BrowserModule,
+        CommonModule,
+        TradeModule,
+        AccountsModule,
+        AgGridModule,
+        AlertModule.forRoot(),
+        PlatformModule,
+        RouterModule.forRoot(routes)
+    ],
+    providers: [provideHttpClient(withInterceptorsFromDi(), withJsonpSupport())]
+})
+export class AppModule { }

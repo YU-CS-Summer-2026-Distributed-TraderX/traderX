@@ -197,11 +197,36 @@ echo "[seed] ${TICKER} @ ${PX} for account ${SEEDED_ACCOUNT} (fresh ticker: no t
 # verdict about the order path when it is a statement about this line. The guard further down
 # ("the negative case would be vacuous") does catch it, so nothing passes wrongly, but it names the
 # wrong suspect and costs a diagnosis. Observed 2026-08-14 on YU16 in exactly that shape.
-SEED_CODE="$(curl -s -m20 -o /tmp/yu13-otel-seed -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
-  -H 'Content-Type: application/json' \
-  -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" || echo 000)"
+# `rollout status` ON THE STATEFULSET RETURNS BEFORE THE CLUSTER CAN SEQUENCE A WRITE.
+#
+# The pods are Ready — the readiness probe is /ready on 8080, which the member's HTTP server
+# answers as soon as it is listening — but a member that has just restarted has not rejoined
+# consensus, and a /seed is a symbol REGISTRATION that has to go through it. The gateway's own
+# /ready says {"connected":true} the whole time, so nothing in the readiness path is lying; it is
+# simply not answering the question this line needs answered.
+#
+# Measured 2026-08-25, members rolled and nothing else, seeding at fixed offsets after
+# `rollout status` returned:
+#     +0s   {"error":"TimeoutException"}
+#     +10s  {"seeded":true}      (and +20s, +30s, +60s)
+# so the window is under ten seconds and this proof lands inside it every time — it failed on three
+# consecutive runs, always here, always with the gateway's generic 503 catch-all
+# ({"error":"ExecutionException"} / {"error":"TimeoutException"}, which is `e.getClass()
+# .getSimpleName()` and logs nothing, so the gateway log is silent).
+#
+# RETRYING IS HONEST HERE, and only here: this is FIXTURE SETUP, not an assertion. The proof makes
+# no claim about how quickly a seed lands, and the hard failure below still stands if the cluster
+# never accepts it. The retry absorbs the measured window; it does not weaken anything.
+for _try in $(seq 1 15); do
+  SEED_CODE="$(curl -s -m20 -o /tmp/yu13-otel-seed -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+    -H 'Content-Type: application/json' \
+    -d "{\"accountId\":${SEEDED_ACCOUNT},\"tickers\":\"${TICKER}\",\"price\":${PX}}" || echo 000)"
+  [[ "${SEED_CODE}" == 2* ]] && break
+  [[ "${_try}" == 1 ]] && echo "    seed refused (HTTP ${SEED_CODE} $(cat /tmp/yu13-otel-seed 2>/dev/null)) — the members were rolled; waiting for the cluster to accept writes again"
+  sleep 4
+done
 if [[ "${SEED_CODE}" != 2* ]]; then
-  echo "[FAIL] the seed did not take: HTTP ${SEED_CODE} $(cat /tmp/yu13-otel-seed 2>/dev/null)" >&2
+  echo "[FAIL] the seed did not take after 60s of retries: HTTP ${SEED_CODE} $(cat /tmp/yu13-otel-seed 2>/dev/null)" >&2
   echo "       Everything below asserts on an account and a security this was supposed to create," >&2
   echo "       so it would report UNKNOWN_ACCOUNT / UNKNOWN_SECURITY as if the order path were at" >&2
   echo "       fault. 000 = nothing answered at ${MATCHER_URL} at all — the transport," >&2

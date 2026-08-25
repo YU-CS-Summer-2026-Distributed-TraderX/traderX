@@ -1,0 +1,59 @@
+<div class="platform-page p-4">
+    <h2>Cluster</h2>
+    <p class="text-muted small mb-3">
+        The Aeron cluster that sequences every order. Refreshes every 5s.
+    </p>
+
+    <div class="mb-3">
+        <span class="status-pill me-2"
+              [ngClass]="{ 'bg-success': agreement.state === 'agreed',
+                           'bg-danger': agreement.state === 'split',
+                           'bg-secondary': agreement.state === 'unknown' }">
+            {{ agreement.state === 'agreed' ? 'AGREED' : agreement.state === 'split' ? 'SPLIT' : 'UNKNOWN' }}
+        </span>
+        <span class="small text-muted">{{ agreement.detail }}</span>
+        <button class="btn btn-sm btn-outline-primary ms-3" type="button" (click)="refresh()">Refresh now</button>
+    </div>
+
+    <div class="alert alert-warning py-2 px-3" *ngIf="error">
+        Cannot read the cluster: {{ error }}
+    </div>
+
+    <div class="alert alert-danger py-2 px-3" *ngIf="!error && leaders.length > 1">
+        {{ leaders.length }} members claim to be leader.
+    </div>
+
+    <div class="table-responsive" *ngIf="!error">
+        <table class="table table-sm table-striped align-middle">
+            <thead>
+                <tr>
+                    <th>Member</th>
+                    <th>Role</th>
+                    <th>Started</th>
+                    <th class="text-end">Applied</th>
+                    <th class="text-end">Engine applied</th>
+                    <th class="text-end">Trades</th>
+                    <th class="text-end">Snapshots</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr *ngFor="let m of members" [ngClass]="rowClass(m)">
+                    <td>{{ m.ordinal }}</td>
+                    <td>{{ m.role || '-' }}</td>
+                    <td>{{ m.started ? 'yes' : 'no' }}</td>
+                    <td class="text-end">{{ m.applied }}</td>
+                    <td class="text-end">{{ m.engineApplied }}</td>
+                    <td class="text-end">{{ m.trades }}</td>
+                    <td class="text-end">{{ m.snapshots }}</td>
+                </tr>
+                <tr *ngIf="members.length === 0">
+                    <td colspan="7" class="text-muted">No members reported.</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <p class="text-muted small" *ngIf="lastRefreshUtc">
+        Last refresh {{ lastRefreshUtc | date:'HH:mm:ss':'UTC' }} UTC
+    </p>
+</div>

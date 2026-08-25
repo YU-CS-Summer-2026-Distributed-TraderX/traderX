@@ -38,13 +38,26 @@ IN_PX="${IN_PX:-1.10}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }
 field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''))" <<<"$1"; }
+# Step 4 reads the trade counter through assert_order_effects rather than trusting the REST ack's
+# kind — see the block there. The library is the only place a proof takes a consensus reading from
+# (scripts/proofs/README.md); it uses this script's fail/ok and resolves K itself.
+here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 metric() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk -v k="$2" 'index($1, k"{")==1 || $1==k {print $2}'; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
-order() { # account side price
+# THE TAG IS NOT DECORATION — WITHOUT IT STEP 6 IS AN IDEMPOTENT REPLAY OF STEP 3.
+# The clientOrderId was "${TICKER}-<side>-<price>", and steps 3 and 6 both submit
+# `order ${ACCT} Buy ${IN_PX}` — byte-identical, so the same id. The gateway dedups on
+# clientOrderId (that is what yu13-clordid-suppression proves), so step 6 never submitted an order
+# at all: it replayed step 3's ref and step 3's TERMINAL verdict, which step 4 had turned into
+# FILLED. It surfaced as `post-failover BUY @1.10 did not rest: {"orderRef":32,"kind":4}` — an
+# order that "filled" against an empty book. The arm could never have passed, and worse, it never
+# exercised the post-failover re-anchor it exists to test. Found 2026-08-25, the first run that
+# ever reached step 6 (step 3's reticks assertion blocked it on every pre-mint build).
+order() { # account side price [tag]  -- tag disambiguates otherwise-identical submissions
   curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-$2-$3\"}"; }
+    -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":10,\"limitPrice\":$3,\"clientOrderId\":\"${TICKER}-$2-$3${4:+-$4}\"}"; }
 CLEANUP_REFS=()
 cleanup() { local r; for r in ${CLEANUP_REFS[@]+"${CLEANUP_REFS[@]}"}; do
   curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":${r}}" >/dev/null || true
@@ -96,7 +109,10 @@ SEEDED="$(curl -s -m20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: applicati
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${SEED_PX}}")"
 [[ "${SEEDED}" == *'"seeded":true'* ]] || fail "seed did not take: ${SEEDED}"
 
+# PER-MEMBER BASELINES, because the assertion below is a DELTA. See the block at step 3.
 T0_0="$(metric 0 traderx_book_reticks || true)"
+T0_1="$(metric 1 traderx_book_reticks || true)"
+T0_2="$(metric 2 traderx_book_reticks || true)"
 echo "--- 3. first admission after the tick: BUY @${IN_PX} rests (format 8: this is the retick)"
 O2="$(order "${ACCT}" Buy "${IN_PX}")"
 [[ "$(field "${O2}" kind)" == "1" ]] || fail "BUY @${IN_PX} did not rest: ${O2}"
@@ -105,11 +121,29 @@ if [[ "${EXPECT}" == "after" ]]; then
   sleep 2   # followers apply the committed tail
   RT0="$(metric 0 traderx_book_reticks)"; RT1="$(metric 1 traderx_book_reticks)"; RT2="$(metric 2 traderx_book_reticks)"
   [[ -n "${RT0}" ]] \
-    || fail "no traderx_book_reticks counter on this build — EXPECTED RED until the format-8 mint (design §5): the re-derivation and its counter ship with the mint"
-  [[ "${RT0}" =~ ^[0-9]+$ && "${RT0}" == "${RT1}" && "${RT1}" == "${RT2}" ]] \
-    || fail "members disagree the retick happened: reticks [${RT0}] [${RT1}] [${RT2}] — a member-local grid is the §2.3.3 divergence"
-  [[ "${T0_0}" =~ ^[0-9]+$ && "${RT0}" -gt "${T0_0}" ]] || fail "no retick was counted (${T0_0} -> ${RT0}) on the first post-tick admission"
-  ok "all three members counted the same retick (${RT0})"
+    || fail "no traderx_book_reticks counter on this build — format 8 exports it beside traderx_band_reanchors (design §5)"
+  # DELTAS, NOT ABSOLUTES — and this proof already said so at step 6 before it did the opposite here.
+  #
+  # `traderx_book_reticks` is a plain in-process field on MatchingEngine, never snapshotted, so a
+  # member's ABSOLUTE reading is a function of how much log THAT PROCESS has applied since it
+  # started. Any member restarted since the epoch began (this proof's own step 5 kills one, and the
+  # durability proofs restart others) legitimately reads lower for ever after. Measured 2026-08-25,
+  # on a cluster in perfect digest agreement, the run after a leader kill:
+  #     reticks [4] [1] [4]   <- member 1 had restarted; nothing was wrong
+  # so `RT0 == RT1 == RT2` was a check that cannot pass against a CORRECT system. Same defect,
+  # same counter family and same fix as
+  # issues/resolved/the-band-follows-market-guard-asserts-absolute-counters-and-cannot-fail.md.
+  # The replicated reading is the per-member DELTA: every member applies the same commands, so each
+  # must count EXACTLY ONE re-derivation across this admission — `>= 1` would pass on a book that
+  # re-ticked twice, which is the §2.3.3 divergence this arm exists to exclude.
+  for _m in 0 1 2; do
+    _b="T0_${_m}"; _a="RT${_m}"
+    [[ "${!_b}" =~ ^[0-9]+$ && "${!_a}" =~ ^[0-9]+$ ]] \
+      || fail "member-${_m} reticks unreadable (${!_b:-<none>} -> ${!_a:-<none>}) — a proof that cannot read the counter it asserts on has measured nothing"
+    (( ${!_a} - ${!_b} == 1 )) \
+      || fail "member-${_m} counted $(( ${!_a} - ${!_b} )) re-derivation(s) across the first post-tick admission, not exactly 1 (${!_b} -> ${!_a}). Deltas on all three: [$((RT0-T0_0))] [$((RT1-T0_1))] [$((RT2-T0_2))]. A member that re-derives a different number of times than its peers holds a member-local grid — the §2.3.3 divergence."
+  done
+  ok "all three members counted exactly one re-derivation (deltas [$((RT0-T0_0))] [$((RT1-T0_1))] [$((RT2-T0_2))]; absolutes [${RT0}] [${RT1}] [${RT2}] differ legitimately by restart history)"
 fi
 agree "the post-tick admission"
 
@@ -125,9 +159,31 @@ if [[ "${DESTRUCTIVE}" != "1" ]]; then
 fi
 
 echo "--- 4. trade: ${ACCT2} SELL @${IN_PX} crosses the resting bid"
+# A FILL IS READ OFF THE TRADE COUNTER, NOT OFF THE REST ACK'S KIND.
+#
+# This asserted kind 3/4 (PARTIALLY_FILLED/FILLED) and could never pass. The gateway completes a
+# pipelined /orders response on the FIRST direct ack carrying the request id, and a crossing order
+# emits ACCEPTED *then* its per-match-step FILLs — all in one apply, all under one id — so the
+# fills "find the entry already gone and are ignored" (ClusterGatewayMain, the onDirectAck block).
+# kind 1 on a fully-filled aggressor is the DESIGNED answer, not a missed match.
+#
+# Measured 2026-08-25 on the minted rig, both books, both crossing and both booking two legs:
+#     retick'd sub-dollar book (tick 10):  ack {"orderRef":26,"kind":1}   trades 12 -> 14
+#     ordinary $150 book       (tick 1000): ack {"orderRef":28,"kind":1}   trades 14 -> 16
+# so it is not retick-specific and never was — this arm simply never ran until the mint, because
+# step 3's reticks assertion failed first on every pre-mint build.
+#
+# The trade counter is the reading scripts/proofs/README.md prescribes for exactly this, and
+# assert_order_effects brackets it with the order-ref generator so the delta is attributable to
+# THIS proof's orders rather than to the feed or another writer.
+REFS_B="$(quiesced_order_refs)"; TRD_B="$(quiesced_trades)"
 O3="$(order "${ACCT2}" Sell "${IN_PX}")"
 O3_KIND="$(field "${O3}" kind)"
-[[ "${O3_KIND}" == "3" || "${O3_KIND}" == "4" ]] || { CLEANUP_REFS+=("$(field "${O3}" orderRef)"); fail "the cross did not fill (kind=${O3_KIND}): ${O3}"; }
+[[ "${O3_KIND}" != "2" ]] || { fail "the crossing SELL was REFUSED (kind=2 reason=$(field "${O3}" reason)): ${O3}"; }
+REFS_A="$(quiesced_order_refs)"; TRD_A="$(quiesced_trades)"
+# one order submitted, two trade legs (both sides of one match) — exact, not >=.
+assert_order_effects "${REFS_B}" "${REFS_A}" 1 "${TRD_B}" "${TRD_A}" 2 \
+  "the crossing SELL @${IN_PX} on the re-ticked book"
 CLEANUP_REFS=()   # both sides are terminal now
 agree "the trade"
 
@@ -145,7 +201,7 @@ done
 ok "leader ${LDR} killed and recovered; leader now ${NEW}"
 
 echo "--- 6. re-anchor after the failover: a far-but-market-backed order still answers identically"
-O4="$(order "${ACCT}" Buy "${IN_PX}")"
+O4="$(order "${ACCT}" Buy "${IN_PX}" postfailover)"
 [[ "$(field "${O4}" kind)" == "1" ]] || fail "post-failover BUY @${IN_PX} did not rest: ${O4}"
 CLEANUP_REFS+=("$(field "${O4}" orderRef)")
 C="$(curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' -d "{\"orderRef\":$(field "${O4}" orderRef)}")"

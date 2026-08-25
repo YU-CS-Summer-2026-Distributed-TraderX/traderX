@@ -1,6 +1,6 @@
 # Scoping: the SNAPSHOT_FORMAT 7 → 8 mint
 
-**Status: BUILT 2026-08-25 (chip 3), NOT MINTED.** The contents below are implemented on `YU17-otc-rates` and tagged `traderx/cluster-node:yu17-format8`; the epoch wipe is chip 4's. See §8 for what was built, what the build corrected, and what chip 4 must still do. Originally written as scoping only: Written 2026-08-24 against the YU17 tip, after
+**Status: MINTED 2026-08-25 (chip 4).** The contents below are implemented on `YU17-otc-rates`, tagged `traderx/cluster-node:yu17-format8`, and **deployed on a fresh epoch** on `kind-traderx-yu12-cluster` — all six cluster-node components (three members, gateway, feed-adapter, risk-extract) repinned, members' PVCs wiped, `SNAPSHOT_FORMAT` 8 / `MIN_READABLE_SNAPSHOT_FORMAT` 8 live. See §9 for the mint's results, including the gate V4 detonator and the two durability proofs that had never been executed. Originally written as scoping only: Written 2026-08-24 against the YU17 tip, after
 yaakov's six ADR decisions of the same day. Two deterministic-core changes share one epoch mint
 (ADR-069, "Epoch consequence"): the **pre-open phase machine** (ADR-069 decisions 3+4) and the
 **collar band-width fix** (`issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`).
@@ -426,19 +426,134 @@ about un-anchored books is false in this code (they ARE snapshotted), which mean
 determinism premise is subsumed by the storage decision rather than provided by the re-derivation;
 and `decadeTickPx` takes its cap as a parameter.
 
-**What chip 4 (the mint) still owes, beyond the wipe itself:**
+**What chip 4 (the mint) owed, and how each was discharged — see §9 for the measurements:**
 
-- **the read-model DATABASE must be recreated with the epoch, not just the PVCs.** `QUEUED` is a new
-  value in the `orderbook.status` CHECK constraint, which lives in
-  `kubernetes-runtime/manifests/base/database-init-configmap.yaml` (copied up to YU17) and only
-  runs when the DB initialises an empty data directory. On a DB that keeps its old schema the
-  constraint REFUSES every queued order's row, and `yu17-preopen-queue-open`'s decision-(g)
-  assertion fails for a reason that has nothing to do with the engine;
-- **the on-rig half of gate V4** — `yu17-book-retick` run red against a deployed detonator image;
-- the destructive proofs (`yu17-halt-survives-failover`, `yu17-closed-survives-restart`) at
-  `DESTRUCTIVE=1 EXPECT=after`, and the eight `EXPECT=after` defaults flipped from red to green;
+- ~~the read-model DATABASE must be recreated with the epoch~~ — **resolved differently, and the
+  recreation must NOT happen.** `orderbook` and `eod_price_snapshot` share one schema, and that
+  table holds ~3,000 rows of genuine EOD closes ADR-069 is built on; dropping the database to
+  re-run the init configmap would take them with it. yaakov applied the widened CHECK constraint
+  in place instead. `rebuild_fresh_epoch` deletes only `pvc -l app=order-matcher-cluster`, so the
+  read-model DB is never in the blast radius. Verified live before and after both wipes;
+- **the on-rig half of gate V4** — discharged, see the design doc §7b V4 and §9 below;
+- the destructive proofs and the deliberate-red retirement — discharged, §9;
 - moving `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md` to
-  `issues/resolved/` once they are green (its body already carries the fold).
+  `issues/resolved/` — done.
+
+## 9. MINTED 2026-08-25 (chip 4) — the epoch, the gates, and five arms that could never pass
+
+**The mint.** Manifest pins moved `:yu17-bbo` → `:yu17-format8` (statefulset, gateway, feed-adapter,
+risk-extract — the four YU17 cluster-node declarations), so `run-proofs.sh`'s image guard was
+satisfied by moving the pins rather than defeated; `ALLOW_IMAGE_CHANGE=1` covered the one deliberate
+build change. Members scaled to zero, `pvc -l app=order-matcher-cluster` deleted, fresh epoch, all
+six cluster-node components repinned. `SNAPSHOT_FORMAT=8`, `MIN_READABLE_SNAPSHOT_FORMAT=8`,
+`MAX_QUEUED_ORDERS=4096`, `KIND_SESSION_PHASE=103`, `STATUS_QUEUED=5` confirmed in the shipped tree.
+
+Three-member agreement immediately after, one capture per member:
+
+```
+applied     10983 / 10983 / 10983
+orderhash   -2949526529971486893   (identical)
+poshash      5017019969314474605   (identical)
+snapshots   5 / 5 / 5
+phase       OPEN / OPEN / OPEN      <- decision (a), on a fresh epoch
+queueDepth  0 / 0 / 0
+```
+
+**The read-model database was NOT recreated, and must not be.** §8's first bullet was wrong about
+the remedy. `orderbook` and `eod_price_snapshot` share one schema and that table holds ~3,000 rows
+of genuine EOD closes; yaakov widened the CHECK constraint in place instead. Verified before the
+first wipe and after both: `status in ('NEW','PARTIALLY_FILLED','FILLED','CANCELED','REJECTED',
+'QUEUED')`, 3022 snapshot rows unchanged, `eod-price-db-data` PVC untouched (age 6d13h against the
+members' 2m58s). `yu17-preopen-queue-open` passes, so the QUEUED write path works end to end.
+
+### Gate V4, on-rig half — DISCHARGED
+
+`traderx/cluster-node:yu17-format8-detonator` = today's tree minus the single line
+`rederiveIfEmpty(book, e.securityId);` in `onNewOrder`, built through `build-cluster-image.sh` with
+`OM_DIR` on a copy so the shared generated tree was never patched, and confirmed a different binary.
+Deployed on its own fresh epoch. `yu17-book-retick EXPECT=after` goes red at **step 5**, the
+re-derivation discriminator — `SELL @22.00 -> kind=1`, the 20× probe ACCEPTED where the minted build
+refuses it PRICE_COLLAR — with `traderx_book_reticks{member="0"} 0` (exported, never moved) beside
+`traderx_band_reanchors{member="0"} 1` (the old mechanism answering). The red is the missing
+mechanism, not a missing counter and not a seeding failure.
+
+### What the mint actually found: FIVE arms that could not pass, in four proofs
+
+Every one had been written before the build and never executed against it, because the pre-mint
+build failed each proof earlier for a *true* reason. This is the argument for gate V4's on-rig half
+having been owed at all — and for running a deliberately-red proof suite green at least once.
+
+| where | the arm | why it could not pass |
+|---|---|---|
+| `yu17-book-retick` step 2 | `${ROW} == *'"tickPx":1000'*` | `bbo_json` uses `json.dumps` default separators — the row says `"tickPx": 1000`, **with a space** |
+| `yu17-book-retick` step 6 | `${ROW} == *'"tickPx":10'*` | `"tickPx":10` is a **prefix of** `"tickPx":1000` — satisfied by the book whose grid never moved (could never *fail*) |
+| `yu17-session-closed-rejects` decision (d) | swap booked while CLOSED | posted `{"payFixed":true,"currency":"USD","tenorMonths":60}`; `/swaps` requires `payReceive`/`effectiveDate`/`maturityDate`/`conventions` and 400s first. Its failure text blamed the **session** for a field-name 400 |
+| `yu17-retick-determinism` step 4 | ack `kind` 3 or 4 on the cross | the gateway completes a pipelined `/orders` on the **first** ack for the request id; a crossing order emits ACCEPTED *then* its fills under one id, so `kind=1` is the designed answer. Measured on a re-ticked *and* an ordinary book: both `kind=1`, both +2 trade legs |
+| `yu17-retick-determinism` step 6 | post-failover BUY must rest | `clientOrderId` was `"${TICKER}-<side>-<price>"`, identical to step 3's — the gateway dedups on it, so step 6 replayed step 3's ref and its *terminal* verdict (FILLED). The arm never submitted an order at all |
+
+A sixth, of the already-known class: `yu17-retick-determinism` step 3 compared `traderx_book_reticks`
+**absolutes** across members. That counter is a per-process field, never snapshotted, so a member
+restarted at any point since the epoch began reads lower for ever — measured `[4] [1] [4]` on a
+cluster in perfect digest agreement. This proof's own step 6 warns against exactly that comparison.
+Now a per-member delta, asserted as **exactly one** re-derivation each:
+`deltas [1] [1] [1]; absolutes [5] [2] [5] differ legitimately by restart history`.
+
+All fixed by parsing the value rather than the rendering, by matching the API the gateway actually
+serves, and by reading the counters the README already prescribes. None was fixed by loosening.
+
+### The two durability proofs, executed for the first time
+
+Both had `DESTRUCTIVE=0` defaults and had never run live. Both failed their first run for the same
+reason and it was not the claim: `kubectl get pod -o jsonpath='{...containerStatuses[0].ready}'`
+**still reports the pod you just deleted as ready**, for about 6 seconds, so the wait loop broke
+instantly and `exec`'d into a dying container — rendering as `phase=<absent>`, which reads like the
+phase was lost and means nobody answered. And once the new pod does answer, `phase` is readable
+before it is *correct*: a member that has not replayed the session command serves the fresh-epoch
+default OPEN. Measured, venue CLOSED throughout: `14s phase=OPEN engineApplied=-1` … 24 seconds of
+it … `38s phase=CLOSED`.
+
+Retrying until it answers makes the assertion a coin flip; retrying until it says CLOSED deletes it.
+The gate that is neither is `await_member_restored` (new `lib-consensus-readings.sh`): wait for a
+**different pod uid** and for the member to have **applied the sequence the halt landed at**, which
+`POST /session` returns. A member past that sequence has replayed the command, so if it still reads
+OPEN the proof must go red. Results:
+
+- `yu17-halt-survives-failover DESTRUCTIVE=1` — PRE_OPEN and `queueDepth` 3 on **all three** members
+  after a snapshot barrier and a leader kill; the open then released the restored queue in insertion
+  order (A1 filled, A2 resting).
+- `yu17-closed-survives-restart DESTRUCTIVE=1` — CLOSED on all three after a **follower** restart
+  (`member-2 restored: applied 3124 >= halt sequence 2852`), and again after a **leader** restart
+  (`applied 3403 >= 3335`), which exercises the election as well as the restore. Same probe, same
+  MARKET_CLOSED, nothing traded.
+
+*A halt a restart can bypass is not a halt* — measured, on both paths.
+
+### The suite's other two reds, neither of them format 8
+
+Both were found by running the suite green for the first time, and neither is a mint defect.
+
+**`yu13-otel-reject-trace-log-join`** — the proof rolls the gateway *and* all three members to set
+`OTEL_SAMPLE_MASK`, then seeds a fixture ticker immediately after `rollout status` returns. That is
+a race, and it is now measured: members rolled and nothing else, seeding at fixed offsets after
+`rollout status` returned — `+0s {"error":"TimeoutException"}`, `+10s` onwards `{"seeded":true}`.
+The window is under ten seconds and the proof lands inside it every time (three consecutive
+reproductions, always the same line). Pods being Ready is a statement about HTTP servers listening,
+not about members having rejoined consensus — the same gap `await_member_restored` exists to close
+for the phase. The fixture seed now retries for 60s; the assertions are untouched. Filed as
+`issues/open/rollout-status-returns-before-the-cluster-can-sequence-a-write.md`, which also records
+that the gateway's 503 catch-all reports `e.getClass().getSimpleName()` and logs nothing, so a
+log capture across all three reproductions caught no exception at all.
+
+**`yu13-stp-and-replace`** — its own preflight refused, correctly: `traderx/cluster-node:
+stp-boundary-pre` was built 2026-08-23 and the generated source has moved since, so the proof would
+have crossed a version boundary that is no longer the system's. Pre-existing drift, unrelated to the
+mint; remedied by `bash scripts/yu15/build-stp-boundary-images.sh`. Worth noting what that rebuild
+now means: both sides of the synthesized pair are built from today's tree, so the boundary it
+crosses is format 8 → format 8 with STP and `/replace` removed on the `pre` side. It is the
+BEHAVIOURAL boundary and nothing else — a real format-and-capacity gap is still uncovered
+(`issues/open/nothing-proves-recovery-across-a-real-format-and-capacity-gap.md`), and format 8's
+`MIN_READABLE_SNAPSHOT_FORMAT = 8` widens that gap rather than narrowing it: no build before this
+one can read a format-8 snapshot, by design.
 
 ## 7. Decisions — SETTLED 2026-08-24 (yaakov)
 
