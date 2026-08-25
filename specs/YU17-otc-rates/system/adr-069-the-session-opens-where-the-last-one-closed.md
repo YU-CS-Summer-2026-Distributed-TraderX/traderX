@@ -482,7 +482,7 @@ exist before the mint, and must be shown to FAIL on the current build.
 
 ## Related
 
-- [ADR-051](../../YU06-eod-price-production/system/adr-051-last-trade-is-the-mark.md) — last trade is
+- [ADR-051](../../YU13-limit-order-book/system/adr-051-last-trade-price-output.md) — last trade is
   the mark. Defines what a close *is*; this ADR reads the result.
 - [ADR-066](adr-066-price-band-follows-the-market.md) — the band follows the reference. The
   re-anchor-at-open consequence above is the interaction between the two.
@@ -491,3 +491,6 @@ exist before the mint, and must be shown to FAIL on the current build.
   publisher is replaced, the opening-price question moves with it rather than disappearing.
 - [ADR-068](adr-068-external-price-sources.md) — pluggable price sources. This ADR adds one rung to
   that hierarchy and inherits rule 1 unchanged.
+- [ADR-070](adr-070-the-tape-is-the-reference.md) — a replayed tape supplies the **real** opens,
+  closes and overnight gaps this ADR's rule is written against, making it checkable rather than
+  merely asserted.

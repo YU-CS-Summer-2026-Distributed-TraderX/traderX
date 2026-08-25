@@ -21,7 +21,7 @@ the fixture seeder, and it is far cheaper to disagree about here than in four la
 |---|---|---|
 | **The random walk** | `price-publisher` mutates a synthetic price and publishes `pricing.<ticker>` | The console, the algo engine, anything reading `/prices` |
 | **The seeded tick** | `POST /seed` sequences a `PRICE_TICK`, which sets `BlpRiskState.lastPrice[]` | The risk gate, and — since ADR-066 — the collar band |
-| **The last trade** | `lastPxBySecurity`, set on every print ([ADR-051](../../YU06-eod-price-production/system/adr-051-last-trade-is-the-mark.md)) | Marks, EOD pricing |
+| **The last trade** | `lastPxBySecurity`, set on every print ([ADR-051](../../YU13-limit-order-book/system/adr-051-last-trade-price-output.md)) | Marks, EOD pricing |
 
 Nothing reconciles them. They are free to drift apart and routinely do.
 
@@ -33,7 +33,7 @@ Nothing reconciles them. They are free to drift apart and routinely do.
 - **A whole break class — "seed price ≠ trade price"** — was found and repaired this week
   (`yu03-risk-proof` seeded BAC at 200 and traded it at 40). It had survived because the band ignored
   the seed entirely. The moment one price source started mattering, the others' disagreement surfaced.
-- **`FeedAdapterMain` — described by [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md)
+- **`FeedAdapterMain` — described by [ADR-045](../../YU12-aeron-cluster/system/adr-045-consensus-log-single-input.md)
   as "the ONLY market-data path into the deterministic core" — has never carried a single tick.** It
   reads `price` at the top level of a message the publisher wraps in `{topic, payload:{…}}`, and its
   own `catch (Exception ignore)` swallows the failure. Measured: 2,862 messages in, zero sequenced.
@@ -151,7 +151,7 @@ version and it is wrong, for three reasons that should be recorded so they are n
    book answers `{"ticker":...,"bid":99.5,"mark":100.0}` with no `ask` key at all.
 3. **Does derived market data go through consensus, or beside it?** — **DECIDED: beside it.** It is a
    *product* of applying the log, so it is emitted on egress without being sequenced. Sequencing it would
-   grow the log for data every member can already compute — the same trap [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md)'s
+   grow the log for data every member can already compute — the same trap [ADR-045](../../YU12-aeron-cluster/system/adr-045-consensus-log-single-input.md)'s
    conflation exists to bound.
    Each member computes it independently and they agree: at one applied position all three answered
    byte-identically across 69 books. The response carries `applied` so a consumer can tell whether two
@@ -169,9 +169,9 @@ version and it is wrong, for three reasons that should be recorded so they are n
 
 ## Related
 
-- [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md) — the feed adapter as the only
+- [ADR-045](../../YU12-aeron-cluster/system/adr-045-consensus-log-single-input.md) — the feed adapter as the only
   market-data path into the core. Its premise is sound; its implementation has never worked.
-- [ADR-051](../../YU06-eod-price-production/system/adr-051-last-trade-is-the-mark.md) — last trade is
+- [ADR-051](../../YU13-limit-order-book/system/adr-051-last-trade-price-output.md) — last trade is
   the mark. This ADR extends rather than supersedes it.
 - [ADR-066](adr-066-price-band-follows-the-market.md) — the band follows the reference. This ADR is
   about making that reference mean something.

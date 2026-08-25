@@ -198,7 +198,7 @@ Two consequences worth stating so they are not discovered later:
   terms change, the system loses realism and nothing else.
 - **Not a route for external data to reach the engine directly.** It reaches it the way everything
   does — published on `pricing.*`, sequenced by the adapter, one path
-  ([ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md)). Two paths into the
+  ([ADR-045](../../YU12-aeron-cluster/system/adr-045-consensus-log-single-input.md)). Two paths into the
   deterministic core is divergence.
 - **Not exchange-calculated indices.** An index derived from *our own book* is
   [ADR-067](adr-067-market-data-derived-from-the-book.md)'s lineage — same rule-based aggregate, same
@@ -260,5 +260,8 @@ Two consequences worth stating so they are not discovered later:
 - [ADR-067](adr-067-market-data-derived-from-the-book.md) — market data derived from the book. This
   ADR supplies the reference tier that one defines.
 - [ADR-066](adr-066-price-band-follows-the-market.md) — the band follows the reference.
-- [ADR-045](../../YU12-aeron-cluster/system/adr-045-feed-adapter.md) — one sequenced path in.
+- [ADR-045](../../YU12-aeron-cluster/system/adr-045-consensus-log-single-input.md) — one sequenced path in.
 - `issues/open/the-cluster-rig-sequences-no-live-ticks.md`
+- [ADR-070](adr-070-the-tape-is-the-reference.md) — fills the **equities / ETFs** row of this ADR's
+  per-class table with a licensed TAQ tape replayed on an epoch clock, and keeps the durability rule
+  above intact by fetching the extract at bring-up rather than committing it.
