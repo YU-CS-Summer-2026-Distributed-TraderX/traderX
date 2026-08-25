@@ -1,7 +1,8 @@
 <div class="platform-page p-4">
     <h2>Tick capture</h2>
     <p class="text-muted small mb-3">
-        The kdb tap, per cluster member. Members see the same committed output, so captures should agree.
+        The kdb tap, per cluster member. Only the leader writes, so row counts differ by design —
+        a header-only file means that member has not led.
     </p>
 
     <button class="btn btn-sm btn-outline-primary mb-3" type="button" (click)="load()" [disabled]="loading">
@@ -12,22 +13,22 @@
         Cannot read the capture tap: {{ error }}
     </div>
 
-    <div class="alert alert-danger py-2 px-3" *ngIf="!error && uneven">
-        Some members captured and others did not.
-    </div>
-
     <div class="table-responsive" *ngIf="!error">
         <table class="table table-sm table-striped align-middle">
-            <thead><tr><th>Member</th><th>Capture</th></tr></thead>
+            <thead><tr><th>Member</th><th>Capture file</th><th class="text-end">Rows</th></tr></thead>
             <tbody>
-                <tr *ngFor="let m of members">
-                    <td>{{ m.member }}</td>
-                    <td class="small font-monospace">{{ m.capture || 'none' }}</td>
+                <tr *ngFor="let f of files">
+                    <td>{{ f.member }}</td>
+                    <td class="small font-monospace">{{ f.file }}</td>
+                    <td class="text-end">{{ f.rows }}</td>
                 </tr>
-                <tr *ngIf="members.length === 0">
-                    <td colspan="2" class="text-muted">No members reported.</td>
+                <tr *ngIf="files.length === 0">
+                    <td colspan="3" class="text-muted">No members reported.</td>
                 </tr>
             </tbody>
+            <tfoot *ngIf="files.length">
+                <tr><th colspan="2">Total captured</th><th class="text-end">{{ totalRows }}</th></tr>
+            </tfoot>
         </table>
     </div>
 </div>

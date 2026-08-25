@@ -36,10 +36,39 @@ export class PlatformService {
         return this.read<EodChain>(`/eod/chain?date=${encodeURIComponent(date)}`);
     }
 
-    /** Cuts written to the archive bucket, newest first. */
+    /**
+     * Objects in the archive bucket, unsorted — the caller decides what "newest" means.
+     *
+     * Deliberately NOT sorted here. A lexicographic sort puts `proof/<millis>/…` above every dated
+     * session prefix, so "newest first" hands back an upload-proof object as the latest cut. That
+     * bug reached the screen once already. Ordering needs the date and version parsed out, which is
+     * `sessionCuts` below.
+     */
     getArchivedCuts(): Observable<Reading<string[]>> {
         return this.read<{ files: string[] }>('/gcs/extracts')
-            .pipe(map(r => r.ok ? ok((r.value.files || []).slice().sort().reverse()) : fail<string[]>(r.error)));
+            .pipe(map(r => r.ok ? ok(r.value.files || []) : fail<string[]>(r.error)));
+    }
+
+    /**
+     * Session cuts newest first, by (date, version) NUMERICALLY — v10 must beat v9, which string
+     * order gets wrong. Upload-proof objects are excluded: they are evidence the bucket is
+     * writable, not a session's cut, and they carry no session date to order by.
+     */
+    static sessionCuts(files: string[]): string[] {
+        return files
+            .filter(f => f.indexOf('/proof/') < 0)
+            .map(f => {
+                const m = /\/(\d{4}-\d{2}-\d{2})\/v(\d+)\//.exec(f);
+                return m ? { f: f, date: m[1], version: Number(m[2]) } : null;
+            })
+            .filter(x => !!x)
+            .sort((a: any, b: any) => b.date === a.date ? b.version - a.version : b.date.localeCompare(a.date))
+            .map((x: any) => x.f);
+    }
+
+    /** Upload proofs, kept separate so they cannot be mistaken for a session's cut. */
+    static proofObjects(files: string[]): string[] {
+        return files.filter(f => f.indexOf('/proof/') >= 0);
     }
 
     /** Cuts on the risk-extract pod's local sink. Empty is NORMAL when the extract writes to a bucket. */

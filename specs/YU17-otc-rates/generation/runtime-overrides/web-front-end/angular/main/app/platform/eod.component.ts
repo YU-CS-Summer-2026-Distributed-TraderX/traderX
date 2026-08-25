@@ -61,7 +61,13 @@ export class EodComponent implements OnInit {
     }
 
     get chainError(): string | null { return this.chain && !this.chain.ok ? this.chain.error : null; }
-    get cuts(): string[] { return this.archived && this.archived.ok ? this.archived.value : []; }
+    /** Session cuts, newest first — proof uploads are listed apart rather than sorted among them. */
+    get cuts(): string[] {
+        return this.archived && this.archived.ok ? PlatformService.sessionCuts(this.archived.value) : [];
+    }
+    get proofs(): string[] {
+        return this.archived && this.archived.ok ? PlatformService.proofObjects(this.archived.value) : [];
+    }
     get cutsError(): string | null { return this.archived && !this.archived.ok ? this.archived.error : null; }
     get businessDate(): string | null {
         return this.chain && this.chain.ok ? (this.chain.value.businessDate || null) : null;
