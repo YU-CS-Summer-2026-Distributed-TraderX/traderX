@@ -195,7 +195,19 @@ else
 
   step "6. the delivered object is immutable"
   ${K} exec "${POD}" -- sh -c "test -f '${BASE}'" || fail "delivered object missing"
-  ${K} exec "${POD}" -- sh -c "cat '${BASE}'" | head -22
+  # `| head -22` KILLED THIS PROOF, and it is a RACE, which is why it had never been noticed. The
+  # delivered CSV is 37 lines; head closes the pipe at 22, and IF kubectl exec is still writing it
+  # takes SIGPIPE, `set -o pipefail` fails the pipeline and `set -e` aborts the script
+  # MID-DISPLAY -- after every assertion in steps 0-5 has passed and before step 7 runs at all.
+  # If kubectl happens to finish first, nothing happens. Two full suite runs an hour apart on
+  # 2026-08-25 went one each way. The losing run's log ends part-way through the header block with
+  # NO [FAIL] line, because the script's own fail() never ran, which reads as a crash in the
+  # extract rather than in the way it is being printed.
+  #
+  # Same family as the `grep -q` trap this suite already knows about: an early-closing consumer
+  # turning a healthy producer into a failed pipeline. A full-read spelling has no early close and
+  # so no signal to inherit, and unlike `|| true` it keeps a genuine exec failure fatal.
+  ${K} exec "${POD}" -- sh -c "cat '${BASE}'" | sed -n '1,22p'
 fi
 
 step "7. reproducible after recovery: restart a member, it replays to ${N}"

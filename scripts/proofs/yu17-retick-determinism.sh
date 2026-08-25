@@ -42,10 +42,17 @@ field() { python3 -c "import sys,json;d=json.load(sys.stdin);print(d.get('$2',''
 # kind — see the block there. The library is the only place a proof takes a consensus reading from
 # (scripts/proofs/README.md); it uses this script's fail/ok and resolves K itself.
 here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
+# `|| true` IS LOAD-BEARING, not sloppiness -- it is the same idiom applied_seq uses in the
+# library next door. Under `set -euo pipefail` a member whose HTTP server is not up yet makes the
+# exec's `wget` exit 4, the pipeline inherits it, and `D0="$(digest 0)"` then EXITS THE SCRIPT --
+# so agree()'s 45-attempt retry loop below, which exists precisely to ride out a member catching
+# up, could never take its second attempt. A reading that aborts the run is not a reading the
+# caller can retry; callers here already validate the SHAPE of what comes back, so an empty answer
+# is handled where it should be.
 metric() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
-  | awk -v k="$2" 'index($1, k"{")==1 || $1==k {print $2}'; }
+  | awk -v k="$2" 'index($1, k"{")==1 || $1==k {print $2}' || true; }
 digest() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
-  | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}'; }
+  | awk '/^traderx_book_open_orders/ {d=$2} /^traderx_book_order_hash/ {h=$2} END {print d, h}' || true; }
 # THE TAG IS NOT DECORATION — WITHOUT IT STEP 6 IS AN IDEMPOTENT REPLAY OF STEP 3.
 # The clientOrderId was "${TICKER}-<side>-<price>", and steps 3 and 6 both submit
 # `order ${ACCT} Buy ${IN_PX}` — byte-identical, so the same id. The gateway dedups on
@@ -190,14 +197,30 @@ agree "the trade"
 echo "--- 5. snapshot barrier, then leader kill mid-sequence"
 snapshot_barrier
 LDR="$(leader)" || fail "no leader found"
-echo "    killing leader member ${LDR}"
+# THE GATE MUST OUTLIVE THE POD IT NAMES. This used to break out of its wait on
+# `get pod order-matcher-cluster-${LDR} ... containerStatuses[0].ready == true`, which is STILL
+# TRUE for ~6s for the pod that was just deleted -- trap 1, written up in
+# lib-consensus-readings.sh. So the loop could return before the REPLACEMENT had even started, and
+# step 6's first `digest ${LDR}` then exec'd into a JVM with no HTTP server yet: `wget` exits 4,
+# and under `set -e` that kills the script before agree()'s own retry loop gets a single turn.
+# Measured 2026-08-25 in a full suite run -- the log ends at step 6's header with one bare
+# `command terminated with exit code 4` and no [FAIL] line, which is the signature.
+#
+# await_member_restored is the gate that cannot do that, and this script already sources it: a
+# DIFFERENT pod uid AND an applied sequence at or past where the cluster stood before the kill.
+# Both halves are needed -- the uid alone lets the outgoing container answer, and the sequence
+# alone is satisfied by the very pod being killed, which had already applied it.
+OLD_UID="$(member_pod_uid "${LDR}")"
+[[ -n "${OLD_UID}" ]] || fail "cannot read member ${LDR}'s pod uid before killing it"
+SURV=$(( (LDR + 1) % 3 ))
+PRE_SEQ="$(applied_seq "${SURV}")"
+[[ "${PRE_SEQ}" =~ ^[0-9]+$ ]] || fail "cannot read the applied sequence on member ${SURV} before the kill (${PRE_SEQ})"
+echo "    killing leader member ${LDR} (cluster at applied ${PRE_SEQ} on member ${SURV})"
 "${K[@]}" delete pod "order-matcher-cluster-${LDR}" --wait=false >/dev/null
-for i in $(seq 1 90); do
-  NEW="$(leader || true)"
-  [[ -n "${NEW}" && "$("${K[@]}" get pod "order-matcher-cluster-${LDR}" -o jsonpath='{.status.containerStatuses[0].ready}' 2>/dev/null)" == "true" ]] && break
-  sleep 2
-done
-[[ -n "${NEW:-}" ]] || fail "no leader re-elected and member ${LDR} ready within 180s"
+await_member_restored "${LDR}" "${OLD_UID}" "${PRE_SEQ}" 300 \
+  || fail "member ${LDR} did not rejoin and reach applied >= ${PRE_SEQ} within 300s"
+NEW="$(leader || true)"
+[[ -n "${NEW}" ]] || fail "no leader re-elected after killing member ${LDR}"
 ok "leader ${LDR} killed and recovered; leader now ${NEW}"
 
 echo "--- 6. re-anchor after the failover: a far-but-market-backed order still answers identically"

@@ -540,7 +540,7 @@ The window is under ten seconds and the proof lands inside it every time (three 
 reproductions, always the same line). Pods being Ready is a statement about HTTP servers listening,
 not about members having rejoined consensus — the same gap `await_member_restored` exists to close
 for the phase. The fixture seed now retries for 60s; the assertions are untouched. Filed as
-`issues/open/rollout-status-returns-before-the-cluster-can-sequence-a-write.md`, which also records
+`issues/resolved/rollout-status-returns-before-the-cluster-can-sequence-a-write.md`, which also records
 that the gateway's 503 catch-all reports `e.getClass().getSimpleName()` and logs nothing, so a
 log capture across all three reproductions caught no exception at all.
 

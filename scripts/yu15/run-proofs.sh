@@ -532,6 +532,19 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- do
   ${K} rollout status deployment/cluster-gateway --timeout=600s >/dev/null \
     || fail_hard "the gateway's rollout did not complete after the epoch mint"
   assert_members_up "${image}"
+  # A /seed through a MISMATCHED gateway is refused for reasons that have nothing to do with
+  # writability -- that refusal is the whole reason stp_borrow_gateway exists -- so the write probe
+  # only speaks when the pair matches. The stp prep mints onto a historical image with the gateway
+  # still on the tip and seeds through a gateway it borrows for the purpose; it takes the else.
+  if [[ "$(gateway_image)" == "$(current_image)" ]]; then
+    await_cluster_writable || fail_hard "the cluster never sequenced a write after the epoch mint --
+       the pods rolled and the members are ready, and the log is empty of any other complaint.
+       This is NOT a fresh epoch anyone can seed; see the last answer printed above."
+  else
+    echo "[epoch] gateway $(gateway_image) does not match members $(current_image): skipping the write"
+    echo "        probe (a mismatched pair refuses every /seed regardless of writability)"
+  fi
+  roll_feed_adapter
 }
 
 # Every member on the target image AND ready — the check `rollout status` returning is not the same
@@ -559,10 +572,136 @@ ${states}"
   return 0
 }
 
+# ---- WHAT "THE EPOCH IS MINTED" HAS TO MEAN, AND TWICE DID NOT --------------------------------
+#
+# `rollout status` returning is a true statement about PODS. The runner has now handed on a rig
+# that satisfied it and was unusable in two different ways, neither of which failed loudly:
+#
+#   1. THE CLUSTER COULD NOT YET SEQUENCE A WRITE. Measured 2026-08-25, members rolled and nothing
+#      else touched, POST /seed at fixed offsets after `rollout status` returned:
+#          +0s {"error":"TimeoutException"}   +10s {"seeded":true}   +20s/+30s/+60s {"seeded":true}
+#      Under ten seconds, reproduced three times. yu13-otel-reject-trace-log-join seeded inside
+#      that window and failed on three consecutive runs, always at the same line.
+#      (issues/resolved/rollout-status-returns-before-the-cluster-can-sequence-a-write.md)
+#
+#   2. THE FEED ADAPTER WAS ASLEEP. It is the third Deployment running the cluster-node image and
+#      a cluster CLIENT exactly as the gateway is, and it got neither the roll the gateway gets
+#      here nor any assertion. Minting an epoch under a live adapter kills its session, it
+#      fail-fasts (deliberately), and CrashLoopBackOff -- already at its 5-MINUTE CAP after a suite
+#      that rolls the members a few times -- then sleeps through the healthy cluster underneath it.
+#      Reproduced 2026-08-25: session lost at 17:00:46, members 3/3 at 17:01:12, and the SAME POD
+#      sat ready=false with no retry attempted until 17:06:14. The suite still went green, because
+#      the proofs that need prices seed their own or run before the adapter dies. So the rig was
+#      handed on with no live price feed and every reading still looking fine, on the state where
+#      the feed is the collar's reference (ADR-066) and the price-derived grid's derivation input.
+#
+#      A rollout restart is the remedy because a NEW POD's backoff starts at ZERO, not because pod
+#      identity matters -- the original issue read it as "only a new pod recovers it" and that is
+#      measurably false (`dirDeleteOnStart(true)` is already set, and a fresh pod against absent
+#      members crash-loops identically). The load-bearing half is the ASSERTION below.
+#      (issues/resolved/a-fresh-epoch-strands-the-feed-adapter-and-only-a-new-pod-recovers-it.md)
+#
+# Both gates below assert the FACT rather than the command returning, and both are satisfiable and
+# refutable: point them at a cluster scaled to zero, or at an adapter that cannot reach the
+# members, and they go red inside their budget. Neither retries an ASSERTION -- they are setup
+# gates on the runner's own claim, and the hard failure stands if the property never arrives.
+
+# Moved up from the gateway-pin block below, which is now not the first caller.
+gateway_image() { ${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
+
+# The write goes through the GATEWAY POD ITSELF (wget on localhost:18110) rather than a port
+# forward: this runs inside rebuild_fresh_epoch, which is called before any forward exists and from
+# the stp wrap, where re-establishing one costs a gateway roll. ZZPROBE9 is the same throwaway
+# ticker the symbol-table probe further down already registers -- one symbol slot serves both, and
+# nothing reads its price.
+await_cluster_writable() { # await_cluster_writable [budget-seconds]
+  local budget="${1:-120}" waited=0 r=""
+  while (( waited < budget )); do
+    r="$(${K} exec deploy/cluster-gateway -- wget -q -O- --header='Content-Type: application/json' \
+      --post-data='{"accountId":42422,"tickers":"ZZPROBE9","price":100}' \
+      http://localhost:18110/seed 2>/dev/null)"
+    if [[ "${r}" == *'"seeded":true'* ]]; then
+      echo "[epoch] cluster sequenced a write ${waited}s after the roll"
+      return 0
+    fi
+    sleep 3; waited=$((waited + 3))
+  done
+  echo "[epoch] cluster never sequenced a write within ${budget}s (last answer: ${r:-nothing})"
+  return 1
+}
+
+# THE ASSERTION IS THE ROUND TRIP, NOT THE POD. "feed-adapter is 1/1 Ready" is the same
+# false-success this whole family is about: the Deployment carries no readinessProbe, so Ready
+# means the container started, and a container that starts and then times out connecting is Ready
+# for its whole doomed life. A `SYMBOL <ticker>=<id>` line is printed only when a registration the
+# adapter OFFERED came back on the EGRESS -- ingress publication connected, command sequenced and
+# committed by the members, ack delivered to this client. Nothing else in that process prints one,
+# and a stranded adapter prints none. On a fresh epoch the symbol table is empty and so is the
+# adapter's own cache, so it re-registers every ticker it has seen: 69 on this rig's published
+# universe. The bar is 20 -- far above "one lucky ack", far enough below 69 that a publisher whose
+# universe shrinks does not turn a real gate into a flake.
+#
+# THE POD UID MUST CHANGE FIRST. `kubectl logs deploy/feed-adapter` during a Recreate roll can
+# still resolve the OUTGOING pod, whose log carries the previous epoch's 69 SYMBOL lines; counting
+# those would pass this gate against an adapter that never reconnected. That is exactly the trap
+# await_member_restored refuses in scripts/proofs/lib-consensus-readings.sh, and it is worth more
+# here than there, because here nothing downstream would ever contradict it.
+roll_feed_adapter() {
+  local replicas old uid name n waited=0
+  replicas="$(${K} get deploy feed-adapter -o jsonpath='{.spec.replicas}' 2>/dev/null)"
+  if [[ -z "${replicas}" ]]; then
+    echo "[epoch] no feed-adapter Deployment on this rig; nothing to restore"
+    return 0
+  fi
+  if [[ "${replicas}" == "0" ]]; then
+    echo "[epoch] feed-adapter is scaled to 0 -- THIS EPOCH HAS NO PRICE FEED (deliberate in the stp prep)"
+    return 0
+  fi
+  # PIN IT HERE, not in the repin block below, because that block runs AFTER the baseline mint and
+  # this gate runs inside it. A cluster client on a different codec generation from the members
+  # cannot round-trip a registration, so a stale adapter would fail this assertion for a reason
+  # that has a one-line remedy and no relation to the fault the assertion exists to catch.
+  local want; want="$(current_image)"
+  if [[ -n "${want}" && "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)" != "${want}" ]]; then
+    echo "[epoch] repinning feed-adapter to ${want} (it tracks the members' build)"
+    ${K} set image deployment/feed-adapter \
+      "$(${K} get deploy feed-adapter -o jsonpath='{.spec.template.spec.containers[0].name}')=${want}" >/dev/null
+  fi
+  old="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
+  ${K} rollout restart deployment/feed-adapter >/dev/null
+  ${K} rollout status deployment/feed-adapter --timeout=600s >/dev/null \
+    || fail_hard "the feed adapter's rollout did not complete after the epoch mint"
+  while (( waited < 240 )); do
+    uid="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.uid}' 2>/dev/null)"
+    name="$(${K} get pod -l app=feed-adapter -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)"
+    if [[ -n "${uid}" && "${uid}" != "${old}" && -n "${name}" ]]; then
+      n="$(${K} logs "${name}" 2>/dev/null | grep -c '^SYMBOL ' || true)"
+      [[ "${n}" =~ ^[0-9]+$ ]] || n=0
+      if (( n >= 20 )); then
+        echo "[epoch] feed adapter sequencing: ${n} symbols round-tripped through consensus (${waited}s)"
+        return 0
+      fi
+    fi
+    sleep 5; waited=$((waited + 5))
+  done
+  fail_hard "the feed adapter is not sequencing after the epoch mint: ${n:-0} symbols registered in
+       240s on pod ${name:-<none>} (want >= 20). Every other reading on this rig looks fine and the
+       suite would go green -- with no live price feed behind the collar's reference or the
+       price-derived grid. See issues/resolved/a-fresh-epoch-strands-the-feed-adapter-*.md"
+}
+
 NEED_FRESH=0
 if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] cluster is on $(current_image); rebuilding on ${BASELINE_IMAGE} at a fresh epoch"
   rebuild_fresh_epoch "${BASELINE_IMAGE}"
+  # SAY SO. Without this the projection-staleness check below runs against the brand-new epoch it
+  # just minted, necessarily fires (engine tradeCounter 0 < the dead epoch's highest trade id in
+  # SQL) and calls rebuild_fresh_epoch a SECOND time -- scale to zero, wait for delete, wipe the
+  # PVCs, scale to three, two 600s rollout waits, gateway restart. Measured three times in a row
+  # during the format-8 mint. The check is right; the question was already answered on this line.
+  # The `if NEED_FRESH == 1` block further down still clears and reseeds the projection, exactly
+  # once. (issues/resolved/the-proof-runner-wipes-the-epoch-twice-on-an-image-change.md)
+  NEED_FRESH=1
   echo "[baseline] cluster now on ${BASELINE_IMAGE}, fresh epoch"
 fi
 
@@ -574,7 +713,6 @@ fi
 # (predates the instrumentOf alias) -- every one reporting a different build's behaviour
 # truthfully. The gateway is stateless, so a mismatch here needs a repin and nothing else: no PVC
 # wipe, no epoch reset, no projection clear.
-gateway_image() { ${K} get deploy cluster-gateway -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null; }
 if [[ "$(gateway_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] gateway is on $(gateway_image); repinning to ${BASELINE_IMAGE}"
   ${K} set image deployment/cluster-gateway \
@@ -805,6 +943,16 @@ for p in "${PROOFS[@]}"; do
     STP_RESTORE_OBS=1
     OBS_EXPECTED=0
 
+    # THE FEED ADAPTER GOES DOWN FOR THE SAME TWO REASONS THE CONTROL FEED DOES, and it is a
+    # cluster client on the TIP build while the members are about to go historical -- the very
+    # mismatch stp_borrow_gateway exists to work around, one Deployment further along. It also
+    # ticks 69 instruments into a log that is supposed to hold only this proof's fixtures. The
+    # restore block below scales it back to 1 BEFORE its rebuild_fresh_epoch, so roll_feed_adapter
+    # brings it up and asserts it is sequencing rather than leaving that to hope.
+    echo "[stp-prep] feed adapter to 0 (tip client, historical members; and this epoch stays minimal)"
+    ${K} scale deploy/feed-adapter --replicas=0 >/dev/null 2>&1 || true
+    ${K} wait --for=delete pod -l app=feed-adapter --timeout=120s >/dev/null 2>&1
+
     echo "[stp-prep] control feed off + fresh epoch minted ON ${STP_IMAGE_PRE}"
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=0 >/dev/null
     # WAIT FOR THE SUBSCRIBER TO ACTUALLY BE GONE BEFORE MINTING THE EPOCH. `set env` starts a
@@ -914,7 +1062,8 @@ for p in "${PROOFS[@]}"; do
     # returns the image it FOUND, which after the prep above is the historical one. Rebuild the
     # epoch on the baseline build before turning the feed back on, or the next 510-security replay
     # lands on a 64-capacity engine.
-    echo "[stp-prep] restoring ${BASELINE_IMAGE} at a fresh epoch, then the control feed"
+    echo "[stp-prep] restoring ${BASELINE_IMAGE} at a fresh epoch, then the feed adapter and control feed"
+    ${K} scale deploy/feed-adapter --replicas=1 >/dev/null 2>&1 || true
     rebuild_fresh_epoch "${BASELINE_IMAGE}" allow-image-change
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
     ${K} rollout restart deploy/cluster-gateway >/dev/null

@@ -129,12 +129,56 @@ spec:
                 secretKeyRef:
                   name: auth-secrets
                   key: jwt-secret
+            # -Daeron.driver.timeout IS THE OTHER HALF OF THE REPLAY PROBLEM, and no probe can reach
+            # it. During the same 4.08M-sequence replay the startupProbe below is sized for, the
+            # Aeron client conductor was starved for 29s and the member exited ITSELF:
+            #   DriverTimeoutException: FATAL - MediaDriver (/dev/shm/aeron-cluster)
+            #     keepalive: age=29052ms > timeout=10000ms   -> "exiting client..." -> exit 70
+            # Two of the three members last exited 70, not 137, which is the tell that this is an
+            # in-JVM starvation bound and not a kubelet kill. A startupProbe cannot help: the
+            # process killed the process.
+            #
+            # The driver here is EMBEDDED (ClusteredMediaDriver, same JVM as the consensus module
+            # and the service container), so this timeout can only ever detect the JVM starving
+            # itself -- the out-of-process driver death it was designed for cannot happen. 10s is
+            # Aeron's default for a driver in another process; 300s is 10x the largest starvation
+            # gap measured, and still well inside the 1800s startup window below, so a member that
+            # is genuinely wedged is still restarted, just not for being busy.
             - name: JAVA_TOOL_OPTIONS
-              value: "-Xms256m -Xmx512m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+              value: "-Xms256m -Xmx512m -Daeron.driver.timeout=300000 --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
           ports:
             - name: health
               containerPort: 8080
               protocol: TCP
+          # A LONG REPLAY IS NOT A HANG, AND LIVENESS ALONE CANNOT TELL THEM APART.
+          #
+          # Measured 2026-08-25 at epoch sequence ~4,079,561: election CANVASS -> CLOSED took 60s
+          # and the first apply landed 270s after that -- ~331s from container start against a
+          # liveness budget of initialDelaySeconds 45 + 20 x 15s = 345s. The members were killed
+          # mid-replay and had to replay the whole log again, which re-incurred the same 331s: a
+          # self-sustaining loop that ran at least 13 hours (restarts 63/59/63, feed-adapter 97).
+          # (issues/resolved/a-large-epochs-replay-outlasts-the-members-liveness-budget.md)
+          #
+          # A startupProbe is the platform's own answer and needs nothing built: while it is
+          # FAILING, liveness and readiness are both SUSPENDED, and liveness only begins once it
+          # has succeeded once. cluster-gateway has carried one since it was written (gateway.yaml,
+          # /live on 18111); the members simply never had one. tcpSocket on 8080 is the right
+          # predicate for the same reason it is the right liveness predicate below -- the kernel
+          # answers from the accept backlog -- and the member's HTTP server does not accept at all
+          # until replay is done, which is precisely the transition this probe has to detect.
+          #
+          # SIZED FROM THE BOUND, NOT FROM TASTE. The archive lives on the 1Gi PVC declared at the
+          # bottom of this file and a framed log entry is 96 bytes, so no epoch this rig can carry
+          # exceeds ~11M entries. Replay ran 4.08M in ~270s (~15k/s), so the LARGEST epoch the PVC
+          # can hold replays in ~12 minutes. 10s x 180 = 1800s is 2.5x that. It bounds STARTUP
+          # only: after the first success the 345s liveness budget below applies unchanged, and a
+          # member that never starts at all is still restarted -- at 30 minutes instead of never.
+          startupProbe:
+            tcpSocket:
+              port: 8080
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 180
           readinessProbe:
             httpGet:
               path: /ready

@@ -38,7 +38,49 @@ quiet feed, not as a dead process.**
 - `kubectl get endpoints order-matcher-cluster` listed all three addresses
 - `kubectl delete pod -l app=feed-adapter` → `1/1 Running`, `restarts=0`, sequencing immediately
 
-So the failure outlived its cause by an unbounded margin, and the repair is a pod delete.
+So the failure outlived its cause by a large margin, and the repair is a pod delete.
+
+## The margin is BOUNDED at five minutes — measured 2026-08-25
+
+"Unbounded" was the reasonable reading on 2026-08-23 and it is wrong; `CrashLoopBackOff` caps its
+backoff at 5 minutes, so the adapter does retry, just rarely enough that nobody waits for it.
+Reproduced by minting a fresh epoch under a live, sequencing adapter and then touching nothing:
+
+```
+17:00:46  session lost -> exit 1
+17:01:12  members 3/3 on the fresh epoch, adapter NOT touched
+17:01:12 .. 17:05:44   ready=false  restarts=6      <- no retry attempted; pod status says why:
+                       state.waiting.reason  CrashLoopBackOff
+                       state.waiting.message back-off 5m0s restarting failed container=feed-adapter
+17:06:14  SAME POD     ready=true   restarts=7      <- retried, connected
+17:06:44  SAME POD     ready=true   restarts=7  SYMBOL=69   <- sequencing again
+```
+
+Two things follow. **The pod delete is not load-bearing** — a new pod recovers instantly only
+because its backoff starts at zero, not because pod identity matters; the same pod recovers on its
+own at the cap. And **this issue and
+[`a-fresh-epoch-strands-the-feed-adapter-and-only-a-new-pod-recovers-it`](../resolved/a-fresh-epoch-strands-the-feed-adapter-and-only-a-new-pod-recovers-it.md)
+are one defect** — that issue read the same shape as "only a new pod recovers it" and is corrected
+in place.
+
+## Partially addressed 2026-08-25, and why this stays open
+
+`rebuild_fresh_epoch` in `scripts/yu15/run-proofs.sh` now rolls the adapter and **asserts it is
+sequencing** (>= 20 `SYMBOL <ticker>=<id>` round trips on a pod whose uid changed) before it claims
+a fresh epoch. That covers every epoch mint in the suite, and `yu13-stp-and-replace` is last, so a
+full run now ends with an asserted live feed instead of a hopeful one. It also answers direction 3
+above — "do nothing and make it visible" — for the runner's own path, without adding the probe the
+trap below warns against.
+
+What it does NOT cover, and what keeps this open:
+
+* a bare `kubectl rollout restart statefulset/order-matcher-cluster` outside the runner;
+* the window DURING a suite between a member-rolling proof (`yu16-book-grid`,
+  `yu16-ready-tracks-commit`, `yu16-liveness-restarts-wedge`) and the next mint — the adapter can
+  be asleep for up to five minutes there and the proofs in between read a stale book;
+* direction 1, the bounded retry inside `FeedAdapterMain`, which is the only fix that removes the
+  five-minute hole rather than papering over the places it is noticed. The tuning question is
+  unchanged: N must be longer than a proof suite's roll and shorter than a human's patience.
 
 ## Directions, none chosen
 
