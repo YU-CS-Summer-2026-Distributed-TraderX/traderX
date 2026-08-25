@@ -60,6 +60,22 @@ PROOFS=(
   # nothing, so this ordering is what keeps it from reporting SKIP-shaped success on a rig whose
   # positions were just wiped by a fresh epoch.
   yu16-accrued-interest
+  # ADR-069 rules 1-4 (the session opens where the last one closed). Placed HERE, straight after
+  # the bond block and BEFORE anything that closes an EOD session, for two reasons:
+  #
+  #   1. It reads the newest PUBLISHED session STRICTLY EARLIER than today, so a proof that cuts
+  #      a close for today cannot change its answer -- but running it while the EOD tables are
+  #      otherwise quiet keeps its planted-DRAFT arm unambiguous.
+  #   2. It RESTARTS price-publisher (up to three times) and therefore re-seeds the feed. Nothing
+  #      above it depends on a walked price level, and the proofs below that read the live
+  #      reference (yu17-fnma-collar and the format-8 set) derive their probes FROM it rather than
+  #      from a literal, so a re-seeded reference is not a hazard for them.
+  #
+  # It rolls no member, no gateway and no epoch, and it plants DRAFT rows keyed on
+  # override_reason='yu17-session-opens-from-close' that it removes on every exit path -- a
+  # leaked one is the exact object rule 2 exists to refuse, so its pre-clean runs before it
+  # measures anything.
+  yu17-session-opens-from-close
   # YU17 phase 2. It rolls NOTHING, so it belongs in the stable block rather than beside its
   # sibling below: it asserts the applied sequence moves by exactly two and that the contracts
   # artifact rebuilds byte-identically from the stored cut, and both are cheapest to assert on a

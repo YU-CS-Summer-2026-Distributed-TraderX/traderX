@@ -6,6 +6,7 @@ const yahooFinance = require('yahoo-finance2').default;
 const { parseOcc, quoteOption } = require('./option-quotes');
 const treasury = require('./treasury-pricing');
 const fred = require('./fred-curve');
+const previousClose = require('./previous-close');
 
 const PORT = Number(process.env.PRICE_PUBLISHER_PORT || '18100');
 const NATS_URL = process.env.NATS_ADDRESS || `nats://${process.env.NATS_BROKER_HOST || 'localhost'}:4222`;
@@ -65,7 +66,17 @@ const state = {
   // YU16: instrumentKey -> treasury static (coupon, term, maturity, seed). Membership here is
   // what marks an instrument as a Treasury: walked in percent space by treasury-pricing.js,
   // emitted as a fraction of par (ADR-057), no volatility band, suppressed once matured.
-  treasuries: new Map()
+  treasuries: new Map(),
+  // YU17 (ADR-069 rule 4): which rung of the hierarchy each instrument actually OPENED on, per
+  // class, counted as bootstrapPrices decides it. Reported on /health, and that report is the
+  // whole countermeasure to this ADR's trap -- an opening price that silently came from the seed
+  // looks exactly like one that came from a close, so the counts are the only thing that can
+  // tell them apart without reading logs.
+  openingTally: {
+    equity: { previousClose: 0, staticSeed: 0 },
+    treasury: { previousClose: 0, staticSeed: 0 },
+    corporate: { previousClose: 0, staticSeed: 0 }
+  }
 };
 
 const VOLATILITY_PROFILES = [
@@ -290,16 +301,40 @@ function bootstrapOptionContracts() {
   }
 }
 
+// The date the session is opening on, in UTC -- trade-processor keys EOD sessions by UTC date and
+// runs in a UTC container, so a host-local date here would diverge from the service every evening
+// and ask for the wrong "strictly earlier than". treasury.now() rather than Date.now() so the
+// state's one fixed-clock contract (NFR-CDM09) reaches this read too.
+function openingDateIso() {
+  return new Date(treasury.now()).toISOString().slice(0, 10);
+}
+
+function tallyOpen(bucket, fromClose) {
+  const counters = state.openingTally[bucket];
+  if (counters) {
+    counters[fromClose ? 'previousClose' : 'staticSeed'] += 1;
+  }
+}
+
 async function bootstrapPrices() {
   const snapshot = loadSnapshot();
+  // YU17 (ADR-069 rules 1-3): ONE read, before anything is seeded, resolving rule 2 server-side.
+  // Null on every failure -- unreachable, timed out, unauthorized, no published session, an empty
+  // one -- and every one of those is a sentence on /health rather than a silent fall-through.
+  const closes = await previousClose.load(openingDateIso());
   for (const ticker of TICKERS) {
     const snapshotEntry = snapshot[ticker];
+    const close = closes ? closes.get(ticker) : undefined;
 
     // YU16: bonds seed from the snapshot only — never yfinance, never fallback.
     if (isBond(snapshotEntry)) {
-      const quote = normalizeTreasuryQuote(ticker, snapshotEntry);
+      const seeded = normalizeTreasuryQuote(ticker, snapshotEntry);
+      const opened = previousClose.openBondFromClose(seeded, close);
+      const quote = opened || seeded;
       state.prices.set(ticker, quote);
       state.treasuries.set(ticker, quote);
+      tallyOpen(snapshotEntry.assetClass === 'CORPORATE_BOND' ? 'corporate' : 'treasury',
+        Boolean(opened));
       continue;
     }
 
@@ -308,20 +343,34 @@ async function bootstrapPrices() {
         const quote = await loadFromYahoo(ticker, snapshotEntry);
         state.prices.set(ticker, quote);
         ensureVolatilityBand(ticker, quote);
+        // The TOP rung of ADR-068's hierarchy for equities: an external source answered, so the
+        // close is not consulted. Counted as a seed open because it is not a close open -- the
+        // per-class `source` on /health is the one that names yfinance, via `state.source`.
+        tallyOpen('equity', false);
         continue;
       } catch (err) {
-        // fall through to snapshot/fallback
+        // fall through to previous close / snapshot / fallback
       }
     }
 
-    if (snapshotEntry) {
+    // ADR-069 rule 1, the new rung: the prior published close outranks the static seed, and the
+    // static seed stays the floor. `openPrice` is set once here and never mutated by updateTick,
+    // so it stays the witness of where this session actually opened.
+    if (Number.isFinite(close)) {
+      const quote = normalizeQuote(ticker, close, close, 'previous-close');
+      state.prices.set(ticker, quote);
+      ensureVolatilityBand(ticker, quote);
+      tallyOpen('equity', true);
+    } else if (snapshotEntry) {
       const quote = normalizeQuote(ticker, Number(snapshotEntry.openPrice), Number(snapshotEntry.closePrice), 'snapshot');
       state.prices.set(ticker, quote);
       ensureVolatilityBand(ticker, quote);
+      tallyOpen('equity', false);
     } else {
       const quote = createFallbackQuote(ticker);
       state.prices.set(ticker, quote);
       ensureVolatilityBand(ticker, quote);
+      tallyOpen('equity', false);
     }
   }
 }
@@ -552,6 +601,25 @@ function ensureTicker(ticker) {
   return state.prices.get(normalized);
 }
 
+// YU17 (ADR-069 rule 4). `source` is the rung that won for the class; the counts are beside it
+// so a MIXED class (some instruments in the close, some not -- an instrument the feed has never
+// published has no close) is visible as numbers rather than hidden behind one word. Options carry
+// no opening price of their own by decision: an option is re-priced from its underlying's current
+// tick, so it inherits any overnight gap through the model it already uses, and giving it a stored
+// close would fight that re-price.
+function openingSourceStatus() {
+  const byClass = {};
+  for (const [name, counters] of Object.entries(state.openingTally)) {
+    byClass[name] = {
+      source: counters.previousClose > 0 ? 'previous-close' : 'static-seed',
+      previousClose: counters.previousClose,
+      staticSeed: counters.staticSeed
+    };
+  }
+  byClass.option = { source: 'derived-from-underlying', contracts: state.optionContracts.size };
+  return { ...previousClose.status(), byClass };
+}
+
 app.get('/health', (_req, res) => {
   const profileCounts = {};
   for (const band of state.volatilityBands.values()) {
@@ -581,6 +649,18 @@ app.get('/health', (_req, res) => {
     // copyright check that let them in, and the FRED attribution string. `provider: 'none'` is the
     // synthetic default and is not a degraded state.
     priceSource: fred.status(),
+    // YU17 (ADR-069 rule 4): WHICH RUNG THE SESSION ACTUALLY OPENED ON, per instrument class.
+    //
+    // This is not polish. It is the countermeasure to the ADR's stated trap: a failed close-read
+    // and a successful one produce prices that are equally plausible, so "did the session open
+    // from the prior close?" has no observable answer without this field. Its job is to make the
+    // ABSENCE of continuity loud -- `previousSession: null` with `error` naming the reason, and a
+    // class whose `source` reads `static-seed`.
+    //
+    // Sits beside priceSource deliberately: that one answers "where is this TICK from" (the
+    // running source, which for Treasuries supersedes the open within one FRED interval); this
+    // one answers "where did this SESSION START". Both are needed and neither implies the other.
+    openingSource: openingSourceStatus(),
     publish: normalizePublishConfig(),
     volatilityBands: profileCounts
   });
