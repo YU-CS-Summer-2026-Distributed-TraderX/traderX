@@ -6,7 +6,6 @@ import { EodComponent } from './eod.component';
 import { OtcComponent } from './otc.component';
 import { BandsComponent } from './bands.component';
 import { TickStoreComponent } from './tickstore.component';
-import { PlatformMetricsComponent } from './metrics.component';
 
 /**
  * YU17: the read-model views this state added to the ORIGINAL app.
@@ -18,7 +17,7 @@ import { PlatformMetricsComponent } from './metrics.component';
  */
 const VIEWS = [
     ClusterComponent, EodComponent, OtcComponent,
-    BandsComponent, TickStoreComponent, PlatformMetricsComponent
+    BandsComponent, TickStoreComponent
 ];
 
 @NgModule({

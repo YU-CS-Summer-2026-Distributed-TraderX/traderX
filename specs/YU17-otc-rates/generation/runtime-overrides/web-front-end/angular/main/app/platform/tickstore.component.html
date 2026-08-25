@@ -1,8 +1,9 @@
 <div class="platform-page p-4">
-    <h2>Tick capture</h2>
+    <h2>kdb tick capture</h2>
     <p class="text-muted small mb-3">
-        The kdb tap, per cluster member. Only the leader writes, so row counts differ by design —
-        a header-only file means that member has not led.
+        The analytical tap, written off the engine's own output events. Only the leader writes, so a
+        header-only file means that member has not led. This is the recent tail of each file, not the
+        whole session.
     </p>
 
     <button class="btn btn-sm btn-outline-primary mb-3" type="button" (click)="load()" [disabled]="loading">
@@ -13,22 +14,104 @@
         Cannot read the capture tap: {{ error }}
     </div>
 
-    <div class="table-responsive" *ngIf="!error">
-        <table class="table table-sm table-striped align-middle">
-            <thead><tr><th>Member</th><th>Capture file</th><th class="text-end">Rows</th></tr></thead>
-            <tbody>
-                <tr *ngFor="let f of files">
-                    <td>{{ f.member }}</td>
-                    <td class="small font-monospace">{{ f.file }}</td>
-                    <td class="text-end">{{ f.rows }}</td>
-                </tr>
-                <tr *ngIf="files.length === 0">
-                    <td colspan="3" class="text-muted">No members reported.</td>
-                </tr>
-            </tbody>
-            <tfoot *ngIf="files.length">
-                <tr><th colspan="2">Total captured</th><th class="text-end">{{ totalRows }}</th></tr>
-            </tfoot>
-        </table>
-    </div>
+    <ng-container *ngIf="!error">
+        <h4 class="mt-2">Fill VWAP</h4>
+        <p class="text-muted small">
+            Volume-weighted average of <em>our own</em> fills — every row was emitted by this engine,
+            so it is not a market tape. Only as complete as the capture below.
+        </p>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead>
+                    <tr>
+                        <th>Security</th><th class="text-end">Execs</th><th class="text-end">Volume</th>
+                        <th class="text-end">VWAP</th><th class="text-end">First px</th><th class="text-end">Last px</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr *ngFor="let v of vwap">
+                        <td>{{ v.sym }}</td>
+                        <td class="text-end">{{ v.execs }}</td>
+                        <td class="text-end">{{ v.volume | number:'1.0-6' }}</td>
+                        <td class="text-end">{{ v.vwap | number:'1.2-6' }}</td>
+                        <td class="text-end">{{ v.first | number:'1.2-6' }}</td>
+                        <td class="text-end">{{ v.last | number:'1.2-6' }}</td>
+                    </tr>
+                    <tr *ngIf="vwap.length === 0"><td colspan="6" class="text-muted">No fills captured.</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <h4 class="mt-4">Captured trades ({{ trades.length }})</h4>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead>
+                    <tr>
+                        <th class="text-end">Seq</th><th class="text-end">Trade</th><th>Account</th>
+                        <th>Security</th><th>Side</th><th class="text-end">Qty</th>
+                        <th class="text-end">Price</th><th class="text-end">Member</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr *ngFor="let t of trades">
+                        <td class="text-end">{{ t.seq }}</td>
+                        <td class="text-end">{{ t.tradeSeq }}</td>
+                        <td>{{ t.account }}</td>
+                        <td>{{ t.sym }}</td>
+                        <td>{{ t.side }}</td>
+                        <td class="text-end">{{ t.qty | number:'1.0-6' }}</td>
+                        <td class="text-end">{{ t.px | number:'1.2-6' }}</td>
+                        <td class="text-end">{{ t.member }}</td>
+                    </tr>
+                    <tr *ngIf="trades.length === 0"><td colspan="8" class="text-muted">No trades captured.</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <h4 class="mt-4">Captured order events ({{ orders.length }})</h4>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead>
+                    <tr>
+                        <th class="text-end">Seq</th><th class="text-end">Ref</th><th>Account</th>
+                        <th>Security</th><th>Side</th><th class="text-end">Qty</th>
+                        <th class="text-end">Remaining</th><th class="text-end">Limit</th>
+                        <th>Status</th><th class="text-end">Member</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr *ngFor="let o of orders">
+                        <td class="text-end">{{ o.seq }}</td>
+                        <td class="text-end">{{ o.ref }}</td>
+                        <td>{{ o.account }}</td>
+                        <td>{{ o.sym }}</td>
+                        <td>{{ o.side }}</td>
+                        <td class="text-end">{{ o.qty | number:'1.0-6' }}</td>
+                        <td class="text-end">{{ o.remaining | number:'1.0-6' }}</td>
+                        <td class="text-end">{{ o.limitPx | number:'1.2-6' }}</td>
+                        <td>{{ o.status }}</td>
+                        <td class="text-end">{{ o.member }}</td>
+                    </tr>
+                    <tr *ngIf="orders.length === 0"><td colspan="10" class="text-muted">No order events captured.</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <h4 class="mt-4">Capture files</h4>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>Member</th><th>File</th><th class="text-end">Rows</th></tr></thead>
+                <tbody>
+                    <tr *ngFor="let f of files">
+                        <td>{{ f.member }}</td>
+                        <td class="small font-monospace">{{ f.file }}</td>
+                        <td class="text-end">{{ f.rows }}</td>
+                    </tr>
+                </tbody>
+                <tfoot *ngIf="files.length">
+                    <tr><th colspan="2">Total captured</th><th class="text-end">{{ totalRows }}</th></tr>
+                </tfoot>
+            </table>
+        </div>
+    </ng-container>
 </div>

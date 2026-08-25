@@ -16,7 +16,25 @@ const PORT = 30080;
 // a rig that lacks them. When it is set the port-forward is skipped entirely: nothing local to
 // forward to.
 const REMOTE = process.env.RIG_URL ?? '';
-const target = REMOTE || `http://localhost:${PORT}`;
+/**
+ * CONSOLE_API points dev at a LOCALLY RUN `node server.mjs` instead of straight at the rig's edge.
+ *
+ * It closes a real gap. Several routes are the console SERVER's own — `/members`, `/gateways`,
+ * `/gw/N`, `/mem/N`, `/auth/*`, `/eod/chain` — and in dev that server is not running, so they were
+ * proxied to an edge proxy that has never served them. The symptoms were "the cluster is
+ * unavailable in the System tab" and a sign-in form that could not reach its endpoint: both correct
+ * reports of a dev environment missing its back end, neither a bug in the rig or the app.
+ *
+ * Pointing at that server reproduces PRODUCTION's shape exactly — ingress → console server → edge —
+ * rather than reimplementing each route as a bypass, so what dev exercises is the code that ships.
+ * Run it with:
+ *   PORT=8090 EDGE_PROXY=localhost:30080 POD_HTTP_VIA_EXEC=1 \
+ *   KUBECONFIG=<kind-only kubeconfig> node server.mjs
+ * The kubeconfig must be scoped to the kind context: server.mjs shells `kubectl` with no
+ * --context, so on a laptop it would otherwise read whatever context happens to be current.
+ */
+const CONSOLE_API = process.env.CONSOLE_API ?? '';
+const target = REMOTE || CONSOLE_API || `http://localhost:${PORT}`;
 
 /**
  * Keep localhost:PORT answering, whoever owns the forward.

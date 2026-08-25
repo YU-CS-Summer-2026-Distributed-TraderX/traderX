@@ -290,7 +290,38 @@ const readBody = (req) => new Promise((resolve) => {
 //      gateways' counters: acks/s swings positive and negative around zero and fills read
 //      2 -> 0 -> 2 -> 0. Nothing is wrong with the cluster; the sampler is not sampling one thing.
 //      aggregateGatewayMetrics() sums every pod, so a counter only ever goes up.
-const podHttp = (ip, path, port = 18110, timeout = 6000) => new Promise((resolve) => {
+/**
+ * Reach a pod's own HTTP port.
+ *
+ * IN THE CLUSTER this is a direct connection to the pod IP, which is the only sane thing when the
+ * server runs as a pod itself. ON A LAPTOP against kind it cannot work: pod IPs live on the kind
+ * network and are not routable from macOS, so every probe returns code 0 and the System tab shows
+ * three members with empty health — present, named, and apparently sick. Setting POD_HTTP_VIA_EXEC=1
+ * routes the probe through `kubectl exec … curl` instead, which reaches the port from inside the
+ * pod. Off by default and never set in the manifests: it is slower, it needs kubectl RBAC the pod
+ * does not have, and in-cluster the direct path is correct.
+ *
+ * Accepts the pod object rather than a bare IP because the exec route needs the NAME; a plain
+ * string still works and takes the direct path.
+ */
+const EXEC_PROBE = process.env.POD_HTTP_VIA_EXEC === '1';
+
+const podHttp = (target, path, port = 18110, timeout = 6000) => {
+  const ip = typeof target === 'string' ? target : target?.ip;
+  const name = typeof target === 'string' ? null : target?.name;
+  if (EXEC_PROBE && name) {
+    return new Promise((resolve) => {
+      try {
+        const out = execSync(
+          `kubectl -n ${NS} exec ${name} -- curl -s -m 5 -w '\n%{http_code}' ` +
+          `http://localhost:${port}${path}`,
+          { shell: '/bin/sh', timeout: timeout + 4000 }).toString();
+        const cut = out.lastIndexOf('\n');
+        resolve({ code: Number(out.slice(cut + 1).trim()) || 0, body: out.slice(0, cut) });
+      } catch { resolve({ code: 0, body: '' }); }
+    });
+  }
+  return new Promise((resolve) => {
   const req = http.request({ host: ip, port, path, method: 'GET', timeout }, (r) => {
     const chunks = [];
     r.on('data', (c) => chunks.push(c));
@@ -299,7 +330,8 @@ const podHttp = (ip, path, port = 18110, timeout = 6000) => new Promise((resolve
   req.on('timeout', () => { req.destroy(); resolve({ code: 0, body: '' }); });
   req.on('error', () => resolve({ code: 0, body: '' }));
   req.end();
-});
+  });
+};
 
 // Cached for 5s. The status panel probes every gateway CONCURRENTLY, so without this each probe
 // shells its own kubectl and they contend — observed as one ordinal out of three intermittently
@@ -335,9 +367,9 @@ async function gatewaysBypass(req, res) {
     if (Date.now() - gwCache.at > 5000) {
       const pods = gatewayPods();
       const gateways = await Promise.all(pods.map(async (g, i) => {
-        const ready = await podHttp(g.ip, '/ready');
+        const ready = await podHttp(g, '/ready');
         let health = {};
-        try { health = JSON.parse((await podHttp(g.ip, '/health')).body || '{}'); } catch { /* keep {} */ }
+        try { health = JSON.parse((await podHttp(g, '/health')).body || '{}'); } catch { /* keep {} */ }
         return { ordinal: i, name: g.name, ip: g.ip, phase: g.phase,
                  code: ready.code, ready: ready.code === 200, health };
       }));
@@ -354,7 +386,7 @@ async function gatewaysBypass(req, res) {
 async function aggregateGatewayMetrics(req, res) {
   try {
     const pods = gatewayPods();
-    const bodies = (await Promise.all(pods.map(g => podHttp(g.ip, '/metrics'))))
+    const bodies = (await Promise.all(pods.map(g => podHttp(g, '/metrics'))))
       .filter(r => r.code === 200).map(r => r.body);
     if (!bodies.length) return json(res, 502, { error: 'no gateway answered /metrics' });
     const sum = new Map(), order = [];
@@ -704,7 +736,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const pods = memberPods();
         const members = await Promise.all(pods.map(async (m, i) => {
-          const r = await podHttp(m.ip, '/health', 8080);
+          const r = await podHttp(m, '/health', 8080);
           let health = {};
           try { health = JSON.parse(r.body || '{}'); } catch { /* keep {} */ }
           return { ordinal: i, name: m.name, ip: m.ip, phase: m.phase, code: r.code, health };

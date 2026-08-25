@@ -10,7 +10,6 @@ import { EodComponent } from './platform/eod.component';
 import { OtcComponent } from './platform/otc.component';
 import { BandsComponent } from './platform/bands.component';
 import { TickStoreComponent } from './platform/tickstore.component';
-import { PlatformMetricsComponent } from './platform/metrics.component';
 
 /**
  * YU17: adds the read-model routes. The upstream five are untouched and keep their paths, so every
@@ -27,7 +26,6 @@ export const routes: Routes = [
     { path: 'otc', component: OtcComponent },
     { path: 'bands', component: BandsComponent },
     { path: 'tick-capture', component: TickStoreComponent },
-    { path: 'metrics', component: PlatformMetricsComponent },
     { path: '', redirectTo: '/trade', pathMatch: 'full' },
     { path: '**', component: PageNotFoundComponent }
 ];
