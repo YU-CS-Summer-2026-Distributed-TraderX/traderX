@@ -106,6 +106,24 @@ PROOFS=(
   yu17-option-collar
   yu17-fine-grid
   yu17-book-retick           # mints a ticker via reference-data (needs the 18085 forward)
+  # THE PHASE-MACHINE HALF of the same format-8 set (scope §5 rows 4 and 5), registered pre-mint
+  # with its red halves banked (2026-08-25). Same default-EXPECT=after, deliberately-red posture as
+  # the four above: on a pre-mint build POST /session 404s and the member's /health has no phase, so
+  # both proofs RECORD that and go on to the OBSERVABLE defect — an order the venue should refuse is
+  # accepted, and a crossing pair that should queue trades on the spot. A red that stopped at the
+  # 404 would prove the API is missing, which is worth nothing at the mint.
+  #
+  # THEY MUST STAY IN THIS BLOCK, ahead of yu08-algo-slicing. Both assert EXACT order-ref deltas
+  # (lib-consensus-readings.sh's assert_order_effects — the ref bracket is what makes their trade
+  # readings attributable), and the algo engine has been observed moving next_order_ref by 24
+  # mid-proof. Same exposure yu13-readmodel-effect-end has; same remedy, which is the scale-to-0
+  # this runner already does.
+  #
+  # yu17-preopen-queue-open books ONE match on a ticker it mints and deletes the position rows on
+  # the way out — the yu17-band-follows-market / yu17-retick-determinism posture. It rolls nothing,
+  # kills nothing and wipes nothing. yu17-session-closed-rejects crosses nothing at all.
+  yu17-session-closed-rejects
+  yu17-preopen-queue-open
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
@@ -154,6 +172,22 @@ PROOFS=(
   # yu17-keyed-ack class, no PVC wipe, no epoch) and books one trade on a ticker it mints. Same
   # default-EXPECT=after and deliberately-red-pre-mint posture as the four above.
   yu17-retick-determinism
+  # The two DURABILITY proofs of the format-8 set (scope §5 rows 6 and 7). Both default to
+  # DESTRUCTIVE=0 and exit 2 (SKIP): one kills a leader, the other restarts a member, and unlike
+  # yu17-retick-determinism there is no safe prefix to run first — every step is the destructive
+  # part. That is deliberate and it is NOT the "a skip reads as a pass" trap, because their red
+  # halves are banked OFF-RIG where the claim is actually decided: SessionSnapshotRestoreTest over
+  # MECS's writeSnapshot/onSnapshotRecord seams measures that this build writes no session or queue
+  # record at all, and that a restore accepting a truncated stream is SILENT. A halt is a snapshot
+  # question; a new leader and a restarted member are both just a restore.
+  # The MINT CHIP runs them for real on the fresh epoch:
+  #     DESTRUCTIVE=1 EXPECT=after bash scripts/proofs/yu17-halt-survives-failover.sh
+  #     DESTRUCTIVE=1 EXPECT=after bash scripts/proofs/yu17-closed-survives-restart.sh
+  # They live HERE, beside yu17-retick-determinism, because that is where they belong once armed:
+  # same kill-and-recover-on-the-same-image class, no PVC wipe, no epoch change, and both must stay
+  # BEFORE yu13-stp-and-replace's yu15-era member roll.
+  yu17-halt-survives-failover
+  yu17-closed-survives-restart
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )

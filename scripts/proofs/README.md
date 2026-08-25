@@ -59,9 +59,28 @@ The other twelve disrupt nothing.
   **Do not read `applied` for a delta. Source
   `scripts/proofs/lib-consensus-readings.sh` and use a predicate from it** —
   `traderx_cluster_next_order_ref` for order-shaped commands, the contract id itself for OTC
-  bookings. If you need a third reading, add it there, and the bar is: name a counter the feed
-  adapter does not advance and show it standing still on a live rig while `applied` climbs.
-  `./lib-consensus-readings-selftest.sh` pins the predicates offline, no rig needed.
+  bookings, `assert_order_effects` for what an order DID (the trade counter, bracketed by the ref
+  generator so the trade delta is attributable to *your* orders), `assert_band_effects` for
+  ADR-066 re-anchors and stranded cancels. If you need another reading, add it there, and the bar
+  is: name a counter the feed adapter does not advance and show it standing still on a live rig
+  while `applied` climbs. `./lib-consensus-readings-selftest.sh` pins every predicate offline, red
+  arm and green arm, no rig needed.
+- **The band and trade counters are LIFETIME totals, and they are per-process.** Two separate
+  traps, both found 2026-08-25 in `yu17-band-follows-market.sh`. (1) `traderx_band_reanchors` /
+  `_stranded_cancels` read 1 and 3 on the standing epoch *before* any proof runs, so an absolute
+  `>= 1` assertion is satisfied on arrival and can never fail — the reading is a delta against a
+  captured baseline or it is nothing. (2) They are plain in-process fields on `MatchingEngine`,
+  never snapshotted, so a member's *absolute* value is a function of how much log that process has
+  applied since it started: members 0 and 1 read 2 where member 2, restarted 61 minutes later, read
+  4 — on a cluster in perfect agreement on the book digest. Cross-member equality of the absolutes
+  is a false assertion; the per-member *delta* is the replicated one.
+- **Some proofs are RED ON PURPOSE until the format-8 mint.** The eight `yu17-*` format-8 proofs
+  (`fnma-collar`, `option-collar`, `fine-grid`, `book-retick`, `retick-determinism`,
+  `session-closed-rejects`, `preopen-queue-open`, plus the two `DESTRUCTIVE=0` durability ones)
+  default to `EXPECT=after`, which states the POST-mint claim. Every red line they print ends
+  `EXPECTED RED until the format-8 mint (design §5)`. That text is the tell: it is a banked red
+  half, not a regression to chase. Run `EXPECT=before` to see the defect measured on the current
+  build instead.
 - **`yu08-algo-slicing` poisons every counter-exact proof.** It starts continuous algo traffic, and
   `yu13-readmodel-effect-end` asserts `next_order_ref` moves by *exactly 2*. The algo engine has
   been observed moving it by 24 mid-proof, failing a proof about a system that was behaving

@@ -24,18 +24,31 @@
 #
 # Widening the tolerance (`>= 2`, "allow some drift") does not fix this — it deletes the check.
 # The reading has to be one the feed cannot move. This file holds those readings, and it is the
-# ONLY place a proof should get them from. Two exist today:
+# ONLY place a proof should get them from. Three exist today:
 #
 #   order-shaped commands   -> quiesced_order_refs   (the ORDER_NEW generator; ticks never touch it)
 #   OTC bookings            -> the contract id ITSELF is the consensus sequence it landed at
+#   what an order DID       -> assert_order_effects  (trades, bracketed by the ref generator so the
+#                                                     trade delta is attributable to OUR orders)
+#   ADR-066 band movement   -> assert_band_effects   (reanchors / stranded cancels, as DELTAS —
+#                                                     they are lifetime counters, see the note there)
 #
-# If you need a third, add it here with the same test: name a counter the feed adapter does not
+# If you need a fifth, add it here with the same test: name a counter the feed adapter does not
 # advance, and show it standing still on a live rig while `applied` climbs.
 # ============================================================================================
 #
 # Sourcing: `here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"`
 # Requires the sourcing script to define `fail()` and `K` (its kubectl prefix). Both are resolved
 # at CALL time, so the source line may sit anywhere above the first use.
+#
+# `K` may be EITHER a string ("kubectl --context ... -n traderx", which these bash scripts
+# word-split) OR an array (the ~/dev/lmax/CLAUDE.md preference — it survives a path with a space
+# and is the only form zsh splits). Proofs in this directory use both. `_k` below resolves either,
+# so the library never cares which its caller picked; a bare `${K}` here would silently collapse
+# an array to `kubectl` and every reading would come back as the tool's usage text.
+_k() {
+  if [[ "$(declare -p K 2>/dev/null)" == "declare -"[aA]* ]]; then "${K[@]}" "$@"; else ${K} "$@"; fi
+}
 
 # --- raw per-member readings -----------------------------------------------------------------
 
@@ -45,7 +58,7 @@
 #
 # GLOBAL. Use it as a window BRACKET (see assert_sequenced_in_window), never as a delta.
 applied_seq() { # applied_seq <member-ordinal>
-  ${K} exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
+  _k exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
 }
 
@@ -54,7 +67,7 @@ applied_seq() { # applied_seq <member-ordinal>
 # booking all leave it alone. So its delta counts order-shaped commands that reached consensus,
 # and only those. Replicated state, so it is deterministic on every member and across replay.
 order_refs_issued() { # order_refs_issued <member-ordinal>
-  ${K} exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/metrics 2>/dev/null \
+  _k exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/metrics 2>/dev/null \
     | awk 'index($1,"traderx_cluster_next_order_ref{")==1{print $2; found=1} END{if(!found) print -1}'
 }
 
@@ -159,4 +172,100 @@ assert_no_contracts_in_window() { # <before> <after> <contracts-csv> <what-was-s
   [[ -z "${intruders}" ]] \
     || fail "${what}: contract(s) $(printf '%s\n' "${intruders}" | tr '\n' ' ')exist at a consensus sequence
   inside (${before}, ${after}] — the window in which nothing of ours should have been sequenced."
+}
+
+# The venue's trade counter. PRICE_TICK books no trade, so — unlike `applied` — the feed adapter
+# cannot move this one. Measured 2026-08-25 on kind-traderx-yu12-cluster, idle, no proof running:
+#
+#     applied 3945397 -> 3945530 -> 3945599   (+133 over ~50s, two flushes)
+#     trades  3627116 -> 3627116 -> 3627116   (unmoved across the same window)
+#     refs    3629345 -> 3629345 -> 3629345   (unmoved across the same window)
+#
+# STILL GLOBAL with respect to ORDER writers: the algo engine, another lane's proof, or a human
+# with curl all book trades that land here. That is why the predicate below never reads it alone.
+trades_booked() { # trades_booked <member-ordinal>
+  _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+    | awk 'index($1,"traderx_cluster_trades{")==1 || $1=="traderx_cluster_trades" {print $2; found=1}
+           END{if(!found) print -1}'
+}
+quiesced_trades() { _agreed trades_booked "a trade counter"; }
+
+# "In this window, exactly MY orders were sequenced, and they had exactly THIS trade effect."
+#
+# The trade counter is feed-proof but not writer-proof, so it is never asserted on its own. The
+# order-ref bracket is what makes the trade delta attributable: if `next_order_ref` moved by
+# exactly the number of orders this proof submitted, then no other order-shaped command was
+# sequenced inside the window, and the trade delta measured across it is therefore about THIS
+# proof's orders. Either half alone is the vacuous form —
+#   * trades alone: "0" reads as "my crossing orders were queued" when it may mean "the window
+#     closed before my orders were applied", and "+2" reads as "my order matched" when a
+#     concurrent writer's cross would say the same;
+#   * refs alone: says the orders were sequenced, says nothing about what they did.
+#
+# traderx_cluster_trades counts ONE LEG PER SIDE, so one match is +2 (the same convention
+# yu13-stp-and-replace reads as "6 vs 8" for one wash trade). Pass 0 for "nothing traded".
+#
+# Still fails when: a crossing order traded that should have been queued or refused (delta too
+# high), a released order failed to trade (delta too low), an order of ours was refused before
+# sequencing or retried into a second sequence (ref delta wrong), or another writer slipped an
+# order into the window (ref delta wrong — the check that makes the trade delta mean anything).
+assert_order_effects() { # <refs-before> <refs-after> <orders-submitted> <trades-before> <trades-after> <trade-legs-expected> <what>
+  local rb="${1}" ra="${2}" n="${3}" tb="${4}" ta="${5}" legs="${6}" what="${7}"
+  local rd td
+  for v in "${rb}" "${ra}" "${tb}" "${ta}"; do
+    [[ "${v}" =~ ^[0-9]+$ ]] || fail "${what}: unreadable counter bracket ('${v}') — a proof that
+  cannot read the counters it asserts on has not measured anything"
+  done
+  rd=$(( ra - rb )); td=$(( ta - tb ))
+  (( rd == n )) \
+    || fail "${what}: the order-ref generator moved by ${rd}, not the ${n} order(s) this proof
+  submitted (${rb} -> ${ra}). Until that matches, the trade delta below is not attributable to us:
+  someone else's order is in the window (algo engine? another lane?), or one of ours was never
+  sequenced. Do NOT widen this tolerance — it is what makes the trade reading mean anything."
+  (( td == legs )) \
+    || fail "${what}: trades moved by ${td} leg(s), expected ${legs} (${tb} -> ${ta}), across a window
+  in which exactly our ${n} order(s) were sequenced. $( (( legs == 0 )) \
+      && echo 'Something matched that was supposed to rest, queue, or be refused.' \
+      || echo 'The match this proof exists to observe did not happen as specified.' )"
+}
+
+# The ADR-066 band counters. Also feed-proof, and for a stronger reason than the trade counter:
+# `bandSlot` — the ONLY writer of either counter — is reached from order placement and replace
+# alone (MatchingEngine:578, :1005). A PRICE_TICK moves the collar REFERENCE without ever entering
+# it, so the feed can walk a mark all day and neither counter twitches. Verified by reading, and
+# visible on the rig: reanchors=1 / stranded=3 have stood unchanged for days of live ticking.
+#
+# GLOBAL over order writers, exactly like the trade counter — which is the whole reason
+# assert_band_effects takes a BASELINE and not a floor.
+band_counters() { # band_counters <member-ordinal> -> "<reanchors> <stranded_cancels>"
+  _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+    | awk '/^traderx_band_reanchors[{ ]/ {r=$2} /^traderx_band_stranded_cancels[{ ]/ {c=$2}
+           END {print (r==""?-1:r), (c==""?-1:c)}'
+}
+
+# "This scenario caused exactly THIS much band movement."
+#
+# WHY A BASELINE AND NOT A FLOOR — this is the defect this function exists to make unrepeatable.
+# yu17-band-follows-market.sh asserted `R1 >= 1 && C1 >= 1` on the ABSOLUTE readings, captured a
+# baseline it never compared to, and printed "member-0 counters did not move" on failure. These
+# are lifetime counters on a long-lived epoch: the rig read reanchors=1 / stranded=3 BEFORE the
+# proof did anything, so the assertion was already true on arrival and could never fail again.
+# A movement test on a monotone counter is a delta or it is nothing.
+#
+# EXACT, not `>=`: the scenario's re-anchor count is a property of the scenario. `>= 1` would pass
+# on two re-anchors, which would mean the band moved twice where the design says once.
+assert_band_effects() { # <r-before> <c-before> <r-after> <c-after> <reanchors-expected> <strands-expected> <what>
+  local rb="${1}" cb="${2}" ra="${3}" ca="${4}" wr="${5}" wc="${6}" what="${7}"
+  local v
+  for v in "${rb}" "${cb}" "${ra}" "${ca}"; do
+    [[ "${v}" =~ ^[0-9]+$ ]] || fail "${what}: band counter unreadable ('${v}') — traderx_band_reanchors /
+  traderx_band_stranded_cancels absent from /metrics means this build predates ADR-066 or the probe
+  is pointed at the wrong port. Either way nothing below was measured."
+  done
+  (( ra - rb == wr )) \
+    || fail "${what}: the band re-anchored $(( ra - rb )) time(s), expected ${wr} (reanchors ${rb} -> ${ra}).
+  These are LIFETIME counters — the reading is the delta across this scenario, never the absolute."
+  (( ca - cb == wc )) \
+    || fail "${what}: ${wc} resting order(s) should have been stranded by the re-anchor, ${ca} - ${cb} =
+  $(( ca - cb )) were (stranded_cancels ${cb} -> ${ca})."
 }
