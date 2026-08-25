@@ -37,8 +37,19 @@ case "$RI_CODE" in
     # No remedy named here on purpose: how $OM is reached differs per rig (a forward on kind, a
     # LoadBalancer with a public IP on GKE), so naming one sends half the readers to build
     # something that is not in their path while the real cause goes unexamined.
+    # rc 7 and rc 28 are NOT the same finding — same split as yu05-regulatory-reproducible.sh.
+    # 7 is nothing listening (the transport). 28 is no answer inside the budget, which on a
+    # flood-scale epoch is a busy member, not an absent one.
+    if [ "$RI_RC" = "28" ]; then
+      echo "   ✘ no answer from $OM/recon/full-history/reindex within the budget (curl rc=28)."
+      echo "     A TIMEOUT, not a transport fault and not a verdict about recon: something is"
+      echo "     listening, it did not answer in time. A full-history reindex replays the whole"
+      echo "     log, so on a large epoch it legitimately outlasts a short client budget. Check"
+      echo "     the member (kubectl logs order-matcher-cluster-0) before reading this as broken."
+      exit 1
+    fi
     echo "   ✘ the order-matcher is not reachable at $OM (curl rc=$RI_RC — 7 is nothing"
-    echo "     listening, 28 is a timeout). Nothing answered, so this is the transport, not recon."
+    echo "     listening). Nothing is on the other end, so this is the transport, not recon."
     exit 1 ;;
   404)
     echo "   ✘ $OM/recon/full-history/reindex -> 404"

@@ -50,12 +50,11 @@ step() { echo; echo "=== $* ==="; }
 
 extract_pod() { ${K} get pod -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'; }
 
-# The APPLIED SEQUENCE is a cluster MEMBER's number. The gateway's /health has no opinion about
-# consensus, so asking it there would make every sequence assertion below vacuous.
-applied_seq() { # applied_seq <member-ordinal>
-  ${K} exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
-}
+# applied_seq / quiesced_seq / the consensus predicates live in ONE place, because the trap they
+# carry is one trap: the applied sequence is a cluster MEMBER's number (the gateway's /health has
+# no opinion about consensus) and it is GLOBAL — the feed adapter moves it 69 at a time. Read that
+# file's header before asserting anything about a sequence here.
+here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
 # `|| true` on every curl-in-a-substitution below is load-bearing, not defensive noise. Under
 # `set -e` a curl that fails to CONNECT aborts the script at the assignment, before the guard that
@@ -77,24 +76,6 @@ book() { # book <payReceive> <rate> <clientOrderId> [account] -> "<http_code> <b
          \"maturityDate\":\"${MATURITY}\",\"conventions\":\"${CONVENTIONS}\"}" || true)"
   [[ -n "${body}" ]] || { echo "000 {}"; return 0; }
   echo "$(echo "${body}" | tail -1) $(echo "${body}" | sed '$d' | tr -d '\n')"
-}
-
-# The applied sequence, read only once ALL THREE members agree on it. Sampling one member races
-# with catch-up: a member that has just restored from a snapshot reports the position it restored
-# to while the others are already past it, and a "+2" delta measured across that gap is a statement
-# about replication lag, not about how many commands were sequenced. (Observed here: member 0 at
-# 22927 with engineApplied -1 while 1 and 2 were at 22929.) This is the same quiesce rule the
-# cross-member digest follows.
-quiesced_seq() {
-  local tries=0 a b c
-  while (( tries < 60 )); do
-    a="$(applied_seq 0)"; b="$(applied_seq 1)"; c="$(applied_seq 2)"
-    if [[ "${a}" =~ ^[0-9]+$ && "${a}" == "${b}" && "${b}" == "${c}" ]]; then
-      printf '%s' "${a}"; return 0
-    fi
-    tries=$((tries + 1)); sleep 2
-  done
-  fail "the three members never agreed on an applied sequence (last: ${a:-?} ${b:-?} ${c:-?})"
 }
 
 json_field() { # json_field <key> ; reads JSON on stdin
@@ -204,9 +185,17 @@ PAY_ID="$(echo "${PAY_BODY}"  | json_field contractId)"
 [[ "${RECV_ID}" != "${PAY_ID}" ]] || fail "both legs got contract id ${RECV_ID} — they are not distinct contracts"
 SEQ_AFTER_PAIR="$(quiesced_seq)"
 [[ "${SEQ_AFTER_PAIR}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable after the pair"
-[[ "$((SEQ_AFTER_PAIR - SEQ_BEFORE_PAIR))" == "2" ]] \
-  || fail "the applied sequence moved ${SEQ_BEFORE_PAIR} -> ${SEQ_AFTER_PAIR}; two bookings must be exactly two sequenced commands (D1)"
-echo "[ok] ${RECV_ID} receive@${RECEIVE_RATE} and ${PAY_ID} pay@${PAY_RATE}, sequenced through consensus (+2)"
+# D1, read off the contract ids rather than off a delta. A "+2" on the global sequence never said
+# these two bookings were the two commands — it would have passed on one booking plus one
+# unrelated command — and since the feed adapter went live it measures the price feed: one
+# publisher flush is 69 sequences (its sibling yu17-swaption-terms observed 68 where it wanted 2).
+# The contract id IS the consensus sequence the booking was applied at (onSwapBook:
+# `contractId = appliedSeq`), so the ids returned to this caller are the evidence, and they are
+# tied to THESE bookings: both inside the window all three members agreed on, strictly ascending
+# in submission order. See scripts/proofs/lib-consensus-readings.sh.
+assert_sequenced_in_window "${SEQ_BEFORE_PAIR}" "${SEQ_AFTER_PAIR}" \
+  "the receive-fixed leg=${RECV_ID}" "the pay-fixed leg=${PAY_ID}"
+echo "[ok] ${RECV_ID} receive@${RECEIVE_RATE} and ${PAY_ID} pay@${PAY_RATE}, each sequenced through consensus inside (${SEQ_BEFORE_PAIR}, ${SEQ_AFTER_PAIR}]"
 
 step "3. what netting would have done to this pair"
 # Stated as arithmetic, not as prose: equal notionals in opposite directions at the

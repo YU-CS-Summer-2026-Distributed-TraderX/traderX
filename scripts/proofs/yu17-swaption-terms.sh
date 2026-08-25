@@ -51,28 +51,10 @@ step() { echo; echo "=== $* ==="; }
 
 extract_pod() { ${K} get pod -l app=risk-extract -o jsonpath='{.items[0].metadata.name}'; }
 
-applied_seq() {
-  ${K} exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
-}
-
-# The applied sequence, read only once ALL THREE members agree on it. Sampling one member races
-# with catch-up: a member that has just restored from a snapshot reports the position it restored
-# to while the others are already past it, and a "+2" delta measured across that gap is a statement
-# about replication lag, not about how many commands were sequenced. (Observed here: member 0 at
-# 22927 with engineApplied -1 while 1 and 2 were at 22929.) This is the same quiesce rule the
-# cross-member digest follows.
-quiesced_seq() {
-  local tries=0 a b c
-  while (( tries < 60 )); do
-    a="$(applied_seq 0)"; b="$(applied_seq 1)"; c="$(applied_seq 2)"
-    if [[ "${a}" =~ ^[0-9]+$ && "${a}" == "${b}" && "${b}" == "${c}" ]]; then
-      printf '%s' "${a}"; return 0
-    fi
-    tries=$((tries + 1)); sleep 2
-  done
-  fail "the three members never agreed on an applied sequence (last: ${a:-?} ${b:-?} ${c:-?})"
-}
+# applied_seq / quiesced_seq / the consensus predicates live in one place, because the trap they
+# carry is one trap: the applied sequence is GLOBAL and the feed adapter moves it. Read the header
+# of that file before asserting anything about a sequence here.
+here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
 json_field() { python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('$1',''))"; }
 
@@ -122,16 +104,29 @@ curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: applicati
 echo "[ok] gateway ready, 3 members, a phase-2 image, account ${ACCOUNT} enabled"
 
 step "1. the boundary refuses an unknown exercise style, and never sequences it"
+# BEFORE_BAD/AFTER_BAD bracket the refusal — they are a WINDOW, not a measurement. The old form of
+# this step asserted the applied sequence did not move across it, which stopped meaning "nothing of
+# mine was sequenced" the day the feed adapter went live: the sequence is global, one publisher
+# flush is 69 of them, and this step was green only because its window is two HTTP calls wide.
+#
+# What survives the feed is the CONTRACT ID, because onSwapBook sets it to the applied sequence the
+# booking landed at. So a booking that was sequenced and accepted leaves a contract at a sequence
+# inside this window, and one that died at the boundary leaves none. Ticks create no contracts.
+# The artifact that carries them does not exist until step 4, so the assertion is made in step 6 —
+# against these two brackets. See scripts/proofs/lib-consensus-readings.sh.
 BEFORE_BAD="$(quiesced_seq)"
 [[ "${BEFORE_BAD}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable"
 read -r BAD_CODE BAD_BODY <<<"$(book_swaption "Asian" "yu17-badstyle-$(date -u +%s)")"
 [[ "${BAD_CODE}" == "000" ]] && fail "the booking got NO answer (curl 000) — the gateway or forward is down"
 [[ "${BAD_CODE}" == "400" ]] \
   || fail "an unknown exerciseStyle returned HTTP ${BAD_CODE}, expected 400: ${BAD_BODY}"
+# 400, not 422, is load-bearing here and not cosmetic: 422 is the risk-gate verdict, which IS
+# sequenced and decided (see yu17-swap-netting step 1). 400 is the boundary refusing to encode the
+# term at all. The pair of assertions — 400 here, no contract in this window at step 6 — is what
+# closes off "sequenced, then refused".
 AFTER_BAD="$(quiesced_seq)"
-[[ "${AFTER_BAD}" == "${BEFORE_BAD}" ]] \
-  || fail "the sequence moved ${BEFORE_BAD} -> ${AFTER_BAD}: an unrepresentable term reached consensus"
-echo "[ok] 'Asian' refused 400 and the consensus sequence never moved (${BEFORE_BAD})"
+[[ "${AFTER_BAD}" =~ ^[0-9]+$ ]] || fail "applied sequence unreadable after the refusal"
+echo "[ok] 'Asian' refused 400 at the boundary; window (${BEFORE_BAD}, ${AFTER_BAD}] held for step 6"
 
 step "2. book the pair: payer European and payer Bermudan, identical in every other term"
 RUN_ID="$(date -u +%s)"
@@ -149,9 +144,14 @@ BER_ID="$(echo "${BER_BODY}" | json_field contractId)"
 [[ "${BER_ID}" =~ ^SWPT-[0-9]+$ ]] || fail "Bermudan contract id '${BER_ID}' is not SWPT-<seq>"
 [[ "${EUR_ID}" != "${BER_ID}" ]] || fail "both legs got ${EUR_ID} — they are not distinct contracts"
 SEQ_AFTER="$(quiesced_seq)"
-[[ "$((SEQ_AFTER - SEQ_BEFORE))" == "2" ]] \
-  || fail "the sequence moved ${SEQ_BEFORE} -> ${SEQ_AFTER}; two bookings must be exactly two sequenced commands"
-echo "[ok] ${EUR_ID} European and ${BER_ID} Bermudan, sequenced through consensus (+2)"
+# Not "+2". A delta on the global sequence never said these two bookings were the two commands —
+# it would have passed on one booking plus one unrelated command, and since the feed adapter went
+# live it passes or fails on how many price ticks flushed inside the window (observed 68 where it
+# wanted 2). The contract id IS the consensus sequence the booking was applied at, so the ids are
+# the evidence, tied to these bookings: both must fall inside the window all three members agreed
+# on, and strictly ascend in submission order.
+assert_sequenced_in_window "${SEQ_BEFORE}" "${SEQ_AFTER}" "the European swaption=${EUR_ID}" "the Bermudan swaption=${BER_ID}"
+echo "[ok] ${EUR_ID} European and ${BER_ID} Bermudan, each sequenced through consensus inside (${SEQ_BEFORE}, ${SEQ_AFTER}]"
 
 step "3. book an ordinary swap too, so the artifact has to carry both products"
 SWAP_CODE="$(curl -s -o /dev/null -w '%{http_code}' --max-time 25 -X POST "${MATCHER_URL}/swaps" \
@@ -244,6 +244,12 @@ CONTRACTS_FILE="${CONTRACTS_URI#file:}"
 ${K} exec "${POD}" -- test -f "${CONTRACTS_FILE}" || fail "contracts artifact ${CONTRACTS_FILE} does not exist"
 CSV="$(${K} exec "${POD}" -- cat "${CONTRACTS_FILE}")"
 [[ -n "${CSV}" ]] || fail "contracts artifact is empty"
+# Step 1's assertion, finally made: the 'Asian' booking created no contract at any sequence inside
+# its window. Deferred to here because this is the first point the contract ids exist. A contract
+# is the tick-insensitive trace of an OTC booking reaching consensus — the feed creates none.
+assert_no_contracts_in_window "${BEFORE_BAD}" "${AFTER_BAD}" "${CSV}" \
+  "the 'Asian' exercise style was supposed to die at the boundary"
+echo "  [ok] no contract exists in (${BEFORE_BAD}, ${AFTER_BAD}] — the refused style never reached consensus"
 EUR_ROW="$(printf '%s\n' "${CSV}" | grep "^${EUR_ID}," || true)"
 BER_ROW="$(printf '%s\n' "${CSV}" | grep "^${BER_ID}," || true)"
 [[ -n "${EUR_ROW}" ]] || fail "${EUR_ID} is absent from the artifact"

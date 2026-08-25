@@ -47,8 +47,21 @@ reason a proof "fails" on a system that is fine.
 
 The other twelve disrupt nothing.
 
-### Two constraints that are not about forwards
+### Three constraints that are not about forwards
 
+- **The applied sequence is GLOBAL, and there is a permanent second writer.** Since 2026-08-24 the
+  feed adapter holds its own cluster session and sequences `PRICE_TICK` directly — one
+  price-publisher flush is **69 sequences** with nothing of yours in them. So
+  `applied` moving by N, or not moving at all, says nothing about your commands: it says how many
+  flushes landed inside your window. Three proofs asserted on it and two of them were GREEN on
+  window luck — the write-up is
+  `issues/resolved/stillness-assertions-on-the-global-applied-sequence-race-the-live-feed.md`.
+  **Do not read `applied` for a delta. Source
+  `scripts/proofs/lib-consensus-readings.sh` and use a predicate from it** —
+  `traderx_cluster_next_order_ref` for order-shaped commands, the contract id itself for OTC
+  bookings. If you need a third reading, add it there, and the bar is: name a counter the feed
+  adapter does not advance and show it standing still on a live rig while `applied` climbs.
+  `./lib-consensus-readings-selftest.sh` pins the predicates offline, no rig needed.
 - **`yu08-algo-slicing` poisons every counter-exact proof.** It starts continuous algo traffic, and
   `yu13-readmodel-effect-end` asserts `next_order_ref` moves by *exactly 2*. The algo engine has
   been observed moving it by 24 mid-proof, failing a proof about a system that was behaving

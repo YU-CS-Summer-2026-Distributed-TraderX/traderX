@@ -46,8 +46,21 @@ _OM_CODE="$(curl -s -o /dev/null -w '%{http_code}' -m10 "$OM/regulatory/report" 
 if [ "$_OM_CODE" = "000" ]; then
   # No remedy named here on purpose — see the same branch in yu05-recon.sh. How $OM is reached
   # is a fact about the rig, and this script is on the side that does not know it.
-  echo "   ✘ the order-matcher is not reachable at $OM (curl rc=$_OM_RC — 7 is nothing"
-  echo "     listening, 28 is a timeout). Nothing answered, so this is the transport."
+  # rc 7 and rc 28 are NOT the same finding and must not be narrated as one. 7 is nothing
+  # listening: the transport. 28 is "no answer within the 10s budget", which says nothing about
+  # the transport at all — a member replaying a flood-scale epoch is busy, not absent, and this
+  # branch used to report that as a verdict about the wire. The distinction is the whole message.
+  if [ "$_OM_RC" = "28" ]; then
+    echo "   ✘ no answer from $OM/regulatory/report within 10s (curl rc=28). This is a TIMEOUT, not"
+    echo "     a transport fault and not a verdict about reproducibility: something is listening,"
+    echo "     it did not answer in the budget. On a large epoch the journal-sourced surface can"
+    echo "     take longer than 10s to build its first answer. Check the member is not still"
+    echo "     replaying (kubectl logs order-matcher-cluster-0), then re-run. The timeout is left"
+    echo "     at 10s deliberately — raising it hides the epoch-scale condition it is reporting."
+    exit 1
+  fi
+  echo "   ✘ the order-matcher is not reachable at $OM (curl rc=$_OM_RC — 7 is nothing listening)."
+  echo "     Nothing is on the other end, so this is the transport."
   exit 1
 fi
 if [ "$_OM_CODE" = "404" ]; then

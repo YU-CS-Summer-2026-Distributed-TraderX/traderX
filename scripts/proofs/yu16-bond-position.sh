@@ -42,6 +42,8 @@ step() { echo; echo "=== $* ==="; }
 sql() { vlog "      SQL: $(printf '%s' "$1" | tr '\n' ' ' | tr -s ' ')"; ${K} exec deploy/eod-price-db -c mariadb -- mariadb -utraderx -ptraderx traderx -sN -e "$1" 2>&1 \
           | { grep -v "Using a password on the command line" || true; }; }
 
+here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
+
 order() { # order <side> <account> <quantity> [ticker] [price] -> HTTP code on stdout
   curl -s -o /dev/null -w '%{http_code}' --max-time 20 -X POST "${MATCHER_URL}/orders" \
     -H 'Content-Type: application/json' \
@@ -72,25 +74,25 @@ RESIDUE="$(sql "SELECT COUNT(*) FROM trades WHERE security='${UST}';")"
 echo "[ok] gateway ready, price columns at scale ${SCALE}/${POS_SCALE}, no ${UST} rows to start"
 
 step "1. the boundary rejects a malformed face amount before consensus"
-# The APPLIED SEQUENCE is a cluster MEMBER's number, not the gateway's — the gateway's /health
-# answers {"connected":true} and has no opinion about consensus. Reading it there would have made
-# this step assert nothing; ask a member directly.
-applied_seq() {
-  # Port 8080 is the MEMBER's health; 18110 is the gateway's REST port and answers nothing here.
-  ${K} exec order-matcher-cluster-0 -- wget -qO- localhost:8080/health 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
-}
-BEFORE_SEQ="$(applied_seq)"
-[[ "${BEFORE_SEQ}" =~ ^[0-9]+$ && "${BEFORE_SEQ}" -ge 0 ]] || fail "could not read the applied sequence from order-matcher-cluster-0 (got '${BEFORE_SEQ}') — an idle-vs-unreachable rig would make step 1 meaningless"
+# The reading is the ORDER-REF GENERATOR, not the applied sequence. Both are cluster MEMBER
+# numbers (port 8080; the gateway's /health answers {"connected":true} and has no opinion about
+# consensus, so asking it there asserts nothing) — but the applied sequence is GLOBAL, and this
+# cluster has had a second writer since the feed adapter went live: one price-publisher flush is
+# 69 sequences with nothing of ours in them. "The applied sequence did not move" was therefore
+# "no flush landed between my two HTTP calls", and it was green on window luck alone. Order refs
+# are consumed by TYPE_ORDER_NEW and by nothing else, so ticks cannot move this number, and
+# refs are issued on apply BEFORE any verdict — a rejected order that was sequenced still burns
+# one. See scripts/proofs/lib-consensus-readings.sh for the measurement and the rule.
+BEFORE_REFS="$(quiesced_order_refs)"
+[[ "${BEFORE_REFS}" =~ ^[0-9]+$ && "${BEFORE_REFS}" -ge 0 ]] || fail "could not read the order-ref generator from the members (got '${BEFORE_REFS}') — an idle-vs-unreachable rig would make step 1 meaningless"
 SMALL="$(order Buy ${BUYER} 50)"
 [[ "${SMALL}" == "422" ]] || fail "face 50 returned HTTP ${SMALL}, expected 422 (FR-CDM16 minimum)"
 ODD="$(order Buy ${BUYER} 150)"
 [[ "${ODD}" == "422" ]] || fail "face 150 returned HTTP ${ODD}, expected 422 (FR-CDM16 increment)"
-AFTER_SEQ="$(applied_seq)"
-[[ "${AFTER_SEQ}" =~ ^[0-9]+$ && "${AFTER_SEQ}" -ge 0 ]] || fail "could not re-read the applied sequence (got '${AFTER_SEQ}')"
-[[ "${AFTER_SEQ}" == "${BEFORE_SEQ}" ]] \
-  || fail "the applied sequence moved ${BEFORE_SEQ} -> ${AFTER_SEQ}: a rejected order reached consensus"
-echo "[ok] face 50 and 150 both 422, and the consensus sequence never moved (${BEFORE_SEQ})"
+AFTER_REFS="$(quiesced_order_refs)"
+[[ "${AFTER_REFS}" =~ ^[0-9]+$ && "${AFTER_REFS}" -ge 0 ]] || fail "could not re-read the order-ref generator (got '${AFTER_REFS}')"
+assert_no_orders_sequenced "${BEFORE_REFS}" "${AFTER_REFS}" "face 50 and face 150 were both refused at the boundary"
+echo "[ok] face 50 and 150 both 422, and no order reached consensus (order refs still ${BEFORE_REFS})"
 
 step "2. cross ${FACE} face at ${FRACTION} of par through the real engine"
 curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
