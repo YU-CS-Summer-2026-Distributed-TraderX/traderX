@@ -131,7 +131,28 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int MAX_CONTRACTS = 4096;
 
     /**
-     * Format 7 (YU17 FX-rate fix): the T_FX_RATE record joins the snapshot for the FX conversion
+     * Format 8 (YU17, the format-8 mint -- `system/format-8-mint-scope.md`,
+     * `system/format-8-price-derived-grid-design.md`). Three changes ride one epoch, because a
+     * mint is one irreversible shot:
+     *
+     * <ul>
+     *   <li><b>T_BOOK grows a column</b> to {securityId, baseLevel, tickPx}. This is the change
+     *       that closes the door: {@code baseLevel} is denominated in the book's tick, and until
+     *       now the tick was DERIVED rather than stored, so any change to the derivation rule
+     *       silently reinterpreted an old anchor in the wrong unit -- and whether a given epoch
+     *       holds an affected book is DATA-DEPENDENT, exactly the compatibility hazard the format-4
+     *       postmortem above exists to forbid. Storing the unit beside the anchor retires the whole
+     *       hazard class;</li>
+     *   <li><b>T_SESSION</b> = the venue phase plus the pre-open queue's depth, and
+     *       <b>T_QUEUED_ORDER</b> = one held order each, in insertion order. A member that
+     *       snapshots CLOSED restores CLOSED: ADR-069's "a halt a restart can bypass is not a
+     *       halt", made mechanical;</li>
+     *   <li><b>the grid derivation itself</b> becomes price-derived (MatchingEngine.decadeTickPx),
+     *       which is a deterministic-core change and cannot be rolled gradually under any
+     *       circumstances.</li>
+     * </ul>
+     *
+     * <p>Format 7 (YU17 FX-rate fix): the T_FX_RATE record joins the snapshot for the FX conversion
      * rates the credit gate values non-USD swap notionals with. A new record TYPE, not a changed
      * one — every format-6 record keeps its shape and meaning, so MIN_READABLE stays at 3 and a
      * format-6 epoch rolls forward untouched (it simply has no rates yet, and every non-USD
@@ -140,10 +161,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * rather than deep in record parsing.
      *
      * <p>Format 6 (YU17 phase 2): T_CONTRACT gains the three option-wrapper columns so a swaption can
-     * be carried beside a swap. This is the first change to a record's SHAPE rather than an
-     * addition of a new type, so the reader dispatches on the restored format — see
-     * {@link #restoredFormat} — and a format-5 record is read as its eight columns with the wrapper
-     * defaulted to a swap. That is what keeps a phase-1 epoch rolling forward untouched.
+     * be carried beside a swap. This was the first change to a record's SHAPE rather than an
+     * addition of a new type, and the reader dispatched on the restored format so a format-5 record
+     * was read as its eight columns with the wrapper defaulted to a swap. Format 8's MIN_READABLE
+     * raise retired that dispatch: format 5 no longer reaches the reader.
      *
      * <p>Format 5 (YU17 phase 1): the T_CONTRACT record joins the snapshot for the OTC contract
      * store. It is a new record TYPE, not a changed one — every format-4 record keeps its shape and
@@ -178,16 +199,29 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * lazily the first time the market disagrees with it. Mixed-version members still diverge —
      * that is the deterministic-core roll rule, not a snapshot-readability question.
      */
-    static final int SNAPSHOT_FORMAT = 7;
+    static final int SNAPSHOT_FORMAT = 8;
     /**
-     * Oldest format this build can still restore. 3 -> 4 only WIDENED the symbol-id domain, 4 -> 5
-     * and 6 -> 7 only ADDED a record type, and 5 -> 6 changed T_CONTRACT's shape in a way this
-     * reader handles explicitly by format. So every format-3 through -6 record still means here
-     * exactly what it meant there, and all of them restore exactly — which is what lets this build roll onto an
-     * existing epoch without wiping it. Raise this only for a change that genuinely cannot read
-     * the older records.
+     * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
+     * ever.</b>
+     *
+     * <p>3 -> 4 only WIDENED the symbol-id domain, 4 -> 5 and 6 -> 7 only ADDED a record type, and
+     * 5 -> 6 changed T_CONTRACT's shape in a way the reader handles explicitly by format -- so
+     * every format-3 through -7 record still meant here exactly what it meant there, and this
+     * build could roll onto an existing epoch without wiping it.
+     *
+     * <p>Format 8 ends that, and NOT because of the two new record types (those alone would have
+     * been MIN_READABLE-preserving additions). It is the T_BOOK tick column: a pre-8 T_BOOK carries
+     * an anchor with no unit, and this build's grid derivation is not the one that wrote it, so
+     * restoring it would reinterpret the anchor at the wrong scale -- silently, and only for the
+     * securities whose derived tick happened to change. Refusing every pre-8 snapshot at the header
+     * makes a FRESH EPOCH MANDATORY rather than merely budgeted, which is the honest statement of
+     * what this build is.
+     *
+     * <p>The same reasoning applies to ANY future change of the grid derivation: it re-interprets
+     * every stored anchor, so it is a format bump, not a behaviour tweak. Since format 8 stores the
+     * tick, such a bump no longer has to raise MIN_READABLE -- the unit is in the record.
      */
-    static final int MIN_READABLE_SNAPSHOT_FORMAT = 3;
+    static final int MIN_READABLE_SNAPSHOT_FORMAT = 8;
     static final int T_HEADER = 1;
     static final int T_ORDER = 2;
     static final int T_POSITION = 3;
@@ -205,6 +239,104 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  Never written for index 0: USD is the limit currency and its rate is identity by
      *  construction, not state. */
     static final int T_FX_RATE = 13;
+    /** YU17 format 8: {phase, queueDepth} -- the venue session. Exactly one row, always written.
+     *  {@code queueDepth} is read from the LIVE queue, never tallied from what the write loop
+     *  emitted: a count a writer derives from its own output is a checksum of its own bug. */
+    static final int T_SESSION = 14;
+    /** YU17 format 8: one PRE_OPEN-queued order, {@link #QUEUED_TUPLE_LENGTH} columns, written and
+     *  restored in INSERTION ORDER -- which is the release order at the open, so the order of these
+     *  rows is state, not presentation. */
+    static final int T_QUEUED_ORDER = 15;
+
+    /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
+     *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
+     *  the request id are not state, exactly as {@code applyRequestId} is not. */
+    static final int QUEUED_TUPLE_LENGTH = 8;
+
+    /**
+     * Record types a format-8 snapshot MUST contain, as a bitmask over the T_* type ids
+     * (see {@link #recordTypesSeen}).
+     *
+     * <p>WHY THIS EXISTS. A snapshot record stream is self-describing and knows no expected counts,
+     * so until now a restore handed a stream with WHOLE RECORD TYPES MISSING accepted it in
+     * silence: no throw, clean termination on T_END, state simply absent. {@code finishLoad}
+     * checked exactly two things (header seen, generator above every issued ref) and
+     * MIN_READABLE catches none of it. A stream missing T_END is a different and already-safe
+     * failure ({@code loadSnapshot} refuses it at end-of-stream); the silent case is T_END present
+     * with types absent.
+     *
+     * <p>Only the UNCONDITIONAL records can be required. T_ACCOUNT, T_SECURITY, T_SYMBOL, T_ORDER,
+     * T_BOOK, T_POSITION, T_PRICE, T_IDEMPOTENCY, T_CONTRACT and T_FX_RATE are all legitimately
+     * absent from an empty or young epoch, so requiring them would be a guard that fires on correct
+     * data. T_HEADER, T_POLICY and T_SESSION are written on every snapshot this build takes, so
+     * their absence is always a defect.
+     *
+     * <p>The queue is NOT covered by presence -- zero T_QUEUED_ORDER rows is legitimate whenever
+     * the queue is empty, and that is precisely the dangerous record: a queue silently restored
+     * empty reads as "no halt was in effect". T_SESSION's {@code queueDepth} column covers it by
+     * count instead (see {@link #finishLoad}).
+     */
+    static final int REQUIRED_RECORD_TYPES =
+        (1 << T_HEADER) | (1 << T_POLICY) | (1 << T_SESSION);
+
+    /**
+     * Venue session phase (ADR-069). Replicated state living in MECS beside the contract store and
+     * the FX rates, NEVER in {@link MatchingEngine}: the engine stays clock-free and untouched by
+     * the session machine, exactly as it is untouched by swap bookings.
+     *
+     * <p>The core never knows what time it is. "6:30 ET" is only ever <em>when a producer issued
+     * the command</em>.
+     */
+    static final byte PHASE_CLOSED = 0;
+    static final byte PHASE_PRE_OPEN = 1;
+    static final byte PHASE_OPEN = 2;
+
+    /** Phase names, index-aligned with the constants above; the /health and gateway surfaces. */
+    static final String[] PHASE_NAMES = { "CLOSED", "PRE_OPEN", "OPEN" };
+
+    /**
+     * Pre-open queue capacity, SIZED not guessed (skill: {@code size-a-configuration-bound}).
+     *
+     * <p>The binding unit is not "orders" -- it is <b>how large a halt this venue can hold without
+     * refusing business</b>, against <b>what one apply costs when it releases them</b>, and those
+     * pull opposite ways. Both gradients are MEASURED by {@code QueuedOrderSizingTest}, which
+     * prints the table below on every run rather than leaving the rationale in a commit message:
+     *
+     * <pre>
+     *   cap      queue bytes   snapshot total   outputs at the open   % of output ring
+     *   256          17,408           17,620                   256              0.4%   measured
+     *   4096        278,528          278,740                 4,096              6.3%   measured
+     *   65536     4,456,448                -                65,536            100.0%   extrapolated
+     *   unit costs: 68 B/row, 1 output per released rest; output ring 65,536 slots
+     *   reference:  the idempotency table already costs 7,340,032 B/snapshot
+     * </pre>
+     *
+     * <ul>
+     *   <li><b>Snapshot bytes (an apply-thread FREEZE, not heap).</b> A full 4096-order queue adds
+     *       272 KB -- 26x inside the ~7 MB the idempotency table already spends on every snapshot,
+     *       which is the budget this project has already accepted. At 65536 it would be 4.25 MB,
+     *       comparable to that table: the point at which the queue stops being cheap.</li>
+     *   <li><b>The OPEN apply's output cascade.</b> The release replays every queued order through
+     *       the engine inside ONE apply. A full queue of pure rests emits 4096 outputs into the
+     *       65,536-slot ring -- 6.3%. At 65536 it would be exactly 100% of the ring, which would
+     *       make {@code drainOnBackpressure} the release's NORMAL path on the single most important
+     *       apply of the day rather than its structural backstop. (Crossing releases emit more per
+     *       order and are bounded by that same backstop either way.)</li>
+     * </ul>
+     *
+     * <p>Opposing (too-small) side, reported because a negligible cost is still a finding: the
+     * rig's whole fixture universe is 69 instruments and the heaviest proof traffic moves the
+     * order-ref generator by tens per window, so a pre-open window would have to take thousands of
+     * distinct client orders before the first CAPACITY refusal. At 256 that is reachable; 4096
+     * leaves roughly two orders of magnitude of headroom on real traffic.
+     *
+     * <p>At capacity the order is REFUSED {@code CAPACITY}, deterministically and identically on
+     * every member -- exactly as {@link #MAX_CONTRACTS} and {@code MAX_SECURITIES} refuse, never
+     * silently dropped. Like every constant in this block it is config identity: a member with a
+     * different value disagrees about whether order 4097 was queued, which is permanent divergence,
+     * which is why the sizing test extrapolates the row above the cap instead of measuring it.
+     */
+    static final int MAX_QUEUED_ORDERS = 4096;
 
     /**
      * {contractId, accountId, payFixed, notional, fixedRateTicks, conventionIndex,
@@ -220,9 +352,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * option wrapper and are zero for a swap.
      */
     static final int CONTRACT_TUPLE_LENGTH = 11;
-
-    /** Columns a format-5 (phase 1, swaps only) T_CONTRACT record carries. */
-    static final int CONTRACT_TUPLE_LENGTH_V5 = 8;
 
     static final int PRODUCT_SWAP = 0;
     static final int PRODUCT_SWAPTION = 1;
@@ -289,6 +418,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  it can never be mistaken for an order-lifecycle ack by the gateway's egress correlation. */
     public static final byte KIND_SWAP_BOOKED = 102;
 
+    /**
+     * Egress ack kind for a YU17 session-phase command (ADR-069), correlating by its OWN request id
+     * at ack byte 13 -- exactly as the symbol, extract and swap acks do.
+     *
+     * <p><b>This routing is the regression trap, not a style choice.</b> The OPEN apply also emits
+     * every released order's lifecycle acks, and those echo {@code applyRequestId} at bytes 24..31.
+     * The phase command is offered with request id 0 precisely so those echoes can complete
+     * NOTHING (the gateway never registers id 0 -- see the {@code Inflight} invariant). Route the
+     * phase ack through bytes 24..31 instead and a released order's ack completes the operator's
+     * pending, which is the ratcheting-offset bug that produced the gateway wedge, rebuilt.
+     */
+    public static final byte KIND_SESSION_PHASE = 103;
+
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
     //  22 riskReason   — RiskReason ordinal, so a synchronous /trades reject can answer WHY
@@ -348,10 +490,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long highestIssuedRef;
     private long appliedSeq;
     private boolean snapshotHeaderSeen;
-    // The format of the snapshot being restored, so a record whose SHAPE changed between formats
-    // can be read at its own width. Defaults to the current format, which is what a member that
-    // restored nothing is writing.
-    private int restoredFormat = SNAPSHOT_FORMAT;
+    // Format-8 mint: the "read a record at its own width, dispatching on the restored format"
+    // seam is GONE, because MIN_READABLE_SNAPSHOT_FORMAT now equals SNAPSHOT_FORMAT — exactly one
+    // format is readable, so a per-format width branch could never take its other arm. It was kept
+    // for a while as a dead branch with a comment, which is a build claiming a compatibility it
+    // does not have. Reintroduce it (a restoredFormat field set at T_HEADER, read where the shape
+    // differs) the next time MIN_READABLE lags SNAPSHOT_FORMAT; the T_CONTRACT case below is the
+    // worked example, in git.
     // Symbol identity as replicated state (matrix F2): ids assigned in committed-log order,
     // never evicted, so the generator derives from the mapping itself on restore.
     private final String[] tickerById = new String[MAX_SECURITIES];
@@ -368,6 +513,55 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // the identical rate at the identical sequence. 0 = no rate sequenced yet, and the credit gate
     // fails closed on it. Slot 0 (USD) stays 0 and is never read: USD is identity by construction.
     private final long[] fxUsdTicksPerCurrency = new long[SwapConventions.currencyCount()];
+    /**
+     * YU17 (ADR-069): the venue phase. Replicated state -- written ONLY by the sequenced
+     * TYPE_SESSION_CONTROL apply and by snapshot restore.
+     *
+     * <p>A fresh epoch starts OPEN (decision a): every proof and fixture assumes a trading book,
+     * and CLOSED-until-commanded remains available by issuing the command during bring-up, so
+     * nothing is foreclosed.
+     */
+    private byte phase = PHASE_OPEN;
+    /**
+     * YU17 (ADR-069 section 1.4): orders held while PRE_OPEN, {@link #QUEUED_TUPLE_LENGTH} columns each.
+     *
+     * <p><b>Insertion order is log order and is LOAD-BEARING</b> -- it is the release order at the
+     * open, which makes time priority at the open the same thing the book's FIFO already derives
+     * from the log, rather than an accident. Written to and restored from the snapshot in that
+     * order. Cold path (a handful of halts a day), so the ArrayList never touches the order hot
+     * loop -- the same posture as {@link #contracts}.
+     */
+    private final java.util.List<long[]> queuedOrders = new java.util.ArrayList<>();
+    /**
+     * clientOrderKey -> index into {@link #queuedOrders}: idempotency at QUEUE time, so a retried
+     * key finds the queued original instead of queueing a second copy. The engine's own idempotency
+     * table cannot answer here, because the risk decision has not run yet -- it runs at the OPEN.
+     *
+     * <p>TRANSIENT, and never snapshotted: it is derived state, rebuilt from the queue on restore
+     * (the ADR-052/060 pattern). Snapshotting a derived index is how two members come to disagree
+     * about a mapping neither of them decided.
+     */
+    private final java.util.Map<Long, Integer> queuedByClientKey = new java.util.HashMap<>();
+    /**
+     * Snapshot restore: bit per T_* record type actually seen in the stream, checked against
+     * {@link #REQUIRED_RECORD_TYPES} at {@link #finishLoad}. Generalises the
+     * {@code snapshotHeaderSeen} boolean that was already here -- restore-side only, no format
+     * change. Bit 0 is unused (there is no type 0).
+     */
+    private int recordTypesSeen;
+    /** Snapshot restore: the queue depth T_SESSION declared, so {@link #finishLoad} can assert the
+     *  stream actually carried that many T_QUEUED_ORDER rows. -1 = no T_SESSION seen yet. */
+    private long restoredQueueDepth = -1L;
+    /** Reusable order shell for the session machine's own egress (queue ack, session cancel).
+     *  Apply-thread only, never indexed by the engine, never reserved against, never snapshotted
+     *  as an order: a queued order lives in {@link #queuedOrders}, not in the book. */
+    private final finos.traderx.ordermatcher.lmax.RestingOrder sessionOrder =
+        new finos.traderx.ordermatcher.lmax.RestingOrder();
+    /** Reusable input for replaying a queued order through the engine at the open. */
+    private final InputEvent releaseEvent = new InputEvent();
+    /** The engine's output channel, kept so the session machine can emit order-lifecycle events for
+     *  orders the engine never sees. Same ring, same thread, single producer. */
+    private OutputPublisher outputs;
 
     private volatile int snapshotsTaken;
     private volatile long lastLoadedNextOrderRef = -1;
@@ -487,13 +681,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             CREDIT_LIMIT_TICKS, MAX_ORDER_QUANTITY, MAX_ORDER_NOTIONAL_TICKS, PRICE_MAX_AGE_MILLIS,
             new RiskMetrics());
         // fillFullThreshold 0: the crossing book has no threshold-driven half-fill policy (YU13).
-        this.engine = new MatchingEngine(new OutputPublisher(outputRing, this::drainOnBackpressure), new HotPathMetrics(),
+        this.outputs = new OutputPublisher(outputRing, this::drainOnBackpressure);
+        this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
             MAX_SECURITIES, 0, initialPoolSize, POOL_SIZE, terminalRetain, risk);
         this.nextOrderRef = 1;
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
         this.snapshotHeaderSeen = false;
-        this.restoredFormat = SNAPSHOT_FORMAT;
+        this.recordTypesSeen = 0;
+        this.restoredQueueDepth = -1L;
+        this.phase = PHASE_OPEN;   // decision (a): a fresh epoch, and a member that restores nothing, is OPEN
+        this.queuedOrders.clear();
+        this.queuedByClientKey.clear();
         java.util.Arrays.fill(tickerById, null);
         this.nextSymbolId = 0;
         this.contracts.clear();
@@ -532,6 +731,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // YU17 FX-rate fix: sequenced like every command, applied here, never handed to the
             // engine — the rate is credit-gate state, not an instrument. See onFxRate.
             onFxRate();
+            return;
+        }
+        if (event.type == InputEvent.TYPE_SESSION_CONTROL) {
+            // YU17 (ADR-069): the venue phase is a sequenced command applied HERE, never handed to
+            // the engine — same posture as the FX rate above. Its apply may release or cancel the
+            // whole queue, so it is the one control that emits order-lifecycle egress.
+            onSessionControl(session, timestamp);
             return;
         }
         if (event.type == InputEvent.TYPE_SWAP_BOOK || event.type == InputEvent.TYPE_SWAPTION_BOOK) {
@@ -604,7 +810,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         activeSession = session; // backpressure drain target while the engine emits (same thread)
         applyingMarketTrade = event.type == InputEvent.TYPE_TRADE_NEW;
         directAckKind = 0; // OTEL-01 follow-up: set by drainOutputs below (incl. the backpressure drain)
-        engine.onEvent(event, appliedSeq, true);
+        // YU17 (ADR-069 §1.3): the session gate. It sits HERE — after the sequenced generator has
+        // assigned this order's ref and after event time is stamped, and before the engine sees
+        // anything. Both halves matter: a queued order must already HOLD its ref (the open releases
+        // it without re-sequencing, so cross-epoch ref monotonicity and the client's ack
+        // correlation both survive), and a refusal while CLOSED must still consume a ref value
+        // deterministically, exactly as a duplicate retry does today.
+        if (phaseAdmits()) {
+            engine.onEvent(event, appliedSeq, true);
+        }
         activeSession = null;
         drainOutputs(session);
         applyingMarketTrade = false;
@@ -705,6 +919,306 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             && event.fxRateTicks() > 0L) {
             fxUsdTicksPerCurrency[currencyIndex] = event.fxRateTicks();
         }
+    }
+
+
+    // ----- the session machine (YU17, ADR-069) -----------------------------------------------
+
+    /**
+     * Apply a sequenced phase command. The target phase rides the {@code side} slot
+     * (0=CLOSED, 1=PRE_OPEN, 2=OPEN) and the operator's correlation id rides {@code
+     * clientOrderKey}; the command itself is offered with request id 0, so the lifecycle acks the
+     * OPEN release emits below (which echo {@code applyRequestId} at bytes 24..31) can complete
+     * nothing. See {@link #KIND_SESSION_PHASE}.
+     *
+     * <p>Two transitions do work beyond setting a byte:
+     * <ul>
+     *   <li><b>-&gt; OPEN</b> releases the queue, replaying each held order through the engine's
+     *       normal path in INSERTION ORDER, inside this one apply;</li>
+     *   <li><b>PRE_OPEN -&gt; CLOSED</b> cancels the queue (decision b): a halt that pending client
+     *       orders can block is not a halt.</li>
+     * </ul>
+     *
+     * <p>Fails closed and silently on an unknown phase value, the same posture as
+     * {@link #onFxRate}: the gateway validates before sequencing, so a bad value here is a later
+     * build's log entry, and "ignored identically on every member" is the only apply that cannot
+     * diverge.
+     */
+    private void onSessionControl(final ClientSession session, final long timestamp) {
+        // Sequenced and time-stamped exactly as the order path is: the queue's cancel/release acks
+        // are ordinary order-lifecycle events and must carry this apply's position and cluster
+        // time, not the gateway's zeroed ingress slots.
+        event.seq = ++appliedSeq;
+        final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
+        event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
+        event.ingressNanos = System.nanoTime();   // telemetry only, never state
+        final byte target = event.side;
+        if (target < PHASE_CLOSED || target > PHASE_OPEN) {
+            return;
+        }
+        // The engine emits into the ring on this thread during the release, so the backpressure
+        // drain needs its egress target exactly as an ordinary apply does.
+        activeSession = session;
+        applyRequestId = 0L;   // §1.2: released orders' acks must complete no pending
+        if (target == PHASE_OPEN) {
+            releaseQueue();
+        } else if (target == PHASE_CLOSED) {
+            cancelQueue();
+        }
+        phase = target;
+        activeSession = null;
+        drainOutputs(session);
+
+        ackBuffer.putLong(0, appliedSeq);
+        ackBuffer.putInt(8, phase);
+        ackBuffer.putByte(12, KIND_SESSION_PHASE);
+        ackBuffer.putLong(13, event.clientOrderKey());
+        ackBuffer.putByte(21, (byte) 0);
+        ackBuffer.putByte(22, (byte) 0);
+        ackBuffer.putByte(23, (byte) 0);
+        ackBuffer.putLong(24, 0L); // phase acks correlate by their OWN request id at 13 — never here
+        offerEgress(session);
+    }
+
+    /**
+     * The session gate (§1.3). Returns true when the decoded input should reach the engine.
+     *
+     * <p>The table, and the two rows that are decisions rather than defaults:
+     * <ul>
+     *   <li><b>PRICE_TICK passes in EVERY phase</b> (decision 6): the feed never halts, so the band
+     *       keeps tracking the market through a halt and the open is judged against a current
+     *       reference rather than yesterday's;</li>
+     *   <li><b>CANCEL is allowed while CLOSED</b> (decision c, which overrode the recommendation):
+     *       a cancel only ever REDUCES exposure — it cannot cross, trade, move a price, or re-open
+     *       a halted book — so permitting it during a halt is safer than forbidding it. Forbidding
+     *       it would lock a client into a resting order until the open, where it may fill on terms
+     *       they never saw.</li>
+     * </ul>
+     *
+     * <p>Controls, FX rates, symbol registration, risk-extract markers and OTC bookings never reach
+     * here at all: the first three are routed by template above and the last two by type, before
+     * this gate. That routing IS decision (d) — the halt is the VENUE'S BOOK, and bilateral desk
+     * business never touches it.
+     */
+    private boolean phaseAdmits() {
+        if (phase == PHASE_OPEN) {
+            return true;
+        }
+        switch (event.type) {
+            case InputEvent.TYPE_ORDER_NEW:
+                if (phase == PHASE_PRE_OPEN) {
+                    queueOrder();
+                } else {
+                    refuseNewOrder(RiskReason.MARKET_CLOSED);
+                }
+                return false;
+            case InputEvent.TYPE_ORDER_CANCEL:
+                // PRE_OPEN: a cancel naming a QUEUED order removes it from the queue and acks
+                // CANCELED here; anything else is an ordinary engine cancel of a resting order.
+                // CLOSED: decision (c) — always the engine's.
+                return !(phase == PHASE_PRE_OPEN && cancelQueued(event.orderRef));
+            case InputEvent.TYPE_ORDER_REPLACE:
+            case InputEvent.TYPE_FORCE_FILL:
+                // v1: refused in both halted phases. A queue-aware replace is the stated upgrade
+                // path; a force fill has no meaning against a book nobody may trade into.
+                engine.refuseTargetedRequest(event, RiskReason.MARKET_CLOSED);
+                return false;
+            case InputEvent.TYPE_TRADE_NEW:
+                // A market trade is its own correlation path (/trades reads KIND_TRADE_*), so the
+                // refusal has to be emitted in that shape or the gateway waits for an ack that
+                // never comes.
+                outputs.emitTradeDecision(event.seq, (byte) RiskReason.MARKET_CLOSED.ordinal(),
+                    false, event.ingressNanos);
+                return false;
+            default:
+                // PRICE_TICK, SNAPSHOT markers and every *_CONTROL: pass, in every phase.
+                return true;
+        }
+    }
+
+    /** Hold a new order for the open (§1.4). The ref is already assigned — the client's ack names
+     *  the very order the release will replay. */
+    private void queueOrder() {
+        final long clientKey = event.clientOrderKey();
+        if (clientKey != 0L) {
+            final Integer existing = queuedByClientKey.get(clientKey);
+            if (existing != null) {
+                // Idempotent retry: re-ack the ORIGINAL queued order, never queue a second copy.
+                // (The retry still consumed a ref from the generator, deterministically on every
+                // member — the same posture a duplicate retry has had since FR-IMRG14.)
+                emitQueuedAck(queuedOrders.get(existing));
+                return;
+            }
+        }
+        if (queuedOrders.size() >= MAX_QUEUED_ORDERS) {
+            refuseNewOrder(RiskReason.CAPACITY);
+            return;
+        }
+        final long[] row = new long[] {
+            event.orderRef, event.accountId, event.securityId, event.side,
+            event.qty, event.limitPx, clientKey, event.eventTimeMillis };
+        if (clientKey != 0L) {
+            queuedByClientKey.put(clientKey, queuedOrders.size());
+        }
+        queuedOrders.add(row);
+        emitQueuedAck(row);
+    }
+
+    /** Remove a queued order by ref and ack it CANCELED; false when the ref names no queued order
+     *  (in which case the cancel belongs to the engine). Linear scan over a cold-path list. */
+    private boolean cancelQueued(final int orderRef) {
+        for (int i = 0; i < queuedOrders.size(); i++) {
+            if ((int) queuedOrders.get(i)[0] == orderRef) {
+                final long[] row = queuedOrders.remove(i);
+                reindexQueueKeys();
+                emitQueuedTerminal(row, RiskReason.ACCEPTED);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Decision (b): a close with a non-empty queue CANCELS it, one {@code SESSION_CANCELED} per
+     * entry. That reason is deliberately NOT {@code MARKET_CLOSED} — "we refused you at the door"
+     * and "the order you already hold is gone" are different events calling for different client
+     * actions, and one reason for both would make them indistinguishable.
+     */
+    private void cancelQueue() {
+        for (final long[] row : queuedOrders) {
+            emitQueuedTerminal(row, RiskReason.SESSION_CANCELED);
+        }
+        queuedOrders.clear();
+        queuedByClientKey.clear();
+    }
+
+    /**
+     * The open (§1.5): replay every held order through the engine's ordinary ORDER_NEW path, in
+     * insertion order, inside this one apply.
+     *
+     * <p><b>Band and risk are judged HERE, not at queue time.</b> The band must be judged against
+     * the open's reference (the feed kept ticking through the halt and the band re-anchors across
+     * it), and reservations must not be held against control state that can change while an order
+     * is queued. A queue-time decision would also have made the queue-time ack a lie.
+     *
+     * <p><b>ZERO new order refs are issued.</b> Every released order already holds the ref it was
+     * given at sequencing, and the engine's generator is untouched by this loop. Re-sequencing on
+     * release would break cross-epoch ref monotonicity and the client's ack correlation both.
+     *
+     * <p>Determinism is trivial: one apply, one thread, one order — identical on every member and
+     * on replay. The cascade is bounded by {@link #MAX_QUEUED_ORDERS} and, structurally, by
+     * {@code drainOnBackpressure}.
+     */
+    private void releaseQueue() {
+        if (queuedOrders.isEmpty()) {
+            return;
+        }
+        final java.util.List<long[]> released = new java.util.ArrayList<>(queuedOrders);
+        queuedOrders.clear();
+        queuedByClientKey.clear();
+        for (final long[] row : released) {
+            releaseEvent.type = InputEvent.TYPE_ORDER_NEW;
+            releaseEvent.orderRef = (int) row[0];
+            releaseEvent.accountId = (int) row[1];
+            releaseEvent.securityId = (int) row[2];
+            releaseEvent.side = (byte) row[3];
+            releaseEvent.qty = (int) row[4];
+            releaseEvent.limitPx = row[5];
+            releaseEvent.setClientOrderKey(row[6]);
+            releaseEvent.eventTimeMillis = row[7];
+            releaseEvent.seq = appliedSeq;
+            releaseEvent.ingressNanos = event.ingressNanos;
+            engine.onEvent(releaseEvent, appliedSeq, true);
+        }
+    }
+
+    /** Rebuild the transient key index after a removal shifts every later entry's position. */
+    private void reindexQueueKeys() {
+        queuedByClientKey.clear();
+        for (int i = 0; i < queuedOrders.size(); i++) {
+            final long key = queuedOrders.get(i)[6];
+            if (key != 0L) {
+                queuedByClientKey.put(key, i);
+            }
+        }
+    }
+
+    /** The client's direct ack for a queued order: ACCEPTED, {@code STATUS_QUEUED} (§1.6). It
+     *  completes the pending, names the orderRef, and says QUEUED rather than working — and it
+     *  rides the ordinary order-lifecycle egress, so the read model and the console see the order
+     *  exist in that state. The REST ack itself is unchanged; QUEUED is read from the read model. */
+    private void emitQueuedAck(final long[] row) {
+        loadSessionOrder(row);
+        sessionOrder.status = finos.traderx.ordermatcher.lmax.RestingOrder.STATUS_QUEUED;
+        sessionOrder.riskReason = (byte) RiskReason.ACCEPTED.ordinal();
+        outputs.emitOrderUpdate(sessionOrder, event.seq, OutputEvent.FLAG_CREATE, true,
+            engine.markPx((int) row[2]), event.ingressNanos);
+    }
+
+    /** A queued order leaving the queue without ever reaching a book: CANCELED, carrying the
+     *  reason that says WHICH session event removed it. */
+    private void emitQueuedTerminal(final long[] row, final RiskReason reason) {
+        loadSessionOrder(row);
+        sessionOrder.status = finos.traderx.ordermatcher.lmax.RestingOrder.STATUS_CANCELED;
+        sessionOrder.remaining = 0;
+        sessionOrder.riskReason = (byte) reason.ordinal();
+        sessionOrder.updatedAtMillis = event.eventTimeMillis;
+        outputs.emitOrderUpdate(sessionOrder, event.seq, OutputEvent.FLAG_CANCEL, true,
+            engine.markPx((int) row[2]), event.ingressNanos);
+    }
+
+    private void loadSessionOrder(final long[] row) {
+        sessionOrder.reset();
+        sessionOrder.orderRef = (int) row[0];
+        sessionOrder.accountId = (int) row[1];
+        sessionOrder.securityId = (int) row[2];
+        sessionOrder.side = (byte) row[3];
+        sessionOrder.quantity = (int) row[4];
+        sessionOrder.remaining = (int) row[4];
+        sessionOrder.limitPx = row[5];
+        sessionOrder.createdAtMillis = row[7];
+        sessionOrder.updatedAtMillis = row[7];
+    }
+
+    /** Refuse an ORDER_NEW the session will not admit. Journaled and addressable for audit exactly
+     *  as a risk rejection is, and never resting or reserving — the engine never saw it. */
+    private void refuseNewOrder(final RiskReason reason) {
+        sessionOrder.reset();
+        sessionOrder.orderRef = event.orderRef;
+        sessionOrder.accountId = event.accountId;
+        sessionOrder.securityId = event.securityId;
+        sessionOrder.side = event.side;
+        sessionOrder.quantity = event.qty;
+        sessionOrder.remaining = 0;
+        sessionOrder.limitPx = event.limitPx;
+        sessionOrder.status = finos.traderx.ordermatcher.lmax.RestingOrder.STATUS_REJECTED;
+        sessionOrder.riskReason = (byte) reason.ordinal();
+        sessionOrder.createdAtMillis = event.eventTimeMillis;
+        sessionOrder.updatedAtMillis = event.eventTimeMillis;
+        outputs.emitOrderUpdate(sessionOrder, event.seq, OutputEvent.FLAG_REJECT, true,
+            engine.markPx(event.securityId), event.ingressNanos);
+    }
+
+    /** The venue phase, for the member health surface (§1.7). */
+    public String phaseName() {
+        return PHASE_NAMES[phase];
+    }
+
+    /** Phase ordinal — package-private test seam. */
+    byte phase() {
+        return phase;
+    }
+
+    /** How many orders the pre-open queue holds (§1.7: "was the market open, and is anything
+     *  queued?" must be answerable in ONE request). */
+    public int queueDepth() {
+        return queuedOrders.size();
+    }
+
+    /** The queued rows in insertion order — package-private test seam; the shell proofs read
+     *  {@link #queueDepth()} off /health. */
+    java.util.List<long[]> queuedOrderTuples() {
+        return queuedOrders;
     }
 
     /** USD ticks per one unit of the currency at {@code currencyIndex}; 0 = no rate available.
@@ -982,14 +1496,30 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 writeTuple(writer, T_FX_RATE, new long[] { i, fxUsdTicksPerCurrency[i] });
             }
         }
+        // YU17 format 8: the venue session, ALWAYS written — an absent T_SESSION is a defect, and
+        // the restore-side presence check (REQUIRED_RECORD_TYPES) says so.
+        //
+        // queueDepth is read from the LIVE queue here, deliberately, and never tallied from the
+        // loop below. A count the writer derives from its own output is a checksum of its own bug:
+        // it would agree with a write loop that emitted nothing and catch exactly the defect it
+        // exists to catch, never.
+        writeTuple(writer, T_SESSION, new long[] { phase, queuedOrders.size() });
+        // Insertion order, which IS the release order at the open (§1.4). Restore refuses rows out
+        // of that order, the same rule T_CONTRACT follows and for the same reason: nothing else
+        // validates it, so the invariant lives in the write order and the reader's check.
+        for (final long[] queued : queuedOrders) {
+            writeTuple(writer, T_QUEUED_ORDER, queued);
+        }
         for (final long[] position : engine.positionTuples()) {
             writeTuple(writer, T_POSITION, position);
         }
         for (final long[] price : engine.priceTuples()) {
             writeTuple(writer, T_PRICE, price);
         }
-        // Band anchors BEFORE order rows: restore must rebuild each book's geometry first so
-        // open rows re-enter their exact original price levels (replica-identical bands).
+        // Book geometry BEFORE order rows: restore must rebuild each book's grid AND anchor first
+        // so open rows re-enter their exact original price levels (replica-identical bands).
+        // Format 8: three columns — {securityId, baseLevel, tickPx}. The tick rides beside the
+        // anchor because the anchor is DENOMINATED in it (design §2.4).
         for (final long[] bookBase : engine.bookBaseTuples()) {
             writeTuple(writer, T_BOOK, bookBase);
         }
@@ -1024,6 +1554,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         if (!snapshotHeaderSeen && type != T_HEADER) {
             throw new IllegalStateException("snapshot corrupt: first record type " + type + ", want header");
         }
+        // YU17 format 8: remember WHICH record types the stream actually carried, so finishLoad can
+        // refuse a stream that terminated cleanly with whole types missing (see
+        // REQUIRED_RECORD_TYPES). Restore-side only — nothing about the written format changes.
+        if (type > 0 && type < 32) {
+            recordTypesSeen |= 1 << type;
+        }
         switch (type) {
             case T_HEADER -> {
                 final int format = buffer.getInt(offset + 4);
@@ -1042,7 +1578,6 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                         + " is older than this build can restore (minimum "
                         + MIN_READABLE_SNAPSHOT_FORMAT + ", current " + SNAPSHOT_FORMAT + ")");
                 }
-                restoredFormat = format;
                 nextOrderRef = buffer.getLong(offset + 8);
                 highestIssuedRef = buffer.getLong(offset + 16);
                 appliedSeq = buffer.getLong(offset + 24);
@@ -1076,20 +1611,35 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 buffer.getLong(offset + 4),
                 (int) buffer.getLong(offset + 12),
                 (byte) buffer.getLong(offset + 20));
-            case T_BOOK -> engine.bootstrapBook(
-                (int) buffer.getLong(offset + 4),
-                buffer.getLong(offset + 12));
+            case T_BOOK -> {
+                // Format 8 (design §2.4): {securityId, baseLevel, tickPx}. Restore reads the GRID
+                // instead of re-deriving it, which is what retires the unit-misreading hazard
+                // class — MIN_READABLE 8 guarantees a two-column record can never arrive here, so
+                // no dual-shape reader is needed.
+                final int bookSecurityId = (int) buffer.getLong(offset + 4);
+                final long baseLevel = buffer.getLong(offset + 12);
+                final long tickPx = buffer.getLong(offset + 20);
+                // Fail closed, the same posture as bootstrapOrder's off-grid/outside-band checks
+                // (which remain as the second tripwire): a tick that is non-positive, does not
+                // divide a cent, or exceeds the global cap without a ticker CATEGORY that says so,
+                // is a grid this build cannot have written.
+                final long categoryTickPx = bookSecurityId >= 0 && bookSecurityId < MAX_SECURITIES
+                    ? derivedBookTickPxFor(tickerById[bookSecurityId]) : 0L;
+                if (tickPx <= 0L || 10_000L % tickPx != 0L
+                    || (tickPx > MatchingEngine.DEFAULT_BOOK_TICK_PX && tickPx != categoryTickPx)) {
+                    throw new IllegalStateException("snapshot corrupt: book " + bookSecurityId
+                        + " tick " + tickPx);
+                }
+                engine.bootstrapBook(bookSecurityId, baseLevel, tickPx);
+            }
             case T_CONTRACT -> {
-                // Dispatch on the RESTORED format, not on the record: onSnapshotRecord is handed an
-                // offset and no length, so a record cannot tell the reader how wide it is. The
-                // header has already been seen (the first-record check guarantees that), so the
-                // format is known by the time any T_CONTRACT arrives. A format-5 record carries the
-                // eight swap columns and nothing more; its wrapper defaults to PRODUCT_SWAP with a
-                // zero expiry, which is exactly what it was.
-                final int columns =
-                    restoredFormat >= 6 ? CONTRACT_TUPLE_LENGTH : CONTRACT_TUPLE_LENGTH_V5;
+                // One readable shape: MIN_READABLE 8 means the narrower format-5 record (eight
+                // columns, swaps only) can no longer reach this reader at all — it is refused at
+                // the header. Until the mint this case dispatched on the restored format, because
+                // onSnapshotRecord is handed an offset and no length so a record cannot tell the
+                // reader how wide it is.
                 final long[] contract = new long[CONTRACT_TUPLE_LENGTH];
-                for (int i = 0; i < columns; i++) {
+                for (int i = 0; i < CONTRACT_TUPLE_LENGTH; i++) {
                     contract[i] = buffer.getLong(offset + 4 + 8 * i);
                 }
                 final long contractId = contract[0];
@@ -1172,6 +1722,46 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     engine.overrideBookTickPx(id, derivedTickPx);
                 }
             }
+            case T_SESSION -> {
+                final long restoredPhase = buffer.getLong(offset + 4);
+                if (restoredPhase < PHASE_CLOSED || restoredPhase > PHASE_OPEN) {
+                    // Fail closed: a phase this build cannot hold means the snapshot is not this
+                    // build's to restore, and defaulting it would reopen a halted venue silently.
+                    throw new IllegalStateException("snapshot corrupt: session phase " + restoredPhase);
+                }
+                phase = (byte) restoredPhase;
+                restoredQueueDepth = buffer.getLong(offset + 12);
+                if (restoredQueueDepth < 0 || restoredQueueDepth > MAX_QUEUED_ORDERS) {
+                    throw new IllegalStateException(
+                        "snapshot corrupt: queue depth " + restoredQueueDepth);
+                }
+            }
+            case T_QUEUED_ORDER -> {
+                final long[] queued = new long[QUEUED_TUPLE_LENGTH];
+                for (int i = 0; i < QUEUED_TUPLE_LENGTH; i++) {
+                    queued[i] = buffer.getLong(offset + 4 + 8 * i);
+                }
+                final long ref = queued[0];
+                if (ref <= 0 || ref >= nextOrderRef) {
+                    // The T_ORDER rule (FR-AC09): a queued order holds a ref the generator already
+                    // issued, so one at or beyond the restored generator is an order this member
+                    // could not have accepted.
+                    throw new IllegalStateException(
+                        "snapshot incomplete: queued ref " + ref + " >= nextOrderRef " + nextOrderRef);
+                }
+                if (!queuedOrders.isEmpty() && ref <= queuedOrders.get(queuedOrders.size() - 1)[0]) {
+                    // The T_CONTRACT rule: insertion order is ascending by construction here,
+                    // because the ref generator advances at sequencing and the queue only appends.
+                    // Anything else means the rows were reordered — and this order IS the release
+                    // order at the open, so a reordered queue is a different opening auction.
+                    throw new IllegalStateException("snapshot corrupt: queued ref " + ref
+                        + " is not after " + queuedOrders.get(queuedOrders.size() - 1)[0]);
+                }
+                queuedOrders.add(queued);
+                if (queued[6] != 0L) {
+                    queuedByClientKey.put(queued[6], queuedOrders.size() - 1);
+                }
+            }
             case T_END -> {
                 finishLoad();
                 return true;
@@ -1181,10 +1771,38 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         return false;
     }
 
-    /** Final load invariant (FR-AC09): the generator strictly exceeds every ID ever issued. */
+    /**
+     * Final load invariants. Three of them now, and the last two exist because of a measured gap:
+     * a restore handed a record stream with WHOLE TYPES MISSING accepted it silently — no throw,
+     * clean termination on T_END, state simply absent (SessionSnapshotRestoreTest's false arm).
+     *
+     * <ol>
+     *   <li>(FR-AC09) the generator strictly exceeds every ID ever issued;</li>
+     *   <li><b>presence</b>: every record type a format-8 snapshot must contain actually appeared
+     *       (see {@link #REQUIRED_RECORD_TYPES});</li>
+     *   <li><b>count</b>: exactly as many T_QUEUED_ORDER rows arrived as T_SESSION declared.
+     *       Presence alone CANNOT cover the queue — zero rows is legitimate whenever the queue is
+     *       empty, and that is precisely the dangerous record: a queue silently restored empty
+     *       reads as "no halt was in effect", and a halt pending client orders can walk through is
+     *       not a halt.</li>
+     * </ol>
+     *
+     * <p>A general manifest of {type -> count} was considered and rejected as premature: the
+     * per-record pattern above is cheaper each time and carries no self-reference risk.
+     */
     void finishLoad() {
         if (!snapshotHeaderSeen) {
             throw new IllegalStateException("snapshot corrupt: no header record");
+        }
+        final int missing = REQUIRED_RECORD_TYPES & ~recordTypesSeen;
+        if (missing != 0) {
+            throw new IllegalStateException("snapshot incomplete: record types absent, mask "
+                + Integer.toBinaryString(missing) + " (required " + Integer.toBinaryString(REQUIRED_RECORD_TYPES)
+                + ", seen " + Integer.toBinaryString(recordTypesSeen) + ")");
+        }
+        if (queuedOrders.size() != restoredQueueDepth) {
+            throw new IllegalStateException("snapshot incomplete: session declared queueDepth "
+                + restoredQueueDepth + " but " + queuedOrders.size() + " queued rows were read");
         }
         if (nextOrderRef <= highestIssuedRef) {
             throw new IllegalStateException("snapshot incomplete: nextOrderRef " + nextOrderRef

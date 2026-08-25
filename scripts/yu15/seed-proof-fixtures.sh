@@ -127,9 +127,14 @@ done
 # and that becomes the risk anchor -- yu08-algo-slicing.sh passing 200 unconditionally is how IBM's
 # anchor sat at 200 while the feed had walked to ~185.
 #
-# SEEDING ONLY, DELIBERATELY NO CROSS. The price collar band is anchored by the first LIMIT into a
-# book (slotFor()), never by a price tick, so seeding cannot pin an option book -- crossing here
-# would, and yu15-option-persistence.sh must cross AAPL261218C00260000 at 2.40 against a live ~8.85.
+# SEEDING ONLY, DELIBERATELY NO CROSS. yu15-option-persistence.sh must cross AAPL261218C00260000
+# at 2.40 against a live ~8.85, so a cross here would pin that book where the proof cannot use it.
+#
+# (The old reason given here -- "the collar band is anchored by the first LIMIT into a book
+# (slotFor()), never by a price tick, so seeding cannot pin an option book" -- is stale pre-ADR-066
+# prose and was deleted at the format-8 mint. Since ADR-066 a new book anchors on the REFERENCE, so
+# a seeded tick does pin the band; and since format 8 the tick a book seeds at also decides its
+# GRID, because an empty book re-derives its scale from that same reference.)
 #
 # THE CAPACITY THAT USED TO BOUND THIS IS GONE, which is what makes seeding the whole feed possible.
 # The historical builds yu13-stp-and-replace rolls the members onto held MAX_SECURITIES=64, so the

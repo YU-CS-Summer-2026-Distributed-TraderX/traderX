@@ -102,6 +102,47 @@ at a quantity that clears the other validators, and confirm which gate answers.*
 Whichever is taken, a collar proof must cover a **non-equity** instrument, or the same blind spot
 returns on the next instrument class.
 
+## BUILT 2026-08-25, NOT YET MINTED — what shipped, and the residual it leaves
+
+The fix is **direction 1 in substance, delivered through direction 2's machinery**, and it is
+neither of the two the issue expected: the band stays an absolute distance in ticks, but the TICK is
+now derived per book from the collar's own replicated reference by a pure decade map
+(`MatchingEngine.decadeTickPx`; `format-8-price-derived-grid-design.md` §2). A book re-derives its
+grid at every moment it holds no resting orders, so the band is effectively relative — measured
+across all 69 live instruments it lands every half-band between **6.6% and 64.9% of price** — with
+no class-keyed constant to drift. The fraction-of-par ticker category still OUTRANKS the map, because
+that grid is about six-decimal quote granularity rather than width (design §1.3, with
+`CORP-JPM-20310601` trading above par as the live counterexample).
+
+Corrections this closes, against the table above:
+
+- **listed options: fixed, and without an option constant.** Each option book is priced off its own
+  live premium, so `$0.504` gets tick 1 (±$0.0655, ~13% of premium) where the ±$65.54 band admitted
+  130× the premium. The `OPTION_BOOK_TICK_PX` constant scope §2.1 proposed does not ship at all
+  (design §8, settled) — the map is the strike-derived upgrade that section anticipated, obtained
+  for free and better, since premium beats strike as a scale proxy.
+- **`FNMA`: fixed.** At ~$1.11 it derives tick 10, a ±$0.655 band — 58% of price, against the ±$65.54
+  that admitted a 58× fat finger.
+- **the worst fat-finger multiple the band admits anywhere is now 1.65×.**
+
+**The residual, narrowed and stated as directive 3 requires.** It is no longer "all sub-$10 equities":
+it is exactly **an instrument the feed never prices and that never trades**. Such a book holds the
+provisional global grid, and for anything under ~$66 that collar does not bind — and nothing else
+does either, since the compensating risk caps are effectively unlimited
+(`MAX_ORDER_NOTIONAL_TICKS = Long.MAX/4`). That is the same condition the risk gate already names
+(`PRICE_MISSING`), and it self-heals: one tick plus one empty admission puts the book on its real
+grid. Recorded rather than accepted silently.
+
+The issue's closing requirement — *"a collar proof must cover a non-equity instrument"* — is met by
+`yu17-option-collar` and `yu17-fnma-collar`, with `yu17-fine-grid` and `yu17-book-retick` covering
+the grid itself and `yu17-retick-determinism` covering cross-member agreement.
+
+**Still open until the mint.** The build is on `YU17-otc-rates` and tagged
+`traderx/cluster-node:yu17-format8`; nothing is deployed, and the five proofs above are red by
+design until the format-8 epoch is minted. Move this file to `issues/resolved/` when they go green —
+and check the commit's stat line when you do, because `git mv` stages the index blob and a resolve
+can otherwise land as a pure rename with the body missing.
+
 ## Related
 
 - [ADR-066](../specs/YU17-otc-rates/system/adr-066-price-band-follows-the-market.md) — the band

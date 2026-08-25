@@ -1,6 +1,6 @@
 # Scoping: the SNAPSHOT_FORMAT 7 → 8 mint
 
-**Status: DRAFT — scoping only, nothing built.** Written 2026-08-24 against the YU17 tip, after
+**Status: BUILT 2026-08-25 (chip 3), NOT MINTED.** The contents below are implemented on `YU17-otc-rates` and tagged `traderx/cluster-node:yu17-format8`; the epoch wipe is chip 4's. See §8 for what was built, what the build corrected, and what chip 4 must still do. Originally written as scoping only: Written 2026-08-24 against the YU17 tip, after
 yaakov's six ADR decisions of the same day. Two deterministic-core changes share one epoch mint
 (ADR-069, "Epoch consequence"): the **pre-open phase machine** (ADR-069 decisions 3+4) and the
 **collar band-width fix** (`issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`).
@@ -386,6 +386,59 @@ queue proof asserts the operator's pending completes with KIND_SESSION_PHASE, ne
 proof; (iv) a proof that passes vacuously — mitigated by every red half being mandatory.
 
 ---
+
+## 8. BUILT 2026-08-25 (chip 3) — what landed, what it corrected, what the mint still owes
+
+**Landed on `YU17-otc-rates`, full unfiltered `order-matcher` suite green (471 tests / 91 classes,
+up from 429 / 87), plus all six composed service modules (209 tests).**
+
+Everything §6 lists as riding the mint is built: `SNAPSHOT_FORMAT` 7→8 and
+`MIN_READABLE_SNAPSHOT_FORMAT` 3→8; `TYPE_SESSION_CONTROL = 15`, `KIND_SESSION_PHASE = 103`,
+`MARKET_CLOSED`, `STATUS_QUEUED = 5`; the phase machine, its gate table and the bounded queue with
+`T_SESSION`/`T_QUEUED_ORDER`; the price-derived grid with `T_BOOK`'s tick column; `/session`,
+`/health` `phase`+`queueDepth`, `/bbo` `tickPx`+`tickDrift`, `traderx_book_reticks`; the console's
+QUEUED rendering and the read-model/DB widening it needs.
+
+**Decisions taken while building, each recorded at the code:**
+
+1. **Decision (b)'s queue-cancel got its OWN appended reason, `SESSION_CANCELED`** — ruled by the
+   coordinator, built as ruled. A client must be able to tell "refused because we were closed"
+   (`MARKET_CLOSED`) from "the order you already hold was cancelled when the session halted": those
+   are different events calling for different client actions.
+2. **`MAX_QUEUED_ORDERS = 4096`, sized by measurement** (`QueuedOrderSizingTest` prints the table on
+   every run): 68 B/row measured on the wire → 272 KB at the cap, 26× inside the ~7 MB the
+   idempotency table already spends per snapshot; 1 output per released rest → 4096 outputs = 6.3%
+   of the 65,536-slot output ring, where 65536 would be exactly 100% and make
+   `drainOnBackpressure` the release's normal path on the most important apply of the day.
+3. **Two completeness guards ride the mint** (yaakov's decision): a restore-side presence bitmask
+   over the record types a format-8 snapshot must contain, and `T_SESSION`'s `queueDepth` column
+   with a count assertion at `finishLoad`. `queueDepth` is written from the LIVE queue, never
+   tallied from the write loop's output. A general `T_MANIFEST` was rejected as premature and is
+   not built.
+4. **The per-format record-width dispatch was DELETED, not kept as a dead branch.** With
+   `MIN_READABLE == SNAPSHOT_FORMAT` exactly one format is readable, so the format-5 T_CONTRACT
+   reader could never take its other arm; keeping it would have been a build claiming a
+   compatibility it does not have. `SwapBookingTest`'s three forward-roll arms are inverted to
+   refusals, and each says in place what coverage that cost.
+
+**Corrections this build made to the documents above:** see the design doc §7b — V3's expectation
+about un-anchored books is false in this code (they ARE snapshotted), which means §2.3 job 3's
+determinism premise is subsumed by the storage decision rather than provided by the re-derivation;
+and `decadeTickPx` takes its cap as a parameter.
+
+**What chip 4 (the mint) still owes, beyond the wipe itself:**
+
+- **the read-model DATABASE must be recreated with the epoch, not just the PVCs.** `QUEUED` is a new
+  value in the `orderbook.status` CHECK constraint, which lives in
+  `kubernetes-runtime/manifests/base/database-init-configmap.yaml` (copied up to YU17) and only
+  runs when the DB initialises an empty data directory. On a DB that keeps its old schema the
+  constraint REFUSES every queued order's row, and `yu17-preopen-queue-open`'s decision-(g)
+  assertion fails for a reason that has nothing to do with the engine;
+- **the on-rig half of gate V4** — `yu17-book-retick` run red against a deployed detonator image;
+- the destructive proofs (`yu17-halt-survives-failover`, `yu17-closed-survives-restart`) at
+  `DESTRUCTIVE=1 EXPECT=after`, and the eight `EXPECT=after` defaults flipped from red to green;
+- moving `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md` to
+  `issues/resolved/` once they are green (its body already carries the fold).
 
 ## 7. Decisions — SETTLED 2026-08-24 (yaakov)
 

@@ -172,29 +172,38 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatSeven() {
+    void aSnapshotFromThisBuildDeclaresFormatEight() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
-        assertEquals(7, header.getInt(4), "T_FX_RATE joined the snapshot; the format must say so");
-        assertEquals(3, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
-            "adding a record type does not stop older snapshots restoring — do not raise this");
+        assertEquals(8, header.getInt(4),
+            "the format-8 mint: T_BOOK grew the tick column and T_SESSION/T_QUEUED_ORDER joined");
+        // Literals on BOTH sides, never the constants they pin. MIN_READABLE rises WITH
+        // SNAPSHOT_FORMAT here, which is the whole point: a pre-8 T_BOOK carries an anchor with no
+        // tick, so it must be refused at the header rather than reinterpreted at this build's
+        // derived scale. Leaving MIN_READABLE below 8 while writing format 8 is the defect this
+        // line exists to catch.
+        assertEquals(8, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
+            "format 8 stores the book tick; every older snapshot must be refused, not re-derived");
     }
 
     @Test
-    void aFormatFourSnapshotStillRestores() {
-        // The forward-roll path: an epoch minted by YU16 must come up on this build untouched.
+    void aFormatFourSnapshotIsRefusedAtTheHeader() {
+        // WAS "aFormatFourSnapshotStillRestores": the forward-roll path a YU16 epoch used to take.
+        // The format-8 mint closes it deliberately, and this inversion is where that is stated.
+        // The coverage the old arm carried ("a format-4 epoch simply has no contracts yet") is not
+        // moved elsewhere — it CANNOT be, because the code path that read a format-4 record no
+        // longer exists. That is the cost of the MIN_READABLE raise, recorded here rather than
+        // quietly dropped.
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         header.putInt(4, 4);
         final MatchingEngineClusteredService restored = new MatchingEngineClusteredService();
         restored.initEngine();
-        boolean done = false;
-        for (final byte[] record : records) {
-            done = restored.onSnapshotRecord(new UnsafeBuffer(record), 0);
-        }
-        assertTrue(done, "a format-4 snapshot must still restore here");
-        assertEquals(0, restored.contractCount(), "a format-4 epoch simply has no contracts yet");
+        final IllegalStateException thrown = assertThrows(IllegalStateException.class,
+            () -> restored.onSnapshotRecord(header, 0));
+        assertTrue(thrown.getMessage().contains("older than this build can restore"),
+            "the refusal must name the direction, got: " + thrown.getMessage());
     }
 
     // ----- the risk gate --------------------------------------------------------------------------
@@ -357,7 +366,7 @@ class SwapBookingTest {
     }
 
     @Test
-    void fxRatesSurviveASnapshotAndAFormatSixEpochHasNone() {
+    void fxRatesSurviveASnapshotAndARatelessEpochHasNone() {
         final MatchingEngineClusteredService source = enabledAccounts();
         apply(source, fxRate("EUR", EUR_RATE_TICKS));
         final MatchingEngineClusteredService replica = restore(source);
@@ -369,30 +378,37 @@ class SwapBookingTest {
         assertEquals(1, replica.contractCount());
         assertEquals((long) NOTIONAL * EUR_RATE_TICKS, replica.risk().executedNotional(BUYER));
 
-        // A format-6 epoch (pre-fix) restores untouched and simply has no rates: the same booking
-        // is refused there. Header rewritten to 6 and the T_FX_RATE record dropped, mirroring
-        // what a real format-6 snapshot contains.
+        // A rate-less epoch refuses the same booking rather than booking it raw. Until the
+        // format-8 mint this was measured against a rewritten format-6 header; MIN_READABLE 8
+        // refuses that at the header now, so the same claim is measured on a CURRENT-format
+        // snapshot with the T_FX_RATE records dropped — which is byte-for-byte what a member that
+        // has never been handed a rate writes. The claim is unchanged; only the way of producing a
+        // rate-less snapshot is.
         final List<byte[]> records = new ArrayList<>();
         for (final byte[] record : snapshotRecords(source)) {
-            final UnsafeBuffer view = new UnsafeBuffer(record);
-            if (view.getInt(0) == MatchingEngineClusteredService.T_FX_RATE) {
+            if (new UnsafeBuffer(record).getInt(0) == MatchingEngineClusteredService.T_FX_RATE) {
                 continue;
-            }
-            if (view.getInt(0) == MatchingEngineClusteredService.T_HEADER) {
-                view.putInt(4, 6);
             }
             records.add(record);
         }
-        final MatchingEngineClusteredService preFix = new MatchingEngineClusteredService();
-        preFix.initEngine();
+        final MatchingEngineClusteredService rateless = new MatchingEngineClusteredService();
+        rateless.initEngine();
         boolean done = false;
         for (final byte[] record : records) {
-            done = preFix.onSnapshotRecord(new UnsafeBuffer(record), 0);
+            done = rateless.onSnapshotRecord(new UnsafeBuffer(record), 0);
         }
-        assertTrue(done, "a format-6 snapshot must still restore here");
-        apply(preFix, booking);
-        assertEquals(0, preFix.contractCount(),
+        assertTrue(done, "a rate-less snapshot must restore");
+        apply(rateless, booking);
+        assertEquals(0, rateless.contractCount(),
             "no sequenced rate in the epoch means a EUR booking is refused, not booked raw");
+
+        // ...and the pre-8 header it used to wear is now refused outright.
+        final UnsafeBuffer sixHeader = new UnsafeBuffer(snapshotRecords(source).get(0));
+        sixHeader.putInt(4, 6);
+        final MatchingEngineClusteredService preMint = new MatchingEngineClusteredService();
+        preMint.initEngine();
+        assertThrows(IllegalStateException.class, () -> preMint.onSnapshotRecord(sixHeader, 0),
+            "a format-6 snapshot has no tick column in T_BOOK and must be refused at the header");
     }
 
     @Test
@@ -525,45 +541,24 @@ class SwapBookingTest {
     }
 
     @Test
-    void aFormatFiveSnapshotRestoresItsSwapsAsSwaps() {
-        // The phase-1 forward-roll path: a format-5 T_CONTRACT carries eight columns and no option
-        // wrapper. Reading it at the new width would take the next record's bytes as an expiry.
+    void aFormatFiveSnapshotIsRefusedAtTheHeader() {
+        // WAS "aFormatFiveSnapshotRestoresItsSwapsAsSwaps", which measured the eight-column
+        // T_CONTRACT reader. That reader is GONE at the format-8 mint (MIN_READABLE 8 refuses
+        // format 5 at the header, so the narrow record can never arrive), and the dispatch it
+        // needed was deleted with it rather than left as dead code claiming a compatibility this
+        // build does not have. This is the statement of that, and the tripwire if anyone lowers
+        // MIN_READABLE without restoring the width dispatch.
         final MatchingEngineClusteredService source = enabledAccounts();
         apply(source, swap(BUYER, InputEvent.SWAP_RECEIVE_FIXED, RECEIVE_RATE_TICKS, 1L));
-        apply(source, swap(SELLER, InputEvent.SWAP_PAY_FIXED, PAY_RATE_TICKS, 2L));
 
-        // Rewrite this build's snapshot as a format-5 one: header says 5, and every T_CONTRACT is
-        // truncated to its first eight columns.
-        final List<byte[]> records = new ArrayList<>();
-        for (final byte[] record : snapshotRecords(source)) {
-            final UnsafeBuffer view = new UnsafeBuffer(record);
-            if (view.getInt(0) == MatchingEngineClusteredService.T_HEADER) {
-                view.putInt(4, 5);
-            } else if (view.getInt(0) == MatchingEngineClusteredService.T_CONTRACT) {
-                records.add(java.util.Arrays.copyOf(record, 4 + 8 * 8));
-                continue;
-            }
-            records.add(record);
-        }
-
+        final UnsafeBuffer fiveHeader = new UnsafeBuffer(snapshotRecords(source).get(0));
+        fiveHeader.putInt(4, 5);
         final MatchingEngineClusteredService restored = new MatchingEngineClusteredService();
         restored.initEngine();
-        boolean done = false;
-        for (final byte[] record : records) {
-            done = restored.onSnapshotRecord(new UnsafeBuffer(record), 0);
-        }
-        assertTrue(done, "a format-5 snapshot must still restore here");
-        assertEquals(2, restored.contractCount());
-        for (int i = 0; i < 2; i++) {
-            final long[] before = source.contractTuples().get(i);
-            final long[] after = restored.contractTuples().get(i);
-            for (int col = 0; col < 8; col++) {
-                assertEquals(before[col], after[col], "column " + col);
-            }
-            assertEquals(0L, after[8], "a format-5 contract is a SWAP");
-            assertEquals(0L, after[9]);
-            assertEquals(0L, after[10]);
-        }
+        final IllegalStateException thrown = assertThrows(IllegalStateException.class,
+            () -> restored.onSnapshotRecord(fiveHeader, 0));
+        assertTrue(thrown.getMessage().contains("older than this build can restore"),
+            "the refusal must name the direction, got: " + thrown.getMessage());
     }
 
     @Test

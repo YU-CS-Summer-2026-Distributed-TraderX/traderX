@@ -122,6 +122,23 @@ public final class InputEvent {
      */
     public static final byte TYPE_FX_RATE = 14;
 
+    /**
+     * Set the venue's session phase (YU17, ADR-069 decisions 3+4). The halt is REPLICATED STATE:
+     * it arrives as a committed log entry, applies on every member at the same sequence, and lives
+     * in the snapshot -- which is the entire argument for holding the phase in consensus rather
+     * than in the gateway, where it would evaporate with the process that held it.
+     *
+     * <p>Same shape as every control since FR-IMRG11: a new command type on the EXISTING template,
+     * no schema change. Payload -- {@code side} = the target phase
+     * (0=CLOSED, 1=PRE_OPEN, 2=OPEN); {@code clientOrderKey} = the issuer's correlation id, which
+     * the {@code KIND_SESSION_PHASE} ack echoes at its own byte 13. Nothing else is used.
+     *
+     * <p><b>The core never knows what time it is.</b> "6:30 ET" is only ever WHEN A PRODUCER
+     * ISSUES THIS COMMAND -- a human through the gateway's {@code POST /session}, or a scheduler
+     * emitting the identical command, off by default.
+     */
+    public static final byte TYPE_SESSION_CONTROL = 15;
+
     public static final byte SIDE_BUY = 0;
     public static final byte SIDE_SELL = 1;
     /** TYPE_SWAP_BOOK direction: the booking account receives / pays the FIXED leg. */

@@ -1,4 +1,6 @@
-export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED';
+// QUEUED (YU17, ADR-069): held in the venue's pre-open queue -- accepted, holding its order id,
+// in no book. A LIVE state, not a terminal one.
+export type OrderStatus = 'NEW' | 'PARTIALLY_FILLED' | 'FILLED' | 'CANCELED' | 'REJECTED' | 'QUEUED';
 export type OrderSide = 'Buy' | 'Sell';
 
 export interface OrderRecord {

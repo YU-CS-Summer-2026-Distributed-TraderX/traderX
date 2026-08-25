@@ -1,0 +1,445 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: database-init-sql
+  namespace: traderx
+data:
+  001-initialSchema.sql: |
+    DROP TABLE IF EXISTS eod_position_pnl;
+    DROP TABLE IF EXISTS eod_price_snapshot;
+    DROP TABLE IF EXISTS eod_price_session;
+    DROP TABLE IF EXISTS trades;
+    DROP TABLE IF EXISTS orderbook;
+    DROP TABLE IF EXISTS accountusers;
+    DROP TABLE IF EXISTS positions;
+    DROP TABLE IF EXISTS accounts;
+    DROP SEQUENCE IF EXISTS accounts_seq;
+
+    CREATE TABLE accounts (
+      id INTEGER PRIMARY KEY,
+      displayname VARCHAR(50)
+    );
+
+    CREATE TABLE accountusers (
+      accountid INTEGER NOT NULL,
+      username VARCHAR(15) NOT NULL,
+      PRIMARY KEY (accountid, username),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE positions (
+      accountid INTEGER,
+      security VARCHAR(32),
+      updated DATETIME,
+      quantity INTEGER,
+      averagecostbasis DECIMAL(18,6),
+      PRIMARY KEY (accountid, security),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE trades (
+      id VARCHAR(50) PRIMARY KEY,
+      accountid INTEGER REFERENCES accounts(id),
+      created DATETIME,
+      updated DATETIME,
+      security VARCHAR(32),
+      side VARCHAR(10) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER CHECK (quantity > 0),
+      price DECIMAL(18,6),
+      state VARCHAR(20) CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled', 'Rejected')),
+      settlementdate DATETIME,
+      rejectionreason VARCHAR(255),
+      sourceorderid VARCHAR(50)
+    );
+
+    CREATE TABLE orderbook (
+      orderid VARCHAR(32) PRIMARY KEY,
+      accountid INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      side VARCHAR(16) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER NOT NULL CHECK (quantity > 0),
+      remainingquantity INTEGER NOT NULL CHECK (remainingquantity >= 0),
+      limitprice DECIMAL(18,6) NOT NULL,
+      -- YU17 (ADR-069 decision g): QUEUED = held in the venue's pre-open queue. Accepted, holding
+      -- its order id, in no book. A CHECK constraint REFUSES an unknown value outright, so
+      -- omitting it here would make the read model silently drop every pre-open order -- the
+      -- "reads as missing" failure STATUS_QUEUED exists to prevent.
+      status VARCHAR(24) CHECK (status in ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'QUEUED')),
+      createdat DATETIME NOT NULL,
+      updatedat DATETIME NOT NULL,
+      lastexecutionprice DECIMAL(18,6),
+      lastfillquantity INTEGER,
+      -- YU17 (brief 07): the order's derived 32-hex W3C trace id, written once off the NEW
+      -- update. A trace id is derived from the client order id, which stops at the gateway, so
+      -- without this column only the browser that submitted an order could ever name its trace.
+      traceid VARCHAR(32)
+    );
+    CREATE INDEX idx_orderbook_status ON orderbook(status);
+    CREATE INDEX idx_orderbook_updatedat ON orderbook(updatedat);
+
+    -- YU06 EOD price production: versioned immutable closing-price snapshot (single
+    -- source of truth for every overnight batch job) + the first consumer's P&L output.
+    CREATE TABLE eod_price_session (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      status VARCHAR(16) CHECK (status in ('DRAFT', 'PUBLISHED')),
+      instrument_count INTEGER NOT NULL DEFAULT 0,
+      flagged_count INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME,
+      published_at DATETIME,
+      PRIMARY KEY (session_date, version)
+    );
+
+    CREATE TABLE eod_price_snapshot (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      closing_price DECIMAL(18,6),
+      quality VARCHAR(16) CHECK (quality in ('OK', 'STALE', 'SPIKE', 'MISSING', 'OVERRIDDEN')),
+      source_tick_millis BIGINT,
+      override_reason VARCHAR(255),
+      PRIMARY KEY (session_date, version, security),
+      FOREIGN KEY (session_date, version) REFERENCES eod_price_session(session_date, version)
+    );
+
+    -- Consumer output (position-service). Immutable/idempotent per (date, version, account, security);
+    -- no FK to accounts so a late consumer never blocks on reference-data ordering. Derived data.
+    CREATE TABLE eod_position_pnl (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      account_id INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      quantity INTEGER NOT NULL,
+      closing_price DECIMAL(18,6) NOT NULL,
+      market_value DECIMAL(20,6) NOT NULL,
+      marked_at DATETIME,
+      PRIMARY KEY (session_date, version, account_id, security)
+    );
+    CREATE INDEX idx_eod_pnl_session ON eod_position_pnl(session_date, version);
+
+    CREATE SEQUENCE accounts_seq START WITH 65000 INCREMENT BY 1;
+
+    INSERT INTO accounts (id, displayname) VALUES (22214, 'Test Account 20');
+    INSERT INTO accounts (id, displayname) VALUES (11413, 'Private Clients Fund TTXX');
+    INSERT INTO accounts (id, displayname) VALUES (42422, 'Algo Execution Partners');
+    INSERT INTO accounts (id, displayname) VALUES (52355, 'Big Corporate Fund');
+    INSERT INTO accounts (id, displayname) VALUES (62654, 'Hedge Fund TXY1');
+    INSERT INTO accounts (id, displayname) VALUES (10031, 'Internal Trading Book');
+    INSERT INTO accounts (id, displayname) VALUES (44044, 'Trading Account 1');
+
+    INSERT INTO accountusers (accountid, username) VALUES (22214, 'user01');
+    INSERT INTO accountusers (accountid, username) VALUES (22214, 'user03');
+    INSERT INTO accountusers (accountid, username) VALUES (22214, 'user09');
+    INSERT INTO accountusers (accountid, username) VALUES (22214, 'user05');
+    INSERT INTO accountusers (accountid, username) VALUES (22214, 'user07');
+    INSERT INTO accountusers (accountid, username) VALUES (62654, 'user09');
+    INSERT INTO accountusers (accountid, username) VALUES (62654, 'user05');
+    INSERT INTO accountusers (accountid, username) VALUES (62654, 'user07');
+    INSERT INTO accountusers (accountid, username) VALUES (62654, 'user01');
+    INSERT INTO accountusers (accountid, username) VALUES (10031, 'user01');
+    INSERT INTO accountusers (accountid, username) VALUES (10031, 'user03');
+    INSERT INTO accountusers (accountid, username) VALUES (10031, 'user09');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user09');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user05');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user07');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user04');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user01');
+    INSERT INTO accountusers (accountid, username) VALUES (44044, 'user06');
+
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-22214-AABBCC', NOW(), NOW(), 'IBM', 'Sell', 100, 136.250, 'Settled', 22214);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-22214-DDEEFF', NOW(), NOW(), 'MS', 'Buy', 1000, 95.125, 'Settled', 22214);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-22214-GGHHII', NOW(), NOW(), 'C', 'Sell', 2000, 57.500, 'Settled', 22214);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (22214, 'MS', NOW(), 1000, 95.125);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (22214, 'IBM', NOW(), -100, 136.250);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (22214, 'C', NOW(), -2000, 57.500);
+
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('TRADE-52355-AABBCC', NOW(), NOW(), 'BAC', 'Sell', 2400, 41.125, 'Settled', 52355);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (52355, 'BAC', NOW(), -2400, 41.125);
+
+    -- YU16 (FR-CDM07/FR-CDM16 seeds): the Treasury trading account. Quantities are USD face;
+    -- prices are FRACTIONS of par (ADR-057) - 0.998780 is the quoted 99.878% - so qty x price
+    -- is the position value with the contract multiplier at 1.
+    INSERT INTO accounts (id, displayname) VALUES (17017, 'U.S. Treasury Trading Account');
+    INSERT INTO accountusers (accountid, username) VALUES (17017, 'user02');
+    INSERT INTO accountusers (accountid, username) VALUES (17017, 'user08');
+    INSERT INTO accountusers (accountid, username) VALUES (17017, 'user10');
+
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-20280630', NOW(), NOW(), 'UST-20280630', 'Buy', 100000, 0.998780, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-20310630', NOW(), NOW(), 'UST-20310630', 'Buy', 100000, 0.996650, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-20360515', NOW(), NOW(), 'UST-20360515', 'Buy', 100000, 0.992570, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-20460515', NOW(), NOW(), 'UST-20460515', 'Buy', 100000, 0.984810, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-20560515', NOW(), NOW(), 'UST-20560515', 'Buy', 100000, 0.992930, 'Settled', 17017);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20280630', NOW(), 100000, 0.998780);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20310630', NOW(), 100000, 0.996650);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20360515', NOW(), 100000, 0.992570);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20460515', NOW(), 100000, 0.984810);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-20560515', NOW(), 100000, 0.992930);
+
+    -- A bill and a STRIP, held so the EOD extract carries ZERO-COUPON rows and not only coupon
+    -- ones. Without a held zero the extract's zero-coupon branch is never exercised on the rig and
+    -- yu16-accrued-interest passes having checked nothing about it. Same convention as above:
+    -- quantity is USD face, price is a fraction of par.
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-B20270812', NOW(), NOW(), 'UST-BILL-20270812', 'Buy', 100000, 0.959560, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-S20360515', NOW(), NOW(), 'UST-STRIP-20360515', 'Buy', 100000, 0.644570, 'Settled', 17017);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-BILL-20270812', NOW(), 100000, 0.959560);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'UST-STRIP-20360515', NOW(), 100000, 0.644570);
+
+    -- Corporates, so the blotter and read model show a credit book beside the rates book. These
+    -- accrue on 30/360, not the Treasury convention. NOTE: a row here does NOT reach the EOD
+    -- extract -- that renders the ENGINE's cut, not a read-model query -- so yu16-bond-position
+    -- step 7 crosses one through the gateway for the extract's benefit.
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-CIBM33', NOW(), NOW(), 'CORP-IBM-20330215', 'Buy', 100000, 0.957520, 'Settled', 17017);
+    INSERT INTO trades (id, created, updated, security, side, quantity, price, state, accountid) VALUES ('SEED-17017-CJPM31', NOW(), NOW(), 'CORP-JPM-20310601', 'Buy', 100000, 1.010470, 'Settled', 17017);
+
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'CORP-IBM-20330215', NOW(), 100000, 0.957520);
+    INSERT INTO positions (accountid, security, updated, quantity, averagecostbasis) VALUES (17017, 'CORP-JPM-20310601', NOW(), 100000, 1.010470);
+
+    -- YU04 durable control feeds: account-service and reference-data outbox/epoch tables + the
+    -- reference-data stocks table (previously CSV-only). Inherited from YU04; needed here so the
+    -- control feeds bootstrap on kind. Both *_source_epoch tables self-seed to epoch=1 on first boot.
+    CREATE TABLE account_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      display_name VARCHAR(50),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE account_source_epoch (
+      epoch BIGINT NOT NULL
+    );
+
+    CREATE TABLE stocks (
+      ticker VARCHAR(32) PRIMARY KEY,
+      company_name VARCHAR(120)
+    );
+
+    CREATE TABLE stocks_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticker VARCHAR(32) NOT NULL,
+      company_name VARCHAR(120),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE stocks_source_epoch (
+      epoch BIGINT NOT NULL
+    );
+  # Idempotent desired-state schema for a PERSISTENT (PVC-backed) datadir. The MariaDB
+  # entrypoint runs /docker-entrypoint-initdb.d only on an EMPTY volume, so this key is
+  # (a) run by the entrypoint right after 001 on first boot (every statement no-ops), and
+  # (b) applied by the schema-migrate initContainer on every later start, bringing a
+  # populated volume from any older state's schema up to this state's (new tables,
+  # trades.settlementdate, one index, and from YU15 the widened instrument-identifier
+  # columns - the first migration that MODIFIES rather than only adds).
+  # Reference seeds (accounts/accountusers) are re-asserted with INSERT IGNORE because FKs
+  # and entitlements need them; demo trades/positions are NOT re-asserted, so deliberately
+  # deleted rows stay deleted. Derived mechanically from 001 - keep the two in sync.
+  900-migrations.sql: |
+
+    CREATE TABLE IF NOT EXISTS accounts (
+      id INTEGER PRIMARY KEY,
+      displayname VARCHAR(50)
+    );
+
+    CREATE TABLE IF NOT EXISTS accountusers (
+      accountid INTEGER NOT NULL,
+      username VARCHAR(15) NOT NULL,
+      PRIMARY KEY (accountid, username),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS positions (
+      accountid INTEGER,
+      security VARCHAR(32),
+      updated DATETIME,
+      quantity INTEGER,
+      averagecostbasis DECIMAL(18,6),
+      PRIMARY KEY (accountid, security),
+      FOREIGN KEY (accountid) REFERENCES accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS trades (
+      id VARCHAR(50) PRIMARY KEY,
+      accountid INTEGER REFERENCES accounts(id),
+      created DATETIME,
+      updated DATETIME,
+      security VARCHAR(32),
+      side VARCHAR(10) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER CHECK (quantity > 0),
+      price DECIMAL(18,6),
+      state VARCHAR(20) CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled', 'Rejected')),
+      settlementdate DATETIME,
+      rejectionreason VARCHAR(255),
+      sourceorderid VARCHAR(50)
+    );
+
+    CREATE TABLE IF NOT EXISTS orderbook (
+      orderid VARCHAR(32) PRIMARY KEY,
+      accountid INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      side VARCHAR(16) CHECK (side in ('Buy', 'Sell')),
+      quantity INTEGER NOT NULL CHECK (quantity > 0),
+      remainingquantity INTEGER NOT NULL CHECK (remainingquantity >= 0),
+      limitprice DECIMAL(18,6) NOT NULL,
+      -- YU17 (ADR-069 decision g): QUEUED = held in the venue's pre-open queue. Accepted, holding
+      -- its order id, in no book. A CHECK constraint REFUSES an unknown value outright, so
+      -- omitting it here would make the read model silently drop every pre-open order -- the
+      -- "reads as missing" failure STATUS_QUEUED exists to prevent.
+      status VARCHAR(24) CHECK (status in ('NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'REJECTED', 'QUEUED')),
+      createdat DATETIME NOT NULL,
+      updatedat DATETIME NOT NULL,
+      lastexecutionprice DECIMAL(18,6),
+      lastfillquantity INTEGER,
+      traceid VARCHAR(32)
+    );
+    CREATE INDEX IF NOT EXISTS idx_orderbook_status ON orderbook(status);
+    CREATE INDEX IF NOT EXISTS idx_orderbook_updatedat ON orderbook(updatedat);
+
+    -- YU06 EOD price production: versioned immutable closing-price snapshot (single
+    -- source of truth for every overnight batch job) + the first consumer's P&L output.
+    CREATE TABLE IF NOT EXISTS eod_price_session (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      status VARCHAR(16) CHECK (status in ('DRAFT', 'PUBLISHED')),
+      instrument_count INTEGER NOT NULL DEFAULT 0,
+      flagged_count INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME,
+      published_at DATETIME,
+      PRIMARY KEY (session_date, version)
+    );
+
+    CREATE TABLE IF NOT EXISTS eod_price_snapshot (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      closing_price DECIMAL(18,6),
+      quality VARCHAR(16) CHECK (quality in ('OK', 'STALE', 'SPIKE', 'MISSING', 'OVERRIDDEN')),
+      source_tick_millis BIGINT,
+      override_reason VARCHAR(255),
+      PRIMARY KEY (session_date, version, security),
+      FOREIGN KEY (session_date, version) REFERENCES eod_price_session(session_date, version)
+    );
+
+    -- Consumer output (position-service). Immutable/idempotent per (date, version, account, security);
+    -- no FK to accounts so a late consumer never blocks on reference-data ordering. Derived data.
+    CREATE TABLE IF NOT EXISTS eod_position_pnl (
+      session_date DATE NOT NULL,
+      version INTEGER NOT NULL,
+      account_id INTEGER NOT NULL,
+      security VARCHAR(32) NOT NULL,
+      quantity INTEGER NOT NULL,
+      closing_price DECIMAL(18,6) NOT NULL,
+      market_value DECIMAL(20,6) NOT NULL,
+      marked_at DATETIME,
+      PRIMARY KEY (session_date, version, account_id, security)
+    );
+    CREATE INDEX IF NOT EXISTS idx_eod_pnl_session ON eod_position_pnl(session_date, version);
+
+    CREATE SEQUENCE IF NOT EXISTS accounts_seq START WITH 65000 INCREMENT BY 1;
+
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (22214, 'Test Account 20');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (11413, 'Private Clients Fund TTXX');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (42422, 'Algo Execution Partners');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (52355, 'Big Corporate Fund');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (62654, 'Hedge Fund TXY1');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (10031, 'Internal Trading Book');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (44044, 'Trading Account 1');
+
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user03');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (62654, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user03');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (10031, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user09');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user05');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user07');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user04');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user01');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (44044, 'user06');
+
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (17017, 'U.S. Treasury Trading Account');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (17017, 'user02');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (17017, 'user08');
+    INSERT IGNORE INTO accountusers (accountid, username) VALUES (17017, 'user10');
+
+    -- YU04 durable control feeds: account-service and reference-data outbox/epoch tables + the
+    -- reference-data stocks table (previously CSV-only). Inherited from YU04; needed here so the
+    -- control feeds bootstrap on kind. Both *_source_epoch tables self-seed to epoch=1 on first boot.
+    CREATE TABLE IF NOT EXISTS account_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      account_id INTEGER NOT NULL,
+      display_name VARCHAR(50),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS account_source_epoch (
+      epoch BIGINT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS stocks (
+      ticker VARCHAR(32) PRIMARY KEY,
+      company_name VARCHAR(120)
+    );
+
+    CREATE TABLE IF NOT EXISTS stocks_control_outbox (
+      version BIGINT AUTO_INCREMENT PRIMARY KEY,
+      ticker VARCHAR(32) NOT NULL,
+      company_name VARCHAR(120),
+      published BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMP NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS stocks_source_epoch (
+      epoch BIGINT NOT NULL
+    );
+
+    -- YU14 made listed options tradeable, and an unpadded OCC symbol (AAPL260918C00240000)
+    -- is 19 characters. Every instrument-identifier column was VARCHAR(15)/(16), so MariaDB's
+    -- strict mode rejected the insert and every option fill the ADR-048 trade bridge published
+    -- was dropped on the floor by trade-processor. CREATE IF NOT EXISTS cannot widen an
+    -- existing column, so a populated volume needs an explicit MODIFY; re-running one is a
+    -- no-op once the column is already VARCHAR(32). The JPA entities already declare
+    -- @Column(length = 50), so only the schema was ever the constraint.
+    ALTER TABLE positions MODIFY COLUMN security VARCHAR(32);
+    ALTER TABLE trades MODIFY COLUMN security VARCHAR(32);
+    ALTER TABLE orderbook MODIFY COLUMN security VARCHAR(32) NOT NULL;
+    ALTER TABLE eod_price_snapshot MODIFY COLUMN security VARCHAR(32) NOT NULL;
+    ALTER TABLE eod_position_pnl MODIFY COLUMN security VARCHAR(32) NOT NULL;
+    ALTER TABLE stocks MODIFY COLUMN ticker VARCHAR(32) NOT NULL;
+    ALTER TABLE stocks_control_outbox MODIFY COLUMN ticker VARCHAR(32) NOT NULL;
+
+    -- YU05 added trades.settlementdate; CREATE IF NOT EXISTS cannot add a column
+    -- to a pre-YU05 table, so assert it explicitly (MariaDB extension).
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS settlementdate DATETIME;
+
+    -- YU16 (ADR-057/FR-CDM15): a bond price is a FRACTION of par, and three decimals on a
+    -- fraction is one decimal of percentage - 0.998780 would silently round to 0.999. Widen
+    -- every column that can carry a bond price to six decimals; re-running a MODIFY that is
+    -- already applied is a no-op. The state CHECK gains 'Rejected' (FR-CDM23): MariaDB names a
+    -- column-level CHECK after its column, so drop-and-re-add under that name; both statements
+    -- are idempotent on a volume already at this state's schema.
+    ALTER TABLE trades MODIFY COLUMN price DECIMAL(18,6);
+    ALTER TABLE positions MODIFY COLUMN averagecostbasis DECIMAL(18,6);
+    ALTER TABLE orderbook MODIFY COLUMN limitprice DECIMAL(18,6) NOT NULL;
+    ALTER TABLE orderbook MODIFY COLUMN lastexecutionprice DECIMAL(18,6);
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS rejectionreason VARCHAR(255);
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS sourceorderid VARCHAR(50);
+    ALTER TABLE trades DROP CONSTRAINT IF EXISTS state;
+    ALTER TABLE trades ADD CONSTRAINT state CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled', 'Rejected'));
+
+    -- YU17 (brief 07): orderbook.traceid. CREATE IF NOT EXISTS cannot add a column to a table that
+    -- already exists, and trade-processor runs ddl-auto=none, so a populated volume needs this
+    -- explicit ADD or every order write fails on an unknown column. Re-running it is a no-op.
+    ALTER TABLE orderbook ADD COLUMN IF NOT EXISTS traceid VARCHAR(32);

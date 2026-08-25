@@ -1,6 +1,6 @@
 # Design: the price-derived book grid (format-8 mint, §2.2 mechanism)
 
-**Status: DESIGN — nothing built.** Written 2026-08-25 against the YU17 tip, after yaakov's
+**Status: BUILT 2026-08-25 (chip 3) — see §7b for the gate results and the two corrections this build made to the design. Not minted: no epoch has been wiped and nothing is deployed.** Originally written as design only: Written 2026-08-25 against the YU17 tip, after yaakov's
 2026-08-24 decision (§7f of `format-8-mint-scope.md`) pulled the mechanism §2.2 had rejected into
 the mint. This document is that mechanism, designed. Everything marked *measured* was read off the
 live kind rig or the operative sources on 2026-08-25; nothing below is inherited from the brief
@@ -343,6 +343,23 @@ are already at the live price and safe.
 - **V5**: catalog loop-closer additions: every producible map tick divides 10 000 (unit test over
   the map's range); every Debt key still matches the category prefixes (exists); both run against
   a deliberately off-convention hypothetical.
+
+## 7b. Gate results — BUILT 2026-08-25 (chip 3), measured
+
+| gate | result |
+|---|---|
+| **V1** — an emptied `LimitBook` is clean enough that `retick` needs no array work | **PASS, measured.** `LimitBookRetickTest` fills three bid levels and one ask level with two orders each, drains, and asserts every level's head/tail/aggregate/occupancy bit and both best pointers are clear BEFORE the re-tick, then that placement, `priceAt` and best-price maintenance all behave on the new grid. `retick` is two field writes. |
+| **V2** — the empty-admission branch allocates nothing | **PASS.** All four allocation gates green with the branch executing on every order in the measured window. The retick arm itself is JIT-warmed on an unpinned scratch security in `AllocationGateTest`'s warm-up, so an allocation on either path would be caught. The measured securities are pinned to the global grid through the ADR-060 category channel — the gate's `$50` deep bids and `$100` crossing level are load-bearing geometry that a ±$6.55 derived band cannot hold, and the gate's own "self-trade-prevention branch did not run" sanity assertion is what surfaced it. |
+| **V3** — `bookBaseTuples` includes anchored-empty books; unanchored ones excluded | **HALF FALSE, and the correction is better than the expectation.** `bookBaseTuples` emits EVERY created book, un-anchored ones included, carrying `baseLevel` -1 (and, from format 8, its tick); `bootstrapBook` restores it as created-but-unanchored. So un-anchored books are NOT absent from the snapshot — which means **§2.3 job 3's premise is false for this build**: a survivor and a restorer cannot disagree about such a book's grid, because the grid rides the record. Storage (§2.4) subsumes job 3. Jobs 1, 2 and 4 remain entirely load-bearing (V4 below). Pinned by `PriceDerivedGridTest.gateV3_…` and by that class's `jobThree` arm, both of which say so in place so nobody "fixes" the code to match this document. |
+| **V4** — the detonator fails exactly `yu17-book-retick` and no other proof | **PASS off-rig, precisely.** A build with `rederiveIfEmpty` deleted from `onNewOrder` fails **exactly five arms, all in `PriceDerivedGridTest`** — jobs 1, 2 and 4, the counter's semantics, and jobThree's tick assertion — out of 467 tests. Nothing else moves: not `GridRestoreFormatTest`, not `BookGridDerivationTest`, not `LimitBookRetickTest`, not the snapshot round trips. That is the claim: no pre-existing proof covered the accident window. The on-rig half (`yu17-book-retick` red against a deployed detonator image) is **owed by the mint chip** — it needs a deployment, which chip 3 was scoped out of. |
+| **V5** — every producible map tick divides 10 000 | **PASS, swept.** `BookGridDerivationTest` walks the map across its whole producible range (0 → $2,000 at a prime-ish stride) and asserts `10_000 % tick == 0` and `1_000_000 % tick == 0` at every point, plus monotonicity in price, plus the cap and floor edges. The category loop-closers it already carried are unchanged and now sit beside the map, deliberately in one class. |
+
+**One mechanism change against §2.1 as written:** `decadeTickPx` takes the cap as a PARAMETER and
+`tickPxForBook` passes the configured global grid (`BOOK_TICK_PX`), rather than hard-coding the
+literal 1000. Identical in production (nothing sets `BOOK_TICK_PX`; it is 1000 everywhere), and it
+is the faithful reading of the cap's stated job — "the top decade keeps exactly today's geometry",
+where today's geometry is whatever the global is configured to be. It also keeps the change monotone
+for any configured value.
 
 ## 8. The §2.1-shape decision — SETTLED 2026-08-24 (yaakov, via the coordinator): map only, no constant
 

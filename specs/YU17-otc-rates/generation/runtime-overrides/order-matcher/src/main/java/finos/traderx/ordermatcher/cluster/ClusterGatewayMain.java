@@ -225,6 +225,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long[] lastSwapAck;    // YU17 {contractId, booked, riskReason, clientOrderKey}
+    private long[] lastSessionAck; // YU17 {appliedSeq, phase, requestId}
     private long nextSymbolRequestId = 1;
     // Pipelined-batch ack accounting (owner thread only; pollEgress runs on the owner thread).
     // Acks per session are FIFO in log order, so counting order-lifecycle acks matches offers.
@@ -337,6 +338,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/cancel", this::handleCancel);
         server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
+        server.createContext("/session", this::handleSession);
         server.createContext("/swaps", this::handleSwapBook);
         server.createContext("/swaptions", this::handleSwaptionBook);
         server.createContext("/metrics", this::handleMetrics);
@@ -693,6 +695,14 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // gateway client's.
             lastSwapAck = new long[] { buffer.getLong(offset), buffer.getInt(offset + 8),
                 buffer.getByte(offset + 22), buffer.getLong(offset + 13) };
+        } else if (kind == MatchingEngineClusteredService.KIND_SESSION_PHASE) {
+            // YU17 (ADR-069 §1.2). Its OWN kind and its OWN request id at 13 — never bytes 24..31.
+            // The OPEN apply emits every released order's lifecycle acks in the same apply, and
+            // those echo the phase command's requestId (0) at 24..31; routing the phase ack the
+            // same way would let a released order's ack complete the operator's pending, which is
+            // the ratcheting-offset bug that wedged this gateway once already.
+            lastSessionAck = new long[] {
+                buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
         } else if (OutputEvent.isOrderLifecycleKind(kind) || kind == OutputEvent.KIND_ORDER_NOT_FOUND) {
             if (batchActive && batchFenceAwaiting && kind == OutputEvent.KIND_ORDER_NOT_FOUND
                     && buffer.getInt(offset + 8) == 0) {
@@ -1538,6 +1548,83 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * read-model query", and booking swaps into the database directly would quietly make that
      * sentence false.
      */
+    /**
+     * Venue session control (YU17, ADR-069 decisions 3+4).
+     *
+     * <p>POST /session {"phase":"CLOSED"|"PRE_OPEN"|"OPEN"} — sequences a
+     * {@code TYPE_SESSION_CONTROL} command and answers with the consensus sequence it landed at,
+     * so a halt is a NAMED LOG POSITION rather than a wall-clock claim. 200
+     * {"phase":"CLOSED","sequence":N}.
+     *
+     * <p>This gateway DECIDES NOTHING about the phase: it is a producer of a command the members
+     * apply. That is the whole point of ADR-069 — a phase held here would evaporate with this
+     * process, and a member that restarted would come back trading. "6:30 ET" is when a human (or,
+     * later, an opt-in scheduler emitting this identical command) calls this route.
+     *
+     * <p>Correlation: offered with request id 0, answered by {@code KIND_SESSION_PHASE} carrying
+     * this call's own nonce at ack byte 13 — see {@link #onEgress}.
+     */
+    private void handleSession(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            if (!body.hasNonNull("phase")) {
+                respond(exchange, 400, "{\"error\":\"phase required\"}");
+                return;
+            }
+            final String name = body.get("phase").asText("").toUpperCase(java.util.Locale.ROOT);
+            int target = -1;
+            for (int i = 0; i < MatchingEngineClusteredService.PHASE_NAMES.length; i++) {
+                if (MatchingEngineClusteredService.PHASE_NAMES[i].equals(name)) {
+                    target = i;
+                }
+            }
+            if (target < 0) {
+                respond(exchange, 400, "{\"error\":\"phase must be one of "
+                    + String.join(", ", MatchingEngineClusteredService.PHASE_NAMES) + "\"}");
+                return;
+            }
+            // A per-call nonce, not a client-supplied key: this command is idempotent in the
+            // engine (setting OPEN twice is setting OPEN), so the id exists only to name WHICH
+            // pending this ack answers when two operators race.
+            final long requestId = clientOrderKey("session-" + name + "-" + System.nanoTime());
+            final byte phase = (byte) target;
+            final long[] ack = onOwner(() -> {
+                event.type = InputEvent.TYPE_SESSION_CONTROL;
+                event.side = phase;
+                event.setClientOrderKey(requestId);
+                event.accountId = 0;
+                event.securityId = 0;
+                event.orderRef = 0;
+                event.qty = 0;
+                event.limitPx = 0L;
+                event.eventTimeMillis = 0;
+                // inputSeq 0: the phase command names NO request in the slot the order acks
+                // correlate by (§1.2). The released orders' acks echo it, and a zero completes
+                // nothing.
+                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                lastSessionAck = null;
+                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES,
+                        () -> lastSessionAck != null && lastSessionAck[2] == requestId)) {
+                    return null; // no committed decision within timeout: ambiguous, NOT a failure
+                }
+                return lastSessionAck;
+            });
+            if (ack == null) {
+                respond(exchange, 504, "{\"error\":\"no committed decision\"}");
+                return;
+            }
+            respond(exchange, 200, "{\"phase\":\""
+                + MatchingEngineClusteredService.PHASE_NAMES[(int) ack[1]]
+                + "\",\"sequence\":" + ack[0] + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
     private void handleSwapBook(final HttpExchange exchange) {
         handleOtcBooking(exchange, false);
     }

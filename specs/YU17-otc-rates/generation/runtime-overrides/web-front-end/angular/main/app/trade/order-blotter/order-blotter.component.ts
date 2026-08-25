@@ -76,6 +76,13 @@ export class OrderBlotterComponent implements OnChanges, OnDestroy {
       valueFormatter: ({ value }) => this.formatSignedCurrency(value),
       cellStyle: ({ value }) => this.deltaStyle(value)
     },
+    {
+      // YU17 (ADR-069 decision g): without this column a PRE_OPEN order is indistinguishable from
+      // a live resting one to anyone watching, which is the whole reason QUEUED exists.
+      headerName: 'STATUS',
+      field: 'status',
+      cellStyle: ({ value }) => (value === 'QUEUED' ? { color: '#b8860b', fontWeight: '600' } : null)
+    },
     { headerName: 'UPDATED', field: 'updatedAt', valueFormatter: ({ value }) => this.toRelativeTime(value) },
     {
       headerName: 'ACTION',

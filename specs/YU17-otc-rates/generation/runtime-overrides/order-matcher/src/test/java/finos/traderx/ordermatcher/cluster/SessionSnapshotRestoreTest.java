@@ -12,6 +12,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -44,25 +45,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * that the queue came back, so the round trip must assert the queue's CONTENT. A queue silently
  * restored empty is a halt that pending orders walk straight through.
  *
- * <p><b>Owed by the MINT CHIP, not writable against these sources</b> (they need
- * {@code T_SESSION = 14}, {@code T_QUEUED_ORDER = 15}, a {@code phase()} accessor and a
- * {@code queueDepth()}, none of which compile today), recorded here so the obligation is versioned
- * with its red half:
- * <ul>
- *   <li>decision (a): a service that restores a snapshot with no {@code T_SESSION} record — and a
- *       fresh one that restores nothing — both come up {@code OPEN};</li>
- *   <li>round trip: PRE_OPEN with N queued orders through {@code writeSnapshot} →
- *       {@code onSnapshotRecord}, phase preserved AND the queue restored with its INSERTION ORDER
- *       intact (§1.4: the order is the release order, so a set-equality assertion would miss the
- *       defect that matters);</li>
- *   <li>the same round trip with the {@code T_QUEUED_ORDER} rows filtered out — the FALSE arm
- *       below, pointed at the real record type — which must leave the restored queue provably
- *       empty, so the content assertion above is shown to discriminate;</li>
- *   <li>fail-closed: a queued row whose {@code orderRef >= nextOrderRef} refused (the T_ORDER
- *       rule), and out-of-order queued rows refused (the T_CONTRACT rule);</li>
- *   <li>decision (b): CLOSED applied to a service holding a non-empty queue leaves the queue empty
- *       and emits one CANCELED per entry.</li>
- * </ul>
+ * <p><b>Delivered by the MINT CHIP</b> (the arms after the red half): decision (a)'s default
+ * phase; the PRE_OPEN round trip asserting the queue's CONTENT and INSERTION ORDER; the same trip
+ * with the queued rows filtered out; both fail-closed rules (a queued ref at or beyond the
+ * generator, and out-of-order rows); decision (b); and one arm for each of the two format-8
+ * completeness guards. Every one asserts what came BACK, never that the restore returned -- which
+ * is precisely what the false arm above bought.
  */
 class SessionSnapshotRestoreTest {
     private static final long PX = 1_000_000L;
@@ -128,7 +116,194 @@ class SessionSnapshotRestoreTest {
         // ...and it did not throw, and it did terminate on T_END. That is the whole finding.
     }
 
+    // ----- the mint's own arms ----------------------------------------------------------------
+
+    @Test
+    void aServiceThatRestoresNothingComesUpOpen() {
+        // Decision (a). Every proof and fixture assumes a trading book, so a fresh epoch trades;
+        // CLOSED-until-commanded stays available by issuing the command at bring-up.
+        final MatchingEngineClusteredService fresh = new MatchingEngineClusteredService();
+        fresh.initEngine();
+        assertEquals("OPEN", fresh.phaseName());
+        assertEquals(0, fresh.queueDepth());
+    }
+
+    @Test
+    void aHaltedVenueAndItsQueueSurviveTheSnapshotWithTheirCONTENT() {
+        // THE ROUND TRIP the two shell durability proofs are actually deciding. A restarted member
+        // and a newly elected leader are both "a member that restored and replayed", so this seam
+        // is where "a halt a restart can bypass is not a halt" is settled.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_PRE_OPEN);
+        final int[] refs = new int[3];
+        for (int i = 0; i < refs.length; i++) {
+            refs[i] = queueOrder(source, 100L + i, (100 + i) * PX);
+        }
+        assertEquals(3, source.queueDepth(), "precondition: three orders held");
+
+        final MatchingEngineClusteredService restored = restore(records(source, -1));
+
+        assertEquals("PRE_OPEN", restored.phaseName(), "a member that snapshots halted restores halted");
+        assertEquals(3, restored.queueDepth());
+        // CONTENT, and in ORDER. A set-equality assertion would miss the defect that matters:
+        // insertion order IS the release order at the open, so a queue restored with the same
+        // members in a different order is a different opening.
+        for (int i = 0; i < refs.length; i++) {
+            final long[] row = restored.queuedOrderTuples().get(i);
+            assertEquals(refs[i], (int) row[0], "queued row " + i + " is the wrong order");
+            assertEquals(ACCOUNT, (int) row[1]);
+            assertEquals(SECURITY, (int) row[2]);
+            assertEquals(InputEvent.SIDE_BUY, (byte) row[3]);
+            assertEquals(10, (int) row[4]);
+            assertEquals((100 + i) * PX, row[5], "queued row " + i + " lost its limit price");
+            assertEquals(100L + i, row[6], "queued row " + i + " lost its client key");
+        }
+        // ...and the derived key index is rebuilt FROM the queue, never snapshotted: a retry of a
+        // key queued before the restart must still find its original.
+        final int retried = queueOrder(restored, 100L, 100 * PX);
+        assertEquals(refs[0], retried,
+            "the transient clientOrderKey index was rebuilt on restore (the ADR-052/060 pattern)");
+        assertEquals(3, restored.queueDepth(), "and the retry queued nothing new");
+    }
+
+    @Test
+    void aQueueRestoredEMPTYIsCaughtByTheDECLAREDDEPTH() {
+        // THE GUARD PRESENCE CANNOT PROVIDE, and the false arm above pointed at the record type
+        // that matters. Zero T_QUEUED_ORDER rows is LEGITIMATE whenever the queue is empty, so
+        // their absence cannot be caught by asking "did this type appear?". T_SESSION's declared
+        // depth -- written from the LIVE queue, never tallied from the write loop's own output --
+        // is what makes the difference observable.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_PRE_OPEN);
+        queueOrder(source, 200L, 100 * PX);
+        queueOrder(source, 201L, 101 * PX);
+
+        final IllegalStateException thrown = assertThrows(IllegalStateException.class,
+            () -> restore(records(source, MatchingEngineClusteredService.T_QUEUED_ORDER)),
+            "dropping every queued row must be refused, not restored as an empty queue");
+        assertTrue(thrown.getMessage().contains("queueDepth"),
+            "the refusal must name the count that disagreed, got: " + thrown.getMessage());
+    }
+
+    @Test
+    void aMissingSessionRecordIsCaughtByThePRESENCEBITMASK() {
+        // The other guard: a whole record TYPE absent from an otherwise valid, cleanly terminated
+        // stream. Before format 8 that restored in silence with the phase defaulted to OPEN -- a
+        // halted venue coming back trading, no throw, nothing in a log to read.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_CLOSED);
+
+        final IllegalStateException thrown = assertThrows(IllegalStateException.class,
+            () -> restore(records(source, MatchingEngineClusteredService.T_SESSION)),
+            "a stream with no T_SESSION must be refused, not defaulted to OPEN");
+        assertTrue(thrown.getMessage().contains("record types absent"),
+            "the refusal must name what was missing, got: " + thrown.getMessage());
+
+        // THE CONTROL: the same stream with T_SESSION present restores, and restores CLOSED.
+        assertEquals("CLOSED", restore(records(source, -1)).phaseName());
+    }
+
+    @Test
+    void aQueuedRowAtOrBeyondTheGeneratorIsRefused() {
+        // The T_ORDER rule applied to the queue (FR-AC09): a queued order holds a ref the generator
+        // already issued, so one at or beyond the restored generator is an order this member could
+        // not have accepted. Fed by rewriting a REAL row, so the rest of the stream stays valid and
+        // the refusal can only be this rule.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_PRE_OPEN);
+        queueOrder(source, 300L, 100 * PX);
+
+        final List<byte[]> mangled = records(source, -1);
+        boolean rewritten = false;
+        for (final byte[] record : mangled) {
+            final UnsafeBuffer view = new UnsafeBuffer(record);
+            if (view.getInt(0) == MatchingEngineClusteredService.T_QUEUED_ORDER) {
+                view.putLong(4, Integer.MAX_VALUE);
+                rewritten = true;
+            }
+        }
+        assertTrue(rewritten, "the stream must contain a queued row for this arm to mean anything");
+        final IllegalStateException thrown =
+            assertThrows(IllegalStateException.class, () -> restore(mangled));
+        assertTrue(thrown.getMessage().contains("nextOrderRef"),
+            "the refusal must name the generator, got: " + thrown.getMessage());
+    }
+
+    @Test
+    void outOfOrderQueuedRowsAreRefused() {
+        // The T_CONTRACT rule applied to the queue: nothing else validates the order of these rows,
+        // and the order IS the release order, so a reordered queue is a different opening.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_PRE_OPEN);
+        queueOrder(source, 400L, 100 * PX);
+        queueOrder(source, 401L, 101 * PX);
+
+        final List<byte[]> original = records(source, -1);
+        final List<byte[]> queued = new ArrayList<>();
+        for (final byte[] record : original) {
+            if (new UnsafeBuffer(record).getInt(0) == MatchingEngineClusteredService.T_QUEUED_ORDER) {
+                queued.add(record);
+            }
+        }
+        assertEquals(2, queued.size(), "precondition: two queued rows to swap");
+        final List<byte[]> reordered = new ArrayList<>();
+        int seen = 0;
+        for (final byte[] record : original) {
+            if (new UnsafeBuffer(record).getInt(0) == MatchingEngineClusteredService.T_QUEUED_ORDER) {
+                reordered.add(queued.get(1 - seen));
+                seen++;
+                continue;
+            }
+            reordered.add(record);
+        }
+        final IllegalStateException thrown =
+            assertThrows(IllegalStateException.class, () -> restore(reordered));
+        assertTrue(thrown.getMessage().contains("is not after"),
+            "the refusal must name the ordering rule, got: " + thrown.getMessage());
+    }
+
+    @Test
+    void aCloseOnANonEmptyQueueLeavesNothingToRestore() {
+        // Decision (b) at the snapshot seam rather than the ack: after the close there is no queue
+        // left for a snapshot to carry, and the restored member agrees.
+        final MatchingEngineClusteredService source = newLiveService();
+        setPhase(source, MatchingEngineClusteredService.PHASE_PRE_OPEN);
+        queueOrder(source, 500L, 100 * PX);
+        assertEquals(1, source.queueDepth());
+        setPhase(source, MatchingEngineClusteredService.PHASE_CLOSED);
+        assertEquals(0, source.queueDepth(), "the close cancelled the queue");
+
+        final MatchingEngineClusteredService restored = restore(records(source, -1));
+        assertEquals("CLOSED", restored.phaseName());
+        assertEquals(0, restored.queueDepth());
+        assertTrue(recordTypes(source).contains(MatchingEngineClusteredService.T_SESSION),
+            "T_SESSION is written on every snapshot, empty queue or not");
+    }
+
     // ----- helpers ---------------------------------------------------------------------------
+
+    /** Sequence a phase command through the real ingress path. */
+    private void setPhase(final MatchingEngineClusteredService service, final byte phase) {
+        final InputEvent e = new InputEvent();
+        e.type = InputEvent.TYPE_SESSION_CONTROL;
+        e.side = phase;
+        e.setClientOrderKey(9_000L + phase);
+        apply(service, e);
+    }
+
+    /** Queue one BUY while PRE_OPEN; returns the ref it already holds. */
+    private int queueOrder(final MatchingEngineClusteredService service, final long clientKey,
+                           final long limitPx) {
+        final InputEvent e = newOrder(InputEvent.SIDE_BUY, limitPx);
+        e.setClientOrderKey(clientKey);
+        apply(service, e);
+        for (final long[] row : service.queuedOrderTuples()) {
+            if (row[6] == clientKey) {
+                return (int) row[0];
+            }
+        }
+        throw new AssertionError("order with key " + clientKey + " was not queued");
+    }
 
     /** Controls, a tick, and four resting bids at 100.00 — a stream with real content in it. */
     private MatchingEngineClusteredService newLiveService() {
