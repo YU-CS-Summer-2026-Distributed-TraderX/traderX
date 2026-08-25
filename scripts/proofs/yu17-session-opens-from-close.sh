@@ -10,34 +10,66 @@
 #     /health carries no `openingSource` at all, and both controls open on the STATIC SEED while a
 #     published close for them sits in the database. That is ADR-069's measured gap: open_today has
 #     no causal connection to close_yesterday, and nothing in the system can say so.
-#   EXPECT=after  (this change): the endpoint resolves rule 2, the controls open AT their published
-#     closes, /health names the winning source per class, and switching the read off flips every
+#   EXPECT=after  (this change): the controls open AT their published closes WHILE A NEWER DRAFT
+#     EXISTS, /health names the winning source per class, and switching the read off flips every
 #     one of those readings back.
 #
-# WHY THERE ARE FOUR ARMS, AND WHY ARM 4 IS NOT OPTIONAL. This ADR's stated trap is that a failed
-# close-read and a successful one produce prices that are equally plausible — "there is no wrong
-# number to notice". So a green arm 3 on its own proves very little: the opening price might match
-# the close because the close read worked, or because the seed happens to sit near the close.
-# Arm 4 switches the read off ON THE SAME BUILD and requires the readings to change — that is the
-# control that makes arm 3 mean something, and it is why every price assertion below is EXACT
-# equality against a number read out of the database or out of the pod's own seed file, never a
-# tolerance wide enough to swallow the difference.
+# THE ARM THAT MATTERS MOST IS STEP 3, AND IT IS COMPOSED ON PURPOSE. Asserting "the endpoint
+# refuses a DRAFT" and separately "the publisher opens from a close" leaves the joint claim
+# untested — and the joint claim IS rule 2: *the publisher opened on the PUBLISHED price while a
+# newer DRAFT existed*. So step 2 plants the DRAFTs and LEAVES THEM PLANTED, and step 3 restarts
+# the publisher underneath them. One restart proves both, and the three possible readings are
+# mutually exclusive, so a failure names its own cause:
 #
-# THE ARMS ARE REFUSED RATHER THAN ROUNDED. Step 0 asserts that the published close and the static
-# seed DIFFER for both controls. If they ever coincide, the two arms predict the same number and
-# the proof discriminates nothing — it exits 2 saying so instead of reporting a pass.
+#     openPrice == published close   -> rule 2 holds and the session opened from it
+#     openPrice == the DRAFT's price -> the hierarchy prefers a DRAFT (the defect rule 2 forbids)
+#     openPrice == the static seed   -> the read failed and fell through
 #
-# ROLLING, NOT DESTRUCTIVE. It restarts the price-publisher Deployment (up to three times on the
-# after arm) and plants + removes DRAFT rows in eod_price_session/eod_price_snapshot. No epoch, no
-# PVC wipe, no member roll, no gateway roll, nothing sequenced through consensus. The restart
-# re-seeds the feed, so the reference steps by |close - seed| — printed in step 0, and bounded by
-# the same magnitudes ADR-069 measured (a few percent).
+# WHY STEP 4 IS NOT OPTIONAL EITHER. This ADR's trap is that a failed close-read and a successful
+# one produce prices that are equally plausible — "there is no wrong number to notice". A green
+# step 3 alone is consistent with the seed happening to sit near the close. Step 4 switches the
+# read off ON THE SAME BUILD and requires every reading to change; step 5 switches it back and
+# requires them to return. That is what makes step 3 evidence rather than a coincidence.
 #
-# THE PLANTED DRAFTS ARE KEYED ON A MARKER, NOT A PRICE. Every planted row carries
-# override_reason='yu17-session-opens-from-close' and the cleanup deletes on that, so a run killed
-# by SIGKILL (which no EXIT trap survives) leaves rows a later run's PRE-clean removes — and it
-# removes every stratum, not just its own. A leaked DRAFT here is not cosmetic: it is precisely the
-# object rule 2 exists to refuse, so leaving one behind would poison the thing under test.
+# THE ARMS ARE REFUSED RATHER THAN ROUNDED. Step 0 asserts that the published close, the static
+# seed and the planted DRAFT price are three DIFFERENT numbers. If any two ever coincide the arms
+# stop discriminating, and the proof exits 2 saying so instead of reporting a pass.
+#
+# ROLLING, NOT DESTRUCTIVE. It restarts the price-publisher Deployment three times on the after
+# arm and once on the before arm. No epoch, no PVC wipe, no member roll, no gateway roll, nothing
+# sequenced through consensus. The restart re-seeds the feed, so the reference steps by
+# |close - seed| — printed in step 0, and of the order ADR-069 measured (a few percent).
+#
+# ---- WHAT THIS WRITES TO A LIVE DATABASE, AND WHAT A KILL LEAVES BEHIND -----------------------
+#
+# `eod_price_snapshot` is REAL, LIVE AND GROWING — measured 4121 rows across 141 sessions (49 of
+# them DRAFT) on 2026-08-25, having read 3981 minutes earlier and 3022 in an earlier session. The
+# EOD chain keeps cutting. Three consequences, all load-bearing:
+#
+#   1. NO ABSOLUTE ROW COUNT IS ASSERTED ANYWHERE. A count is a live counter, so a fixed
+#      expectation is stale the moment it is written.
+#   2. NOR IS DELTA-ZERO ACROSS THE RUN, for the same reason — a session cut by the hourly CronJob
+#      or by a concurrent proof legitimately grows the table mid-run, and a delta-zero assertion
+#      would fail on somebody else's correct behaviour. What IS asserted is the pair that actually
+#      means "I cleaned up after myself and touched nothing else": zero rows carrying my marker
+#      survive, and the totals did not DECREASE. A decrease is the only reading that can mean this
+#      script deleted a row it did not plant.
+#   3. NOTHING IS DELETED THAT THIS SCRIPT DID NOT CREATE. Both cleanup statements are keyed on a
+#      marker no other producer writes: snapshot rows carry
+#      override_reason='yu17-session-opens-from-close', and their session headers carry the
+#      sentinel instrument_count=4242 (verified against the live table to match zero existing rows
+#      before it was adopted). No LEFT JOIN antijoin, no date-range sweep, nothing that could
+#      match a real session.
+#
+# IF THIS SCRIPT IS KILLED BETWEEN PLANT AND CLEAN — SIGKILL, a dead kubectl session, the box
+# going down — no EXIT trap fires and the rig is left holding one or two DRAFT sessions dated on
+# or before the last published close, each with a single marked row for the equity control. What
+# that costs while it sits there: nothing to the opening price (rule 2 refuses a DRAFT, which is
+# the property under test) and nothing to the SPIKE baseline (priorPublishedClose reads PUBLISHED
+# rows only). It is still not harmless — it is precisely the object rule 2 exists to refuse, so a
+# leaked one makes the next run's step 2 test a rig that was already planted. That is why the
+# pre-clean at the top of step 0 runs unconditionally and BEFORE any baseline is captured: it
+# removes every stratum from every previous run, not just this one's.
 #
 # Usage:  [EXPECT=before|after] [EQ_CTL=AAPL] [UST_CTL=UST-20280630] ./yu17-session-opens-from-close.sh
 set -uo pipefail
@@ -49,7 +81,9 @@ EXPECT="${EXPECT:-after}"
 EQ_CTL="${EQ_CTL:-AAPL}"
 UST_CTL="${UST_CTL:-UST-20280630}"
 DB_DEPLOY="${DB_DEPLOY:-eod-price-db}"
+# The two markers. Nothing else in this system writes either.
 MARKER='yu17-session-opens-from-close'
+HDR_SENTINEL=4242
 # UTC, not host-local: trade-processor keys EOD sessions by UTC date and runs in a UTC container,
 # and price-publisher resolves its own opening date the same way. A host-local date here would ask
 # for the wrong "strictly earlier than" every evening — the trap yu06-quality-gate documents.
@@ -67,7 +101,7 @@ db() { "${K[@]}" exec "deploy/${DB_DEPLOY}" -c mariadb -- \
 # literal, and a wrong one fails as an opaque 401 with nothing naming the secret as the cause.
 MASTER="${AUTH_MASTER_SECRET:-$("${K[@]}" get secret auth-secrets -o 'jsonpath={.data.dev-token-master-secret}' 2>/dev/null | base64 -d 2>/dev/null)}"
 [[ -n "${MASTER}" ]] || fail "could not read auth-secrets/dev-token-master-secret from the rig"
-TOK='T=$(curl -s -m8 -X POST http://trade-processor:18091/auth/dev-token -H "X-Auth-Master-Secret: '"${MASTER}"'" -H "Content-Type: application/json" -d "{\"subject\":\"proof-open\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":600}")'
+TOK='T=$(curl -s -m8 -X POST http://trade-processor:18091/auth/dev-token -H "X-Auth-Master-Secret: '"${MASTER}"'" -H "Content-Type: application/json" -d "{\"subject\":\"proof-open\",\"accounts\":[],\"admin\":true,\"ttlSeconds\":900}")'
 api() { "${K[@]}" exec deploy/trade-processor -- sh -c "${TOK}; $1" 2>/dev/null; }
 pub() { "${K[@]}" exec deploy/price-publisher -- wget -qO- "http://localhost:18100$1" 2>/dev/null; }
 
@@ -94,18 +128,15 @@ for key in sys.argv[1].split('.'):
     d = d[key]
 print('yes')
 " "$1"; }
+eq() { python3 -c "import sys; sys.exit(0 if abs(float('$1') - float('$2')) <= float('$3') else 1)"; }
 
-# EVERY plant this proof can ever have made, on every date, keyed on the marker — not on this
-# run's version numbers. A version-scoped delete tidies only the run that ran it, so a killed
-# run's leftovers become the operative rows the moment a later run tidies its own. The second
-# statement sweeps session headers left with no rows at all (a kill between the two INSERTs).
+# MARKER-SCOPED, BOTH STATEMENTS. Never a date sweep, never an antijoin — this runs against a
+# database holding thousands of real rows that ADR-069 itself depends on, in the same schema as
+# the order book. The only rows either statement can reach are rows this script wrote.
 unplant() {
   db "DELETE FROM eod_price_snapshot WHERE override_reason = '${MARKER}';
-      DELETE h FROM eod_price_session h
-        LEFT JOIN eod_price_snapshot s
-          ON s.session_date = h.session_date AND s.version = h.version
-        WHERE h.status = 'DRAFT' AND s.security IS NULL AND h.session_date < '${DATE}'
-          AND h.instrument_count = 1 AND h.flagged_count = 0;" >/dev/null 2>&1
+      DELETE FROM eod_price_session WHERE status = 'DRAFT' AND instrument_count = ${HDR_SENTINEL};" \
+    >/dev/null 2>&1
 }
 
 ENV_TOUCHED=0
@@ -145,11 +176,16 @@ echo "=== yu17-session-opens-from-close, EXPECT=${EXPECT}, controls ${EQ_CTL} / 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight: resolve rule 2 out of the database, and prove the arms discriminate"
 
-# PRE-clean before anything is measured. An EXIT trap does not survive SIGKILL, a dead kubectl
-# session or the box going down, and a leaked DRAFT from a killed run is the exact object rule 2
-# exists to refuse — it would sit there being ignored (correct) or accepted (a real defect) with
-# nothing distinguishing the two.
+# PRE-CLEAN FIRST, BEFORE THE BASELINE IS TAKEN. An EXIT trap does not survive SIGKILL, and a
+# leaked DRAFT from a killed run would make step 2 plant on top of an already-planted rig — and
+# would be counted into the baseline the cleanup is later checked against.
 unplant
+
+read -r B_SNAP B_SESS <<<"$(db "SELECT (SELECT COUNT(*) FROM eod_price_snapshot),
+                                       (SELECT COUNT(*) FROM eod_price_session);" | tr '\t' ' ')"
+[[ "${B_SNAP}" =~ ^[0-9]+$ && "${B_SESS}" =~ ^[0-9]+$ ]] \
+  || fail "could not read the baseline row counts (got '${B_SNAP:-}' '${B_SESS:-}')"
+echo "    baseline: ${B_SNAP} snapshot rows across ${B_SESS} sessions (a LIVE counter — nothing below asserts it)"
 
 # The oracle, written differently from the implementation on purpose: the repository groups by
 # date and takes MAX(version) INSIDE the status filter; this orders and limits. Same answer, and
@@ -160,7 +196,7 @@ read -r RES_DATE RES_VER <<<"$(db "SELECT session_date, version FROM eod_price_s
 [[ "${RES_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && "${RES_VER}" =~ ^[0-9]+$ ]] \
   || skip "no PUBLISHED session strictly before ${DATE} on this rig (got '${RES_DATE:-}' '${RES_VER:-}'):
        there is no previous close for a session to open FROM, so neither arm can say anything.
-       Cut and publish one (yu06-quality-gate's step 1-4 is the recipe) and re-run."
+       Cut and publish one (yu06-quality-gate's steps 1-4 are the recipe) and re-run."
 ok "rule 2 resolves to ${RES_DATE} v${RES_VER} (latest PUBLISHED version of the most recent earlier date)"
 
 close_of() { db "SELECT closing_price FROM eod_price_snapshot
@@ -182,10 +218,10 @@ SEEDS="$("${K[@]}" exec deploy/price-publisher -- cat /app/data/snapshot-prices.
 [[ -n "${SEEDS}" ]] || fail "could not read /app/data/snapshot-prices.json out of the price-publisher pod"
 # openPrice, not closePrice, and the difference is not cosmetic: normalizeQuote seeds the wire's
 # `openPrice` field from the snapshot's OPEN (AAPL 240.1) while `price`/`closePrice` come from its
-# CLOSE (241.8). Comparing against the wrong one would fail the red arm for a reason that has
-# nothing to do with this ADR. `round`/`floor(x*1000+0.5)` mirrors JS Math.round rather than
-# Python's banker's rounding, so the two implementations agree on a .5 that a 3dp seed could
-# legitimately carry.
+# CLOSE (241.8). Measured off-rig 2026-08-25 against the real module. Comparing against the wrong
+# one fails the red arm for a reason that has nothing to do with this ADR.
+# floor(x*1000+0.5) mirrors JS Math.round rather than Python's banker's rounding, so the two
+# implementations agree on a .5 that a 3dp seed could legitimately carry.
 SEED_EQ="$(python3 -c "
 import sys, json, math
 d = json.load(sys.stdin)['${EQ_CTL}']
@@ -197,24 +233,31 @@ d = json.load(sys.stdin)['${UST_CTL}']
 pct = math.floor(float(d['runtimeSeedCleanPrice']) * 1000 + 0.5) / 1000   # treasury.round3
 print('%.6f' % (math.floor(pct * 10000 + 0.5) / 1000000))                 # treasury.pctToFraction
 " <<<"${SEEDS}")" || fail "${UST_CTL} is not in the pod's seed file"
-echo "    ${EQ_CTL}:  close ${CLOSE_EQ}  vs static seed ${SEED_EQ}"
-echo "    ${UST_CTL}: close ${CLOSE_UST}  vs static seed ${SEED_UST}"
 
-# THE ARMS MUST PREDICT DIFFERENT NUMBERS. If a control's close equals its seed, "opened from the
-# close" and "opened from the seed" are the same reading and a green means nothing.
-# The thresholds are tied to the tolerances step 3 asserts with, not picked to be small: the
-# equity is compared EXACTLY (prices are 3dp, so any real difference is at least 1e-3), and the
-# bond is compared to 1e-5, so its gap must be at least 10x that or the tolerance could swallow
-# the very difference the two arms turn on.
+# The price the planted DRAFT will carry. DERIVED from the real close, never a literal: it has to
+# be distinguishable from both the close and the seed to discriminate, and PLAUSIBLE in case a
+# defect ever does put it on the wire — a sentinel like 424242 reaching the feed would move the
+# ADR-066 band hard enough to stranded-cancel a peer's resting orders.
+DRAFT_PX="$(python3 -c "print('%.3f' % (round(${CLOSE_EQ}, 3) + 1.111))")"
+echo "    ${EQ_CTL}:  close ${CLOSE_EQ}  seed ${SEED_EQ}  planted-DRAFT ${DRAFT_PX}"
+echo "    ${UST_CTL}: close ${CLOSE_UST}  seed ${SEED_UST}"
+
+# THE THREE NUMBERS MUST BE THREE NUMBERS. If any two coincide, at least one arm predicts the same
+# reading as another and the proof stops discriminating. The thresholds are tied to the tolerances
+# step 3 asserts with, not picked to look small: the equity is compared EXACTLY (3dp prices, so a
+# real difference is at least 1e-3) and the bond to 1e-5, so its gap must be 10x that at minimum.
 python3 -c "
 import sys
-pairs = [('${EQ_CTL}', ${CLOSE_EQ}, ${SEED_EQ}, 1e-3), ('${UST_CTL}', ${CLOSE_UST}, ${SEED_UST}, 1e-4)]
-bad = [n for n, c, s, floor in pairs if abs(c - s) < floor]
+eq = [('close', ${CLOSE_EQ}), ('seed', ${SEED_EQ}), ('draft', ${DRAFT_PX})]
+bad = [(a[0], b[0]) for i, a in enumerate(eq) for b in eq[i+1:] if abs(a[1] - b[1]) < 1e-3]
+if abs(${CLOSE_UST} - ${SEED_UST}) < 1e-4:
+    bad.append(('bond close', 'bond seed'))
 sys.exit(0 if not bad else 1)
-" || skip "a control's published close equals its static seed, so the two arms predict the SAME
-       opening price and this proof would discriminate nothing. Pick other controls:
+" || skip "two of the numbers this proof turns on coincide (${EQ_CTL}: close ${CLOSE_EQ} / seed
+       ${SEED_EQ} / draft ${DRAFT_PX}; ${UST_CTL}: close ${CLOSE_UST} / seed ${SEED_UST}), so at
+       least two arms predict the same reading and a green would mean nothing. Pick other controls:
        EQ_CTL=<ticker> UST_CTL=<key> bash scripts/proofs/yu17-session-opens-from-close.sh"
-ok "close and seed differ for both controls — the arms predict different numbers"
+ok "close, seed and planted-DRAFT are three distinct numbers — every arm predicts a different reading"
 
 # ---------------------------------------------------------------------------------------------
 step "1. the previous-session read (rule 3): resolved server-side, over HTTP"
@@ -224,10 +267,10 @@ PREV_CODE="$(api "curl -s -o /dev/null -w '%{http_code}' -m15 \
 PREV_BODY="$(api "curl -s -m15 \
   'http://trade-processor:18091/eod/session/previous?before=${DATE}' -H \"Authorization: Bearer \$T\"")"
 
-# SHAPE-TEST THE CODE BEFORE BRANCHING ON IT. A failed `kubectl exec` prints nothing and curl's
-# own 000 means the connection never happened -- and on the before arm BOTH would sail straight
-# through a bare `!= 200` and be reported as "the endpoint is correctly absent". No answer and the
-# answer no are different verdicts.
+# SHAPE-TEST THE CODE BEFORE BRANCHING ON IT. A failed `kubectl exec` prints nothing and curl's own
+# 000 means the connection never happened — and on the before arm BOTH would sail straight through
+# a bare `!= 200` and be reported as "the endpoint is correctly absent". No answer and the answer
+# no are different verdicts.
 [[ "${PREV_CODE}" =~ ^[0-9]{3}$ && "${PREV_CODE}" != "000" ]] \
   || fail "no HTTP answer from trade-processor for /eod/session/previous (got '${PREV_CODE}'):
        the exec or the connection failed, which says nothing about whether the route exists"
@@ -250,23 +293,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------------------------
-step "2. rule 2's whole content: a DRAFT never wins, however recent it is"
+step "2. plant DRAFTs newer than the published close, and leave them planted"
 
+PLANTED=()
+DRAFT_V=0
 if [[ "${EXPECT}" == "before" ]]; then
   echo "    N/A on this build: there is no previous-session read, so there is nothing that could"
-  echo "    prefer a DRAFT. Recorded as absent rather than passed — the defect on this build is"
-  echo "    step 3's, not this one's."
+  echo "    prefer a DRAFT, and planting one would write to a live database to prove nothing."
+  echo "    Recorded as absent rather than passed — the defect on this build is step 3's."
 else
-  plant_draft() { # plant_draft <session_date> <version> <price>
+  plant_draft() { # plant_draft <session_date> <version>
     db "INSERT INTO eod_price_session (session_date, version, status, instrument_count, flagged_count, created_at)
-          VALUES ('$1', $2, 'DRAFT', 1, 0, NOW());
+          VALUES ('$1', $2, 'DRAFT', ${HDR_SENTINEL}, 0, NOW());
         INSERT INTO eod_price_snapshot (session_date, version, security, closing_price, quality, override_reason)
-          VALUES ('$1', $2, '${EQ_CTL}', $3, 'OVERRIDDEN', '${MARKER}');" >/dev/null \
+          VALUES ('$1', $2, '${EQ_CTL}', ${DRAFT_PX}, 'OVERRIDDEN', '${MARKER}');" >/dev/null \
       || fail "could not plant the DRAFT at $1 v$2"
-    # VERIFY THE PLANT. "I ran the INSERT" is not "the row is there", and a DRAFT that never
-    # landed makes this arm pass against nothing at all.
-    local n; n="$(db "SELECT COUNT(*) FROM eod_price_session WHERE session_date='$1' AND version=$2 AND status='DRAFT';" | tr -d '[:space:]')"
+    # VERIFY THE PLANT. "I ran the INSERT" is not "the row is there", and a DRAFT that never landed
+    # makes every assertion below pass against nothing at all — the destructive-precondition rule
+    # applied to a constructive one.
+    local n
+    n="$(db "SELECT COUNT(*) FROM eod_price_session h JOIN eod_price_snapshot s
+               ON s.session_date = h.session_date AND s.version = h.version
+             WHERE h.session_date='$1' AND h.version=$2 AND h.status='DRAFT'
+               AND s.override_reason='${MARKER}';" | tr -d '[:space:]')"
     [[ "${n}" == "1" ]] || fail "the DRAFT at $1 v$2 is not in the table after the INSERT (count=${n:-?})"
+    PLANTED+=("$1 $2")
   }
   resolved_now() { api "curl -s -m15 'http://trade-processor:18091/eod/session/previous?before=${DATE}' \
       -H \"Authorization: Bearer \$T\"" | python3 -c "
@@ -276,18 +327,18 @@ print(d['sessionDate'], d['version'])
 "; }
 
   # 2a — same date, HIGHER version. This is the exact bug a MAX(version) taken OUTSIDE the status
-  # filter would produce: the newest version wins, and it is a DRAFT.
+  # filter produces: the newest version wins, and it is a DRAFT.
   DRAFT_V=$(( $(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${RES_DATE}';" | tr -d '[:space:]') + 1 ))
-  plant_draft "${RES_DATE}" "${DRAFT_V}" 424242.424242
+  plant_draft "${RES_DATE}" "${DRAFT_V}"
   read -r A_DATE A_VER <<<"$(resolved_now)"
   [[ "${A_DATE}" == "${RES_DATE}" && "${A_VER}" == "${RES_VER}" ]] \
     || fail "a DRAFT at ${RES_DATE} v${DRAFT_V} displaced the published close: the endpoint now
        resolves ${A_DATE:-?} v${A_VER:-?} instead of ${RES_DATE} v${RES_VER}"
-  ok "DRAFT ${RES_DATE} v${DRAFT_V} (higher version, same date) ignored — still ${A_DATE} v${A_VER}"
+  ok "DRAFT ${RES_DATE} v${DRAFT_V} (higher version, same date) ignored by the endpoint"
 
-  # 2b — a LATER date, when one exists strictly between the resolved date and today. This is the
-  # other half of rule 2: "most recent session_date" means the most recent one that HAS a
-  # published version, not the most recent one that exists.
+  # 2b — a LATER date, when one exists strictly between the resolved date and today. The other half
+  # of rule 2: "most recent session_date" means the most recent one that HAS a published version,
+  # not the most recent one that exists.
   LATER="$(python3 -c "
 import datetime as d
 res = d.date.fromisoformat('${RES_DATE}')
@@ -297,26 +348,22 @@ print(nxt.isoformat() if nxt < today else '')
 ")"
   if [[ -n "${LATER}" ]]; then
     LATER_V=$(( $(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${LATER}';" | tr -d '[:space:]') + 1 ))
-    plant_draft "${LATER}" "${LATER_V}" 424242.424242
+    plant_draft "${LATER}" "${LATER_V}"
     read -r B_DATE B_VER <<<"$(resolved_now)"
     [[ "${B_DATE}" == "${RES_DATE}" && "${B_VER}" == "${RES_VER}" ]] \
       || fail "a DRAFT dated ${LATER} (later than the published close, still before ${DATE}) won:
        the endpoint resolves ${B_DATE:-?} v${B_VER:-?} instead of ${RES_DATE} v${RES_VER}"
-    ok "DRAFT dated ${LATER} (a later date entirely) ignored — still ${B_DATE} v${B_VER}"
+    ok "DRAFT dated ${LATER} (a later date entirely) ignored by the endpoint"
   else
-    echo "    2b not run: ${RES_DATE} is the day before ${DATE}, so no date sits strictly between"
-    echo "    them to plant a later DRAFT on. 2a covers the version half of rule 2; the date half"
-    echo "    is covered whenever the rig's newest published close is older than yesterday."
+    echo "    2b not planted: ${RES_DATE} is the day before ${DATE}, so no date sits strictly"
+    echo "    between them. 2a covers the version half of rule 2; the date half is covered"
+    echo "    whenever the rig's newest published close is older than yesterday."
   fi
-  unplant
-  read -r C_DATE C_VER <<<"$(resolved_now)"
-  [[ "${C_DATE}" == "${RES_DATE}" && "${C_VER}" == "${RES_VER}" ]] \
-    || fail "the plants did not come out cleanly: the endpoint now resolves ${C_DATE:-?} v${C_VER:-?}"
-  ok "plants removed; the endpoint is back on ${C_DATE} v${C_VER}"
+  echo "    ${#PLANTED[@]} DRAFT(s) left in place for step 3 — the publisher restarts underneath them"
 fi
 
 # ---------------------------------------------------------------------------------------------
-step "3. the open itself: restart the publisher and read where the session actually started"
+step "3. the open itself: restart the publisher WITH the newer DRAFTs in place"
 
 restart_publisher
 HEALTH="$(pub /health)"
@@ -333,8 +380,6 @@ EQ_SRC="$(pyget source <<<"${EQ_Q}")"
 UST_OPEN="$(pyget openPrice <<<"${UST_Q}")"
 HAS_OS="$(haskey openingSource <<<"${HEALTH}")"
 echo "    ${EQ_CTL}: openPrice ${EQ_OPEN} source ${EQ_SRC} | ${UST_CTL}: openPrice ${UST_OPEN} | openingSource present: ${HAS_OS}"
-
-eq() { python3 -c "import sys; sys.exit(0 if abs(float('$1') - float('$2')) <= float('$3') else 1)"; }
 
 if [[ "${EXPECT}" == "before" ]]; then
   [[ "${HAS_OS}" == "no" ]] \
@@ -356,32 +401,49 @@ fi
 
 [[ "${HAS_OS}" == "yes" ]] || fail "/health carries no openingSource: rule 4 is the countermeasure
        to this ADR's trap, and without it a seed open and a close open are indistinguishable"
-eq "${EQ_OPEN}" "${CLOSE_EQ}" 1e-9 \
-  || fail "${EQ_CTL} opened at ${EQ_OPEN}, not at its published close ${CLOSE_EQ} (seed is ${SEED_EQ})"
+
+# THE COMPOSED ASSERTION. Three mutually exclusive readings, so the failure names its own cause.
+if ! eq "${EQ_OPEN}" "${CLOSE_EQ}" 1e-9; then
+  if eq "${EQ_OPEN}" "${DRAFT_PX}" 1e-9; then
+    fail "${EQ_CTL} opened at ${EQ_OPEN} — THE PLANTED DRAFT's price. The hierarchy prefers a
+       DRAFT over the published close, which is exactly what rule 2 forbids, and every price it
+       produces would look completely ordinary."
+  elif eq "${EQ_OPEN}" "${SEED_EQ}" 1e-9; then
+    fail "${EQ_CTL} opened at ${EQ_OPEN} — the STATIC SEED. The close read fell through; /health
+       openingSource.error should name the reason: $(pyget openingSource.error <<<"${HEALTH}")"
+  else
+    fail "${EQ_CTL} opened at ${EQ_OPEN}, which is not the close ${CLOSE_EQ}, the seed ${SEED_EQ}
+       or the planted DRAFT ${DRAFT_PX} — an opening price from a fourth source nobody predicted"
+  fi
+fi
 [[ "${EQ_SRC}" == "previous-close" ]] \
   || fail "${EQ_CTL}'s wire provenance is '${EQ_SRC}', expected 'previous-close'"
 # 1e-5, and only here: the close is a 6dp fraction of par, the walk state is 3dp percent-of-par,
 # so the round trip through treasury.round3 can move the last digit. Every other comparison in
-# this proof is exact, and this bound is 100x smaller than the gap between close and seed asserted
-# in step 0 — it cannot swallow the difference the arms turn on.
+# this proof is exact, and step 0 refuses to run unless the bond's close/seed gap is at least 10x
+# this — it cannot swallow the difference the arms turn on.
 eq "${UST_OPEN}" "${CLOSE_UST}" 1e-5 \
   || fail "${UST_CTL} opened at ${UST_OPEN}, not at its published close ${CLOSE_UST} (seed ${SEED_UST})"
-ok "both controls opened AT the published close of ${RES_DATE} v${RES_VER}"
+ok "RULE 2, END TO END: ${EQ_CTL} opened at ${CLOSE_EQ} — the PUBLISHED close — while ${#PLANTED[@]} newer"
+ok "  DRAFT(s) carrying ${DRAFT_PX} sat in the table. The bond opened at its close too (${CLOSE_UST})."
 
-OS_DATE="$(pyget openingSource.previousSession.sessionDate <<<"${HEALTH}")"
-OS_VER="$(pyget openingSource.previousSession.version <<<"${HEALTH}")"
-# haskey first: pyget prints an empty string BOTH for `error: null` (what a clean open looks
-# like) and for a key that is not there at all (a /health that cannot report failure). A bare
-# emptiness test would call the second one healthy.
+# haskey first: pyget prints an empty string BOTH for `error: null` (what a clean open looks like)
+# and for a key that is not there at all (a /health that cannot report failure). A bare emptiness
+# test would call the second one healthy.
 [[ "$(haskey openingSource.error <<<"${HEALTH}")" == "yes" ]] \
   || fail "/health's openingSource carries no error field at all, so it has no way to report a
        failed read -- the absence of continuity could never be loud"
+OS_DATE="$(pyget openingSource.previousSession.sessionDate <<<"${HEALTH}")"
+OS_VER="$(pyget openingSource.previousSession.version <<<"${HEALTH}")"
 OS_ERR="$(pyget openingSource.error <<<"${HEALTH}")"
 OS_EQC="$(pyget openingSource.byClass.equity.source <<<"${HEALTH}")"
 OS_USC="$(pyget openingSource.byClass.treasury.source <<<"${HEALTH}")"
 OS_OPT="$(pyget openingSource.byClass.option.source <<<"${HEALTH}")"
+# RES_VER, and the planted DRAFT's version is strictly higher at the same date, so this equality
+# is also the /health-level statement that the DRAFT did not win.
 [[ "${OS_DATE}" == "${RES_DATE}" && "${OS_VER}" == "${RES_VER}" ]] \
-  || fail "/health names ${OS_DATE:-?} v${OS_VER:-?} as the opening session; the prices came from ${RES_DATE} v${RES_VER}"
+  || fail "/health names ${OS_DATE:-?} v${OS_VER:-?} as the opening session; the published close is
+       ${RES_DATE} v${RES_VER} and the planted DRAFT is v${DRAFT_V}"
 [[ -z "${OS_ERR}" ]] || fail "/health reports a successful open AND an error: '${OS_ERR}'"
 [[ "${OS_EQC}" == "previous-close" ]] || fail "/health says equities opened on '${OS_EQC}'"
 [[ "${OS_USC}" == "previous-close" ]] || fail "/health says treasuries opened on '${OS_USC}'"
@@ -389,6 +451,45 @@ OS_OPT="$(pyget openingSource.byClass.option.source <<<"${HEALTH}")"
   || fail "/health says options opened on '${OS_OPT}': an option must inherit its underlying's gap
        through the re-price it already uses, never carry a stored close of its own"
 ok "rule 4: /health names ${OS_DATE} v${OS_VER} and the winning rung per class (equity/treasury previous-close, option derived)"
+
+# ---------------------------------------------------------------------------------------------
+step "3b. remove the plants, and account for exactly what was removed"
+
+unplant
+for pair in ${PLANTED[@]+"${PLANTED[@]}"}; do
+  read -r pd pv <<<"${pair}"
+  n="$(db "SELECT COUNT(*) FROM eod_price_session WHERE session_date='${pd}' AND version=${pv};" | tr -d '[:space:]')"
+  [[ "${n}" == "0" ]] || fail "the planted DRAFT ${pd} v${pv} is still in eod_price_session (count=${n:-?})"
+done
+LEFT="$(db "SELECT COUNT(*) FROM eod_price_snapshot WHERE override_reason='${MARKER}';" | tr -d '[:space:]')"
+[[ "${LEFT}" == "0" ]] || fail "${LEFT} row(s) carrying this proof's marker survived the cleanup"
+
+read -r A_SNAP A_SESS <<<"$(db "SELECT (SELECT COUNT(*) FROM eod_price_snapshot),
+                                       (SELECT COUNT(*) FROM eod_price_session);" | tr '\t' ' ')"
+[[ "${A_SNAP}" =~ ^[0-9]+$ && "${A_SESS}" =~ ^[0-9]+$ ]] \
+  || fail "could not re-read the row counts after the cleanup"
+# NOT delta-zero. This table is live and grows on its own — the EOD chain cuts sessions on an
+# hourly CronJob and concurrent proofs cut their own, so a session appearing mid-run is somebody
+# else's CORRECT behaviour and must not fail this proof. A DECREASE is the only reading that can
+# mean this script deleted something it did not plant, and that is what is asserted.
+(( A_SNAP >= B_SNAP )) \
+  || fail "eod_price_snapshot SHRANK across this run (${B_SNAP} -> ${A_SNAP}): the cleanup deleted
+       rows this proof did not plant. Both delete statements are marker-scoped, so this should be
+       unreachable — investigate before running it again."
+(( A_SESS >= B_SESS )) \
+  || fail "eod_price_session SHRANK across this run (${B_SESS} -> ${A_SESS}): the cleanup deleted
+       sessions this proof did not plant."
+ok "plants gone, marker rows 0; rows ${B_SNAP} -> ${A_SNAP}, sessions ${B_SESS} -> ${A_SESS} (growth is the live EOD chain, not this proof)"
+
+read -r C_DATE C_VER <<<"$(api "curl -s -m15 'http://trade-processor:18091/eod/session/previous?before=${DATE}' \
+    -H \"Authorization: Bearer \$T\"" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d['sessionDate'], d['version'])
+")"
+[[ "${C_DATE}" == "${RES_DATE}" && "${C_VER}" == "${RES_VER}" ]] \
+  || fail "after the cleanup the endpoint resolves ${C_DATE:-?} v${C_VER:-?}, not ${RES_DATE} v${RES_VER}"
+ok "endpoint is back on ${C_DATE} v${C_VER}"
 
 # ---------------------------------------------------------------------------------------------
 step "4. the control that makes step 3 mean something: switch the read off, same build"
@@ -415,9 +516,9 @@ eq "${UST_OFF}" "${SEED_UST}" 1e-9 \
   || fail "/health reports a seed open with NO error text: the absence of continuity has to be
        LOUD, and a silent fall-through here is this ADR's trap in the countermeasure itself"
 [[ "${OFF_EQC}" == "static-seed" ]] || fail "/health says equities opened on '${OFF_EQC}', expected static-seed"
+[[ "${OFF_SESS}" == "yes" ]] || fail "openingSource.previousSession disappeared rather than reading null"
 ok "read off -> both controls back on the seed, /health says enabled=false, source=static-seed, error='${OFF_ERR}'"
 ok "step 3's readings therefore depend on the close read, which is what makes them evidence"
-[[ "${OFF_SESS}" == "yes" ]] || fail "openingSource.previousSession disappeared rather than reading null"
 
 # ---------------------------------------------------------------------------------------------
 step "5. restore: the rig must not be left with the read switched off"
@@ -429,13 +530,19 @@ restart_publisher
 RESTORED="$(pub /health)"
 R_EN="$(pyget openingSource.enabled <<<"${RESTORED}")"
 R_DATE="$(pyget openingSource.previousSession.sessionDate <<<"${RESTORED}")"
+R_EQ="$(pyget openPrice <<<"$(pub "/prices/${EQ_CTL}")")"
 [[ "${R_EN}" == "True" || "${R_EN}" == "true" ]] || fail "the read is still off after the restore (enabled=${R_EN})"
 [[ "${R_DATE}" == "${RES_DATE}" ]] \
   || fail "after the restore the publisher opens from '${R_DATE:-nothing}', not ${RES_DATE} — the rig
        is left in a state a later proof would read as a defect in something else"
-ok "restored: the publisher is opening from ${R_DATE} again"
+# The clean continuity reading, with no plant in the table: step 3 proved the close beats a DRAFT,
+# this proves the close is still what the rig opens from once the DRAFTs are gone.
+eq "${R_EQ}" "${CLOSE_EQ}" 1e-9 \
+  || fail "after the restore ${EQ_CTL} opens at ${R_EQ}, not at the published close ${CLOSE_EQ}"
+ok "restored: the publisher opens from ${R_DATE} again, ${EQ_CTL} at ${CLOSE_EQ}"
 
 echo
 echo "[PASS] yu17-session-opens-from-close (EXPECT=after): rule 1's rung is live, rule 2 refuses a"
-echo "       DRAFT however recent, rule 3 reads it over HTTP with no schema dependency, and rule 4"
-echo "       makes the answer readable in one request — including when it is 'the seed'."
+echo "       DRAFT however recent — proven at the PRICE, not just at the endpoint — rule 3 reads it"
+echo "       over HTTP with no schema dependency, and rule 4 makes the answer readable in one"
+echo "       request, including when the answer is 'the seed'."
