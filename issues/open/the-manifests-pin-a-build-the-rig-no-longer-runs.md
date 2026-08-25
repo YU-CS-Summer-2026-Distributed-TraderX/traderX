@@ -42,3 +42,9 @@ Updating the four pins to today's tag repeats the pattern one tag later — the 
 (then rolling = editing the manifest, and `set image` is banned), or the build script's derived
 tag is (then the manifests should pin the derived tag and bring-up should build it). That choice
 touches every layer's manifests and every lane's workflow — yaakov's call.
+
+**Interim guard (2026-08-25, format-8 proof-set chip):** `run-proofs.sh`'s `rebuild_fresh_epoch`
+now refuses to wipe the epoch when the target image differs from what the members are running,
+printing both and the two overrides (`CLUSTER_IMAGE=<running>` / `ALLOW_IMAGE_CHANGE=1`) — a bare
+suite invocation on a drifted rig no longer silently reverts the build while destroying the epoch.
+The pinning-authority question above is unchanged.

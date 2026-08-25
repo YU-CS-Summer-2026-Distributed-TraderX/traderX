@@ -95,6 +95,17 @@ PROOFS=(
   # two opposite verdicts) — already in this array above. Do not remove that step believing the
   # accrual and extract proofs still cover it; they do not.
   yu17-swaption-terms
+  # FORMAT-8 PROOF SET (design §5), registered BEFORE the mint with the red halves banked
+  # (2026-08-25, this file's commit). Each script defaults EXPECT=after — the suite states the
+  # POST-MINT claim — so on a pre-mint build these four are RED, deliberately: the defect they
+  # describe (an inert collar on FNMA and every option) is live, and a skip would read as a pass
+  # in the summary, which is exactly how the "no YU17 proofs in the YU17 suite" gap was born (see
+  # the yu17-swap-netting account above). The mint chip runs the red halves as EXPECT=before
+  # explicitly. All four roll nothing: resting non-crossing probes, cancelled on the way out.
+  yu17-fnma-collar
+  yu17-option-collar
+  yu17-fine-grid
+  yu17-book-retick           # mints a ticker via reference-data (needs the 18085 forward)
   yu13-otel-trace-join
   yu13-otel-reject-trace-log-join
   yu10-fix-session
@@ -138,6 +149,11 @@ PROOFS=(
   # roll (whose builds predate the 32-byte ack entirely). A kill that strands nothing exits 2
   # (uninformative, not confirming — rule 18); on a pre-B build this proof is REQUIRED to fail.
   yu17-keyed-ack-correlation
+  # Format-8 §2.3.3 determinism (design §5 row 6). Lives in THIS block, not with its four siblings
+  # above, because its tail kills the leader (statefulset recovers it on the same image — the
+  # yu17-keyed-ack class, no PVC wipe, no epoch) and books one trade on a ticker it mints. Same
+  # default-EXPECT=after and deliberately-red-pre-mint posture as the four above.
+  yu17-retick-determinism
   yu13-cancel-ingress        # rolls the gateway
   yu13-stp-and-replace       # rolls all three members
 )
@@ -431,8 +447,26 @@ seed_fixtures() { # seed_fixtures [fresh]  -- "fresh" clears the projection for 
 # the message still says fresh epoch, and every proof afterwards describes a two-member cluster
 # truthfully. prove-cluster-engine-change §1 already prescribes the end-state assertion below; it
 # was simply never wired in here.
-rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] -- down, PVC wipe, optionally repin members, up
+rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- down, PVC wipe, optionally repin members, up
   local image="${1:-}"
+  # AN EPOCH WIPE MUST NEVER ALSO BE A SILENT BUILD CHANGE. The baseline block derives its image
+  # from the MANIFESTS, and the manifests drift behind what a lane actually rolled
+  # (issues/open/the-manifests-pin-a-build-the-rig-no-longer-runs.md) — so a bare invocation on a
+  # drifted rig would destroy the epoch AND revert the members to a build missing whatever the
+  # drift carried. Measured 2026-08-25: manifests declared :yu17-bbo while the rig ran
+  # :yu17-markwait2. Wiping is this function's job; CHANGING THE BUILD while doing it needs an
+  # explicit second argument (the two stp call sites, which swap builds deliberately and in view)
+  # or the operator override the refusal names. This is an interim loud-stop, not the pinning
+  # policy — that remains yaakov's call, recorded in the issue above.
+  local running; running="$(current_image)"
+  if [[ -n "${image}" && -n "${running}" && "${image}" != "${running}" \
+        && "${2:-}" != "allow-image-change" && "${ALLOW_IMAGE_CHANGE:-0}" != "1" ]]; then
+    fail_hard "refusing to wipe the epoch AND change the members' build in one motion:
+       members are running   ${running}
+       this rebuild would pin ${image} (derived from the manifests / CLUSTER_IMAGE)
+       If the running build is the one under test:   CLUSTER_IMAGE=${running} bash scripts/yu15/run-proofs.sh ...
+       If the build change is deliberate:            ALLOW_IMAGE_CHANGE=1 bash scripts/yu15/run-proofs.sh ..."
+  fi
   ensure_image_on_nodes "${image}"
   ${K} scale sts order-matcher-cluster --replicas=0 >/dev/null
   ${K} wait --for=delete pod -l app=order-matcher-cluster --timeout=300s >/dev/null 2>&1
@@ -740,7 +774,7 @@ for p in "${PROOFS[@]}"; do
     # ~130 for seed-proof-fixtures alone; the ~510 excess is the universe. Intermittent precisely
     # because it is a race on whether the old pod is still up when the members return.
     ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
-    rebuild_fresh_epoch "${STP_IMAGE_PRE}"
+    rebuild_fresh_epoch "${STP_IMAGE_PRE}" allow-image-change
     # A fresh epoch needs a fresh projection — the engine's counters restart below the trade ids
     # already in SQL, and stp's own preflight (correctly) refuses to run into that. The main heal
     # path clears after its rebuilds; this wrap forgot to, and stp failed in-suite on exactly the
@@ -831,7 +865,7 @@ for p in "${PROOFS[@]}"; do
     # epoch on the baseline build before turning the feed back on, or the next 510-security replay
     # lands on a 64-capacity engine.
     echo "[stp-prep] restoring ${BASELINE_IMAGE} at a fresh epoch, then the control feed"
-    rebuild_fresh_epoch "${BASELINE_IMAGE}"
+    rebuild_fresh_epoch "${BASELINE_IMAGE}" allow-image-change
     ${K} set env deploy/cluster-gateway CONTROL_FEED_SUBSCRIBER=1 >/dev/null
     ${K} rollout restart deploy/cluster-gateway >/dev/null
     ${K} rollout status deploy/cluster-gateway --timeout=300s >/dev/null 2>&1
