@@ -194,7 +194,18 @@ sampled symbol, fragmented into more files but missing nothing.)
 
 **The replayed universe is 23 of the rig's 25 equity/ETF names** — every one verified present on
 `dt=2025-02-03`, the same day the listable universe was pinned to (`473dff07`). The two exclusions
-stay on the synthetic walk with their existing provenance, deliberately:
+are deliberate, and they do **not** fall back to the synthetic walk.
+
+**Corrected 2026-08-26, measured off the wire.** Earlier drafts of this section, and the briefs
+written from it, said the exclusions "stay on the synthetic walk". They do not: both publish
+`source: previous-close` with a **wall-clock** `asOf`, i.e. a carried-forward last close that does
+not move. The distinction is worth the correction because it is the difference between a name that is
+visibly **frozen** and one that is visibly **fake**, and the first is the more honest thing to show.
+There are in fact **five** provenances on the wire simultaneously — `taq-replay-2025-02` (23),
+`black-scholes` (24), `fred-us-treasury-cmt-curve` (15), `simulated-corporate-credit-spread` (4) and
+`previous-close` (2) — so **any consumer that models provenance as tape-vs-synthetic is wrong twice**:
+it labels the FRED curve fake, and it labels a stale carried-forward close live. Found by the UI lane
+building the provenance chip; the wire was always right and the prose was not.
 
 - **GOOGL** — the store's `GOOG` partition merges Alphabet's two classes (the ingest dropped
   TAQ's `SYM_SUFFIX`; `issues/open/tick-store-drops-taq-sym-suffix-and-merges-share-classes.md`).
