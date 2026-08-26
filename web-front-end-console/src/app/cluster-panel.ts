@@ -21,6 +21,43 @@ import { HelpTip } from './help';
 const FEED_FLUSH_MS = 15000;
 const STALE_AFTER_MS = FEED_FLUSH_MS * 3;
 
+export interface BookRead { applied: number; digest: string; books: number; }
+
+/**
+ * Which of four things three member reads are saying — pure, so it can be tested without a cluster.
+ *
+ * <p><b>Three identical reads are NOT a consensus claim.</b> A stopped cluster agrees with itself
+ * perfectly, and a panel that goes green for that is a vacuous pass. The claim is pinned to the
+ * sequence: same `applied` across members, AND that sequence advancing.
+ *
+ * <p><b>Books are compared ONLY at a matching sequence.</b> Members legitimately sit at different
+ * points for a moment; a difference read across two sequences is SKEW, not disagreement, and
+ * alarming on it would cry wolf during normal operation.
+ *
+ * <p>Extracted from the component deliberately. Real divergence is permanent here and costs a fresh
+ * epoch, so the alarm arm must never be exercised against a live cluster — but an arm whose
+ * behaviour is only assumed is the one that fails when it finally matters. This is the seam where
+ * it can be handed a divergent payload and watched, at no risk to anything.
+ */
+export function bookVerdict(
+  reads: (BookRead | null)[], advancing: boolean, quietMs: number,
+): { text: string; tone: string } {
+  const seen = reads.filter(r => r !== null) as BookRead[];
+  if (seen.length < 2) { return { text: '· book agreement: need at least two members to compare', tone: 'banner' }; }
+  const seqs = new Set(seen.map(r => r.applied));
+  if (seqs.size > 1) {
+    return { text: `· members are at different sequences (${[...seqs].sort((a, b) => a - b).join(', ')}) — skew, not disagreement; not comparing books`, tone: 'banner' };
+  }
+  const applied = seen[0].applied;
+  if (new Set(seen.map(r => r.digest)).size > 1) {
+    return { text: `⚠ members DISAGREE on the book at the same applied sequence ${applied}`, tone: 'banner bad' };
+  }
+  if (!advancing) {
+    return { text: `· ${seen.length} members hold an identical book (${seen[0].books} securities) at ${applied} · quiet ${Math.round(quietMs / 1000)}s`, tone: 'banner' };
+  }
+  return { text: `✓ ${seen.length} members agree on the book (${seen[0].books} securities) at applied ${applied}, and advancing`, tone: 'banner good' };
+}
+
 @Component({
   selector: 'cluster-panel',
   imports: [HelpTip],
@@ -89,23 +126,7 @@ export class ClusterPanel implements OnInit, OnDestroy {
    * for a moment, and a difference read across two sequences is SKEW, not disagreement; calling it
    * disagreement would cry wolf on every busy poll.
    */
-  readonly book = computed<{ text: string; tone: string }>(() => {
-    const reads = this.bookReads().filter(r => r !== null) as { applied: number; digest: string; books: number }[];
-    if (reads.length < 2) { return { text: '· book agreement: need at least two members to compare', tone: 'banner' }; }
-    const seqs = new Set(reads.map(r => r.applied));
-    if (seqs.size > 1) {
-      return { text: `· members are at different sequences (${[...seqs].sort((a, b) => a - b).join(', ')}) — skew, not disagreement; not comparing books`, tone: 'banner' };
-    }
-    const applied = reads[0].applied;
-    const same = new Set(reads.map(r => r.digest)).size === 1;
-    if (!same) {
-      return { text: `⚠ members DISAGREE on the book at the same applied sequence ${applied}`, tone: 'banner bad' };
-    }
-    if (!this.advancing()) {
-      return { text: `· ${reads.length} members hold an identical book (${reads[0].books} securities) at ${applied} · quiet ${Math.round(this.quietMs() / 1000)}s`, tone: 'banner' };
-    }
-    return { text: `✓ ${reads.length} members agree on the book (${reads[0].books} securities) at applied ${applied}, and advancing`, tone: 'banner good' };
-  });
+  readonly book = computed(() => bookVerdict(this.bookReads(), this.advancing(), this.quietMs()));
 
   ngOnInit(): void {
     this.poll();
