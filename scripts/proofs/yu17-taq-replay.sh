@@ -250,6 +250,18 @@ PAST=$(( $(now_ms) - (SPAN_S + 3600) * 1000 ))
 "${K[@]}" create configmap replay-epoch --from-literal=epochStartMs="${PAST}" \
   --dry-run=client -o yaml | "${K[@]}" apply -f - >/dev/null || fail "could not re-stamp replay-epoch"
 roll_publisher
+# WAIT FOR THE FIRST REPLAY TICK before reading a price. A freshly restarted publisher serves the
+# BOOTSTRAP quote (the previous close, walk provenance, no asOf) until the publish loop first
+# samples the ticker — up to ~15s at the 25%-batch cadence. Reading before that is the
+# readings-taken-too-early class in its purest form: the first suite run read 248.334 (the
+# bootstrap close) an instant after rollout and 222.47 (the correct hold) ten seconds later, and
+# blamed the hold. The gate is provenance, not time: the assertion below stays as sharp as ever.
+waited=0
+until [[ "$(pub "/prices/${SYM}" | pyget source)" == "${WANT_SRC}" ]]; do
+  (( waited >= 60 )) && fail "no replay tick reached ${SYM} within 60s of the publisher restart —
+       the hold cannot be read because the replay never started (check /health.taqReplay.error)"
+  sleep 3; waited=$((waited + 3))
+done
 H3="$(pub /health)"
 [[ "$(pyget taqReplay.position.held <<<"${H3}")" == "True" || "$(pyget taqReplay.position.held <<<"${H3}")" == "true" ]] \
   || fail "clock forced $(( SPAN_S / 3600 ))h+1h past the epoch and /health does not report held=true
