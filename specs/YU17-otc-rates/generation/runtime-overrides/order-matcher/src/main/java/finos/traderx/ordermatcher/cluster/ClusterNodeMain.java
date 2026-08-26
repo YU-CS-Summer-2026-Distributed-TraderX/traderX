@@ -355,7 +355,14 @@ public final class ClusterNodeMain {
                 final long bid = service.engine().bestBidPx(id);
                 final long ask = service.engine().bestAskPx(id);
                 final long mark = service.engine().markPx(id);
-                if (bid == 0L && ask == 0L && mark == 0L) {
+                // YU17 (ADR-070): the sequenced feed reference — BlpRiskState.lastPrice, the
+                // number the collar anchors on (ADR-066) and the grid derives from. NOT the mark:
+                // ADR-067 q1 decided publishing and collaring diverge, so the mark (last trade)
+                // and the reference (last sequenced tick) are different numbers, and until this
+                // line only one of them was observable. The taq-replay proof reads this to assert
+                // the tape reached consensus; nothing else on this surface could say so.
+                final long ref = service.risk() == null ? 0L : service.risk().lastPrice(id);
+                if (bid == 0L && ask == 0L && mark == 0L && ref == 0L) {
                     continue; // never quoted, never traded, nothing resting: no row at all
                 }
                 if (!first) {
@@ -371,6 +378,9 @@ public final class ClusterNodeMain {
                 }
                 if (mark != 0L) {
                     sb.append(",\"mark\":").append(java.math.BigDecimal.valueOf(mark, 6).toPlainString());
+                }
+                if (ref != 0L) {
+                    sb.append(",\"ref\":").append(java.math.BigDecimal.valueOf(ref, 6).toPlainString());
                 }
                 // YU17 (format-8 design §2.6): the grid this book is actually on. One request
                 // answers "what precision will the engine accept here" — which is what lets the

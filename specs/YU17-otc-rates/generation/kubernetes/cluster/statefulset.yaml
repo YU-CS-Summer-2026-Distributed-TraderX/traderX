@@ -65,7 +65,7 @@ spec:
           # exactly one difference, so the core, gateway and every member class are byte-identical
           # and this rolls without semantic change (the suite still mints a fresh epoch on a tag
           # mismatch, which is fine). Wire rule unchanged: post-B, never mixes with pre-B.
-          image: traderx/cluster-node:yu17-format8
+          image: traderx/cluster-node:yu17-taqref
           imagePullPolicy: IfNotPresent
           env:
             # lowpark is the latency campaign's SHIPPED recommendation (2026-07-24: RTT p50
