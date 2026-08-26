@@ -2,7 +2,12 @@
 
 ## Status
 
-**Proposed** (2026-08-24). **Not implemented.** Raised by yaakov: we hold a licensed TAQ corpus
+**Accepted** (2026-08-26), implemented on YU17. Open questions 1, 2 and 3 are answered in
+[Sizing, measured](#sizing-measured-2026-08-26-not-picked) and
+[Open questions](#open-questions--dispositions-2026-08-26) below; the end-of-tape ruling (hold at
+Mar 31's close, never loop, never fall back) and the share-class scoping are recorded there too.
+
+Originally **Proposed** (2026-08-24). Raised by yaakov: we hold a licensed TAQ corpus
 covering February and March 2025 — can it be the reference price, treating day 1 of any fresh epoch
 as the first day of the tape?
 
@@ -134,6 +139,72 @@ so a consumer reading a Feb 2025 print can tell it is not this morning's. Withou
 answers "was this invented?" but not "when was this true?", and for a replay the second question is
 the one that matters.
 
+## Sizing, measured (2026-08-26), not picked
+
+The proposal called questions 1 and 3 "a sizing question with a measurable answer, not a
+preference", and they are coupled through one identity: the resample window is the tape time that
+passes per sequenced tick. The adapter's flush interval is the sequenced cadence — 15s, itself
+measured into `feed-adapter.yaml` — so
+
+    window = FEED_FLUSH_MS x compression
+
+makes every flush land in a fresh window: the sequenced tick rate stays byte-for-byte identical to
+today's (decision 1's bound), no window is ever skipped, and none is published twice.
+
+**Chosen: window 195s, compression 13x.** One trading day (23,400 s of RTH) = 30 wall-clock
+minutes, 120 windows/day; the 40-day tape spans **20 hours** of wall clock. Measured against
+samples chosen to bracket the corpus — most and least liquid demo names (SPY/AAPL vs DFS/FNF),
+calmest and wildest days (Feb 3, Mar 11, Mar 31), regular hours only:
+
+- **Sample floor.** The worst single 195s window in the sample holds **22 prints** (FNF, Feb 3);
+  p5 across all symbol-days is >= 42, and there are **zero empty RTH windows** — at 60s windows
+  FNF still never goes empty, so 195s carries wide margin, not the minimum.
+- **Step size.** Adjacent-window median moves: p99 <= 1.3%, worst 2.06% (DFS on Mar 31 — a real
+  repricing, not noise). Far inside the collar band, so a per-flush step can never strand the band.
+- **Why 13x and not the proposal's example 39x (one day per ten minutes):** at 39x the tape spans
+  6.7 hours, and the epoch live on the rig while this was measured was already **12.6 hours old**
+  (member PVC age) — every demo on it would have found the reference held at Mar 31 before anyone
+  looked. At 13x the tape outlasts that epoch with margin while a one-hour demo still crosses two
+  real session boundaries. Fixed, not configurable: it is baked into the extract, because the
+  window and the compression are one decision and a knob that moved one without the other would
+  silently break the flush identity above.
+
+**The filtering emphasis in decision 1 was wrong, and the tape says by how much.** Re-measured on
+raw TAQ (A, AAL, AAPL, ABBV; Feb 3 RTH; 1.07M prints, `TR_SCOND`/`TR_CORR` intact):
+
+- Corrections (`TR_CORR != 00`), the failure mode the proposal emphasised: **0.034%** of RTH prints.
+- Prints whose condition codes mark them non-current (derivative, average-price, out-of-sequence,
+  prior-reference…): 1.6–9.1% per symbol. Their effect on the per-195s-window median —
+  |median(all) − median(filtered)|: **0.00 bps median, <= 3.8 bps p99, 32 bps worst** across 480
+  symbol-windows.
+
+So the unfilterable-print exposure the dropped columns leave behind is worth basis points at this
+window size, and the median absorbs it. The proposal's *mechanism* (median over the window) was
+right; its *threat model* (corrections) was two orders of magnitude smaller than the condition
+codes, and both are immaterial. Recorded so nobody re-ingests 650 GiB to recover columns worth
+single-digit basis points to a collar reference. (Same measurement, free corroboration: raw AAPL
+Feb 3 RTH has 802,923 trades and so does the tick store — YU07's ingest dropped columns, never
+rows. And `dt=2025-03-11`, the OOM-retry suspect, verified complete: full RTH coverage on every
+sampled symbol, fragmented into more files but missing nothing.)
+
+**The replayed universe is 23 of the rig's 25 equity/ETF names** — every one verified present on
+`dt=2025-02-03`, the same day the listable universe was pinned to (`473dff07`). The two exclusions
+stay on the synthetic walk with their existing provenance, deliberately:
+
+- **GOOGL** — the store's `GOOG` partition merges Alphabet's two classes (the ingest dropped
+  TAQ's `SYM_SUFFIX`; `issues/open/tick-store-drops-taq-sym-suffix-and-merges-share-classes.md`).
+  A median over a merged root is a price for no security that exists, and it is *invisible in the
+  price distribution* — so neither Alphabet symbol replays until a re-ingest recovers the suffix.
+  Scoping ruling, 2026-08-26: exclude now, re-ingest later if ever; the issue stays open.
+- **FNMA** — OTC, not in TAQ, exactly as this ADR's decision 3 already noted.
+
+**The live move-limit guard proposed under decision 1 was not built.** The extract is a median
+computed offline over >= 22 prints — the sanitisation already happened, once, where the whole
+window is visible. A runtime N% guard would have to wave through the tape's real overnight gaps
+(the headline feature) while catching bad values a median already caught; the judgment it needs is
+the one the offline build already makes with more information. It stays worth having the day the
+source is a live stream again.
+
 ## The collision with ADR-068's durability rule — and why it does not need an exception
 
 ADR-068 states the rule that makes "revert before anything public" real:
@@ -201,23 +272,44 @@ to survive it.
   the exogenous series with a better one honours that decision; it does not revisit it. If anything it
   strengthens it — the reference is now genuinely exogenous rather than a walk this system invented.
 
-## Open questions
+## Open questions — dispositions (2026-08-26)
 
-1. **Compression ratio, and whether it is fixed or configurable.** 1:1 puts 40 trading days across
-   eight weeks of wall clock, which no rig survives; one trading day per ten minutes puts the corpus
-   in a working day. This is a sizing question with a measurable answer, not a preference — it sets
-   both the demo's pace and the replay index's granularity.
-2. **What happens at the end of the tape?** Forty trading days ends. Halt, loop to Feb 3, or fall back
-   to synthetic? Looping creates a discontinuity at the seam — Mar 31's close to Feb 3's open — which
-   is a fabricated gap of exactly the kind ADR-069 exists to make real. Falling back to synthetic is
-   honest but drifts. **No recommendation yet; this needs deciding before it is discovered live.**
-3. **Which resample statistic, and over what window?** Median is proposed above for robustness. The
-   window length is coupled to question 1.
-4. **Does the console display it?** ADR-068 open question 1, unchanged and still open. The permission
-   recorded above covers *use*.
-5. **Do the 14 trade-only days matter?** Not for a print-driven replay. They would rule out any future
-   quote-derived reference over Mar 13–31, and `dt=2025-03-11` should be excluded or verified
-   regardless.
+1. **Compression ratio: 13x, fixed.** Measured, with the reasoning and the numbers in
+   [Sizing, measured](#sizing-measured-2026-08-26-not-picked). Fixed because window and compression
+   are one decision (the flush identity), and both live in the extract, not in a knob.
+2. **End of tape: HOLD at Mar 31's close, and let `asOf` say so.** Ruled by yaakov 2026-08-26,
+   before it could be discovered live. Looping fabricates the exact seam this ADR exists to make
+   real (Mar 31's close to Feb 3's open is an invented overnight gap); falling back to synthetic
+   silently changes provenance category mid-run, which is what decision 4 exists to prevent; and
+   holding needs no new mechanism — `asOf` was introduced to carry "a real price at a fabricated
+   time", and a frozen reference with an honestly ageing `asOf` is exactly that. At 13x the tape
+   spans 20 hours, so the hold is a rare path rather than a demo path — and
+   `yu17-taq-replay.sh` exercises it deliberately, by re-stamping the epoch into the past.
+3. **Statistic and window: median over 195s.** The median survived its re-examination (the merged
+   share class is the one thing it cannot defend against, which is why GOOGL is excluded rather
+   than defended); the window is measured above.
+4. **Does the console display it?** Unchanged, still ADR-068 open question 1. The permission
+   recorded above covers *use*; nothing here extends it.
+5. **The trade-only days do not bite** a print-driven replay, exactly as suspected; and
+   `dt=2025-03-11` was **verified rather than excluded** — complete RTH coverage on every sampled
+   symbol, more fragmented, nothing missing. Any future *quote*-derived reference over Mar 13–31
+   remains ruled out by the corpus itself.
+
+## What the implementation is, in one paragraph
+
+`price-publisher` gains `taq-replay.js`: at bring-up it reads the resampled extract (~280 KB
+gzipped: 23 symbols x 40 days x 120 window-medians) from a Secret that `start-cluster-kind.sh`
+fetches out of `gs://traderx-501015-tick-store/replay/`, and the epoch anchor from a `replay-epoch`
+ConfigMap that the bring-up and `rebuild_fresh_epoch` stamp from the member-0 PVC's
+`creationTimestamp` — which IS the mint instant, so restamping is idempotent and the anchor can
+never disagree with the epoch it describes. Every tick derives its position from
+`(now − epochStartMs) x compression` and looks the median up; nothing stores a cursor (decision
+2). A symbol the extract does not carry falls through to the walk with its provenance unchanged.
+Failures — no Secret, no stamp, an invalid extract — are all-or-nothing and loud on
+`/health.taqReplay`, and the walk continues underneath (ADR-068 rule 1). The extract is built once
+by `scripts/yu17/build-taq-replay-extract.{sh,py}`; `scripts/proofs/yu17-taq-replay.sh` asserts
+the clock/extract agreement, the wire provenance, the exclusions, the member-side sequencing, the
+restart-invisibility, and the hold.
 
 ## Related
 
