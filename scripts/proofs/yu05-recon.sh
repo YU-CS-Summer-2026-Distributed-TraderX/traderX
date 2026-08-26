@@ -384,7 +384,7 @@ OS2=$(sweep)
 ORPHANS2=$(num "$(printf '%s' "$OS2" | jfield "d['orphanCount']")")
 IDS2=$(printf '%s' "$OS2" | jfield "', '.join(d['orphanIds'])")
 say "planted projection-only row" "$PROBE"
-say "orphan_in_projection"        "${ORPHANS2:-?} (baseline ${BASELINE} + 1 expected)"
+say "orphan_in_projection"        "${ORPHANS2:-?} (baseline was ${BASELINE}; the verdict is the probe's id below, not this number)"
 # Assert the DELTA and that the probe is NAMED. Both halves matter: the count alone could move for
 # an unrelated reason, and a matching count with the probe absent would be a coincidence, not a
 # detection. The previous form required the count to equal 1 and the id list to equal the probe
