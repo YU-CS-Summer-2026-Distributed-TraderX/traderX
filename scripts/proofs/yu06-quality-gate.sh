@@ -137,6 +137,16 @@ step "1. close the session until ONLY QLTY is flagged (restart wiped the price h
 # until the flag set collapses to the one genuinely priceless ticker. Never warming up IS a fail.
 # Only trust a session THIS run created: a previous proof leaves today's row in exactly the
 # target shape, and reading it before our first close lands would pass on stale evidence.
+#
+# ADR-070 changed what the first close after a fresh epoch looks like, and the gate is RIGHT to
+# flag it: a mint rewinds the tape to Feb 3 2025 while the prior epoch's published closes persist
+# in the database, so every replayed equity (and the option quoted off one) closes SPIKE against
+# a baseline from a different point on the tape. Measured 2026-08-26: flagged=19 held across 60
+# closes, because a flagged session stays DRAFT, nothing publishes, and the baseline can never
+# re-anchor by itself. The remedy is the same one every EOD proof already uses for a flagged
+# mark — override AT THE OBSERVED CLOSE, which resolves the transition without widening any band.
+# Walk-mode rigs are untouched: their warm-up flags are MISSING rows with no close to override,
+# so the loop below degrades to exactly the old poll.
 V_START="$(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${DATE}';")"
 FLAGGED=""
 for i in $(seq 1 40); do
@@ -145,6 +155,19 @@ for i in $(seq 1 40); do
   V="$(maxver)"
   FLAGGED="$(db "SELECT flagged_count FROM eod_price_session WHERE session_date='${DATE}' AND version=${V};")"
   printf "   close -> v%s flagged=%s\n" "${V}" "${FLAGGED}"
+  if [[ "${FLAGGED:-0}" =~ ^[0-9]+$ ]] && (( ${FLAGGED:-0} > 1 )); then
+    # The epoch-transition SPIKEs: flagged rows that CARRY a close. QLTY (MISSING, no close) is
+    # untouchable here by construction, so it survives as the collapse target.
+    while IFS=$'\t' read -r sec px; do
+      [[ -n "${sec}" && -n "${px}" ]] || continue
+      api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/prices/${DATE}/override -H \"Authorization: Bearer \$T\" -H 'Content-Type: application/json' -d '{\"security\":\"${sec}\",\"price\":${px},\"reason\":\"ADR-070 epoch transition: tape rewound at the mint (proof)\"}'" >/dev/null
+    done <<<"$(db "SELECT security, closing_price FROM eod_price_snapshot
+                    WHERE session_date='${DATE}' AND version=${V} AND quality<>'OK'
+                      AND security<>'QLTY' AND closing_price IS NOT NULL;")"
+    V="$(maxver)"
+    FLAGGED="$(db "SELECT flagged_count FROM eod_price_session WHERE session_date='${DATE}' AND version=${V};")"
+    printf "   transition overridden at observed closes -> v%s flagged=%s\n" "${V}" "${FLAGGED}"
+  fi
   [[ "${FLAGGED:-99}" == "1" && "${V:-0}" -gt "${V_START}" ]] && break
   sleep 8
 done

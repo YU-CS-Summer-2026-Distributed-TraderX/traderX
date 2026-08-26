@@ -263,6 +263,17 @@ to survive it.
 **A demo becomes explicable.** "This is Apple on February 4th" is a sentence an audience can check.
 "This is a random walk seeded at 200" is not.
 
+**A fresh epoch rewinds the tape, and the EOD database does not rewind with it** (found on the
+first suite run, 2026-08-26). The mint restarts the clock at Feb 3 while the prior epoch's
+published closes persist in `eod-price-db`, so the first close after a mint flags every replayed
+equity — and the option quoted off one — SPIKE against a baseline from a different point on the
+tape. The gate is *right*: the discontinuity is real. And it cannot resolve itself, because a
+flagged session stays DRAFT and the baseline never re-anchors (measured: flagged=19 held across
+60 consecutive closes). The resolution is the one every EOD proof already uses for a flagged
+mark: **override at the observed close**, once, after which closes are tape-continuous for the
+rest of the epoch. `yu06-quality-gate` does exactly this, and an operator minting an epoch
+outside the suite should expect the same one-time override set on the first close.
+
 ## What this is explicitly NOT
 
 - **Not a market simulator.** The tape drives a *reference*; the book is still made by the orders this
