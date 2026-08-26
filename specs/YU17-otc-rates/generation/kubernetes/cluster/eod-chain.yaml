@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: traderx/price-publisher:yu17-open
+          image: traderx/price-publisher:yu17-taq
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -115,6 +115,22 @@ spec:
             # spends someone else's rate limit.
             - name: FRED_POLL_MINUTES
               value: "15"
+            # YU17 (ADR-070): the replay clock's anchor — the fresh-epoch mint instant, stamped
+            # into the replay-epoch ConfigMap by start-cluster-kind.sh / rebuild_fresh_epoch from
+            # the member-0 PVC's creationTimestamp (which IS the mint; deriving it means a restamp
+            # is always idempotent). Position is (now - this) x compression, derived per tick and
+            # stored nowhere, so a publisher restart resumes in the right place with no
+            # coordination (decision 2 — the property to protect).
+            #
+            # `optional: true` is ADR-068 rule 1's mechanism, exactly as for FRED_API_KEY below:
+            # an unstamped namespace leaves the variable unset, taq-replay.js records the sentence
+            # on /health, and every equity keeps the synthetic walk.
+            - name: REPLAY_EPOCH_START_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: replay-epoch
+                  key: epochStartMs
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health
@@ -127,6 +143,22 @@ spec:
               memory: 128Mi
             limits:
               memory: 384Mi
+          volumeMounts:
+            # YU17 (ADR-070): the resampled TAQ extract (~280 KB gzipped), fetched from
+            # gs://traderx-501015-tick-store/replay/ into this Secret at bring-up. In the bucket
+            # and on this mount it lives in memory and on the wire only — nothing durable enters
+            # the repo, so ADR-068's durability rule survives without a TAQ carve-out. `optional:
+            # true` for the same rule-1 reason as the env above: no Secret, no replay, loud
+            # /health, working walk. Deleting the Secret and restarting this pod is the whole
+            # revert.
+            - name: taq-replay
+              mountPath: /etc/taq-replay
+              readOnly: true
+      volumes:
+        - name: taq-replay
+          secret:
+            secretName: taq-replay-extract
+            optional: true
 ---
 apiVersion: v1
 kind: Service

@@ -7,6 +7,7 @@ const { parseOcc, quoteOption } = require('./option-quotes');
 const treasury = require('./treasury-pricing');
 const fred = require('./fred-curve');
 const previousClose = require('./previous-close');
+const taqReplay = require('./taq-replay');
 
 const PORT = Number(process.env.PRICE_PUBLISHER_PORT || '18100');
 const NATS_URL = process.env.NATS_ADDRESS || `nats://${process.env.NATS_BROKER_HOST || 'localhost'}:4222`;
@@ -446,6 +447,24 @@ function updateTick(ticker, sharedRoll) {
     return next;
   }
   const current = state.prices.get(ticker) || createFallbackQuote(ticker);
+  // YU17 (ADR-070): a tape symbol takes its reference from the replayed extract, not the walk.
+  // Only price/source/asOf move — openPrice stays the bootstrap witness (ADR-069 rule 1), and the
+  // volatility band is NOT consulted: it exists to keep an invented walk plausible, and clamping a
+  // REAL Feb-2025 print to a synthetic band would discard the very thing being integrated (the
+  // same reasoning as the Treasury curve branch above). A ticker the extract does not carry —
+  // GOOGL (suffix-merged root, issues/open/tick-store-drops-taq-sym-suffix-*), FNMA (OTC, not in
+  // TAQ) — falls through to the walk with its provenance unchanged.
+  const replayed = taqReplay.priceAt(ticker, treasury.now());
+  if (replayed) {
+    const next = {
+      ...current,
+      price: replayed.price,
+      source: replayed.source,
+      asOf: replayed.asOf
+    };
+    state.prices.set(ticker, next);
+    return next;
+  }
   const band = ensureVolatilityBand(ticker, current);
   const low = band.low;
   const high = band.high;
@@ -500,7 +519,10 @@ function toPayload(quote) {
     price: quote.price,
     openPrice: quote.openPrice,
     closePrice: quote.closePrice,
-    asOf: new Date().toISOString(),
+    // YU17 (ADR-070 decision 4): a replayed quote carries the TRUE tape timestamp — a real price
+    // at a fabricated time is a third provenance category, and `asOf` is the half of it a boolean
+    // cannot express. A walked quote keeps stamping "now", which is when it was invented.
+    asOf: quote.asOf || new Date().toISOString(),
     source: quote.source
   };
 }
@@ -661,6 +683,12 @@ app.get('/health', (_req, res) => {
     // running source, which for Treasuries supersedes the open within one FRED interval); this
     // one answers "where did this SESSION START". Both are needed and neither implies the other.
     openingSource: openingSourceStatus(),
+    // YU17 (ADR-070): the replay clock, derived at request time from the same arithmetic priceAt
+    // uses — never a stored position, which would be a second clock able to disagree with the
+    // first. `error` is the loud form of "the walk is what you are getting": an unfetched extract
+    // and a working replay produce equally plausible prices, so this block is the only reading
+    // that can tell them apart (the same trap, and the same countermeasure, as openingSource).
+    taqReplay: taqReplay.status(treasury.now()),
     publish: normalizePublishConfig(),
     volatilityBands: profileCounts
   });
@@ -685,6 +713,8 @@ async function main() {
   // synthetic and flip to the curve when the first poll lands, and `simulated` on the wire says
   // exactly which is which at every instant.
   fred.start();
+  // Sync, local, all-or-nothing; every failure path is a /health sentence and the walk (rule 1).
+  taqReplay.load();
   await bootstrapPrices();
   bootstrapOptionContracts();
   assignStartupVolatilityBands();

@@ -64,6 +64,14 @@ spec:
               value: "0.25"
             - name: PRICE_OPTION_RATE
               value: "0.04"
+            # YU17 (ADR-070): same wiring as the kind manifest — see the comments there. Both
+            # refs are optional, so a GKE bring-up that stamps neither runs the walk, loudly.
+            - name: REPLAY_EPOCH_START_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: replay-epoch
+                  key: epochStartMs
+                  optional: true
           readinessProbe:
             httpGet:
               path: /health
@@ -76,6 +84,15 @@ spec:
               memory: 128Mi
             limits:
               memory: 384Mi
+          volumeMounts:
+            - name: taq-replay
+              mountPath: /etc/taq-replay
+              readOnly: true
+      volumes:
+        - name: taq-replay
+          secret:
+            secretName: taq-replay-extract
+            optional: true
 ---
 apiVersion: v1
 kind: Service

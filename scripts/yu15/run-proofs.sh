@@ -23,6 +23,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
+# shellcheck source=lib-replay-epoch.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-replay-epoch.sh"
 # EXPORTED, because 34 proofs read CTX/KCTX themselves and each decides independently which cluster
 # to talk to. Most default to this same kind rig, so they were right by coincidence rather than by
 # instruction. yu13-otel-trace-join deliberately has NO default (it can legitimately target the yu12
@@ -76,6 +78,14 @@ PROOFS=(
   # leaked one is the exact object rule 2 exists to refuse, so its pre-clean runs before it
   # measures anything.
   yu17-session-opens-from-close
+  # ADR-070 (the tape is the reference). Straight after its ADR-069 sibling and for the same
+  # reasons: it restarts price-publisher (twice, plus a cleanup restamp) and rolls no member, no
+  # gateway, no epoch. It needs the taq-replay-extract Secret and the replay-epoch stamp that
+  # rebuild_fresh_epoch / start-cluster-kind.sh maintain, and their ABSENCE is a FAIL by design —
+  # a rig quietly publishing the walk while everyone believes it replays the tape is this ADR's
+  # own trap. Its hold-at-end arm drives the clock past the tape by re-stamping the ConfigMap and
+  # restores the stamp from the PVC on every exit path.
+  yu17-taq-replay
   # YU17 phase 2. It rolls NOTHING, so it belongs in the stable block rather than beside its
   # sibling below: it asserts the applied sequence moves by exactly two and that the contracts
   # artifact rebuilds byte-identically from the stored cut, and both are cheapest to assert on a
@@ -544,6 +554,13 @@ rebuild_fresh_epoch() { # rebuild_fresh_epoch [image] [allow-image-change] -- do
     echo "[epoch] gateway $(gateway_image) does not match members $(current_image): skipping the write"
     echo "        probe (a mismatched pair refuses every /seed regardless of writability)"
   fi
+  # ADR-070: a fresh epoch restarts the tape at day 1, and the publisher learns that ONLY through
+  # the replay-epoch stamp. A stale stamp is the silent-wrong form — the clock keeps running from
+  # the DEAD epoch's mint and the prices are completely plausible — so a stamp that cannot be
+  # written is a hard stop, exactly like the write probe above. (A rig with no replay wiring at
+  # all stamps nothing and returns 0; the publisher then says so on /health and walks.)
+  stamp_replay_epoch || fail_hard "the replay-epoch ConfigMap could not be stamped for this fresh
+       epoch — the publisher would keep replaying on the dead epoch's clock, silently"
   roll_feed_adapter
 }
 

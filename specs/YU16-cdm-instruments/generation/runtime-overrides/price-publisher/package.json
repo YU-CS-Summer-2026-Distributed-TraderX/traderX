@@ -7,7 +7,7 @@
   "main": "src/main.js",
   "scripts": {
     "start": "node src/main.js",
-    "test": "node --test test/option-quotes.test.js test/treasury-pricing.test.js test/fred-curve.test.js test/previous-close.test.js"
+    "test": "node --test test/option-quotes.test.js test/treasury-pricing.test.js test/fred-curve.test.js test/previous-close.test.js test/taq-replay.test.js"
   },
   "dependencies": {
     "express": "5.2.1",

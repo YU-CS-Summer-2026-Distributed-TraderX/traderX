@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=lib-state-image.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib-state-image.sh"
+# shellcheck source=lib-replay-epoch.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib-replay-epoch.sh"
 
 # KDIR and IMAGE are DERIVED from the state this worktree is, not hardcoded. Both used to be
 # literals, and both went stale at the YU16 cut in different directions: this path still named
@@ -140,6 +142,15 @@ for d in nats eod-price-db trade-processor cluster-gateway risk-extract feed-ada
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s
 done
+# YU17 (ADR-070): the tape replay's two bring-up duties. The extract is FETCHED here — at
+# bring-up, from the bucket, never from the repo (ADR-068's durability rule) — and the epoch
+# anchor is stamped from the member-0 PVC that now exists. Both are rule-1 safe: an unfetchable
+# extract or an unstampable epoch leaves the publisher on the synthetic walk, saying so on
+# /health.taqReplay.
+K="kubectl --context ${CTX} -n traderx"
+fetch_replay_extract_secret
+stamp_replay_epoch
+
 kubectl --context "${CTX}" -n traderx get pods -o wide
 echo "[ok] YU15 cluster up on ${CTX}"
 
