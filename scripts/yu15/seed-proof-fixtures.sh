@@ -319,6 +319,42 @@ hold 10031 42422 NVDA 25 "$(live_px NVDA)"   # yu06-consumer-halt: the held secu
 hold 44044 42422 AAPL 10 "$(live_px AAPL)"   # a control account marked in the same version
 hold 22214 42422 IBM  10 "$(live_px IBM)"    # yu05 recon/settlement have something to reconcile
 
+# SWEEP: NO DEMO ACCOUNT LEAVES AN ORDER RESTING, ANYWHERE.
+#
+# Since ADR-072 the tape replay trades the equity/ETF universe continuously, and an operator order
+# left resting on one of those books is picked off at some random later moment. That books an
+# operator trade leg inside whichever proof happens to have a counter window open, and no counter
+# can fix it: the leg IS the operator's. Measured 2026-08-26, yu17-retick-determinism read "trades
+# moved by 3 leg(s), expected 2" on a scenario that was entirely correct, because a seeder order was
+# still sitting on NVDA from an earlier run.
+#
+# Fixing it proof by proof is a losing game -- yu03 leaves four on IBM, yu08 left six, the crossings
+# above leave their own -- so it is enforced HERE, in the one place the runner calls before every
+# proof. Establishing a known starting state is this script's whole job, and a leftover resting
+# order is not part of one. Nothing depends on an order surviving between proofs: each places its
+# own after this runs, and the POSITIONS built above are untouched by a cancel.
+echo "[seed] cancelling any order the demo accounts left resting"
+swept=0
+for acct in "${ACCOUNTS[@]}" 17017; do
+  refs="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/trade-processor -- \
+    wget -qO- "http://localhost:18091/accounts/${acct}/orders" 2>/dev/null \
+    | python3 -c '
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+for r in rows:
+    ref = str(r.get("id", "")).rsplit("-", 1)[-1]
+    if ref.isdigit():
+        print(ref)' 2>/dev/null)"
+  for ref in ${refs}; do
+    curl -s -m20 -o /dev/null -X POST "${MATCHER_URL}/cancel" \
+      -H 'Content-Type: application/json' -d "{\"orderRef\":${ref}}" && swept=$((swept + 1))
+  done
+done
+echo "   ${swept} resting order(s) cancelled — no demo account is holding a book open"
+
 # Clear positions in the throwaway instruments other proofs mint.
 #
 # Several proofs each trade a time-derived ticker so their runs cannot collide. Those instruments
