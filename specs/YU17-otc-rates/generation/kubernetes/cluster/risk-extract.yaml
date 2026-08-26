@@ -52,7 +52,7 @@ spec:
           # unchanged: this is still a post-B build and never mixes with a pre-B one.
                     # `:yu17-tick` (2026-08-24): `:yu17-band` plus FeedAdapterMain only (envelope parse +
           # session keepalive); RiskExtractMain byte-identical. See the note in statefulset.yaml.
-          image: traderx/cluster-node:yu17-taqref
+          image: traderx/cluster-node:yu17-adr072
           imagePullPolicy: IfNotPresent
           # Same image as the node and the gateway, a different main — the cluster tier's
           # established shape (ADR-047).

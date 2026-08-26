@@ -127,6 +127,18 @@ data:
     INSERT INTO accounts (id, displayname) VALUES (10031, 'Internal Trading Book');
     INSERT INTO accounts (id, displayname) VALUES (44044, 'Trading Account 1');
 
+    -- YU17 (ADR-072): the TAPE REPLAY's own accounts. Replayed TAQ prints enter the engine as
+    -- real orders and therefore book real trades and real positions, and `trades.accountid` is a
+    -- FOREIGN KEY onto this table -- so without these rows the trade-processor throws a constraint
+    -- violation on EVERY replayed fill and the blotter stays empty while the engine trades all day
+    -- (measured 2026-08-26, before these rows existed). The names say what they are: an operator
+    -- looking at the blotter has to be able to tell replayed activity from their own, which is
+    -- ADR-072's own consequence, and the account range (>= 900000) is the same tag the members
+    -- attribute the flow by.
+    INSERT INTO accounts (id, displayname) VALUES (900001, 'TAQ Tape Replay 1 (ADR-072)');
+    INSERT INTO accounts (id, displayname) VALUES (900002, 'TAQ Tape Replay 2 (ADR-072)');
+    INSERT INTO accounts (id, displayname) VALUES (900003, 'TAQ Tape Replay 3 (ADR-072)');
+
     INSERT INTO accountusers (accountid, username) VALUES (22214, 'user01');
     INSERT INTO accountusers (accountid, username) VALUES (22214, 'user03');
     INSERT INTO accountusers (accountid, username) VALUES (22214, 'user09');
@@ -348,6 +360,18 @@ data:
     INSERT IGNORE INTO accounts (id, displayname) VALUES (62654, 'Hedge Fund TXY1');
     INSERT IGNORE INTO accounts (id, displayname) VALUES (10031, 'Internal Trading Book');
     INSERT IGNORE INTO accounts (id, displayname) VALUES (44044, 'Trading Account 1');
+
+    -- YU17 (ADR-072): the TAPE REPLAY's own accounts. Replayed TAQ prints enter the engine as
+    -- real orders and therefore book real trades and real positions, and `trades.accountid` is a
+    -- FOREIGN KEY onto this table -- so without these rows the trade-processor throws a constraint
+    -- violation on EVERY replayed fill and the blotter stays empty while the engine trades all day
+    -- (measured 2026-08-26, before these rows existed). The names say what they are: an operator
+    -- looking at the blotter has to be able to tell replayed activity from their own, which is
+    -- ADR-072's own consequence, and the account range (>= 900000) is the same tag the members
+    -- attribute the flow by.
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (900001, 'TAQ Tape Replay 1 (ADR-072)');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (900002, 'TAQ Tape Replay 2 (ADR-072)');
+    INSERT IGNORE INTO accounts (id, displayname) VALUES (900003, 'TAQ Tape Replay 3 (ADR-072)');
 
     INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user01');
     INSERT IGNORE INTO accountusers (accountid, username) VALUES (22214, 'user03');

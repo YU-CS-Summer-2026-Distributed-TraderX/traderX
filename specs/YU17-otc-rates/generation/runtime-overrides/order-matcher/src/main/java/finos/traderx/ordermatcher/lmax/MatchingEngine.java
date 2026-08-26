@@ -139,6 +139,25 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long selfTradesPrevented;   // ADR-057: resting orders cancelled by cancel-oldest STP
     private long bandReanchors;         // ADR-066: bands re-centred on the market reference
     private long bandStrandedCancels;   // ADR-066: resting orders cancelled by a band re-anchor
+    /**
+     * YU17 (ADR-072): the halves of {@link #tradeCounter} and the two band counters above that
+     * belong to REPLAYED TAPE FLOW rather than to an operator.
+     *
+     * <p>WHY THEY EXIST. A proof asserts "my orders had exactly this trade effect" by bracketing a
+     * global counter, and every one of these three is global over order writers — the library that
+     * holds those readings says so itself. Continuous replayed flow moves all three, so the
+     * readings stop being about the thing they name the day ADR-072 ships. Subtracting these gives
+     * the operator-only sibling, which the replay cannot move by construction.
+     *
+     * <p>{@code externalTradeLegs} IS SNAPSHOTTED (via the service's header record) and the two
+     * band shadows are NOT — each matching its sibling exactly. The trade counter is replicated
+     * state that three members must agree on after a restore; the band counters are per-process
+     * observability that a restarted member legitimately reads lower on, and their shadows have to
+     * be read the same way or the subtraction goes negative on one member.
+     */
+    private long externalTradeLegs;
+    private long externalBandReanchors;
+    private long externalBandStrandedCancels;
     private long bookReticks;           // YU17: empty-book re-derivations that CHANGED a book's tick
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
@@ -361,6 +380,16 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public void bootstrapTradeCounter(long lastTradeSeq) {
         if (lastTradeSeq > tradeCounter) {
             tradeCounter = lastTradeSeq;
+        }
+    }
+
+    /** YU17 (ADR-072): restore the replayed half of the trade counter from the snapshot header.
+     *  Same monotone rule as {@link #bootstrapTradeCounter}, and it MUST be restored: the operator
+     *  sibling is a subtraction, and three members that restore different halves report three
+     *  different operator counts for one committed log. */
+    public void bootstrapExternalTradeLegs(long legs) {
+        if (legs > externalTradeLegs) {
+            externalTradeLegs = legs;
         }
     }
 
@@ -803,6 +832,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         final int newPosition = positions.bookTrade(o.accountId, o.securityId, signedQty, execPx);
         final long avgCostTicks = positions.lastAvgCostTicks();
         final long tradeSeq = ++tradeCounter;
+        // ADR-072: attributed to the account of the LEG, not of the aggressor. A replayed order
+        // crossing an operator's resting one books one leg each, and each side's own counter is
+        // the honest reading of who traded.
+        if (InputEvent.isReplayFlow(o.accountId)) {
+            externalTradeLegs++;
+        }
         out.emitFillWithTradeAndPosition(o, fillQty, execPx, tradeSeq, newPosition, avgCostTicks,
             e.seq, flags, lastPxBySecurity[o.securityId], e.ingressNanos);
     }
@@ -936,6 +971,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         cancelStranded(book, InputEvent.SIDE_SELL, newBase, e);
         book.rebase(newBase);
         bandReanchors++;
+        if (InputEvent.isReplayFlow(e.accountId)) {   // ADR-072
+            externalBandReanchors++;
+        }
         return book.slotFor(limitPx);
     }
 
@@ -949,6 +987,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 RestingOrder r;
                 while ((r = book.headAt(side, slot)) != null) {
                     bandStrandedCancels++;
+                    // Attributed to the flow that CAUSED the re-anchor, not to the order it
+                    // stranded: assert_band_effects asks "how much band movement did THIS scenario
+                    // cause", and the scenario is the order that moved the band.
+                    if (InputEvent.isReplayFlow(e.accountId)) {   // ADR-072
+                        externalBandStrandedCancels++;
+                    }
                     cancelUnsolicited(r, e, book, RiskReason.PRICE_COLLAR);
                 }
             }
@@ -1189,6 +1233,9 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
         int newPosition = positions.bookTrade(e.accountId, e.securityId, signedQty, execPx);
         long avgCostTicks = positions.lastAvgCostTicks();
         long tradeSeq = ++tradeCounter;
+        if (InputEvent.isReplayFlow(e.accountId)) {   // ADR-072
+            externalTradeLegs++;
+        }
         out.emitMarketTrade(e.accountId, e.securityId, e.side, e.qty, execPx, tradeSeq, newPosition,
             avgCostTicks, e.seq, e.eventTimeMillis, e.ingressNanos);
         metrics.recordMatchLatency(System.nanoTime() - e.ingressNanos);
@@ -1473,6 +1520,26 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long bandStrandedCancels() {
         readFence();
         return bandStrandedCancels;
+    }
+
+    /** YU17 (ADR-072): trade legs booked for a replay account. Replicated and snapshotted, so
+     *  {@code tradeCounter() - externalTradeLegs()} is the operator-only count on every member. */
+    public long externalTradeLegs() {
+        readFence();
+        return externalTradeLegs;
+    }
+
+    /** YU17 (ADR-072): the replayed half of {@link #bandReanchors()}. PER-PROCESS, like its
+     *  sibling — read it as a delta against a baseline, never as a cross-member absolute. */
+    public long externalBandReanchors() {
+        readFence();
+        return externalBandReanchors;
+    }
+
+    /** YU17 (ADR-072): the replayed half of {@link #bandStrandedCancels()}. PER-PROCESS. */
+    public long externalBandStrandedCancels() {
+        readFence();
+        return externalBandStrandedCancels;
     }
 
     /**

@@ -426,6 +426,21 @@ public final class ClusterNodeMain {
                 + "# TYPE traderx_book_order_hash gauge\ntraderx_book_order_hash" + m + (d == null ? 0L : d.orderHash()) + "\n"
                 + "# TYPE traderx_book_position_hash gauge\ntraderx_book_position_hash" + m + (d == null ? 0L : d.positionHash()) + "\n"
                 + "# TYPE traderx_cluster_next_order_ref gauge\ntraderx_cluster_next_order_ref" + m + service.nextOrderRef() + "\n"
+                // YU17 (ADR-072): the OPERATOR-ONLY halves of the four counters a proof brackets
+                // its own work with. Replayed tape flow is order-shaped and continuous, so it
+                // moves every global counter below; these four exclude it at the writer.
+                //
+                // THE ADMISSION TEST `scripts/proofs/lib-consensus-readings.sh` sets for any new
+                // reading is run against exactly these lines: with the replay live,
+                // traderx_cluster_next_order_ref and traderx_cluster_trades climb while the two
+                // operator siblings stand still. Anything reading the globals as if they were
+                // private to its own orders is measuring the replay.
+                + "# TYPE traderx_cluster_operator_next_order_ref gauge\ntraderx_cluster_operator_next_order_ref"
+                + m + service.operatorOrderRefs() + "\n"
+                + "# TYPE traderx_cluster_external_order_refs counter\ntraderx_cluster_external_order_refs"
+                + m + service.externalOrderRefs() + "\n"
+                + "# TYPE traderx_cluster_operator_trades counter\ntraderx_cluster_operator_trades" + m
+                + (started ? trades - service.engine().externalTradeLegs() : 0L) + "\n"
                 // ADR-057: resting orders cancelled by self-trade prevention. Read HERE and not
                 // at the gateway — egress acks are best-effort and drop under flood, so a
                 // gateway tally silently undercounts exactly when the number matters.
@@ -436,6 +451,13 @@ public final class ClusterNodeMain {
                 + (started ? service.engine().bandReanchors() : 0L) + "\n"
                 + "# TYPE traderx_band_stranded_cancels counter\ntraderx_band_stranded_cancels" + m
                 + (started ? service.engine().bandStrandedCancels() : 0L) + "\n"
+                // YU17 (ADR-072): the operator-only halves. PER-PROCESS like their siblings — the
+                // replayed shadows are NOT snapshotted either, so the subtraction stays consistent
+                // on a restarted member instead of going negative.
+                + "# TYPE traderx_band_operator_reanchors counter\ntraderx_band_operator_reanchors" + m
+                + (started ? service.engine().bandReanchors() - service.engine().externalBandReanchors() : 0L) + "\n"
+                + "# TYPE traderx_band_operator_stranded_cancels counter\ntraderx_band_operator_stranded_cancels" + m
+                + (started ? service.engine().bandStrandedCancels() - service.engine().externalBandStrandedCancels() : 0L) + "\n"
                 // YU17 (format-8 design 2.6): empty-book grid re-derivations that CHANGED a tick.
                 // PER-PROCESS, exactly like the two ADR-066 counters above and for the same reason:
                 // a plain in-process field on MatchingEngine, deliberately NOT snapshotted, because

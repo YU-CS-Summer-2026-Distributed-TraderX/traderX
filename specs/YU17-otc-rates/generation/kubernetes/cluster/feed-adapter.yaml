@@ -46,7 +46,7 @@ spec:
           # Tracks the members' build. This is a cluster CLIENT speaking AeronReplicationCodec on
           # the ingress, so it must be the same codec generation as the members — treat it exactly
           # like the gateway and risk-extract when repinning (run-proofs.sh does).
-          image: traderx/cluster-node:yu17-taqref
+          image: traderx/cluster-node:yu17-adr072
           imagePullPolicy: IfNotPresent
           command:
             - java

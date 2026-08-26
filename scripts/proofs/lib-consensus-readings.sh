@@ -23,18 +23,61 @@
 #   stopped being about the thing they name.
 #
 # Widening the tolerance (`>= 2`, "allow some drift") does not fix this — it deletes the check.
-# The reading has to be one the feed cannot move. This file holds those readings, and it is the
-# ONLY place a proof should get them from. Three exist today:
+# The reading has to be one the other writers cannot move. This file holds those readings, and it
+# is the ONLY place a proof should get them from.
 #
-#   order-shaped commands   -> quiesced_order_refs   (the ORDER_NEW generator; ticks never touch it)
+# ---------------------------------------------------------------------------------------------
+# THE THIRD WRITER (YU17, ADR-072, 2026-08-26) — AND WHY THE PROMISE ABOVE HAD TO BE REPLACED
+#
+# This file used to promise:
+#
+#     order-shaped commands -> quiesced_order_refs (the ORDER_NEW generator; ticks never touch it)
+#
+# ADR-072 replays sampled TAQ prints back through the matching engine AS ORDERS. Replayed prints
+# ARE order-shaped, so they advance that generator, and the promise became false the day it
+# shipped. Worse, it was never only one counter: replayed flow moves every counter this library
+# reads, because all four are global over ORDER WRITERS —
+#
+#     traderx_cluster_next_order_ref      an ORDER_NEW consumes a ref on apply
+#     traderx_cluster_trades              any replayed fill books legs
+#     traderx_band_reanchors              the band slot is reached from order placement
+#     traderx_band_stranded_cancels       same path
+#
+# The note under band_counters below had already said "GLOBAL over order writers, exactly like the
+# trade counter". It had named the category — plural — while the promise at the top still assumed
+# the proofs were the only member of it. That is the shape of this whole class of defect: the
+# reading is not wrong when written, the environment grows a writer, and the reading keeps its
+# name.
+#
+# THE REMEDY IS NOT A FOURTH RETREAT TO SOME OTHER GLOBAL COUNTER. It is attribution at the
+# writer: replayed flow trades on a dedicated account range (InputEvent.REPLAY_ACCOUNT_BASE, a
+# tag already carried into consensus on accountId), the members count that flow separately, and
+# each global counter gains an OPERATOR-ONLY sibling that externally-generated order flow cannot
+# move by construction. So the four readings below are unchanged in NAME and in MEANING, and only
+# the metric they read moved. The six proofs that use them needed no edit.
+#
+# The four readings, and where each gets its number:
+#
+#   order-shaped commands   -> quiesced_order_refs   (traderx_cluster_operator_next_order_ref)
 #   OTC bookings            -> the contract id ITSELF is the consensus sequence it landed at
-#   what an order DID       -> assert_order_effects  (trades, bracketed by the ref generator so the
-#                                                     trade delta is attributable to OUR orders)
-#   ADR-066 band movement   -> assert_band_effects   (reanchors / stranded cancels, as DELTAS —
-#                                                     they are lifetime counters, see the note there)
+#   what an order DID       -> assert_order_effects  (traderx_cluster_operator_trades, bracketed by
+#                                                     the operator ref counter so the trade delta
+#                                                     is attributable to OUR orders)
+#   ADR-066 band movement   -> assert_band_effects   (traderx_band_operator_{reanchors,
+#                                                     stranded_cancels}, as DELTAS — they are
+#                                                     lifetime counters, see the note there)
 #
-# If you need a fifth, add it here with the same test: name a counter the feed adapter does not
-# advance, and show it standing still on a live rig while `applied` climbs.
+# THE ADMISSION TEST FOR A FIFTH IS UNCHANGED, and it is the whole discipline of this file: name a
+# counter the new writer does not advance, and SHOW IT STANDING STILL ON A LIVE RIG while that
+# writer runs. Argument does not qualify. `scripts/proofs/yu17-replay-attribution.sh` is that
+# demonstration for these four, and it carries the anti-vacuity half too — a counter wired to a
+# constant also stands still, so the proof submits its own orders in the same window and requires
+# the operator counter to move by exactly that many.
+#
+# Measured 2026-08-26 on kind-traderx-yu12-cluster with the replay live, no proof running:
+#     applied                          climbing continuously (feed + replayed order flow)
+#     traderx_cluster_next_order_ref   climbing continuously (replayed order flow)
+#     traderx_cluster_operator_*       UNMOVED across the same window
 # ============================================================================================
 #
 # Sourcing: `here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"`
@@ -62,13 +105,19 @@ applied_seq() { # applied_seq <member-ordinal>
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
 }
 
-# The ORDER_NEW ref generator. MatchingEngineClusteredService advances `nextOrderRef` on
-# TYPE_ORDER_NEW and on nothing else — a PRICE_TICK, an FX rate, a symbol register and an OTC
-# booking all leave it alone. So its delta counts order-shaped commands that reached consensus,
-# and only those. Replicated state, so it is deterministic on every member and across replay.
+# The OPERATOR half of the ORDER_NEW ref generator. MatchingEngineClusteredService advances
+# `nextOrderRef` on TYPE_ORDER_NEW and on nothing else — a PRICE_TICK, an FX rate, a symbol
+# register and an OTC booking all leave it alone — and counts the subset of those that arrived on
+# a replay account (ADR-072) so this line can exclude them. So its delta counts order-shaped
+# commands that reached consensus and were NOT the tape replay's, and only those. Replicated state
+# and snapshotted (format 9), so it is deterministic on every member and across replay and
+# restore — which is what lets it be quiesced across the three below.
+#
+# NOT traderx_cluster_next_order_ref, which is the global and which the replay moves continuously.
 order_refs_issued() { # order_refs_issued <member-ordinal>
   _k exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/metrics 2>/dev/null \
-    | awk 'index($1,"traderx_cluster_next_order_ref{")==1{print $2; found=1} END{if(!found) print -1}'
+    | awk 'index($1,"traderx_cluster_operator_next_order_ref{")==1{print $2; found=1}
+           END{if(!found) print -1}'
 }
 
 # --- quiesce -----------------------------------------------------------------------------------
@@ -78,12 +127,25 @@ order_refs_issued() { # order_refs_issued <member-ordinal>
 # others are already past it, and a delta measured across that gap is a statement about
 # replication lag, not about how many commands were sequenced. (Observed: member 0 at 22927 with
 # engineApplied -1 while 1 and 2 were at 22929.) Same quiesce rule the cross-member digest follows.
+# _AGREE_TRIES exists for the selftest, which has to exercise the give-up path and cannot spend
+# two minutes doing it. Never set it in a proof: the 60 x 2s budget is sized for a member catching
+# up from a snapshot, and shortening it turns a slow restore into a spurious red.
 _agreed() { # _agreed <reader-fn> <what-it-is>
-  local tries=0 a b c
-  while (( tries < 60 )); do
+  local tries=0 a b c limit="${_AGREE_TRIES:-60}"
+  while (( tries < limit )); do
     a="$("$1" 0)"; b="$("$1" 1)"; c="$("$1" 2)"
     if [[ "${a}" =~ ^[0-9]+$ && "${a}" == "${b}" && "${b}" == "${c}" ]]; then
       printf '%s' "${a}"; return 0
+    fi
+    # All three answering -1 is AGREEMENT — on the metric being absent. Retrying that for two
+    # minutes and then reporting "never agreed" describes a disagreement that is not happening and
+    # sends the reader looking for replication lag. It is one specific thing: a build older than
+    # the reading. Named immediately, because a run against a pre-change build is a step in every
+    # proof's own procedure here, not an accident.
+    if [[ "${a}" == "-1" && "${b}" == "-1" && "${c}" == "-1" ]]; then
+      fail "${2}: the metric is absent from all three members' /metrics. This build predates the
+  ADR-072 operator counters (traderx_cluster_operator_next_order_ref, traderx_cluster_operator_trades,
+  traderx_band_operator_*). It is not a disagreement and waiting will not change it."
     fi
     tries=$((tries + 1)); sleep 2
   done
@@ -98,9 +160,11 @@ quiesced_order_refs() { _agreed order_refs_issued  "an order-ref counter"; }
 # "No order-shaped command of mine reached consensus."
 #
 # Still fails when: a boundary-rejected order is sequenced anyway (it consumes a ref on apply,
-# before any verdict), a retry is sequenced twice, an order leaks in from another writer on the
+# before any verdict — replayed orders included, which is why they are counted on their own side
+# rather than skipped), a retry is sequenced twice, an order leaks in from another writer on the
 # gateway. Does not fail on: price ticks, FX rates, symbol registrations, OTC bookings — none of
-# which are orders, which is the whole point.
+# which are orders — nor on ADR-072's replayed tape flow, which is order-shaped but attributed to
+# its own account range and excluded at the writer.
 assert_no_orders_sequenced() { # <before-refs> <after-refs> <what-was-supposed-to-be-refused>
   [[ "${2}" == "${1}" ]] \
     || fail "${3}: the order-ref generator moved ${1} -> ${2}, so $(( ${2} - ${1} )) order(s) reached
@@ -174,18 +238,25 @@ assert_no_contracts_in_window() { # <before> <after> <contracts-csv> <what-was-s
   inside (${before}, ${after}] — the window in which nothing of ours should have been sequenced."
 }
 
-# The venue's trade counter. PRICE_TICK books no trade, so — unlike `applied` — the feed adapter
-# cannot move this one. Measured 2026-08-25 on kind-traderx-yu12-cluster, idle, no proof running:
+# The venue's OPERATOR trade counter. PRICE_TICK books no trade, so — unlike `applied` — the feed
+# adapter cannot move even the global one. Measured 2026-08-25 on kind-traderx-yu12-cluster, idle,
+# no proof running:
 #
 #     applied 3945397 -> 3945530 -> 3945599   (+133 over ~50s, two flushes)
 #     trades  3627116 -> 3627116 -> 3627116   (unmoved across the same window)
 #     refs    3629345 -> 3629345 -> 3629345   (unmoved across the same window)
 #
-# STILL GLOBAL with respect to ORDER writers: the algo engine, another lane's proof, or a human
-# with curl all book trades that land here. That is why the predicate below never reads it alone.
+# ADR-072's replayed order flow DOES book trades, which is the point of it, so the global counter
+# stopped being readable here on 2026-08-26 and this reads the operator sibling instead. Legs are
+# attributed per SIDE, by the account of the leg: a replayed order crossing an operator's resting
+# one contributes one leg to each counter, which is the honest reading of who traded.
+#
+# STILL GLOBAL with respect to other ORDER writers: the algo engine, another lane's proof, or a
+# human with curl all book operator legs that land here. That is why the predicate below never
+# reads it alone.
 trades_booked() { # trades_booked <member-ordinal>
   _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
-    | awk 'index($1,"traderx_cluster_trades{")==1 || $1=="traderx_cluster_trades" {print $2; found=1}
+    | awk 'index($1,"traderx_cluster_operator_trades{")==1 {print $2; found=1}
            END{if(!found) print -1}'
 }
 quiesced_trades() { _agreed trades_booked "a trade counter"; }
@@ -237,9 +308,14 @@ assert_order_effects() { # <refs-before> <refs-after> <orders-submitted> <trades
 #
 # GLOBAL over order writers, exactly like the trade counter — which is the whole reason
 # assert_band_effects takes a BASELINE and not a floor.
+# ADR-072: the OPERATOR halves, for the same reason as the two counters above — a replayed order
+# reaches bandSlot exactly like any other, so both globals climb whenever the tape moves a book's
+# band. The shadows subtracted here are per-process and NOT snapshotted, matching their siblings
+# exactly, so the subtraction stays consistent on a restarted member instead of going negative.
 band_counters() { # band_counters <member-ordinal> -> "<reanchors> <stranded_cancels>"
   _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
-    | awk '/^traderx_band_reanchors[{ ]/ {r=$2} /^traderx_band_stranded_cancels[{ ]/ {c=$2}
+    | awk '/^traderx_band_operator_reanchors[{ ]/ {r=$2}
+           /^traderx_band_operator_stranded_cancels[{ ]/ {c=$2}
            END {print (r==""?-1:r), (c==""?-1:c)}'
 }
 
@@ -258,9 +334,10 @@ assert_band_effects() { # <r-before> <c-before> <r-after> <c-after> <reanchors-e
   local rb="${1}" cb="${2}" ra="${3}" ca="${4}" wr="${5}" wc="${6}" what="${7}"
   local v
   for v in "${rb}" "${cb}" "${ra}" "${ca}"; do
-    [[ "${v}" =~ ^[0-9]+$ ]] || fail "${what}: band counter unreadable ('${v}') — traderx_band_reanchors /
-  traderx_band_stranded_cancels absent from /metrics means this build predates ADR-066 or the probe
-  is pointed at the wrong port. Either way nothing below was measured."
+    [[ "${v}" =~ ^[0-9]+$ ]] || fail "${what}: band counter unreadable ('${v}') — traderx_band_operator_reanchors /
+  traderx_band_operator_stranded_cancels absent from /metrics means this build predates ADR-072 (or,
+  if the un-prefixed pair is absent too, ADR-066), or the probe is pointed at the wrong port. Either
+  way nothing below was measured."
   done
   (( ra - rb == wr )) \
     || fail "${what}: the band re-anchored $(( ra - rb )) time(s), expected ${wr} (reanchors ${rb} -> ${ra}).

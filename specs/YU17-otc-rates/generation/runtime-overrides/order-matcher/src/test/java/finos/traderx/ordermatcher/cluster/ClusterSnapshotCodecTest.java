@@ -33,7 +33,11 @@ class ClusterSnapshotCodecTest {
     // rather than the proof weakened.
     private static final int ACCOUNT_TAKER = 12;
     private static final int SECURITY = 1;
-    private static final int HEADER_BYTES = 52;
+    // 52 -> 68 at snapshot format 9 (YU17, ADR-072): the header grew externalOrderRefs at 52 and
+    // externalTradeLegs at 60. A 52-byte buffer here is not a smaller header, it is a read past
+    // the end of one — the restore reads both fields unconditionally, exactly as MIN_READABLE ==
+    // SNAPSHOT_FORMAT lets it.
+    private static final int HEADER_BYTES = 68;
 
     private final AeronReplicationCodec codec = new AeronReplicationCodec();
     private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);

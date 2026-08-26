@@ -49,21 +49,26 @@ The other twelve disrupt nothing.
 
 ### Three constraints that are not about forwards
 
-- **The applied sequence is GLOBAL, and there is a permanent second writer.** Since 2026-08-24 the
-  feed adapter holds its own cluster session and sequences `PRICE_TICK` directly — one
-  price-publisher flush is **69 sequences** with nothing of yours in them. So
-  `applied` moving by N, or not moving at all, says nothing about your commands: it says how many
-  flushes landed inside your window. Three proofs asserted on it and two of them were GREEN on
-  window luck — the write-up is
+- **The applied sequence is GLOBAL, and there are permanent OTHER WRITERS — now two of them.**
+  Since 2026-08-24 the feed adapter holds its own cluster session and sequences `PRICE_TICK`
+  directly — one price-publisher flush is **69 sequences** with nothing of yours in them. Since
+  2026-08-26 (ADR-072) the tape replay submits sampled TAQ prints as **real orders**, continuously,
+  at order 6/s. So `applied` moving by N, or not moving at all, says nothing about your commands,
+  and neither does any raw order or trade counter. Three proofs asserted on `applied` and two were
+  GREEN on window luck — the write-up is
   `issues/resolved/stillness-assertions-on-the-global-applied-sequence-race-the-live-feed.md`.
-  **Do not read `applied` for a delta. Source
+  **Do not read a global counter for a delta. Source
   `scripts/proofs/lib-consensus-readings.sh` and use a predicate from it** —
-  `traderx_cluster_next_order_ref` for order-shaped commands, the contract id itself for OTC
+  `quiesced_order_refs` for order-shaped commands, the contract id itself for OTC
   bookings, `assert_order_effects` for what an order DID (the trade counter, bracketed by the ref
   generator so the trade delta is attributable to *your* orders), `assert_band_effects` for
-  ADR-066 re-anchors and stranded cancels. If you need another reading, add it there, and the bar
-  is: name a counter the feed adapter does not advance and show it standing still on a live rig
-  while `applied` climbs. `./lib-consensus-readings-selftest.sh` pins every predicate offline, red
+  ADR-066 re-anchors and stranded cancels. Every one of those now reads a
+  `*_operator_*` metric: the replay is tagged at the source by account range and excluded at the
+  writer, so the four readings kept their names and their meanings while the numbers underneath
+  them changed. If you need another reading, add it there, and the bar is: name a counter the
+  other writers do not advance and show it standing still on a live rig while `applied` climbs —
+  `yu17-replay-attribution.sh` is that demonstration for the four that exist.
+  `./lib-consensus-readings-selftest.sh` pins every predicate offline, red
   arm and green arm, no rig needed.
 - **The band and trade counters are LIFETIME totals, and they are per-process.** Two separate
   traps, both found 2026-08-25 in `yu17-band-follows-market.sh`. (1) `traderx_band_reanchors` /

@@ -142,13 +142,15 @@ for d in nats eod-price-db trade-processor cluster-gateway risk-extract feed-ada
   echo "[wait] ${d}"
   kubectl --context "${CTX}" -n traderx rollout status "deployment/${d}" --timeout=300s
 done
-# YU17 (ADR-070): the tape replay's two bring-up duties. The extract is FETCHED here — at
-# bring-up, from the bucket, never from the repo (ADR-068's durability rule) — and the epoch
-# anchor is stamped from the member-0 PVC that now exists. Both are rule-1 safe: an unfetchable
-# extract or an unstampable epoch leaves the publisher on the synthetic walk, saying so on
-# /health.taqReplay.
+# YU17: the tape replay's three bring-up duties. Two artifacts are FETCHED here — at bring-up,
+# from the bucket, never from the repo (ADR-068's durability rule): the ADR-070 median extract
+# that is the equity REFERENCE, and the ADR-072 print sample that becomes replayed ORDER FLOW.
+# Then the epoch anchor is stamped from the member-0 PVC that now exists. All three are rule-1
+# safe: an unfetchable artifact or an unstampable epoch leaves the publisher on the synthetic walk
+# with no replayed orders, saying so on /health.taqReplay and /health.printReplay.
 K="kubectl --context ${CTX} -n traderx"
 fetch_replay_extract_secret
+fetch_print_sample_secret
 stamp_replay_epoch
 
 kubectl --context "${CTX}" -n traderx get pods -o wide

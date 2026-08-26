@@ -8,6 +8,7 @@ const treasury = require('./treasury-pricing');
 const fred = require('./fred-curve');
 const previousClose = require('./previous-close');
 const taqReplay = require('./taq-replay');
+const printReplay = require('./print-replay');
 
 const PORT = Number(process.env.PRICE_PUBLISHER_PORT || '18100');
 const NATS_URL = process.env.NATS_ADDRESS || `nats://${process.env.NATS_BROKER_HOST || 'localhost'}:4222`;
@@ -689,6 +690,12 @@ app.get('/health', (_req, res) => {
     // and a working replay produce equally plausible prices, so this block is the only reading
     // that can tell them apart (the same trap, and the same countermeasure, as openingSource).
     taqReplay: taqReplay.status(treasury.now()),
+    // YU17 (ADR-072): the replayed prints that become order flow. Beside taqReplay deliberately —
+    // that block answers "what price is this", this one answers "what activity is this", and the
+    // second is a claim about the blotter, the positions and the P&L on screen. `sideRule` is the
+    // label ADR-072 requires: the buy/sell is INVENTED from the tick rule, and a consumer reading
+    // a replayed fill has to be able to find that out from the system rather than from an ADR.
+    printReplay: printReplay.status(taqReplay),
     publish: normalizePublishConfig(),
     volatilityBands: profileCounts
   });
@@ -720,6 +727,11 @@ async function main() {
   assignStartupVolatilityBands();
   state.nats = await connect({ servers: NATS_URL, maxReconnectAttempts: -1 });
   schedulePublishLoop();
+  // YU17 (ADR-072). AFTER bootstrapPrices, because the replayed universe is the intersection with
+  // the tickers this publisher actually holds a tape price for, and that set does not exist until
+  // the bootstrap has run. Never awaited and never fatal: ADR-068 rule 1 says the system starts
+  // with no network, and a publisher that cannot reach the gateway still publishes prices.
+  printReplay.start(taqReplay, TICKERS, treasury.now);
   app.listen(PORT, () => {
     console.log(`price-publisher listening on :${PORT}`);
   });

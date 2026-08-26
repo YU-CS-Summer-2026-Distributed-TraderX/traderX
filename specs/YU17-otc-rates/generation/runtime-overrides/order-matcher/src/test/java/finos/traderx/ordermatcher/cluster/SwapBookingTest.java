@@ -172,19 +172,26 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatEight() {
+    void aSnapshotFromThisBuildDeclaresFormatNine() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
-        assertEquals(8, header.getInt(4),
-            "the format-8 mint: T_BOOK grew the tick column and T_SESSION/T_QUEUED_ORDER joined");
+        assertEquals(9, header.getInt(4),
+            "format 9 (ADR-072): the header carries the REPLAYED halves of the ref generator and"
+                + " the trade counter, so an operator-only reading exists at all");
         // Literals on BOTH sides, never the constants they pin. MIN_READABLE rises WITH
-        // SNAPSHOT_FORMAT here, which is the whole point: a pre-8 T_BOOK carries an anchor with no
-        // tick, so it must be refused at the header rather than reinterpreted at this build's
-        // derived scale. Leaving MIN_READABLE below 8 while writing format 8 is the defect this
-        // line exists to catch.
-        assertEquals(8, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
-            "format 8 stores the book tick; every older snapshot must be refused, not re-derived");
+        // SNAPSHOT_FORMAT here, and for format 9 the reason is not the T_BOOK tick that made the
+        // format-8 raise necessary: it is that a format-8 header carries NEITHER new field, so
+        // restoring one would leave both at zero and every operator counter would then be
+        // inflated by the whole epoch's replayed order flow. A wrong answer, silently — the same
+        // class the format-4 postmortem forbids, arriving by a different route.
+        assertEquals(9, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
+            "a format-8 snapshot has no replayed halves to restore; refuse it, do not zero them");
+        // The header is 68 bytes, and the two new longs are the last 16 of them. Asserted on the
+        // WRITTEN record rather than on a constant, because the failure this catches is a writer
+        // that grew the layout and a `writer.write(..., 52)` that did not.
+        assertEquals(68, records.get(0).length,
+            "the format-9 header record is 68 bytes: the two ADR-072 longs at 52 and 60");
     }
 
     @Test

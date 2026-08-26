@@ -123,7 +123,11 @@ function positionAt(nowMs) {
   }
   // A window's median is the price AS OF the window's end; the last window's end is the close.
   const asOfMs = ex.days[dayIndex].openMs + (windowIndex + 1) * ex.windowSeconds * 1000;
-  return { dayIndex, windowIndex, held, tapeDate: ex.days[dayIndex].date, asOfMs };
+  // `tapeSeconds` is the RAW, unclamped position — continuous, sub-window, and monotone in wall
+  // clock even past the end of the tape. print-replay.js (ADR-072) schedules replayed orders off
+  // it, and it must be THIS number: a second derivation of the clock is a second clock, and the
+  // whole ADR-070 property is that there is only one. Everything above stays clamped.
+  return { dayIndex, windowIndex, held, tapeDate: ex.days[dayIndex].date, asOfMs, tapeSeconds };
 }
 
 /** The replayed reference for one ticker, or null (not loaded / not a tape symbol — the caller

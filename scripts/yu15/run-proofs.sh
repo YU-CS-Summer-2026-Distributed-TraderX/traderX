@@ -86,6 +86,20 @@ PROOFS=(
   # own trap. Its hold-at-end arm drives the clock past the tape by re-stamping the ConfigMap and
   # restores the stamp from the PVC on every exit path.
   yu17-taq-replay
+  # ADR-072 (replayed prints become order flow). Directly after its ADR-070 sibling, and in the
+  # STABLE block for the same reason yu17-preopen-queue-open and yu17-retick-determinism are:
+  # it asserts an EXACT order-ref and trade-leg delta for its own four orders, and the algo engine
+  # has been observed moving that counter by 24 mid-proof — so it must stay ahead of
+  # yu08-algo-slicing. It rolls nothing, mints one ticker, and leaves both accounts FLAT (every
+  # cross is reversed) with anything still resting cancelled on the way out.
+  #
+  # THIS PROOF IS WHY THE SUITE CAN STILL BE BELIEVED WITH THE REPLAY LIVE. The replay is a third
+  # writer of sequenced ORDER-shaped commands, and it moves every global counter the other proofs
+  # bracket their work with. This one measures, on the rig, that the operator-scoped counters they
+  # actually read do NOT move for it — and, in the same window, that they still move by exactly
+  # four for orders of its own. A green suite that only passes because the replay happens to be
+  # off is not a green suite, so step 1 here FAILS on a quiet publisher rather than skipping.
+  yu17-replay-attribution
   # YU17 phase 2. It rolls NOTHING, so it belongs in the stable block rather than beside its
   # sibling below: it asserts the applied sequence moves by exactly two and that the contracts
   # artifact rebuilds byte-identically from the stored cut, and both are cheapest to assert on a

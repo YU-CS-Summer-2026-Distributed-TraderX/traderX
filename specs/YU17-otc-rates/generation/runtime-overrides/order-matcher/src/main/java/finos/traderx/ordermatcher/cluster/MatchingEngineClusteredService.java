@@ -199,7 +199,20 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * lazily the first time the market disagrees with it. Mixed-version members still diverge —
      * that is the deterministic-core roll rule, not a snapshot-readability question.
      */
-    static final int SNAPSHOT_FORMAT = 8;
+    /**
+     * <p>Format 9 (YU17, ADR-072 -- replayed prints become order flow): the T_HEADER record grows
+     * two longs, {@code externalOrderRefs} and the engine's {@code externalTradeLegs}. They are
+     * the REPLAYED halves of the ref generator and the trade counter, so that
+     * {@code global - external} is an operator-only reading a continuous replayed order feed
+     * cannot move. Nothing else about the format changes and no record type is added.
+     *
+     * <p>MIN_READABLE moves with it, and that is the honest statement rather than a convenience:
+     * a format-8 header carries neither field, so a format-8 snapshot restored here would leave
+     * both at zero and every operator counter would then be inflated by the whole epoch's replayed
+     * flow -- a wrong ANSWER, silently, which is precisely the class the format-4 postmortem below
+     * exists to forbid. A fresh epoch is mandatory.
+     */
+    static final int SNAPSHOT_FORMAT = 9;
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -221,7 +234,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * every stored anchor, so it is a format bump, not a behaviour tweak. Since format 8 stores the
      * tick, such a bump no longer has to raise MIN_READABLE -- the unit is in the record.
      */
-    static final int MIN_READABLE_SNAPSHOT_FORMAT = 8;
+    static final int MIN_READABLE_SNAPSHOT_FORMAT = 9;
     static final int T_HEADER = 1;
     static final int T_ORDER = 2;
     static final int T_POSITION = 3;
@@ -487,6 +500,22 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private boolean stampFirstApplyAsLeader; // Phase-0 SLO clock: armed on LEADER, fires once
 
     private long nextOrderRef = 1;
+    /**
+     * YU17 (ADR-072): how many of the refs {@link #nextOrderRef} has issued went to REPLAYED TAPE
+     * FLOW rather than to an operator. {@code nextOrderRef - 1 - externalOrderRefs} is the
+     * operator-only count, and the replay cannot move it by construction.
+     *
+     * <p>This is the counter ADR-072 is about. `lib-consensus-readings.sh` retreated to the
+     * order-ref generator when the feed adapter made the global applied sequence unreadable, on
+     * the promise that "ticks never touch it" — and replayed prints are order-shaped, so they do.
+     * Widening the tolerance was ruled out there in advance: it deletes the check. Splitting the
+     * counter at the writer keeps it.
+     *
+     * <p>SNAPSHOTTED (format 9). It has to be: the reading quiesces across all three members, two
+     * proofs restart one, and a member that restored a zero here would report an operator count
+     * inflated by every replayed order in the epoch so far.
+     */
+    private long externalOrderRefs;
     private long highestIssuedRef;
     private long appliedSeq;
     private boolean snapshotHeaderSeen;
@@ -685,6 +714,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.engine = new MatchingEngine(outputs, new HotPathMetrics(),
             MAX_SECURITIES, 0, initialPoolSize, POOL_SIZE, terminalRetain, risk);
         this.nextOrderRef = 1;
+        this.externalOrderRefs = 0;
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
         this.snapshotHeaderSeen = false;
@@ -780,6 +810,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // member and replay, and never reused; the engine then answers from idempotency.
             event.orderRef = (int) nextOrderRef++;
             highestIssuedRef = Math.max(highestIssuedRef, event.orderRef);
+            // YU17 (ADR-072). Counted HERE, beside the increment it shadows, and on exactly the
+            // same condition — including the rejected and the retried, because they consume a ref
+            // too. Anywhere later would be a second rule that could disagree with this one.
+            if (InputEvent.isReplayFlow(event.accountId)) {
+                externalOrderRefs++;
+            }
         }
         event.seq = ++appliedSeq;
         // The unit must be read HERE, not cached in onStart: the container is told the cluster's time
@@ -1456,7 +1492,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         snapshotBuffer.putLong(32, engine.tradeCounter());
         snapshotBuffer.putInt(40, engine.bookLevels());
         snapshotBuffer.putLong(44, engine.bookTickPx());
-        writer.write(snapshotBuffer, 0, 52);
+        // Format 9 (YU17, ADR-072): the two REPLAYED halves. Both are subtracted from a global
+        // counter to give an operator-only reading, so a member that restored one of them as zero
+        // would answer a different operator count for the same committed log — which is exactly
+        // the disagreement the quiesce in lib-consensus-readings.sh exists to refuse.
+        snapshotBuffer.putLong(52, externalOrderRefs);
+        snapshotBuffer.putLong(60, engine.externalTradeLegs());
+        writer.write(snapshotBuffer, 0, 68);
 
         writeTuple(writer, T_POLICY, risk.policyTuple());
         for (final long[] account : risk.accountTuples()) {
@@ -1583,6 +1625,22 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 appliedSeq = buffer.getLong(offset + 24);
                 engine.bootstrapTradeCounter(buffer.getLong(offset + 32));
                 engine.adoptBookGeometry(buffer.getInt(offset + 40), buffer.getLong(offset + 44));
+                // Format 9 (ADR-072). No width branch is needed and none may be added while
+                // MIN_READABLE == SNAPSHOT_FORMAT: a narrower format-8 header cannot reach here,
+                // it is refused above.
+                externalOrderRefs = buffer.getLong(offset + 52);
+                engine.bootstrapExternalTradeLegs(buffer.getLong(offset + 60));
+                // Fail closed, the same posture every other restored identifier takes: more
+                // replayed refs than refs ISSUED is arithmetic this build cannot have written, and
+                // the operator counter derived from it would go NEGATIVE — a proof would then read
+                // "no order of mine was sequenced" off a corrupt subtraction. Stated as the
+                // subtraction itself rather than as `>= nextOrderRef`, because the generator is
+                // 1-based and refs issued is nextOrderRef - 1.
+                if (externalOrderRefs < 0 || externalOrderRefs > Math.max(0L, nextOrderRef - 1)) {
+                    throw new IllegalStateException("snapshot corrupt: externalOrderRefs "
+                        + externalOrderRefs + " exceeds the " + Math.max(0L, nextOrderRef - 1)
+                        + " ref(s) nextOrderRef " + nextOrderRef + " says were issued");
+                }
                 snapshotHeaderSeen = true;
             }
             case T_POLICY -> risk.bootstrapPolicy(new long[] {
@@ -1996,6 +2054,26 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  release-store (read {@code engine().blpSeq()} first). */
     public long nextOrderRef() {
         return nextOrderRef;
+    }
+
+    /**
+     * YU17 (ADR-072): order-shaped commands that reached consensus and were NOT replayed tape
+     * flow. Exported as {@code traderx_cluster_operator_next_order_ref} and read by
+     * `scripts/proofs/lib-consensus-readings.sh` in place of the raw generator.
+     *
+     * <p>Offset by the generator's 1-based start so it is a COUNT, not a next-value: a fresh epoch
+     * reads 0 here and {@code nextOrderRef} 1, which is what makes "no order of mine was
+     * sequenced" expressible as an unchanged reading on a rig that has never traded.
+     */
+    public long operatorOrderRefs() {
+        return nextOrderRef - 1 - externalOrderRefs;
+    }
+
+    /** YU17 (ADR-072): the replayed half, exported so the library's own admission test — name a
+     *  counter the new writer does not advance and show it standing still while that writer runs —
+     *  can be demonstrated on a rig rather than argued. */
+    public long externalOrderRefs() {
+        return externalOrderRefs;
     }
 
     public MatchingEngine engine() {

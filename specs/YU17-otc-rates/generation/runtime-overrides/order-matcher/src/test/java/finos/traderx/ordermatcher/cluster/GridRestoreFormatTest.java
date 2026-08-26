@@ -39,7 +39,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * mandatory rather than merely tidy.
  */
 class GridRestoreFormatTest {
-    private static final int HEADER_BYTES = 52;
+    // 52 -> 68 at snapshot format 9 (YU17, ADR-072): the header grew externalOrderRefs at 52 and
+    // externalTradeLegs at 60. A 52-byte buffer here is not a smaller header, it is a read past
+    // the end of one — the restore reads both fields unconditionally, exactly as MIN_READABLE ==
+    // SNAPSHOT_FORMAT lets it.
+    private static final int HEADER_BYTES = 68;
     private static final int BOOK_LEVELS = 1 << 17;
     private static final long GLOBAL_TICK_PX = 1_000L;
 

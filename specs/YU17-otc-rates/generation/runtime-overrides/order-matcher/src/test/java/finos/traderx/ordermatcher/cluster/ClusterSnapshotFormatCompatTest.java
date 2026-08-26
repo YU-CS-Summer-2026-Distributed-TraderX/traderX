@@ -36,7 +36,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * service agent down on all three members while the pods stayed READY.
  */
 class ClusterSnapshotFormatCompatTest {
-    private static final int HEADER_BYTES = 52;
+    // 52 -> 68 at snapshot format 9 (YU17, ADR-072): the header grew externalOrderRefs at 52 and
+    // externalTradeLegs at 60. A 52-byte buffer here is not a smaller header, it is a read past
+    // the end of one — the restore reads both fields unconditionally, exactly as MIN_READABLE ==
+    // SNAPSHOT_FORMAT lets it.
+    private static final int HEADER_BYTES = 68;
 
     private MatchingEngineClusteredService newRestoreTarget() {
         final MatchingEngineClusteredService service = new MatchingEngineClusteredService();

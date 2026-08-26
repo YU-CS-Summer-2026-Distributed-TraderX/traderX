@@ -60,4 +60,62 @@ run green "pre-change arm: no movement" assert_band_effects 1 3 1 3 0 0 "the pin
 run red   "re-anchored twice"          assert_band_effects 1 3 3 4 1 1 "the re-anchor"
 run red   "re-anchor stranded nothing" assert_band_effects 1 3 2 3 1 1 "the re-anchor"
 run red   "counter absent from metrics" assert_band_effects 1 3 -1 -1 1 1 "the re-anchor"
+
+# ---------------------------------------------------------------------------------------------
+# ADR-072: THE READERS MUST TAKE THE OPERATOR METRIC, NOT THE GLOBAL ONE.
+#
+# Everything above tests the PREDICATES, which take numbers and never look at a rig. The thing
+# ADR-072 actually changed is one level below that — WHICH LINE of /metrics each reader greps —
+# and none of the arms above can see it. A reader silently reverted to the global counter would
+# leave every predicate green and every proof measuring the tape replay.
+#
+# So: stub `_k` with a /metrics payload in which the global and operator values DIFFER, and
+# require the operator one. The two numbers are the shape a live rig produces — the replay has
+# been running, so the globals are far ahead.
+_k() {
+  cat <<'METRICS'
+traderx_cluster_applied{member="0"} 41000
+traderx_cluster_trades{member="0"} 900
+traderx_cluster_operator_trades{member="0"} 6
+traderx_cluster_next_order_ref{member="0"} 1500
+traderx_cluster_operator_next_order_ref{member="0"} 8
+traderx_cluster_external_order_refs{member="0"} 1491
+traderx_band_reanchors{member="0"} 40
+traderx_band_stranded_cancels{member="0"} 12
+traderx_band_operator_reanchors{member="0"} 1
+traderx_band_operator_stranded_cancels{member="0"} 3
+METRICS
+}
+expect() { # expect <what> <want> <got>
+  [[ "$3" == "$2" ]] && echo "ok   $1 (${3})" \
+    || { echo "BAD  $1: want ${2} got ${3} — the reader is on the GLOBAL counter, which the ADR-072"
+         echo "     replay moves continuously. Every proof sourcing this file is then measuring the tape."
+         exit 1; }
+}
+expect "refs reader takes the operator line"   8 "$(order_refs_issued 0)"
+expect "trades reader takes the operator line" 6 "$(trades_booked 0)"
+expect "band reader takes the operator lines"  "1 3" "$(band_counters 0)"
+
+# ...and the absence path. All three members answering -1 is agreement ON THE METRIC BEING ABSENT,
+# which used to burn the full 60 x 2s budget and then report a disagreement that was not happening.
+# A run against a pre-change build is a STEP in this project's proof procedure, so it has to be
+# legible and fast.
+_k() { echo "traderx_cluster_next_order_ref{member=\"0\"} 1500"; }   # pre-ADR-072 build
+start=${SECONDS}
+if ( _AGREE_TRIES=60 quiesced_order_refs ) >/dev/null 2>&1; then
+  echo "BAD  a pre-ADR-072 build must be refused, not quiesced"; exit 1
+fi
+elapsed=$(( SECONDS - start ))
+(( elapsed < 10 )) && echo "ok   pre-ADR-072 build refused immediately (${elapsed}s)" \
+  || { echo "BAD  the absent-metric path waited ${elapsed}s; it must not retry an absence"; exit 1; }
+
+# The give-up path still exists for a REAL disagreement (a member catching up), and still retries.
+_disagree_calls=0
+_k() { :; }
+_disagreeing() { _disagree_calls=$((_disagree_calls + 1)); echo "$(( 100 + $1 ))"; }
+if ( _AGREE_TRIES=2 _agreed _disagreeing "a test counter" ) >/dev/null 2>&1; then
+  echo "BAD  three different readings must never be reported as agreement"; exit 1
+fi
+echo "ok   genuine disagreement is retried and then refused"
+
 echo "ALL GREEN"

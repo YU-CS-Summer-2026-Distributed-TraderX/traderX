@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: traderx/price-publisher:yu17-taq
+          image: traderx/price-publisher:yu17-replay
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -131,6 +131,39 @@ spec:
                   name: replay-epoch
                   key: epochStartMs
                   optional: true
+            # YU17 (ADR-072): replayed prints become ORDER FLOW. The publisher submits a
+            # deterministic sample of the real TAQ prints to the gateway as ordinary orders, off
+            # the SAME clock taq-replay.js derives the reference from — one clock, in one process,
+            # because two derivations of it could disagree and the whole ADR-070 property is that
+            # they cannot.
+            - name: PRINT_REPLAY_GATEWAY
+              value: "http://order-matcher:18110"
+            # The dedicated accounts. All >= InputEvent.REPLAY_ACCOUNT_BASE (900000), which is what
+            # the MEMBERS attribute replayed flow by — an account below it would be counted as the
+            # operator's and every proof that brackets its own orders would start counting these.
+            # Three of them, so consecutive prints in one symbol land on different accounts and
+            # the crossing pair this flow exists to create is not self-trade-prevented.
+            - name: PRINT_REPLAY_ACCOUNTS
+              value: "900001,900002,900003"
+            # The gateway's compiled-in default (ClusterGatewayMain.riskControlToken). Set
+            # explicitly rather than relied on, so changing it there is a visible break here
+            # instead of a replay that silently stops enabling its own accounts.
+            - name: RISK_CONTROL_TOKEN
+              value: "dev-risk-control"
+            # Sample DOWN from what the artifact carries (it is built for ~6 orders/s, inside
+            # ADR-072's 5-20 band). 1 = replay every sampled print. Raise it to slow the flow down
+            # without rebuilding the sample; it can never speed it up.
+            - name: PRINT_REPLAY_STRIDE
+              value: "1"
+            # FIXED, and labelled as fixed on /health: TAQ's own size is 54% odd lots and would
+            # need clamping against the order cap, so it would not be real either. ADR-072 replays
+            # PRICES with an invented side; it makes no claim about size.
+            - name: PRINT_REPLAY_QTY
+              value: "10"
+            # The whole revert, alongside deleting the Secret below: set to 0 and the publisher
+            # goes back to being a price publisher. ADR-068 rule 1.
+            - name: PRINT_REPLAY
+              value: "1"
           readinessProbe:
             httpGet:
               path: /health
@@ -154,10 +187,24 @@ spec:
             - name: taq-replay
               mountPath: /etc/taq-replay
               readOnly: true
+            # YU17 (ADR-072): the sampled PRINTS (~780 KB gzipped, 23 symbols x 40 days x 120
+            # windows x 4 prints), fetched from the same bucket prefix into this Secret at
+            # bring-up. Same posture as the extract above in every respect — never durable in the
+            # repo, `optional: true`, and deleting it plus restarting this pod is the revert. It
+            # is a SUBSET of the extract's universe by construction (the builder reads the
+            # extract to decide what to sample) and print-replay.js refuses at runtime if that
+            # ever stops being true, because a replayed order needs a replayed reference.
+            - name: taq-print-sample
+              mountPath: /etc/taq-print-sample
+              readOnly: true
       volumes:
         - name: taq-replay
           secret:
             secretName: taq-replay-extract
+            optional: true
+        - name: taq-print-sample
+          secret:
+            secretName: taq-print-sample
             optional: true
 ---
 apiVersion: v1
