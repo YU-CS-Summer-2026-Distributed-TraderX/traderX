@@ -70,6 +70,26 @@ The other twelve disrupt nothing.
   `yu17-replay-attribution.sh` is that demonstration for the four that exist.
   `./lib-consensus-readings-selftest.sh` pins every predicate offline, red
   arm and green arm, no rig needed.
+- **Never leave an order resting on a symbol the tape replay trades, and never assume a global
+  gauge holds still.** ADR-072's replay is a permanent writer of order-shaped commands at ~6/s, and
+  the first full suite run with it live found **eleven** readings that were about the thing they
+  named until it existed. Two shapes, and both have a standard repair:
+  - **A global counter or gauge read as a delta or an absolute** — `traderx_book_open_orders`,
+    `queueDepth`, an orphan count, a book digest compared across time, two members' reindexes
+    compared for equality. The repair is never a widened tolerance: it is an operator-scoped
+    counter from `lib-consensus-readings.sh`, a measured bracket, or the identity of the thing
+    itself (an order's own `CANCELED` row, a probe id named then not named).
+  - **A resting order of yours on a replayed book.** The replay is entitled to fill it, and the leg
+    it books IS yours — no counter can exclude it. Cancel what you place; prefer a minted ticker.
+    `seed-proof-fixtures.sh` sweeps every demo account before each proof, so the rig starts clean;
+    a proof that leaves residue reintroduces the flakiness for everyone after it.
+
+  **Two proofs pause the replay** (`kubectl scale deploy price-publisher --replicas=0`, restored on
+  every exit path), and only because they need the ABSENCE of something a continuous writer denies:
+  `yu16-ready-tracks-commit` needs a window in which nothing commits, and `yu13-stp-and-replace`
+  runs on yu15-era builds that export no operator-scoped counter at all. **That is not a general
+  escape hatch** — every other repair kept the replay running, which is the point: a green suite
+  that only passes because the replay is off is not a green suite.
 - **The band and trade counters are LIFETIME totals, and they are per-process.** Two separate
   traps, both found 2026-08-25 in `yu17-band-follows-market.sh`. (1) `traderx_band_reanchors` /
   `_stranded_cancels` read 1 and 3 on the standing epoch *before* any proof runs, so an absolute
