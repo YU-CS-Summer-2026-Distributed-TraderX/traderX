@@ -3,6 +3,47 @@ import { Api } from './api';
 import { HelpTip } from './help';
 import { SecPager, Section } from './section';
 
+/** Field positions in a `txtrade` capture row; see capturedPrints() for why they are positional. */
+const SYM_AT = 4;
+const TRADE_FIELDS = 9;
+
+/**
+ * Which securities the capture WITNESSED printing, and how many rows that was.
+ *
+ * Rows are read POSITIONALLY, against KdbTapWriter's own header — the same convention
+ * `kdb-panel.ts` already uses on this bridge:
+ *
+ *     txtrade: seq,epoch,tradeSeq,account,sym,side,qty,px,tsMs
+ *
+ * <p><b>NOT by looking `sym` up in line 0.</b> The bridge hands back `tail -n 300` per file, so the
+ * moment a capture passes 300 lines its header scrolls out of the window and line 0 is a data row.
+ * `indexOf('sym')` then returns -1 and the guard on it drops EVERY row without a word.
+ *
+ * <p>Measured on the rig 2026-08-26, the first time trade volume was high enough to reach it: with
+ * ADR-072's replayed flow live, this panel reported **0 of 68 books printed against 2,476 booked
+ * trades** and rendered all 68 as never-printed — the wrong one of the two states it exists to
+ * separate, for every row at once. It looked like a quiet venue rather than a broken parser, which
+ * is why a header-lookup survives: its failure mode is a confident empty answer.
+ */
+export function capturedPrints(members: { capture: string }[]): { symbols: Set<string>; rows: number } {
+  const symbols = new Set<string>();
+  let rows = 0;
+  for (const m of members) {
+    for (const part of (m.capture || '').split(/==FILE\s+/).filter(x => x.trim())) {
+      const nl = part.indexOf('\n');
+      const path = (nl < 0 ? part : part.slice(0, nl)).trim().split(/\s+/)[0] || '';
+      if (path.indexOf('txtrade') < 0) { continue; }
+      const lines = (nl < 0 ? '' : part.slice(nl + 1)).split('\n').map(l => l.trim()).filter(Boolean);
+      for (const line of lines) {
+        if (line.startsWith('seq,')) { continue; }   // the header, when it is still in the window
+        const cells = line.split(',');
+        if (cells.length >= TRADE_FIELDS && cells[SYM_AT]) { symbols.add(cells[SYM_AT]); rows++; }
+      }
+    }
+  }
+  return { symbols, rows };
+}
+
 export interface Book { ticker: string; mark: number; ref: number; tickPx?: number; }
 interface Bbo { member: number; applied: number; books: Book[]; }
 
@@ -54,10 +95,7 @@ export interface Row extends Book { hasPrinted: boolean; gapPct: number | null; 
     @if (error(); as e) { <div class="sub note">{{ e }}</div> }
 
     @if (sec.open() && bbo()) {
-      <div class="sub note">
-        {{ printed().size }} of {{ rows().length }} books have printed here
-        ({{ engineTrades() ?? '—' }} trades booked cluster-wide{{ captureAgrees() ? ', which the capture accounts for' : '' }}).
-      </div>
+      <div class="sub note" [class.warn]="!captureAgrees()">{{ printedLine() }}</div>
 
       <table>
         <thead><tr>
@@ -73,7 +111,12 @@ export interface Row extends Book { hasPrinted: boolean; gapPct: number | null; 
               <td class="num" [class.bad]="r.hasPrinted && r.offReference">
                 {{ r.gapPct === null ? '—' : (r.gapPct > 0 ? '+' : '') + r.gapPct.toFixed(1) + '%' }}</td>
               <td>
-                @if (!r.hasPrinted) { <span class="pill">no print here</span> }
+                <!-- "seen", not "here", once the capture stops accounting for every trade: the
+                     panel then knows only that it did not WITNESS a print, which is a different
+                     claim and the one it can actually support. -->
+                @if (!r.hasPrinted) {
+                  <span class="pill">{{ captureAgrees() ? 'no print here' : 'no print seen' }}</span>
+                }
                 @else if (r.offReference) { <span class="pill warn">printed, off reference</span> }
                 @else { <span class="pill good">printed</span> }
               </td>
@@ -87,6 +130,7 @@ export interface Row extends Book { hasPrinted: boolean; gapPct: number | null; 
   styles: `
     .spacer { flex: 1; }
     .note { max-width: 720px; margin-bottom: 8px; }
+    .note.warn { color: var(--warn); }
     .tog { background: none; border: none; padding: 0; font: inherit; color: inherit;
            display: flex; align-items: center; gap: 6px; cursor: pointer; text-align: left; }
     .arrow { display: inline-block; width: 13px; line-height: 1; color: var(--muted); }
@@ -129,32 +173,19 @@ export class CollarReference {
 
     const cap = await this.api.fetchJson<{ members: { capture: string }[] }>('/kdbtap');
     if (!cap.ok) { return; }
-    const syms = new Set<string>();
-    let rows = 0;
-    for (const m of cap.value.members ?? []) {
-      for (const part of (m.capture || '').split(/==FILE\s+/).filter(x => x.trim())) {
-        const nl = part.indexOf('\n');
-        const path = (nl < 0 ? part : part.slice(0, nl)).trim().split(/\s+/)[0] || '';
-        if (path.indexOf('txtrade') < 0) { continue; }
-        const lines = (nl < 0 ? '' : part.slice(nl + 1)).split('\n').map(l => l.trim()).filter(Boolean);
-        if (!lines.length) { continue; }
-        const cols = lines[0].split(',');
-        const symAt = cols.indexOf('sym');
-        for (const line of lines.slice(1)) {
-          const cells = line.split(',');
-          if (symAt >= 0 && cells[symAt]) { syms.add(cells[symAt]); rows++; }
-        }
-      }
-    }
-    this.printed.set(syms);
+    const { symbols, rows } = capturedPrints(cap.value.members ?? []);
+    this.printed.set(symbols);
     this.capturedTrades.set(rows);
   }
 
-  private readonly capturedTrades = signal<number | null>(null);
+  readonly capturedTrades = signal<number | null>(null);
 
   /** The capture is a tail; when its row count matches the engine's counter it saw everything. */
   readonly captureAgrees = computed(() =>
     this.engineTrades() !== null && this.capturedTrades() === this.engineTrades());
+
+  readonly printedLine = computed(() =>
+    printedSummary(this.rows().length, this.printed().size, this.capturedTrades(), this.engineTrades()));
 
   /**
    * When the reference is from — the question the old header did not answer at all.
@@ -178,6 +209,41 @@ export class CollarReference {
   readonly rows = computed<Row[]>(() => rankBooks(this.bbo()?.books ?? [], this.printed()));
 
   readonly sec = new Section<Row>(this.rows, r => r.ticker);
+}
+
+/**
+ * How many books have printed — and, when that number is only a floor, SAYING SO.
+   *
+ * <p><b>This used to fail by omission and that was not good enough.</b> The reconciliation was a
+ * clause appended when the capture accounted for every trade and dropped when it did not, so a
+ * reader learned the count was untrustworthy by noticing an absent phrase. Nobody notices an
+ * absent phrase.
+   *
+ * <p>It stopped being hypothetical the moment ADR-072's replayed order flow went live: the
+ * capture is `tail -n 300` per member, and the leader's file measured 1,625 lines against 1,502
+ * booked trades — **the panel could see 18% of them**. Every book whose prints fell outside that
+ * window renders as never-printed, which is the WRONG one of the two states this panel exists to
+ * separate, and it sorts such a book to the bottom of the list precisely because it looks
+ * uninteresting. A printed-and-drifted book — the only row a collar is about — can hide there.
+   *
+ * <p>So the shortfall is now stated in numbers, and the row pill weakens from "no print here" to
+ * "no print seen". Neither is a fix: recovering the truth needs a durable per-security trade
+ * source, and the read model is per-account. This makes the panel's uncertainty legible instead
+ * of invisible, which is the honest thing a view can do about a limit it cannot lift.
+ */
+export function printedSummary(
+  books: number, printedN: number, seen: number | null, engine: number | null): string {
+  if (engine !== null && seen === engine) {
+    return `${printedN} of ${books} books have printed here `
+      + `(${engine} trades booked cluster-wide, which the capture accounts for).`;
+  }
+  if (engine === null || seen === null) {
+    return `${printedN} of ${books} books seen printing here — the trade capture could not be `
+      + 'reconciled, so this is a floor.';
+  }
+  return `At least ${printedN} of ${books} books have printed here — the capture holds ${seen} of `
+    + `${engine} booked trades, so this is a floor and a book can read as never-printed when its `
+    + 'prints have scrolled out.';
 }
 
 /**

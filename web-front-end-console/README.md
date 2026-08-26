@@ -63,7 +63,11 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
   "nothing has printed yet" rather than "our print has drifted"; the two are rendered differently
   because only the second is a signal. Printed-and-drifted rows sort first, the panel collapses, and
   it pages — with 100 replayed names the never-printed rows would otherwise bury the handful that
-  matter under the noise they were sorted away from.
+  matter under the noise they were sorted away from. **Which books have printed comes from a bounded
+  capture tail**, so once trade volume exceeds it the count is a floor and the panel says so in
+  numbers ("the capture holds 300 of 3064 booked trades") rather than by dropping a clause; the row
+  state weakens from *no print here* to *no print seen* at the same moment, because that is the only
+  claim it can still support.
 
 - **Admin** — a **live trading session**: several accounts submitting real orders at their own rate
   for their own duration, stoppable, so every other surface has something to show at once. The

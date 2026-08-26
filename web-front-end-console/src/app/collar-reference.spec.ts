@@ -1,5 +1,5 @@
 import { signal } from '@angular/core';
-import { Book, Row, rankBooks } from './collar-reference';
+import { Book, Row, capturedPrints, printedSummary, rankBooks } from './collar-reference';
 import { Section } from './section';
 
 /**
@@ -90,5 +90,89 @@ describe('collar reference at ~145 books', () => {
     const rows = rankBooks([{ ticker: 'NEW', mark: 200, ref: 0 }], new Set());
     expect(rows[0].gapPct).toBeNull();
     expect(rows[0].offReference).toBe(false);
+  });
+
+  /**
+   * The reconciliation used to fail by OMISSION — a clause appended when the capture accounted for
+   * every trade and dropped when it did not. A reader learned the count was untrustworthy by
+   * noticing an absent phrase, which nobody does.
+   *
+   * It stopped being hypothetical when ADR-072's replayed order flow went live: the capture is
+   * `tail -n 300` per member and the leader's file measured 1,625 lines against 1,502 booked
+   * trades, so the panel could see 18% of them. Every book whose prints fell outside that window
+   * reads as never-printed — the WRONG one of the two states this panel exists to separate, and
+   * the one that sorts to the bottom precisely because it looks uninteresting.
+   */
+  describe('the printed count says when it is only a floor', () => {
+    it('claims the capture accounts for everything only when the counts match', () => {
+      const line = printedSummary(69, 6, 6, 6);
+      expect(line).toContain('6 of 69 books have printed here');
+      expect(line).toContain('which the capture accounts for');
+      expect(line).not.toContain('floor');
+    });
+
+    it('states the shortfall in numbers rather than dropping a clause', () => {
+      const line = printedSummary(68, 22, 300, 1502);
+      expect(line).toContain('At least 22 of 68');
+      expect(line).toContain('300 of 1502');
+      expect(line).toContain('floor');
+      // The specific consequence, because "this is a floor" alone does not tell a reader that a
+      // row in the table below may be lying to them.
+      expect(line).toContain('never-printed');
+    });
+
+    it('never claims reconciliation when a counter could not be read', () => {
+      for (const line of [printedSummary(68, 22, null, 1502), printedSummary(68, 22, 300, null)]) {
+        expect(line).not.toContain('accounts for');
+        expect(line).toContain('floor');
+      }
+    });
+  });
+
+  /**
+   * The capture parse, and the case that blanked the panel.
+   *
+   * The bridge returns `tail -n 300` per file. Below 300 lines the header rides along and a
+   * header-lookup works; above it the header has scrolled out, line 0 is a data row,
+   * `indexOf('sym')` is -1, and every row is dropped in silence. Measured live once ADR-072's
+   * replayed flow filled the file: 0 of 68 books printed against 2,476 booked trades, all 68
+   * rendered never-printed.
+   *
+   * The header case is tested too, because a positional parser that ate the header as data would
+   * add a symbol called "sym" and be just as wrong in the other direction.
+   */
+  describe('capturedPrints', () => {
+    const trade = (seq: number, sym: string) => `${seq},1,${seq},900001,${sym},B,10,201.19,17877817`;
+    const file = (name: string, rows: string[]) => `==FILE /data/kdb-capture/${name} ${rows.length}\n${rows.join('\n')}`;
+
+    it('reads rows whose header has scrolled out of the tail window', () => {
+      const cap = file('txtrade-1-order-matcher-cluster-0.csv',
+        [trade(1, 'COF'), trade(2, 'AAPL'), trade(3, 'COF')]);
+      const got = capturedPrints([{ capture: cap }]);
+      expect([...got.symbols].sort()).toEqual(['AAPL', 'COF']);
+      expect(got.rows).toBe(3);
+    });
+
+    it('skips the header when it is still in the window, rather than counting it as a print', () => {
+      const cap = file('txtrade-1-order-matcher-cluster-0.csv',
+        ['seq,epoch,tradeSeq,account,sym,side,qty,px,tsMs', trade(1, 'IBM')]);
+      const got = capturedPrints([{ capture: cap }]);
+      expect([...got.symbols]).toEqual(['IBM']);
+      expect(got.rows).toBe(1);
+    });
+
+    it('counts trades only — an order capture is not a print', () => {
+      const cap = file('txorder-1-order-matcher-cluster-0.csv', [trade(1, 'TSLA')])
+        + '\n' + file('txtrade-1-order-matcher-cluster-0.csv', [trade(2, 'NVDA')]);
+      const got = capturedPrints([{ capture: cap }]);
+      expect([...got.symbols]).toEqual(['NVDA']);
+    });
+
+    it('is empty, not wrong, for a follower holding only a header', () => {
+      const got = capturedPrints([{ capture: file('txtrade-1-order-matcher-cluster-1.csv',
+        ['seq,epoch,tradeSeq,account,sym,side,qty,px,tsMs']) }]);
+      expect(got.symbols.size).toBe(0);
+      expect(got.rows).toBe(0);
+    });
   });
 });
