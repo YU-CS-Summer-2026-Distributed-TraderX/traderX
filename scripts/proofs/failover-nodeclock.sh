@@ -31,8 +31,15 @@ kc() { kubectl --context "$CTX" -n "$NS" --request-timeout=60s "$@"; }
 role() { kc exec order-matcher-cluster-"$1" -- sh -c 'curl -s -m 5 localhost:8080/metrics' 2>/dev/null \
          | awk 'index($1,"traderx_cluster_role{")==1{print $2}'; }
 leader() { for i in 0 1 2; do [ "$(role $i)" = "1" ] && echo "$i" && return; done; }
-applied() { kc exec order-matcher-cluster-"$1" -- sh -c 'curl -s -m 5 localhost:8080/metrics' 2>/dev/null \
-            | awk 'index($1,"traderx_cluster_applied{")==1{print $2}'; }
+# NOT `applied`. That is a GLOBAL counter and the feed adapter advances it by 69 per flush with
+# zero load (measured 2026-08-24: applied 3937958 -> 3938027 over ~20s idle, next_order_ref
+# unmoved across the same window). Reading it here let the guard below fall SILENT whenever a
+# flush happened to land in its 2s sample, so the tool would go on to report servingMs figures
+# for a rig carrying no load at all. `next_order_ref` is the order-shaped counter the feed never
+# touches. See scripts/proofs/lib-consensus-readings.sh for the full reasoning and the test any
+# replacement reading has to pass.
+order_refs() { kc exec order-matcher-cluster-"$1" -- sh -c 'curl -s -m 5 localhost:8080/metrics' 2>/dev/null \
+            | awk 'index($1,"traderx_cluster_next_order_ref{")==1{print $2}'; }
 
 # Full log, not --tail=N: members emit heavy ELECTION-PHASE output and a small tail window
 # silently drops the very stamps we are looking for (this cost a whole measurement run).
@@ -46,9 +53,9 @@ for r in $(seq 1 "$ROUNDS"); do
   if [ -z "$L" ]; then echo "round $r: no leader yet, waiting"; sleep 15; continue; fi
 
   # Confirm load is actually flowing, otherwise servingMs is meaningless.
-  A1=$(applied "$L"); sleep 2; A2=$(applied "$L")
+  A1=$(order_refs "$L"); sleep 2; A2=$(order_refs "$L")
   if [ -z "$A1" ] || [ "$A2" = "$A1" ]; then
-    echo "round $r: WARNING no traffic is being applied (applied stuck at ${A1:-?}) — start load first"; fi
+    echo "round $r: WARNING no order traffic is being sequenced (next_order_ref stuck at ${A1:-?}) — start load first"; fi
 
   # busybox date has no %3N (prints the format literally), so ms-precision epoch isn't directly
   # readable in the pod. Instead spin until the second rolls over and stamp that edge: accurate
