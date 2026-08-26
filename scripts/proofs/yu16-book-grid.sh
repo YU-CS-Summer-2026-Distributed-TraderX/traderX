@@ -197,9 +197,29 @@ echo "    which is the book's own grid check and not PRICE_COLLAR (out of band) 
 echo "  the two differ by 0.000123 on a band ±65 wide — the decimals are the only variable"
 
 step "3. the grid is DERIVED, not stored: rebuild a member and the resting order survives"
+# THE BOOKS THIS PROOF OWNS, not the venue-wide digest. Both tickers are outside the ADR-072 tape
+# replay's universe by construction — a freshly minted equity and a Treasury — so their geometry is
+# this proof's alone and holds still across a rebuild that takes minutes. tickPx IS the grid, which
+# is what this step is named for, and bid/ask is the resting order that has to survive with it.
+book_geom() { # book_geom <member> <ticker> -> "<tickPx> <bid> <ask>"
+  ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
+    sh -c 'wget -qO- http://localhost:8080/bbo 2>/dev/null' \
+    | python3 -c '
+import sys, json
+want = sys.argv[1]
+row = next((b for b in json.load(sys.stdin)["books"] if b["ticker"] == want), None)
+if row is None:
+    print("absent")
+else:
+    print(row.get("tickPx", 0), row.get("bid", 0), row.get("ask", 0))' "$2"
+}
 PRE="$(identity_consensus)"
 echo "  pre-rebuild agreed state: [${PRE}]"
 [[ "${PRE}" != "${BASE_STATE}" ]] || fail "nothing this proof did changed the agreed state — vacuous"
+GEOM_EQ_PRE="$(book_geom 1 "${EQUITY}")"; GEOM_UST_PRE="$(book_geom 1 "${UST}")"
+echo "  pre-rebuild geometry (member 1): ${EQUITY}=[${GEOM_EQ_PRE}]  ${UST}=[${GEOM_UST_PRE}]"
+[[ "${GEOM_EQ_PRE}" != "absent" && "${GEOM_UST_PRE}" != "absent" ]] \
+  || fail "one of this proof's own books is absent before the rebuild — nothing below is a verdict"
 
 LDR=""
 for m in 0 1 2; do
@@ -298,12 +318,29 @@ OLDEST="$(${K} exec "order-matcher-cluster-${VICTIM}" -c cluster-node -- \
 echo "  nothing on member ${VICTIM}'s disk predates the wipe (oldest file +$(( OLDEST - WIPE_AT ))s),"
 echo "  so everything it now holds was rebuilt from the other two members"
 
+# CROSS-MEMBER BYTE-IDENTITY, which is what identity_consensus asserts by returning at all: the
+# rebuilt member reached the same order hash, position hash, open-order count and trade count as
+# the two that never went away. A member that re-derived a DIFFERENT grid rebuilds its book at a
+# different geometry, its order hash diverges, and this call never returns.
 POST_STATE="$(identity_consensus)"
-[[ "${POST_STATE}" == "${PRE}" ]] \
-  || fail "the agreed state changed across the rebuild: [${PRE}] -> [${POST_STATE}].
-  A member that re-derived a DIFFERENT grid rebuilds its book at a different geometry and its
-  order hash diverges — which is exactly this assertion."
-echo "  post-rebuild agreed state: [${POST_STATE}] — identical, so the rebuilt book has the same geometry"
+
+# ...and NOT `POST_STATE == PRE`. That compared the venue-wide digest ACROSS TIME, and it held only
+# because nothing else was writing. Since ADR-072 the tape replay books trades throughout the
+# minutes this rebuild takes, so the digest legitimately differs at both ends: measured 2026-08-26,
+# [.. 5778 9836] -> [.. 6138 10265], on a cluster that had just proved byte-identity on all three
+# members. The claim is about THIS PROOF'S BOOKS, and those are the ones read below — neither is a
+# tape symbol, so their geometry is unaffected by anything but the rebuild.
+GEOM_EQ_POST="$(book_geom "${VICTIM}" "${EQUITY}")"; GEOM_UST_POST="$(book_geom "${VICTIM}" "${UST}")"
+echo "  post-rebuild agreed state: [${POST_STATE}] — all three members byte-identical"
+echo "  post-rebuild geometry (member ${VICTIM}, the rebuilt one):"
+echo "    ${EQUITY}=[${GEOM_EQ_POST}]  ${UST}=[${GEOM_UST_POST}]"
+[[ "${GEOM_EQ_POST}" == "${GEOM_EQ_PRE}" ]] \
+  || fail "${EQUITY}'s book came back at a DIFFERENT geometry: [${GEOM_EQ_PRE}] -> [${GEOM_EQ_POST}].
+  The first column is tickPx — the grid itself — and the rest is the resting order that had to
+  survive with it. A member that re-derived a different grid rebuilds the book at a different
+  geometry, which is exactly this assertion."
+[[ "${GEOM_UST_POST}" == "${GEOM_UST_PRE}" ]] \
+  || fail "${UST}'s book came back at a DIFFERENT geometry: [${GEOM_UST_PRE}] -> [${GEOM_UST_POST}]"
 
 # WHICH PATH RAN. The member emits no log line for snapshot load, so this reports the thing it can
 # actually establish rather than sniffing for a string that is not there: a snapshot was taken at a

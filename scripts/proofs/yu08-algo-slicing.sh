@@ -132,9 +132,15 @@ echo "  all ${N} buckets carry a childOrderId ✔"
 step "4. every child BOOKED on the matcher, at its bucket's time (the effect end's own clock)"
 # One blotter read rather than a fetch per child. The matcher served GET /orders/{id}; the cluster
 # gateway's /orders is POST-only, so each of those came back {"error":"POST only"} and the verdict
-# blew up on a missing key instead of reporting a booking problem. The read model carries every
-# child including terminal states, which is what this step needs.
-ROWS="$(api "'${BLOTTER}/${ACCT}/orders'")"
+# blew up on a missing key instead of reporting a booking problem.
+#
+# ?status=all, AND IT IS LOAD-BEARING. Without it the read model returns OPEN orders only, and
+# this step's own claim -- "the read model carries every child including terminal states" -- was
+# true of the API and false of the URL. It went unnoticed because a TWAP child on a quiet rig
+# rests and stays NEW. Since ADR-072 the tape replay trades the same symbols continuously, so a
+# child on IBM gets crossed and leaves the open list: measured 2026-08-26, four of six children
+# reported "NOT on the matcher" seconds after booking perfectly.
+ROWS="$(api "'${BLOTTER}/${ACCT}/orders?status=all'")"
 ROWS="${ROWS:-[]}"
 VERDICT="$(py "
 import json, datetime
