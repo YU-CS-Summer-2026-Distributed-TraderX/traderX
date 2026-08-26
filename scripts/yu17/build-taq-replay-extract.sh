@@ -41,10 +41,17 @@ COMPRESSION="${COMPRESSION:-13}"
 #   * the dual-class roots GOOG/GOOGL, BRK, BF and CMCS/CMCSA. The ingest dropped TAQ's SYM_SUFFIX,
 #     so those partitions merge two securities and a median over them is a price for no security
 #     that exists — issues/open/tick-store-drops-taq-sym-suffix-and-merges-share-classes.md.
-#   * AMD and ANET, because BigQuery CANNOT READ THEM. Both carry 41 truncated copies of one
-#     dt=2025-03-11 object (no PAR1 footer), and one unreadable file fails the whole external-table
-#     scan — issues/open/two-symbols-are-unreadable-on-the-oom-retry-day.md. BA and AFL take their
-#     places in the ranking.
+#   * AMD, ANET, ANSS, AON and ARE, because BigQuery CANNOT READ THEM. Each carries ~41 truncated
+#     copies of one dt=2025-03-11 object (PAR1 header, no PAR1 footer), and ONE unreadable file
+#     fails the whole external-table scan. BA and AFL take the two places that were filled; the
+#     other three were never selected, and the chosen 100 is unchanged by excluding them (checked).
+#
+#     THIS LIST IS COMPLETE FOR THIS SCRIPT'S RANKING DOMAIN AND ONLY FOR IT. 52 symbols on that
+#     day are truncated corpus-wide; five is what the S&P 500 reference list intersects. An earlier
+#     version of this comment named two — the two that happened to break the build — which covered
+#     what broke rather than what is broken. If the ranking domain ever widens beyond that CSV,
+#     re-derive the exclusion from the footer test rather than trusting these five.
+#     See issues/open/truncated-uploads-make-one-day-of-the-tick-store-unreadable.md.
 #
 # FNMA is excluded by the corpus itself (OTC, not in TAQ). All of them keep the walk.
 SYMBOLS="${SYMBOLS:-AAL,AAPL,ADBE,AEP,AFL,AMCR,AMZN,APA,AVGO,BA,BAC,BAX,BEN,BKR,BMY,C,CARR,CCL,CMG,COF,COP,CSCO,CSX,CTRA,CVX,D,DAL,DB,DFS,DIS,DOC,DOW,DVN,F,FCX,FIS,FITB,FNF,FOXA,GILD,GLD,GLW,GM,GS,HAL,HBAN,HPE,HPQ,HST,IBM,INTC,IPG,IVZ,IWM,JPM,KEY,KHC,KMI,KO,KR,LRCX,LUV,MCHP,MDLZ,META,MO,MRK,MRNA,MS,MSFT,MU,NCLH,NEE,NEM,NFLX,NKE,NVDA,O,OXY,PFE,PG,PYPL,QQQ,RF,SBUX,SLB,SPY,T,TFC,TSLA,UBS,UPS,USB,VFC,VTI,VZ,WFC,WMB,WMT,XOM}"

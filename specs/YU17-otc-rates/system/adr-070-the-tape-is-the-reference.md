@@ -212,14 +212,17 @@ Three facts the widening established that the 23-symbol build could not:
   accepted, 1,200,000 refused). No init container, no volume, no change to
   `lib-replay-epoch.sh`. `build-taq-replay-extract.py` now refuses to write an extract over that
   ceiling, so the next widening finds it at build time rather than at a bring-up.
-- **Two symbols cannot be read at all**, and they are why the universe is 100 and not 102. `AMD`
-  and `ANET` each carry 41 **truncated** copies of one `dt=2025-03-11` object (`PAR1` header, no
-  `PAR1` footer), and one unreadable file fails the entire external-table scan. BA and AFL take
-  their places. This does not contradict the paragraph above — that verification sampled the 23,
-  which contain neither — and it is filed as
-  `issues/open/two-symbols-are-unreadable-on-the-oom-retry-day.md`. Seven other symbols carry 42
-  *complete* duplicate copies on the same day, which a median is invariant under; only the footer
-  separates the harmless case from the fatal one.
+- **`dt=2025-03-11` is partly unreadable**, which is why five names are excluded by force rather
+  than by choice. The OOM retry re-ran from the top of the alphabet and died 42 times, leaving
+  **52 symbols** holding ~41 **truncated** copies each (`PAR1` header, no `PAR1` footer), and one
+  unreadable file fails the entire external-table scan. Five of the 52 are in this builder's
+  ranking domain — `AMD`, `ANET`, `ANSS`, `AON`, `ARE` — so BA and AFL take the two places that
+  were filled. Filed as `issues/open/truncated-uploads-make-one-day-of-the-tick-store-unreadable.md`.
+  This does not contradict the paragraph above, which verified that day on **sampled** symbols: the
+  sample was the 23-symbol universe, which contains none of the 52. What it does correct is this
+  ADR's implicit assumption that a day either is or is not usable. **Only the footer separates the
+  fatal case from the harmless one** — 500 further symbols carry 42 *complete* duplicate copies that
+  day, which this ADR's median is invariant under and a print sampler is not.
 - **Nothing on the wire changed.** The rig quotes 25 equity/ETF names, so the 77 additions are
   carried by the extract and published by nobody: the flush is the same size, at the same cadence,
   with the same five provenances (23 / 24 / 15 / 4 / 2). Decision 1's rate bound is untouched. The
