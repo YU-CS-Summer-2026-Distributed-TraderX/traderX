@@ -15,7 +15,7 @@ import http from 'node:http';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { createHash, createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const PORT = Number(process.env.PORT ?? 8080);
@@ -221,6 +221,42 @@ function extractBypass(req, res) {
     return json(res, 200, extractCache.body);
   } catch {
     return json(res, 502, { error: 'kubectl exec failed — is the risk-extract pod up?' });
+  }
+}
+
+
+// ---- TAQ replay tape: per-day opens and closes (ADR-070) --------------------------------------
+// Day/range views need prices[SYMBOL][day][0] and [day][last]; the whole extract is a megabyte of
+// intraday windows nobody looks at, so the summarising runs where the file already is.
+//
+// READ FROM THE PUBLISHER'S OWN MOUNT, not from the bucket. The Secret is fetched at bring-up and
+// an epoch never refetches, so the bucket object can be a rebuild ahead of what is actually
+// replaying — and a day view disagreeing with the clock above it is worse than no day view.
+// `node -e` because the pod is a node image with no python, and execFileSync because the snippet
+// is full of quotes.
+const TAPE_JS = "const z=require('zlib'),f=require('fs');"
+  + "const e=JSON.parse(z.gunzipSync(f.readFileSync("
+  + "process.env.TAQ_REPLAY_EXTRACT_PATH||'/etc/taq-replay/extract.json.gz')).toString('utf8'));"
+  + "const s={};for(const[k,v]of Object.entries(e.prices))s[k]=v.map(d=>[d[0],d[d.length-1]]);"
+  + "process.stdout.write(JSON.stringify({source:e.source,windowSeconds:e.windowSeconds,"
+  + "sessionSeconds:e.sessionSeconds,compression:e.compression,days:e.days,symbols:s}));";
+const tapeCache = { at: 0, body: '' };
+
+function tapeBypass(req, res) {
+  try {
+    // The extract only changes at a bring-up, so this is cached for minutes, not seconds.
+    if (Date.now() - tapeCache.at > 300_000) {
+      const out = execFileSync('kubectl', ['-n', NS, 'exec', 'deploy/price-publisher',
+        '--', 'node', '-e', TAPE_JS], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }).toString();
+      // Parse before caching: a pod that printed anything ahead of the JSON would otherwise be
+      // cached as the tape for five minutes.
+      JSON.parse(out);
+      tapeCache.at = Date.now();
+      tapeCache.body = out;
+    }
+    return json(res, 200, tapeCache.body);
+  } catch {
+    return json(res, 502, { error: 'could not read the replay extract off price-publisher' });
   }
 }
 
@@ -677,6 +713,7 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/gcs/')) return gcsBypass(req, res, url);
   if (p.startsWith('/kdbtap')) return kdbBypass(req, res);
   if (p.startsWith('/extracts')) return extractBypass(req, res);
+  if (p.startsWith('/taq-tape')) return tapeBypass(req, res);
   if (p.startsWith('/fixorder')) {
     if (req.method !== 'POST') return json(res, 405, {});
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }

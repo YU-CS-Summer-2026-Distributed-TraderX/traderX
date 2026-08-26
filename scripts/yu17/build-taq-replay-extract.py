@@ -29,6 +29,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 SESSION_SECONDS = 23400  # 09:30 -> 16:00 ET
+SECRET_LIMIT = 1048576   # a Kubernetes Secret's data, in bytes (measured, not recalled)
 ET = ZoneInfo('America/New_York')
 
 
@@ -97,6 +98,17 @@ def main():
     blob = gzip.compress(json.dumps(extract, separators=(',', ':')).encode())
     with open(args.out, 'wb') as f:
         f.write(blob)
+    # THE EXTRACT SHIPS AS A KUBERNETES SECRET, and a Secret's data may not exceed 1 MiB — measured
+    # against the live rig 2026-08-26: 1,048,576 bytes is accepted, 1,200,000 is refused outright.
+    # 23 symbols was 227 KB, so ~10 KB a symbol; a widening finds this ceiling somewhere past a
+    # hundred. Say so HERE, where the number is known and the fix is to drop symbols, rather than at
+    # a bring-up where it surfaces as a Secret that silently stayed at its old contents.
+    if len(blob) > SECRET_LIMIT:
+        sys.exit(f'{args.out} is {len(blob)} bytes, over the {SECRET_LIMIT}-byte Kubernetes Secret '
+                 f'limit: {len(symbols)} symbols will not ship through lib-replay-epoch.sh. Narrow '
+                 'the universe, or give the publisher a volume it fetches for itself.')
+    if len(blob) > SECRET_LIMIT * 0.9:
+        print(f'  WARNING: {len(blob)} bytes is within 10% of the {SECRET_LIMIT}-byte Secret limit')
     total = len(symbols) * len(dates) * windows_per_day
     print(f'{args.out}: {len(blob)} bytes gzipped, {len(symbols)} symbols x {len(dates)} days x '
           f'{windows_per_day} windows, {filled} forward-filled of {total} '

@@ -84,7 +84,47 @@ fi
 #   10031 44044  yu06 EOD P&L consumer (10031 must HOLD stock for the halt proof)
 ACCOUNTS=(22214 52355 42422 62654 11413 10031 44044)
 TICKERS="${TICKERS:-IBM,BAC,AAPL,MSFT,NVDA,GOOGL,AMZN,META,TSLA,C,JPM,GS,MS,UBS,DB,COF,DFS,FNMA,FIS,FNF}"
+# THE OPENING SEED IS THE TAPE'S OWN FIRST PRICE, not a round number.
+#
+# POST /seed sends a PRICE_TICK at the price passed and the FIRST one a book ever gets becomes its
+# mark, its ADR-066 collar anchor and (format 8) the grid its scale is derived from. A re-seed does
+# not move a mark that already exists, so whatever this loop passes is what the book carries for the
+# rest of the epoch -- the block further down that re-seeds the whole feed at live prices CANNOT
+# correct it. Measured on the rig 2026-08-26: 17 of 69 books sat at `mark 200.000`, every one of
+# them a ticker named here and never crossed, while FNMA's reference was 1.157 -- a mark 173x its
+# own market, invented by this line.
+#
+# So each ticker is seeded from prices[SYMBOL][0][0] of the replay extract: the median of the first
+# 195s window of 2025-02-03, which is exactly where the tape starts a fresh epoch. That makes the
+# opening mark and the opening reference the SAME number rather than two unrelated ones, and it is
+# on the venue's grid for free (the extract is rounded to 3dp against an equity tickPx of 1000).
+#
+# Read off the publisher's own mount, so this seeds from the extract that is actually replaying
+# rather than a bucket copy that may be a rebuild ahead. Two fallbacks, in order, because ADR-068
+# rule 1 says a rig with no tape must still come up: a name the extract does not carry (FNMA is OTC
+# and not in TAQ; GOOGL is a suffix-merged root) takes the publisher's live quote, and only a rig
+# with no publisher at all falls back to ${PRICE}.
 PRICE="${PRICE:-200}"
+TAPE_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- node -e '
+const z = require("zlib"), f = require("fs");
+const p = process.env.TAQ_REPLAY_EXTRACT_PATH || "/etc/taq-replay/extract.json.gz";
+for (const [t, series] of Object.entries(JSON.parse(z.gunzipSync(f.readFileSync(p)).toString()).prices)) {
+  console.log(t, series[0][0]);
+}' 2>/dev/null || true)"
+LIVE_PX="$(kubectl --context "${CTX}" -n "${NS}" exec deploy/price-publisher -- \
+  wget -qO- http://localhost:18100/prices 2>/dev/null \
+  | python3 -c 'import sys, json
+for q in json.load(sys.stdin)["prices"]:
+    if q.get("price", 0) > 0: print(q["ticker"], "%.6f" % q["price"])' 2>/dev/null || true)"
+if [[ -z "${TAPE_PX}" ]]; then
+  echo "[warn] no replay extract on price-publisher -- opening seeds fall back to the live feed"
+fi
+# First hit wins: tape, then the live quote, then the flat default.
+seed_px() {
+  awk -v t="$1" -v d="${PRICE}" '$1 == t { print $2; found = 1; exit }
+                                 END { if (!found) print d }' <<< "${TAPE_PX}
+${LIVE_PX}"
+}
 
 echo "[seed] matcher ${MATCHER_URL}"
 if ! curl -sf -m8 -o /dev/null "${MATCHER_URL}/ready"; then
@@ -93,12 +133,29 @@ if ! curl -sf -m8 -o /dev/null "${MATCHER_URL}/ready"; then
   exit 1
 fi
 
+# One call per ticker rather than one per account: the prices differ per ticker now, and /seed
+# carries a single price for the whole list it is given.
+#
+# A newline-separated "TICKER PX" string, NOT an associative array: macOS ships bash 3.2, which has
+# no `declare -A`, and this suite runs on a laptop. Same shape FEED_PX uses below.
+OPEN_PX="$(tr ',' '\n' <<< "${TICKERS}" | while read -r t; do
+  [[ -n "${t}" ]] && printf '%s %s\n' "${t}" "$(seed_px "${t}")"
+done)"
+TICKER_N="$(grep -c . <<< "${OPEN_PX}")"
+echo "[seed] ${#ACCOUNTS[@]} accounts x ${TICKER_N} tickers at the tape's opening prices"
 for acct in "${ACCOUNTS[@]}"; do
-  code="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
-    -H 'Content-Type: application/json' \
-    -d "{\"accountId\":${acct},\"tickers\":\"${TICKERS}\",\"price\":${PRICE}}")"
-  printf "   %-8s %s\n" "${acct}" "seed HTTP ${code}"
+  bad=0
+  while read -r t px; do
+    [[ -n "${t}" ]] || continue
+    code="$(curl -s -m20 -o /dev/null -w '%{http_code}' -X POST "${MATCHER_URL}/seed" \
+      -H 'Content-Type: application/json' \
+      -d "{\"accountId\":${acct},\"tickers\":\"${t}\",\"price\":${px}}")"
+    [[ "${code}" == "200" ]] || { echo "[warn] seed ${acct} ${t} @ ${px}: HTTP ${code}"; bad=$((bad + 1)); }
+  done <<< "${OPEN_PX}"
+  printf "   %-8s %s\n" "${acct}" "$(( TICKER_N - bad ))/${TICKER_N} seeded"
 done
+# Printed, so a wrong opening mark is visible HERE rather than three proofs later.
+sed 's/^/   /' <<< "${OPEN_PX}" | sort
 
 # EVERY OTHER QUOTED INSTRUMENT -- the same enablement step, for every class TICKERS does not name.
 #

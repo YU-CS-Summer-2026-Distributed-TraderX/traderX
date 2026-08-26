@@ -21,9 +21,33 @@ ROWS_URI="${BUCKET}/replay/taq-replay-2025-02/rows"
 WORK="${WORK:-${TMPDIR:-/tmp}/taq-replay-build}"
 WINDOW="${WINDOW:-195}"
 COMPRESSION="${COMPRESSION:-13}"
-# The rig's equity/ETF universe minus GOOGL (suffix-merged root — replaying it would publish a
-# price for no security that exists) and FNMA (OTC, not in TAQ). Both keep the walk.
-SYMBOLS="${SYMBOLS:-AAPL,MSFT,AMZN,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS,FIS,FNF,SPY,QQQ,IWM,VTI,GLD}"
+# THE REPLAYED UNIVERSE — 100 symbols, widened from 23 on 2026-08-26.
+#
+# Built as a union of two sets, and it has to stay a union: taking the ranking alone would DROP
+# thirteen names that are already replaying on the rig (IBM, GS, UBS, DB, COF, DFS, FIS, FNF and
+# the five ETFs), silently reverting each to the synthetic walk.
+#
+#   * the 23 incumbents, so no name that is on the tape today comes off it;
+#   * the 77 most liquid S&P 500 names not already in that set.
+#
+# Liquidity is ranked by DAY-1 PARTITION BYTE SIZE under
+# gs://.../ticks/source=taq/dt=2025-02-03/symbol=<T>/ — a proxy, and a defensible one: the parquet
+# is one row per print, so bytes are prints. One recursive listing of that single day (20,402
+# objects) ranks all 10,081 tape symbols with no query and no download. The cut lands at LUV,
+# 3.9 MiB against a 1.48 MiB all-symbol mean.
+#
+# EXCLUDED, and neither exclusion is a preference:
+#
+#   * the dual-class roots GOOG/GOOGL, BRK, BF and CMCS/CMCSA. The ingest dropped TAQ's SYM_SUFFIX,
+#     so those partitions merge two securities and a median over them is a price for no security
+#     that exists — issues/open/tick-store-drops-taq-sym-suffix-and-merges-share-classes.md.
+#   * AMD and ANET, because BigQuery CANNOT READ THEM. Both carry 41 truncated copies of one
+#     dt=2025-03-11 object (no PAR1 footer), and one unreadable file fails the whole external-table
+#     scan — issues/open/two-symbols-are-unreadable-on-the-oom-retry-day.md. BA and AFL take their
+#     places in the ranking.
+#
+# FNMA is excluded by the corpus itself (OTC, not in TAQ). All of them keep the walk.
+SYMBOLS="${SYMBOLS:-AAL,AAPL,ADBE,AEP,AFL,AMCR,AMZN,APA,AVGO,BA,BAC,BAX,BEN,BKR,BMY,C,CARR,CCL,CMG,COF,COP,CSCO,CSX,CTRA,CVX,D,DAL,DB,DFS,DIS,DOC,DOW,DVN,F,FCX,FIS,FITB,FNF,FOXA,GILD,GLD,GLW,GM,GS,HAL,HBAN,HPE,HPQ,HST,IBM,INTC,IPG,IVZ,IWM,JPM,KEY,KHC,KMI,KO,KR,LRCX,LUV,MCHP,MDLZ,META,MO,MRK,MRNA,MS,MSFT,MU,NCLH,NEE,NEM,NFLX,NKE,NVDA,O,OXY,PFE,PG,PYPL,QQQ,RF,SBUX,SLB,SPY,T,TFC,TSLA,UBS,UPS,USB,VFC,VTI,VZ,WFC,WMB,WMT,XOM}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "${WORK}/rows"

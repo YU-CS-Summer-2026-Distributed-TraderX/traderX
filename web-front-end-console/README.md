@@ -44,6 +44,26 @@ env vars if it isn't `kind-traderx-yu12-cluster` / `traderx`.
 - **End of day** — draft vs published with the version chain (a correction is a new version,
   ADR-026), per-instrument quality codes, the override form, and the publish button that shows the
   quality gate's 409.
+- **Replay** — the recorded 2025 tape (ADR-070), and the one page behind a **sign-in**. Everything
+  read off the tape lives here: the replay clock (rendered from the publisher's `/health`, never
+  advanced locally — position is derived in exactly one place and a second clock in a browser would
+  disagree silently), a day and range view of the tape's real opens, closes and overnight gaps, and
+  the collar reference. The gate is not the session-driver gate on Admin, which stops an accident:
+  our permission over the TAQ corpus covers **use**, and whether it covers **display** is ADR-068
+  open question 1, still open. Per-row provenance chips stay on the trading pages — "where did
+  THIS price come from" is asked while trading, not on a tour of the tape.
+- Also on **Replay**: **tape by day** picks one session or a span of them from the 40, and shows per
+  symbol the open (the day's first 195s window), the close (its last), the change, and the
+  overnight gap from the prior session's close. No new pipeline — every number is already in the
+  extract, read off the publisher's own mount rather than the bucket, because the Secret is fetched
+  once at bring-up and a rebuilt bucket object can be a universe ahead of what is on the wire.
+- Also on **Replay**: **collar reference** — per security, the collar's exogenous reference against
+  the last price printed *here*, with the tape timestamp that reference is from. A security that has
+  never traded on this rig still has a mark (its opening seed), so a huge divergence usually means
+  "nothing has printed yet" rather than "our print has drifted"; the two are rendered differently
+  because only the second is a signal. Printed-and-drifted rows sort first, the panel collapses, and
+  it pages — with 100 replayed names the never-printed rows would otherwise bury the handful that
+  matter under the noise they were sorted away from.
 
 - **Admin** — a **live trading session**: several accounts submitting real orders at their own rate
   for their own duration, stoppable, so every other surface has something to show at once. The

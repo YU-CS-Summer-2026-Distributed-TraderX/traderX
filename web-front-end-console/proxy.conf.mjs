@@ -5,7 +5,7 @@
 //    /trade-processor requests, so the EOD panel's auto-mint works with no manual paste.
 //  - Proxies /nats-ws as a websocket for the live blotter feed.
 // Dev-rig convenience only; none of this exists in a real deployment.
-import { execSync, spawn } from 'node:child_process';
+import { execFileSync, execSync, spawn } from 'node:child_process';
 
 const CTX = process.env.RIG_CONTEXT ?? 'kind-traderx-yu12-cluster';
 const NS = process.env.RIG_NAMESPACE ?? 'traderx';
@@ -187,6 +187,45 @@ function extractBypass(req, res) {
   return false;
 }
 
+
+// ---- TAQ replay tape: per-day opens and closes (ADR-070) --------------------------------------
+// Day/range views need prices[SYMBOL][day][0] and [day][last]; the whole extract is a megabyte of
+// intraday windows nobody looks at, so the summarising runs where the file already is.
+//
+// READ FROM THE PUBLISHER'S OWN MOUNT, not from the bucket. The Secret is fetched at bring-up and
+// an epoch never refetches, so the bucket object can be a rebuild ahead of what is actually
+// replaying — and a day view disagreeing with the clock above it is worse than no day view.
+// `node -e` because the pod is a node image with no python, and execFileSync because the snippet
+// is full of quotes.
+const TAPE_JS = "const z=require('zlib'),f=require('fs');"
+  + "const e=JSON.parse(z.gunzipSync(f.readFileSync("
+  + "process.env.TAQ_REPLAY_EXTRACT_PATH||'/etc/taq-replay/extract.json.gz')).toString('utf8'));"
+  + "const s={};for(const[k,v]of Object.entries(e.prices))s[k]=v.map(d=>[d[0],d[d.length-1]]);"
+  + "process.stdout.write(JSON.stringify({source:e.source,windowSeconds:e.windowSeconds,"
+  + "sessionSeconds:e.sessionSeconds,compression:e.compression,days:e.days,symbols:s}));";
+const tapeCache = { at: 0, body: '' };
+
+function tapeBypass(req, res) {
+  try {
+    // The extract only changes at a bring-up, so this is cached for minutes, not seconds.
+    if (Date.now() - tapeCache.at > 300_000) {
+      const out = execFileSync('kubectl', ['--context', CTX, '-n', NS, 'exec', 'deploy/price-publisher',
+        '--', 'node', '-e', TAPE_JS], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }).toString();
+      // Parse before caching: a pod that printed anything ahead of the JSON would otherwise be
+      // cached as the tape for five minutes.
+      JSON.parse(out);
+      tapeCache.at = Date.now();
+      tapeCache.body = out;
+    }
+    res.setHeader('Content-Type', 'application/json');
+    res.end(tapeCache.body);
+  } catch {
+    res.statusCode = 502;
+    res.end('{"error":"could not read the replay extract off price-publisher"}');
+  }
+  return false;
+}
+
 // ---- FIX 4.4 bridge: the gateway's SECOND ingress ---------------------------------------------
 // The gateway terminates a FIX 4.4 session on its own port (ADR-047): FIX_ACCEPTOR_PORT=18130,
 // SenderCompID TRADERX, counterparty CLIENT1, session state ephemeral (MemoryStoreFactory) and
@@ -325,6 +364,7 @@ export default [
   // serves both routes itself, so proxy them there and keep the bypasses for the local rig only.
   REMOTE ? plain('/kdbtap') : { context: ['/kdbtap'], target, secure: false, bypass: kdbBypass },
   REMOTE ? plain('/extracts') : { context: ['/extracts'], target, secure: false, bypass: extractBypass },
+  REMOTE ? plain('/taq-tape') : { context: ['/taq-tape'], target, secure: false, bypass: tapeBypass },
   { context: ['/fixorder'], target, secure: false, bypass: fixBypass },
   plain('/algo'), plain('/tempo'),
   // Sign-in lives on the console's own server, so dev has to forward it or the login form posts

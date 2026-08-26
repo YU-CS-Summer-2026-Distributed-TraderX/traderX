@@ -75,6 +75,7 @@ print('yes')
 
 STAMP_TOUCHED=0
 cleanup() {
+  rm -f "${EXTRACT_FILE:-}"
   if [[ "${STAMP_TOUCHED}" == "1" ]]; then
     echo "[cleanup] restoring the replay-epoch stamp from the member-0 PVC"
     stamp_replay_epoch >/dev/null 2>&1 || echo "[cleanup] WARNING: restamp failed — run stamp_replay_epoch by hand"
@@ -123,9 +124,17 @@ ERR="$(pyget taqReplay.error <<<"${HEALTH}")"
 ok "replay live: $(pyget taqReplay.symbols <<<"${HEALTH}") symbols, position $(pyget taqReplay.position.tapeDate <<<"${HEALTH}") day $(pyget taqReplay.position.dayIndex <<<"${HEALTH}") window $(pyget taqReplay.position.windowIndex <<<"${HEALTH}")"
 
 # ---- the proof's OWN copies of the clock inputs — the same objects the publisher reads --------
-EXTRACT_JSON="$("${K[@]}" get secret taq-replay-extract -o 'jsonpath={.data.extract\.json\.gz}' 2>/dev/null \
-  | base64 -d | gunzip 2>/dev/null)"
-[[ -n "${EXTRACT_JSON}" ]] || fail "could not read the taq-replay-extract Secret this rig's publisher mounts"
+# A FILE, NOT A VARIABLE, and the difference is not style. This used to hold the decoded extract
+# in a shell variable and pass it to python3 as an ARGV element; at 23 symbols that was ~1 MB and
+# worked, and at 100 it is ~4.5 MB and every python3 call in this proof dies with "Argument list
+# too long" (macOS ARG_MAX is 1 MB). The proof then failed on its FIRST assertion with
+# "AAPL source is 'taq-replay-2025-02', want ''" — a provenance accusation against a rig that was
+# publishing correctly, because the wanted value came from a python3 that never ran. Measured
+# 2026-08-26 on the widening. A path costs the same and has no ceiling.
+EXTRACT_FILE="$(mktemp "${TMPDIR:-/tmp}/yu17-extract.XXXXXX.json")"
+"${K[@]}" get secret taq-replay-extract -o 'jsonpath={.data.extract\.json\.gz}' 2>/dev/null \
+  | base64 -d | gunzip > "${EXTRACT_FILE}" 2>/dev/null
+[[ -s "${EXTRACT_FILE}" ]] || fail "could not read the taq-replay-extract Secret this rig's publisher mounts"
 EPOCH_MS="$("${K[@]}" get configmap replay-epoch -o 'jsonpath={.data.epochStartMs}' 2>/dev/null)"
 [[ "${EPOCH_MS}" =~ ^[0-9]+$ ]] || fail "replay-epoch ConfigMap is missing or unreadable ('${EPOCH_MS:-}')"
 
@@ -136,7 +145,7 @@ EPOCH_MS="$("${K[@]}" get configmap replay-epoch -o 'jsonpath={.data.epochStartM
 candidates() { # candidates <t0-ms> <t1-ms> <back-windows>  -> lines of "price asOfIso"
   python3 -c "
 import sys, json
-ex = json.loads(sys.argv[4])
+ex = json.load(open(sys.argv[4]))
 epoch = int(sys.argv[5])
 w, sess, comp = ex['windowSeconds'], ex['sessionSeconds'], ex['compression']
 wpd = sess // w
@@ -158,7 +167,7 @@ for idx in range(lo, hi + 1):
     as_of = datetime.datetime.fromtimestamp((days[d]['openMs'] + (win + 1) * w * 1000) / 1000,
                                             datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
     print(series[d][win], as_of, d * wpd + win)
-" "$1" "$2" "$3" "${EXTRACT_JSON}" "${EPOCH_MS}" "${SYM}"
+" "$1" "$2" "$3" "${EXTRACT_FILE}" "${EPOCH_MS}" "${SYM}"
 }
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 
@@ -169,7 +178,7 @@ Q="$(pub "/prices/${SYM}")"
 T1="$(now_ms)"
 [[ -n "${Q}" ]] || fail "no quote for ${SYM}"
 PX="$(pyget price <<<"${Q}")"; ASOF="$(pyget asOf <<<"${Q}")"; SRC="$(pyget source <<<"${Q}")"
-WANT_SRC="$(python3 -c "import json,sys; print(json.loads(sys.argv[1])['source'])" "${EXTRACT_JSON}")"
+WANT_SRC="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['source'])" "${EXTRACT_FILE}")"
 [[ "${SRC}" == "${WANT_SRC}" ]] \
   || fail "${SYM} source is '${SRC}', want '${WANT_SRC}' — the wire cannot say where this price came from"
 [[ "${ASOF}" == 2025-0[23]-* ]] \
@@ -229,7 +238,7 @@ roll_publisher
 H2="$(pub /health)"
 D2="$(pyget taqReplay.position.dayIndex <<<"${H2}")"; W2="$(pyget taqReplay.position.windowIndex <<<"${H2}")"
 [[ "${D2}" =~ ^[0-9]+$ && "${W2}" =~ ^[0-9]+$ ]] || fail "no readable position after the restart"
-WPD="$(python3 -c "import json,sys; ex=json.loads(sys.argv[1]); print(ex['sessionSeconds']//ex['windowSeconds'])" "${EXTRACT_JSON}")"
+WPD="$(python3 -c "import json,sys; ex=json.load(open(sys.argv[1])); print(ex['sessionSeconds']//ex['windowSeconds'])" "${EXTRACT_FILE}")"
 IDX_AFTER=$(( D2 * WPD + W2 ))
 (( IDX_AFTER >= IDX_BEFORE )) \
   || fail "position went BACKWARD across a restart (${IDX_BEFORE} -> ${IDX_AFTER}): the clock is not
@@ -238,13 +247,13 @@ ok "position ${IDX_BEFORE} -> ${IDX_AFTER} across the restart: derived, never st
 
 # ---- 6. the end of the tape HOLDS ------------------------------------------------------------
 step "6: force the clock past the tape's end; the price holds at Mar 31's close, asOf frozen"
-SPAN_S="$(python3 -c "import json,sys; ex=json.loads(sys.argv[1]); print(int(len(ex['days'])*ex['sessionSeconds']/ex['compression']))" "${EXTRACT_JSON}")"
-LAST_PX="$(python3 -c "import json,sys; ex=json.loads(sys.argv[1]); print(ex['prices']['${SYM}'][-1][-1])" "${EXTRACT_JSON}")"
+SPAN_S="$(python3 -c "import json,sys; ex=json.load(open(sys.argv[1])); print(int(len(ex['days'])*ex['sessionSeconds']/ex['compression']))" "${EXTRACT_FILE}")"
+LAST_PX="$(python3 -c "import json,sys; ex=json.load(open(sys.argv[1])); print(ex['prices']['${SYM}'][-1][-1])" "${EXTRACT_FILE}")"
 LAST_ASOF="$(python3 -c "
 import json, sys, datetime
-ex = json.loads(sys.argv[1])
+ex = json.load(open(sys.argv[1]))
 ms = ex['days'][-1]['openMs'] + ex['sessionSeconds'] * 1000
-print(datetime.datetime.fromtimestamp(ms/1000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'))" "${EXTRACT_JSON}")"
+print(datetime.datetime.fromtimestamp(ms/1000, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'))" "${EXTRACT_FILE}")"
 STAMP_TOUCHED=1
 PAST=$(( $(now_ms) - (SPAN_S + 3600) * 1000 ))
 "${K[@]}" create configmap replay-epoch --from-literal=epochStartMs="${PAST}" \

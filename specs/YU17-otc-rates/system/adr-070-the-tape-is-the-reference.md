@@ -196,6 +196,35 @@ sampled symbol, fragmented into more files but missing nothing.)
 `dt=2025-02-03`, the same day the listable universe was pinned to (`473dff07`). The two exclusions
 are deliberate, and they do **not** fall back to the synthetic walk.
 
+**Widened to 100 symbols, 2026-08-26 (yaakov's request).** The extract now carries the 23
+incumbents — byte-identical series, verified against the running publisher's own mount — plus the
+77 most liquid S&P 500 names not already in it. It is a **union, deliberately**: the ranking alone
+would have dropped thirteen names that were already replaying (IBM, GS, UBS, DB, COF, DFS, FIS, FNF
+and the five ETFs), silently reverting each to the walk. Liquidity is ranked by day-1 partition byte
+size — the parquet is one row per print, so bytes are prints — from a single recursive listing of
+`dt=2025-02-03`, which orders all 10,081 tape symbols with no query and no download. The cut lands
+at LUV, 3.9 MiB against a 1.48 MiB all-symbol mean.
+
+Three facts the widening established that the 23-symbol build could not:
+
+- **The Secret still fits, with room.** 100 symbols x 40 days x 120 windows gzips to **837,323
+  bytes** against a Kubernetes Secret's 1,048,576-byte ceiling (measured against the rig: 1,048,576
+  accepted, 1,200,000 refused). No init container, no volume, no change to
+  `lib-replay-epoch.sh`. `build-taq-replay-extract.py` now refuses to write an extract over that
+  ceiling, so the next widening finds it at build time rather than at a bring-up.
+- **Two symbols cannot be read at all**, and they are why the universe is 100 and not 102. `AMD`
+  and `ANET` each carry 41 **truncated** copies of one `dt=2025-03-11` object (`PAR1` header, no
+  `PAR1` footer), and one unreadable file fails the entire external-table scan. BA and AFL take
+  their places. This does not contradict the paragraph above — that verification sampled the 23,
+  which contain neither — and it is filed as
+  `issues/open/two-symbols-are-unreadable-on-the-oom-retry-day.md`. Seven other symbols carry 42
+  *complete* duplicate copies on the same day, which a median is invariant under; only the footer
+  separates the harmless case from the fatal one.
+- **Nothing on the wire changed.** The rig quotes 25 equity/ETF names, so the 77 additions are
+  carried by the extract and published by nobody: the flush is the same size, at the same cadence,
+  with the same five provenances (23 / 24 / 15 / 4 / 2). Decision 1's rate bound is untouched. The
+  additions exist for the console's day and range views, and for the day the quoted universe grows.
+
 **Corrected 2026-08-26, measured off the wire.** Earlier drafts of this section, and the briefs
 written from it, said the exclusions "stay on the synthetic walk". They do not: both publish
 `source: previous-close` with a **wall-clock** `asOf`, i.e. a carried-forward last close that does
@@ -326,8 +355,8 @@ outside the suite should expect the same one-time override set on the first clos
 
 ## What the implementation is, in one paragraph
 
-`price-publisher` gains `taq-replay.js`: at bring-up it reads the resampled extract (~280 KB
-gzipped: 23 symbols x 40 days x 120 window-medians) from a Secret that `start-cluster-kind.sh`
+`price-publisher` gains `taq-replay.js`: at bring-up it reads the resampled extract (~820 KB
+gzipped: 100 symbols x 40 days x 120 window-medians; 23 symbols and ~280 KB until 2026-08-26) from a Secret that `start-cluster-kind.sh`
 fetches out of `gs://traderx-501015-tick-store/replay/`, and the epoch anchor from a `replay-epoch`
 ConfigMap that the bring-up and `rebuild_fresh_epoch` stamp from the member-0 PVC's
 `creationTimestamp` — which IS the mint instant, so restamping is idempotent and the anchor can

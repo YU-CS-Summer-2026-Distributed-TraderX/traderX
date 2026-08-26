@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal, NO_ERRORS_SCHEMA } from '@angular/core';
 import { Api } from './api';
-import { AdminPage } from './pages';
+import { AdminPage, ReplayPage } from './pages';
 
 /**
  * The session driver is signed-in only.
@@ -53,5 +53,51 @@ describe('AdminPage — the session driver is behind sign-in', () => {
     const { panel, text } = render();
     expect(panel).not.toBeNull();
     expect(text).not.toContain('Sign in to use it');
+  });
+});
+
+/**
+ * The whole Replay tab is signed-in only, and for a different reason from the session driver above:
+ * that gate stops an accident, this one is the display-rights gate. Our permission over the TAQ
+ * corpus covers USE; whether it covers DISPLAY is ADR-068 open question 1 and still open. So the
+ * surface that exists to show those prices is the one surface that asks who is looking.
+ *
+ * Asserted in both directions for the same reason as above: "absent when signed out" alone passes
+ * against a page that renders nothing at all.
+ */
+describe('ReplayPage — the tape is behind sign-in', () => {
+  const authUser = signal<string | null>(null);
+
+  const render = () => {
+    const f = TestBed.createComponent(ReplayPage);
+    f.detectChanges();
+    const el = f.nativeElement as HTMLElement;
+    return { clock: el.querySelector('replay-clock'), tape: el.querySelector('replay-tape'),
+             collar: el.querySelector('collar-reference'), text: el.textContent ?? '' };
+  };
+
+  beforeEach(() => {
+    authUser.set(null);
+    TestBed.configureTestingModule({
+      providers: [{ provide: Api, useValue: { authUser, authPrompt: signal(false) } }],
+      schemas: [NO_ERRORS_SCHEMA],
+    });
+    TestBed.overrideComponent(ReplayPage, { set: { imports: [], schemas: [NO_ERRORS_SCHEMA] } });
+  });
+
+  it('shows no tape and offers a sign-in when signed out', () => {
+    const { clock, tape, collar, text } = render();
+    expect(clock).toBeNull();
+    expect(tape).toBeNull();
+    expect(collar).toBeNull();
+    expect(text).toContain('Sign in to view');
+  });
+
+  it('renders the clock, the day view and the collar reference once signed in', () => {
+    authUser.set('admin');
+    const { clock, tape, collar } = render();
+    expect(clock).not.toBeNull();
+    expect(tape).not.toBeNull();
+    expect(collar).not.toBeNull();
   });
 });

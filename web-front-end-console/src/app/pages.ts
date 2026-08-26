@@ -15,18 +15,20 @@ import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
 import { FixPanel } from './fix-panel';
 import { BandsPanel } from './bands-panel';
-import { CollarReference } from './collar-reference';
 import { GrafanaPanel } from './grafana-panel';
 import { LegacyPanel } from './legacy-panel';
 import { ReplayClock } from './replay-clock';
+import { ReplayTape } from './replay-tape';
+import { CollarReference } from './collar-reference';
 
 @Component({
   selector: 'trading-page',
-  imports: [TicketPanel, BlotterPanel, ActivityPanel, ReplayClock],
+  imports: [TicketPanel, BlotterPanel, ActivityPanel],
   template: `
-    <!-- Above the ticket on purpose: it says WHEN the prices below are from, and that has to be
-         read before the numbers, not discovered after them. -->
-    <section class="card tape"><replay-clock /></section>
+    <!-- The replay clock used to sit here. It, the day and range views and the collar reference all
+         moved to the Replay tab; the per-row provenance chips on the ticket and the blotter stay,
+         because "where did THIS price come from" is a question asked while trading, not a tour of
+         the tape. -->
     <div class="cols">
       <section class="card ticket"><ticket-panel /></section>
       <div class="stack">
@@ -36,7 +38,6 @@ import { ReplayClock } from './replay-clock';
     </div>
   `,
   styles: `
-    .tape { padding: 9px 14px; margin-bottom: 12px; }
     .cols { display: grid; grid-template-columns: 380px 1fr; gap: 14px; align-items: start; }
     .stack { display: grid; gap: 14px; }
     @media (max-width: 950px) { .cols { grid-template-columns: 1fr; } }
@@ -81,7 +82,7 @@ export class EodPage {}
 
 @Component({
   selector: 'admin-page',
-  imports: [AdminPanel, DemoSession, BandsPanel, CollarReference],
+  imports: [AdminPanel, DemoSession, BandsPanel],
   template: `
     <div class="stack">
       <!-- Signed-in only. The session driver submits live orders at a chosen rate, so it is the one
@@ -101,9 +102,9 @@ export class EodPage {}
           <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
         </section>
       }
-      <!-- Two halves of one question: the journal says what the collar REFUSED, this says where
-           the band currently sits against what has printed here. -->
-      <section class="card"><collar-reference /></section>
+      <!-- The collar reference moved to the Replay tab, where the reference it compares against
+           is explained. What stays is the other half of the question: the journal of what the
+           collar actually REFUSED. -->
       <section class="card"><bands-panel /></section>
       <section class="card"><admin-panel /></section>
     </div>
@@ -114,6 +115,37 @@ export class EodPage {}
   `,
 })
 export class AdminPage {
+  readonly api = inject(Api);
+}
+
+@Component({
+  selector: 'replay-page',
+  imports: [ReplayClock, ReplayTape, CollarReference],
+  template: `
+    @if (api.authUser()) {
+      <div class="stack">
+        <!-- The clock first, and everything below it is dated by it. -->
+        <section class="card tape"><replay-clock /></section>
+        <section class="card"><replay-tape /></section>
+        <!-- Last because it is the only panel here that is about THIS venue rather than the tape:
+             it asks what our own book has done against the reference the two panels above explain. -->
+        <section class="card"><collar-reference /></section>
+      </div>
+    } @else {
+      <section class="card">
+        <h2>Replay</h2>
+        <p class="muted">The recorded market tape and everything read off it. Sign in to view.</p>
+        <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
+      </section>
+    }
+  `,
+  styles: `
+    .stack { display: grid; gap: 14px; max-width: 980px; }
+    .tape { padding: 9px 14px; }
+    .muted { color: var(--muted); margin: 4px 0 10px; }
+  `,
+})
+export class ReplayPage {
   readonly api = inject(Api);
 }
 
