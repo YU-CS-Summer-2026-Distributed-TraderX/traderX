@@ -129,6 +129,13 @@ fi
 
 # --- 3. three orders into the halted book -------------------------------------------------------
 REFS0="$(quiesced_order_refs)"; T0="$(quiesced_trades)"
+# queueDepth IS A GLOBAL GAUGE, and since ADR-072 the tape replay is a queue writer: while the
+# venue is PRE_OPEN its ~6 orders/s queue exactly as ours do. So the reading is a DELTA against a
+# baseline captured here, never the absolute — the same lesson the ADR-066 band counters already
+# carry, arriving at a gauge instead of a counter. Measured 2026-08-26 on the first suite run with
+# the replay live: this proof read queueDepth 33 for its 3 orders and called the phase machine
+# broken, in a step whose own counter arms (order_refs +3, trades +0) had just passed.
+QD0="$(health_field 0 queueDepth)"
 A1="$(order "${ACCT}"  Buy  10 "${SEED_PX}" a1)"; A1_REF="$(field "${A1}" orderRef)"
 A2="$(order "${ACCT}"  Buy  10 "${SEED_PX}" a2)"; A2_REF="$(field "${A2}" orderRef)"
 S="$( order "${ACCT2}" Sell 10 "${SEED_PX}" s )"; S_REF="$( field "${S}"  orderRef)"
@@ -156,8 +163,13 @@ case "${EXPECT}" in
     # is absent". Ordering is what guarantees the reader sees the behaviour first.
     # From the library, never hand-rolled: see the header.
     assert_order_effects "${REFS0}" "${REFS1}" 3 "${T0}" "${T1}" 0 "orders queued during PRE_OPEN"
-    [[ "${QD}" == "3" ]] || fail "nothing traded, but queueDepth reads '${QD:-<absent>}', not 3 — scope §1.7 requires the depth beside the phase, and without it a halt is not a named log position"
-    ok "nothing traded while queued: 3 orders sequenced, 0 trade legs, queueDepth 3"
+    [[ "${QD}" =~ ^[0-9]+$ && "${QD0}" =~ ^[0-9]+$ ]] \
+      || fail "queueDepth reads '${QD:-<absent>}' (baseline '${QD0:-<absent>}') — scope §1.7 requires the depth beside the phase, and without it a halt is not a named log position"
+    (( QD - QD0 >= 3 )) \
+      || fail "nothing traded, but queueDepth moved ${QD0} -> ${QD} across three orders that were
+  neither rejected nor filled. They were sequenced (order_refs +3, asserted above) and they did not
+  trade, so the queue is where they must be."
+    ok "nothing traded while queued: 3 orders sequenced, 0 trade legs, queueDepth ${QD0} -> ${QD}"
     # decision (g): the queued order must be visible OUTSIDE the engine, and as QUEUED — not
     # missing, and not indistinguishable from a live resting order.
     ST="$(rm_status "${A1_REF}" "${ACCT}")"
@@ -169,6 +181,7 @@ esac
 
 # --- 4. the open ---------------------------------------------------------------------------------
 if (( PHASE_TOUCHED == 1 )); then
+  QD_PRE_OPEN="$(health_field 0 queueDepth)"
   RESP="$(set_phase OPEN)"; [[ "${RESP%% *}" == "2"* ]] || fail "the OPEN command answered ${RESP%% *}"
   sleep 3
   REFS2="$(quiesced_order_refs)"; T2="$(quiesced_trades)"
@@ -177,8 +190,18 @@ if (( PHASE_TOUCHED == 1 )); then
   # that already hold theirs. A release that issues fresh refs has re-sequenced the queue, which
   # would break cross-epoch ref monotonicity and the client's ack correlation both.
   assert_order_effects "${REFS1}" "${REFS2}" 0 "${T1}" "${T2}" 2 "the release at the open"
-  [[ "$(health_field 0 queueDepth)" == "0" ]] || fail "the queue did not drain at the open (queueDepth $(health_field 0 queueDepth))"
-  ok "the open released the queue in ONE apply: 0 new order refs, exactly one match, queue drained"
+  # NOT "== 0". The open releases everything queued AT THAT INSTANT, and the replay keeps queuing
+  # behind it — by the time this reads, the depth is what arrived in the last few seconds, not what
+  # failed to drain. The falsifiable claim is that the depth FELL: a release that did not happen
+  # leaves it at or above where it was.
+  QD_POST_OPEN="$(health_field 0 queueDepth)"
+  [[ "${QD_POST_OPEN}" =~ ^[0-9]+$ && "${QD_PRE_OPEN}" =~ ^[0-9]+$ ]] \
+    || fail "queueDepth unreadable across the open ('${QD_PRE_OPEN:-<absent>}' -> '${QD_POST_OPEN:-<absent>}')"
+  (( QD_POST_OPEN < QD_PRE_OPEN )) \
+    || fail "the queue did not drain at the open (queueDepth ${QD_PRE_OPEN} -> ${QD_POST_OPEN}) — the
+  release is one apply, so the depth it held at the command must be gone, whatever has queued since"
+  ok "the open released the queue in ONE apply: 0 new order refs, exactly one match, depth \
+${QD_PRE_OPEN} -> ${QD_POST_OPEN}"
 
   # INSERTION ORDER, which is the part a count cannot see. A1 and A2 are identical BUYs from the
   # same account at the same price; only their queue position separates them. Released A1-then-A2,
@@ -201,10 +224,16 @@ fi
 if [[ "${EXPECT}" == "after" ]]; then
   RESP="$(set_phase PRE_OPEN)"; [[ "${RESP%% *}" == "2"* ]] || fail "second PRE_OPEN answered ${RESP%% *}"
   PHASE_TOUCHED=1
+  QD_B0="$(health_field 0 queueDepth)"
   Q="$(order "${ACCT}" Buy 10 "$(python3 -c "print(f'{${SEED_PX} - 5:.3f}')")" b)"
   Q_REF="$(field "${Q}" orderRef)"
   [[ "$(field "${Q}" kind)" != "2" ]] || fail "the order to be queued was rejected: ${Q}"
-  [[ "$(health_field 0 queueDepth)" == "1" ]] || fail "queueDepth is $(health_field 0 queueDepth), not 1, with one order queued"
+  QD_B1="$(health_field 0 queueDepth)"
+  [[ "${QD_B1}" =~ ^[0-9]+$ && "${QD_B0}" =~ ^[0-9]+$ ]] \
+    || fail "queueDepth unreadable ('${QD_B0:-<absent>}' -> '${QD_B1:-<absent>}')"
+  (( QD_B1 - QD_B0 >= 1 )) \
+    || fail "queueDepth moved ${QD_B0} -> ${QD_B1} with one order queued — a delta, not the absolute,
+  because the tape replay queues alongside us while the venue is PRE_OPEN (ADR-072)"
   RESP="$(set_phase CLOSED)"; [[ "${RESP%% *}" == "2"* ]] || fail "the CLOSED command answered ${RESP%% *}"
   sleep 2
   [[ "$(health_field 0 queueDepth)" == "0" ]] \

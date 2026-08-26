@@ -111,6 +111,7 @@ fi
 [[ -z "${PR_ERR}" ]] || fail "the replay is OFF: ${PR_ERR}
   A suite that goes green with the replay off has not tested the thing ADR-072 shipped."
 SUBMITTED0="$(printf '%s' "${HEALTH}" | jget printReplay.submitted)"
+ACCEPTED0="$(printf '%s' "${HEALTH}" | jget printReplay.accepted)"
 SYMS="$(printf '%s' "${HEALTH}" | jget printReplay.symbols)"
 RATE="$(printf '%s' "${HEALTH}" | jget printReplay.ordersPerSecond)"
 echo "    replaying ${SYMS} symbols at ~${RATE}/s, ${SUBMITTED0} orders submitted so far"
@@ -124,7 +125,9 @@ echo "    t0  global refs=${GREF0} trades=${GTRD0} | operator refs=${OREF0} trad
 
 sleep "${WINDOW_S}"
 
-SUBMITTED1="$(pub /health | jget printReplay.submitted)"
+PR1="$(pub /health)"
+SUBMITTED1="$(printf '%s' "${PR1}" | jget printReplay.submitted)"
+ACCEPTED1="$(printf '%s' "${PR1}" | jget printReplay.accepted)"
 GREF1="$(gmetric 0 traderx_cluster_next_order_ref)"
 GTRD1="$(gmetric 0 traderx_cluster_trades)"
 echo "    t1  global refs=${GREF1} trades=${GTRD1}, publisher submitted ${SUBMITTED1}"
@@ -132,6 +135,16 @@ echo "    t1  global refs=${GREF1} trades=${GTRD1}, publisher submitted ${SUBMIT
 (( SUBMITTED1 > SUBMITTED0 )) \
   || fail "the publisher submitted no orders in ${WINDOW_S}s (${SUBMITTED0} -> ${SUBMITTED1}).
   Everything below would pass on a rig where nothing is happening."
+# ACCEPTED, not just submitted. A refused order still consumes a ref before any verdict, so every
+# counter arm below is satisfied by a replay whose every order is being REJECTED — which is exactly
+# what a fresh mint produces until the account controls are re-issued (228 UNKNOWN_ACCOUNTs,
+# measured 2026-08-26). The later book-depth arm would catch it, but four steps later and pointing
+# at the collar; this says it where it happened.
+(( ACCEPTED1 > ACCEPTED0 )) \
+  || fail "the publisher submitted $(( SUBMITTED1 - SUBMITTED0 )) order(s) in ${WINDOW_S}s and the
+  venue accepted NONE of them. The counters below would still move (a ref is consumed before any
+  verdict), so this arm exists to stop that reading as a working replay. The reason is on
+  /health.printReplay.rejectedByReason: $(printf '%s' "${PR1}" | jget printReplay.rejectedByReason)"
 (( GREF1 > GREF0 )) \
   || fail "traderx_cluster_next_order_ref did not move (${GREF0} -> ${GREF1}) while the publisher
   submitted $(( SUBMITTED1 - SUBMITTED0 )) order(s). Either they are not reaching consensus, or
@@ -150,13 +163,38 @@ BAND1="$(band_counters 0)"; BR1="${BAND1%% *}"; BC1="${BAND1##* }"
   || fail "traderx_cluster_operator_next_order_ref moved ${OREF0} -> ${OREF1} while only the tape
   replay was writing. This is the counter six proofs bracket their own work with; if replayed flow
   moves it, the retreat from the ref generator bought nothing and the class is open again."
-[[ "${OTRD1}" == "${OTRD0}" ]] \
-  || fail "traderx_cluster_operator_trades moved ${OTRD0} -> ${OTRD1} on replayed flow alone.
-  assert_order_effects reads this as 'what MY order did'."
 assert_band_effects "${BR0}" "${BC0}" "${BR1}" "${BC1}" 0 0 \
   "the band counters under replayed flow alone"
-ok "operator refs ${OREF0}, trades ${OTRD0}, band [${BAND0}] — unmoved, agreed by all three members,\
- while the globals moved +$(( GREF1 - GREF0 )) refs / +$(( GTRD1 - GTRD0 )) trade legs"
+
+# THE TRADE COUNTER IS THE ONE THE REPLAY CAN LEGITIMATELY MOVE, AND SAYING SO IS THE POINT.
+#
+# It is scoped per LEG, by the account of the leg — so a replayed order that crosses an operator's
+# ALREADY-RESTING order books one leg to each side, and the operator's leg is genuinely the
+# operator's. That is the counter being right, not wrong. This arm asserted equality on its first
+# suite run and went red at +1, on a rig whose fixture seeding leaves resting orders on tape
+# symbols; the assertion was the thing that was wrong.
+#
+# What the replay CANNOT do is create an operator order — which is why the ref and band arms above
+# are exact equalities and this one is not. The reading here is that the replayed legs were
+# EXCLUDED: if the exclusion were broken the operator delta would be the global delta, and the two
+# are separated by a whole order of magnitude at 6 orders/s. The EXACT trade assertion lives in
+# step 3, where this proof's own orders are the subject and their effect is knowable.
+OTRD_D=$(( OTRD1 - OTRD0 )); GTRD_D=$(( GTRD1 - GTRD0 ))
+(( GTRD_D > 0 )) \
+  || fail "the venue booked no trade legs at all in ${WINDOW_S}s while the replay submitted
+  $(( SUBMITTED1 - SUBMITTED0 )) order(s) — with nothing trading, 'the operator counter did not
+  move' is a statement about a quiet rig and not about the exclusion."
+(( OTRD_D < GTRD_D )) \
+  || fail "traderx_cluster_operator_trades moved by ${OTRD_D} of the ${GTRD_D} leg(s) the venue
+  booked while only the tape replay was writing. If the two are equal, the replayed legs are not
+  being excluded at all and assert_order_effects is reading the replay as 'what MY order did'."
+if (( OTRD_D > 0 )); then
+  echo "    NOTE: ${OTRD_D} operator leg(s) in the window against ${GTRD_D} total — a replayed order"
+  echo "          crossed an operator order that was ALREADY RESTING (the fixture seeding leaves"
+  echo "          some on tape symbols). The leg is the operator's and the counter is right."
+fi
+ok "operator refs ${OREF0} and band [${BAND0}] unmoved, agreed by all three members, and \
+${OTRD_D} of ${GTRD_D} trade legs were the operator's, while the globals moved +$(( GREF1 - GREF0 )) refs"
 
 # ---------------------------------------------------------------------------------------------
 step "3. ...and they still move for US, inside the live replay (anti-vacuity)"

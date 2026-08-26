@@ -30,7 +30,14 @@ K=(kubectl --context "${CTX}" -n "${NS}")
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 EXPECT="${EXPECT:-after}"
 TICKER="${TICKER:-FNMA}"
-CONTROL_TICKER="${CONTROL_TICKER:-NVDA}"
+# GOOGL, NOT NVDA (changed 2026-08-26). The control only has to be a >=$100 equity with a live
+# publisher price and an EMPTY book, and since ADR-072 the tape replay keeps live depth in every
+# symbol it trades — so NVDA is now permanently occupied and this proof SKIPPED every run, which
+# reads as a pass in the suite summary. GOOGL is one of ADR-070's two deliberate tape exclusions
+# (the store merges Alphabet's share classes), so it is priced by the publisher, sits in the cap
+# grid's decade, and is a book the replay will never touch. If it ever stops being excluded, this
+# control needs a different name — not a widened skip.
+CONTROL_TICKER="${CONTROL_TICKER:-GOOGL}"
 ACCT="${ACCT:-22214}"
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 ok() { echo "[ok] $*"; }

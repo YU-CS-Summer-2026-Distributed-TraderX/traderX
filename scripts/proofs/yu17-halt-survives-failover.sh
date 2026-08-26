@@ -126,6 +126,10 @@ HALT_SEQ="$(field "${RESP#* }" sequence)"
 [[ "${HALT_SEQ}" =~ ^[0-9]+$ ]] || fail "POST /session did not return the sequence its halt landed at (got '${RESP#* }') — without it the post-failover read cannot be gated on the restarted member having replayed the halt"
 PHASE_TOUCHED=1
 REFS0="$(quiesced_order_refs)"; T0="$(quiesced_trades)"
+# queueDepth is a GLOBAL gauge and, since ADR-072, the tape replay queues alongside us for as long
+# as the venue is PRE_OPEN. Every reading of it below is therefore a delta or a floor against a
+# baseline, never an absolute — the sibling repair to yu17-preopen-queue-open's.
+QD0="$(health_field 0 queueDepth)"
 A1="$(order "${ACCT}"  Buy  10 "${SEED_PX}" a1)"; A1_REF="$(field "${A1}" orderRef)"
 A2="$(order "${ACCT}"  Buy  10 "${SEED_PX}" a2)"; A2_REF="$(field "${A2}" orderRef)"
 S="$( order "${ACCT2}" Sell 10 "${SEED_PX}" s )"; S_REF="$( field "${S}"  orderRef)"
@@ -133,8 +137,17 @@ CLEANUP_REFS=("${A1_REF}" "${A2_REF}" "${S_REF}")
 REFS1="$(quiesced_order_refs)"; T1="$(quiesced_trades)"
 assert_order_effects "${REFS0}" "${REFS1}" 3 "${T0}" "${T1}" 0 "orders queued during PRE_OPEN"
 QD="$(health_field 0 queueDepth)"
-[[ "${QD}" == "3" ]] || fail "queueDepth reads '${QD:-<absent>}', not 3"
-ok "3 orders queued (A1=${A1_REF} A2=${A2_REF} S=${S_REF}), nothing traded, depth 3"
+[[ "${QD}" =~ ^[0-9]+$ && "${QD0}" =~ ^[0-9]+$ ]] \
+  || fail "queueDepth unreadable ('${QD0:-<absent>}' -> '${QD:-<absent>}')"
+(( QD - QD0 >= 3 )) || fail "queueDepth moved ${QD0} -> ${QD} across three orders that were neither
+  rejected nor filled — they were sequenced (asserted above) and did not trade, so the queue is
+  where they must be"
+# The applied position by which ALL THREE members had our three orders. Step 4 gates each member's
+# read on it, so "the queue survived" is measured after the member has replayed the commands that
+# created it — not while it is still catching up, which is the reading-taken-too-early trap this
+# file's own header records.
+QUEUE_SEQ="$(quiesced_seq)"
+ok "3 orders queued (A1=${A1_REF} A2=${A2_REF} S=${S_REF}), nothing traded, depth ${QD0} -> ${QD} at sequence ${QUEUE_SEQ}"
 
 echo "--- 2. snapshot barrier: the halt must be in the snapshot, not only in the log tail"
 # WITHOUT the barrier this proof would only prove the LOG carries the phase — a member that
@@ -142,6 +155,7 @@ echo "--- 2. snapshot barrier: the halt must be in the snapshot, not only in the
 # question the format-8 record types exist to answer: is the phase IN the snapshot?
 snapshot_barrier
 
+QD_KILL="$(health_field 0 queueDepth)"
 echo "--- 3. kill the leader"
 LDR="$(leader)" || fail "no leader found"
 echo "    killing leader member ${LDR}"
@@ -163,23 +177,45 @@ await_member_restored "${LDR}" "${OLD_UID}" "${HALT_SEQ}" 300 \
 
 echo "--- 4. the halt survived, on EVERY member — including the one that came back from disk"
 for m in 0 1 2; do
+  # Gate on the member having replayed the commands that queued our orders. Without it the read
+  # races catch-up, and a member still restoring reports a low depth that reads exactly like a
+  # member that lost the queue.
+  for i in $(seq 1 60); do
+    AP="$(applied_seq "${m}")"
+    [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QUEUE_SEQ )) && break
+    sleep 2
+  done
+  [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QUEUE_SEQ )) \
+    || fail "member-${m} never replayed past sequence ${QUEUE_SEQ} (applied ${AP:-<none>}) — an
+  incomplete restart, NOT a verdict about whether the queue survived"
   P="$(health_field "${m}" phase)"; Q="$(health_field "${m}" queueDepth)"
-  echo "    member-${m}: phase=${P:-<absent>} queueDepth=${Q:-<absent>}"
+  echo "    member-${m}: phase=${P:-<absent>} queueDepth=${Q:-<absent>} (applied ${AP} >= ${QUEUE_SEQ})"
   [[ "${P}" == "PRE_OPEN" ]] \
     || fail "member-${m} reads phase='${P:-<absent>}' after the failover, not PRE_OPEN. A halt that a leader change lifts is the gateway-held phase ADR-069 exists to reject$( [[ "${m}" == "${LDR}" ]] && echo ' — and this is the member that restarted, so the phase was not in its snapshot' )"
-  [[ "${Q}" == "3" ]] \
-    || fail "member-${m} reads queueDepth='${Q:-<absent>}', not 3. The queue is replicated state (§1.4, T_QUEUED_ORDER); losing it across a failover silently drops three client orders that were ACKED"
+  # A FLOOR against the depth at the kill, not an absolute 3: nothing drains the queue while the
+  # venue is PRE_OPEN, so a member that kept it reads at least what was there, and the replay's own
+  # queued orders only add. A member that LOST it reads far below — which is the case this exists
+  # to catch, and the case the identity check at the open (A1 FILLED, A2 NEW) then confirms.
+  [[ "${Q}" =~ ^[0-9]+$ ]] && (( Q >= QD_KILL )) \
+    || fail "member-${m} reads queueDepth='${Q:-<absent>}', below the ${QD_KILL} standing at the kill.
+  The queue is replicated state (§1.4, T_QUEUED_ORDER); losing it across a failover silently drops
+  three client orders that were ACKED"
 done
-ok "phase PRE_OPEN and queueDepth 3 on all three members after the leader kill"
+ok "phase PRE_OPEN and a queue of at least ${QD_KILL} on all three members after the leader kill"
 
 echo "--- 5. the open still releases identically"
 REFS2="$(quiesced_order_refs)"; T2="$(quiesced_trades)"
+QD_PRE_OPEN="$(health_field 0 queueDepth)"
 RESP="$(set_phase OPEN)"; [[ "${RESP%% *}" == 2* ]] || fail "OPEN answered ${RESP%% *}"
 PHASE_TOUCHED=0
 sleep 3
 REFS3="$(quiesced_order_refs)"; T3="$(quiesced_trades)"
 assert_order_effects "${REFS2}" "${REFS3}" 0 "${T2}" "${T3}" 2 "the post-failover release at the open"
-[[ "$(health_field 0 queueDepth)" == "0" ]] || fail "the queue did not drain at the open"
+QD_POST_OPEN="$(health_field 0 queueDepth)"
+# NOT "== 0": the release is one apply over what was queued AT THE COMMAND, and the replay keeps
+# queuing behind it, so what remains is arrivals rather than a failure to drain.
+[[ "${QD_POST_OPEN}" =~ ^[0-9]+$ ]] && (( QD_POST_OPEN < QD_PRE_OPEN )) \
+  || fail "the queue did not drain at the open (queueDepth ${QD_PRE_OPEN} -> ${QD_POST_OPEN:-<absent>})"
 ST1="$(rm_status "${A1_REF}" "${ACCT}")"; ST2="$(rm_status "${A2_REF}" "${ACCT}")"
 echo "    read model: A1(${A1_REF})=${ST1:-<absent>}  A2(${A2_REF})=${ST2:-<absent>}"
 [[ "${ST1}" == "FILLED" ]] || fail "insertion order did not survive the failover: A1 (queued FIRST) reads '${ST1:-<absent>}'. The queue restored, but in the wrong order — §1.4 makes its order load-bearing precisely because it is the release order"
