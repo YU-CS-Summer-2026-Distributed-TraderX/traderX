@@ -2,9 +2,24 @@ import { Component, OnDestroy, OnInit, computed, inject, signal } from '@angular
 import { Api, MemberHealth } from './api';
 import { HelpTip } from './help';
 
-/** Polls (2s each) of no movement before "advancing" is withdrawn. Long enough to ride out a quiet
- *  moment, short enough that a genuinely stopped cluster stops claiming consensus within ~10s. */
-const STATIC_POLLS_BEFORE_STALE = 5;
+/**
+ * How long the sequence must be still before "advancing" is withdrawn.
+ *
+ * MUST EXCEED THE PRODUCER'S OWN BEAT, and the first version did not. The feed adapter batches:
+ * `FEED_FLUSH_MS=15000` on the feed-adapter deployment, read off the rig. A threshold of ~10s
+ * against a 15s flush does not detect stillness — it detects the GAP BETWEEN BEATS, so a perfectly
+ * healthy cluster drops the claim once per flush cycle, forever. Measured independently on this rig:
+ * `applied` held the same value for 40s+ with the adapter Running, 0 restarts and no drops.
+ *
+ * 45s is three flush intervals. The coupling is deliberate and stated because the interval is a
+ * property of the PRODUCER and is not exposed on any HTTP surface the browser can read: if
+ * FEED_FLUSH_MS changes, this has to change with it, and a reader of either needs to know that.
+ *
+ * The same shape cost another lane a day: a stillness gate of 4-6s against a 10s sweep went quiet
+ * deterministically for any epoch larger than one page.
+ */
+const FEED_FLUSH_MS = 15000;
+const STALE_AFTER_MS = FEED_FLUSH_MS * 3;
 
 @Component({
   selector: 'cluster-panel',
@@ -20,7 +35,7 @@ const STATIC_POLLS_BEFORE_STALE = 5;
     </div>
     <div class="banner" [class]="book().tone">
       {{ book().text }}
-      <help-tip text="Each member serves its own view of the book. Three matching reads are only a consensus claim if they are at the SAME applied sequence AND that sequence is advancing — three identical reads of a stopped cluster agree by coincidence. Books are compared only when the members are at the same sequence, because at different sequences a difference is skew, not disagreement." />
+      <help-tip text="Each member serves its own view of the book. Three matching reads are only a consensus claim if they are at the SAME applied sequence AND that sequence is advancing — three identical reads of a stopped cluster agree by coincidence. Books are compared only when the members are at the same sequence, because at different sequences a difference is skew, not disagreement. Quiet is normal: the feed batches every 15s and an idle rig sequences nothing at all, so a quiet reading means agreement has not been re-tested lately — not that anything is wrong." />
     </div>
     <table>
       <thead><tr><th></th><th>role</th><th class="num">applied</th><th class="num">engineApplied</th><th class="num">trades</th><th class="num">snapshots</th></tr></thead>
@@ -50,8 +65,10 @@ export class ClusterPanel implements OnInit, OnDestroy {
   /** The highest applied seen so far, to tell "advancing" from "identical because stopped". */
   private highWater = signal<number | null>(null);
   private advancing = signal(false);
-  /** Consecutive polls with no movement; the claim is withdrawn only after several. */
-  private staticPolls = 0;
+  /** When the sequence last moved. Wall-clock, not a poll count: the threshold is a property of the
+   *  producer's flush interval, and tying it to this panel's poll rate couples two unrelated things. */
+  private lastAdvanceAt: number | null = null;
+  readonly quietMs = signal(0);
   readonly agreed = computed(() => {
     const ms = this.members();
     return ms.every(m => m !== null)
@@ -85,7 +102,7 @@ export class ClusterPanel implements OnInit, OnDestroy {
       return { text: `⚠ members DISAGREE on the book at the same applied sequence ${applied}`, tone: 'banner bad' };
     }
     if (!this.advancing()) {
-      return { text: `· ${reads.length} members hold an identical book (${reads[0].books} securities) at ${applied} — but the sequence is not advancing, so this is not yet a consensus reading`, tone: 'banner' };
+      return { text: `· ${reads.length} members hold an identical book (${reads[0].books} securities) at ${applied} · quiet ${Math.round(this.quietMs() / 1000)}s`, tone: 'banner' };
     }
     return { text: `✓ ${reads.length} members agree on the book (${reads[0].books} securities) at applied ${applied}, and advancing`, tone: 'banner good' };
   });
@@ -124,10 +141,14 @@ export class ClusterPanel implements OnInit, OnDestroy {
     // from a lagging member must not read as the cluster rewinding.
     const top = Math.max(...reads.filter(r => r !== null).map(r => r!.applied), -1);
     if (top < 0) { return; }
+    const now = Date.now();
     const prev = this.highWater();
-    if (prev === null) { this.highWater.set(top); return; }
-    if (top > prev) { this.staticPolls = 0; this.advancing.set(true); }
-    else { this.staticPolls += 1; if (this.staticPolls >= STATIC_POLLS_BEFORE_STALE) { this.advancing.set(false); } }
+    if (prev === null) { this.highWater.set(top); this.lastAdvanceAt = now; return; }
+    if (top > prev) { this.lastAdvanceAt = now; this.advancing.set(true); }
+    else if (this.lastAdvanceAt !== null && now - this.lastAdvanceAt >= STALE_AFTER_MS) {
+      this.advancing.set(false);
+    }
+    this.quietMs.set(this.lastAdvanceAt === null ? 0 : now - this.lastAdvanceAt);
     this.highWater.set(Math.max(prev, top));
   }
 
