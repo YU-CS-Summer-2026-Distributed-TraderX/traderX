@@ -45,7 +45,7 @@ interface TaqReplay {
            on each row already say where any individual price came from. -->
       <div class="clock">
         <span class="pill">SYNTHETIC</span>
-        <span class="when">no tape loaded</span>
+        <span class="when" [title]="replay()?.error || 'no replay extract configured'">no tape loaded</span>
       </div>
     } @else if (state() === 'error') {
       <div class="clock bad">
@@ -81,7 +81,7 @@ export class ReplayClock {
     if (r.status !== 200 || !r.body) { this.state.set('unreadable'); return; }
     const t = r.body.taqReplay;
     this.replay.set(t ?? null);
-    this.state.set(!t ? 'synthetic' : t.error ? 'error' : 'tape');
+    this.state.set(classify(t));
   }
 
   readonly held = computed(() => !!this.replay()?.position?.held);
@@ -117,6 +117,33 @@ export class ReplayClock {
         : 'Position is read from the publisher on every poll and never advanced here, so one clock decides where the tape is.')
       + ' Names not on the tape publish their own source, shown per row.';
   });
+}
+
+/**
+ * Which of the three states the publisher is actually in.
+ *
+ * MEASURED, not assumed, and the assumption was wrong. Deleting the replay Secret — the documented,
+ * rehearsed revert — does NOT remove `taqReplay`. It returns the block present, with no position and
+ * `error: "no extract at /etc/taq-replay/extract.json.gz"`. Keyed on `error` alone, the sanctioned
+ * fallback therefore rendered as a red TAPE ERROR: the demo's own honest mode reported as a fault,
+ * which is the opposite of what the revert exists to demonstrate.
+ *
+ * A purely STRUCTURAL rule does not work either, and I only found that by breaking the tape on
+ * purpose. Corrupting the extract produces `did not gunzip+parse: incorrect header check` — and,
+ * like the absent case, no source, no days, no position. Structure cannot separate "no tape here"
+ * from "the tape is broken"; the publisher distinguishes them only in words, so this matches on the
+ * one phrase it emits for absence and treats everything else as a fault.
+ *
+ * It FAILS SAFE deliberately: an unrecognised error alarms rather than going quiet. Silence is the
+ * worse mistake here, because a corrupt tape presenting as the ordinary synthetic fallback is a
+ * fault that looks exactly like a normal demo.
+ */
+function classify(t: TaqReplay | undefined): 'tape' | 'synthetic' | 'error' {
+  if (!t) { return 'synthetic'; }
+  // A described tape: position, day count or source present. Then an error means a broken tape.
+  if (t.source || t.days || t.position) { return t.error ? 'error' : 'tape'; }
+  if (!t.error) { return 'synthetic'; }
+  return /no extract at/i.test(t.error) ? 'synthetic' : 'error';
 }
 
 const ordinal = (n: number): string => {
