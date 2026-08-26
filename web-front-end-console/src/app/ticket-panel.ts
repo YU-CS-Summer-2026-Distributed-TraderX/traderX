@@ -1,6 +1,7 @@
 import { Component, computed, effect, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { FormsModule } from '@angular/forms';
+import { PriceChip } from './price-chip';
 import { Api, OrderResult, OtcContract, nextClientOrderId, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
 
@@ -68,7 +69,7 @@ const PRESETS: Preset[] = [
 
 @Component({
   selector: 'ticket-panel',
-  imports: [FormsModule, NgTemplateOutlet, HelpTip],
+  imports: [FormsModule, NgTemplateOutlet, HelpTip, PriceChip],
   template: `
     <div class="card-head">
       <h2>Order entry</h2>
@@ -94,6 +95,7 @@ const PRESETS: Preset[] = [
     @if (livePrice(); as p) {
       <div class="live">
         <span class="lv" [class.up]="p.dir === 1" [class.down]="p.dir === -1">{{ priceLabel() }}</span>
+        <price-chip [source]="p.source" [asOf]="p.asOf" />
         <span class="sub">live price</span>
         @if (bondInfo(); as b) {
           <span class="sub">· coupon {{ b.fixedInterest?.couponRatePercent ?? b.zeroCoupon?.couponRatePercent ?? 0 }}%

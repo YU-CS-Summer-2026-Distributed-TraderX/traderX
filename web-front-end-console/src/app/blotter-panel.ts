@@ -4,6 +4,8 @@ import { Api, BlotterTrade, OtcContract, Position, parseOcc } from './api';
 import { HelpTip } from './help';
 import { Gated } from './gated';
 import { TraceView } from './trace-view';
+import { PriceChip } from './price-chip';
+import type { PriceMark } from './api';
 import { SecHead, SecPager, Section } from './section';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
@@ -61,7 +63,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
 
 @Component({
   selector: 'blotter-panel',
-  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated, TraceView],
+  imports: [FormsModule, HelpTip, SecHead, SecPager, Gated, TraceView, PriceChip],
   template: `
     <div class="card-head">
       <h2>Blotter &amp; positions</h2>
@@ -94,7 +96,8 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
               <td class="num">{{ p.quantity }}</td>
               <td class="num">{{ p.averageCostBasis.toFixed(6) }}</td>
               <td class="num" [class.up]="p.dir === 1" [class.down]="p.dir === -1">
-                {{ p.last !== undefined ? p.last.toFixed(p.last < 2 ? 6 : 3) : '—' }}</td>
+                {{ p.last !== undefined ? p.last.toFixed(p.last < 2 ? 6 : 3) : '—' }}
+                <price-chip [source]="markOf(p.security)?.source" [asOf]="markOf(p.security)?.asOf" /></td>
               <td class="num">{{ p.value !== undefined ? fmt(p.value) : '—' }}</td>
               <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">
                 {{ p.upnl !== undefined ? fmt(p.upnl) : '—' }}</td>
@@ -480,6 +483,9 @@ export class BlotterPanel implements OnInit, OnDestroy {
       upnl: rs.reduce((s, r) => s + (r.upnl ?? 0), 0),
     };
   });
+
+  /** The live mark for a security, for its provenance chip. Absent until the first tick arrives. */
+  markOf(security: string): PriceMark | undefined { return this.api.prices()[security]; }
 
   readonly positions = new Section<PosRow>(this.rows, p => p.security);
   readonly openOrders = new Section<OpenOrder>(this.rawOpenOrders, o => o.orderId);

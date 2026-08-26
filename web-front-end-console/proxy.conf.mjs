@@ -349,4 +349,7 @@ export default [
   plain('/grafana'),
   // Per-pod fan-out and discovery, added on the cloud rig: one row per gateway and per member.
   plain('/gateways'), plain('/members'), plain('/gw'), plain('/mem'), plain('/legacy'),
+  // price-publisher's own /health carries the TAQ replay position. The edge routes it; without this
+  // the dev server answers with its SPA fallback and the replay clock reads a page as a clock.
+  plain('/price-publisher'),
 ];

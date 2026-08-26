@@ -21,6 +21,42 @@ export interface Instrument {
   };
 }
 
+/** A live mark and where it came from. */
+export interface PriceMark {
+  price: number; dir: 1 | -1 | 0;
+  /** The publisher's own `source` string, verbatim — never a guess, absent if the tick omitted it. */
+  source?: string;
+  /** Tape time on replayed names, wall-clock on the rest. Not comparable across sources. */
+  asOf?: string;
+}
+
+/**
+ * How to READ a `source`, without pretending there are only two kinds.
+ *
+ * The obvious design is a binary tape/synthetic chip. Measured against the rig that is wrong twice
+ * over: treasuries come from FRED and are real but not tape, and the two names deliberately excluded
+ * from the replay publish `previous-close` — carried forward, which is neither a tape price nor a
+ * moving simulation. Both would be mislabelled by a two-way split, and mislabelled in the direction
+ * that overclaims.
+ */
+export type Provenance = 'tape' | 'reference' | 'model' | 'simulated' | 'carried' | 'unknown';
+
+export function provenanceOf(source: string | undefined): Provenance {
+  if (!source) { return 'unknown'; }
+  if (source.startsWith('taq-replay')) { return 'tape'; }
+  if (source.startsWith('fred-')) { return 'reference'; }
+  if (source === 'black-scholes') { return 'model'; }
+  if (source.startsWith('simulated-')) { return 'simulated'; }
+  if (source === 'previous-close') { return 'carried'; }
+  return 'unknown';
+}
+
+/** Short label for a chip. The exact source string belongs in the title, not the chip. */
+export const PROVENANCE_LABEL: Record<Provenance, string> = {
+  tape: 'tape', reference: 'FRED', model: 'model',
+  simulated: 'sim', carried: 'prev close', unknown: 'source?',
+};
+
 export interface MemberHealth {
   memberId: number; role: string; started: boolean;
   applied: number; engineApplied: number; trades: number; snapshots: number;
@@ -486,8 +522,21 @@ export class Api {
 
   // ---- live prices ----------------------------------------------------------------------------
 
-  /** ticker -> {price, dir} from price-publisher's pricing.<ticker> ticks; dir is the last move. */
-  readonly prices = signal<Record<string, { price: number; dir: 1 | -1 | 0 }>>({});
+  /**
+   * ticker -> {price, dir, source, asOf} from price-publisher's `pricing.<ticker>` ticks.
+   *
+   * `source` and `asOf` were on the wire all along and were being dropped here. They matter now
+   * that not every price comes from the same place: measured live, one rig publishes five distinct
+   * provenances at once — `taq-replay-2025-02` (a real 2025 tape), `fred-us-treasury-cmt-curve`
+   * (real), `black-scholes` (derived from the underlying), `simulated-corporate-credit-spread`, and
+   * `previous-close` (carried forward, not moving). A price is not meaningful without knowing which
+   * of those produced it, and a number that looks live but is a carried-forward close is the kind
+   * of thing an audience reads wrongly.
+   *
+   * `asOf` is the TAPE's timestamp on replayed names and wall-clock on the rest, so the two are not
+   * comparable and nothing here should difference them.
+   */
+  readonly prices = signal<Record<string, PriceMark>>({});
   private pricesStarted = false;
 
   /** Start the pricing.> subscription once; the prices signal updates per tick thereafter. */
@@ -502,7 +551,11 @@ export class Api {
         this.prices.update(m => {
           const prev = m[p.ticker]?.price;
           const dir = prev === undefined || p.price === prev ? 0 : p.price > prev ? 1 : -1;
-          return { ...m, [p.ticker]: { price: p.price, dir: dir as 1 | -1 | 0 } };
+          return { ...m, [p.ticker]: {
+            price: p.price, dir: dir as 1 | -1 | 0,
+            source: typeof p.source === 'string' ? p.source : undefined,
+            asOf: typeof p.asOf === 'string' ? p.asOf : undefined,
+          } };
         });
       } catch { /* not a price tick */ }
     });

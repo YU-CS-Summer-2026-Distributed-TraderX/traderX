@@ -133,7 +133,10 @@ const needsAuth = (method, p) =>
 // Paths the edge proxy already knows how to route. Identical list to proxy.conf.mjs's plain()
 // entries — if one gains a route, so must the other.
 const PROXY_PREFIXES = ['/order-matcher', '/reference-data', '/account-service', '/position-service',
-  '/trade-processor', '/m0', '/m1', '/m2', '/nats-ws', '/algo', '/tempo', '/grafana'];
+  '/trade-processor', '/m0', '/m1', '/m2', '/nats-ws', '/algo', '/tempo', '/grafana',
+  // The edge already routes /price-publisher/ to :18100; this side had to be told too, or the
+  // replay clock's /health read falls through to serveStatic and gets index.html with a 200.
+  '/price-publisher'];
 
 const json = (res, code, body) => {
   res.statusCode = code;

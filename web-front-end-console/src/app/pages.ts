@@ -17,11 +17,15 @@ import { FixPanel } from './fix-panel';
 import { BandsPanel } from './bands-panel';
 import { GrafanaPanel } from './grafana-panel';
 import { LegacyPanel } from './legacy-panel';
+import { ReplayClock } from './replay-clock';
 
 @Component({
   selector: 'trading-page',
-  imports: [TicketPanel, BlotterPanel, ActivityPanel],
+  imports: [TicketPanel, BlotterPanel, ActivityPanel, ReplayClock],
   template: `
+    <!-- Above the ticket on purpose: it says WHEN the prices below are from, and that has to be
+         read before the numbers, not discovered after them. -->
+    <section class="card tape"><replay-clock /></section>
     <div class="cols">
       <section class="card ticket"><ticket-panel /></section>
       <div class="stack">
@@ -31,6 +35,7 @@ import { LegacyPanel } from './legacy-panel';
     </div>
   `,
   styles: `
+    .tape { padding: 9px 14px; margin-bottom: 12px; }
     .cols { display: grid; grid-template-columns: 380px 1fr; gap: 14px; align-items: start; }
     .stack { display: grid; gap: 14px; }
     @media (max-width: 950px) { .cols { grid-template-columns: 1fr; } }
