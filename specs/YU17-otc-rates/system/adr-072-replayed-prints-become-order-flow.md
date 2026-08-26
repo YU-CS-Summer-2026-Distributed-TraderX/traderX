@@ -52,10 +52,40 @@ counter the proofs currently use to say "this was mine", and the answer cannot b
 *"widening the tolerance does not fix this — it deletes the check."*
 
 **Decision: replayed flow must be attributable and excludable at the source.** Route it through a
-dedicated account (or an equivalent tag carried into consensus) and expose a counter that separates
+dedicated account (or an equivalent tag carried into consensus) and expose counters that separate
 externally-generated order flow from everything else, so a proof can still bracket its own work
 without knowing what else is running. The library's own admission test applies unchanged: *name a
 counter the replay does not advance, and show it standing still on a live rig while the replay runs.*
+
+### It is FOUR counters, not one (corrected 2026-08-26)
+
+This ADR first said "the attribution counter", singular, naming only the order-ref generator. **That
+understates the cost fourfold.** Traced by the implementing lane and verified here — replayed order
+flow moves every counter the library reads:
+
+| counter | why the replay moves it |
+|---|---|
+| `traderx_cluster_next_order_ref` | `ORDER_NEW` consumes a ref on apply |
+| `traderx_cluster_trades` | any replayed fill books legs |
+| `traderx_band_reanchors` | the band slot is reached from order placement |
+| `traderx_band_stranded_cancels` | same path |
+
+**All four are global, so no choice of ticker or symbol avoids any of them.** The library already knew
+this about the last two and said so, at the point where it explains why band movement takes a baseline
+rather than a floor: *"GLOBAL over order writers, exactly like the trade counter."* **It had named the
+category — "order writers", plural — while its own promise at the top still assumed the proofs were
+the only one.**
+
+### And therefore a snapshot format bump
+
+Operator-scoped siblings for the ref and trade counters must **survive a snapshot**: `quiesced_*`
+requires all three members to agree, and two proofs restart a member. So this is **snapshot format 9
+and a fresh-epoch mint**, arriving weeks after format 8. The two band shadows are not snapshotted, for
+the same reason their existing siblings are not.
+
+**This is the real price of the reversal** and it was not visible when the decision was taken. It does
+not change the decision — but a format bump and a mint is a different thing from adding a counter, and
+the record should not pretend it was foreseen.
 
 ### The side is invented, and must be labelled as invented
 
