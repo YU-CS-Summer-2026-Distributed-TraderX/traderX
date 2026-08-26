@@ -32,8 +32,23 @@ Measured consequence, both observed on a live rig:
    demo, which is the more dangerous direction.
 
 The UI lane shipped both readings before landing on matching the absence phrase and treating every
-other message as a fault. That works and it fails safe. **It is also string-matching prose**, and the
-day someone rewords that message the check silently reclassifies a fault as a routine revert.
+other message as a fault. That works, and **it genuinely fails safe** — which this issue originally
+got wrong and the UI lane corrected on 2026-08-26. The correction matters enough to record:
+
+    if (t.source || t.days || t.position) return t.error ? 'error' : 'tape';
+    if (!t.error) return 'synthetic';
+    return /no extract at/i.test(t.error) ? 'synthetic' : 'error';
+
+**Reword the absence message and the regex stops matching, so the state falls through to `error`** — a
+routine revert renders as a red TAPE ERROR. That is a **false alarm**, noisy and immediately visible.
+For a genuine fault to render as the honest mode instead, a *fault* message would have to begin
+matching `no extract at`, which rewording the absence string cannot cause.
+
+**So the drift direction is toward crying wolf, not toward going quiet**, and this issue is a
+correctness-of-contract item rather than a latent silent failure. The first draft said the opposite,
+and the lane's objection to that was the right one: *"silently hides a fault" is the kind of line that
+gets copied into an ADR and then prioritised against the wrong risk.* **It is still string-matching
+prose and should still be fixed** — just not urgently, and not for the reason first written.
 
 ## The fix, which belongs on the producer
 
