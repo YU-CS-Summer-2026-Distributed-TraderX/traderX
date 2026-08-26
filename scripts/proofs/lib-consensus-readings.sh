@@ -78,6 +78,26 @@
 #     applied                          climbing continuously (feed + replayed order flow)
 #     traderx_cluster_next_order_ref   climbing continuously (replayed order flow)
 #     traderx_cluster_operator_*       UNMOVED across the same window
+#
+# THE ONE RESIDUAL, AND IT IS A RULE FOR PROOF AUTHORS RATHER THAN A GAP IN THE COUNTERS.
+#
+# The trade counter is scoped PER LEG, by the account of the leg. So a replayed order that crosses
+# an operator order books one leg to each side, and the operator's leg is genuinely the operator's
+# — the counter is right, and assert_order_effects' trade delta is disturbed anyway. This needs an
+# operator order to be RESTING on a book the replay trades, and it is not hypothetical: measured
+# 2026-08-26, yu17-retick-determinism read "trades moved by 3 leg(s), expected 2" on a scenario
+# whose own orders were on a freshly minted ticker and were entirely correct. The extra leg was a
+# fixture-seeder order left resting on NVDA, filled by the tape at an unrelated moment.
+#
+#   RULE: A PROOF MUST NOT LEAVE AN ORDER RESTING ON A REPLAYED SYMBOL. Cancel what you place, and
+#   prefer a minted ticker for anything counter-exact — which every such proof already does for its
+#   own orders. The two standing sources were fixed at the source (scripts/yu15/seed-proof-fixtures.sh
+#   cancels both legs of its position crossings, scripts/proofs/yu08-algo-slicing.sh cancels its TWAP
+#   children); a third would reintroduce the flakiness for everyone downstream of it.
+#
+#   `kubectl -n traderx exec deploy/trade-processor -- wget -qO- localhost:18091/accounts/<id>/orders`
+#   lists what an account has left resting. On a rig at rest that should be empty for every demo
+#   account on every tape symbol.
 # ============================================================================================
 #
 # Sourcing: `here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"`

@@ -270,15 +270,40 @@ echo "   ${seeded_n} instruments enabled at their live prices (${TOTAL} securiti
 # so a PRICE_COLLAR on either side reported a position that did not exist and the proof that needed
 # it failed three steps later with a message about itself. The engine's ack carries kind=2 plus a
 # reason on a refusal; read it.
+# CANCELS ITS OWN RESIDUE, and that is not tidiness -- it is what keeps every counter-exact proof
+# in the suite readable.
+#
+# This crossing rests a SELL and then aggresses it with a BUY, on a TAPE symbol. Since ADR-072 the
+# replay trades those symbols continuously, so a replayed order can take the resting side first and
+# leave OURS resting instead. An operator order left resting on a replayed book is then picked off
+# at some random later moment, and it books an operator trade leg inside whichever proof's window
+# happens to be open -- which is exactly how yu17-retick-determinism read "trades moved by 3, expected
+# 2" (2026-08-26) on a scenario whose own orders were on a freshly minted ticker and were perfectly
+# correct. The counters attribute replayed flow correctly; what they cannot do is un-rest an
+# operator order that the replay is entitled to fill.
+#
+# Cancelling is safe on either outcome: a filled order answers the cancel by returning unchanged
+# (009 parity), so this is a no-op on the happy path and a cleanup on the interfered one. The
+# POSITION -- the thing this function exists to build -- is untouched either way.
 hold() { # hold <buyer> <seller> <ticker> <qty> <px>
-  local out
+  local out refs=()
   for body in \
     "{\"accountId\":$2,\"ticker\":\"$3\",\"side\":\"Sell\",\"quantity\":$4,\"limitPrice\":$5}" \
     "{\"accountId\":$1,\"ticker\":\"$3\",\"side\":\"Buy\",\"quantity\":$4,\"limitPrice\":$5}"; do
     out="$(curl -s -m20 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' -d "${body}")"
     [[ "${out}" == *'"kind":2'* ]] && { echo "[fail] hold $3 x$4 @ $5 refused: ${out}"; exit 1; }
+    refs+=("$(printf '%s' "${out}" | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("orderRef",""))
+except Exception: print("")')")
   done
-  printf "   %-8s holds %s x%s @ %s\n" "$1" "$3" "$4" "$5"
+  local left=0 r
+  for r in "${refs[@]}"; do
+    [[ "${r}" =~ ^[0-9]+$ ]] || continue
+    curl -s -m20 -X POST "${MATCHER_URL}/cancel" -H 'Content-Type: application/json' \
+      -d "{\"orderRef\":${r}}" >/dev/null 2>&1 && left=$((left + 1))
+  done
+  printf "   %-8s holds %s x%s @ %s (both legs cancelled after the cross: no residue on a replayed book)\n" \
+    "$1" "$3" "$4" "$5"
 }
 
 # AT THE LIVE PRICE, NOT 200. The collar band is +/-$65.50 around the security's sequenced

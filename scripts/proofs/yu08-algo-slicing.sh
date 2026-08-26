@@ -68,6 +68,23 @@ api() {
 
 py() { python3 -c "$1"; }
 
+# CANCEL THE CHILDREN ON THE WAY OUT. This proof used to leave six resting IBM orders behind every
+# run, which was harmless while nothing else traded IBM. Since ADR-072 the tape replay does, so an
+# operator order left resting on a replayed book is picked off at some random later moment and
+# books an operator trade leg inside whichever proof's window happens to be open -- which is how
+# yu17-retick-determinism came to read "trades moved by 3, expected 2" on a scenario that was
+# entirely correct. A proof that leaves resting orders on a replayed symbol is now a proof that
+# disturbs the ones after it.
+CHILD_REFS=()
+cleanup_children() {
+  local r
+  for r in ${CHILD_REFS[@]+"${CHILD_REFS[@]}"}; do
+    [[ "${r}" =~ ^[0-9]+$ ]] || continue
+    api "-X POST http://${MATCHER_DEPLOY}:18110/cancel -H 'Content-Type: application/json' -d '{\"orderRef\":${r}}'" >/dev/null 2>&1
+  done
+}
+trap cleanup_children EXIT
+
 # ---------------------------------------------------------------------------------------------
 vlog "   ctx=${CTX} ns=${NS}  engine=${EXEC_POD}  matcher=${MATCHER_DEPLOY}" \
      "   TWAP: account=${ACCT} ${SEC} qty=${QTY} over ${DURATION}s in ${N} buckets of ${BUCKET}s (slack ${SLACK_S}s)" \
@@ -141,6 +158,13 @@ step "4. every child BOOKED on the matcher, at its bucket's time (the effect end
 # child on IBM gets crossed and leaves the open list: measured 2026-08-26, four of six children
 # reported "NOT on the matcher" seconds after booking perfectly.
 ROWS="$(api "'${BLOTTER}/${ACCT}/orders?status=all'")"
+# Captured here rather than after the verdict, so the cleanup still runs when the verdict fails.
+mapfile -t CHILD_REFS < <(printf '%s' "${FINAL}" | python3 -c '
+import sys, json
+for b in json.load(sys.stdin)["buckets"]:
+    cid = b.get("childOrderId")
+    if cid:
+        print(str(cid).rsplit("-", 1)[-1])' 2>/dev/null) || true
 ROWS="${ROWS:-[]}"
 VERDICT="$(py "
 import json, datetime

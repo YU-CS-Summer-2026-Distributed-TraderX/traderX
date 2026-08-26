@@ -110,10 +110,22 @@ done
 start_pf
 curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null || fail "seed failed"
-REF0="$(agreed traderx_cluster_next_order_ref)"; OPEN0="$(agreed traderx_book_open_orders)"
+# QUIET MEANS "NO OTHER OPERATOR WORKLOAD", which is what this precondition always meant and what
+# it can still measure. It used to read the GLOBAL ref generator and the venue-wide open-order
+# count, and since ADR-072 neither is ever still: the tape replay submits ~6 orders/s and rests and
+# fills them continuously. The replay does not poison the per-item accounting below — that walks
+# THIS proof's own clients against the engine's idempotency table, and replayed orders are other
+# clients — so the reading to keep is the operator-scoped one, which the replay cannot move.
+#
+# traderx_book_open_orders is dropped from the stillness half entirely rather than scoped: there is
+# no operator-only book count, the replay owns most of the depth on this rig, and the thing this
+# precondition exists to exclude is another ORDER WRITER, which the ref counter names exactly.
+REF0="$(agreed traderx_cluster_operator_next_order_ref)"
 sleep 5
-[[ "$(agreed traderx_cluster_next_order_ref)" == "${REF0}" && "$(agreed traderx_book_open_orders)" == "${OPEN0}" ]] \
-  || fail "cluster is not quiet: another workload would poison the per-item accounting"
+[[ "$(agreed traderx_cluster_operator_next_order_ref)" == "${REF0}" ]] \
+  || fail "cluster is not quiet: another OPERATOR workload is submitting orders, and it would poison
+  the per-item accounting. (The ADR-072 tape replay is excluded from this counter by construction;
+  if this trips, something else is writing.)"
 GW_POD="$(${K} get pods -l app=cluster-gateway -o jsonpath='{.items[0].metadata.name}')"
 RESTARTS0="$(${K} get pod "${GW_POD}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
 UPS0="$(${K} logs "${GW_POD}" 2>/dev/null | grep -c '^GATEWAY up' || true)"
@@ -238,10 +250,37 @@ oracle="$(send_order "${cid}")"; oref="$(ref_of "${oracle}")"
 echo "  ok: probe committed ref ${told}, oracle agrees"
 
 # ---------------------------------------------------------------------------------------------
-step "5. the members' verdict: quiesced agreement"
-agreed traderx_book_open_orders >/dev/null
-agreed traderx_cluster_next_order_ref >/dev/null
-echo "  ok: all three members agree on the book and the ref counter"
+step "5. the members' verdict: agreement AT A SHARED LOG POSITION"
+agreed traderx_cluster_operator_next_order_ref >/dev/null
+# THE BOOK CANNOT BE COMPARED BY SAMPLING THREE MEMBERS IN SEQUENCE ANY MORE. `agreed` retries
+# until three consecutive reads match, which converges only on a still log; under ADR-072's
+# continuous replayed flow the book moves between the reads and the retry burns its whole budget on
+# a cluster in perfect agreement. The claim is determinism — SAME LOG POSITION, SAME STATE — so
+# read the position and the state together and compare members that report the same position.
+#
+# This is strictly stronger than the old form, which compared three states with no evidence they
+# were taken at the same point in the log at all.
+BOOK_AT_POS="$(for round in $(seq 1 40); do
+  for n in 0 1 2; do
+    ${K} exec "order-matcher-cluster-${n}" -c cluster-node -- \
+      sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+      | awk -v m="${n}" '/^traderx_cluster_applied/{a=$2}
+                         /^traderx_book_open_orders/{o=$2}
+                         /^traderx_book_order_hash/{h=$2}
+                         END{if(a!="") print a, m, o, h}'
+  done
+done | sort -k1,1n -k2,2n | awk '
+  { if ($1 == prev_pos) { print prev_pos, prev_state, $3" "$4 } ; prev_pos=$1; prev_state=$3" "$4 }
+' | head -1)"
+[[ -n "${BOOK_AT_POS}" ]] \
+  || fail "no two members were ever observed at the same applied position across 40 rounds, so
+  cross-member book determinism could not be measured at all"
+read -r POS S1A S1B S2A S2B <<<"${BOOK_AT_POS}"
+[[ "${S1A} ${S1B}" == "${S2A} ${S2B}" ]] \
+  || fail "two members at the SAME applied position ${POS} hold different books:
+  [${S1A} ${S1B}] vs [${S2A} ${S2B}]. Identical log, identical state, or the cluster has diverged."
+echo "  ok: two members at applied ${POS} hold the identical book [${S1A} ${S1B}], and all three"
+echo "      agree on the operator ref counter"
 
 echo
 echo "[PASS] keyed ack correlation: ${STRANDED_TOTAL} stranded, 0 of ${CHECKED} answered clients cross-wired,"

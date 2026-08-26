@@ -77,7 +77,14 @@ IMAGE_PRE_NAMED=0
 # name it here. See issues/open/cancel-regression-demo-has-no-stageable-image.md.
 IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:precancel-BUILD-ME}"
 IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-cancel}"
-ACCOUNT="${ACCOUNT:-99001}"
+# 22214, NOT 99001. `orderbook.accountid` is a FOREIGN KEY onto `accounts`, and 99001 is in no
+# reference data — so every order this proof placed was refused by the read model and the account's
+# blotter has been empty the whole time (measured 2026-08-26: 0 rows). That cost nothing while the
+# verdict was a venue-wide open-order count, and it costs everything now that the verdict is the
+# ORDER'S OWN state: a global count cannot survive ADR-072's continuous replayed flow, and the
+# identity reading that replaces it needs the row to exist. It creates no position, so the reason
+# other proofs avoid a mapped account here does not apply.
+ACCOUNT="${ACCOUNT:-22214}"
 # JPM is deliberately avoided as the default. On a long-lived rig its price reference drifts
 # into a state where every order is rejected PRICE_COLLAR regardless of limit price -- the
 # proof then fails for a reason that has nothing to do with cancel ingress. IBM is crossed by
@@ -463,8 +470,36 @@ sleep 2
 AFTER_FIX="$(digest_consensus)"
 AFTER_DEPTH="${AFTER_FIX%% *}"
 echo "  book after:  ${AFTER_FIX}"
-[[ "${AFTER_DEPTH}" == "$((BEFORE_DEPTH - 1))" ]] \
-  || fail "expected depth ${BEFORE_DEPTH} -> $((BEFORE_DEPTH - 1)), got ${AFTER_DEPTH}"
+
+# THE ORDER'S OWN STATE, NOT A VENUE-WIDE COUNT. traderx_book_open_orders is global, and since
+# ADR-072 the tape replay rests and fills orders continuously, so "exactly one fewer" is a
+# statement about the whole venue over the two seconds this took. Measured 2026-08-26 on the first
+# suite run with the replay live: 585 -> 577, on a cancel that had just answered
+# {"canceled":true} and was entirely correct.
+#
+# The count was standing in for an identity claim all along — "THIS order left the book" — and the
+# order says so itself. The read model is written from the LEADER's egress, so a row that reads
+# CANCELED is a committed apply and not the gateway's opinion of one.
+for _ in $(seq 1 30); do
+  ST="$(${K} exec deploy/trade-processor -- \
+        wget -qO- "http://localhost:18091/accounts/${ACCOUNT}/orders?status=all" 2>/dev/null \
+        | python3 -c "
+import sys, json
+want = str(${PRE_REF})
+for r in json.load(sys.stdin):
+    if str(r.get('id', '')).rsplit('-', 1)[-1] == want:
+        print(r.get('status', '')); break
+else:
+    print('')" 2>/dev/null)"
+  [[ "${ST}" == "CANCELED" ]] && break
+  sleep 2
+done
+[[ "${ST}" == "CANCELED" ]] \
+  || fail "order ${PRE_REF} reads '${ST:-<absent>}' after a cancel that answered canceled:true.
+  The 200 is the gateway's report; this is the members' own committed state reaching the read
+  model, and it is the reading that says the cancel took EFFECT rather than merely being answered.
+  (venue-wide depth ${BEFORE_DEPTH} -> ${AFTER_DEPTH}, which the replay moves independently)"
+echo "  order ${PRE_REF} reads CANCELED in the read model — the cancel took effect on the members"
 [[ "${AFTER_FIX}" != "${BEFORE_FIX}" ]] || fail "book digest did not change on cancel"
 echo "[ok] exactly one order left the book, and all three members agree on the new digest:"
 book_all
