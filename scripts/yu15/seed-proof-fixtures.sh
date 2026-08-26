@@ -362,7 +362,14 @@ echo "   ${swept} resting order(s) cancelled — no demo account is holding a bo
 # that account's end-of-day P&L forever. yu15-risk-extract then fails with "an unpriced holding
 # blocks its P&L", which is a true statement about a fixture no one intended to keep.
 #
-# THE LIST HAS TO TRACK THE PROOFS THAT MINT, and it had fallen behind by nine prefixes. It read
+# THE LIST HAS TO TRACK THE PROOFS THAT MINT, and it fell behind again the moment ADR-072 added a
+# proof: yu17-replay-attribution mints ATT<time> and CROSSES on it (that is the whole anti-vacuity
+# arm -- four of its own orders, four trade legs, inside the live replay), so it leaves a net-zero
+# position row that halts an account's P&L a full suite later. Measured 2026-08-26: the run in
+# which the attribution proof first PASSED was the run after which yu15-risk-extract reported
+# `halted=2`. yu16-book-grid's GRD was added at the same time -- it rests rather than crosses
+# today, but the next edit to it would not know that. It had previously fallen behind by nine
+# prefixes. It read
 # DUP|RM|STP|Z|BND while the suite was also minting CSR, HSF, KAC, PQO, RJT, RPL, RTD and RTK --
 # and three of those BOOK TRADES: yu17-halt-survives-failover (HSF) fills a queued order at the
 # open, yu17-retick-determinism (RTD) crosses its resting bid, yu17-preopen-queue-open (PQO) books
@@ -379,9 +386,9 @@ echo "   ${swept} resting order(s) cancelled — no demo account is holding a bo
 echo "[clean] positions in generated throwaway instruments"
 kubectl --context "${CTX}" -n "${NS}" exec deploy/eod-price-db -c mariadb -- \
   mariadb -utraderx -ptraderx traderx -N -B -e \
-  "DELETE FROM positions WHERE security REGEXP '^(DUP|RM|STP|Z|BND|CSR|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';
+  "DELETE FROM positions WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';
    SELECT CONCAT('   remaining throwaway rows: ', COUNT(*)) FROM positions
-     WHERE security REGEXP '^(DUP|RM|STP|Z|BND|CSR|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';" 2>/dev/null
+     WHERE security REGEXP '^(ATT|DUP|RM|STP|Z|BND|CSR|GRD|HSF|KAC|PQO|RJT|RPL|RTD|RTK|SES)[0-9]';" 2>/dev/null
 
 # YU17 FX-rate fix: the credit gate values swap notionals in USD off SEQUENCED rates, which are
 # replicated state and die with the epoch. Until rates are re-sequenced, every non-USD swap
