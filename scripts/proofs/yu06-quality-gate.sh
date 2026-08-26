@@ -162,7 +162,8 @@ for i in $(seq 1 40); do
       [[ -n "${sec}" && -n "${px}" ]] || continue
       api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/prices/${DATE}/override -H \"Authorization: Bearer \$T\" -H 'Content-Type: application/json' -d '{\"security\":\"${sec}\",\"price\":${px},\"reason\":\"ADR-070 epoch transition: tape rewound at the mint (proof)\"}'" >/dev/null
     done <<<"$(db "SELECT security, closing_price FROM eod_price_snapshot
-                    WHERE session_date='${DATE}' AND version=${V} AND quality<>'OK'
+                    WHERE session_date='${DATE}' AND version=${V}
+                      AND quality NOT IN ('OK','OVERRIDDEN')
                       AND security<>'QLTY' AND closing_price IS NOT NULL;")"
     V="$(maxver)"
     FLAGGED="$(db "SELECT flagged_count FROM eod_price_session WHERE session_date='${DATE}' AND version=${V};")"
@@ -173,7 +174,10 @@ for i in $(seq 1 40); do
 done
 [[ "${FLAGGED:-99}" == "1" ]] || fail "flag set never collapsed to just QLTY (still ${FLAGGED:-unknown})"
 read -r STATUS FLAGGED <<<"$(session "${V}")"
-QROW="$(db "SELECT security, quality FROM eod_price_snapshot WHERE session_date='${DATE}' AND version=${V} AND quality<>'OK';")"
+# Still-FLAGGED rows only: OVERRIDDEN is a resolved state (flagged_count already excludes it),
+# and after an ADR-070 epoch-transition resolution the final version legitimately carries one
+# OVERRIDDEN row per replayed name beside the single MISSING QLTY this asserts on.
+QROW="$(db "SELECT security, quality FROM eod_price_snapshot WHERE session_date='${DATE}' AND version=${V} AND quality NOT IN ('OK','OVERRIDDEN');")"
 echo "   v${V}: status=${STATUS} flagged=${FLAGGED} — flagged row: [${QROW}]"
 [[ "${STATUS}" == "DRAFT" ]] || fail "a flagged close must land DRAFT, got ${STATUS}"
 [[ "${QROW}" == QLTY* ]] || fail "expected QLTY to be the flagged instrument, got: ${QROW}"

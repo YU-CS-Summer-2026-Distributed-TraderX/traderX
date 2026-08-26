@@ -100,7 +100,8 @@ for i in $(seq 1 40); do
   # actually asserts. Walk-mode warm-up flags carry no close, so this block is a no-op there.
   if [[ "${FLAGGED:-0}" =~ ^[0-9]+$ ]] && (( ${FLAGGED:-0} > 0 )); then
     ROWS="$(db "SELECT security, closing_price FROM eod_price_snapshot
-                 WHERE session_date='${DATE}' AND version=${V} AND quality<>'OK'
+                 WHERE session_date='${DATE}' AND version=${V}
+                   AND quality NOT IN ('OK','OVERRIDDEN')
                    AND closing_price IS NOT NULL;")"
     if [[ -n "${ROWS}" ]]; then
       while IFS=$'\t' read -r sec px; do
@@ -108,7 +109,15 @@ for i in $(seq 1 40); do
         api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/prices/${DATE}/override -H \"Authorization: Bearer \$T\" -H 'Content-Type: application/json' -d '{\"security\":\"${sec}\",\"price\":${px},\"reason\":\"ADR-070 epoch transition: tape rewound at the mint (proof)\"}'" >/dev/null
       done <<<"${ROWS}"
       api "curl -s -m45 -o /dev/null -X POST http://trade-processor:18091/eod/prices/${DATE}/publish -H \"Authorization: Bearer \$T\"" >/dev/null
-      echo "   transition overridden at observed closes and republished; closing again"
+      # The override-resolved version IS the session this proof needs — flagged 0, PUBLISHED,
+      # HELD_SEC still excluded, and publish fans out to the P&L consumer exactly as an
+      # auto-publish does. A genuinely clean close cannot exist today: the SPIKE baseline is the
+      # newest PUBLISHED session STRICTLY BEFORE today (rule 2), which today's publish cannot
+      # move, so "close again until clean" would re-flag the same names forever (measured:
+      # flagged=17 across override+republish+close cycles). Re-read and let the break decide.
+      V="$(db "SELECT COALESCE(MAX(version),0) FROM eod_price_session WHERE session_date='${DATE}';")"
+      FLAGGED="$(db "SELECT flagged_count FROM eod_price_session WHERE session_date='${DATE}' AND version=${V};")"
+      printf "   transition overridden at observed closes and republished -> v%s flagged=%s\n" "${V}" "${FLAGGED}"
     fi
   fi
   [[ "${FLAGGED:-99}" == "0" && "${V:-0}" -gt "${V_START}" ]] && break
