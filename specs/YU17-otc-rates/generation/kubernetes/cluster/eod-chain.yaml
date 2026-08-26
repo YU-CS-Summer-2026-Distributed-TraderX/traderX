@@ -41,7 +41,7 @@ spec:
     spec:
       containers:
         - name: price-publisher
-          image: traderx/price-publisher:yu17-replay
+          image: traderx/price-publisher:yu17-replay-heal
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
