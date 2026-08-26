@@ -229,8 +229,19 @@ echo "    killing leader member ${LDR} (cluster at applied ${PRE_SEQ} on member 
 "${K[@]}" delete pod "order-matcher-cluster-${LDR}" --wait=false >/dev/null
 await_member_restored "${LDR}" "${OLD_UID}" "${PRE_SEQ}" 300 \
   || fail "member ${LDR} did not rejoin and reach applied >= ${PRE_SEQ} within 300s"
-NEW="$(leader || true)"
-[[ -n "${NEW}" ]] || fail "no leader re-elected after killing member ${LDR}"
+# BOUNDED RETRY, not a single sample: "a leader emerges" is a converging property, and the one-shot
+# read raced the election it was asserting — measured 2026-08-26 on a loaded box: the read found no
+# leader, and seconds later member 0 was LEADER with all three agreed and advancing. The restored
+# member rejoining (asserted above) does not imply the election has settled. 60s is a liveness
+# budget; the assertion itself is unchanged and still goes red on a cluster that truly cannot elect.
+NEW=""
+_waited=0
+while (( _waited < 60 )); do
+  NEW="$(leader || true)"
+  [[ -n "${NEW}" ]] && break
+  sleep 2; _waited=$(( _waited + 2 ))
+done
+[[ -n "${NEW}" ]] || fail "no leader re-elected within 60s of killing member ${LDR}"
 ok "leader ${LDR} killed and recovered; leader now ${NEW}"
 
 echo "--- 6. re-anchor after the failover: a far-but-market-backed order still answers identically"
