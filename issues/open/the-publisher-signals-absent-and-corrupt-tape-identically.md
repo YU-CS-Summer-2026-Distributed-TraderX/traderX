@@ -59,6 +59,26 @@ Small change, and it removes the only reason a client has to read English.
 Until then, every consumer must independently rediscover this, and the runbook now warns about it in
 the revert step.
 
+## A second instance, and therefore a class (added 2026-08-26)
+
+This is not a one-off. The same shape appeared twice in one afternoon, in the same producer:
+
+| what a consumer needs | how it has to get it today |
+|---|---|
+| absent vs corrupt extract | **match the error message as prose** |
+| the feed's flush cadence, to size a stillness threshold | **hardcode `FEED_FLUSH_MS`'s value from the Deployment** |
+
+Both are facts the producer knows exactly and does not publish, so every consumer either guesses or
+couples itself to something that was never a contract — a sentence, or an env var read out of band.
+The stillness case already broke once for precisely this reason (`802f7ea0`): the console had no way
+to read the cadence, sized a threshold against the wrong thing, and reported a healthy cluster as
+faltering every flush cycle.
+
+**The fix generalises: whatever a consumer must branch on, the producer should say on its health
+surface.** Concretely, `errorKind: "absent" | "parse"` and the flush interval, both on
+`price-publisher`/`feed-adapter` health. The UI lane has offered to delete its hardcoded constant the
+day the interval is exposed.
+
 ## Not urgent, and not nothing
 
 Nothing is broken on the rig; the console handles all three states correctly today. This is a
