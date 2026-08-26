@@ -95,6 +95,17 @@ WHERE event_type = 'trade'
   AND ts <  TIMESTAMP(CONCAT(dt, ' 16:00:00'))
 EOF
 
+# CLEAR THE PREFIX FIRST. `EXPORT DATA … overwrite=true` overwrites THE FILES IT WRITES, not the
+# prefix: a previous run that sharded into more files leaves the extras behind, the fetch below
+# copies them down with the new ones, and the assembler unions two different samples into one
+# artifact. There is no error and no failed scan — a partly-filled extract is otherwise a perfectly
+# plausible artifact. Found by the ADR-072 lane on the sibling builder (its assemble came out
+# "100 symbols x 4 slots, 33% filled" and only a size guard caught it); this script has never been
+# bitten only because every run so far happened to shard into the same 21 files.
+# `|| true` because a first-ever run has no prefix to remove and `rm -r` exits 1 for that.
+echo "[bq] clearing ${ROWS_URI} (stale shards from a previous run would be assembled as data)"
+gcloud storage rm -r "${ROWS_URI}" >/dev/null 2>&1 || true
+
 echo "[bq] resampling ${SYMBOLS//,/ } at ${WINDOW}s windows (in-region, EXPORT DATA -> ${ROWS_URI})"
 bq --project_id=traderx-501015 --location=us-east1 query --use_legacy_sql=false --quiet \
    --external_table_definition="taq::${WORK}/def.json" "$(cat "${WORK}/resample.sql")"

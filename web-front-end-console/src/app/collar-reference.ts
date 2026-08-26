@@ -3,10 +3,10 @@ import { Api } from './api';
 import { HelpTip } from './help';
 import { SecPager, Section } from './section';
 
-interface Book { ticker: string; mark: number; ref: number; tickPx?: number; }
+export interface Book { ticker: string; mark: number; ref: number; tickPx?: number; }
 interface Bbo { member: number; applied: number; books: Book[]; }
 
-interface Row extends Book { hasPrinted: boolean; gapPct: number | null; offReference: boolean; }
+export interface Row extends Book { hasPrinted: boolean; gapPct: number | null; offReference: boolean; }
 
 /**
  * The collar's reference against this venue's own mark, per security.
@@ -175,26 +175,34 @@ export class CollarReference {
       + ' every other class carries its own source, as of now.';
   });
 
-  readonly rows = computed<Row[]>(() => {
-    const books = this.bbo()?.books ?? [];
-    const printed = this.printed();
-    return books
-      .map(b => {
-        const gapPct = b.ref ? ((b.mark - b.ref) / b.ref) * 100 : null;
-        // Magnitude, not sign. A mark far BELOW the reference is the same signal as far above, and
-        // the live example is below: nothing has printed TSLA here, so its seed sits under a tape
-        // that has moved on.
-        return { ...b, hasPrinted: printed.has(b.ticker), gapPct, offReference: Math.abs(gapPct ?? 0) >= 10 };
-      })
-      // Printed-and-drifted first: that is the only row a collar is actually about.
-      .sort((a, b) => {
-        const rank = (x: { hasPrinted: boolean; gapPct: number | null }) =>
-          x.hasPrinted ? Math.abs(x.gapPct ?? 0) + 1e6 : Math.abs(x.gapPct ?? 0);
-        return rank(b) - rank(a);
-      });
-  });
+  readonly rows = computed<Row[]>(() => rankBooks(this.bbo()?.books ?? [], this.printed()));
 
   readonly sec = new Section<Row>(this.rows, r => r.ticker);
+}
+
+/**
+ * The row order, and the reason paging is safe.
+ *
+ * Printed-and-drifted first, because that is the only row a collar is actually about. **Every
+ * printed row outranks every never-printed one**, unconditionally — that is what makes showing
+ * fifteen of a hundred and forty-five honest rather than a truncation: the rows a reader would act
+ * on cannot be pushed off page one by a never-printed row with a bigger number, and there are many
+ * of those. Exported so that invariant has a test rather than a comment.
+ *
+ * Within each group it is gap MAGNITUDE, not sign. A mark far below the reference is the same
+ * signal as far above, and the live example is below: nothing has printed TSLA here, so its seed
+ * sits under a tape that has moved on.
+ */
+export function rankBooks(books: Book[], printed: Set<string>): Row[] {
+  return books
+    .map(b => {
+      const gapPct = b.ref ? ((b.mark - b.ref) / b.ref) * 100 : null;
+      return { ...b, hasPrinted: printed.has(b.ticker), gapPct, offReference: Math.abs(gapPct ?? 0) >= 10 };
+    })
+    .sort((a, b) => {
+      const rank = (x: Row) => (x.hasPrinted ? 1e6 : 0) + Math.abs(x.gapPct ?? 0);
+      return rank(b) - rank(a);
+    });
 }
 
 /** `2025-02-06 13:11 ET` — formatting only. US equity tape times mean nothing in another zone. */
