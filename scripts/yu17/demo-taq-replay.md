@@ -61,7 +61,18 @@ consensus.
    kubectl --context kind-traderx-yu12-cluster -n traderx rollout restart deploy/price-publisher
    ```
    Equities walk again, `/health.taqReplay.error` says exactly why, and nothing else changes — no
-   network, no key, no tape required. Return:
+   network, no key, no tape required.
+
+   **If you are building a consumer, read this before you key on `error`.** Deleting the Secret does
+   **not** clear the `taqReplay` block — it returns present, with no position and `error` set to
+   `"no extract at …"`. So **this deliberate, rehearsed revert populates `error` exactly as a real
+   fault does**, and a client keyed on that field alone renders the demo's own honest mode as a red
+   breakage. Worse, a *corrupt* extract is structurally identical to an absent one — no `source`, no
+   `days`, no `position` — so structure cannot separate them either; only the message text can.
+   Distinguish the absence phrase explicitly and treat every other error as a fault, so an
+   unrecognised message **alarms rather than going quiet**. Found the hard way 2026-08-26 by the UI
+   lane, which shipped two wrong readings in a row before landing on this; see
+   `issues/open/the-publisher-signals-absent-and-corrupt-tape-identically.md`. Return:
    `bash -c 'source scripts/yu15/lib-replay-epoch.sh; K="kubectl --context kind-traderx-yu12-cluster -n traderx"; fetch_replay_extract_secret; stamp_replay_epoch'`
 
 **After the demo, restore the real anchor** (the jumps de-anchor the clock from the mint):
