@@ -369,6 +369,33 @@ export class Api {
     }
   }
 
+  /**
+   * `load` with the status check built in, so a non-2xx cannot be parsed as data.
+   *
+   * `load` returns `{status, body}` and trusts the caller to look at the status. Twice in one week
+   * that trust was misplaced in the same way: a 401 from `/order-matcher/regulatory/report` was read
+   * as an empty result and reported as "kind has no data", and an unproxied route's 200 of
+   * index.html was read as a clock. Neither was a lapse of care — a body is right there and looks
+   * like an answer, and `.json()` on a refusal is silent by default.
+   *
+   * So the shape stops offering the mistake: this returns a value or a reason, never both, and
+   * there is no field to forget to check. Prefer it for new reads.
+   */
+  async fetchJson<T>(url: string, init?: RequestInit): Promise<{ ok: true; value: T } | { ok: false; error: string }> {
+    const r = await this.load<T>(url, init);
+    if (r.status === 0) { return { ok: false, error: 'no response' }; }
+    if (r.status < 200 || r.status >= 300) {
+      const said = (r.body as { error?: string } | null)?.error;
+      return { ok: false, error: said ? `HTTP ${r.status} — ${said}` : `HTTP ${r.status}` };
+    }
+    // A 2xx whose body did not parse is a route answering with something that is not data at all —
+    // usually a dev server's SPA fallback, which is a page wearing a success code.
+    if (r.body === null || typeof r.body === 'string') {
+      return { ok: false, error: 'this route did not return data — likely not proxied here' };
+    }
+    return { ok: true, value: r.body as T };
+  }
+
   async init(): Promise<void> {
     const [, i] = await Promise.all([
       this.loadAccounts(),

@@ -15,6 +15,7 @@ import { DemoSession } from './demo-session';
 import { AccountsPanel } from './accounts-panel';
 import { FixPanel } from './fix-panel';
 import { BandsPanel } from './bands-panel';
+import { CollarReference } from './collar-reference';
 import { GrafanaPanel } from './grafana-panel';
 import { LegacyPanel } from './legacy-panel';
 import { ReplayClock } from './replay-clock';
@@ -80,7 +81,7 @@ export class EodPage {}
 
 @Component({
   selector: 'admin-page',
-  imports: [AdminPanel, DemoSession, BandsPanel],
+  imports: [AdminPanel, DemoSession, BandsPanel, CollarReference],
   template: `
     <div class="stack">
       <!-- Signed-in only. The session driver submits live orders at a chosen rate, so it is the one
@@ -100,6 +101,9 @@ export class EodPage {}
           <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
         </section>
       }
+      <!-- Two halves of one question: the journal says what the collar REFUSED, this says where
+           the band currently sits against what has printed here. -->
+      <section class="card"><collar-reference /></section>
       <section class="card"><bands-panel /></section>
       <section class="card"><admin-panel /></section>
     </div>
