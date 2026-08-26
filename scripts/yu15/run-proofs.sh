@@ -729,6 +729,19 @@ if [[ "$(current_image)" != "${BASELINE_IMAGE}" ]]; then
   echo "[baseline] cluster now on ${BASELINE_IMAGE}, fresh epoch"
 fi
 
+# FORCE_FRESH_EPOCH=1: start from a mint even when the image already matches. A run on a STANDING
+# epoch inherits every trade the previous suite accumulated, and yu05-recon's stillness gate — a
+# documented proxy its own header refuses to widen — settles mid-sweep on a multi-page blotter and
+# misses the mismatch control planted on the oldest row. Measured 2026-08-26: same build, fresh
+# epoch = recon green; standing 170-trade epoch = the planted-control arm settled early and went
+# red. Default off: an incremental re-run against a standing epoch is still a valid (and faster)
+# thing to want; a CLOSING run should pass 1.
+if [[ "${NEED_FRESH}" == "0" && "${FORCE_FRESH_EPOCH:-0}" == "1" ]]; then
+  echo "[baseline] FORCE_FRESH_EPOCH=1: minting a fresh epoch before the run"
+  rebuild_fresh_epoch "${BASELINE_IMAGE}"
+  NEED_FRESH=1
+fi
+
 # The GATEWAY image is pinned separately, because checking only the StatefulSet let a whole run
 # fail four proofs: yu13-cancel-ingress rolls the gateway to its own build, its restore did not
 # happen (the run before it died part-way), and the STS-only check above never noticed. Against
