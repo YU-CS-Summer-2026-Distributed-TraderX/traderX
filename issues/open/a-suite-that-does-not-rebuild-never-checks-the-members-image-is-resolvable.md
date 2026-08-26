@@ -55,13 +55,23 @@ deletes **every reference carrying it**.
 ## Not verified — this is a hypothesis with a test, not a finding
 
 The mechanism above is **inferred from the two outputs and from CRI semantics, and has not been
-executed.** The test below runs against content that is **already tagless and unused**, so the
-worst case is that it ends tagless again; removing a reference cannot reclaim content a running
-container holds, and nothing holds these.
+executed.** The test below runs against content that is **already tagless and unused**. State the
+worst case honestly, because it is the thing under test: if removal turns out to be record-scoped
+the blob loses its pre-existing repo reference too, so it is **not** restorable to its prior state.
+That costs nothing *here* only because nothing uses it — which is a different sentence from "it
+costs nothing", and the difference is exactly what was got wrong about the incident this file
+describes. Removing a reference cannot reclaim content a running container holds, and nothing holds
+these.
+
+**Spend ONE blob, not three.** The other two are the corroboration in this file that tag-stripping
+has happened repeatedly and cluster-wide; consuming a reference on one is a fair price for the
+fourth reading below, consuming all three would spend the evidence in order to run the experiment.
+If the test comes back inconclusive on the first, two spares remain in a known state — and they are
+on all three workers, so a second attempt can also use a different node.
 
 ```bash
 N=traderx-yu12-cluster-worker2
-B=sha256:<one of the three tagless blobs listed under Corroboration>
+B=sha256:cd116ff5345cf   # ONE of the three. Leave b69bc29a9e385 and 1cea996d7fe7e untouched.
 
 docker exec $N ctr -n k8s.io images tag $B tmp/nametest:a
 docker exec $N ctr -n k8s.io images tag $B tmp/nametest:b
