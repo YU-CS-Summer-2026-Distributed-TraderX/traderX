@@ -173,6 +173,32 @@ recon_status(){ curl -s -m8 "$TP/recon/status" -H "Authorization: Bearer $ADMIN"
 # (matched / missingInProjection / fieldMismatch) is unchanged across three consecutive reads. It
 # still fails loudly if classification never runs at all (matched stays 0 through the timeout), so
 # nothing is weakened — a mismatch that IS present is now guaranteed to have been looked for.
+#
+# QUIESCENCE IS NOT ENOUGH, AND THE FAILURE IS DETERMINISTIC RATHER THAN FLAKY. Measured
+# 2026-08-25 on a 226-trade epoch: this proof FAILED at 3b with "a PLANTED persistent mismatch was
+# NOT caught", reading `matched 52` against `SQL rows 222`. Same build, same code, re-run on a
+# fresh 20-trade epoch minutes later: PASS. The discriminator is EPOCH SIZE, not the build —
+# confirmed separately by polling /recon/status for 80s of real stillness after a restart, which
+# settled at matched=20 against 20 rows, i.e. the classifier covers every row and the gate is what
+# returns early.
+#
+# The arithmetic, which is why it cannot be a race that "sometimes" bites:
+#     RECON_POLL_INTERVAL_MS = 10000        the sweep advances once per 10s
+#     this gate: sleep 2, stable>=2         ~4-6s of stillness is enough to return
+# The triple therefore sits unchanged for ~5 consecutive polls BETWEEN pages, and "between pages"
+# is indistinguishable from "finished". Any epoch needing more than one page returns mid-sweep,
+# and 3b plants on the OLDEST row — which the sweep reaches last.
+#
+# DO NOT FIX THIS BY WIDENING THE WINDOW. That works today and breaks at the next epoch size or
+# interval change; it is how this gate got here. Stillness is a PROXY for "the classification
+# finished"; the property is "the classification covered every row". Gate on that instead.
+#
+# It is deliberately NOT fixed here yet, because `matched` and `cursor` do not track in a way
+# anyone has explained: the failing run read matched 52 / cursor 226 / rows 222, the passing run
+# read 20 / 20 / 20. A completeness gate built on a wrong model of what `matched` counts would
+# fail LOUDLY and WRONGLY, which is worse than passing quietly and wrongly — it looks like rigour
+# and sends people after phantom defects. Settle what `matched` counts relative to `cursor` in
+# ReconciliationService first; the gate is three lines after that, and a guess before it.
 fresh_classification(){ # restart TP, re-own the forward, echo the SETTLED from-zero classification
   $K rollout restart deploy/trade-processor >/dev/null 2>&1
   $K rollout status deploy/trade-processor --timeout=300s >/dev/null 2>&1 || return 1
