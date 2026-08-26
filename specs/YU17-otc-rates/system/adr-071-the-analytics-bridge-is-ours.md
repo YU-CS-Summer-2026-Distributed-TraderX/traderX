@@ -144,6 +144,12 @@ but the bridge still decides what enters the log, and still has to fail closed w
    one event type with a payload discriminator, or two?
 2. **Who fabricates the calibration config?** Us (with the honesty tiers), him (with defaults), or is a
    session simply not priced when no defensible input exists? **Fail-closed argues for the third.**
+
+   **This question is load-bearing beyond this ADR.** `issues/open/HANDOFF-fx-instrument-class.md`
+   defers FX-as-a-tradable-class partly because **FX forwards cannot be priced without a curve in each
+   currency, and we have no curve in any currency** — and it names as its own revisit condition *"the
+   rates curve work happens anyway and forwards become cheap on the back of it."* The bridge is the most
+   likely thing to force that answer. Deciding curve ownership here is therefore not only about DV01.
 3. **Where does the result artifact live?** A third file beside the two, under the same `cutSha256`, has
    symmetry with ADR-064; sending analytics only into the log leaves no auditable record of what was
    priced.
@@ -160,3 +166,8 @@ but the bridge still decides what enters the log, and still has to fail closed w
 - [ADR-070](adr-070-the-tape-is-the-reference.md) — a real tape changes the calibration inputs, not the ownership
 - `docs/handoff/INTEGRATION-jax-risk-engine-2026-08-17.md` — what we send, and the market-data tiers
 - `docs/handoff/INTEGRATION-jax-risk-engine-inbound-2026-08-17.md` — the four delivery rules, and DV01 as the first ask
+- `issues/open/HANDOFF-fx-instrument-class.md` — FX as a tradable class, **deliberately deferred**. Read
+  it before proposing FX here: his cross-asset simulator's FX legs **need rates, not instruments**, and
+  the rate fix (`TYPE_FX_RATE`, `7256a33c`) already satisfies them. The instrument work is blocked behind
+  curves and settlement and serves no consumer that has asked. Its revisit condition is open question 2
+  above — the dependency runs both ways.
