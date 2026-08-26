@@ -57,8 +57,11 @@ fetch_replay_extract_secret() {
     echo "       unless an earlier fetch already created it — /health.taqReplay is the reading)"
     return 0
   fi
-  _rk create secret generic taq-replay-extract --from-file=extract.json.gz="${tmp}" \
-    --dry-run=client -o yaml | _rk apply -f - >/dev/null
+  # delete+create, NOT dry-run|apply: client-side apply stores the whole object in the
+  # last-applied annotation, and the ~240 KB extract blows the 256 KB annotation cap (measured
+  # 2026-08-26 — the apply was refused and the old Secret silently stayed operative).
+  _rk delete secret taq-replay-extract --ignore-not-found >/dev/null 2>&1
+  _rk create secret generic taq-replay-extract --from-file=extract.json.gz="${tmp}" >/dev/null
   rm -f "${tmp}"
   echo "[ok] taq-replay-extract Secret updated from ${uri}"
   return 0

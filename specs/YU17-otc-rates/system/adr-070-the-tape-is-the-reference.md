@@ -151,6 +151,11 @@ measured into `feed-adapter.yaml` — so
 makes every flush land in a fresh window: the sequenced tick rate stays byte-for-byte identical to
 today's (decision 1's bound), no window is ever skipped, and none is published twice.
 
+(On counts, to head off a units confusion: the flush carries the rig's full published universe of
+~69 *instruments* — the "~69" this ADR's context uses. The replay changes the *content* of the 23
+equity/ETF rows in that flush and nothing about its size or cadence; treasuries, corporates and
+options keep their own sources per decision 3.)
+
 **Chosen: window 195s, compression 13x.** One trading day (23,400 s of RTH) = 30 wall-clock
 minutes, 120 windows/day; the 40-day tape spans **20 hours** of wall clock. Measured against
 samples chosen to bracket the corpus — most and least liquid demo names (SPY/AAPL vs DFS/FNF),
@@ -307,7 +312,12 @@ never disagree with the epoch it describes. Every tick derives its position from
 2). A symbol the extract does not carry falls through to the walk with its provenance unchanged.
 Failures — no Secret, no stamp, an invalid extract — are all-or-nothing and loud on
 `/health.taqReplay`, and the walk continues underneath (ADR-068 rule 1). The extract is built once
-by `scripts/yu17/build-taq-replay-extract.{sh,py}`; `scripts/proofs/yu17-taq-replay.sh` asserts
+by `scripts/yu17/build-taq-replay-extract.{sh,py}` — a BigQuery external table over the parquet
+tree computes the medians in-region and `EXPORT DATA` writes them bucket-internally, so decision
+1's "computed once, in-region, at zero egress" is literally true: no byte of the corpus ever
+reaches a laptop or a node (measured: ~50 s, ~5 GiB scanned, free tier). The exact medians were
+cross-checked against an independent pandas computation over raw partitions — 1,800 of 1,800
+windows identical. `scripts/proofs/yu17-taq-replay.sh` asserts
 the clock/extract agreement, the wire provenance, the exclusions, the member-side sequencing, the
 restart-invisibility, and the hold.
 
