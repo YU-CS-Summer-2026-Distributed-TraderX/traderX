@@ -90,6 +90,16 @@ of them by simplifying:
   rates — for 69 symbols, under time compression — multiplies today's flush by an unbudgeted factor.
   Resampling to the publisher's existing cadence makes the rate **identical to today's**, so nothing
   downstream is resized. (It is also why compression becomes free: a lookup index, not a throttle.)
+  **AMENDED 2026-08-26.** The universe widened to 100 symbols and `PRICE_TICKERS` widened with it, so
+  the rate is **no longer identical to today's**: measured at 66 per flush (~4.4/s sequenced) before,
+  roughly 145 (~9.7/s) after. **This is a deliberate change to the bound above, not an oversight.**
+  It is safe on the numbers — the consensus ceiling is ~440k/s — and it only became safe for the
+  *proofs* once [ADR-072](adr-072-replayed-prints-become-order-flow.md) added operator-scoped
+  counters; before those, doubling the feed would have degraded every global-counter reading. The
+  original argument still holds for what it was written about: **the rate is set by the resample
+  cadence and the universe size, never by the tape's real print rate**, which is the property that
+  keeps compression free.
+
 - **It defuses the unfiltered print.** Take a **median** over the window, not the last print. A median
   is robust to isolated erroneous or out-of-sequence prints, which is the failure mode the missing
   `TR_CORR`/`TR_SCOND` columns leave in the data. This does not make the series reference-grade and
