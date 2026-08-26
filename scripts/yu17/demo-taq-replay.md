@@ -5,9 +5,14 @@ check — instead of "this is a random walk seeded at 200". Every price on the e
 real Feb–Mar 2025 print (a 195 s median of regular-hours trades), replayed on a clock anchored to
 the epoch, with its provenance and true timestamp on the wire.
 
-**Display rights, before anything else.** The recorded permission (ADR-070, context) covers *use*.
-A live internal demo is use. **Do not record, stream, or publish demo output showing the prices**
-until ADR-068 open question 1 (display rights) is settled — that question is still open.
+**Display rights, before anything else — and this gates TODAY, not a future widget.** The
+recorded permission (ADR-070, context) covers *use*. A live internal demo is use. But the front
+end is **already displaying licensed data right now**: its ticker consumes the same `pricing.*`
+subject the adapter does, so every equity row on screen has carried real Feb–Mar 2025 prices since
+the replay went live. Until ADR-068 open question 1 (display rights) is settled — escalated to
+yaakov 2026-08-26 as blocking — **no screenshot, recording, stream, or deck capture of any surface
+showing these prices**. Design screenshots and UI work: switch to synthetic first via the revert
+in step 5, which exists for exactly this.
 
 ## Prerequisites
 
