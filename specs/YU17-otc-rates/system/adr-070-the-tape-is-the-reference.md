@@ -287,9 +287,11 @@ outside the suite should expect the same one-time override set on the first clos
 
 ## What this is explicitly NOT
 
-- **Not a market simulator.** The tape drives a *reference*; the book is still made by the orders this
-  system receives. Replayed prints are never injected as trades, and the resampled series is never
-  presented as depth.
+- **Not a market simulator.** The tape drives a *reference*, and the resampled series is never
+  presented as depth. **The clause forbidding injected prints was REVERSED 2026-08-26 by
+  [ADR-072](adr-072-replayed-prints-become-order-flow.md)** — replayed prints may now enter as order
+  flow, sampled and with a tick-rule side. The rest of this bullet stands: replayed orders do not set
+  the collar's reference, and a replayed print that breaches the collar is rejected.
 - **Not a TCA or VWAP source.** The store holds unfiltered prints. Any volume-weighted number computed
   from it is not reference-grade and must not be described as one — a constraint on what we assert,
   independent of this ADR.
