@@ -198,6 +198,67 @@ books carrying a `mark`", and ADR-051 stamps the mark from a market-data *tick* 
 crosses — so every seeded option, Treasury and corporate reports one whether it has ever traded or
 not. It read 66 of 66 on a rig minutes old. Resting depth discriminates; the mark does not.
 
+## What it actually cost the proof suite: eleven readings, not four counters
+
+The section above says the attribution counter is four counters and not one. **The first full suite
+run with the replay live found that the four counters were the easy half.** Eleven readings across
+ten proofs stopped being about the thing they named, and every one of them had been correct when it
+was written. The suite went **27 passed / 3 skipped / 11 failed** on the first run and **36 / 2 / 3**
+once these were repaired.
+
+They fall into two shapes, and neither was ever repaired by widening a tolerance:
+
+**1. A global counter or gauge read as a delta, an absolute, or a stillness.** The four counters
+this ADR names are only the ones `lib-consensus-readings.sh` already owned. The suite was also
+reading `traderx_book_open_orders` (three proofs), `queueDepth` (two), an orphan count, a venue-wide
+book digest compared **across time**, two members' reindexes compared for **equality**, and a
+gateway in-flight depth sampled once. The repairs are the same three moves every time: read an
+operator-scoped counter, measure a bracket instead of an equality, or assert the **identity** of the
+thing itself — an order's own `CANCELED` row, a probe id named and then not named, a book's own
+`tickPx`.
+
+**Two of these had a private copy of a reading the library exists to be the only source of** —
+`yu13-readmodel-effect-end` and `yu17-keyed-ack-correlation`, a seventh and eighth dependent file
+beyond the six this ADR lists. They were missed because the audit after the *feed adapter* swept for
+`applied`, and by then the proofs had already retreated to the counter this change breaks. **The
+lesson generalises exactly as this ADR predicted, and it generalises to the audit too:** sweep for
+the reading the proofs have retreated *to*, not the one they retreated *from*.
+
+**2. An operator order left resting on a replayed book.** This one no counter can fix, and it is
+worth stating plainly: the trade counter is scoped **per leg, by the account of the leg**, so when
+the replay crosses an operator's resting order the operator's leg is genuinely the operator's. The
+counter is right and the exact-delta reading is disturbed anyway. `yu17-retick-determinism` read
+"trades moved by 3, expected 2" on a scenario whose own orders were on a freshly minted ticker and
+were entirely correct — the extra leg was a **fixture-seeder order left resting on NVDA**, filled by
+the tape at an unrelated moment. The remedy is hygiene, not accounting: `seed-proof-fixtures.sh`
+sweeps every demo account's resting orders before each proof, and the rule is recorded where the
+next proof author will meet it.
+
+### Two proofs pause the replay, and the distinction matters
+
+`yu16-ready-tracks-commit` needs a window in which **nothing commits** — that gap is its entire
+content — and `yu13-stp-and-replace` rolls the members onto **yu15-era builds that export no
+operator-scoped counter at all**. Neither can be repaired by a better reading, because both need the
+*absence* of something a continuous writer denies. They scale `price-publisher` to zero for the
+scoped step and restore it on every exit path, the same way one of them already removes quorum and
+the other already removes the current engine.
+
+**That is not the general escape hatch, and the record should not be read as licensing one.** Nine
+of the eleven repairs kept the replay running, which is the whole point: *a green suite that only
+passes because the replay happens to be off is not a green suite.*
+
+### And the trap this ADR's own proof walked into
+
+`yu17-replay-attribution` mints its own ticker and **crosses** on it — that is its anti-vacuity arm,
+four of its own orders and four trade legs inside the live replay. A net-zero position in an
+instrument no EOD universe will ever price halts that account's P&L, and the failure surfaces **a
+full suite later** in `yu15-risk-extract` as "an unpriced holding blocks its P&L". The seeder's
+throwaway-prefix list documents this trap at length and had already fallen behind by nine prefixes
+once; adding a crossing proof without adding its prefix is exactly how it falls behind. Measured
+cleanly: the run in which this proof first PASSED is the run after which `yu15-risk-extract`
+reported `halted=2`. The two runs before it were clean only because the proof had failed before
+reaching its crossing step.
+
 ## Related
 
 - [ADR-070](adr-070-the-tape-is-the-reference.md) — the tape as reference; this lifts one of its
