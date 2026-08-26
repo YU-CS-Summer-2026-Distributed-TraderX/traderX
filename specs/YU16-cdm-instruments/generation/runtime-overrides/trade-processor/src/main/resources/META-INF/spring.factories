@@ -1,0 +1,5 @@
+# Renders the ddl-auto=validate startup failure as an actionable message (see
+# SchemaValidationFailureAnalyzer). FailureAnalyzers are still registered via spring.factories in
+# Spring Boot 3.x - only auto-configurations moved to AutoConfiguration.imports.
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+finos.traderx.tradeprocessor.SchemaValidationFailureAnalyzer
