@@ -27,7 +27,10 @@ SYMBOLS="${SYMBOLS:-AAPL,MSFT,AMZN,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
 mkdir -p "${WORK}/rows"
-SYMLIST="'${SYMBOLS//,/\',\'}'"
+# sed, not ${var//,/\',\'}: inside double quotes that substitution keeps the backslashes, the SQL
+# gets 'AAPL\',\'MSFT\'…, BigQuery parses \' as an escaped quote, the IN list matches nothing and
+# the export is 21 header-only files — which the assembler refuses loudly (measured 2026-08-26).
+SYMLIST="'$(printf '%s' "${SYMBOLS}" | sed "s/,/','/g")'"
 
 cat > "${WORK}/def.json" <<'EOF'
 {"sourceFormat":"PARQUET",
@@ -39,6 +42,12 @@ EOF
 # Exact median (PERCENTILE_CONT, midpoint on even counts — the same statistic pandas' median
 # gives), regular hours only, one row per (symbol, day, window). `ts` is ET wall-clock tz-naive
 # in the store, so the 09:30/16:00 bounds compare in the same naive space.
+#
+# ROUND TO 3dp, NOT 4 — the venue's price grid. The equity book's tickPx is 1000 ($0.001), and
+# every proof fixture derives its order prices FROM the published reference, so a 4dp median
+# makes the venue refuse the fixture's own hold order INVALID (measured 2026-08-26: seed-proof-
+# fixtures held AAPL at 229.8112, off-grid, and the whole suite ran against a partly-seeded rig).
+# 3dp matches Px.SCALE's edge rounding and round3 everywhere else in the publisher.
 cat > "${WORK}/resample.sql" <<EOF
 EXPORT DATA OPTIONS(
   uri='${ROWS_URI}/win-*.csv',
@@ -47,7 +56,7 @@ SELECT DISTINCT
   symbol, dt,
   DIV(TIMESTAMP_DIFF(ts, TIMESTAMP(CONCAT(dt, ' 09:30:00')), SECOND), ${WINDOW}) AS win,
   ROUND(PERCENTILE_CONT(price, 0.5) OVER (PARTITION BY symbol, dt,
-    DIV(TIMESTAMP_DIFF(ts, TIMESTAMP(CONCAT(dt, ' 09:30:00')), SECOND), ${WINDOW})), 4) AS median_price
+    DIV(TIMESTAMP_DIFF(ts, TIMESTAMP(CONCAT(dt, ' 09:30:00')), SECOND), ${WINDOW})), 3) AS median_price
 FROM taq
 WHERE event_type = 'trade'
   AND symbol IN (${SYMLIST})
