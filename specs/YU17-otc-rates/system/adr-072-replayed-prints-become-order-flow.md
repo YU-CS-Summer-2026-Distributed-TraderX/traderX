@@ -2,8 +2,9 @@
 
 ## Status
 
-**Accepted** (2026-08-26) by yaakov, after being shown what it costs. **Not implemented.** Intended as
-its own state.
+**Accepted** (2026-08-26) by yaakov, after being shown what it costs. **Implemented on YU17
+2026-08-26**, on `traderx/cluster-node:yu17-adr072` + `price-publisher:yu17-replay`, at snapshot
+format 9 on a fresh epoch. Intended as its own state.
 
 **This reverses a decision, and says so rather than quietly contradicting it.**
 [ADR-070](adr-070-the-tape-is-the-reference.md) states under *What this is explicitly NOT*:
@@ -133,6 +134,69 @@ accounts rather than sharing the demo ones.
 **One-for-one reproducibility is lost unless the sample is deterministic.** Two runs from the same
 epoch should produce the same orders; that argues for deriving the sample from the tape position
 rather than from a random draw, in the same spirit as ADR-070's stateless clock.
+
+
+## What the implementation is, in one paragraph
+
+`price-publisher` gains `print-replay.js` beside `taq-replay.js` — the same process, deliberately,
+because position comes from `taqReplay.positionAt()` and a second derivation of
+`(now − epochStart) × compression` would be a second clock that could put the order flow at a
+different tape instant from the reference. At bring-up it reads a **sampled-print extract** (~777 KB
+gzipped: 23 symbols × 40 days × 120 windows × **4 real prints per window**, chosen at evenly spaced
+*ranks* within each window so a quiet window is sampled as thoroughly as a busy one) out of a
+`taq-print-sample` Secret that `start-cluster-kind.sh` fetches from the same
+`gs://traderx-501015-tick-store/replay/` prefix as the median extract — so ADR-068's durability rule
+is untouched and the revert is deleting a Secret. The builder,
+`scripts/yu17/build-taq-print-sample.{sh,py}`, reads its universe **out of the median extract itself**
+rather than from a second copy of a symbol list, because a symbol sampled but not referenced would put
+real prices into a book whose collar is anchored by the synthetic walk; `print-replay.js` refuses the
+pair at runtime on the same grounds and says so on `/health.printReplay`. Every order is a pure
+function of (symbol, absolute tape slot): the price is the print, the side is the tick rule over the
+*strided* series, the account rotates so consecutive slots in one symbol never self-trade, and the
+`clientOrderId` is `taq-<SYMBOL>-<slot>` — which makes each submitted order self-identifying against
+the tape and gives free idempotency on a retry. Symbols are staggered across each slot's duration, so
+one print per window across a wide universe is a smooth rate rather than a burst every fifteen
+seconds. Members gain four operator-scoped counters and **snapshot format 9**;
+`scripts/proofs/yu17-replay-attribution.sh` and `ReplayFlowAttributionTest` are the two halves of the
+library's admission test.
+
+## Measured on the way in (2026-08-26), because none of it was foreseeable on paper
+
+**The transport ceiling is a RATE, not a universe size**, and that is not obvious: prints =
+symbols × days × windows × slots, and slots is chosen as rate × window / (symbols × compression), so
+the symbol count *cancels* and the artifact is `rate × 72,000` prints at 40 days. Widening the
+universe costs nothing; raising the order rate is what costs. Measured against the 1 MiB Secret cap
+at 1.62 bytes/print gzipped: 12.3/s = 1.43 MB (refused), 26.7/s = 2.87 MB (refused), 6.1/s = 777 KB
+(ships). Delta+varint encoding measured 1.11 bytes/print and would buy ~11/s; it was not built,
+because 6.1/s is inside the band this ADR asks for.
+
+**Two downstream breaks that the ADR did not anticipate, both found by running it:**
+
+- **`trades.accountid` is a FOREIGN KEY onto `accounts`.** Replayed fills are real trades, so without
+  seeded rows for the replay accounts the trade-processor threw a constraint violation on *every*
+  one and **the blotter stayed empty while the engine traded all day** — the exact opposite of this
+  ADR's stated purpose, and silent unless you read the consumer's logs. Fixed in the DB init
+  configmap, in both the initial-schema and the `900-migrations` halves.
+- **The risk extract refuses an account with no counterparty mapping.** `RiskExtractCsv` throws
+  rather than emit an unmapped row, correctly. The three replay accounts are mapped to
+  `CPTY-TAPE-REPLAY-0{1,2,3}` in `counterparties.csv`, which also makes the replayed exposure
+  *excludable by name* from any consumer of that artifact — the same discipline as the account range
+  itself.
+
+**The collar rejection is not hypothetical.** Within minutes of the first fresh epoch the rig had
+refused replayed prints with `PRICE_COLLAR`, counted by reason on `/health.printReplay`. A real
+February 2025 print that moved further from its window's median than the band allows is refused, and
+that is the band working.
+
+**The demo claim, measured.** This ADR opens on *"3 of 69 books have ever printed, six trades total"*.
+Twenty minutes into the first epoch with the replay live: **23 of 69 books carrying live resting
+depth — every one of them a tape symbol — and 430 trade legs.**
+
+**One reading in the first draft of the proof could never have failed**, and it is worth recording
+because it is this project's recurring shape. "Count books that have printed" was written as "count
+books carrying a `mark`", and ADR-051 stamps the mark from a market-data *tick* until a book first
+crosses — so every seeded option, Treasury and corporate reports one whether it has ever traded or
+not. It read 66 of 66 on a rig minutes old. Resting depth discriminates; the mark does not.
 
 ## Related
 
