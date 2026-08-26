@@ -40,10 +40,12 @@ interface TaqReplay {
         <help-tip [text]="tip()" />
       </div>
     } @else if (state() === 'synthetic') {
+      <!-- A state word, not a sentence. Mid-demo this is read at a glance or not at all, and an
+           explanation of what synthetic MEANS is rationale — it belongs in this comment. The chips
+           on each row already say where any individual price came from. -->
       <div class="clock">
         <span class="pill">SYNTHETIC</span>
-        <span class="when">no tape loaded — prices are generated</span>
-        <help-tip text="The replay extract is absent, so the publisher is generating prices rather than replaying a recorded session. Nothing is wrong; it is the honest fallback and the tick provenance says so per row." />
+        <span class="when">no tape loaded</span>
       </div>
     } @else if (state() === 'error') {
       <div class="clock bad">
