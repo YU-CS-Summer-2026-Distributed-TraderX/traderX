@@ -78,7 +78,13 @@ CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K=(kubectl --context "${CTX}" -n "${NS}")
 EXPECT="${EXPECT:-after}"
-EQ_CTL="${EQ_CTL:-AAPL}"
+# GOOGL, not AAPL, since ADR-070: a TAPE symbol's `source`/`price` flip to taq-replay-2025-02 on
+# its first published tick, so the previous-close provenance this proof asserts survives only on
+# an equity the replay excludes. GOOGL is exactly that (suffix-merged root, deliberately kept on
+# the walk) and it bootstraps from the prior close precisely as before. The openPrice half of the
+# assertion never cared — replay moves price/source/asOf and leaves the bootstrap witness alone —
+# but the wire-provenance half does.
+EQ_CTL="${EQ_CTL:-GOOGL}"
 UST_CTL="${UST_CTL:-UST-20280630}"
 DB_DEPLOY="${DB_DEPLOY:-eod-price-db}"
 # The two markers. Nothing else in this system writes either.
