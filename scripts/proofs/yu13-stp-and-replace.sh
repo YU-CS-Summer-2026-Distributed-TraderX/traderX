@@ -300,7 +300,39 @@ restore_gateway() {
     || echo "[warn] gateway did not settle on ${GW_ORIGINAL_IMAGE} -- check it before running other proofs"
   return 0
 }
-trap 'restore_image; restore_gateway' EXIT
+# ADR-072: PAUSE THE TAPE REPLAY FOR THE WHOLE PROOF, and this one is not a judgement call.
+#
+# This proof rolls the members onto builds that PREDATE the attribution mechanism entirely: a
+# yu15-era engine has no operator-scoped counters, so there is no reading on it that can separate
+# this proof's two orders from a continuous external order writer. It reads the global trade
+# counter because on those builds that is the only counter there is. Measured 2026-08-26 with the
+# replay live: "members did not all book the 2-sided wash trade within 60s: [908 908 908] (want +2
+# on each of [458 458 458])" — 450 replayed legs inside a 60s window, on a boundary demonstration
+# that was working exactly as designed.
+#
+# So the confounding writer is removed for the duration, the same way this proof already removes
+# the CURRENT engine by rolling to the boundary image. It is restored on every exit path.
+REPLAY_PAUSED=0
+pause_replay() {
+  ${K} get deploy price-publisher >/dev/null 2>&1 || return 0
+  ${K} scale deploy price-publisher --replicas=0 >/dev/null \
+    || { echo "[fail] could not pause the tape replay; its order flow would swamp the +2 wash-trade"; exit 1; }
+  ${K} wait --for=delete pod -l app=price-publisher --timeout=120s >/dev/null 2>&1
+  REPLAY_PAUSED=1
+  echo "[replay] price-publisher scaled to 0 for the boundary demonstration (yu15-era builds export"
+  echo "         no operator-scoped counter, so its flow cannot be excluded from a reading)"
+}
+restore_replay() {
+  [[ "${REPLAY_PAUSED}" == "1" ]] || return 0
+  REPLAY_PAUSED=0
+  ${K} scale deploy price-publisher --replicas=1 >/dev/null 2>&1
+  ${K} rollout status deploy/price-publisher --timeout=300s >/dev/null 2>&1 \
+    && echo "[replay] price-publisher restored" \
+    || echo "[replay] WARNING: price-publisher did not come back — this rig has no feed and no replay"
+  return 0
+}
+trap 'restore_image; restore_gateway; restore_replay' EXIT
+pause_replay
 
 # A SNAPSHOT BARRIER IS PART OF THE ROLLING PROCEDURE, not a convenience.
 #

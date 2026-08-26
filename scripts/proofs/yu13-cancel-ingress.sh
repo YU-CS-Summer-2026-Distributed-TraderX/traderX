@@ -31,6 +31,10 @@ vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 CTX="${CTX:-kind-traderx-yu12-cluster}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+# Sourced for quiesced_order_refs — the ONLY place a proof may get a consensus reading from, and
+# since ADR-072 the only kind that survives a live external order writer. Resolves `fail` and `K`
+# at call time.
+_here="$(cd "$(dirname "$0")" && pwd)"; . "${_here}/lib-consensus-readings.sh"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18110}"
 # Whether the operator NAMED a pre-image, captured before the default eats the distinction. It
 # decides whether a missing image is a precondition or an error: an ambient default that has been
@@ -511,6 +515,7 @@ UNKNOWN="$(cancel 999999999)"
 [[ "${UNKNOWN}" == 404*'"kind":8'* ]] || fail "cancel-of-unknown should be 404 kind=8, got: ${UNKNOWN}"
 echo "  unknown ref            -> ${UNKNOWN}"
 
+CANCEL_REFS="$(quiesced_order_refs)"
 FENCE="$(cancel 0)"
 [[ "${FENCE}" == 404* ]] || fail "cancel of reserved fence ref 0 should be 404, got: ${FENCE}"
 echo "  reserved fence ref 0   -> ${FENCE}"
@@ -520,9 +525,22 @@ REPEAT="$(cancel "${PRE_REF}")"
   || fail "a repeated cancel should be idempotent (200), got: ${REPEAT}"
 echo "  repeated cancel        -> ${REPEAT}  (idempotent: the engine re-publishes a terminal order)"
 
-REPEAT_DIGEST="$(digest_consensus)"
-[[ "${REPEAT_DIGEST}" == "${AFTER_FIX}" ]] \
-  || fail "a repeated cancel changed the book: ${AFTER_FIX} -> ${REPEAT_DIGEST}"
+# THE ORDER-REF GENERATOR, NOT THE BOOK DIGEST. "The repeated cancel changed nothing" was read as
+# a venue-wide book hash holding still, which since ADR-072 it never does: the tape replay rests and
+# fills orders continuously and the hash moves between any two reads. Measured 2026-08-26,
+# 451 -643295848204933230 -> 451 3414254060097556203 -- the same open-order COUNT, a different
+# hash, on a repeated cancel that was perfectly idempotent.
+#
+# What "changed nothing" has to mean for a CANCEL is that it created no order and moved no order of
+# ours. The operator ref counter says the first (a cancel must never consume a ref) and it is a
+# reading the replay cannot move; the order's own status says the second.
+REPEAT_REFS="$(quiesced_order_refs)"
+[[ "${REPEAT_REFS}" == "${CANCEL_REFS}" ]] \
+  || fail "a repeated cancel moved the order-ref generator ${CANCEL_REFS} -> ${REPEAT_REFS}. A
+  cancel is not order-shaped and must consume nothing; re-sequencing one as a new order would break
+  cross-epoch ref monotonicity and every client's ack correlation."
+[[ "$(printf '%s' "${REPEAT}" | grep -c '"canceled":true')" == "1" ]] \
+  || fail "the repeated cancel did not re-publish the terminal order: ${REPEAT}"
 echo "[ok] none of the three moved the book; all three members still agree"
 
 step "6. the epoch survived — this was a gateway-only change"

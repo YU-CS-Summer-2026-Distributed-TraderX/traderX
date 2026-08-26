@@ -140,7 +140,7 @@ if [[ -z "${REAPED0}" ]]; then
   KEYED=0; REAPED0=0
 fi
 [[ "${REAPED0}" =~ ^[0-9]+$ ]] || fail "unreadable reaped baseline: '${REAPED0}'"
-echo "  ok: quiet at ref ${REF0}, open ${OPEN0}; gateway restarts=${RESTARTS0} ups=${UPS0} reaped=${REAPED0}"
+echo "  ok: quiet at operator ref ${REF0}; gateway restarts=${RESTARTS0} ups=${UPS0} reaped=${REAPED0}"
 
 # ---------------------------------------------------------------------------------------------
 step "1. induce a strand: staggered stream, leader killed mid-stream (retried if nothing strands)"
@@ -191,10 +191,24 @@ step "2. THE PER-ITEM CLAIM: every answered client was told ITS OWN ref (engine 
 # originals (oracle precondition: the re-emit is guarded on RESTING).
 sleep "${REAP_WINDOW_S}"
 ANSWERED=0; CHECKED=0; MISATTRIBUTED=0
-OPEN_NOW="$(agreed traderx_book_open_orders)"
-BOOKED=$((OPEN_NOW - OPEN0))
-echo "  book holds ${BOOKED} new resting orders for this run (open ${OPEN0} -> ${OPEN_NOW})"
-[[ ${BOOKED} -gt 0 ]] || fail "no orders rested — the oracle would have nothing to answer and this proof would be vacuous"
+# THIS RUN'S OWN RESTING ORDERS, counted on the ticker this run minted. It used to be a delta on
+# the venue-wide traderx_book_open_orders, which since ADR-072 moves for the tape replay's own
+# resting and filling all day and never settles for `agreed` to converge on. The precondition was
+# always about THIS proof's orders -- the oracle has nothing to answer without them -- and the
+# minted ticker makes that directly countable.
+BOOKED="$(${K} exec deploy/trade-processor -- \
+  wget -qO- "http://localhost:18091/accounts/${ACCT}/orders" 2>/dev/null \
+  | python3 -c "
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+print(sum(1 for r in rows if r.get('security') == '${TICKER}'))" 2>/dev/null)"
+echo "  book holds ${BOOKED:-?} resting order(s) for this run on ${TICKER}"
+[[ "${BOOKED}" =~ ^[0-9]+$ && ${BOOKED} -gt 0 ]] \
+  || fail "no orders rested on ${TICKER} — the oracle would have nothing to answer and this proof
+  would be vacuous"
 for f in "${WORK}"/kac-$$-*.res; do
   code="$(awk '{print $1}' "$f")"; body="$(cut -d' ' -f2- "$f")"
   [[ "${code}" == "200" ]] || continue
@@ -221,10 +235,22 @@ echo "  ok: ${CHECKED}/${CHECKED} answered clients verified against the engine's
 
 # ---------------------------------------------------------------------------------------------
 step "3. the mechanism reading: depth returned to 0 WITHOUT a reconnect (sweep, not drain)"
-DEPTH="$(gw_metric 'traderx_gateway_inflight_orders')"
+# OBSERVED AT ZERO, not zero at one instant. The gateway is no longer idle after the reap window:
+# ADR-072's replay submits through it continuously, so a single sample legitimately catches an
+# in-flight order and reads 1. What a STRAND looks like is different in kind -- the depth never
+# returns to zero at all -- so the discriminating reading is whether zero is ever observed.
+DEPTH=""
+for _ in $(seq 1 30); do
+  DEPTH="$(gw_metric 'traderx_gateway_inflight_orders')"
+  [[ "${DEPTH}" == "0" ]] && break
+  sleep 1
+done
 [[ "${DEPTH}" =~ ^[0-9]+$ ]] || fail "unreadable in-flight depth: '${DEPTH}'"
 [[ "${DEPTH}" == "0" ]] \
-  || fail "in-flight depth is ${DEPTH} after ${REAP_WINDOW_S}s idle — a persisting depth is a stranded window (the positional defect's deterministic signature)"
+  || fail "in-flight depth never reached 0 in 30s after the ${REAP_WINDOW_S}s reap window (last
+  reading ${DEPTH}) — a depth that never returns to zero is a stranded window (the positional
+  defect's deterministic signature), which is different in kind from a sample that caught one of
+  the replay's orders in flight"
 RESTARTS1="$(${K} get pod "${GW_POD}" -o jsonpath='{.status.containerStatuses[0].restartCount}')"
 UPS1="$(${K} logs "${GW_POD}" 2>/dev/null | grep -c '^GATEWAY up' || true)"
 [[ "${RESTARTS1}" == "${RESTARTS0}" && "${UPS1}" == "${UPS0}" ]] \
