@@ -86,6 +86,9 @@ const state = {
   slotPos: null,
   submitted: 0,
   accepted: 0,
+  // Wall-clock of the last self-heal, so a rejection storm re-enables once rather than per order.
+  lastEnableMs: 0,
+  reEnabled: 0,
   rejected: 0,
   skipped: 0,
   failed: 0,
@@ -319,6 +322,7 @@ async function gatewayPost(path, body, headers) {
  *  depend on the proof-rig seeder having run, and so a fresh epoch replays without a human. None
  *  of these are order-shaped, so none of them move any counter a proof brackets its work with. */
 async function enable() {
+  state.lastEnableMs = Date.now();
   const headers = { 'X-Risk-Control-Token': RISK_TOKEN, 'X-Risk-Operator': 'print-replay' };
   const problems = [];
   for (const accountId of ACCOUNTS) {
@@ -364,6 +368,27 @@ async function submit(order) {
   // is the band doing its job against a real print that moved too far from the tape median.
   const reason = (r.body && (r.body.reason || r.body.error)) || `HTTP ${r.status}`;
   state.byReason[reason] = (state.byReason[reason] || 0) + 1;
+  // ...but UNKNOWN_ACCOUNT and ACCOUNT_DISABLED are not a demonstration of anything. They mean the
+  // enablement this module sequenced at startup is GONE, and there is exactly one routine way for
+  // that to happen: a FRESH EPOCH. The mint wipes the PVCs, so the account-control commands are no
+  // longer in the log, and until something re-issues them every replayed order is refused.
+  //
+  // Measured 2026-08-26 on the first suite run: 228 UNKNOWN_ACCOUNT rejections across the mint,
+  // and the replay only recovered because rebuild_fresh_epoch happens to roll the publisher for
+  // the replay-epoch stamp. Depending on that is depending on a side effect of a different
+  // procedure — an operator who mints by hand would get a rig whose blotter never moves again,
+  // with no error on /health because nothing here failed. So: heal, and count the healing, so the
+  // reading distinguishes "the rig was re-minted" from "something is refusing us".
+  if (reason === 'UNKNOWN_ACCOUNT' || reason === 'ACCOUNT_DISABLED') {
+    const now = Date.now();
+    if (now - state.lastEnableMs > 30000) {
+      state.lastEnableMs = now;
+      state.reEnabled++;
+      console.warn(`[print-replay] ${reason}: the epoch no longer knows our accounts (a fresh mint?)`
+        + ' — re-issuing the account and security controls');
+      enable().catch(() => {});
+    }
+  }
 }
 
 /** One tick of the loop: submit whatever the clock says is due. Exported for the tests, which
@@ -455,6 +480,10 @@ function status(taqReplay) {
     rejectedByReason: state.byReason,
     skipped: state.skipped,
     failed: state.failed,
+    // Times the controls had to be re-issued because the epoch stopped knowing these accounts.
+    // Non-zero after a fresh mint is expected and self-healed; non-zero and CLIMBING means
+    // something is refusing the control path itself.
+    reEnabled: state.reEnabled,
     slotPos: state.slotPos === null ? null : Math.floor(state.slotPos),
     lastOrder: state.lastOrder
   };

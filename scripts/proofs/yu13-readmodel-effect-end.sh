@@ -25,7 +25,7 @@ set -euo pipefail
 
 VERBOSE=0
 case "${1:-}" in -v|--verbose) VERBOSE=1; shift ;; esac
-# STDERR: order(), cancel(), rest_orders(), refs_all() and sql() are all captured with $(...), so a
+# STDERR: order(), cancel(), rest_orders() and sql() are all captured with $(...), so a
 # verbose line on stdout would be parsed as a body, a status code or a counter value.
 vlog() { [ "${VERBOSE}" = 1 ] && printf '%s\n' "$@" >&2 || true; }
 
@@ -38,6 +38,9 @@ TICKER="${TICKER:-RM$(date +%H%M%S)}"
 PRICE="${PRICE:-100.00}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
+# Sourced for quiesced_order_refs (see refs_agreed below). Resolves `fail` and `K` at CALL time, so
+# this line may sit above their definitions — `K` is set just above and `fail` on this one.
+here_lib="$(cd "$(dirname "$0")" && pwd)"; . "${here_lib}/lib-consensus-readings.sh"
 step() { echo; echo "=== $* ==="; }
 
 # trade-processor projects into the `database` deploy (NOT eod-price-db, which carries the same
@@ -58,8 +61,6 @@ member_metric() { # member_metric <ordinal> <metric-prefix>
   ${K} exec "order-matcher-cluster-$1" -- \
     sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' | awk -v m="^$2" '$0 ~ m {print $2}'
 }
-refs_all() { local v; for m in 0 1 2; do v="$(member_metric "${m}" traderx_cluster_next_order_ref)"; vlog "      member ${m} next_order_ref=${v}"; printf "%s " "${v}"; done; }
-uniq_one() { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
 book() {
   ${K} exec "order-matcher-cluster-$1" -- \
     sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
@@ -77,16 +78,21 @@ digest_consensus() {
   done
   fail "members never agreed on the book: [${b0}] [${b1}] [${b2}]"
 }
-# refs_agreed -> the single agreed next_order_ref, retried for the same mid-apply reason.
-refs_agreed() {
-  local r i
-  for i in $(seq 1 "${AGREE_TIMEOUT_S:-180}"); do
-    r="$(refs_all)"
-    [[ "$(echo "${r}" | uniq_one)" == "1" ]] && { echo "${r%% *}"; return 0; }
-    sleep 1
-  done
-  fail "members never agreed on next_order_ref: [${r}]"
-}
+# refs_agreed -> the single agreed order-ref count, retried for the same mid-apply reason.
+#
+# IT DELEGATES NOW, and the delegation is the fix rather than tidiness. This file held a PRIVATE
+# copy of the reading `scripts/proofs/lib-consensus-readings.sh` exists to be the only source of,
+# and it read the GLOBAL traderx_cluster_next_order_ref. That was true when written and stopped
+# being true when ADR-072 made the tape replay a continuous writer of order-shaped commands:
+# measured 2026-08-26 on the first suite run with the replay live, this proof's step 4 reported
+# "next_order_ref moved on a cancel: 3502 -> 3515" — thirteen replayed orders in the window,
+# nothing wrong with the cancel, and the assertion correct about the counter and wrong about the
+# world. ADR-072 names six dependent files; this was a seventh, missed because the earlier audit
+# swept for `applied` rather than for the counter the proofs had retreated to.
+#
+# The library's quiesced_order_refs is the same shape (all three members must agree, retried) on
+# the operator-scoped metric, so nothing about this proof's claim changes.
+refs_agreed() { quiesced_order_refs; }
 
 # The script owns its port-forward — a dead tunnel must not be mistakable for a missing feature.
 PF_PID=""

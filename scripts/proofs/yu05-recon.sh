@@ -103,19 +103,56 @@ else
 fi
 
 # ---- 2. cross-member: the answer is a function of the LOG, not of one pod ---------------------
-# Two members replay their own archive independently. Equal counts mean the index is derived from
-# replicated state; a difference means one of them is not reading what it committed.
+# Two members replay their own archive independently. The claim is that the index is derived from
+# replicated state rather than from whatever one pod happens to hold.
+#
+# IT USED TO BE AN EQUALITY, AND THAT WAS ONLY EVER TRUE ON A QUIET LOG. Each reindex replays that
+# member's archive UP TO NOW, so two reindexes taken seconds apart legitimately cover different
+# prefixes of a log that is still growing. Before ADR-072 the only writer was the price feed, which
+# books no trades, so the trade population happened to hold still between the two calls and the
+# equality passed for a reason that had nothing to do with cross-member determinism. Since the tape
+# replay became an order writer it does not hold still: measured 2026-08-26 on the first suite run
+# with the replay live, 608 vs 624, on a cluster in perfect agreement — the check accusing the
+# members of a divergence that the same numbers disprove.
+#
+# THE REPAIR IS A BRACKET, NOT A TOLERANCE. Reindex member 0, then member 1, then member 0 AGAIN.
+# Member 0's two readings bound exactly the growth the log took while member 1 was replaying, so
+# member 1 must land inside them — on BOTH the trade count and the consensus position it replayed
+# to. The interval is measured, not chosen, and it collapses to the old equality the moment nothing
+# is writing. A member replaying a stale or divergent archive falls outside it, and the SEQUENCE
+# half is what catches the case the count could hide: a member that stopped following the log
+# reports a lower replayedAppliedSeq no matter how many trades it happens to have indexed.
 member_reindex(){ $K exec "order-matcher-cluster-$1" -- sh -c \
   "wget -qO- --post-data='' --header='Authorization: Bearer $ADMIN' \
-   http://localhost:8080/recon/full-history/reindex" 2>/dev/null | jfield "d['indexedTrades']"; }
-M0=$(num "$(member_reindex 0)"); M1=$(num "$(member_reindex 1)")
-say "member 0 / member 1 index" "${M0:-?} / ${M1:-?}"
-if [ -z "$M0" ] || [ -z "$M1" ]; then
+   http://localhost:8080/recon/full-history/reindex" 2>/dev/null \
+  | jfield "str(d['indexedTrades']) + ' ' + str(d['replayedAppliedSeq'])"; }
+read -r M0A S0A <<EOF
+$(member_reindex 0)
+EOF
+read -r M1 S1 <<EOF
+$(member_reindex 1)
+EOF
+read -r M0B S0B <<EOF
+$(member_reindex 0)
+EOF
+say "member 0 index / seq" "${M0A:-?} .. ${M0B:-?} / ${S0A:-?} .. ${S0B:-?}"
+say "member 1 index / seq" "${M1:-?} / ${S1:-?}"
+if [ -z "$M0A" ] || [ -z "$M1" ] || [ -z "$M0B" ] || [ -z "$S0A" ] || [ -z "$S1" ] || [ -z "$S0B" ]; then
   bad "could not read a per-member reindex — cross-member determinism unproven"
-elif [ "$M0" != "$M1" ]; then
-  bad "members disagree on the replayed history ($M0 vs $M1) — the index is not a function of the log"
+elif [ "$M0A" -gt "$M0B" ] || [ "$S0A" -gt "$S0B" ]; then
+  # One member's own readings must be monotone; if they are not, the bracket below is meaningless
+  # and the member is the thing that is wrong.
+  bad "member 0 went BACKWARDS between its own two reindexes ($M0A->$M0B trades, $S0A->$S0B seq)
+     — the log does not shrink, so this is the member losing history, not the bracket being loose"
+elif [ "$S1" -lt "$S0A" ] || [ "$S1" -gt "$S0B" ]; then
+  bad "member 1 replayed to consensus position $S1, outside the [$S0A, $S0B] member 0 bracketed it
+     with — it is not following the same log"
+elif [ "$M1" -lt "$M0A" ] || [ "$M1" -gt "$M0B" ]; then
+  bad "members disagree on the replayed history: member 1 indexed $M1 trades from a log member 0
+     bracketed at [$M0A, $M0B] over the same window — the index is not a function of the log"
 else
-  echo "   → both members replay their own archive to the same history ✔"
+  echo "   → both members replay their own archive to the same history ✔ (member 1 inside member"
+  echo "     0's own [$M0A, $M0B] bracket, at consensus position $S1 in [$S0A, $S0B])"
 fi
 
 # ---- 3. the forward sweep: trade-processor classifying the log against its projection ---------
@@ -311,14 +348,24 @@ else
   # The real property is that the sweep can TELL a journal-backed row from one without provenance,
   # and that is what the delta test below proves. This number is the baseline it measures against.
   BASELINE="$ORPHANS"
+  BASE_IDS=$(printf '%s' "$OS" | jfield "', '.join(d['orphanIds'])")
   if [ "$ORPHANS" -eq 0 ]; then
     echo "   → all $LOCAL projection rows have a journal fill behind them ✔"
   else
     echo "   → baseline: $ORPHANS projection row(s) with no journal fill — expected on a seeded rig"
-    echo "     $(printf '%s' "$OS" | jfield "', '.join(d['orphanIds'])")"
+    echo "     ${BASE_IDS}"
+  fi
+  # A sweep that flags EVERY row is not a sweep, and no count-delta test below can tell the
+  # difference: planting one more row into a set that is already entirely orphaned still moves the
+  # count by one. This is the guard that says the sweep discriminates at all, and it is a
+  # comparison between two things the sweep itself reports rather than a threshold.
+  if [ "$ORPHANS" -ge "$LOCAL" ]; then
+    bad "the sweep called all $LOCAL projection row(s) orphans — it is not distinguishing anything,
+     and the planted-probe test below would pass against it"
   fi
 fi
 BASELINE="${BASELINE:-0}"
+BASE_IDS="${BASE_IDS:-}"
 
 # ---- 5. positive control: can the sweep detect an orphan at all? ------------------------------
 # Without this, orphan_in_projection=0 is indistinguishable from a check that does nothing — the
@@ -343,9 +390,28 @@ say "orphan_in_projection"        "${ORPHANS2:-?} (baseline ${BASELINE} + 1 expe
 # detection. The previous form required the count to equal 1 and the id list to equal the probe
 # exactly, which is only true on a rig holding no seed rows -- it failed here while printing the
 # probe among the flagged ids, accusing the sweep of a defect the same line disproved.
-case "$IDS2" in *"$PROBE"*) NAMED=1 ;; *) NAMED=0 ;; esac
-if [ "${ORPHANS2:-0}" -ne "$((BASELINE + 1))" ] || [ "$NAMED" -ne 1 ]; then
-  bad "the planted row was NOT detected (count=${ORPHANS2:-?}, expected $((BASELINE + 1)); named=${NAMED})"
+# THE VERDICT IS THE PROBE'S IDENTITY, IN THREE PHASES, AND NOT THE COUNT.
+#
+# It used to be the count: baseline, then baseline+1, then back to baseline. That assumed the
+# orphan population is STABLE between three sweeps, and since ADR-072 it is not — replayed order
+# flow books trades continuously, the bridge writes their projection rows, and a row whose journal
+# fill the freshly-built index has not yet reached is an orphan by definition. Measured 2026-08-26
+# on the first suite run with the replay live: baseline 2, probe 3 (correct), cleanup 4. The sweep
+# was working perfectly and the arithmetic accused it of a defect. This is the same class the
+# comment above records — the count moving for an unrelated reason — arriving from a new writer,
+# and widening the count to a tolerance would have deleted the check rather than repaired it.
+#
+# absent -> planted and NAMED -> removed and absent is the whole claim, it is what "the sweep can
+# tell a journal-backed row from one without provenance" actually means, and no amount of
+# concurrent drift can satisfy it by accident. The counts stay on screen as information.
+case "$BASE_IDS" in *"$PROBE"*) PRESENT0=1 ;; *) PRESENT0=0 ;; esac
+case "$IDS2"     in *"$PROBE"*) NAMED=1 ;;    *) NAMED=0 ;; esac
+if [ "$PRESENT0" -ne 0 ]; then
+  bad "$PROBE was ALREADY named an orphan before this run planted it — a previous run leaked its
+     probe row, so the detection below would pass without detecting anything. Clean it up:
+     DELETE FROM trades WHERE id='$PROBE';"
+elif [ "$NAMED" -ne 1 ]; then
+  bad "the planted row was NOT detected (count=${ORPHANS2:-?}, baseline ${BASELINE})"
   echo "     ids=${IDS2:-none} — the baseline above meant nothing: the sweep cannot tell a"
   echo "     journal-backed row from one without provenance."
 else
@@ -354,11 +420,14 @@ fi
 cleanup; trap - EXIT
 OS3=$(sweep)
 ORPHANS3=$(num "$(printf '%s' "$OS3" | jfield "d['orphanCount']")")
-say "after removing the probe"    "${ORPHANS3:-?} (baseline ${BASELINE} expected)"
-# Back to baseline, not to zero. This half is what proves the +1 was caused by the probe rather
-# than by drift that happened to coincide with it.
-[ "${ORPHANS3:-$((BASELINE + 1))}" -ne "$BASELINE" ] \
-  && bad "orphans did not return to the baseline of ${BASELINE} after cleanup (got ${ORPHANS3:-?})"
+IDS3=$(printf '%s' "$OS3" | jfield "', '.join(d['orphanIds'])")
+say "after removing the probe"    "${ORPHANS3:-?} (baseline was ${BASELINE}; it drifts under live flow)"
+# The third phase, and the half that proves the naming above was caused by the probe rather than by
+# drift that happened to coincide with it: the id the sweep named is gone once the row is gone.
+case "$IDS3" in
+  *"$PROBE"*) bad "$PROBE is STILL named an orphan after its projection row was deleted — the sweep
+     is not reading the projection it claims to sweep, so the detection above proved nothing" ;;
+esac
 
 echo
 if [ "$FAIL" -eq 0 ]; then

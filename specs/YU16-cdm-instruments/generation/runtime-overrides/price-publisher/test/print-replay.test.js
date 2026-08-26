@@ -320,6 +320,73 @@ test('a stalled poll is capped rather than discharged as a burst', async () => {
   assert.ok(m.state.skipped > 0, 'the skipped slots were not counted, so the gap is invisible');
 });
 
+test('UNKNOWN_ACCOUNT re-issues the controls once — a fresh epoch must not silence the replay', async () => {
+  // The only routine way the accounts stop existing is a fresh-epoch mint, which wipes the PVCs
+  // and with them the account-control commands this module sequenced at startup. Nothing here
+  // FAILS when that happens — every order is simply refused — so without the self-heal the rig
+  // comes back with a blotter that never moves and a /health block reporting no error at all.
+  writeSample(flatSample(() => 100000));
+  delete require.cache[require.resolve('../src/print-replay')];
+  const m = require('../src/print-replay');
+  const controls = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/risk/control')) {
+      controls.push(String(url));
+      return { status: 200, json: async () => ({}) };
+    }
+    return { status: 422, json: async () => ({ reason: 'UNKNOWN_ACCOUNT' }) };
+  };
+  let tape = 0;
+  const clock = fakeTaqReplay(() => tape);
+  m.load(clock);
+  m.selectUniverse(clock, SYMS, 0);
+  await m.step(clock, 0);
+  tape = WINDOW;
+  await m.step(clock, 0);
+  assert.ok(m.state.rejected > 0, 'nothing was rejected, so nothing could have healed');
+  assert.strictEqual(m.state.reEnabled, 1, 'the controls must be re-issued exactly once, not once '
+    + 'per refused order — a rejection storm re-enabling per order is its own outage');
+  // The heal is deliberately NOT awaited by submit() — an order path that blocks on a control
+  // round trip is a worse failure than the one being healed — so let it drain before reading it.
+  for (let i = 0; i < 200 && !controls.some((u) => u.endsWith('/risk/control/security')); i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.ok(controls.some((u) => u.endsWith('/risk/control/account')));
+  assert.ok(controls.some((u) => u.endsWith('/risk/control/security')),
+    'the heal must re-issue the SECURITY controls too — a fresh epoch forgets those as well, and '
+    + 'accounts alone leaves every order refused for a different reason');
+  // ...and a second burst inside the window does not re-issue again.
+  tape = WINDOW * 2;
+  await m.step(clock, 0);
+  assert.strictEqual(m.state.reEnabled, 1);
+});
+
+test('a collar rejection does NOT re-issue the controls', async () => {
+  // PRICE_COLLAR is the demonstration, not a fault. Healing on it would hammer the sequenced
+  // control path all day on a rig that is working exactly as ADR-072 says it should.
+  writeSample(flatSample(() => 100000));
+  delete require.cache[require.resolve('../src/print-replay')];
+  const m = require('../src/print-replay');
+  let controls = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes('/risk/control')) {
+      controls++;
+      return { status: 200, json: async () => ({}) };
+    }
+    return { status: 422, json: async () => ({ reason: 'PRICE_COLLAR' }) };
+  };
+  let tape = 0;
+  const clock = fakeTaqReplay(() => tape);
+  m.load(clock);
+  m.selectUniverse(clock, SYMS, 0);
+  await m.step(clock, 0);
+  tape = WINDOW;
+  await m.step(clock, 0);
+  assert.ok(m.state.rejected > 0);
+  assert.strictEqual(m.state.reEnabled, 0);
+  assert.strictEqual(controls, 0);
+});
+
 test('a rejected order is counted by REASON — the collar refusing a print is the demonstration', async () => {
   writeSample(flatSample(() => 100000));
   delete require.cache[require.resolve('../src/print-replay')];
