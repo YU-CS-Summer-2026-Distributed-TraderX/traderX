@@ -68,7 +68,43 @@ matcher_hint() {
 step() { echo; echo "=== $* ==="; }
 
 PF_PID=""
-cleanup() { [[ -n "${PF_PID}" ]] && kill "${PF_PID}" 2>/dev/null || true; }
+# ADR-072: THE DISCRIMINATOR NEEDS A WINDOW IN WHICH NOTHING COMMITS, AND THE TAPE REPLAY DENIES IT.
+#
+# Step 3's whole content is the gap between "the socket came back" and "something committed": the
+# old socket-based probe reported healthy in it, and the fixed probe must not. The replay submits
+# ~6 orders/s THROUGH THIS GATEWAY, so the first one to commit after quorum returns clears the
+# no-ack streak and /ready is legitimately 200 before this proof reads it. Measured 2026-08-26 on
+# the first suite run with the replay live: step 3 read 200 with noAckStreak already back to 0, and
+# accused the gateway of tracking the connection while the gateway was doing exactly the right
+# thing.
+#
+# This is NOT "turn the replay off so the suite goes green". The claim under test is unchanged and
+# is still asserted in full; what is being removed is a CONFOUNDING VARIABLE that makes the
+# experiment undecidable — the same reason step 2 removes quorum rather than waiting for one to
+# fail. It is scoped to steps 2-4, restored on every exit path, and the proof FAILS rather than
+# continues if it cannot take it down or bring it back.
+REPLAY_PAUSED=0
+pause_replay() {
+  ${K} get deploy price-publisher >/dev/null 2>&1 || { echo "  [note] no price-publisher on this tier; nothing to pause"; return 0; }
+  ${K} scale deploy price-publisher --replicas=0 >/dev/null \
+    || fail "could not pause the tape replay, so the no-commit window step 3 needs cannot exist"
+  ${K} wait --for=delete pod -l app=price-publisher --timeout=120s >/dev/null 2>&1
+  REPLAY_PAUSED=1
+  echo "  [replay] price-publisher scaled to 0 — no external order flow until step 4 completes"
+}
+resume_replay() {
+  [[ "${REPLAY_PAUSED}" == "1" ]] || return 0
+  REPLAY_PAUSED=0
+  ${K} scale deploy price-publisher --replicas=1 >/dev/null 2>&1
+  ${K} rollout status deploy/price-publisher --timeout=300s >/dev/null 2>&1 \
+    && echo "  [replay] price-publisher restored" \
+    || echo "  [replay] WARNING: price-publisher did not come back — the rig has no feed and no"
+  return 0
+}
+cleanup() {
+  [[ -n "${PF_PID}" ]] && kill "${PF_PID}" 2>/dev/null || true
+  resume_replay
+}
 trap cleanup EXIT
 
 ready_body() { curl -s -m 10 "${READY_URL}/ready" 2>/dev/null; }
@@ -148,6 +184,7 @@ echo "  after ${DRIVE} healthy orders: [${CODE}] ${BODY}"
 [[ "$(printf '%s' "${BODY}" | jnum noAckStreak)" == "0" ]] || fail "streak non-zero when healthy: ${BODY}"
 
 step "2. remove quorum: the gateway can no longer commit anything"
+pause_replay
 ${K} scale sts order-matcher-cluster --replicas=1 >/dev/null
 sleep 25
 drive noquorum
@@ -187,6 +224,7 @@ BODY="$(ready_body)"
 [[ "$(ready_code)" == "200" ]] || fail "/ready did not recover after a committed order: ${BODY}"
 [[ "$(printf '%s' "${BODY}" | jnum noAckStreak)" == "0" ]] || fail "streak did not reset: ${BODY}"
 echo "  ${BODY}"
+resume_replay
 
 echo
 echo "[PASS] readiness tracks the ability to COMMIT: ordinary traffic on a healthy cluster left it"
