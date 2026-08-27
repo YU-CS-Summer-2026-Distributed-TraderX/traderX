@@ -36,6 +36,30 @@ sample with the tape-priced universe and reports the shortfall as
    artifact stays the same size — the transport ceiling is a rate, not a universe (see ADR-072).
 3. Every one of those books then comes alive, which is the whole point of ADR-072.
 
+## Measured 2026-08-27, which discharges step 1's "re-check rather than assume"
+
+**The flush does not get bigger — it gets more frequent.** `FeedAdapterMain.flush()` iterates the
+conflated tick map and calls `offerTick()` **once per ticker**, each into a fixed
+`AeronReplicationCodec.INPUT_BYTES` buffer. There is no batched flush message, so a wider universe
+cannot push any single message across a fragmentation boundary. What it changes is the sequenced
+message RATE, proportionally: ~69 instruments per 15s (~4.6/s) today, ~145 (~9.7/s) at the widened
+list. Against a cluster already absorbing ~6/s of replayed orders plus their fills, that is
+immaterial — but it IS a change to ADR-070 decision 1's "byte-for-byte identical" bound, which
+covered the replay changing the CONTENT of the flush and not the size of the universe.
+
+**Precondition state, measured the same day:** the median extract now carries **100** symbols (the
+tape-extract widening landed), and **99 of the 100 already exist in `stocks`** (605 rows). The one
+exception is **`DOC`** (Healthpeak Properties), which is in the extract and not in the rig's
+reference data. It is left OUT of the widened `PRICE_TICKERS` rather than seeded: the replayer
+refuses a symbol with no tape price, and the self-heal treats `UNKNOWN_SECURITY` as healable — so
+including it would publish an instrument the read model has no row for, which is the same shape as
+the `trades.accountid` foreign-key break ADR-072 already paid for once. One REIT is not worth that.
+
+**The artifact is built and sized.** 99 symbols x 40 days x 120 windows x 1 slot = **845,881 bytes
+gzipped** (1,901,620 raw), inside the 1,048,576-byte Secret ceiling. Note the slot count fell from 4
+to 1 as the universe grew 23 -> 99 and the achieved rate held: this is the "the ceiling is a rate,
+not a universe" arithmetic doing exactly what ADR-072 says it does.
+
 ## The trap, recorded because it already cost a build
 
 **Do not take the universe from `GET /prices`.** A quote's `source` only reads `taq-replay-2025-02`

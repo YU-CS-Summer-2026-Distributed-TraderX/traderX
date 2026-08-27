@@ -226,6 +226,23 @@ that is the band working.
 Twenty minutes into the first epoch with the replay live: **23 of 69 books carrying live resting
 depth — every one of them a tape symbol — and 430 trade legs.**
 
+**The universe widened to the whole tape extract (2026-08-27), and the arithmetic held.** The
+replayed universe went 23 -> **99** symbols (the extract's 100 less `DOC`, which is in the tape and
+not in the rig's reference data). The artifact did NOT grow: the builder re-solved slots per window
+from 4 to 1 and produced **845,881 bytes** against the same 1 MiB ceiling, at **6.6 orders/sec** --
+the "the ceiling is a rate, not a universe" claim above, measured a second time at 4.3x the width.
+`unpricedSymbols` is empty and `reEnabled` is 0, so every one of the 99 was already known to the
+read model; that is why `DOC` is excluded rather than seeded.
+
+**And the demo claim, re-measured at that width: 85 of 146 books carry live resting depth**, against
+this ADR's opening *"3 of 69 books have ever printed, six trades total"*. One thing this exposed that
+the narrower run could not: **widening `PRICE_TICKERS` changes the sequenced tick RATE** (~4.6/s ->
+~9.7/s), because `FeedAdapterMain.flush()` offers one Aeron message PER TICKER rather than one
+batched flush. No message gets bigger, so nothing approaches a fragmentation boundary -- but
+ADR-070 decision 1's "byte-for-byte identical" bound is about the replay not changing the flush,
+and it does not cover changing the size of the universe. Re-check it there, not here, if the
+universe widens again.
+
 **One reading in the first draft of the proof could never have failed**, and it is worth recording
 because it is this project's recurring shape. "Count books that have printed" was written as "count
 books carrying a `mark`", and ADR-051 stamps the mark from a market-data *tick* until a book first
