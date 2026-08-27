@@ -317,24 +317,28 @@ async function gatewayPost(path, body, headers) {
   }
 }
 
+const CONTROL_HEADERS = { 'X-Risk-Control-Token': RISK_TOKEN, 'X-Risk-Operator': 'print-replay' };
+
+async function control(path, body) {
+  return gatewayPost(path, body, CONTROL_HEADERS)
+    .catch((err) => ({ status: 0, body: { error: String((err && err.message) || err) } }));
+}
+
 /** Enable the replay accounts and the instruments this flow trades, through the sequenced control
  *  path. Idempotent and cheap (a handful of commands at startup); it exists so the replay does not
  *  depend on the proof-rig seeder having run, and so a fresh epoch replays without a human. None
  *  of these are order-shaped, so none of them move any counter a proof brackets its work with. */
 async function enable() {
   state.lastEnableMs = Date.now();
-  const headers = { 'X-Risk-Control-Token': RISK_TOKEN, 'X-Risk-Operator': 'print-replay' };
   const problems = [];
   for (const accountId of ACCOUNTS) {
-    const r = await gatewayPost('/risk/control/account', { accountId, enabled: true }, headers)
-      .catch((err) => ({ status: 0, body: { error: String((err && err.message) || err) } }));
+    const r = await control('/risk/control/account', { accountId, enabled: true });
     if (r.status !== 200) {
       problems.push(`account ${accountId}: ${r.status} ${JSON.stringify(r.body)}`);
     }
   }
   for (const ticker of state.replayed) {
-    const r = await gatewayPost('/risk/control/security', { ticker, enabled: true }, headers)
-      .catch((err) => ({ status: 0, body: { error: String((err && err.message) || err) } }));
+    const r = await control('/risk/control/security', { ticker, enabled: true });
     if (r.status !== 200) {
       problems.push(`security ${ticker}: ${r.status} ${JSON.stringify(r.body)}`);
     }
@@ -346,6 +350,50 @@ async function enable() {
     console.warn(`[print-replay] ${problems.length} control(s) refused: ${problems[0]}`);
   }
   return problems;
+}
+
+/**
+ * WHAT THE SELF-HEAL MAY RE-ISSUE, AND WHAT IT MUST NEVER.
+ *
+ * Healing exists for ONE condition: a fresh-epoch mint wiped the control commands this module
+ * sequenced at startup, so state that was never a decision has simply ceased to exist. Three
+ * rejection reasons say that and nothing else —
+ *
+ *   UNKNOWN_ACCOUNT / ACCOUNT_DISABLED   our own accounts; nobody else has an opinion about them
+ *   UNKNOWN_SECURITY                     the security is not REGISTERED, which is never a state
+ *                                        somebody chose
+ *
+ * SECURITY_DISABLED and RESTRICTED are the opposite: they are DECISIONS, and yu03-risk-proof exists
+ * to halt a security and watch the venue refuse it. Re-enabling one because the replay was refused
+ * would undo another lane's halt from a background process, which is a far worse failure than the
+ * replay going quiet — so those two reasons are never healed, and a security control is re-issued
+ * only for the ONE ticker that reported itself unregistered, never for the whole universe.
+ */
+const HEAL_ACCOUNTS = new Set(['UNKNOWN_ACCOUNT', 'ACCOUNT_DISABLED']);
+const HEAL_SECURITY = 'UNKNOWN_SECURITY';
+
+function heal(reason, ticker) {
+  const now = Date.now();
+  if (now - state.lastEnableMs <= 30000) {
+    return false;
+  }
+  if (HEAL_ACCOUNTS.has(reason)) {
+    state.lastEnableMs = now;
+    state.reEnabled++;
+    console.warn(`[print-replay] ${reason}: the epoch no longer knows our accounts (a fresh mint?)`
+      + ' — re-issuing the account and security controls');
+    enable().catch(() => {});
+    return true;
+  }
+  if (reason === HEAL_SECURITY && ticker) {
+    state.lastEnableMs = now;
+    state.reEnabled++;
+    console.warn(`[print-replay] ${reason}: ${ticker} is not registered — re-issuing that ONE `
+      + 'security control (a halted security reports SECURITY_DISABLED and is never healed)');
+    control('/risk/control/security', { ticker, enabled: true }).catch(() => {});
+    return true;
+  }
+  return false;
 }
 
 async function submit(order) {
@@ -379,16 +427,7 @@ async function submit(order) {
   // procedure — an operator who mints by hand would get a rig whose blotter never moves again,
   // with no error on /health because nothing here failed. So: heal, and count the healing, so the
   // reading distinguishes "the rig was re-minted" from "something is refusing us".
-  if (reason === 'UNKNOWN_ACCOUNT' || reason === 'ACCOUNT_DISABLED') {
-    const now = Date.now();
-    if (now - state.lastEnableMs > 30000) {
-      state.lastEnableMs = now;
-      state.reEnabled++;
-      console.warn(`[print-replay] ${reason}: the epoch no longer knows our accounts (a fresh mint?)`
-        + ' — re-issuing the account and security controls');
-      enable().catch(() => {});
-    }
-  }
+  heal(reason, order.ticker);
 }
 
 /** One tick of the loop: submit whatever the clock says is due. Exported for the tests, which

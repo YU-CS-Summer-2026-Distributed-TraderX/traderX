@@ -361,6 +361,65 @@ test('UNKNOWN_ACCOUNT re-issues the controls once — a fresh epoch must not sil
   assert.strictEqual(m.state.reEnabled, 1);
 });
 
+test('a DELIBERATELY HALTED security is never re-enabled by the heal', async () => {
+  // The hazard this arm exists for: yu03-risk-proof halts a security and watches the venue refuse
+  // it. A background process that re-enabled it because ITS orders were refused would undo another
+  // lane's halt, which is a far worse failure than the replay going quiet. SECURITY_DISABLED and
+  // RESTRICTED are DECISIONS; only UNKNOWN_SECURITY (never registered) is a wiped epoch.
+  for (const reason of ['SECURITY_DISABLED', 'RESTRICTED']) {
+    writeSample(flatSample(() => 100000));
+    delete require.cache[require.resolve('../src/print-replay')];
+    const m = require('../src/print-replay');
+    let controls = 0;
+    globalThis.fetch = async (url) => {
+      if (String(url).includes('/risk/control')) {
+        controls++;
+        return { status: 200, json: async () => ({}) };
+      }
+      return { status: 422, json: async () => ({ reason }) };
+    };
+    let tape = 0;
+    const clock = fakeTaqReplay(() => tape);
+    m.load(clock);
+    m.selectUniverse(clock, SYMS, 0);
+    await m.step(clock, 0);
+    tape = WINDOW;
+    await m.step(clock, 0);
+    assert.ok(m.state.rejected > 0, `${reason}: nothing was rejected, so nothing was measured`);
+    assert.strictEqual(m.state.reEnabled, 0, `${reason} must never be healed — it is a decision`);
+    assert.strictEqual(controls, 0);
+  }
+});
+
+test('UNKNOWN_SECURITY re-issues ONE security control, not the whole universe', async () => {
+  writeSample(flatSample(() => 100000));
+  delete require.cache[require.resolve('../src/print-replay')];
+  const m = require('../src/print-replay');
+  const controls = [];
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('/risk/control')) {
+      controls.push(JSON.parse(init.body));
+      return { status: 200, json: async () => ({}) };
+    }
+    return { status: 422, json: async () => ({ reason: 'UNKNOWN_SECURITY' }) };
+  };
+  let tape = 0;
+  const clock = fakeTaqReplay(() => tape);
+  m.load(clock);
+  m.selectUniverse(clock, SYMS, 0);
+  await m.step(clock, 0);
+  tape = WINDOW;
+  await m.step(clock, 0);
+  for (let i = 0; i < 200 && !controls.length; i++) {
+    await new Promise((r) => setImmediate(r));
+  }
+  assert.strictEqual(m.state.reEnabled, 1);
+  assert.strictEqual(controls.length, 1, 'exactly ONE security control — re-issuing the whole '
+    + 'universe would re-enable anything another lane had deliberately halted');
+  assert.ok(SYMS.includes(controls[0].ticker), 'and it must be the ticker that was refused');
+  assert.ok(!('accountId' in controls[0]), 'an unregistered security is not an account problem');
+});
+
 test('a collar rejection does NOT re-issue the controls', async () => {
   // PRICE_COLLAR is the demonstration, not a fault. Healing on it would hammer the sequenced
   // control path all day on a rig that is working exactly as ADR-072 says it should.
