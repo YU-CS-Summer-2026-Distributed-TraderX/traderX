@@ -77,6 +77,38 @@ rather than a floor: *"GLOBAL over order writers, exactly like the trade counter
 category — "order writers", plural — while its own promise at the top still assumed the proofs were
 the only one.**
 
+### It is FIVE, not four (corrected again 2026-08-27) — and they do not share a persistence
+
+`traderx_stp_cancels` was missed by the count above and is the same shape: **global over order
+writers**, moved whenever replayed flow trips self-trade prevention. Its twin
+`traderx_stp_operator_cancels` landed in `6374c110` and is verified live on kind and GKE.
+
+**And the five twins split two ways, which matters more than the count.** A twin is a *subtraction*,
+so it inherits the persistence of **both** its terms — snapshotted parent means the shadow must be
+snapshotted too, or a restored member subtracts a shadow its parent outlived:
+
+| twin | terms | across a member RESTART |
+|---|---|---|
+| `traderx_cluster_operator_next_order_ref` | `nextOrderRef`(off 8) − 1 − `externalOrderRefs`(off 52) | **survives** |
+| `traderx_cluster_operator_trades` | `tradeCounter`(off 32) − `externalTradeLegs`(off 60) | **survives** |
+| `traderx_stp_operator_cancels` | `selfTradesPrevented` − `externalSelfTradesPrevented` | **resets to 0** |
+| `traderx_band_operator_reanchors` | `bandReanchors` − `externalBandReanchors` | **resets to 0** |
+| `traderx_band_operator_stranded_cancels` | `bandStrandedCancels` − `externalBandStrandedCancels` | **resets to 0** |
+
+The first two are why `SNAPSHOT_FORMAT` went to 9 and why that needed a mandatory mint. The last
+three cost neither, because their parents are per-process too and both sides restart together.
+
+**A RESTART AND AN EPOCH MINT ARE DIFFERENT EVENTS.** A restart restores from a snapshot, so the
+first two survive and the last three reset. **A mint wipes the PVCs, so there is no snapshot and ALL
+FIVE reset** — `nextOrderRef` initialises to 1, making `operatorOrderRefs()` exactly 0 at epoch
+start. No counter comparison of any kind can span a mint; the two epochs' counters are not
+commensurable, and that is not a contamination problem and no twin fixes it. Across a mint the
+claim has to be an identity.
+
+**Consequences for anyone reading a twin across a restart**: a per-process twin's cross-member
+*absolute* reads as divergence and is not one, and a *delta* straddling the restart of the member
+being measured goes **negative** — which reads as corruption rather than as a moved assertion.
+
 ### And therefore a snapshot format bump
 
 Operator-scoped siblings for the ref and trade counters must **survive a snapshot**: `quiesced_*`
