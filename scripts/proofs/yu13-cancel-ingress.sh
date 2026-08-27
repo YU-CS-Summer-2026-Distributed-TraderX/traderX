@@ -405,7 +405,12 @@ SKIP_REGRESSION=0
 SKIP_WHY=""
 if [[ "${PRE_ABSENT}" == "1" ]]; then
   SKIP_REGRESSION=1
-  SKIP_WHY="the default pre-fix image ${IMAGE_PRE} is not in the local Docker daemon"
+  # NAME BOTH SURFACES, because PRE_ABSENT is set only when image_available found it on NEITHER
+  # local Docker NOR any node. Saying "the local Docker daemon" understates what was measured and
+  # misleads in an actionable direction: a reader concludes the fix is a `kind load`, which would
+  # do nothing, because this tag exists nowhere. (`precancel-BUILD-ME` is a placeholder name that
+  # was never built -- see the comment at IMAGE_PRE and the open issue.)
+  SKIP_WHY="the pre-fix image ${IMAGE_PRE} is on neither local Docker nor the ${CLUSTER:-traderx-yu12-cluster} nodes (it has never been built)"
 elif [[ "${DEPLOYED_IMAGE}" == "${IMAGE_PRE}" && "$(cancel 0 2>/dev/null)" == *'"canceled"'* ]]; then
   SKIP_REGRESSION=1
   SKIP_WHY="the deployed gateway IS ${IMAGE_PRE} and it already serves /cancel"

@@ -155,3 +155,26 @@ forward half, which needs no pre-image, should now run.
 `docker images` answered honestly about local Docker and I read it as an answer about the rig.
 **A confident absence from the wrong surface is indistinguishable from a real one** — and it cost a
 filed conclusion that would have sent someone to rebuild an artifact that already existed.
+
+## The missing image also makes the strip/restore path UNTESTABLE, which is a second cost
+
+Noticed 2026-08-27 when the proof passed for the first time since the reclaim. The passing run left
+the gateway's probes intact — and **that is not evidence the restore works.** `IMAGE_PRE` was
+absent, so the regression arm skipped, so the deployment was never patched, so the probes were
+never stripped. Finding them intact afterwards is a pass with nothing behind it.
+
+That matters more than it sounds, because **the strip/restore path is the one that has already
+latched damage**: on 2026-08-14 an aborted hand-run left the probes stripped, and the two full
+suites afterwards faithfully restored them *stripped*, each reporting a successful restore, until
+`yu16-liveness-restarts-wedge` failed three proofs earlier with a true statement about a rig the
+proofs themselves had broken. A guard was added (a capture missing either probe is read as evidence
+of that abort, and the manifest form is the floor) — **and that guard has never been exercised,
+because exercising it requires the roll that requires `IMAGE_PRE`.**
+
+So building the pre-cancel image buys two things, not one:
+
+1. the regression demonstration this issue is named for, and
+2. **the only route to exercising the probe strip/restore path and its anti-latch guard.**
+
+Until then, every green run of this proof is green on the forward half alone, and the restore path
+is carried on a 2026-08-14 fix that no run since has been able to test.
