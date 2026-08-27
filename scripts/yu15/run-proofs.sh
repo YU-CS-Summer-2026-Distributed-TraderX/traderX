@@ -289,27 +289,50 @@ start_forwards() {
   # for a while after its forward is re-made) and yu10 needs trade-processor on 18091. They came up
   # a beat later than the gateway and the proofs started without them, failing on connection
   # errors that named nothing. A forward that is not verified is not established.
-  local tries=0 ready
+  local tries=0 ready unready
   while :; do
-    ready=1
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || ready=0
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || ready=0
+    ready=1; unready=""
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18110/ready 2>/dev/null)" == "200" ]] || { ready=0; unready+=" cluster-gateway:18110"; }
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18091/actuator/health 2>/dev/null)" == "200" ]] || { ready=0; unready+=" trade-processor:18091"; }
     # YU16 (FR-CDM12, ADR-058): deliberately still /stocks. The yu04 proofs moved to the general
     # /instruments route; this gate stays on the retained one, which makes "/stocks is retained"
     # a standing regression check rather than a claim in a spec.
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18085/stocks/control-snapshot 2>/dev/null)" == "200" ]] || ready=0
-    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18100/prices/UST-20280630 2>/dev/null)" == "200" ]] || ready=0
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18085/stocks/control-snapshot 2>/dev/null)" == "200" ]] || { ready=0; unready+=" reference-data:18085"; }
+    [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:18100/prices/UST-20280630 2>/dev/null)" == "200" ]] || { ready=0; unready+=" price-publisher:18100"; }
     # Only when the observability stack is expected to be up. stp deliberately scales it to zero
     # for a quiet box, and waiting on a service we just switched off is an unsatisfiable condition
     # -- it aborted the whole stp wrap with "forwards never all became reachable".
     if [[ "${OBS_EXPECTED:-1}" == "1" ]]; then
-      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3200/ready 2>/dev/null)" == "200" ]] || ready=0
+      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3200/ready 2>/dev/null)" == "200" ]] || { ready=0; unready+=" tempo:3200"; }
       # Loki and Grafana answer non-2xx on / by design; a connection at all is enough.
-      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3100/ 2>/dev/null)" != "000" ]] || ready=0
+      [[ "$(curl -s -o /dev/null -w '%{http_code}' -m5 http://localhost:3100/ 2>/dev/null)" != "000" ]] || { ready=0; unready+=" loki:3100"; }
     fi
     [[ ${ready} -eq 1 ]] && break
     tries=$((tries + 1))
-    [[ ${tries} -lt 90 ]] || { echo "[fail] forwards never all became reachable"; return 1; }
+    # NAME THE CAUSE, NOT THE TRANSPORT.
+    #
+    # This used to say only "forwards never all became reachable", which reads as a network or
+    # port-forward problem and is almost never one. Measured 2026-08-27: two consecutive suite runs
+    # died here because an interrupted stp proof had left the observability stack scaled to ZERO --
+    # the gate was waiting on a Deployment somebody had deliberately switched off and never
+    # restored (issues/open/a-proof-killed-mid-run-leaves-its-prep-stranded-on-the-rig.md). The
+    # diagnosis took hours and landed three steps downstream of the cause.
+    #
+    # This gate ALREADY KNOWS scale-downs happen -- OBS_EXPECTED exists for exactly that -- so the
+    # information was here and unused. Report which endpoint is unready AND which Deployments are
+    # at zero replicas, and the two lists next to each other answer it on sight.
+    if [[ ${tries} -ge 90 ]]; then
+      echo "[fail] forwards never all became reachable"
+      echo "       unready:${unready:- (none recorded)}"
+      local zeroed
+      zeroed="$(${K} get deploy -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null)"
+      if [[ -n "${zeroed// /}" ]]; then
+        echo "       SCALED TO ZERO: ${zeroed}"
+        echo "       A Deployment at 0 replicas is not a forward problem. If a proof scaled it down"
+        echo "       and did not restore it, scale it back before reading anything else here."
+      fi
+      return 1
+    fi
     sleep 2
   done
 }
