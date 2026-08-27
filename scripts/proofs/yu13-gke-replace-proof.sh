@@ -84,6 +84,16 @@
 # claims (NEW in step 1, CANCELED in step 2) run on every pass, so they are also the standing
 # positive control on the reader itself.
 #
+# SELFTEST=1 RUNS THE READ-MODEL PARSERS OFFLINE, IN ABOUT A SECOND, WITH NO CLUSTER:
+#
+#     SELFTEST=1 ./yu13-gke-replace-proof.sh
+#
+# Those parsers are the instrument five assertions now depend on, and a bug in one does NOT read as
+# a parser bug -- it reads as "the order never became visible", i.e. a verdict about the replace.
+# Run it before you spend a rig on a shape bug, and after ANY edit to row()/open_on_ticker(). It
+# covers the dash-anchoring that must not read ref '4' out of order id '1-504', numeric rather than
+# lexicographic ref sort, and empty/non-JSON responses parsing as "cannot read" rather than "absent".
+#
 # THE TAPE MUST BE LIVE. Step 0 fails if price-publisher reports the replay off or absent, and
 # step 6 requires it to have submitted orders ACROSS this run. A green with the tape stopped
 # proves nothing about the class these assertions were rewritten for, and this file has never
@@ -350,6 +360,31 @@ JSON
   exit 0
 fi
 
+# THE WRITE PRESSURE THIS RUN ACTUALLY RAN UNDER, so a green is qualified by it rather than merely
+# claiming it. Six counters from ONE scrape -- deliberately a single HTTP call, so the readings are
+# mutually coherent and this cannot reproduce the sequential-sampling skew that agree_on() exists to
+# survive. Reporting only: the rate gate in step 6 is what ASSERTS the pressure was real.
+pressure_row() {
+  ${K} exec order-matcher-cluster-0 -c cluster-node -- \
+    sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+    | awk '/^traderx_cluster_trades[{ ]/                  {a=$2}
+           /^traderx_cluster_operator_trades[{ ]/         {b=$2}
+           /^traderx_stp_cancels[{ ]/                     {c=$2}
+           /^traderx_stp_operator_cancels[{ ]/            {d=$2}
+           /^traderx_cluster_next_order_ref[{ ]/          {e=$2}
+           /^traderx_cluster_operator_next_order_ref[{ ]/ {f=$2}
+           END{print a, b, c, d, e, f}'
+}
+print_pressure() { # print_pressure <before-row> <after-row>
+  awk -v b="$1" -v a="$2" 'BEGIN{
+    split(b,B," "); split(a,A," ");
+    n[1]="traderx_cluster_trades";             n[2]="  traderx_cluster_operator_trades";
+    n[3]="traderx_stp_cancels";                n[4]="  traderx_stp_operator_cancels";
+    n[5]="traderx_cluster_next_order_ref";     n[6]="  traderx_cluster_operator_next_order_ref";
+    for(i=1;i<=6;i++) printf "    %-44s %10s -> %-10s %+d\n", n[i], B[i], A[i], A[i]-B[i];
+  }'
+}
+
 # --- the tape, which must be writing while this proof passes -----------------------------------
 pub()  { ${K} exec deploy/price-publisher -- wget -qO- "http://localhost:18100$1" 2>/dev/null || true; }
 jget() { python3 -c "
@@ -444,6 +479,7 @@ awk -v r="${RATE0}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
   Enabled and error-free is NOT the same as writing at pressure, and a quarter-rate tape lets every
   assertion here pass for the wrong reason. Check the print-sample Secret against PRICE_TICKERS."
 RUN_T0=${SECONDS}
+PRESSURE0="$(pressure_row)"
 
 RESTARTS0="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
@@ -666,6 +702,13 @@ SUBMITTED1="$(pub /health | jget printReplay.submitted)" || SUBMITTED1=""
 RUN_S=$(( SECONDS - RUN_T0 ))
 OBS_RATE="$(awk -v n="$(( SUBMITTED1 - SUBMITTED0 ))" -v s="${RUN_S}" 'BEGIN{printf "%.2f", (s>0? n/s : 0)}')"
 echo "  tape wrote throughout: submitted ${SUBMITTED0} -> ${SUBMITTED1} (+$(( SUBMITTED1 - SUBMITTED0 ))) over ${RUN_S}s = ${OBS_RATE}/s observed"
+# THE GREEN, QUALIFIED BY THE PRESSURE IT RAN UNDER. Every global below is a counter this proof used
+# to assert exact deltas on; every operator sibling is what it reads now. The globals show what the
+# tape did to the venue during these assertions; the operator halves show our own work, and are the
+# only numbers any assertion above touched. A green with the global deltas near zero is a green from
+# a quiet venue and proves nothing about this class -- which is what the rate gate above refuses.
+echo "  write pressure across this run (member 0, indented rows are the operator halves):"
+print_pressure "${PRESSURE0}" "$(pressure_row)"
 awk -v r="${OBS_RATE}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
   'BEGIN{exit !(r+0 >= lo+0 && r+0 <= hi+0)}' \
   || fail "the tape averaged ${OBS_RATE}/s across this run, outside ADR-072's ${REPLAY_MIN_RATE}-${REPLAY_MAX_RATE}/s
