@@ -124,3 +124,34 @@ originally described.
 **And the general point survives intact and is strengthened**: a proof depending on a historical
 image depends on a local artifact nothing tracks. It happened to survive on the nodes this time. **A
 build script per historical image is still the durable fix; "it was still on the node" is luck.**
+
+## CORRECTION (2026-08-27, later the same day): the section above named the wrong image
+
+**`traderx/cluster-node:yu15-cancel` was never lost.** It is on both kind nodes and always was; the
+disk reclaim pruned it from *local Docker* only. Measured:
+
+```
+traderx/cluster-node:yu15-cancel          local docker: absent   kind nodes: PRESENT (both)
+traderx/cluster-node:precancel-BUILD-ME   local docker: absent   kind nodes: absent
+```
+
+So the proof did not fail because its fix image was gone. **It failed because its preflight
+inspected local Docker, which is not the surface that matters** — the members are rolled onto an
+image on the *nodes*, and `kind load` two lines below the guard is deliberately tolerant of a
+failed load for exactly that reason (*"assuming it is already on the nodes"*). **The guard was
+stricter than the mechanism it guarded**, and refused over an image the proof could have used.
+
+Fixed: the preflight now accepts either surface, via an `image_available` helper that checks local
+Docker and then every `${CLUSTER}-` node's `crictl images`. Self-tested against four tags including
+a known-absent negative control, so the helper is demonstrably able to say no.
+
+**What actually remains missing is `IMAGE_PRE`** — `precancel-BUILD-ME` is a placeholder name that
+nobody ever built, exactly as the comment above it in the proof has always said. **That is what
+this issue is about and it is unchanged**: the regression demonstration still cannot be staged, and
+restoring it still means building from the commit before the cancel route landed. The proof's
+forward half, which needs no pre-image, should now run.
+
+**The lesson is the one the day kept repeating**, and this instance is the cheapest to state:
+`docker images` answered honestly about local Docker and I read it as an answer about the rig.
+**A confident absence from the wrong surface is indistinguishable from a real one** — and it cost a
+filed conclusion that would have sent someone to rebuild an artifact that already existed.

@@ -333,12 +333,35 @@ start_pf
 #
 # But only for the DEFAULT. An IMAGE_PRE the operator named and which does not exist is a real
 # error: they are running a comparison and asked for a specific before-arm.
+# CHECK BOTH SURFACES: LOCAL DOCKER *OR* THE NODES. What this proof needs is an image the members
+# can be rolled onto, and `kind load` below is deliberately tolerant of a failed load precisely
+# because the tag may already be on the nodes ("assuming it is already on the nodes"). A preflight
+# that inspects local Docker only is therefore STRICTER THAN THE MECHANISM IT GUARDS: it refuses
+# over an image the proof could actually use.
+#
+# Measured 2026-08-27, and it cost a wrong diagnosis before it was understood: a host disk reclaim
+# pruned traderx/cluster-node:yu15-cancel from local Docker and did NOT touch the copies inside the
+# kind nodes. `docker images` said absent, this guard failed the run, and the failure was reported
+# as "the fix image is gone, unfixable without rebuilding from the commit where the route landed" —
+# about an image that was sitting on both nodes the whole time. The reading was taken from the
+# wrong surface and came back a confident absence.
+image_available() { # image_available <ref> -- local docker OR any kind node
+  docker image inspect "$1" >/dev/null 2>&1 && return 0
+  local node
+  for node in $(docker ps --filter "name=${CLUSTER:-traderx-yu12-cluster}-" --format '{{.Names}}' 2>/dev/null); do
+    docker exec "${node}" crictl images 2>/dev/null | awk -v r="$1" '
+      { if ($1 ":" $2 == r || $1 ":" $2 == "docker.io/" r) found = 1 }
+      END { exit found ? 0 : 1 }' && return 0
+  done
+  return 1
+}
 PRE_ABSENT=0
-if ! docker image inspect "${IMAGE_PRE}" >/dev/null 2>&1; then
-  [[ "${IMAGE_PRE_NAMED}" == "1" ]] && fail "IMAGE_PRE=${IMAGE_PRE} was named explicitly but is not present locally"
+if ! image_available "${IMAGE_PRE}"; then
+  [[ "${IMAGE_PRE_NAMED}" == "1" ]] && fail "IMAGE_PRE=${IMAGE_PRE} was named explicitly but is on neither local Docker nor the nodes"
   PRE_ABSENT=1
 fi
-docker image inspect "${IMAGE_FIX}" >/dev/null 2>&1 || fail "fixed image ${IMAGE_FIX} not present locally"
+image_available "${IMAGE_FIX}" \
+  || fail "fixed image ${IMAGE_FIX} is on neither local Docker nor the ${CLUSTER:-traderx-yu12-cluster} nodes"
 
 # Present in the local Docker daemon is not the same as present in the cluster. start-cluster-kind.sh
 # loads the images the kustomization names; these two are proof-only tags it has never heard of, so
