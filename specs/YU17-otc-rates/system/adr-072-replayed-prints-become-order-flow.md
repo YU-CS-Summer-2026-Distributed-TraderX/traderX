@@ -183,6 +183,40 @@ because 6.1/s is inside the band this ADR asks for.
   *excludable by name* from any consumer of that artifact — the same discipline as the account range
   itself.
 
+### A fresh epoch wipes sequenced control state, and a producer that assumed it survives goes dark
+
+**This is the finding with the longest reach, and it is not about the tape at all.**
+
+The three replay accounts are seeded into the database, and the reference-data loader publishes them
+onto the cluster as sequenced commands at startup. A **fresh epoch — scale to zero, wipe the PVCs,
+mint** — is exactly the operation this project mandates for any change to the deterministic core,
+and it discards the replicated log those commands lived in. The accounts are still in the database.
+They are no longer in the state machine.
+
+What that looked like: **228 consecutive `UNKNOWN_ACCOUNT` rejections**, the replay submitting at its
+full rate into a cluster that refused every order, `/health` green on all three members, the pods
+Ready, the counters advancing — `submitted` climbing, `accepted` flat. **Nothing was broken. Nothing
+was down. It would have stayed that way indefinitely**, because the producer had no reason to think
+its accounts could stop existing after they had once been accepted.
+
+The fix in this ADR is a rate-limited self-heal: on a rejection reason that names *missing sequenced
+state* — `UNKNOWN_ACCOUNT`, `ACCOUNT_DISABLED`, `UNKNOWN_SECURITY` — the replayer re-publishes the
+account or instrument and retries. **It deliberately does not heal `SECURITY_DISABLED` or
+`RESTRICTED`**, which name an operator's *decision*: a producer that healed those would quietly
+undo a halt, and a halt that a background job can undo is not a halt. It heals one ticker per
+trigger, never the universe, so a genuinely-unknown symbol cannot turn into a publish storm.
+
+**The general rule, which the next feature to sequence its startup state will need:** state that
+enters the cluster as a *command at startup* does not survive an epoch, and its producer must treat
+"the cluster has forgotten" as a **routine, recurring condition to detect and repair at runtime** —
+not as an error to log. The distinguishing signal is a **rejection reason naming missing state, in
+volume, from a producer that was previously accepted.** That is not the same alarm as a producer
+failing to reach the cluster, and it does not look like one: every liveness and readiness signal
+stays green throughout, because everything is in fact alive.
+
+**Which also means Ready is not the check after a mint.** `rebuild_fresh_epoch` does not roll the
+feed adapter, and the adapter strands silently in exactly this shape. Assert `applied` advancing.
+
 **The collar rejection is not hypothetical.** Within minutes of the first fresh epoch the rig had
 refused replayed prints with `PRICE_COLLAR`, counted by reason on `/health.printReplay`. A real
 February 2025 print that moved further from its window's median than the band allows is refused, and

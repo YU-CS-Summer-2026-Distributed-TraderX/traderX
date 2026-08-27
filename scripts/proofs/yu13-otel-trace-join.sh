@@ -16,7 +16,9 @@
 #   2. it contains 5 spans from 2 services (gateway: order/queue/consensus; member: commit/apply)
 #   3. the member's spans parent to the gateway's cluster.consensus span, whose id was PREDICTED
 #   4. the span sinks report zero drops and zero export failures for this run
-#   5. ground truth advanced by exactly the number of orders submitted (traderx_cluster_next_order_ref)
+#   5. the member's own sink is clean, and its role and consensus order-ref counter are DISPLAYED
+#      (not asserted — traderx_cluster_next_order_ref is global and ADR-072's replayed flow moves
+#      it continuously, so no exact-delta assertion on it could hold; the join above is the proof)
 #
 # This is a FUNCTIONAL proof. It says nothing about cost: the "telemetry is free" claim is a
 # timing claim and must be measured on GKE with the before/after benchmark, never on kind.
@@ -242,7 +244,7 @@ if ${K} get pod "${MEMBER_POD}" >/dev/null 2>&1; then
   role="$(awk '!/^#/ && /^traderx_cluster_role/{print $2}' <<<"${mem_metrics}")"
   next_ref="$(awk '!/^#/ && /^traderx_cluster_next_order_ref/{print $2}' <<<"${mem_metrics}")"
   [[ "${mem_dropped:-0}" == "0" ]] || fail "member dropped ${mem_dropped} spans"
-  ok "member sink clean; role=${role} (1 = leader); ground truth next_order_ref=${next_ref}"
+  ok "member sink clean; role=${role} (1 = leader); consensus next_order_ref=${next_ref} (all writers, FYI only)"
 fi
 
 echo

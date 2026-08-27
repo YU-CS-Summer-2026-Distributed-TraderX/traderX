@@ -31,6 +31,16 @@
 # Non-tape entries in that list (Treasuries, corporates, GOOGL, FNMA) are dropped automatically:
 # the sample is intersected with the extract below.
 #
+# THE 43-OBJECTS-PER-SYMBOL-DAY IN THE RAW TREE IS RE-SHARDING, NOT DUPLICATION. Measured
+# 2026-08-26 after a report that seven symbols carried "42 duplicate copies" of dt=2025-03-11 and
+# that any uniform sampler would over-weight that day 42x. Row counts for 2025-03-11 against its
+# two neighbouring days, all seven: AAL 1.17, AAPL 0.92, ADBE 0.84, AEP 0.89, AMCR 1.03, AMZN 0.91,
+# APA 0.95. No day is duplicated at the row level. The 43 is a count of parquet OBJECTS — the OOM
+# retry re-sharded the day across more files, and the external table reads their union.
+# COUNT OBJECTS AND YOU MEASURE THE WRITER'S RETRY HISTORY; COUNT ROWS AND YOU MEASURE THE DATA.
+# (This sampler is immune either way: it takes a fixed K per (symbol, day, window), so a day with
+# ten times the prints contributes exactly as many orders as a quiet one — by construction.)
+#
 # Needs: gcloud + bq authenticated with bigquery.jobs.create on traderx-501015
 # (yaakov.traderx@gmail.com — set CLOUDSDK_CORE_ACCOUNT rather than switching the shared config),
 # python3 (stdlib only).
