@@ -113,6 +113,20 @@ _k() {
   if [[ "$(declare -p K 2>/dev/null)" == "declare -"[aA]* ]]; then "${K[@]}" "$@"; else ${K} "$@"; fi
 }
 
+# NAME THE CONTAINER ON EVERY exec. Both tiers declare the member's regular container as
+# `cluster-node`; the GKE tier also carries a `restore-from-gcs` INIT container, so a bare
+# `kubectl exec` there prints "Defaulted container ... out of: cluster-node, restore-from-gcs
+# (init)" on stderr for every call -- about forty lines in a full run.
+#
+# Passing -c is the SAFER form and not merely the quieter one: that warning is kubectl telling you
+# it made a choice on your behalf. Today it chooses right because there is exactly one regular
+# container. A tier that grows a SECOND regular container would silently redirect every reading in
+# this file to whichever sorts first, and the readings would still come back numbers. With -c, a
+# renamed or missing container fails loudly by name instead.
+_kx() { # _kx <pod> -- <cmd...>   exec into a member's cluster-node container
+  _k exec -c "${MEMBER_CONTAINER:-cluster-node}" "$@"
+}
+
 # ---------------------------------------------------------------------------------------------
 # THE CLASS IS THE SHAPE OF THE READING, NOT THE NAME OF THE METRIC (2026-08-27)
 #
@@ -162,6 +176,19 @@ _k() {
 #            This file already held the answer and pointed it at the wrong readers:
 #            `digest_consensus`'s comment says a single sample "looks exactly like a determinism
 #            failure and is not one" -- and the three checks it sits beside never got the retry.
+
+#            AND IT APPLIES TO DIGESTS, NOT ONLY COUNTERS -- confirmed on GKE 2026-08-27, where a
+#            single un-retried sample of a book digest read:
+#
+#                m0: 182 4338271606200828232      <- one order behind
+#                m1: 183 7712560763971096156
+#                m2: 183 7712560763971096156
+#
+#            Same skew, on a PRIMARY assertion, amplified by that tier's ~0.35s exec latency
+#            against a ~6/s tape. So `digest_consensus`'s retry loop is LOAD-BEARING on GKE and
+#            belt-and-braces only on kind: it is spending those tries, not holding them in reserve.
+#            **Do not trim it as excessive.** A digest is more exposed than a counter, not less --
+#            it pairs a depth with a hash, and the hash changes on any book write at all.
 #
 #   EXPOSED  a delta or an absolute over a window:  AFTER - BEFORE == n,  AFTER == BEFORE
 #            The claim is about VOLUME, and every writer contributes to it.
@@ -200,7 +227,7 @@ _k() {
 #
 # GLOBAL. Use it as a window BRACKET (see assert_sequenced_in_window), never as a delta.
 applied_seq() { # applied_seq <member-ordinal>
-  _k exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
+  _kx "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
     | python3 -c 'import sys,json;print(json.load(sys.stdin).get("applied", -1))' 2>/dev/null || echo -1
 }
 
@@ -214,7 +241,7 @@ applied_seq() { # applied_seq <member-ordinal>
 #
 # NOT traderx_cluster_next_order_ref, which is the global and which the replay moves continuously.
 order_refs_issued() { # order_refs_issued <member-ordinal>
-  _k exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/metrics 2>/dev/null \
+  _kx "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/metrics 2>/dev/null \
     | awk 'index($1,"traderx_cluster_operator_next_order_ref{")==1{print $2; found=1}
            END{if(!found) print -1}'
 }
@@ -354,7 +381,7 @@ assert_no_contracts_in_window() { # <before> <after> <contracts-csv> <what-was-s
 # human with curl all book operator legs that land here. That is why the predicate below never
 # reads it alone.
 trades_booked() { # trades_booked <member-ordinal>
-  _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+  _kx "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
     | awk 'index($1,"traderx_cluster_operator_trades{")==1 {print $2; found=1}
            END{if(!found) print -1}'
 }
@@ -412,7 +439,7 @@ assert_order_effects() { # <refs-before> <refs-after> <orders-submitted> <trades
 # band. The shadows subtracted here are per-process and NOT snapshotted, matching their siblings
 # exactly, so the subtraction stays consistent on a restarted member instead of going negative.
 band_counters() { # band_counters <member-ordinal> -> "<reanchors> <stranded_cancels>"
-  _k exec "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
+  _kx "order-matcher-cluster-${1}" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
     | awk '/^traderx_band_operator_reanchors[{ ]/ {r=$2}
            /^traderx_band_operator_stranded_cancels[{ ]/ {c=$2}
            END {print (r==""?-1:r), (c==""?-1:c)}'
