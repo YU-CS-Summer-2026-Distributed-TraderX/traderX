@@ -1,7 +1,9 @@
 # Five GKE proofs read a global counter that ADR-072's replayed flow now moves
 
 **Filed 2026-08-26** on YU17, at the coordinator's request, alongside the ADR-072 implementation.
-**Not fixed.** They are not in `run-proofs.sh`, so nothing on the kind rig will ever red them.
+**Four of the five are still not fixed.** They are not in `run-proofs.sh`, so nothing on the kind
+rig will ever red them. `yu13-gke-replace-proof.sh` **is fixed** (`d7144170`, 2026-08-27) — see the
+resolution at the bottom, which also corrects two things this file got wrong about it.
 
 ## Why this is worth a file rather than a fix-when-noticed
 
@@ -117,7 +119,7 @@ enumeration, so nobody has to redo it:
 | `yu13-readmodel-effect-end:251` | `$((BEFORE-1)) -eq AFTER` | **fixed** `c691b849` — replay paused for the measurement |
 | `yu13-stp-and-replace:785` | `BEFORE == AFTER` | **covered** — `pause_replay` at :335 with no resume before :785, so the replay is off for the whole proof |
 | `yu13-cancel-ingress:465,475` | computed into `BEFORE_DEPTH`/`AFTER_DEPTH` | **safe** — never asserted; used only in the display string at :505, annotated *"which the replay moves independently"* |
-| **`yu13-gke-replace-proof:150,176`** | `BEFORE == AFTER` **and** `$((BEFORE-1)) -eq AFTER` | **EXPOSED** — GKE tier, not in `run-proofs.sh`, nothing here will ever red it |
+| **`yu13-gke-replace-proof`** | `BEFORE == AFTER` **and** `$((BEFORE-1)) -eq AFTER` — **and seven more this row could not see**, see below | **FIXED** `d7144170` |
 
 **The identity-claim reader DOES exist on the GKE tier** — checked statically 2026-08-27, because
 "does the read model exist over there" was the open unknown blocking the three sites that need an
@@ -133,7 +135,100 @@ So the pattern `yu13-cancel-ingress` and `yu13-readmodel-effect-end` already use
 novel**, and whoever takes points 2–4 does not need a running GKE cluster to find that out. What
 still needs the tier is *exercising* the result — a reader that exists is not a reader that answers.
 
-**The durable fix is a `traderx_book_operator_open_orders` twin**, matching the four that already
-exist. Pausing the replay works but is a workaround for a missing counter: it mutates shared rig
-state mid-suite, needs a trap to avoid stranding the rig feedless, and makes the reading depend on
-a scale-down succeeding. See `issues/the-adr-072-counter-countermeasure-stops-one-metric-short.md`.
+**~~The durable fix is a `traderx_book_operator_open_orders` twin~~ — REVERSED 2026-08-27, do not
+build it.** See the resolution below. Pausing the replay remains a workaround for the reasons given
+(it mutates shared rig state mid-suite, needs a trap to avoid stranding the rig feedless, and makes
+the reading depend on a scale-down succeeding), which is why it ranks last of the three.
+See `issues/the-adr-072-counter-countermeasure-stops-one-metric-short.md`.
+
+---
+
+## RESOLUTION for `yu13-gke-replace-proof.sh` (`d7144170`, 2026-08-27), and two corrections
+
+### It was NINE assertions, not two. The counting method was the bug.
+
+This file said two, from enumerating readers of `traderx_book_open_orders`. The header of the proof
+itself said six, then seven. It is **nine**, and the progression is the lesson:
+
+* **A search by METRIC NAME cannot see a site exposed through a different counter.** Four sites read
+  `traderx_cluster_trades` and one reads `traderx_stp_cancels`; no amount of grepping the gauge finds
+  them.
+* **A loop is N assertions.** Two sites sit in the same `for m in 0 1 2` body, two lines apart, and
+  the loop was read as one site.
+* **Two compare a whole digest string and appear in NO metric-name search at all** — one across a
+  member kill-and-rebuild, one asserting the digest *changed*.
+
+> **Enumerate what a proof ASSERTS, not what it READS.** `grep -nE '^\s*\[\[|^\s*\(\('` and
+> classify every hit. The same helper can be sound on one line and exposed on the next — this file's
+> `trades_all()` fed both a sound cross-member `uniq_one` and an exposed per-member delta.
+
+### The ninth was exposed in the opposite direction: it COULD NOT FAIL
+
+`BEFORE != AFTER` on the digest — "the replace changed nothing on the members". Replayed flow
+rewrites the digest at ~6/s, so it held whether or not the replace did anything. **Zero coverage that
+reads as coverage**, and the only one of the nine that would never have printed a red. Deleted, not
+repaired. Same shape deleted from `yu13-cancel-ingress`.
+
+### Correction: do NOT build `traderx_book_operator_open_orders`
+
+The recommendation above is withdrawn, and the reasons generalise to any future gauge twin:
+
+* It is a **gauge over resting state**, not a monotonic counter, so there is no external contribution
+  to subtract. A real twin needs resting orders tracked by account range — deterministic engine state
+  added for an observability artifact.
+* **The persistence rule forces the cost.** Resting orders are snapshotted, so the shadow must be
+  snapshotted too: a `SNAPSHOT_FORMAT` bump and a mandatory fresh-epoch mint. That is what
+  `externalOrderRefs`/`externalTradeLegs` cost at format 9. Per-process parents (`selfTradesPrevented`,
+  the band counters) cost neither. **Check the parent before assuming either — the four are not
+  uniform.**
+* **Every one of its call sites wanted an identity claim anyway**, and now makes one.
+
+### What replaced the nine
+
+Five became **identity claims** on the order's own read-model row (status, quantity, limit price):
+"depth fell by one" is satisfied by *any* order leaving; "ref Q reads CANCELED and ref B still rests
+at the new price" says **which**. Two became **operator twins** read per member. Two became
+`assert_order_effects`, so the operator trade delta is bracketed by the operator ref delta and is
+therefore attributable. One was deleted.
+
+The digest equality across the member kill was **deleted rather than swapped**: `digest_consensus`
+already refuses to return until all three members agree, and after the rebuild that includes the
+member restored from an empty disk — that *is* the convergence claim. The equality's only remaining
+content was "the venue was quiet across a member rejoin", which is the one window where replayed flow
+is guaranteed to be moving it.
+
+### The reader was confirmed to ANSWER, not merely to exist
+
+The static finding above (the route is in the operative YU17 layer, `trade-processor` is in the GKE
+manifest set) is correct and was the right call to make without a cluster. Confirmed live
+2026-08-27: on the **GKE bench rig** `GET /accounts/22214/orders?status=all` returns a JSON array,
+and on **kind** the helpers parse real rows correctly, including the dash-anchoring that must not
+read ref `4` out of order id `1-504`. The proof now **refuses to start** if that route does not
+answer — a probe silently returning `""` would turn all five identity claims into greens that cannot
+fail, which is the defect this whole issue is about, reintroduced at the fix.
+
+### Measured, on `kind-traderx-yu12-cluster`, 30s, no operator activity
+
+The admission test the library demands, and the concrete reason the nine failed accusingly:
+
+| counter | t0 | t1 | delta |
+|---|---|---|---|
+| `traderx_cluster_trades` | 15278 | 15430 | **+152** |
+| `traderx_cluster_operator_trades` | 5 | 5 | **0** |
+| `traderx_stp_cancels` | 295 | 320 | **+25** |
+| `traderx_stp_operator_cancels` | 0 | 0 | **0** |
+| `traderx_cluster_next_order_ref` | 18354 | 18545 | **+191** |
+| `traderx_cluster_operator_next_order_ref` | 6 | 6 | **0** |
+
+The old `t1 -eq t0` ("a self-trade must book nothing") would have seen **+152 legs**; the old
+`s1 -eq s0 + 1` would have seen **+25** STP cancels rather than 1.
+
+### Still open for this proof
+
+**Not yet exercised end-to-end on GKE.** The bench rig (`traderx-bench`, 2026-08-27) runs
+`cluster-node:yu17-gke5`, which exports **no operator twins at all**, and a `price-publisher` whose
+`/health` carries **no `printReplay` block** — the tape is not running there. Exercising it needs both
+images rebuilt `--platform linux/amd64` from a build carrying `6374c110`, and a fresh-epoch roll. The
+proof now refuses to pass without the tape having submitted orders across the run, so a green on that
+tier cannot be faked by a quiet venue. `SELFTEST=1` exercises the read-model parsers offline, with no
+cluster, in the meantime.
