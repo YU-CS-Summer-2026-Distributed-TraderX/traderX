@@ -158,15 +158,40 @@ and the code states the reason: *"PER-PROCESS like their siblings — the replay
 snapshotted either, so the subtraction stays consistent on a restarted member instead of going
 negative."*
 
-**So no `SNAPSHOT_FORMAT` bump and no fresh-epoch mint is involved.** Given that format 9 *did* need a
-mint for its operator-scoped work, "adding a twin costs an epoch" was a reasonable assumption and a
-wrong one — it would have been a reason to defer this indefinitely.
+**That is true of the BAND pair only, and I first wrote it here as though it were true of all four.**
+The comment quoted above sits directly over the band pair and describes the band pair. Corrected by
+the ADR-072 lane (`7a527ac6`), confirmed here in the snapshot writer and reader:
+
+    MatchingEngineClusteredService:1499   snapshotBuffer.putLong(52, externalOrderRefs)
+    MatchingEngineClusteredService:1500   snapshotBuffer.putLong(60, engine.externalTradeLegs())
+    MatchingEngineClusteredService:1631   externalOrderRefs = buffer.getLong(offset + 52)
+    MatchingEngineClusteredService:1632   engine.bootstrapExternalTradeLegs(buffer.getLong(offset + 60))
+
+    externalBandReanchors / externalBandStrandedCancels   0 snapshot-path hits
+
+**`externalOrderRefs` and `externalTradeLegs` ARE snapshotted, and had to be** — their parents
+`nextOrderRef` and `tradeCounter` are, so a restored member that kept the parent and lost the shadow
+would subtract zero and report operator counts far too high. **That is what cost `SNAPSHOT_FORMAT` 9
+and its mandatory fresh epoch.**
+
+### The rule, which is the durable part
+
+**A shadow must have the same persistence as its PARENT.**
+
+    snapshotted parent  ->  snapshotted shadow  ->  format bump  ->  fresh-epoch mint
+    per-process parent  ->  per-process shadow  ->  neither
+
+Get it wrong and the failure is silent: a restored member subtracting a shadow its parent outlived
+reports a **plausible wrong number**, not an error. Recorded above the four twins in `ClusterNodeMain`,
+where anyone adding a fifth is already reading, with all four classified explicitly.
 
 ### The two are not equivalent
 
-- **`traderx_stp_operator_cancels` — trivial.** `countSelfTradesPrevented()` already exists; it needs
-  an `externalSelfTradesPrevented()` shadow beside the three that exist and one subtraction line.
-  Mirrors the established pattern exactly.
+- **`traderx_stp_operator_cancels` — trivial, and it survives the correction above.** Checked against
+  the rule rather than inherited from it: `selfTradesPrevented` is a plain field (`MatchingEngine:139`),
+  incremented in the apply path (`:866`), read at `:1510`, and **absent from both the snapshot writer
+  and the reader**. Per-process parent, so a per-process shadow, so **no format bump and no mint.** It
+  needs an `externalSelfTradesPrevented()` beside the three that exist, plus one subtraction line.
 - **`traderx_book_operator_open_orders` — genuinely harder, and probably the wrong fix.** Open orders
   is a **gauge over resting state**, not a monotonic counter, so there is no shadow to subtract; it
   would need resting orders tracked by account range. **And the two sites that want it
