@@ -108,7 +108,43 @@ start_pf() {
     sleep 2
   done
 }
-trap stop_pf EXIT
+REPLAY_PAUSED=0
+# ADR-072 put a THIRD writer on this rig, and step 4's reading is a VENUE-WIDE gauge
+# (traderx_book_open_orders carries only a member label — there is no per-ticker book metric to
+# narrow to). Replayed flow rests and pulls orders on the tape's own books continuously, so
+# "exactly one order left the book" measures this proof's cancel PLUS whatever the replay did in
+# the same window. Measured 2026-08-27: the count went 287 -> 284 on a correct cancel.
+#
+# IT PASSED THE RUN BEFORE, WHICH IS THE WORST PART — at ~6/s the window is often quiet and the
+# delta is often exactly 1. A flaky green is worse than a red, so this is not tuned, it is removed:
+# the replay is stopped for the measurement and the exact-delta assertion stays exact.
+#
+# The alternative — dropping to step 5's identity readings — was rejected because they read the
+# READ MODEL (SQL + REST), and this step is the proof's only CONSENSUS-level ground truth. That is
+# what the proof is named for, and it is not a thing to trade away to dodge a gauge.
+pause_replay() {
+  ${K} get deploy price-publisher >/dev/null 2>&1 || { echo "  [note] no price-publisher on this tier; nothing to pause"; return 0; }
+  ${K} scale deploy price-publisher --replicas=0 >/dev/null \
+    || fail "could not pause the tape replay, so step 4's exact-delta reading cannot be trusted"
+  ${K} wait --for=delete pod -l app=price-publisher --timeout=120s >/dev/null 2>&1
+  REPLAY_PAUSED=1
+  echo "  [replay] price-publisher scaled to 0 — the venue gauge is this proof's alone for step 4"
+}
+resume_replay() {
+  [[ "${REPLAY_PAUSED}" == "1" ]] || return 0
+  REPLAY_PAUSED=0
+  ${K} scale deploy price-publisher --replicas=1 >/dev/null 2>&1
+  ${K} rollout status deploy/price-publisher --timeout=300s >/dev/null 2>&1 \
+    && echo "  [replay] price-publisher restored" \
+    || echo "  [replay] WARNING: price-publisher did not come back — the rig has no tape feed"
+  return 0
+}
+# ON THE TRAP, NOT AT THE END OF STEP 4. A restore that only runs on the happy path strands the rig
+# for every later proof and every other lane when this one is interrupted — which is exactly what
+# an outage did to yu13-stp-and-replace on 2026-08-27
+# (issues/open/a-proof-killed-mid-run-leaves-its-prep-stranded-on-the-rig.md).
+cleanup() { resume_replay; stop_pf; }
+trap cleanup EXIT
 
 order() { # order <side> -> body (fails the run unless it RESTS: kind=1)
   local body kind
@@ -205,6 +241,7 @@ await "open set ${SUBJECT} (REST)" "NEW" rest_status "${SUBJECT}"
 await "open set ${CONTROL} (REST)" "NEW" rest_status "${CONTROL}"
 
 step "4. cancel the subject; the cluster applies it (ground truth, not the 200)"
+pause_replay
 BEFORE="$(digest_consensus)"
 OUT="$(cancel "${SUBJECT}")"
 echo "  POST /cancel ${SUBJECT} -> ${OUT}"
@@ -212,11 +249,15 @@ echo "  POST /cancel ${SUBJECT} -> ${OUT}"
 AFTER="$(digest_consensus)"
 echo "  book: [${BEFORE}] -> [${AFTER}]"
 [[ "$(( ${BEFORE%% *} - 1 ))" -eq "${AFTER%% *}" ]] \
-  || fail "expected exactly one order to leave the replicated book"
+  || fail "expected exactly one order to leave the replicated book (replay paused, so this delta is
+       this proof's alone; a drop of more than 1 means another writer is still live)"
 # A cancel mints no orderRef: the counter must NOT have moved. This is the "never trust a 200"
 # assertion in the other direction — the effect happened, and nothing else did.
 REF2="$(refs_agreed)"
 [[ "${REF2}" -eq "${REF1}" ]] || fail "next_order_ref moved on a cancel: ${REF1} -> ${REF2}"
+# Step 5 reads the read model and is immune to replayed flow, so the replay goes back on here
+# rather than at the end — the rig spends the minimum time without its tape feed.
+resume_replay
 
 step "5. the effect end: subject CANCELED, gone from the open set — control still open"
 await "orderbook row ${SUBJECT} (SQL)"   "CANCELED" sql_status "${SUBJECT}"
