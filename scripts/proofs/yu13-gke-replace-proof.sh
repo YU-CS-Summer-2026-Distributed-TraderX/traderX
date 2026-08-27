@@ -89,7 +89,26 @@
 # proves nothing about the class these assertions were rewritten for, and this file has never
 # once run under live replay — so it gets to prove the tape was writing while it passed.
 #
-# SOUND, AND LEFT ALONE: the `uniq_one` cross-member agreement checks in step 3. "The members
+# THE TENTH, FOUND BY RUNNING IT (2026-08-27) AFTER ALL NINE WERE FIXED — AND IT IS A DIFFERENT
+# SHAPE, WHICH IS WHY THREE ENUMERATIONS AND TWO PEOPLE ALL CLASSIFIED IT "SOUND":
+#
+#   Step 3's three `uniq_one` cross-member checks. The CLAIM is sound and always was — "the members
+#   agree" cannot be disturbed by who wrote the orders. The MEASUREMENT was not. refs_all/
+#   trades_all/stp_all read a global counter with three SEQUENTIAL `kubectl exec`s, and the tape
+#   advances it between them, so a member that sampled earlier reads lower and is reported as
+#   disagreeing. Measured at 6.13/s: `refs [21580 21586 21586]`, `trades [18006 18006 18010]`,
+#   **8 skews in 80 samples**. ~90% pass rate — the worst kind, because the red gets re-run.
+#
+#   The lesson the first nine did NOT teach: **classifying the assertion is not enough — ask how it
+#   SAMPLES.** "Cross-member agreement is safe" is a statement about the claim; a claim you cannot
+#   sample coherently is still unmeasurable. Fixed with agree_on(), the retry digest_consensus has
+#   always had, whose own comment was pointing straight at these three checks.
+#
+#   It also printed a self-contradicting failure — "members disagree: [20850 20850 20850]" — because
+#   the assertion and the message called the reader twice and got different samples. Same disease as
+#   `d26d9851`: a success or failure line narrating something other than what was asserted.
+#
+# STILL SOUND, AND LEFT ALONE IN SUBSTANCE: the `uniq_one` cross-member agreement checks in step 3. "The members
 # agree" is true no matter who wrote the orders. They read the GLOBAL counters deliberately: the
 # twins are the wrong instrument for a determinism check, and the STP twin is per-process, so a
 # cross-member absolute on it could not survive a restart anyway. The old header warned that
@@ -149,6 +168,10 @@ OTHER="${OTHER:-22214}"
 # nothing replayed can cross our orders and the operator trade deltas below are exactly ours.
 TICKER="${TICKER:-RPL$(date +%H%M%S)}"
 PRICE="${PRICE:-150.00}"
+# ADR-072 decision: "sample to a target order rate -- order 5-20/sec, tunable". Overridable because
+# the ADR calls it tunable, but NOT to be widened to make a run pass: see the rate gate in step 0.
+REPLAY_MIN_RATE="${REPLAY_MIN_RATE:-5}"
+REPLAY_MAX_RATE="${REPLAY_MAX_RATE:-20}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -200,6 +223,38 @@ refs_all()   { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_c
 op_trades_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_operator_trades)"; done; }
 op_stp_all()    { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_stp_operator_cancels)"; done; }
 uniq_one()   { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
+
+# RETRIED, for exactly the reason digest_consensus is -- and the omission took a live tape to find.
+# refs_all/trades_all/stp_all read a GLOBAL counter with three SEQUENTIAL `kubectl exec`s, and
+# ADR-072's replay advances all three counters BETWEEN those reads. A member reading lower is then
+# not a member that disagrees, it is a sample taken earlier. Measured on kind 2026-08-27 with the
+# tape at 6.13/s:
+#
+#     refs   [21580 21586 21586]      trades [18006 18006 18010]
+#     8 skews in 80 samples -- it passes ~90% of the time
+#
+# which is the worst rate there is: the red gets re-run and goes green. THE CLAIM IS STILL SOUND --
+# who wrote the orders is irrelevant to whether the members agree -- but the MEASUREMENT was not,
+# and no amount of reasoning about the claim could have found that. Only running it under a live
+# tape did. This file already knew the answer and had applied it in one place only: the comment in
+# digest_consensus says a single sample "looks exactly like a determinism failure and is not one".
+# The three checks below were the ones it was pointing AT, and they never got the retry.
+#
+# Returning the agreed reading also removes a second defect: step 3 used to call each reader TWICE,
+# once for the assertion and once for the failure message, so the message printed a DIFFERENT and
+# usually coherent sample -- "members disagree: [20850 20850 20850]", a claim contradicted by the
+# data printed inside it. Assert and report the same reading.
+agree_on() { # agree_on <reader-fn> <what-it-is> -> the agreed reading
+  local v i
+  for i in $(seq 1 40); do
+    v="$("$1")"
+    [[ "$(printf '%s' "${v}" | uniq_one)" == "1" ]] && { printf '%s' "${v}"; return 0; }
+    sleep 1
+  done
+  fail "the members never agreed on ${2}: [${v}]
+  Retried 40x, so this is a PERSISTENT split and not the sampling skew the retry exists for. On a
+  deterministic core that is the most serious thing this proof can report."
+}
 
 # --- the read model: ASK THE ORDER, do not count the venue ------------------------------------
 # Written from the LEADER's egress, so a status here is a COMMITTED apply and not the gateway's
@@ -375,7 +430,20 @@ SUBMITTED0="$(printf '%s' "${PUB_H}" | jget printReplay.submitted)" \
 REPLAY_ERR="$(printf '%s' "${PUB_H}" | jget printReplay.error)" || REPLAY_ERR=""
 [[ -z "${REPLAY_ERR}" ]] || fail "the replay is OFF: ${REPLAY_ERR}
   A green here with the tape stopped proves nothing about the class this file was rewritten for."
-echo "  tape live: $(printf '%s' "${PUB_H}" | jget printReplay.symbols) symbols at ~$(printf '%s' "${PUB_H}" | jget printReplay.ordersPerSecond)/s, ${SUBMITTED0} orders submitted so far"
+RATE0="$(printf '%s' "${PUB_H}" | jget printReplay.ordersPerSecond)" || RATE0=""
+echo "  tape live: $(printf '%s' "${PUB_H}" | jget printReplay.symbols) symbols at ~${RATE0}/s, ${SUBMITTED0} orders submitted so far"
+# ENABLED IS NOT THE SAME AS WRITING AT PRESSURE. A rig shipped 2026-08-27 reported enabled with
+# error:null and plausible orders while replaying at 1.53/s -- a quarter of target, because the
+# print-sample Secret and PRICE_TICKERS disagreed, and NOTHING reported the disagreement. Every
+# arm below would still have gone green, and the "submitted climbed" check in step 6 passes at any
+# rate above zero. So the band is asserted, not printed. Do not widen it to make a run pass: a
+# quiet tape is the condition under which the assertions this file used to make ALSO passed.
+awk -v r="${RATE0}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
+  'BEGIN{exit !(r+0 >= lo+0 && r+0 <= hi+0)}' \
+  || fail "the tape reports ${REPLAY_MIN_RATE:+}${RATE0:-no}/s, outside ADR-072's ${REPLAY_MIN_RATE}-${REPLAY_MAX_RATE}/s band.
+  Enabled and error-free is NOT the same as writing at pressure, and a quarter-rate tape lets every
+  assertion here pass for the wrong reason. Check the print-sample Secret against PRICE_TICKERS."
+RUN_T0=${SECONDS}
 
 RESTARTS0="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
@@ -427,9 +495,15 @@ echo "  ${SELF} own bid    ref=${REF_B} buy  4 @ $(px -5)"
 BEFORE="$(digest_consensus)"
 # The twins, per member. traderx_stp_cancels and traderx_cluster_trades are global over order
 # writers, so the tape's own self-crosses and fills land in them; these two exclude replayed flow
-# at the writer. Both are read BEFORE the kill in step 4, which matters for the STP twin: it is
-# per-process, so its cross-member absolutes would not survive a restart (its per-member delta,
-# used here, is unaffected).
+# at the writer.
+#
+# DO NOT MOVE THE STP ASSERTION BELOW PAST A MEMBER REBUILD. traderx_stp_operator_cancels is
+# PER-PROCESS on both halves, so a rebuilt member restarts it at 0. That breaks two different ways
+# and only one of them is obvious: a cross-member ABSOLUTE cannot agree after a restart, and --
+# less obvious -- a per-member DELTA that STRADDLES the restart subtracts a pre-restart s0 from a
+# post-restart s1 and goes negative. It is safe HERE only because both reads happen in step 2,
+# before step 4's kill; nothing structural protects it. The trade twin has no such constraint: it
+# is snapshotted on both halves, which is why step 4 may use it across the rebuild.
 STP0="$(op_stp_all)"; TR0="$(op_trades_all)"
 REP="$(replace "${REF_B}" 4 "$(px 0)")"
 echo "  POST /replace (bid $(px -5) -> $(px 0), into its own quote)  ->  ${REP}"
@@ -459,12 +533,14 @@ echo "  the replaced order survived and its own quote was cancelled — never th
 
 # ---------------------------------------------------------------------------------------------
 step "3. three-member state identity through the replace sequence"
-# SOUND AS WRITTEN, and deliberately still on the GLOBAL counters: the claim is that the MEMBERS
-# AGREE, which is a determinism property no third writer can disturb.
-[[ "$(refs_all | uniq_one)" == "1" ]]  || fail "members disagree on nextOrderRef: [$(refs_all)]"
-[[ "$(trades_all | uniq_one)" == "1" ]] || fail "members disagree on the trade counter: [$(trades_all)]"
-[[ "$(stp_all | uniq_one)" == "1" ]]    || fail "members disagree on the STP counter: [$(stp_all)]"
-echo "  nextOrderRef [$(refs_all)]  trades [$(trades_all)]  stp [$(stp_all)]  book [$(digest_consensus)]"
+# Deliberately still on the GLOBAL counters: the claim is that the MEMBERS AGREE, and agreement on
+# the global is the STRONGER determinism statement -- it covers the tape's own orders too, not just
+# ours. What had to change is not the counter but the SAMPLING: see agree_on above, and the 8-in-80
+# skew rate that exposed it. A single sequential sample of a moving global is not a reading.
+REFS="$(agree_on refs_all  "nextOrderRef")"
+TRD="$(agree_on trades_all "the trade counter")"
+STP="$(agree_on stp_all    "the STP counter")"
+echo "  nextOrderRef [${REFS}] trades [${TRD}] stp [${STP}] book [$(digest_consensus)]"
 
 # ---------------------------------------------------------------------------------------------
 step "4. a replace survives a snapshot AND a member rebuilt from nothing"
@@ -583,7 +659,18 @@ SUBMITTED1="$(pub /health | jget printReplay.submitted)" || SUBMITTED1=""
   || fail "the tape submitted NO orders across this entire run (${SUBMITTED0} -> ${SUBMITTED1}).
   Every assertion above is designed to hold while a third writer moves the venue; with the tape
   stopped this run demonstrates none of that. Start the replay and run it again."
-echo "  tape wrote throughout: printReplay.submitted ${SUBMITTED0} -> ${SUBMITTED1}"
+# THE OBSERVED RATE, MEASURED OVER THIS RUN. The step-0 gate reads a field the publisher reports
+# about itself; this one counts what it actually did, over a window minutes long, and no
+# misconfiguration can fake it. This is the reading that says the nine assertions were exercised
+# under real foreign write pressure rather than merely with a tape switched on.
+RUN_S=$(( SECONDS - RUN_T0 ))
+OBS_RATE="$(awk -v n="$(( SUBMITTED1 - SUBMITTED0 ))" -v s="${RUN_S}" 'BEGIN{printf "%.2f", (s>0? n/s : 0)}')"
+echo "  tape wrote throughout: submitted ${SUBMITTED0} -> ${SUBMITTED1} (+$(( SUBMITTED1 - SUBMITTED0 ))) over ${RUN_S}s = ${OBS_RATE}/s observed"
+awk -v r="${OBS_RATE}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
+  'BEGIN{exit !(r+0 >= lo+0 && r+0 <= hi+0)}' \
+  || fail "the tape averaged ${OBS_RATE}/s across this run, outside ADR-072's ${REPLAY_MIN_RATE}-${REPLAY_MAX_RATE}/s
+  band. The venue was not under the write pressure these assertions were rewritten for, so this run
+  does not demonstrate the class even though every arm above passed."
 
 echo
 echo "[PASS] atomic replace on a real cluster: ack correlation under cancel-plus-add, three-member"
