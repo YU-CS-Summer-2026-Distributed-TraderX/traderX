@@ -1,5 +1,39 @@
 #!/usr/bin/env bash
 # yu13-gke-replace-proof.sh — the three things atomic replace (ADR-058) still needed proving on a
+#
+# !!! THIS PROOF IS KNOWN-EXPOSED TO ADR-072's REPLAYED ORDER FLOW AND HAS NOT BEEN FIXED (2026-08-27)
+#
+# READ THIS BEFORE YOU DEBUG A RED RUN, because the failure will not look like this cause: it will
+# say "expected exactly one order to leave the book" or "expected exactly 1 STP cancel", and the
+# replace under test will have worked perfectly.
+#
+# Since ADR-072 the rig has a THIRD writer replaying sampled TAQ prints as real orders at ~6/s.
+# Six assertions below claim an exact delta or an unchanged absolute over a window, on counters
+# every writer moves:
+#
+#   :150  BEFORE == AFTER                 on traderx_book_open_orders   (venue-wide, NO twin)
+#   :176  $((BEFORE - 1)) -eq AFTER       on traderx_book_open_orders   (venue-wide, NO twin)
+#   ~:178 s1 -eq s0 + 1   per member      on traderx_stp_cancels        (NO twin; replayed flow
+#                                          tripping self-trade prevention moves it)
+#   ~:240 t1 -eq t0 + 2   per member      on traderx_cluster_trades     (twin EXISTS, see below)
+#   :256  BEFORE == AFTER  (full digest)  on the book digest            (any book change moves it)
+#   ~:262 t1 -eq t0 + 2   per member      on traderx_cluster_trades     (twin EXISTS, see below)
+#
+# The cross-member `uniq_one` assertions around :188-:190 are SOUND and need nothing — "the members
+# agree" is true no matter who wrote the orders. Note the same helper serves both purposes here:
+# `trades_all()` feeds the sound agreement check AND the exposed per-member delta.
+#
+# WHY IT IS STILL LIKE THIS: this file is not in run-proofs.sh, so nothing on the kind rig can red
+# it, and it cannot be exercised from there either — fixing it blind would replace a documented
+# break with an undocumented one. The two `traderx_cluster_trades` sites have a drop-in twin today
+# (`traderx_cluster_operator_trades`, per member, same shape); the other four need either
+# `traderx_book_operator_open_orders` / `traderx_stp_operator_cancels`, which do not exist, or the
+# identity claim — ask the order its own state instead of counting the venue.
+#
+# See scripts/proofs/lib-consensus-readings.sh (the "SHAPE OF THE READING" block) and
+# issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md for the
+# enumeration of all seventeen readers, of which this file is the only exposed one.
+#
 # real cluster, run on GKE because kind cannot carry them.
 #
 # WHY GKE. Replace is the least-proven and most complex of the member bundle: multiple state

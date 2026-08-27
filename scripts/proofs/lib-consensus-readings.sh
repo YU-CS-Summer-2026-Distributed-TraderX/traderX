@@ -113,6 +113,56 @@ _k() {
   if [[ "$(declare -p K 2>/dev/null)" == "declare -"[aA]* ]]; then "${K[@]}" "$@"; else ${K} "$@"; fi
 }
 
+# ---------------------------------------------------------------------------------------------
+# THE CLASS IS THE SHAPE OF THE READING, NOT THE NAME OF THE METRIC (2026-08-27)
+#
+# THE SAME DEFECT HAS NOW BEEN FOUND THREE TIMES, IN THREE PROOFS, AND FIXED THREE TIMES BY THREE
+# PEOPLE WHO EACH THOUGHT THEY HAD A LOCAL BUG:
+#
+#   yu13-cancel-ingress          2026-08-26   venue depth 585 -> 577 on a correct cancel
+#   yu13-readmodel-effect-end    2026-08-27   venue depth 287 -> 284 on a correct cancel
+#   yu13-gke-replace-proof       2026-08-27   found by enumeration; still exposed, GKE-only
+#
+# Nobody generalised, so here is the generalisation. **Do not ask "is this metric contaminated?"
+# Ask "what shape is my assertion?"** — because the same helper in the same file can be sound in
+# one line and exposed in the next. `yu13-gke-replace-proof`'s `trades_all()` feeds BOTH a
+# cross-member `uniq_one` (sound) AND a per-member exact delta (exposed). No search by metric
+# name can sort that; only reading the assertion can.
+#
+#   SOUND    cross-member agreement:  m0 == m1 == m2
+#            The claim is that the MEMBERS AGREE. Who wrote the orders is irrelevant, so a third
+#            writer cannot touch it. Fourteen of the seventeen readers of traderx_book_open_orders
+#            are this shape and need nothing.
+#
+#   EXPOSED  a delta or an absolute over a window:  AFTER - BEFORE == n,  AFTER == BEFORE
+#            The claim is about VOLUME, and every writer contributes to it.
+#            `>=` is WORSE than `==`, not safer: it goes vacuously green rather than red, because
+#            somebody else's activity satisfies it. (seed-option-chain.sh:88-96 asserts `-gt` on
+#            traderx_order_events_total{event="fill"} to prove an option cross booked; a replayed
+#            EQUITY fill satisfies it while the option is silently rejected.)
+#
+# THE FIX, IN PREFERENCE ORDER — and the first one is the one all three reached for last:
+#
+#   1. ASK THE ORDER WHAT HAPPENED TO IT. A count standing in for "THIS order did X" can almost
+#      always be replaced by the identity claim itself: the row's own CANCELED/FILLED status, its
+#      own orderRef in the ack, its own absence from the open set. It needs no counter, no twin
+#      and no quiet venue, and it says something STRICTER than the count did. Prefer it.
+#   2. An operator-scoped twin, read per member (below) — keeps the consensus level when the claim
+#      genuinely is about volume rather than about one order.
+#   3. Pausing the replay for the measurement. It works and it is the weakest: it mutates shared
+#      rig state mid-suite, strands the rig feedless if it is not on an EXIT trap, and makes the
+#      reading depend on a scale-down succeeding.
+#
+# ADOPTION IS THE GAP, NOT COVERAGE. Twins exist for traderx_cluster_trades and
+# traderx_cluster_next_order_ref and are still the MINORITY of reads across scripts/ (18 raw vs 5
+# scoped; 22 raw vs 8). Proofs keep reaching for the raw name because it is the name that comes to
+# mind. traderx_book_open_orders and traderx_stp_cancels have no twin at all.
+#
+# AND THE TELL, WHEN YOU ARE THE ONE BEING FOOLED: it passes MOST of the time. At ~6 orders/sec the
+# window is often quiet and the delta is often exactly right. A proof that is right most of the
+# time is worse than one that is wrong every time — the red gets fixed, the flake gets re-run.
+# ---------------------------------------------------------------------------------------------
+
 # --- raw per-member readings -----------------------------------------------------------------
 
 # The applied sequence off a MEMBER's health port. Port 8080 is the member; 18110 is the
