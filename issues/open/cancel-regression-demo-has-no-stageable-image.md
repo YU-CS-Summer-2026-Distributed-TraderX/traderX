@@ -90,3 +90,37 @@ not in the registry, not in git, and not rebuilt by any script under `scripts/` 
 `build-stp-boundary-images.sh` (which is exactly why the stp boundary pair survived the same
 reclaim — it can regenerate them, and did, in under a minute). **The durable fix for this class is
 a build script per historical image**, not a note asking people not to prune.
+
+
+## CORRECTION 2026-08-27: `yu15-cancel` was not lost, and the FIX half is one line from running
+
+**The image survives on all three kind nodes.** Measured after the reclaim:
+
+    traderx-yu12-cluster-worker{,2,3}: yu15-cancel present (with 13 other historical cluster-node tags)
+    docker images: yu15-cancel ABSENT
+
+The prune took **Docker's** copy. It did not touch the **nodes' containerd store**, which is where a
+pod actually reads from — so the artifact a pod needs was never gone.
+
+**What is broken is the preflight, not the availability**:
+
+    337  docker image inspect "${IMAGE_PRE}" ...
+    341  docker image inspect "${IMAGE_FIX}" ... || fail "fixed image not present locally"
+    350  kind load docker-image "${_img}" ...
+
+**It tests Docker's store, then loads to the nodes.** When the node already holds the image, the load
+is redundant and the check fails on a precondition that is already satisfied by another route — **a
+check testing the MECHANISM (is it in Docker?) rather than the PROPERTY (can a pod run it?)**, which
+is this project's most-repeated defect shape, here in a preflight.
+
+**Fix**: treat presence on the nodes as satisfying the precondition — probe
+`crictl images` on a node and skip the `kind load` when it is already there. That restores the FIX
+half immediately, with no rebuild.
+
+**The IMAGE_PRE half is unaffected by this correction** — it was already the `precancel-BUILD-ME`
+placeholder and remains genuinely absent, so the proof stays partial for the reason this issue
+originally described.
+
+**And the general point survives intact and is strengthened**: a proof depending on a historical
+image depends on a local artifact nothing tracks. It happened to survive on the nodes this time. **A
+build script per historical image is still the durable fix; "it was still on the node" is luck.**
