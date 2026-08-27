@@ -1,5 +1,6 @@
 import React from 'react';
 import Link from '@docusaurus/Link';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 import {Icon} from './Icons';
 import {ExternalLink} from './Links';
 import {catalogSource, internalNav} from './homepageData';
@@ -21,7 +22,7 @@ function HeroNav() {
   return (
     <nav className={styles.heroNav} aria-label="Homepage">
       <Link to="/" className={styles.brand}>
-        <img src="/img/favicon/favicon-traderX.ico" alt="" className={styles.brandLogo} />
+        <img src={useBaseUrl('/img/favicon/favicon-traderX.ico')} alt="" className={styles.brandLogo} />
         <span>FINOS TraderX</span>
       </Link>
 
@@ -37,7 +38,7 @@ function HeroNav() {
           <Icon name="external" />
         </ExternalLink>
         <ExternalLink href="https://www.finos.org" className={styles.finosNavBadge}>
-          <img src="/img/finos/finos-white.png" alt="" />
+          <img src={useBaseUrl('/img/finos/finos-white.png')} alt="" />
           <span>FINOS</span>
         </ExternalLink>
       </div>
@@ -59,7 +60,7 @@ export default function Hero() {
 
           <div className={styles.heroTitleGroup}>
             <img
-              src="/img/traderX/TraderX_Horizontal_BLK.svg"
+              src={useBaseUrl('/img/traderX/TraderX_Horizontal_BLK.svg')}
               alt="TraderX"
               className={styles.heroLogo}
             />

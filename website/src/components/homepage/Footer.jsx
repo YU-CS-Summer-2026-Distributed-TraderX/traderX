@@ -1,4 +1,5 @@
 import React from 'react';
+import useBaseUrl from '@docusaurus/useBaseUrl';
 import {Icon} from './Icons';
 import {ExternalLink, SmartLink} from './Links';
 import {catalogSource} from './homepageData';
@@ -9,7 +10,7 @@ export default function Footer() {
     <footer className={styles.footer}>
       <div className={styles.footerInner}>
         <div className={styles.footerBrand}>
-          <img src="/img/finos/finos-blue.png" alt="FINOS" className={styles.footerFinosLogo} />
+          <img src={useBaseUrl('/img/finos/finos-blue.png')} alt="FINOS" className={styles.footerFinosLogo} />
           <span />
           <div>
             <p>Copyright &copy; 2026 Fintech Open Source Foundation.</p>

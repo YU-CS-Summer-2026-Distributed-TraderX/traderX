@@ -35,8 +35,15 @@ jobs:
 
       - name: Build Docusaurus site
         env:
-          DOCUSAURUS_URL: https://traderx.finos.org
-          DOCUSAURUS_BASE_URL: /
+          # This fork publishes to a PROJECT Pages site served under a subpath --
+          # https://yu-cs-summer-2026-distributed-traderx.github.io/traderX/ -- and has no custom
+          # domain (the Pages API reports cname: null). Upstream's values are correct only for
+          # traderx.finos.org, which is a root domain: built with baseUrl "/" the page asks for
+          # /assets/... , that path 404s under /traderX/, every asset misses, and Docusaurus shows
+          # "Your Docusaurus site did not load properly". Restore the upstream values ONLY together
+          # with a CNAME that puts this site back on a root domain.
+          DOCUSAURUS_URL: https://yu-cs-summer-2026-distributed-traderx.github.io
+          DOCUSAURUS_BASE_URL: /traderX/
         run: |
           TRADERX_SITE_ROOT="${DOCUSAURUS_BASE_URL%/}" bash pipeline/refresh-state-docs.sh
           npm --prefix website run clear
