@@ -468,6 +468,9 @@ public final class ClusterNodeMain {
                 // YU17 (ADR-072): the operator-only halves. PER-PROCESS like their siblings — the
                 // replayed shadows are NOT snapshotted either, so the subtraction stays consistent
                 // on a restarted member instead of going negative.
+                + "# TYPE traderx_stp_operator_cancels counter\ntraderx_stp_operator_cancels" + m
+                + (started ? service.engine().countSelfTradesPrevented()
+                           - service.engine().externalSelfTradesPrevented() : 0L) + "\n"
                 + "# TYPE traderx_band_operator_reanchors counter\ntraderx_band_operator_reanchors" + m
                 + (started ? service.engine().bandReanchors() - service.engine().externalBandReanchors() : 0L) + "\n"
                 + "# TYPE traderx_band_operator_stranded_cancels counter\ntraderx_band_operator_stranded_cancels" + m

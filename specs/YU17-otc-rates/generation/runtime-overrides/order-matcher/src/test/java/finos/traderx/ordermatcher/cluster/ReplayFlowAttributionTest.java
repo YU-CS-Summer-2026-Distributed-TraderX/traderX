@@ -135,6 +135,69 @@ class ReplayFlowAttributionTest {
             "exactly the operator's own leg — not both, and not neither");
     }
 
+    // ----- the STP shadow (ADR-072, added 2026-08-27) --------------------------------------------
+    //
+    // The reading this exists for: yu13-gke-replace-proof asserts `s1 == s0 + 1` per member on
+    // traderx_stp_cancels to prove "exactly one STP cancel". That counter is global over order
+    // writers, so replayed flow tripping self-trade prevention breaks it — and unlike a trade leg,
+    // STP is unambiguous about whose it is: the guard only fires when the resting order and the
+    // aggressor share an account.
+
+    @Test
+    void aReplayedSelfTradeIsExcludedFromTheOperatorStpCount() {
+        final MatchingEngineClusteredService s = live();
+        final long globalBefore = s.engine().countSelfTradesPrevented();
+        final long operatorBefore = operatorStpCancels(s);
+
+        apply(s, order(REPLAY, InputEvent.SIDE_BUY, 100 * PX, 10));
+        apply(s, order(REPLAY, InputEvent.SIDE_SELL, 100 * PX, 10));
+
+        assertEquals(1, s.engine().countSelfTradesPrevented() - globalBefore,
+            "the replay crossed itself: the GLOBAL counter must see it");
+        assertEquals(0, operatorStpCancels(s) - operatorBefore,
+            "...and the operator sibling must not — this is the half the proof reads");
+    }
+
+    @Test
+    void anOperatorSelfTradeStillMovesTheOperatorStpCountWhileReplayFlowRuns() {
+        // Anti-vacuity, and the arm that would catch a shadow incremented unconditionally: a twin
+        // that never moves is indistinguishable from a twin that is always zero.
+        final MatchingEngineClusteredService s = live();
+        apply(s, order(REPLAY, InputEvent.SIDE_BUY, 100 * PX, 10));
+        apply(s, order(REPLAY, InputEvent.SIDE_SELL, 100 * PX, 10));
+        final long operatorBefore = operatorStpCancels(s);
+
+        // 90, NOT 100: the replay pair above leaves its SELL resting at 100 (STP cancels the
+        // resting side, never the aggressor), so an operator BUY at 100 crosses it as a genuine
+        // two-account trade and never rests — leaving nothing to self-cross, and the arm reads 0
+        // for a reason that has nothing to do with attribution. Measured while writing this.
+        apply(s, order(OPERATOR, InputEvent.SIDE_BUY, 90 * PX, 10));
+        apply(s, order(OPERATOR, InputEvent.SIDE_SELL, 90 * PX, 10));
+
+        assertEquals(1, operatorStpCancels(s) - operatorBefore,
+            "the operator crossed its own resting order through a window the replay also wrote in");
+    }
+
+    @Test
+    void theStpShadowIsPerProcessLikeItsParent() {
+        // The persistence rule (see ClusterNodeMain, above the twins): selfTradesPrevented is not
+        // snapshotted, so its shadow must not be either, or a restored member subtracts a shadow
+        // its parent outlived and the operator count goes NEGATIVE. Asserting the pair moves
+        // together across a restore is what makes that concrete rather than a comment.
+        final MatchingEngineClusteredService s = live();
+        apply(s, order(REPLAY, InputEvent.SIDE_BUY, 100 * PX, 10));
+        apply(s, order(REPLAY, InputEvent.SIDE_SELL, 100 * PX, 10));
+        assertEquals(1, s.engine().externalSelfTradesPrevented(), "shadow moved with its parent");
+
+        final MatchingEngineClusteredService restored = restore(s);
+        assertEquals(0, restored.engine().countSelfTradesPrevented(),
+            "parent restarts at 0 — it is not in the snapshot");
+        assertEquals(0, restored.engine().externalSelfTradesPrevented(),
+            "so the shadow must too; if this is ever non-zero the subtraction can go negative");
+        assertTrue(operatorStpCancels(restored) >= 0,
+            "the operator reading is non-negative on a restored member, which is the whole point");
+    }
+
     // ----- the band shadows --------------------------------------------------------------------
 
     @Test
@@ -226,6 +289,10 @@ class ReplayFlowAttributionTest {
 
     private long operatorTrades(final MatchingEngineClusteredService s) {
         return s.engine().tradeCounter() - s.engine().externalTradeLegs();
+    }
+
+    private long operatorStpCancels(final MatchingEngineClusteredService s) {
+        return s.engine().countSelfTradesPrevented() - s.engine().externalSelfTradesPrevented();
     }
 
     private long operatorReanchors(final MatchingEngineClusteredService s) {

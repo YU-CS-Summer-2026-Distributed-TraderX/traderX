@@ -158,6 +158,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     private long externalTradeLegs;
     private long externalBandReanchors;
     private long externalBandStrandedCancels;
+    private long externalSelfTradesPrevented;   // ADR-072: the replay's half of selfTradesPrevented
     private long bookReticks;           // YU17: empty-book re-derivations that CHANGED a book's tick
     private volatile long blpSeq = -1;
     private volatile long blpThreadId;
@@ -864,6 +865,16 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      */
     private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
         selfTradesPrevented++;
+        // ADR-072: the operator-only half. STP is decidable here BECAUSE the guard at the call site
+        // (`r.accountId == a.accountId`) only reaches this method when the resting order and the
+        // aggressor are the SAME account — so there is no "which side counts" question to get
+        // wrong, unlike a trade leg, where the two sides can be different writers and both are
+        // counted separately. PER-PROCESS, matching selfTradesPrevented, which is a plain field
+        // and is in neither the snapshot writer nor the reader; see the persistence rule above the
+        // twins in ClusterNodeMain before adding another.
+        if (InputEvent.isReplayFlow(r.accountId)) {
+            externalSelfTradesPrevented++;
+        }
         cancelUnsolicited(r, e, book, RiskReason.SELF_TRADE_PREVENTED);
     }
 
@@ -1527,6 +1538,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     public long externalTradeLegs() {
         readFence();
         return externalTradeLegs;
+    }
+
+    /** ADR-072: STP cancels caused by replayed tape flow. Per-process, like its parent. */
+    public long externalSelfTradesPrevented() {
+        readFence();
+        return externalSelfTradesPrevented;
     }
 
     /** YU17 (ADR-072): the replayed half of {@link #bandReanchors()}. PER-PROCESS, like its
