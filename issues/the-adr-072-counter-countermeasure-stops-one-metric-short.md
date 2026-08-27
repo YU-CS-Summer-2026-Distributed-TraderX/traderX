@@ -68,8 +68,11 @@ needing a quiet venue.**
 
 ## What to do
 
-1. **Add `traderx_book_operator_open_orders`** (or an operator label on the existing gauge), matching
-   the four twins that already exist. This closes the class rather than the instance.
+1. ~~**Add `traderx_book_operator_open_orders`** (or an operator label on the existing gauge), matching
+   the four twins that already exist.~~ **SUPERSEDED 2026-08-27 — do NOT build this twin.** See
+   *"Correction to the recommendation above"* below: the gauge is over resting state, so there is no
+   monotonic shadow to subtract, and by the persistence rule its shadow would need snapshotting —
+   a format bump and a mandatory fresh-epoch mint. **Its call sites want an identity claim.**
 2. **Enumerate which of the 17 take a delta rather than a cross-member compare**, and convert those.
    A regex cannot separate the two reliably — this needs reading the assertions.
 3. **Leave the cross-member comparisons alone.** They are correct as written.
@@ -127,8 +130,10 @@ read of the assertions.
 
 ### Revised recommendation
 
-1. **Two gauges need twins, not one:** `traderx_book_operator_open_orders` **and**
-   `traderx_stp_operator_cancels`.
+1. ~~**Two gauges need twins, not one:** `traderx_book_operator_open_orders` **and**
+   `traderx_stp_operator_cancels`.~~ **SUPERSEDED the same day — only the STP twin was correct**, and
+   it is built and verified live (`6374c110`). **Do not build the book-gauge twin;** see the
+   correction section below for why, and reach for the identity claim instead.
 2. **The larger gap is adoption, not coverage.** Twins exist for `cluster_trades` and
    `next_order_ref` and are the minority of reads — 18 raw `cluster_trades` reads against 5
    operator-scoped, 22 raw `next_order_ref` against 8. Proofs keep reaching for the raw name.
@@ -255,3 +260,23 @@ COF $170-$210, both inside $100-$1000).
 forever. "Quiet because books are busy and no symbol crosses $100" is a standing hazard with a named
 expiry — **the queued `PRICE_TICKERS` widening.** Only the mechanism decides whether the finding
 survives, and no check that looks at outputs can tell the two apart.
+
+
+---
+
+## Note on how this file was wrong (2026-08-27)
+
+**This issue recommended building `traderx_book_operator_open_orders` in three places and advised
+against it in one.** A reader meets the first recommendation ~120 lines before the correction, and
+would have spent a snapshot format bump and a mandatory fresh-epoch mint on a twin that was decided
+against the same day. Caught by the chip working `yu13-gke-replace-proof`, which met the stale advice
+in a tracking issue derived from this one.
+
+**The cause is a habit, not an oversight: corrections were APPENDED rather than applied to the body.**
+The same file already carries the lesson — *"corrected in place, editing the wrong claim rather than
+appending beneath it, because a wrong rule in the durable artifact is worse than no rule and a reader
+meets the body before the addenda"* — and it was applied to one claim while two live recommendations
+were left standing above it.
+
+**A superseded recommendation is not history, it is an instruction.** Strike it where it stands, and
+point at what replaced it.
