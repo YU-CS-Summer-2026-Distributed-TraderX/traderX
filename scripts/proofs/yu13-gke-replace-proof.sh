@@ -1,72 +1,115 @@
 #!/usr/bin/env bash
 # yu13-gke-replace-proof.sh — the three things atomic replace (ADR-058) still needed proving on a
+# real cluster, run on GKE because kind cannot carry them.
 #
-# !!! THIS PROOF IS KNOWN-EXPOSED TO ADR-072's REPLAYED ORDER FLOW AND HAS NOT BEEN FIXED
-# !!! (2026-08-27; enumeration CORRECTED the same day, see "how this list was got wrong" below)
+# ============================================================================================
+# ADR-072 EXPOSURE: ALL NINE ASSERTIONS FIXED IN ONE CHANGE (2026-08-27). Read this before you
+# add an assertion to this file.
 #
-# READ THIS BEFORE YOU DEBUG A RED RUN, because the failure will not look like this cause: it will
-# say "expected exactly one order to leave the book", or "member 0 booked a self-trade", or "the
-# rebuilt member did not converge" -- and the replace under test will have worked perfectly.
+# Since ADR-072 the rig has a THIRD writer, replaying sampled TAQ prints as real orders at ~6/s.
+# Nine assertions here claimed an exact delta, or an unchanged absolute, across a window on
+# counters every writer moves. Eight would have failed in the ACCUSATORY direction — naming the
+# replace, the STP, or a rebuilt member for something the tape did. The ninth could not fail.
 #
-# Since ADR-072 the rig has a THIRD writer replaying sampled TAQ prints as real orders at ~6/s.
+# THIS HEADER NAMES STEPS, NOT LINE NUMBERS, DELIBERATELY. The previous two versions of it were
+# wrong within a day because a header insertion renumbered the file underneath them, and a stale
+# line number sends the next reader to the wrong assertion. Steps do not shift.
 #
-# EIGHT assertions claim an exact delta or an unchanged absolute over a window, on counters every
-# writer moves. All eight fail in the ACCUSATORY direction -- naming a component that did nothing:
+# WHAT REPLACED THEM, in lib-consensus-readings.sh's preference order:
 #
-#   :184  BEFORE == AFTER          traderx_book_open_orders   venue-wide, NO twin
-#   :210  $((BEFORE-1)) -eq AFTER  traderx_book_open_orders   venue-wide, NO twin
-#   :214  s1 -eq s0 + 1  per mem   traderx_stp_cancels        twin EXISTS since 6374c110
-#   :216  t1 -eq t0      per mem   traderx_cluster_trades     twin EXISTS  <- same loop as :214
-#   :261  PRE_KILL == POST_KILL    book digest, across a member KILL AND REBUILD -- seconds during
-#                                  which replayed flow is guaranteed to move the venue
-#   :275  t1 -eq t0 + 2  per mem   traderx_cluster_trades     twin EXISTS
-#   :290  BEFORE == AFTER          book digest (depth AND hash)
-#   :298  t1 -eq t0 + 2  per mem   traderx_cluster_trades     twin EXISTS
+#   ASK THE ORDER (five sites). Each count was standing in for "THIS order did X", which the
+#   order's own read-model row states directly — status, quantity, limit price — and which no
+#   other writer can move. Strictly STRONGER than the count it replaced: "depth fell by one" is
+#   satisfied by any order leaving; "ref Q reads CANCELED and ref B still rests at the new price"
+#   says WHICH. Identity is what a proof named for replace and ack-correlation exists to
+#   establish, so the count was always the proxy.
+#     step 1  one order in, one out   -> ref A rests NEW at the REPLACED qty and price, AND the
+#                                        account's open set on this ticker is exactly {A}. That
+#                                        second half is the "not two orders" claim the depth
+#                                        equality was making, scoped to a ticker the tape cannot
+#                                        touch.
+#     step 2  the quote left the book -> ref Q reads CANCELED and ref B still reads NEW. The old
+#                                        depth-minus-one could not tell which of them went.
+#     step 4  the rebuilt member      -> DELETED, not replaced. digest_consensus already asserts
+#             converged                  three-member agreement and now includes the member
+#                                        rebuilt from an empty disk; that IS the convergence
+#                                        claim. The equality across the kill added nothing except
+#                                        a requirement that the venue be quiet for the seconds a
+#                                        member takes to rejoin — which is the one window where
+#                                        replayed flow is guaranteed to be moving it.
+#     step 4  the replaces survived   -> refs A and T read NEW at their replaced terms AFTER the
+#             snapshot + rebuild         rebuild. Says far more than a digest byte-compare did.
+#     step 5  a REJECTED replace left -> ref R still reads NEW at its ORIGINAL qty and price.
+#             the order alone
 #
-# ONE MORE fails in the opposite and worse direction -- it CANNOT FAIL:
+#   THE OPERATOR TWIN, per member (two sites), where the claim really is about volume:
+#     step 2  exactly one STP cancel     traderx_stp_operator_cancels     (twin landed 6374c110)
+#     step 2  the self-cross booked 0    traderx_cluster_operator_trades
 #
-#   :183  BEFORE != AFTER          "the replace changed nothing on the members". Replayed flow
-#                                  rewrites the digest continuously, so this holds whether or not
-#                                  the replace did anything. Zero coverage that reads as coverage.
-#                                  Delete it; :180's orderRef identity is the real claim.
+#   assert_order_effects (two sites). The two "+2 legs" checks are volume claims that also have
+#   to be ATTRIBUTABLE, so the operator TRADE delta is bracketed by the operator REF delta:
+#   "exactly my one order was sequenced in this window, and it had exactly this trade effect".
+#   Either half alone is the vacuous form — see the library.
 #
-# SOUND, leave alone: :222-:224, the `uniq_one` cross-member agreement checks. "The members agree"
-# is true no matter who wrote the orders. Note trades_all() feeds BOTH those and the exposed
-# per-member deltas -- the same helper, sound in one line and exposed in the next.
+#   DELETED (one site, step 1). `BEFORE != AFTER` on the digest — "the replace changed nothing on
+#   the members". Replayed flow rewrites the digest continuously, so it held whether or not the
+#   replace did anything: zero coverage that read as coverage, and the only one of the nine that
+#   would never have printed a red to tell anyone. The orderRef identity above it is the real
+#   claim. Same shape deleted from yu13-cancel-ingress.
 #
-# HOW THIS LIST WAS GOT WRONG, TWICE, WHICH IS THE USEFUL PART:
-#   * It first said SIX. It was built by enumerating readers of `traderx_book_open_orders` -- a
-#     search by METRIC NAME, which cannot see a site whose exposure comes through a different
-#     counter.
-#   * It then said SEVEN. :216 was missed because it sits in the same `for m in 0 1 2` loop as
-#     :214, two lines below, and the loop was read as ONE site. A loop is N assertions.
-#   * It is now NINE, found by enumerating ASSERTIONS (`grep -nE '^\s*\[\[|^\s*\(\('`) and
-#     classifying each, rather than by chasing metrics. :261 and :183 appear in no metric-name
-#     search at all: both compare a whole digest string.
-#   Enumerate what the file ASSERTS, not what it READS. Satisfy yourself there is no tenth.
+# WHY THERE IS NO traderx_book_operator_open_orders, decided and not to be relitigated silently:
+# it is a GAUGE over resting state, so there is no monotonic external contribution to subtract. A
+# real twin would need resting orders tracked by account range — engine state added for an
+# observability artifact — and by the persistence rule its shadow would have to be snapshotted
+# like the gauge, i.e. a format bump and a mandatory fresh epoch. Every one of its call sites
+# wanted an identity claim anyway, and now makes one.
 #
-# WHY IT IS STILL LIKE THIS: this file is not in run-proofs.sh, so nothing on the kind rig can red
-# it, and its branch has never run under live replay -- nothing has ever printed a red from any of
-# the nine. FIX ALL OF THEM IN ONE CHANGE, on a tier that can run it: fixing a subset leaves the
-# rest red, which is unexercised diff for no gain.
+# THE PERSISTENCE RULE, because it is what decides whether a twin survives step 4's rebuild:
+#   traderx_cluster_operator_trades  SNAPSHOTTED on BOTH halves (tradeCounter, and the engine's
+#       externalTradeLegs at snapshot offset 60 — MatchingEngineClusteredService:1500). So it
+#       survives the restore and can still be quiesced across all three members afterwards. That
+#       is what makes step 4's use of it legal; a per-process twin there would have substituted a
+#       fresh bug for the one being removed.
+#   traderx_stp_operator_cancels     PER-PROCESS on both halves (selfTradesPrevented is a plain
+#       field, in neither the snapshot writer nor the reader). Its per-member DELTA is sound; its
+#       cross-member ABSOLUTE is not, after any restart. Used only in step 2, before the kill.
+#   The four are NOT uniform. Check the PARENT before assuming either — ClusterNodeMain's twin
+#   block spells out which is which and what each one cost.
 #
-# THE FIX, in the order lib-consensus-readings.sh ranks them:
-#   1. ASK THE ORDER. :184/:210/:290/:261 are all standing in for "THIS order did X" -- the order's
-#      own state says it, needs no counter, and no other writer can move it. See yu13-cancel-ingress
-#      `52752df4` and `d26d9851` for the same rewrite done on the same class; copy that shape.
-#   2. THE OPERATOR TWIN, per member, for the four counter sites: `traderx_cluster_operator_trades`
-#      (:216/:275/:298) and `traderx_stp_operator_cancels` (:214). Both exist and both are
-#      per-process -- see the persistence rule above the twins in ClusterNodeMain BEFORE assuming
-#      that of any future one.
-#   3. DO NOT build `traderx_book_operator_open_orders`. It is a gauge over resting state, so there
-#      is no monotonic external contribution to subtract, and its two call sites are identity
-#      claims anyway (fix 1).
+# THE READ MODEL IS NOW A HARD DEPENDENCY, and the trailer that used to deny it was stale: the
+# GKE bring-up deploys trade-processor and waits on its rollout, and the YU17 gke layer carries
+# trade-processor.yaml. Step 0 REFUSES TO RUN if it cannot read — a reader that exists is not a
+# reader that answers, and a probe silently returning "" would turn every identity claim above
+# into a green that cannot fail, which is precisely the defect this change removes. The forward
+# claims (NEW in step 1, CANCELED in step 2) run on every pass, so they are also the standing
+# positive control on the reader itself.
+#
+# THE TAPE MUST BE LIVE. Step 0 fails if price-publisher reports the replay off or absent, and
+# step 6 requires it to have submitted orders ACROSS this run. A green with the tape stopped
+# proves nothing about the class these assertions were rewritten for, and this file has never
+# once run under live replay — so it gets to prove the tape was writing while it passed.
+#
+# SOUND, AND LEFT ALONE: the `uniq_one` cross-member agreement checks in step 3. "The members
+# agree" is true no matter who wrote the orders. They read the GLOBAL counters deliberately: the
+# twins are the wrong instrument for a determinism check, and the STP twin is per-process, so a
+# cross-member absolute on it could not survive a restart anyway. The old header warned that
+# trades_all() fed BOTH those and the exposed per-member deltas — one helper, sound in one line
+# and exposed in the next — so the helpers are now split: trades_all()/stp_all() serve only the
+# agreement checks, op_trades_all()/op_stp_all() only the deltas.
+#
+# HOW THE ENUMERATION WAS GOT WRONG, TWICE, WHICH IS THE USEFUL PART:
+#   * SIX, from enumerating readers of traderx_book_open_orders. A search by METRIC NAME cannot
+#     see a site exposed through a different counter.
+#   * SEVEN, when one turned up in the same `for m in 0 1 2` loop as another, two lines below,
+#     and the loop had been read as ONE site. A loop is N assertions.
+#   * NINE, by enumerating what the file ASSERTS (`grep -nE '^\s*\[\[|^\s*\(\('`) and classifying
+#     each. Two compare a whole digest string and appear in no metric-name search at all.
+#   Enumerate what the file ASSERTS, not what it READS. If you add an assertion here, classify it
+#   in this header at the same time.
 #
 # See scripts/proofs/lib-consensus-readings.sh (the "SHAPE OF THE READING" block) and
-# issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md for the
-# enumeration of all seventeen readers, of which this file is the only exposed one.
-#
-# real cluster, run on GKE because kind cannot carry them.
+# issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md.
+# ============================================================================================
 #
 # WHY GKE. Replace is the least-proven and most complex of the member bundle: multiple state
 # mutations inside ONE apply, which is exactly where unit tests are weakest. It needs a real
@@ -92,27 +135,26 @@
 # The divergence rule is applied on the way in — every member running the target image AND ready,
 # then the members agreed, BEFORE any traffic. That rule was earned on this exact change: a
 # rolling window is a divergence window while members compute different functions of the same log.
-#
-# Assertion end: the engine's own per-member counters and book digests. There is no order read
-# model (`orderbook` holds 0 rows for every order ever), and the trades read model is deliberately
-# not deployed for this proof — booked trades are asserted on the engine's trade counter, which is
-# authoritative and is simultaneously a cross-member agreement check.
 set -euo pipefail
 
-CTX="${CTX:-gke_traderx-501015_us-east1-b_traderx-lmax}"
+CTX="${CTX:-gke_traderx-505400_us-east1-b_traderx-bench}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
-IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-501015/traderx/cluster-node:yu13-replace}"
+IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-gke6}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18210}"
 SELF="${SELF:-42422}"
 OTHER="${OTHER:-22214}"
+# A MINTED ticker, and the library's rule depends on it: the tape never trades this symbol, so
+# nothing replayed can cross our orders and the operator trade deltas below are exactly ours.
 TICKER="${TICKER:-RPL$(date +%H%M%S)}"
 PRICE="${PRICE:-150.00}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 px() { python3 -c "print(${PRICE} + $1)"; }
+
+here="$(cd "$(dirname "$0")" && pwd)"; . "${here}/lib-consensus-readings.sh"
 
 member_metric() { # member_metric <ordinal> <metric-prefix>
   ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
@@ -146,10 +188,127 @@ digest_consensus() {
   fail "members never agreed on the book: [${b0}] [${b1}] [${b2}]
   (all-blank readings mean the members were UNREACHABLE, not that they disagreed)"
 }
+# THE GLOBAL counters, for the CROSS-MEMBER AGREEMENT checks in step 3 and nothing else. "The
+# members agree" is a claim about determinism that a third writer cannot touch, and the raw engine
+# counters are the right instrument for it.
 trades_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_trades)"; done; }
 stp_all()    { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_stp_cancels)"; done; }
 refs_all()   { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_next_order_ref)"; done; }
+# THE OPERATOR TWINS, for the per-member DELTAS and nothing else. Split from the two above on
+# purpose: the same helper feeding a sound agreement check and an exposed delta is how this file
+# came to have nine exposed assertions that a metric-name search kept missing.
+op_trades_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_operator_trades)"; done; }
+op_stp_all()    { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_stp_operator_cancels)"; done; }
 uniq_one()   { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
+
+# --- the read model: ASK THE ORDER, do not count the venue ------------------------------------
+# Written from the LEADER's egress, so a status here is a COMMITTED apply and not the gateway's
+# opinion of one. This is the effect end that replaced five venue-wide counter assertions.
+tp() { # tp <account> [all] -> the raw JSON array of that account's orders
+  ${K} exec deploy/trade-processor -- \
+    wget -qO- "http://localhost:18091/accounts/$1/orders${2:+?status=all}" 2>/dev/null || true
+}
+row() { # row <account> <ref> -> "<status> <quantity> <limitPrice>", or "" if not visible yet
+  tp "$1" all | python3 -c "
+import sys, json
+want = '$2'
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+for r in rows:
+    if str(r.get('id', '')).rsplit('-', 1)[-1] == want:
+        print(r.get('status', ''), r.get('quantity', ''), float(r.get('limitPrice') or 0)); sys.exit(0)
+print('')" 2>/dev/null || true
+}
+open_on_ticker() { # open_on_ticker <account> -> that account's OPEN refs on ${TICKER}, ascending
+  # No ?status=all: the default route returns only NEW/PARTIALLY_FILLED/QUEUED, which is the open
+  # set. Scoped to our MINTED ticker, so this is a statement no other writer can reach.
+  tp "$1" | python3 -c "
+import sys, json
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+refs = [str(r.get('id', '')).rsplit('-', 1)[-1] for r in rows if r.get('security') == '${TICKER}']
+print(' '.join(sorted((r for r in refs if r.isdigit()), key=int)))" 2>/dev/null || true
+}
+await_status() { # await_status <account> <ref> <want-status> <what> -> echoes the whole row
+  local got=""
+  for _ in $(seq 1 45); do
+    got="$(row "$1" "$2")"
+    [[ "${got%% *}" == "$3" ]] && { printf '%s' "${got}"; return 0; }
+    sleep 2
+  done
+  [[ -n "${got}" ]] \
+    || fail "$4: order $2 never became visible in the read model at all. That is the PROBE failing
+  to read — NOT a verdict about the replace. Check trade-processor and its NATS feed."
+  fail "$4: order $2 reads '${got%% *}', wanted '$3'   (row: ${got})"
+}
+# Numeric, because the read model returns limitprice as 153.000 where px() prints 153.0.
+same_num() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0==b+0)}'; }
+assert_terms() { # assert_terms <row> <qty> <price> <what>
+  local q p
+  q="$(awk '{print $2}' <<<"$1")"; p="$(awk '{print $3}' <<<"$1")"
+  same_num "${q}" "$2" || fail "$4: quantity reads ${q}, expected $2   (row: $1)"
+  same_num "${p}" "$3" || fail "$4: limit price reads ${p}, expected $3   (row: $1)"
+}
+
+# SELF-TEST THE PROBE BEFORE ARMING IT. `SELFTEST=1 ./yu13-gke-replace-proof.sh` exercises the three
+# read-model parsers against fixture JSON, with no cluster and no rig time. They are the instrument
+# five assertions now depend on, and a parser bug in them does not read as a parser bug: it reads as
+# "the order never became visible", i.e. a verdict about the replace. Cheap to run, so run it before
+# you spend a metered rig on a shape bug.
+if [[ "${SELFTEST:-0}" == "1" ]]; then
+  TICKER=ACME
+  tp() { # the real route filters by status server-side; this fixture deliberately does not, so the
+         # security filter and the numeric sort below are actually exercised rather than assumed.
+    [[ "$1" == "empty" ]] && { echo "[]"; return 0; }
+    [[ "$1" == "broken" ]] && { echo "<html>502</html>"; return 0; }
+    cat <<'JSON'
+[{"id":"ep7-101","accountId":22214,"security":"ACME","side":"Sell","quantity":9,"limitPrice":153.000,"status":"NEW"},
+ {"id":"ep7-17","accountId":22214,"security":"ACME","side":"Buy","quantity":4,"limitPrice":150.000,"status":"CANCELED"},
+ {"id":"ep7-2","accountId":22214,"security":"ZZZZ","side":"Buy","quantity":1,"limitPrice":9.500,"status":"NEW"}]
+JSON
+  }
+  _t=0; _f=0
+  chk() { _t=$((_t+1)); [[ "$2" == "$3" ]] || { echo "  [FAIL] $1: got '$2', want '$3'"; _f=$((_f+1)); }; }
+  chk "row reads status+qty+price"  "$(row x 101)"           "NEW 9 153.0"
+  chk "row reads a terminal state"  "$(row x 17)"            "CANCELED 4 150.0"
+  chk "absent ref reads empty"      "$(row x 999)"           ""
+  # '-7' must not match '-17'. A suffix compare that used endswith/LIKE would return the WRONG
+  # order's status here -- the dash-anchoring bug yu13-readmodel-effect-end calls out in SQL.
+  chk "no suffix bleed 7 vs 17"     "$(row x 7)"             ""
+  # Numeric sort, not lexicographic: lexicographic gives "101 17" and would make the step-1 open-set
+  # equality fail against a correct venue.
+  chk "open set, ticker-scoped"     "$(open_on_ticker x)"    "17 101"
+  chk "empty array is not a crash"  "$(row empty 101)"       ""
+  chk "empty array open set"        "$(open_on_ticker empty)" ""
+  # A 502 from the route must parse as "cannot read", never as "the order is absent" -- the step-0
+  # gate is what turns this into a refusal to run, and this arm proves it does not throw first.
+  chk "non-JSON is not a crash"     "$(row broken 101)"      ""
+  same_num 153.000 153.0 || { echo "  [FAIL] same_num 153.000 == 153.0"; _f=$((_f+1)); }; _t=$((_t+1))
+  same_num 153.0 154.0 && { echo "  [FAIL] same_num must reject 153.0 == 154.0"; _f=$((_f+1)); }; _t=$((_t+1))
+  assert_terms "NEW 9 153.0" 9 153.000 "selftest" ; _t=$((_t+1))
+  echo "selftest: $(( _t - _f ))/${_t} passed"
+  [[ ${_f} -eq 0 ]] || exit 1
+  exit 0
+fi
+
+# --- the tape, which must be writing while this proof passes -----------------------------------
+pub()  { ${K} exec deploy/price-publisher -- wget -qO- "http://localhost:18100$1" 2>/dev/null || true; }
+jget() { python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(3)
+for k in sys.argv[1].split('.'):
+    if isinstance(d, dict) and k in d:
+        d = d[k]
+    else:
+        sys.exit(4)
+print('' if d is None else d)" "$1"; }
 
 PF_PID=""
 stop_pf() { [[ -n "${PF_PID}" ]] && { kill "${PF_PID}" 2>/dev/null || true; wait "${PF_PID}" 2>/dev/null || true; }; PF_PID=""; }
@@ -189,6 +348,35 @@ for i in $(seq 1 120); do
   sleep 5
 done
 echo "  all three members: ${IMAGE##*:}, ready"
+
+# THE READER MUST PROVE IT CAN READ, BEFORE ANY CLAIM DEPENDS ON IT. Five assertions below are the
+# order's own state out of this read model. A reader that answered "" for every ref would satisfy
+# nothing and fail loudly at the first await_status — but a reader that answered an EMPTY ARRAY for
+# every account would be indistinguishable from "the order is not there yet" until the timeout, and
+# would report it as a verdict about the replace. Refuse up front instead.
+[[ "$(${K} get deploy trade-processor -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" == "1" ]] \
+  || fail "trade-processor is not READY. This proof's identity claims are read from the order read
+  model, so it cannot run without one. (The GKE bring-up deploys it; check the rollout.)"
+PROBE="$(tp "${OTHER}" all)"
+[[ "${PROBE}" == \[* ]] \
+  || fail "GET /accounts/${OTHER}/orders?status=all did not answer with a JSON array (got:
+  ${PROBE:-nothing}). A reader that EXISTS is not a reader that ANSWERS, and every identity claim
+  in this proof would otherwise go green off a read that never worked."
+echo "  order read model answers on trade-processor:18091 (the effect end for every claim below)"
+
+# THE TAPE IS A WRITER, AND THIS PROOF IS ONLY MEANINGFUL WHILE IT IS RUNNING. Every assertion here
+# was rewritten because replayed flow moved a counter underneath it; a run with the tape stopped
+# re-proves none of that and would quietly restore confidence in the shapes that were removed.
+PUB_H="$(pub /health)"
+[[ -n "${PUB_H}" ]] || fail "price-publisher /health did not answer — cannot establish the tape is live"
+SUBMITTED0="$(printf '%s' "${PUB_H}" | jget printReplay.submitted)" \
+  || fail "price-publisher /health carries NO printReplay block: this build predates ADR-072. This
+  proof asserts it passed WHILE the tape was writing, and on this rig it cannot."
+REPLAY_ERR="$(printf '%s' "${PUB_H}" | jget printReplay.error)" || REPLAY_ERR=""
+[[ -z "${REPLAY_ERR}" ]] || fail "the replay is OFF: ${REPLAY_ERR}
+  A green here with the tape stopped proves nothing about the class this file was rewritten for."
+echo "  tape live: $(printf '%s' "${PUB_H}" | jget printReplay.symbols) symbols at ~$(printf '%s' "${PUB_H}" | jget printReplay.ordersPerSecond)/s, ${SUBMITTED0} orders submitted so far"
+
 RESTARTS0="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
 start_pf
@@ -211,10 +399,20 @@ echo "  POST /replace qty 5->9, px $(px 5)->$(px 3)  ->  ${REP}"
 [[ "${REP}" == 200* ]] || fail "replace not accepted: ${REP}"
 [[ "${REP}" == *"\"orderRef\":${REF_A}"* ]] || fail "replace minted a new orderRef; identity was not preserved"
 AFTER="$(digest_consensus)"
-echo "  book: [${BEFORE}] -> [${AFTER}]"
-[[ "${BEFORE}" != "${AFTER}" ]] || fail "the replace changed nothing on the members"
-[[ "${BEFORE%% *}" == "${AFTER%% *}" ]] \
-  || fail "depth moved: a replace must be one order in and one order out, not two orders"
+echo "  book: [${BEFORE}] -> [${AFTER}]   (venue-wide; the tape moves this independently of us)"
+# ASK THE ORDER. This used to assert `BEFORE != AFTER` (the digest changed, so the replace did
+# something) and `BEFORE depth == AFTER depth` (a replace is not two orders). The first CANNOT FAIL
+# under a tape that rewrites the digest at ~6/s, so it was deleted rather than repaired. The second
+# was an identity claim wearing a counter's clothes, and the order states it directly: ref A is
+# still resting, now at the REPLACED terms, and it is the ONLY thing this account has open on this
+# ticker — which is what "one order in, one order out, not two" actually means.
+ROW_A="$(await_status "${OTHER}" "${REF_A}" NEW "the replaced order must still be resting")"
+assert_terms "${ROW_A}" 9 "$(px 3)" "the replace did not take effect on the resting order"
+OPEN_A="$(open_on_ticker "${OTHER}")"
+[[ "${OPEN_A}" == "${REF_A}" ]] \
+  || fail "after the replace, ${OTHER} has open orders [${OPEN_A}] on ${TICKER}, expected exactly
+  [${REF_A}]. A replace must be one order in and one order out — not two orders."
+echo "  ref ${REF_A} reads NEW at qty 9 @ $(px 3), and is the only order ${OTHER} has open on ${TICKER}"
 
 # ---------------------------------------------------------------------------------------------
 step "2. ONE input, cancel-plus-add: the caller gets the REPLACE's outcome, not the STP cancel"
@@ -227,7 +425,12 @@ OWN_BID="$(order "${SELF}" Buy 4 "$(px -5)")";   REF_B="$(ref_of "${OWN_BID}")"
 echo "  ${SELF} own quote  ref=${REF_Q} sell 4 @ $(px 0)"
 echo "  ${SELF} own bid    ref=${REF_B} buy  4 @ $(px -5)"
 BEFORE="$(digest_consensus)"
-STP0="$(stp_all)"; TR0="$(trades_all)"
+# The twins, per member. traderx_stp_cancels and traderx_cluster_trades are global over order
+# writers, so the tape's own self-crosses and fills land in them; these two exclude replayed flow
+# at the writer. Both are read BEFORE the kill in step 4, which matters for the STP twin: it is
+# per-process, so its cross-member absolutes would not survive a restart (its per-member delta,
+# used here, is unaffected).
+STP0="$(op_stp_all)"; TR0="$(op_trades_all)"
 REP="$(replace "${REF_B}" 4 "$(px 0)")"
 echo "  POST /replace (bid $(px -5) -> $(px 0), into its own quote)  ->  ${REP}"
 [[ "${REP}" == 200* ]] || fail "replace not accepted: ${REP}"
@@ -235,22 +438,29 @@ echo "  POST /replace (bid $(px -5) -> $(px 0), into its own quote)  ->  ${REP}"
 [[ "${REP}" == *"\"orderRef\":${REF_B}"* ]] \
   || fail "ACK CORRELATION BROKEN: the caller got an ack for ref $(ref_of "${REP}"), not the replaced ${REF_B}"
 AFTER="$(digest_consensus)"
-STP1="$(stp_all)"; TR1="$(trades_all)"
-echo "  book: [${BEFORE}] -> [${AFTER}]"
-echo "  stp_cancels:  [${STP0}] -> [${STP1}]"
-echo "  engine trades:[${TR0}] -> [${TR1}]   (a self-trade must book nothing)"
-[[ "$(( ${BEFORE%% *} - 1 ))" -eq "${AFTER%% *}" ]] \
-  || fail "expected exactly one order to leave the book (the STP-cancelled quote)"
+STP1="$(op_stp_all)"; TR1="$(op_trades_all)"
+echo "  book: [${BEFORE}] -> [${AFTER}]   (venue-wide context, moved by the tape independently)"
+echo "  operator stp_cancels:  [${STP0}] -> [${STP1}]"
+echo "  operator trades:       [${TR0}] -> [${TR1}]   (a self-trade must book nothing)"
+# ASK THE ORDER. This used to assert depth fell by exactly one — satisfied by ANY order leaving the
+# venue, including one of the tape's. The claim is about WHICH order left: the participant's own
+# quote was cancelled and the replaced bid survived. Both orders say so themselves.
+ROW_Q="$(await_status "${SELF}" "${REF_Q}" CANCELED "self-trade prevention must cancel the resting quote")"
+ROW_B="$(await_status "${SELF}" "${REF_B}" NEW "the REPLACED order must survive, never the other way round")"
+assert_terms "${ROW_B}" 4 "$(px 0)" "the replaced bid is not at its new terms"
 for m in 0 1 2; do
   s0=$(echo "${STP0}" | cut -d' ' -f$((m+1))); s1=$(echo "${STP1}" | cut -d' ' -f$((m+1)))
-  [[ "${s1}" -eq "$(( s0 + 1 ))" ]] || fail "member ${m}: expected exactly 1 STP cancel, saw $(( s1 - s0 ))"
+  [[ "${s1}" -eq "$(( s0 + 1 ))" ]] || fail "member ${m}: expected exactly 1 operator STP cancel, saw $(( s1 - s0 ))"
   t0=$(echo "${TR0}" | cut -d' ' -f$((m+1))); t1=$(echo "${TR1}" | cut -d' ' -f$((m+1)))
   [[ "${t1}" -eq "${t0}" ]] || fail "member ${m} booked a self-trade"
 done
+echo "  ref ${REF_Q} reads CANCELED and ref ${REF_B} still reads NEW at qty 4 @ $(px 0):"
 echo "  the replaced order survived and its own quote was cancelled — never the other way round"
 
 # ---------------------------------------------------------------------------------------------
 step "3. three-member state identity through the replace sequence"
+# SOUND AS WRITTEN, and deliberately still on the GLOBAL counters: the claim is that the MEMBERS
+# AGREE, which is a determinism property no third writer can disturb.
 [[ "$(refs_all | uniq_one)" == "1" ]]  || fail "members disagree on nextOrderRef: [$(refs_all)]"
 [[ "$(trades_all | uniq_one)" == "1" ]] || fail "members disagree on the trade counter: [$(trades_all)]"
 [[ "$(stp_all | uniq_one)" == "1" ]]    || fail "members disagree on the STP counter: [$(stp_all)]"
@@ -288,26 +498,46 @@ for _ in $(seq 1 150); do
   sleep 2
 done
 ${K} wait --for=condition=Ready "pod/${VICTIM}" --timeout=600s >/dev/null
+# THE CONVERGENCE CLAIM IS digest_consensus ITSELF. It does not return until all three members —
+# including the one just rebuilt from an empty disk — report a well-formed and IDENTICAL digest,
+# retrying while the restored member catches up. That is the whole claim of this step.
+#
+# What used to be here as well was `PRE_KILL == POST_KILL`: the venue-wide digest unchanged ACROSS
+# the kill and rebuild. Those are exactly the seconds in which replayed flow is guaranteed to be
+# moving the book, so it would have gone red on a converged cluster and blamed the rebuilt member
+# for not converging. Deleted, not swapped: the agreement above is stronger than the equality was,
+# and the equality's only remaining content was "the venue was quiet", which is not a fact about
+# this cluster and never was one this proof needed.
 POST_KILL="$(digest_consensus)"
 echo "  book: [${PRE_KILL}] -> [${POST_KILL}] after the rebuild"
-[[ "${PRE_KILL}" == "${POST_KILL}" ]] \
-  || fail "the rebuilt member did not converge to the pre-kill book"
+echo "  all three members (including the rebuilt one) agree on the digest"
+# ASK THE ORDERS. Both replaced orders must still be resting at their REPLACED terms — ref A from
+# before the snapshot, ref T from after it, so the restored member had to combine snapshot AND log
+# tail to hold both. This says far more than a digest byte-compare ever did.
+ROW_A="$(await_status "${OTHER}" "${REF_A}" NEW "the pre-snapshot replace must survive the rebuild")"
+assert_terms "${ROW_A}" 9 "$(px 3)" "ref ${REF_A} did not come back at its replaced terms"
+ROW_T="$(await_status "${OTHER}" "${REF_T}" NEW "the post-snapshot replace must survive the rebuild")"
+assert_terms "${ROW_T}" 7 "$(px 6)" "ref ${REF_T} did not come back at its replaced terms"
+echo "  refs ${REF_A} (qty 9 @ $(px 3)) and ${REF_T} (qty 7 @ $(px 6)) both survived snapshot + rebuild"
 
 # The falsifiable part: trade the restored order AT ITS REPLACED price and quantity. If the replace
 # had not survived the snapshot/restore, ref_A would still be qty 5 @ PRICE+5 and this buy would not
 # cross it at all.
-TR0="$(trades_all)"
+#
+# The trade delta is the OPERATOR twin, bracketed by the OPERATOR ref counter (assert_order_effects).
+# Both halves are needed and the library is emphatic about why: the trade counter alone reads "+2"
+# for anybody's cross, and the ref counter alone says an order was sequenced without saying what it
+# did. The bracket is what makes "+2 legs" attributable to THIS order. Both counters are snapshotted
+# on both halves, so they are still quiesceable across all three members after the rebuild above.
+OREF0="$(quiesced_order_refs)"; OTRD0="$(quiesced_trades)"
 CLOSE="$(order "${SELF}" Buy 9 "$(px 3)")"
 echo "  buy 9 @ $(px 3) (the REPLACED size and price of ref ${REF_A}) -> ${CLOSE}"
 sleep 3
-TR1="$(trades_all)"
-echo "  engine trades: [${TR0}] -> [${TR1}]"
-for m in 0 1 2; do
-  t0=$(echo "${TR0}" | cut -d' ' -f$((m+1))); t1=$(echo "${TR1}" | cut -d' ' -f$((m+1)))
-  [[ "${t1}" -eq "$(( t0 + 2 ))" ]] \
-    || fail "member ${m}: the restored order did not fill at its replaced price/size — the replace did not survive"
-done
-[[ "$(digest_consensus)" ]] >/dev/null
+OREF1="$(quiesced_order_refs)"; OTRD1="$(quiesced_trades)"
+echo "  operator refs ${OREF0} -> ${OREF1}, operator trades ${OTRD0} -> ${OTRD1}"
+assert_order_effects "${OREF0}" "${OREF1}" 1 "${OTRD0}" "${OTRD1}" 2 \
+  "the restored order did not fill at its replaced price/size — the replace did not survive"
+digest_consensus >/dev/null
 echo "  the restored order filled at qty 9 @ $(px 3): the replace survived snapshot + rebuild"
 
 # ---------------------------------------------------------------------------------------------
@@ -319,27 +549,46 @@ echo "  POST /replace to an out-of-band price -> ${REJ}"
 [[ "${REJ}" == 422* ]] || fail "expected 422 for a rejected replace, got ${REJ}"
 [[ "${REJ}" == *PRICE_COLLAR* ]] || fail "expected reason PRICE_COLLAR in the body: ${REJ}"
 AFTER="$(digest_consensus)"
-[[ "${BEFORE}" == "${AFTER}" ]] \
-  || fail "a REJECTED replace changed the book — the client's order was not left intact"
-TR0="$(trades_all)"
+echo "  book: [${BEFORE}] -> [${AFTER}]   (venue-wide context, moved by the tape independently)"
+# ASK THE ORDER. This was the worst of the nine: it compared the FULL digest — depth AND the order
+# hash — across the window, and the tape rewrites that hash on every book change. Measured on kind
+# during the sibling fix: `524 <hash-a> -> 524 <hash-b>`, depth identical and hash different. Not
+# fragile: UNSATISFIABLE. It would have failed on every future run and blamed the rejected replace
+# for touching a book it never reached. The client's order says it is intact, at its ORIGINAL terms.
+ROW_R="$(await_status "${OTHER}" "${REF_R}" NEW "a REJECTED replace must leave the client's order intact")"
+assert_terms "${ROW_R}" 6 "$(px 4)" "the rejected replace altered the order it was refused for"
+echo "  ref ${REF_R} still reads NEW at its ORIGINAL qty 6 @ $(px 4) — the rejection touched nothing"
+OREF0="$(quiesced_order_refs)"; OTRD0="$(quiesced_trades)"
 order "${SELF}" Buy 6 "$(px 4)" >/dev/null
 sleep 3
-TR1="$(trades_all)"
-for m in 0 1 2; do
-  t0=$(echo "${TR0}" | cut -d' ' -f$((m+1))); t1=$(echo "${TR1}" | cut -d' ' -f$((m+1)))
-  [[ "${t1}" -eq "$(( t0 + 2 ))" ]] \
-    || fail "member ${m}: the order that survived the rejected replace could not be traded"
-done
+OREF1="$(quiesced_order_refs)"; OTRD1="$(quiesced_trades)"
+echo "  operator refs ${OREF0} -> ${OREF1}, operator trades ${OTRD0} -> ${OTRD1}"
+assert_order_effects "${OREF0}" "${OREF1}" 1 "${OTRD0}" "${OTRD1}" 2 \
+  "the order that survived the rejected replace could not be traded"
 echo "  the order survived untouched and still trades at its original price"
 
-step "6. no member bounced except the one this proof destroyed"
+step "6. no member bounced except the one this proof destroyed, and the tape wrote throughout"
 RESTARTS1="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.status.containerStatuses[0].restartCount}{" "}{end}')"
 echo "  restart counts: [${RESTARTS0}] -> [${RESTARTS1}]  (the destroyed pod is a NEW pod, count 0)"
+# THE ANTI-VACUITY ARM FOR THE WHOLE FILE. Every assertion above was rewritten so that replayed
+# order flow could not move it. That rewrite is only DEMONSTRATED by a run in which the tape was
+# actually writing — otherwise this is a proof that the new shapes pass on a quiet venue, which is
+# the one thing nobody doubted. Brackets the entire run, so it costs nothing.
+SUBMITTED1="$(pub /health | jget printReplay.submitted)" || SUBMITTED1=""
+[[ "${SUBMITTED1}" =~ ^[0-9]+$ ]] \
+  || fail "could not read printReplay.submitted at the end of the run, so this proof cannot say the
+  tape was live while it passed."
+(( SUBMITTED1 > SUBMITTED0 )) \
+  || fail "the tape submitted NO orders across this entire run (${SUBMITTED0} -> ${SUBMITTED1}).
+  Every assertion above is designed to hold while a third writer moves the venue; with the tape
+  stopped this run demonstrates none of that. Start the replay and run it again."
+echo "  tape wrote throughout: printReplay.submitted ${SUBMITTED0} -> ${SUBMITTED1}"
 
 echo
 echo "[PASS] atomic replace on a real cluster: ack correlation under cancel-plus-add, three-member"
-echo "       identity, and survival across a snapshot and a member rebuilt from an empty disk."
-echo "       Not asserted here: the SQL read model. There is no order read model at all, and the"
-echo "       trades read model is deliberately not deployed for this proof — booked trades are"
-echo "       asserted on the engine's per-member counter, which is authoritative."
+echo "       identity, and survival across a snapshot and a member rebuilt from an empty disk —"
+echo "       asserted while the ADR-072 tape replayed $(( SUBMITTED1 - SUBMITTED0 )) orders into the same venue."
+echo "       The order-level claims are the ORDER'S OWN read-model state (status, quantity, price),"
+echo "       which no other writer can move; the two volume claims are operator-scoped counters"
+echo "       bracketed by the operator ref generator. No assertion here reads a venue-wide count."
