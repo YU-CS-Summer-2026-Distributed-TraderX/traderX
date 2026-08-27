@@ -92,6 +92,20 @@ enumeration, so nobody has to redo it:
 | `yu13-cancel-ingress:465,475` | computed into `BEFORE_DEPTH`/`AFTER_DEPTH` | **safe** — never asserted; used only in the display string at :505, annotated *"which the replay moves independently"* |
 | **`yu13-gke-replace-proof:150,176`** | `BEFORE == AFTER` **and** `$((BEFORE-1)) -eq AFTER` | **EXPOSED** — GKE tier, not in `run-proofs.sh`, nothing here will ever red it |
 
+**The identity-claim reader DOES exist on the GKE tier** — checked statically 2026-08-27, because
+"does the read model exist over there" was the open unknown blocking the three sites that need an
+identity claim rather than a twin swap:
+
+- `gke/trade-processor.yaml` is in the GKE manifest set **and** in `gke/kustomization.yaml`, exposing
+  **18091** (container, service and probe all agree), and `scripts/yu15/bring-up-gke.sh` rolls it.
+- The route is `@GetMapping("/accounts/{accountId}/orders")` with `?status=all`, in the **YU17**
+  layer of `trade-processor`'s `OrderController` — the operative layer, and the same image both
+  tiers run.
+
+So the pattern `yu13-cancel-ingress` and `yu13-readmodel-effect-end` already use is **portable, not
+novel**, and whoever takes points 2–4 does not need a running GKE cluster to find that out. What
+still needs the tier is *exercising* the result — a reader that exists is not a reader that answers.
+
 **The durable fix is a `traderx_book_operator_open_orders` twin**, matching the four that already
 exist. Pausing the replay works but is a workaround for a missing counter: it mutates shared rig
 state mid-suite, needs a trap to avoid stranding the rig feedless, and makes the reading depend on
