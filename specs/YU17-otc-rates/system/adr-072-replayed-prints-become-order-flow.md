@@ -222,6 +222,25 @@ refused replayed prints with `PRICE_COLLAR`, counted by reason on `/health.print
 February 2025 print that moved further from its window's median than the band allows is refused, and
 that is the band working.
 
+**But the collar count is NOT a volatility measure, and this ADR implied it was** (corrected
+2026-08-27). The sampler does not filter TAQ **sale conditions**: ADR-070's median extract is robust
+to them by construction, while this one takes *real prints at evenly spaced ranks*, so average-price,
+bunched, prior-reference-price and corrected prints arrive exactly as the tape carries them. Measured
+per symbol against its true Feb–Mar 2025 range, **every median is correct** and 84–100% of prints sit
+in-band — worst in financials, where odd-lot and off-exchange activity concentrates (COF 83.8%,
+JPM 91.2%, C 91.9%; AAPL, NVDA, TSLA, GLD and IBM 100%).
+
+So a substantial share of the steady `PRICE_COLLAR` rate is **condition-coded prints rather than
+genuine large moves**. The sentence above survives unchanged — an average-price print *is* a real
+print far from its window's median, and refusing it *is* the band working — but **the number cannot
+be read as market volatility or as rig health**, which is how it was being reported.
+
+**And it defeats the obvious way to characterise the artifact.** `min`/`max` over the price plane is
+contaminated by that tail: BAC reads `$17.52–$1250.30` against a **$43.32 median**, and a
+boundary-crossing check built on it reported BAC crossing `$100` and `$1000` — confident, specific
+and false, from `min` and `max` being *exactly right about the numbers in the array*. Use a median or
+a trimmed percentile. The only tell was domain knowledge: BAC does not trade at $1250.
+
 **The demo claim, measured.** This ADR opens on *"3 of 69 books have ever printed, six trades total"*.
 Twenty minutes into the first epoch with the replay live: **23 of 69 books carrying live resting
 depth — every one of them a tape symbol — and 430 trade legs.**
