@@ -46,6 +46,33 @@ there were eleven. **Sweep for the raw metric name; any private copy must contai
 grep -rln 'traderx_cluster_next_order_ref\|traderx_cluster_trades\|traderx_cluster_applied\|traderx_band_' scripts/
 ```
 
+## The retick readings: quiet for a reason, established 2026-08-27
+
+`yu17-book-retick` and `yu17-retick-determinism` both assert exact deltas on
+**`traderx_book_reticks`** — member label only, venue-wide, no operator twin. Structurally in this
+issue's class. **Measured and mechanism established, and the mechanism is not the obvious one:**
+
+A retick needs BOTH (`MatchingEngine.rederiveIfEmpty`): the book **empty** (`openOrders() == 0`),
+and the derived tick to **differ** from the book's current one. The derivation has two paths:
+
+```java
+derivedBookTickPxFor(ticker) -> isFractionOfParTicker(ticker) ? BOND_BOOK_TICK_PX : 0L
+```
+
+**Only bonds get a stored, price-independent category tick.** Equities return 0 and fall through to
+`decadeTickPx(ref, bookTickPx)`, which steps at **$1 / $10 / $100 / $1000** — so for exactly the
+securities the replay trades, the tick IS a function of the reference price. "The geometry is
+already stored so it can never fire" is true of bonds and **false of every tape symbol.**
+
+**They are quiet anyway, for two independent reasons.** Replayed flow keeps tape books occupied, so
+the empty gate short-circuits; and measured against the shipping 23-symbol artifact, **no tape
+symbol's real price range crosses a decade boundary** — the widest, GS at $520–$670 and COF at
+$170–$210, sit entirely inside the $100–$1000 band.
+
+**So: safe today, and not by construction.** A tape symbol whose reference crosses $100 (or $10, or
+$1000) while its book is momentarily empty would move the counter, and the assertion would fail
+naming a retick that was not the proof's. Re-check this list whenever `PRICE_TICKERS` widens.
+
 ## Two residuals in the kind suite, deliberately left
 
 Both survive today and are recorded so they are not rediscovered as new:

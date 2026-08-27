@@ -53,6 +53,30 @@
 # (This sampler is immune either way: it takes a fixed K per (symbol, day, window), so a day with
 # ten times the prints contributes exactly as many orders as a quiet one — by construction.)
 #
+# THIS SAMPLER DOES NOT FILTER TAQ SALE CONDITIONS, AND A MINORITY OF ITS PRINTS ARE OFF-MARKET.
+# The ADR-070 median extract is robust to them by construction -- a median per window discards
+# outliers. This one takes REAL prints at evenly spaced ranks, so it faithfully reproduces
+# average-price, bunched, prior-reference-price and corrected prints exactly as the tape carries
+# them. Measured 2026-08-27 against the shipping 23-symbol artifact, share of prints inside each
+# symbol's true Feb-Mar 2025 trading range:
+#
+#     AAPL NVDA TSLA GLD IBM  100%   META 99.9%   MSFT 99.3%   QQQ 99.4%   GS 98.5%
+#     AMZN 97.7%   BAC 97.3%   SPY 95.8%   MS 95.2%   C 91.9%   JPM 91.2%   COF 83.8%
+#
+# EVERY MEDIAN IS CORRECT -- the bulk of the artifact is the real market. The tail is widest in
+# financials (COF's worst decile reaches ~$18 against a $185 median), which is where odd-lot and
+# off-exchange activity concentrates.
+#
+# TWO CONSEQUENCES, BOTH ALREADY HANDLED, NEITHER OBVIOUS:
+#   * Part of the steady PRICE_COLLAR rejection count on the rig is these prints rather than
+#     genuine large moves. ADR-072 calls a collar rejection "a demonstration rather than a defect"
+#     and that stands -- an average-price print IS a real print far from its window's median -- but
+#     the count is not a measure of market volatility.
+#   * DO NOT CHARACTERISE A SYMBOL FROM min/max OF THIS PLANE. Measured while writing this note:
+#     BAC's min/max reads $17.52-$1250.30 against a $43.32 median, and a boundary-crossing check
+#     built on it reported BAC "crossing $100 and $1000" -- confident, specific and wrong. Use a
+#     median or a trimmed percentile; the extremes are condition codes, not the market.
+#
 # Needs: gcloud + bq authenticated with bigquery.jobs.create on traderx-501015
 # (yaakov.traderx@gmail.com — set CLOUDSDK_CORE_ACCOUNT rather than switching the shared config),
 # python3 (stdlib only).
