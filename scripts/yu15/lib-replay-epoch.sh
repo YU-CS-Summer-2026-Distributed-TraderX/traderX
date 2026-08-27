@@ -16,6 +16,26 @@
 # means a stamp can never disagree with the epoch it describes. (Stamping "now" instead would
 # drift by however long the rollout waits took, and a RE-stamp would silently rewind the tape.)
 #
+# A HAND-WIPED RIG IS NOT A FRESH EPOCH UNTIL THIS RUNS. `rebuild_fresh_epoch` calls
+# stamp_replay_epoch as its second-to-last step; a manual recovery -- `kubectl delete pvc -l
+# app=order-matcher-cluster`, scale back up -- does NOT, and nothing downstream notices. The
+# ConfigMap keeps the DELETED epoch's anchor, the publisher keeps computing
+# (now - epochStartMs) x compression against it, and the tape simply reports a later day on a rig
+# that was just reset to nothing.
+#
+# MEASURED 2026-08-27, after exactly that: the anchor still read 1787805906000 (04:45Z) against a
+# PVC created at 15:14:16Z, and the replay was serving **tape day 23 of 40 on a rig minutes old**.
+# Every price was real, every asOf was self-consistent, and nothing anywhere reported an error --
+# a stale anchor has no failure mode, only a wrong answer. Re-stamping and rolling the publisher
+# put it back at day 1.
+#
+# So the manual recovery path is three steps, not two:
+#     kubectl -n traderx delete pvc -l app=order-matcher-cluster    # after scaling the sts to 0
+#     kubectl -n traderx scale sts order-matcher-cluster --replicas=3
+#     bash -c 'K=(kubectl -n traderx); source scripts/yu15/lib-replay-epoch.sh; stamp_replay_epoch'
+# and the reading that confirms it is /health.taqReplay's day, which must be 1 on a rig you just
+# wiped. `applied` advancing does not tell you this; it is the same trap as asserting Ready.
+#
 # Both functions resolve the sourcing script's ${K} kubectl prefix exactly as
 # lib-consensus-readings.sh does: string or array, either works.
 _rk() {
