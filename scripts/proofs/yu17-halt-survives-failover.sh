@@ -44,6 +44,15 @@ here="$(cd "$(dirname "$0")" && pwd)"; . "$here/lib-consensus-readings.sh"
 
 health_field() { "${K[@]}" exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('$2',''))" 2>/dev/null || echo ""; }
+# BOTH FROM ONE /health, and that is the whole point of it existing. The queue grows continuously
+# while the venue is PRE_OPEN (the ADR-072 replay queues alongside us), so a depth read in one call
+# and a position read in another describe two different instants — which is how the first version
+# of step 4 below compared a depth taken at one applied position against a member replayed to an
+# earlier one and called a healthy failover a lost queue.
+health_pair() { "${K[@]}" exec "order-matcher-cluster-${1}" -- wget -qO- localhost:8080/health 2>/dev/null \
+  | python3 -c "import sys,json
+d = json.load(sys.stdin)
+print(d.get('applied', -1), d.get('queueDepth', -1), d.get('phase', ''))" 2>/dev/null || echo "-1 -1"; }
 metric() { "${K[@]}" exec "order-matcher-cluster-$1" -- sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
   | awk -v k="$2" 'index($1, k"{")==1 || $1==k {print $2}'; }
 snap_count() { metric "$1" traderx_cluster_snapshots; }
@@ -142,12 +151,7 @@ QD="$(health_field 0 queueDepth)"
 (( QD - QD0 >= 3 )) || fail "queueDepth moved ${QD0} -> ${QD} across three orders that were neither
   rejected nor filled — they were sequenced (asserted above) and did not trade, so the queue is
   where they must be"
-# The applied position by which ALL THREE members had our three orders. Step 4 gates each member's
-# read on it, so "the queue survived" is measured after the member has replayed the commands that
-# created it — not while it is still catching up, which is the reading-taken-too-early trap this
-# file's own header records.
-QUEUE_SEQ="$(quiesced_seq)"
-ok "3 orders queued (A1=${A1_REF} A2=${A2_REF} S=${S_REF}), nothing traded, depth ${QD0} -> ${QD} at sequence ${QUEUE_SEQ}"
+ok "3 orders queued (A1=${A1_REF} A2=${A2_REF} S=${S_REF}), nothing traded, depth ${QD0} -> ${QD}"
 
 echo "--- 2. snapshot barrier: the halt must be in the snapshot, not only in the log tail"
 # WITHOUT the barrier this proof would only prove the LOG carries the phase — a member that
@@ -155,7 +159,12 @@ echo "--- 2. snapshot barrier: the halt must be in the snapshot, not only in the
 # question the format-8 record types exist to answer: is the phase IN the snapshot?
 snapshot_barrier
 
-QD_KILL="$(health_field 0 queueDepth)"
+# The depth AND the position it was taken at, from one call. Step 4 compares like for like against
+# it: during PRE_OPEN nothing drains the queue, so a member that has replayed to at least this
+# position and kept its queue reads at least this depth.
+read -r QD_KILL_SEQ QD_KILL _ <<EOF
+$(health_pair 0)
+EOF
 echo "--- 3. kill the leader"
 LDR="$(leader)" || fail "no leader found"
 echo "    killing leader member ${LDR}"
@@ -181,15 +190,16 @@ for m in 0 1 2; do
   # races catch-up, and a member still restoring reports a low depth that reads exactly like a
   # member that lost the queue.
   for i in $(seq 1 60); do
-    AP="$(applied_seq "${m}")"
-    [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QUEUE_SEQ )) && break
+    read -r AP Q P <<EOF
+$(health_pair "${m}")
+EOF
+    [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QD_KILL_SEQ )) && break
     sleep 2
   done
-  [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QUEUE_SEQ )) \
-    || fail "member-${m} never replayed past sequence ${QUEUE_SEQ} (applied ${AP:-<none>}) — an
+  [[ "${AP}" =~ ^[0-9]+$ ]] && (( AP >= QD_KILL_SEQ )) \
+    || fail "member-${m} never replayed past sequence ${QD_KILL_SEQ} (applied ${AP:-<none>}) — an
   incomplete restart, NOT a verdict about whether the queue survived"
-  P="$(health_field "${m}" phase)"; Q="$(health_field "${m}" queueDepth)"
-  echo "    member-${m}: phase=${P:-<absent>} queueDepth=${Q:-<absent>} (applied ${AP} >= ${QUEUE_SEQ})"
+  echo "    member-${m}: phase=${P:-<absent>} queueDepth=${Q:-<absent>} (applied ${AP} >= ${QD_KILL_SEQ})"
   [[ "${P}" == "PRE_OPEN" ]] \
     || fail "member-${m} reads phase='${P:-<absent>}' after the failover, not PRE_OPEN. A halt that a leader change lifts is the gateway-held phase ADR-069 exists to reject$( [[ "${m}" == "${LDR}" ]] && echo ' — and this is the member that restarted, so the phase was not in its snapshot' )"
   # A FLOOR against the depth at the kill, not an absolute 3: nothing drains the queue while the
