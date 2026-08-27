@@ -451,6 +451,20 @@ public final class ClusterNodeMain {
                 + (started ? service.engine().bandReanchors() : 0L) + "\n"
                 + "# TYPE traderx_band_stranded_cancels counter\ntraderx_band_stranded_cancels" + m
                 + (started ? service.engine().bandStrandedCancels() : 0L) + "\n"
+                // ADDING A FIFTH TWIN: THE SHADOW MUST HAVE THE SAME PERSISTENCE AS ITS PARENT.
+                // These four are NOT uniform, and reading the per-process comment below as a
+                // general rule is how the next one gets built wrong (nearly happened 2026-08-27):
+                //   externalOrderRefs, externalTradeLegs   SNAPSHOTTED (offsets 52 and 60) —
+                //       because nextOrderRef and tradeCounter are, so a restored member that kept
+                //       the parent and lost the shadow would report operator counts that are far
+                //       too high. THIS is what cost SNAPSHOT_FORMAT 9 and a mandatory fresh epoch.
+                //   externalBandReanchors, externalBandStrandedCancels   PER-PROCESS — because
+                //       bandReanchors and bandStrandedCancels are, so both sides restart at 0
+                //       together and the subtraction stays consistent.
+                // Snapshotted parent -> snapshotted shadow -> format bump -> mint. Per-process
+                // parent -> per-process shadow -> neither. Check the PARENT before assuming.
+                // (A twin for traderx_stp_cancels would be the cheap kind: selfTradesPrevented is
+                // a plain field, not in the snapshot, so its shadow would not be either.)
                 // YU17 (ADR-072): the operator-only halves. PER-PROCESS like their siblings — the
                 // replayed shadows are NOT snapshotted either, so the subtraction stays consistent
                 // on a restarted member instead of going negative.
