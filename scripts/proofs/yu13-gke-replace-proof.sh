@@ -1,34 +1,66 @@
 #!/usr/bin/env bash
 # yu13-gke-replace-proof.sh — the three things atomic replace (ADR-058) still needed proving on a
 #
-# !!! THIS PROOF IS KNOWN-EXPOSED TO ADR-072's REPLAYED ORDER FLOW AND HAS NOT BEEN FIXED (2026-08-27)
+# !!! THIS PROOF IS KNOWN-EXPOSED TO ADR-072's REPLAYED ORDER FLOW AND HAS NOT BEEN FIXED
+# !!! (2026-08-27; enumeration CORRECTED the same day, see "how this list was got wrong" below)
 #
 # READ THIS BEFORE YOU DEBUG A RED RUN, because the failure will not look like this cause: it will
-# say "expected exactly one order to leave the book" or "expected exactly 1 STP cancel", and the
-# replace under test will have worked perfectly.
+# say "expected exactly one order to leave the book", or "member 0 booked a self-trade", or "the
+# rebuilt member did not converge" -- and the replace under test will have worked perfectly.
 #
 # Since ADR-072 the rig has a THIRD writer replaying sampled TAQ prints as real orders at ~6/s.
-# Six assertions below claim an exact delta or an unchanged absolute over a window, on counters
-# every writer moves:
 #
-#   :150  BEFORE == AFTER                 on traderx_book_open_orders   (venue-wide, NO twin)
-#   :176  $((BEFORE - 1)) -eq AFTER       on traderx_book_open_orders   (venue-wide, NO twin)
-#   ~:178 s1 -eq s0 + 1   per member      on traderx_stp_cancels        (NO twin; replayed flow
-#                                          tripping self-trade prevention moves it)
-#   ~:240 t1 -eq t0 + 2   per member      on traderx_cluster_trades     (twin EXISTS, see below)
-#   :256  BEFORE == AFTER  (full digest)  on the book digest            (any book change moves it)
-#   ~:262 t1 -eq t0 + 2   per member      on traderx_cluster_trades     (twin EXISTS, see below)
+# EIGHT assertions claim an exact delta or an unchanged absolute over a window, on counters every
+# writer moves. All eight fail in the ACCUSATORY direction -- naming a component that did nothing:
 #
-# The cross-member `uniq_one` assertions around :188-:190 are SOUND and need nothing — "the members
-# agree" is true no matter who wrote the orders. Note the same helper serves both purposes here:
-# `trades_all()` feeds the sound agreement check AND the exposed per-member delta.
+#   :184  BEFORE == AFTER          traderx_book_open_orders   venue-wide, NO twin
+#   :210  $((BEFORE-1)) -eq AFTER  traderx_book_open_orders   venue-wide, NO twin
+#   :214  s1 -eq s0 + 1  per mem   traderx_stp_cancels        twin EXISTS since 6374c110
+#   :216  t1 -eq t0      per mem   traderx_cluster_trades     twin EXISTS  <- same loop as :214
+#   :261  PRE_KILL == POST_KILL    book digest, across a member KILL AND REBUILD -- seconds during
+#                                  which replayed flow is guaranteed to move the venue
+#   :275  t1 -eq t0 + 2  per mem   traderx_cluster_trades     twin EXISTS
+#   :290  BEFORE == AFTER          book digest (depth AND hash)
+#   :298  t1 -eq t0 + 2  per mem   traderx_cluster_trades     twin EXISTS
+#
+# ONE MORE fails in the opposite and worse direction -- it CANNOT FAIL:
+#
+#   :183  BEFORE != AFTER          "the replace changed nothing on the members". Replayed flow
+#                                  rewrites the digest continuously, so this holds whether or not
+#                                  the replace did anything. Zero coverage that reads as coverage.
+#                                  Delete it; :180's orderRef identity is the real claim.
+#
+# SOUND, leave alone: :222-:224, the `uniq_one` cross-member agreement checks. "The members agree"
+# is true no matter who wrote the orders. Note trades_all() feeds BOTH those and the exposed
+# per-member deltas -- the same helper, sound in one line and exposed in the next.
+#
+# HOW THIS LIST WAS GOT WRONG, TWICE, WHICH IS THE USEFUL PART:
+#   * It first said SIX. It was built by enumerating readers of `traderx_book_open_orders` -- a
+#     search by METRIC NAME, which cannot see a site whose exposure comes through a different
+#     counter.
+#   * It then said SEVEN. :216 was missed because it sits in the same `for m in 0 1 2` loop as
+#     :214, two lines below, and the loop was read as ONE site. A loop is N assertions.
+#   * It is now NINE, found by enumerating ASSERTIONS (`grep -nE '^\s*\[\[|^\s*\(\('`) and
+#     classifying each, rather than by chasing metrics. :261 and :183 appear in no metric-name
+#     search at all: both compare a whole digest string.
+#   Enumerate what the file ASSERTS, not what it READS. Satisfy yourself there is no tenth.
 #
 # WHY IT IS STILL LIKE THIS: this file is not in run-proofs.sh, so nothing on the kind rig can red
-# it, and it cannot be exercised from there either — fixing it blind would replace a documented
-# break with an undocumented one. The two `traderx_cluster_trades` sites have a drop-in twin today
-# (`traderx_cluster_operator_trades`, per member, same shape); the other four need either
-# `traderx_book_operator_open_orders` / `traderx_stp_operator_cancels`, which do not exist, or the
-# identity claim — ask the order its own state instead of counting the venue.
+# it, and its branch has never run under live replay -- nothing has ever printed a red from any of
+# the nine. FIX ALL OF THEM IN ONE CHANGE, on a tier that can run it: fixing a subset leaves the
+# rest red, which is unexercised diff for no gain.
+#
+# THE FIX, in the order lib-consensus-readings.sh ranks them:
+#   1. ASK THE ORDER. :184/:210/:290/:261 are all standing in for "THIS order did X" -- the order's
+#      own state says it, needs no counter, and no other writer can move it. See yu13-cancel-ingress
+#      `52752df4` and `d26d9851` for the same rewrite done on the same class; copy that shape.
+#   2. THE OPERATOR TWIN, per member, for the four counter sites: `traderx_cluster_operator_trades`
+#      (:216/:275/:298) and `traderx_stp_operator_cancels` (:214). Both exist and both are
+#      per-process -- see the persistence rule above the twins in ClusterNodeMain BEFORE assuming
+#      that of any future one.
+#   3. DO NOT build `traderx_book_operator_open_orders`. It is a gauge over resting state, so there
+#      is no monotonic external contribution to subtract, and its two call sites are identity
+#      claims anyway (fix 1).
 #
 # See scripts/proofs/lib-consensus-readings.sh (the "SHAPE OF THE READING" block) and
 # issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md for the
