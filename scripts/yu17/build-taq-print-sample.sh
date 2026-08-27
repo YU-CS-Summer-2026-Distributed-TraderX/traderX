@@ -38,6 +38,18 @@
 # APA 0.95. No day is duplicated at the row level. The 43 is a count of parquet OBJECTS — the OOM
 # retry re-sharded the day across more files, and the external table reads their union.
 # COUNT OBJECTS AND YOU MEASURE THE WRITER'S RETRY HISTORY; COUNT ROWS AND YOU MEASURE THE DATA.
+# AND THE REASON ONLY QUOTES COULD DUPLICATE IS STRUCTURAL, which is the durable half: the raw
+# corpus stores QUOTES as per-day zips (taq_quotes_YYYYMMDD_csv.zip, 26 of them) and TRADES as two
+# MONTHLY zips (taq_trades_{feb,mar}2025_csv.zip). The OOM retry re-ran the DAILY ingest 42 times;
+# the monthly trade file was ingested once. A retry can only duplicate what was stored per-day.
+# Reconciled 2026-08-27 across both measurements, same rows, one pass:
+#     symbol dt          all_trades  rth_trades      all_rows
+#     AAPL   2025-03-10   1,152,735   1,126,574    18,141,275
+#     AAPL   2025-03-11     899,731     871,334   408,999,283   <- 22x the rows, 0.9x the trades
+#     AAPL   2025-03-12     792,953     762,088     6,900,180
+# THIS SAMPLER READS TRADES (event_type='trade', RTH only), so it is unaffected. Anything derived
+# from QUOTES over Mar 2025 must dedupe first -- nothing does today, and this is the note for
+# whoever first does.
 # (This sampler is immune either way: it takes a fixed K per (symbol, day, window), so a day with
 # ten times the prints contributes exactly as many orders as a quiet one — by construction.)
 #
