@@ -29,14 +29,14 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 
 ## Plain-English Code Delta
 
-- **Added:** `POST /swaps` on the cluster gateway: books a vanilla fixed-float OTC interest-rate swap from
-- **Added:** `TYPE_SWAP_BOOK` (12) on the inherited `InputEventMessage` (SBE template 1): a sequenced
-- **Added:** A replicated OTC contract store: `{contractId, accountId, payFixed, notional, fixedRateTicks,
-- **Added:** `SwapConventions`: a compile-time table of five market conventions (float index, payment
-- **Added:** `BlpRiskState.decideSwapBooking`: the ordered admission pipeline with the swap's notional
-- **Added:** `T_CONTRACT` (12) snapshot records, restoring in booking order and
-- **Added:** A `#contracts` section in the cut after the position rows, with the count declared in the cut
-- **Added:** A second EOD artifact, `seq-<N>-contracts.csv`: one row per contract carrying
+- **Added:** A **session phase machine** in consensus — `CLOSED`, `PRE_OPEN`, `OPEN` — sequenced and snapshotted.
+- **Added:** A **price band that follows the market**, anchored on the reference rather than on a book's first order.
+- **Added:** A **price-derived book grid**: an empty book takes its tick size from the reference price, by decade.
+- **Added:** An **external reference replayed on a stateless clock**, resampled offline from a licensed historical tape.
+- **Added:** **Replayed prints entering as order flow**, sampled to a target rate and matched as ordinary orders.
+- **Added:** `GET /bbo` on each member: best bid, offer and mark derived from the book and served beside consensus.
+- **Added:** `POST /swaps` on the cluster gateway: books a vanilla fixed-float OTC interest-rate swap.
+- **Added:** `TYPE_SWAP_BOOK` (12) on the inherited `InputEventMessage` (SBE template 1): a sequenced consensus command.
 
 ## Run This State
 
