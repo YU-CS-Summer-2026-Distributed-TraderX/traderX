@@ -161,3 +161,43 @@ ${=K} exec deploy/eod-price-db -c mariadb -- \
 cd generated/code/target-generated/trade-processor && \
   ./gradlew integrationTest --tests '*SchemaMatchesShippedDdlIT'
 ```
+
+---
+
+## The inverse half, measured on GKE 2026-08-27: when it DOES re-run, it FAILS
+
+Everything above is about a migration that **never fires**. The same mechanism produces the opposite
+failure, and it is live on the GKE bench tier:
+
+    Init container schema-migrate, exitCode 1:
+    ALTER TABLE trades MODIFY COLUMN security VARCHAR(32)
+    ERROR 1826 (HY000) at line 171: Duplicate CHECK constraint name 'state'
+
+**`eod-price-db` keeps its PVC across a scale-to-zero.** So on scale-up the pod is NEW — init
+containers run, correctly, by the rule above — and the migration executes against a schema **it has
+already migrated**. `900-migrations.sql` is not idempotent, so it dies on the first constraint that
+already exists.
+
+**The blast radius is everything downstream**, and none of it names the cause: `reference-data`,
+`account-service` and `trade-processor` all went `Error`/`CrashLoopBackOff` with MariaDB connect
+failures, because the DB never left `Init:0/1`. The visible symptom is three application services
+crashlooping; the cause is one DDL line 171.
+
+**It recurs on every scale-up of that tier** until the migration is made re-runnable
+(`ADD CONSTRAINT IF NOT EXISTS`, or guard each DDL on `information_schema`).
+
+### The two halves together are the actual rule
+
+| | fires? | outcome |
+|---|---|---|
+| container restart / `rollout restart` | **no** | DDL change reaches nothing, silently |
+| pod recreation with a **fresh** volume | yes | clean, succeeds |
+| pod recreation with a **retained** volume | yes | **fails on already-applied DDL** |
+
+The third row is the common one in practice, because scale-to-zero is how this project parks a tier.
+
+**Workaround used 2026-08-27** (recorded because it has a trap in it): delete the PVC and let the
+migration run clean. **`eod-price-db` is a Deployment, not a StatefulSet** — nothing recreates its PVC,
+so the pod then sat `Pending` with *"persistentvolumeclaim not found"* until the claim was re-applied
+from `specs/YU17-otc-rates/generation/kubernetes/cluster/gke/eod-price-db.yaml`. A StatefulSet's
+controller would have recreated it from its volumeClaimTemplate; a Deployment's does not.
