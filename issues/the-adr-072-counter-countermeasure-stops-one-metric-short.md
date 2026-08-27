@@ -139,3 +139,39 @@ read of the assertions.
 `yu13-gke-replace-proof` is unreachable from `run-proofs.sh` (0 mentions), so **nothing in the suite
 will ever red it** — it fails months from now, on GKE, far from the change that broke it. Recorded in
 the GKE proof family issue (`aea72ac1`) rather than fixed here.
+
+---
+
+## Correction to the recommendation above: the two twins are not the same size, and neither needs a mint
+
+I recommended "two twins" without checking what a twin costs. **It is cheaper than feared and unequal
+between the two.**
+
+The existing operator counters are **derived by subtraction at scrape time, not stored**
+(`ClusterNodeMain.java:438-460`):
+
+    traderx_cluster_operator_trades            = trades - engine().externalTradeLegs()
+    traderx_band_operator_reanchors            = bandReanchors() - externalBandReanchors()
+    traderx_band_operator_stranded_cancels     = bandStrandedCancels() - externalBandStrandedCancels()
+
+and the code states the reason: *"PER-PROCESS like their siblings — the replayed shadows are NOT
+snapshotted either, so the subtraction stays consistent on a restarted member instead of going
+negative."*
+
+**So no `SNAPSHOT_FORMAT` bump and no fresh-epoch mint is involved.** Given that format 9 *did* need a
+mint for its operator-scoped work, "adding a twin costs an epoch" was a reasonable assumption and a
+wrong one — it would have been a reason to defer this indefinitely.
+
+### The two are not equivalent
+
+- **`traderx_stp_operator_cancels` — trivial.** `countSelfTradesPrevented()` already exists; it needs
+  an `externalSelfTradesPrevented()` shadow beside the three that exist and one subtraction line.
+  Mirrors the established pattern exactly.
+- **`traderx_book_operator_open_orders` — genuinely harder, and probably the wrong fix.** Open orders
+  is a **gauge over resting state**, not a monotonic counter, so there is no shadow to subtract; it
+  would need resting orders tracked by account range. **And the two sites that want it
+  (`yu13-gke-replace-proof:150,176`) are asking "did THIS order leave the book" — an identity claim.**
+  That is fix #1 in the ranked order, needs no counter at all, and asserts something stricter.
+
+**Revised: build the STP twin, and do not build the book-gauge twin.** Convert its call sites to the
+identity claim instead — which is what `yu13-cancel-ingress` independently arrived at on 2026-08-26.
