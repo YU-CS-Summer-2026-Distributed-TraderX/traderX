@@ -35,9 +35,20 @@
 #
 # IF THIS STOPS APPLYING, the engine moved underneath it -- which is the point of a synthesized
 # boundary and not a failure. Re-cut it against the current tree; do not force it.
+# RE-CUT 2026-08-27 for ADR-072's `traderx_stp_operator_cancels`. The twin added a field, an
+# accessor, and an INCREMENT INSIDE preventSelfTrade(). The first two are KEPT, for exactly the
+# reason selfTradesPrevented is kept above -- ClusterNodeMain publishes them, so removing them
+# breaks the build for a counter the proof reads only on the `fix` side; on `pre` it exists and
+# stays 0, which is the honest reading. The increment GOES, with the method, because the method is
+# the decision this boundary removes.
+#
+# The re-cut was forced by the patch failing to apply, NOT by anyone noticing the engine had moved:
+# `yu13-stp-and-replace` refused at preflight and named the exact file. That refusal is the only
+# reason a fuzzed hunk did not quietly produce a 'pre' image still carrying half the STP decision --
+# which is why this patch must never be --force'd.
 --- a/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
 +++ b/src/main/java/finos/traderx/ordermatcher/lmax/MatchingEngine.java
-@@ -669,18 +669,6 @@
+@@ -765,18 +765,6 @@
                  break;
              }
              final RestingOrder r = book.headAt(restingSide, opp);
@@ -56,7 +67,7 @@
              final int fillQty = Math.min(a.remaining, r.remaining);
              lastPxBySecurity[a.securityId] = levelPx;   // the last trade price is a matching OUTPUT
              applyMatchFill(r, fillQty, levelPx, e, OutputEvent.FLAG_RESTING_UPDATE, book);
-@@ -741,31 +729,6 @@
+@@ -843,41 +831,6 @@
              e.seq, flags, lastPxBySecurity[o.securityId], e.ingressNanos);
      }
  
@@ -82,6 +93,16 @@
 -     */
 -    private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
 -        selfTradesPrevented++;
+-        // ADR-072: the operator-only half. STP is decidable here BECAUSE the guard at the call site
+-        // (`r.accountId == a.accountId`) only reaches this method when the resting order and the
+-        // aggressor are the SAME account — so there is no "which side counts" question to get
+-        // wrong, unlike a trade leg, where the two sides can be different writers and both are
+-        // counted separately. PER-PROCESS, matching selfTradesPrevented, which is a plain field
+-        // and is in neither the snapshot writer nor the reader; see the persistence rule above the
+-        // twins in ClusterNodeMain before adding another.
+-        if (InputEvent.isReplayFlow(r.accountId)) {
+-            externalSelfTradesPrevented++;
+-        }
 -        cancelUnsolicited(r, e, book, RiskReason.SELF_TRADE_PREVENTED);
 -    }
 -
@@ -90,11 +111,11 @@
       *  gateway's first-direct-ack correlation from answering the input being applied with it. */
 --- a/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
 +++ b/src/main/java/finos/traderx/ordermatcher/cluster/ClusterGatewayMain.java
-@@ -335,7 +335,6 @@
+@@ -336,7 +336,6 @@
          // orderRef. A cancel that silently books an order is the worst available failure mode; a
          // sibling path 404s on old replicas instead.
          server.createContext("/cancel", this::handleCancel);
 -        server.createContext("/replace", this::handleReplace);
          server.createContext("/trades", this::handleTrade);
+         server.createContext("/session", this::handleSession);
          server.createContext("/swaps", this::handleSwapBook);
-         server.createContext("/swaptions", this::handleSwaptionBook);
