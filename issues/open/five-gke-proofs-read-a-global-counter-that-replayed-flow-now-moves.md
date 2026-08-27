@@ -283,12 +283,53 @@ at step 0 and the **observed** rate (submitted delta ÷ elapsed) at step 6; the 
 a config field. Nothing else in `scripts/` gates on rate — `yu17-replay-attribution:116` reads
 `ordersPerSecond` only to print it.
 
+### Exercised on GKE too — GREEN on the named tier, under a live in-band tape
+
+`gke_traderx-505400_us-east1-b_traderx-bench`, `cluster-node:yu17-6374c110` (both twins present),
+full sequence including the snapshot and the emptyDir rebuild. The coordinator built and rolled the
+tier; the proof needed no changes — `CTX` and `IMAGE` are the only knobs.
+
+**The write pressure this green ran under**, printed by the proof itself so every future run is
+self-qualifying (six counters from ONE scrape, because six calls would reproduce the skew above):
+
+```
+tape wrote throughout: submitted 2436 -> 3933 (+1497) over 244s = 6.14/s observed
+  traderx_cluster_trades                     1902 -> 3074    +1172
+    traderx_cluster_operator_trades             1 -> 5          +4
+  traderx_stp_cancels                         224 -> 360     +136
+    traderx_stp_operator_cancels                0 -> 1          +1
+  traderx_cluster_next_order_ref             2438 -> 3942    +1504
+    traderx_cluster_operator_next_order_ref     2 -> 9          +7
+```
+
+**1,172 foreign trade legs and 1,504 foreign order refs crossed the venue while this proof asserted;
+our own work was 4 legs and 7 refs.** That ratio is what the nine assertions used to be measured
+against.
+
+The counterfactual on this tier, starker than kind:
+
+| step | venue actually read | old assertion |
+|---|---|---|
+| 1 | depth `204 -> 183` | **failed by 21** — demanded depth unchanged |
+| 2 | depth `185 -> 183` | **failed** — demanded exactly −1 |
+| 4 | depth `269 -> 300` across the kill | **failed by 31** — blaming a member that had converged |
+| 5 | depth `318 -> 327` on a **rejected** replace | **failed** — blaming a replace the venue never accepted |
+
+Step 4 is the one worth remembering: the book moved by 31 orders across a member destroy-and-rebuild
+while all three members, including the one restored from an empty disk, agreed exactly on the digest.
+The deleted assertion would have called that a convergence failure at the precise moment the system
+was doing the hardest correct thing it does.
+
+**One thing the GKE run established that kind could not:** `digest_consensus` — this proof's *primary*
+assertion, and not one of the ten — needs its retry loop on this tier and earns it. A single
+un-retried hand sample read `m0: 182 … / m1: 183 … / m2: 183 …`: the same sequential-sampling skew,
+on the reading the file calls its primary claim. The existing retry absorbs it on every call, so it
+was left untouched — but it is doing real work on GKE, not belt-and-braces.
+
 ### Still open for this proof
 
-**Not exercised on GKE.** The bench rig (`traderx-bench`, 2026-08-27) runs
-`cluster-node:yu17-gke5`, which exports **no operator twins at all**, and a `price-publisher` whose
-`/health` carries **no `printReplay` block** — the tape is not running there. Exercising it needs both
-images rebuilt `--platform linux/amd64` from a build carrying `6374c110`, and a fresh-epoch roll. The
-proof now refuses to pass without the tape having submitted orders across the run, so a green on that
-tier cannot be faked by a quiet venue. `SELFTEST=1` exercises the read-model parsers offline, with no
-cluster, in the meantime.
+Nothing on the two tiers it targets. Remaining: it is in **no suite** — `run-proofs.sh` is kind-only
+and this proof kills a member and waits on a snapshot, so an entry there would red the suite for a
+structural reason. `SELFTEST=1` runs the read-model parsers offline in about a second and wants a CI
+home beside the root gates, which is separate work. Until then nothing automated will red this file,
+which is the condition that let nine assertions rot here in the first place.
