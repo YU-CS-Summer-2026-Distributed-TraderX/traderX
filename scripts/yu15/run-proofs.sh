@@ -324,12 +324,20 @@ start_forwards() {
     if [[ ${tries} -ge 90 ]]; then
       echo "[fail] forwards never all became reachable"
       echo "       unready:${unready:- (none recorded)}"
-      local zeroed
-      zeroed="$(${K} get deploy -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null)"
-      if [[ -n "${zeroed// /}" ]]; then
-        echo "       SCALED TO ZERO: ${zeroed}"
-        echo "       A Deployment at 0 replicas is not a forward problem. If a proof scaled it down"
-        echo "       and did not restore it, scale it back before reading anything else here."
+      # INTERSECT, do not list. `execution-algo-engine` rests at 0 by design (scaled down at suite
+      # start, up only for yu08), so a bare list of zeroed Deployments names an innocent party on
+      # every timeout -- which is the same defect this block exists to fix, one level up. Only a
+      # Deployment that BACKS AN UNREADY ENDPOINT is evidence about this failure.
+      local zeroed culprit=""
+      zeroed=" $(${K} get deploy -o jsonpath='{range .items[?(@.spec.replicas==0)]}{.metadata.name}{" "}{end}' 2>/dev/null) "
+      local u
+      for u in ${unready}; do
+        [[ "${zeroed}" == *" ${u%%:*} "* ]] && culprit+=" ${u%%:*}"
+      done
+      if [[ -n "${culprit// /}" ]]; then
+        echo "       SCALED TO ZERO AND WAITED ON:${culprit}"
+        echo "       That is not a forward problem. A proof scaled it down and did not restore it;"
+        echo "       scale it back before reading anything else here."
       fi
       return 1
     fi
