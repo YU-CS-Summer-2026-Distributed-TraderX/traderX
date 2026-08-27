@@ -112,6 +112,34 @@ if [[ "${DESTRUCTIVE}" != "1" ]]; then
 MSG
   exit 2
 fi
+
+# NOTHING HERE CREATES A PORT-FORWARD, and until 2026-08-27 nothing had ever noticed. This proof
+# has been DESTRUCTIVE=0-skipped on every suite run since it was written, so its error paths had
+# never been printed by anything -- and the first time it ran for real it died at step 0 with
+# "[FAIL] seed did not take", which is TRUE and names the wrong cause: nothing was listening on
+# 18110. That reads as a rig or seeding fault and sends the reader to the engine.
+#
+# A permanently-skipped branch has its ERROR PATHS unreviewed as well as its assertions -- the
+# assertions at least get read; a message nobody has seen printed gets read as if it were accurate.
+#
+# Deliberately a precondition and NOT a start_pf of its own: this proof kills and restarts members,
+# so a forward it owned would need to survive that, and yu13-cancel-ingress's start_pf exists
+# precisely because that is more than a one-liner. The runner (run-proofs.sh) already establishes
+# 18110; this only refuses to mistake its absence for a verdict about the venue.
+require_matcher() {
+  local code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "${MATCHER_URL}/ready" 2>/dev/null || true)"
+  if [[ "${code}" != "200" ]]; then
+    echo "[FAIL] nothing is answering ${MATCHER_URL}/ready (HTTP '${code:-000}'; 000 = no listener)."
+    echo "       THIS PROOF DOES NOT CREATE ITS OWN PORT-FORWARD -- it assumes the runner's."
+    echo "       Nothing below has run, so this is NOT a verdict about the venue, the session"
+    echo "       phase or the engine. Establish the forward and re-run:"
+    echo "         kubectl --context ${CONTEXT:-kind-traderx-yu12-cluster} -n ${NS:-traderx} \\"
+    echo "           port-forward svc/order-matcher 18110:18110 &"
+    exit 1
+  fi
+}
+require_matcher
 for m in 0 1 2; do "${K[@]}" get pod "order-matcher-cluster-${m}" -o jsonpath='{.spec.containers[0].image}{"\n"}'; done | sort -u
 [[ "${EXPECT}" == "after" ]] || fail "EXPECT=before is not a thing here: on a pre-mint build there is no phase to survive a failover, and re-measuring a 404 across a leader kill is an API-shaped red. The pre-mint half is SessionSnapshotRestoreTest."
 
