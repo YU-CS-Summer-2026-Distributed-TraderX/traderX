@@ -669,6 +669,11 @@ PRE_KILL="$(digest_consensus)"
 
 VICTIM="$(${K} get pods -l app=order-matcher-cluster \
   -o jsonpath='{range .items[*]}{.metadata.name}{" "}{end}' | tr ' ' '\n' | grep . | tail -1)"
+# NAME THE CLUSTER IN THE IRREVERSIBLE LINE. CTX is a default that has been wrong before -- this
+# file shipped for weeks pointing at a project deleted 2026-08-01 -- and a wrong-context kubectl
+# answers truthfully about the wrong cluster. DESTRUCTIVE=1 says the operator accepted destroying a
+# member; it does not say they accepted destroying THIS one.
+echo "  cluster: ${CTX}   namespace: ${NS}"
 echo "  DESTROYING ${VICTIM} — emptyDir, so it comes back with an EMPTY disk and rebuilds from"
 echo "  the snapshot plus the log tail. This is the restore boundary."
 ${K} delete pod "${VICTIM}" --wait=true >/dev/null
