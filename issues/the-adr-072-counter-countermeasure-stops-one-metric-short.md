@@ -200,3 +200,58 @@ where anyone adding a fifth is already reading, with all four classified explici
 
 **Revised: build the STP twin, and do not build the book-gauge twin.** Convert its call sites to the
 identity claim instead — which is what `yu13-cancel-ingress` independently arrived at on 2026-08-26.
+
+---
+
+## A sweep is bounded by REACHABILITY, not by metric name (2026-08-27)
+
+The seventeen-reader enumeration above was complete **for the code that runs**, and it still missed a
+live site in a file it had already examined.
+
+`yu13-cancel-ingress:470` asserts venue-wide digest **equality** across a window:
+
+    [[ "${AFTER_PRE}" == "${BEFORE_PRE}" ]] || fail "the pre-fix gateway somehow changed the book"
+
+`book()` (`:128-132`) reads `traderx_book_open_orders` — the venue-wide gauge with no operator twin —
+and pairs it with the order hash. Under ADR-072's continuous replay this cannot hold: measured live
+**436 -> 438** across the window, two orders arriving from the tape, and **the proof blamed the
+gateway.** It fails in the accusatory direction, naming an innocent component.
+
+**The enumeration marked this file's `:465,475` SAFE, and that was correct** — those are computed and
+never asserted. `:470` is a different site, in the same file, reading the same gauge through a helper.
+
+**It sat behind `if [[ "${SKIP_REGRESSION}" == "0" ]]`, which had never been true**, because
+`IMAGE_PRE` did not exist. **Dead code hid a live defect.** No metric-name search, no diff and no green
+run could have reached it; it became visible only when the missing artifact was built
+(`traderx/cluster-node:precancel-36e693ab`, 2026-08-27) and the branch executed for the first time.
+
+The comment at `:467-468` already says a claim contradicting the data printed beneath it *"is worse
+than silence"* — sitting directly above the assertion that is itself in the class.
+
+**Fix:** the identity claim, as everywhere else. The proof's actual claim is *"the pre-fix gateway
+could not cancel"*, and the 404 already establishes there was no route; `:470` was only corroboration.
+Assert the order's own state — **still resting, not CANCELED** — which needs no venue count and is
+strictly stronger than "nothing moved".
+
+**Do not point the proof's `IMAGE_PRE` default at the new image until `:470` is fixed** — that converts
+a proof which *skips* in `run-proofs.sh` into one that *fails* it.
+
+## The failure mode with nothing to detect: a right answer with a wrong mechanism
+
+Worth its own row, because every other entry on this list produces a **wrong reading** and this one
+produces a **right** one.
+
+Measuring whether replay moves `traderx_book_reticks`, this coordinator recorded **0 over 60 replayed
+trade legs** — true, reproducible — and explained it as *"the geometry is already stored in `T_BOOK`,
+so replay never triggers a retick."* **That mechanism is bonds only.** Equities return `0` from
+`derivedBookTickPxFor` and fall through to `decadeTickPx`, stepping at $1/$10/$100/$1000, so for every
+symbol the replay trades the tick **is** a function of the reference price.
+
+They are quiet for two different reasons: replayed flow keeps tape books **occupied**, so the
+empty-book gate short-circuits; and no tape symbol's range crosses a decade (widest: GS $520-$670,
+COF $170-$210, both inside $100-$1000).
+
+**Same measurement, same verdict, opposite durability.** "Never, by construction" retires the question
+forever. "Quiet because books are busy and no symbol crosses $100" is a standing hazard with a named
+expiry — **the queued `PRICE_TICKERS` widening.** Only the mechanism decides whether the finding
+survives, and no check that looks at outputs can tell the two apart.
