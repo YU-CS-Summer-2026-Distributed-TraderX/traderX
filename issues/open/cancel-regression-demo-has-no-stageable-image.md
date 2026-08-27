@@ -62,3 +62,31 @@ half cannot stage reports **PASS**, and only its log says otherwise. That is leg
 reading the log and invisible to someone reading the roll-up — the same who-reads-it problem booked
 in `vacuous-pass-audit`. Worth considering a partial verdict, though not urgent while this is the
 only known instance.
+
+## And now the FIX image is gone too (2026-08-27) — the proof fails outright
+
+`traderx/cluster-node:yu15-cancel`, the image this proof rolls to for its forward half, was
+**pruned from the local Docker store** during a disk reclaim on 2026-08-27 (the host had filled to
+431 MiB free and taken the kind rig down with it). The proof no longer reports a partial pass; it
+fails at preflight:
+
+```
+=== 0. preflight ===
+[FAIL] fixed image traderx/cluster-node:yu15-cancel not present locally
+```
+
+**This is worth distinguishing from a regression**, because the failure text names an image and not
+a behaviour, and a reader coming to it cold has no way to tell that the engine is fine and the
+artifact is missing. Both halves of this proof are now unstageable: `IMAGE_PRE` was already the
+placeholder `precancel-BUILD-ME`, and `IMAGE_FIX` has joined it.
+
+Restoring it means building from the commit where the cancel route landed, the same exercise this
+issue already describes for `IMAGE_PRE` — so the two are now one job rather than two, which is the
+only good news here.
+
+**The general point, which outlives this proof:** a proof that depends on a historical image
+depends on a *local Docker artifact that nothing tracks and any reclaim can delete*. The images are
+not in the registry, not in git, and not rebuilt by any script under `scripts/` except
+`build-stp-boundary-images.sh` (which is exactly why the stp boundary pair survived the same
+reclaim — it can regenerate them, and did, in under a minute). **The durable fix for this class is
+a build script per historical image**, not a note asking people not to prune.
