@@ -133,6 +133,25 @@ book() { # book <member-ordinal> -> "<openOrders> <orderHash>"
 
 book_all() { for m in 0 1 2; do echo "  member $m: $(book "$m")"; done; }
 
+# order_status <ref> -> the order's OWN status from the read model, or "" if not visible yet.
+# The read model is written from the LEADER's egress, so a status here is a committed apply and not
+# the gateway's opinion of one. Used by BOTH halves of this proof, deliberately: the forward half
+# asserts CANCELED and passes today, so it is a standing positive control on this helper. A helper
+# that silently returned "" for everything would red there before it could quietly satisfy a
+# "still NEW" check elsewhere.
+order_status() { # order_status <ref>
+  ${K} exec deploy/trade-processor -- \
+    wget -qO- "http://localhost:18091/accounts/${ACCOUNT}/orders?status=all" 2>/dev/null \
+    | python3 -c "
+import sys, json
+want = str($1)
+for r in json.load(sys.stdin):
+    if str(r.get('id', '')).rsplit('-', 1)[-1] == want:
+        print(r.get('status', '')); break
+else:
+    print('')" 2>/dev/null
+}
+
 # Sampled ONCE, with no retry -- so a follower still catching up after a member roll read as the
 # three disagreeing on the book, which on a deterministic core is the most serious thing this proof
 # can say. Seen as [55 ...] [56 ...] [56 ...]: member 0 one order behind, converging moments later.
@@ -467,9 +486,37 @@ AFTER_PRE="$(digest_consensus)"
 # the book is byte-identical — the cancel had no ingress" as an [ok], directly above a book_all
 # showing the order gone. A claim that contradicts the data printed beneath it is worse than silence.
 if [[ "${SKIP_REGRESSION}" == "0" ]]; then
-  [[ "${AFTER_PRE}" == "${BEFORE_PRE}" ]] \
-    || fail "the pre-fix gateway somehow changed the book: ${BEFORE_PRE} -> ${AFTER_PRE}"
-  echo "[ok] the order is still resting and the book is byte-identical — the cancel had no ingress:"
+  # ASK THE ORDER, DO NOT COUNT THE VENUE. This used to assert the whole book digest was byte-
+  # identical across the window -- traderx_book_open_orders plus the order hash, both venue-wide
+  # with no operator twin. Since ADR-072 the tape replays orders continuously, so prints arriving
+  # in that window move the digest and the assertion fires: measured 2026-08-27, `436 -> 438`,
+  # reported as "the pre-fix gateway somehow changed the book". It accused an innocent component of
+  # the one thing this proof exists to say it did not do.
+  #
+  # IT SURVIVED THE ADR-072 SWEEP BY BEING UNREACHABLE. The audit of every traderx_book_open_orders
+  # reader marked this file's other two sites safe -- correctly, they are printed and never
+  # asserted -- and never saw this one, because it sits behind SKIP_REGRESSION == 0 and no
+  # IMAGE_PRE existed for it to be true. Dead code hid a live defect from a sweep that was
+  # otherwise complete.
+  #
+  # The claim is "the pre-fix gateway could not cancel", and the order says so itself: it is still
+  # resting. That needs no venue count, no other writer can move it, and it is strictly stronger
+  # than "nothing moved" -- the 404 above already proves there was no route, so this is the effect
+  # end of the same fact.
+  PRE_ST=""
+  for _ in $(seq 1 30); do
+    PRE_ST="$(order_status "${PRE_REF}")"
+    [[ -n "${PRE_ST}" ]] && break
+    sleep 2
+  done
+  [[ -n "${PRE_ST}" ]] \
+    || fail "order ${PRE_REF} never became visible in the read model, so 'the cancel had no ingress'
+  cannot be shown. This is the probe failing to read, NOT a verdict about the gateway."
+  [[ "${PRE_ST}" == "NEW" ]] \
+    || fail "order ${PRE_REF} reads '${PRE_ST}' after a cancel the pre-fix gateway answered 404.
+  It must still be resting: a 404 means there was no route, so nothing can have cancelled it."
+  echo "[ok] order ${PRE_REF} still reads NEW — the cancel had no ingress on ${IMAGE_PRE}"
+  echo "     (venue digest ${BEFORE_PRE} -> ${AFTER_PRE}: context, moved by replayed flow independently)"
 else
   echo "[skip] the cancel DID take effect (${BEFORE_PRE} -> ${AFTER_PRE}) — which is precisely why"
   echo "[skip] the pre-fix half cannot be demonstrated against ${IMAGE_PRE}:"
@@ -512,17 +559,12 @@ echo "  book after:  ${AFTER_FIX}"
 # The count was standing in for an identity claim all along — "THIS order left the book" — and the
 # order says so itself. The read model is written from the LEADER's egress, so a row that reads
 # CANCELED is a committed apply and not the gateway's opinion of one.
+# Same reader as the regression half above (order_status), on purpose: this assertion passes today,
+# so it is the positive control that keeps that one honest. A reader that returned "" for every ref
+# would fail HERE -- loudly, on a path that runs every time -- rather than quietly satisfying a
+# "still NEW" check on a path that almost never does.
 for _ in $(seq 1 30); do
-  ST="$(${K} exec deploy/trade-processor -- \
-        wget -qO- "http://localhost:18091/accounts/${ACCOUNT}/orders?status=all" 2>/dev/null \
-        | python3 -c "
-import sys, json
-want = str(${PRE_REF})
-for r in json.load(sys.stdin):
-    if str(r.get('id', '')).rsplit('-', 1)[-1] == want:
-        print(r.get('status', '')); break
-else:
-    print('')" 2>/dev/null)"
+  ST="$(order_status "${PRE_REF}")"
   [[ "${ST}" == "CANCELED" ]] && break
   sleep 2
 done
@@ -532,7 +574,18 @@ done
   model, and it is the reading that says the cancel took EFFECT rather than merely being answered.
   (venue-wide depth ${BEFORE_DEPTH} -> ${AFTER_DEPTH}, which the replay moves independently)"
 echo "  order ${PRE_REF} reads CANCELED in the read model — the cancel took effect on the members"
-[[ "${AFTER_FIX}" != "${BEFORE_FIX}" ]] || fail "book digest did not change on cancel"
+# THE THIRD SITE IN THIS FILE, AND THE ONLY ONE EXPOSED IN THE PASSING DIRECTION. This asserted
+# `AFTER_FIX != BEFORE_FIX` -- "the book digest changed, so the cancel did something". Under
+# ADR-072 the tape moves the digest on its own at ~6 orders/sec, so across the seconds this takes
+# the inequality is satisfied whether or not the cancel did anything. It CANNOT FAIL, which makes
+# it zero coverage that reads as coverage -- strictly worse than the two equality assertions above,
+# because those at least go red when they are wrong. (Same family as seed-option-chain's `-gt` on
+# a venue-wide fill counter: a replayed fill satisfies the gate while the thing under test is
+# silently rejected.)
+#
+# Deleted rather than repaired: the verdict for this half is the order's own CANCELED status
+# below, which is stricter, and a corroborating assertion that can no longer corroborate is not
+# worth keeping for the shape of it. The digest is still printed by book_all for a human.
 # SAY WHAT WAS PROVEN, NOT WHAT THE COUNT USED TO MEAN. This line used to read "exactly one order
 # left the book" -- the claim the assertion above it deliberately stopped making when ADR-072 put a
 # third writer on the venue. It survived the fix because a success message is not an assertion and
