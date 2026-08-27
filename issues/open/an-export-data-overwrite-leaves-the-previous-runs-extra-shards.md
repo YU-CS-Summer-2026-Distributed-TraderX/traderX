@@ -41,10 +41,26 @@ gcloud storage rm -r "${ROWS_URI}" >/dev/null 2>&1 || true
 ```
 
 `build-taq-print-sample.sh` carries it with the reasoning inline. Carry it to
-`build-taq-replay-extract.sh`, and **re-run that builder** once: the 100-symbol widening ran into a
-prefix that had held a 23-symbol export, so the extract now in the bucket may be carrying the same
-contamination. The cheap check is the assembler's own summary line — symbol count and forward-fill
-percentage against what was asked for.
+`build-taq-replay-extract.sh` — **which has been done** (`f56d737a`), with `|| true` added because a
+first-ever run has no prefix and `rm -r` exits 1 under `set -euo pipefail`.
+
+**Do NOT re-run that builder. The live extract was checked and is clean — verified twice, by two
+independent methods, 2026-08-26:**
+
+- **Read directly out of the bucket:** 100 symbols x 40 days x 120 windows, **zero nulls**, no short
+  series.
+- **Proven by its own consumer:** `taq-replay.js` validates the extract **all-or-nothing at load** and
+  refuses any symbol whose day is not exactly 120 finite positive prices. A running publisher
+  reporting `symbols: 100, days: 40, error: null` is therefore the artifact proving itself, not a
+  reader agreeing with a reader.
+
+**It escaped by luck, not by design**, which is why the fix still matters: both runs happened to shard
+identically (21 shards), so nothing stale survived to be assembled. **The next build with a different
+shard count is the one that would have been contaminated.**
+
+The earlier version of this paragraph told the reader to rebuild on a suspicion that had already been
+falsified. Recorded rather than silently edited: **an unverified worry in a filed issue costs someone
+a rebuild, and reads exactly like a finding.**
 
 ## Related
 
