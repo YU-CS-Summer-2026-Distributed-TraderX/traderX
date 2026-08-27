@@ -635,6 +635,18 @@ TRD="$(agree_on trades_all "the trade counter")"
 # the system. The STP claim this proof actually needs is step 2's per-member DELTA on the operator
 # twin, which is correct across exactly this case -- same rig, absolutes [2 2 0] -> [3 3 1]: three
 # different starting points, +1 on every member.
+#
+# THE TWIN IS NOT IMMUNE, IT IS BEING USED CORRECTLY -- and the difference matters because the fix
+# for the first nine WAS "swap the raw counter for its twin". traderx_stp_operator_cancels is a
+# per-process shadow subtracted from a per-process parent, so it is per-process END TO END and its
+# absolutes disagree exactly as its parent's do: measured alongside the readings above, [4 4 2].
+# What makes step 2 sound is that it takes a DELTA, which is uptime-independent. A cross-member
+# ABSOLUTE on the twin would be precisely as unsatisfiable as the assertion removed here. The twin
+# fixes ATTRIBUTION, not PERSISTENCE, and nothing about the word "operator" implies otherwise.
+#
+# The pod ages are the mechanism in its cleanest form -- measured with the readings above:
+# m0 37m, m1 37m, m2 18m. The counter was reporting how long each PROCESS had been alive, and this
+# step was reading it as whether the STATE MACHINE agreed.
 echo "  nextOrderRef [${REFS}] trades [${TRD}] book [$(digest_consensus)]"
 echo "  stp [$(stp_all)] — per-process, so it differs across members by UPTIME. Not asserted:"
 echo "       the STP claim is step 2's per-member delta on traderx_stp_operator_cancels."
