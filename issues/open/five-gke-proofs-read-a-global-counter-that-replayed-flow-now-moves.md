@@ -65,3 +65,34 @@ Both survive today and are recorded so they are not rediscovered as new:
 - `specs/YU17-otc-rates/system/adr-072-replayed-prints-become-order-flow.md` — the eleven readings
   and the two shapes they fall into
 - `scripts/proofs/lib-consensus-readings.sh` — the operator-scoped readings and the admission test
+
+## A sixth exposure in the same family, found 2026-08-27 by enumeration
+
+`scripts/proofs/yu13-gke-replace-proof.sh` reads **`traderx_book_open_orders`** — a venue-wide
+gauge with a member label only, **no operator-scoped twin** (unlike the four counters this issue
+opens on) and no per-ticker cut — and asserts arithmetic on it at two sites:
+
+```
+150:  [[ "${BEFORE%% *}" == "${AFTER%% *}" ]]              # depth UNCHANGED across the replace
+176:  [[ "$(( ${BEFORE%% *} - 1 ))" -eq "${AFTER%% *}" ]]  # exactly one order out
+```
+
+Both are the shape that broke `yu13-readmodel-effect-end` on the kind rig, where the same
+`$(( BEFORE - 1 )) -eq AFTER` read **287 → 284** on a correct cancel. Same fix available
+(`c691b849`): stop the replay for the measurement, on an `EXIT` trap.
+
+**It is the ONLY genuinely exposed site of the seventeen proofs that read this gauge.** The
+enumeration, so nobody has to redo it:
+
+| proof | how it reads the gauge | verdict |
+|---|---|---|
+| 14 proofs (`yu17-band-follows-market`, `yu17-book-retick`, `yu17-fine-grid`, `yu16-invisible-orders-repro`, `yu12-gke-failover-transparency`, `yu17-keyed-ack-correlation`, …) | cross-member agreement / divergence — m0 vs m1 vs m2 | **safe as written** — who wrote the orders is irrelevant when the claim is that the members agree |
+| `yu13-readmodel-effect-end:251` | `$((BEFORE-1)) -eq AFTER` | **fixed** `c691b849` — replay paused for the measurement |
+| `yu13-stp-and-replace:785` | `BEFORE == AFTER` | **covered** — `pause_replay` at :335 with no resume before :785, so the replay is off for the whole proof |
+| `yu13-cancel-ingress:465,475` | computed into `BEFORE_DEPTH`/`AFTER_DEPTH` | **safe** — never asserted; used only in the display string at :505, annotated *"which the replay moves independently"* |
+| **`yu13-gke-replace-proof:150,176`** | `BEFORE == AFTER` **and** `$((BEFORE-1)) -eq AFTER` | **EXPOSED** — GKE tier, not in `run-proofs.sh`, nothing here will ever red it |
+
+**The durable fix is a `traderx_book_operator_open_orders` twin**, matching the four that already
+exist. Pausing the replay works but is a workaround for a missing counter: it mutates shared rig
+state mid-suite, needs a trap to avoid stranding the rig feedless, and makes the reading depend on
+a scale-down succeeding. See `issues/the-adr-072-counter-countermeasure-stops-one-metric-short.md`.
