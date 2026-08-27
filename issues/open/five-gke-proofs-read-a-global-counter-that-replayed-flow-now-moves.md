@@ -223,9 +223,69 @@ The admission test the library demands, and the concrete reason the nine failed 
 The old `t1 -eq t0` ("a self-trade must book nothing") would have seen **+152 legs**; the old
 `s1 -eq s0 + 1` would have seen **+25** STP cancels rather than 1.
 
+### A TENTH, found by RUNNING it after all nine were fixed — and it is a different shape
+
+The nine were fixed, the proof was run on kind under the live tape, and **step 3 went red**: the three
+cross-member `uniq_one` checks that this issue, the proof's header, `lib-consensus-readings.sh` and the
+person fixing it had all independently marked **sound**.
+
+```
+[FAIL] members disagree on nextOrderRef: [20850 20850 20850 ]
+```
+
+Three *identical* values, reported as a disagreement. The reader takes three **sequential** `kubectl
+exec`s, one per pod, and the tape advances the counter between them — so the samples are from three
+different instants. Measured at 6.13/s: `refs [21580 21586 21586]`, `trades [18006 18006 18010]`,
+**8 skews in 80 samples (~90% pass rate)** — the flaky-green mode, where the red gets re-run.
+
+> **Sound is not the same as safely measurable.** "Cross-member agreement cannot be disturbed by a
+> third writer" is a statement about the CLAIM, and it is still true. It says nothing about whether
+> the claim can be SAMPLED. Classifying the assertion is not enough — **ask how it samples.**
+
+Reasoning could not have found this; only running it under foreign write pressure did. Fixed with an
+`agree_on()` retry (`7ca3d5fa`); generalised into the library's SHAPE OF THE READING block by the
+ADR-072 lane (`b836b194`), which adds the sharpest form of it: **the readers at risk are the ones that
+hand-roll their own comparison instead of calling `_agreed()`**, which has always retried.
+
+### Exercised: GREEN on kind under a live tape
+
+`kind-traderx-yu12-cluster`, `traderx/cluster-node:yu17-stptwin`, tape at 6.13/s.
+
+**Pre-fix**, same rig, first real red any of these has ever printed — at step 1, against a replace that
+returned `200`, `"replaced":true` and the **same orderRef**, while the tape put +4 orders on the venue:
+
+```
+book: [757 ...] -> [761 ...]
+[FAIL] depth moved: a replace must be one order in and one order out, not two orders
+```
+
+The ninth assertion — `BEFORE != AFTER`, the one exposed in the *passing* direction — passed on that
+same run, for the wrong reason: the tape changed the digest. Zero coverage reading as coverage,
+demonstrated rather than argued.
+
+**Post-fix**, full pass, with the old assertion's counterfactual recorded at each site:
+
+| step | venue reading | what the old assertion would have done | what is asserted now |
+|---|---|---|---|
+| 1 | depth `821 -> 821`, hash changed | passed *by luck* | ref 22089 NEW at qty 9 @ 153.0, sole open order |
+| 2 | depth `825 -> 820` | **failed** — wanted exactly −1 | ref 22097 CANCELED, ref 22098 NEW at qty 4 @ 150.0 |
+| 2 | — | — | operator stp `[1 1 1]->[2 2 2]`, operator trades `[5 5 5]->[5 5 5]` |
+| 4 | depth `809 -> 820` across the kill | **failed** — blaming the rebuilt member | all three agree on the digest; refs 22089 and 22485 back at their replaced terms |
+| 6 | — | — | tape submitted +687 over 111s = **6.19/s observed**, in band |
+
+### Enabled is not the same as writing at pressure
+
+The ADR-072 lane shipped a rig replaying at **1.53/s** with `enabled: true`, `error: null` and plausible
+orders, because the print-sample Secret and `PRICE_TICKERS` disagreed — and nothing reported it. A
+"tape is live" gate that checks `error` is empty and `submitted` climbed **passes on that rig**, because
+a quarter-rate tape still climbs. The proof now gates the *reported* rate against ADR-072's 5–20/s band
+at step 0 and the **observed** rate (submitted delta ÷ elapsed) at step 6; the second cannot be faked by
+a config field. Nothing else in `scripts/` gates on rate — `yu17-replay-attribution:116` reads
+`ordersPerSecond` only to print it.
+
 ### Still open for this proof
 
-**Not yet exercised end-to-end on GKE.** The bench rig (`traderx-bench`, 2026-08-27) runs
+**Not exercised on GKE.** The bench rig (`traderx-bench`, 2026-08-27) runs
 `cluster-node:yu17-gke5`, which exports **no operator twins at all**, and a `price-publisher` whose
 `/health` carries **no `printReplay` block** — the tape is not running there. Exercising it needs both
 images rebuilt `--platform linux/amd64` from a build carrying `6374c110`, and a fresh-epoch roll. The
