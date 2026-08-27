@@ -29,12 +29,28 @@
 # a stale anchor has no failure mode, only a wrong answer. Re-stamping and rolling the publisher
 # put it back at day 1.
 #
-# So the manual recovery path is three steps, not two:
-#     kubectl -n traderx delete pvc -l app=order-matcher-cluster    # after scaling the sts to 0
-#     kubectl -n traderx scale sts order-matcher-cluster --replicas=3
-#     bash -c 'K=(kubectl -n traderx); source scripts/yu15/lib-replay-epoch.sh; stamp_replay_epoch'
-# and the reading that confirms it is /health.taqReplay's day, which must be 1 on a rig you just
-# wiped. `applied` advancing does not tell you this; it is the same trap as asserting Ready.
+# So the manual recovery path is three steps, not two. NAME THE CONTEXT IN EVERY ONE OF THEM:
+#     C=kind-traderx-yu12-cluster
+#     kubectl --context $C -n traderx delete pvc -l app=order-matcher-cluster   # sts scaled to 0
+#     kubectl --context $C -n traderx scale sts order-matcher-cluster --replicas=3
+#     bash -c 'K=(kubectl --context kind-traderx-yu12-cluster -n traderx)
+#              source scripts/yu15/lib-replay-epoch.sh; stamp_replay_epoch'
+#
+# TWO WAYS THIS LAST STEP LIES, BOTH MEASURED 2026-08-27, BOTH ENDING IN A STALE ANCHOR:
+#
+#   * `${K}` IS RESOLVED FROM THE SOURCING SHELL. Call stamp_replay_epoch without K set and it runs
+#     bare `kubectl` — default context, default namespace — finds no member-0 PVC there, and says
+#     so TRUTHFULLY about the wrong cluster.
+#   * SETTING K WITHOUT `--context` HAS THE SAME END. It inherits whatever the current context is,
+#     which is not necessarily this rig and is not visible in the command you typed.
+#
+# AND THE EXIT STATUS CANNOT CATCH EITHER: the no-PVC path prints its line and `return 0` (line ~50,
+# deliberately, so a tier with no EOD chain is not a failure). A wrong-context call therefore
+# SUCCEEDS, and the rig serves a plausible wrong tape day exactly as if you had never run it.
+#
+# So the confirmation is never the command's status — it is /health.taqReplay.position.dayIndex,
+# which must be 0 on a rig you just wiped. `applied` advancing does not tell you this either; it is
+# the same trap as asserting Ready.
 #
 # Both functions resolve the sourcing script's ${K} kubectl prefix exactly as
 # lib-consensus-readings.sh does: string or array, either works.
