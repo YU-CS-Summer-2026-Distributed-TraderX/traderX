@@ -83,3 +83,59 @@ equity fill in the same second satisfies it while the option cross is silently r
 exact delta, so it does not go red; it goes **vacuously green**, which is the direction that hides
 things. It is not invoked by `run-proofs.sh` today (it is a manual YU14 seeder, referenced from
 `scripts/yu15/seed-proof-fixtures.sh:175`), so this is latent rather than live.
+
+---
+
+## Enumeration done (2026-08-27, ADR-072 lane) — and it widened
+
+The seventeen `traderx_book_open_orders` readers, resolved. **Fourteen are the cross-member
+agreement idiom and are correct as written**; the claim is *that the members agree*, not that any
+number is right, so who wrote the orders is irrelevant. Of the remaining three:
+
+    yu13-readmodel-effect-end:251   FIXED c691b849 (replay paused for the measurement)
+    yu13-stp-and-replace:785        COVERED - pause_replay at :335, restore only on the EXIT trap
+    yu13-cancel-ingress:465,475     SAFE   - computed, never asserted; appears only inside another
+                                             assertion's failure text at :505
+    yu13-gke-replace-proof:150,176  EXPOSED - both forms, identical shape to the 287->284 instance
+
+**`yu13-cancel-ingress` had already been fixed for this exact class on 2026-08-26** (measured
+585 -> 577 on a correct cancel) by switching to an identity claim — the read model's own
+`CANCELED` status — rather than a venue-wide count. **That is the third proof this class has bitten**,
+and the fix it landed on is the better pattern: *ask the order what happened to it.*
+
+### The scope was mine and it was too narrow
+
+I scoped the enumeration to one gauge, so that is what came back. Reading the exposed file's other
+assertions shows the class is defined by **the shape of the reading, not the name of the metric**:
+
+    yu13-gke-replace-proof
+      trades_all() -> traderx_cluster_trades          RAW, though an operator twin EXISTS
+      refs_all()   -> traderx_cluster_next_order_ref  RAW, though an operator twin EXISTS
+      stp_all()    -> traderx_stp_cancels             RAW, and NO twin exists
+
+and asserts exact per-member deltas on all of them (`t1 == t0` for "booked no self-trade",
+`s1 == s0 + 1` for "exactly one STP cancel"). **Any replayed fill breaks the first; replayed flow
+tripping self-trade prevention breaks the second.** So that file carries five-plus exposed
+assertions, not the two found by gauge name.
+
+### Why no metric-name search sorts this
+
+**The same helper serves a sound purpose and an exposed one in the same file.** `trades_all` feeds
+`uniq_one` for cross-member agreement — correct — *and* a per-member exact delta — exposed. This is
+why a regex over metric names cannot separate them, and why the enumeration had to be a line-by-line
+read of the assertions.
+
+### Revised recommendation
+
+1. **Two gauges need twins, not one:** `traderx_book_operator_open_orders` **and**
+   `traderx_stp_operator_cancels`.
+2. **The larger gap is adoption, not coverage.** Twins exist for `cluster_trades` and
+   `next_order_ref` and are the minority of reads — 18 raw `cluster_trades` reads against 5
+   operator-scoped, 22 raw `next_order_ref` against 8. Proofs keep reaching for the raw name.
+3. **Prefer the identity claim where one exists** (`yu13-cancel-ingress`'s pattern): a count standing
+   in for "THIS order did X" can be replaced by asking the order. That needs no counter at all.
+4. **Leave the fourteen cross-member comparisons alone.**
+
+`yu13-gke-replace-proof` is unreachable from `run-proofs.sh` (0 mentions), so **nothing in the suite
+will ever red it** — it fails months from now, on GKE, far from the change that broke it. Recorded in
+the GKE proof family issue (`aea72ac1`) rather than fixed here.
