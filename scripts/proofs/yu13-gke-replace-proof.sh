@@ -84,6 +84,12 @@
 # claims (NEW in step 1, CANCELED in step 2) run on every pass, so they are also the standing
 # positive control on the reader itself.
 #
+# THIS PROOF DESTROYS A MEMBER, AND NOW SAYS SO BEFORE IT DOES. `DESTRUCTIVE=1` is required; the
+# default refuses and exits 2 without touching the cluster. Step 4 deletes a cluster member and
+# rebuilds it from an empty disk -- on a SHARED rig that is somebody else's state. The two comparable
+# proofs (yu17-halt-survives-failover, yu17-closed-survives-restart) have been gated since they were
+# written; this one never was, which is also why it must not enter run-proofs.sh ungated.
+#
 # SELFTEST=1 RUNS THE READ-MODEL PARSERS OFFLINE, IN ABOUT A SECOND, WITH NO CLUSTER:
 #
 #     SELFTEST=1 ./yu13-gke-replace-proof.sh
@@ -182,6 +188,12 @@ PRICE="${PRICE:-150.00}"
 # the ADR calls it tunable, but NOT to be widened to make a run pass: see the rate gate in step 0.
 REPLAY_MIN_RATE="${REPLAY_MIN_RATE:-5}"
 REPLAY_MAX_RATE="${REPLAY_MAX_RATE:-20}"
+# THIS PROOF DESTROYS A CLUSTER MEMBER (step 4) AND HAD NO GATE. Same shape as
+# yu17-halt-survives-failover and yu17-closed-survives-restart, which have carried one since they
+# were written -- this file simply never grew one, and on a SHARED rig that means an unsuspecting
+# run kills somebody else's member silently. It was run twice that way on 2026-08-27 before anyone
+# noticed the asymmetry.
+DESTRUCTIVE="${DESTRUCTIVE:-0}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
@@ -428,6 +440,32 @@ replace() { # replace <orderRef> <qty> <price> -> "<http> <body>"
 ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 
 # ---------------------------------------------------------------------------------------------
+# REFUSE, rather than run a reduced version. Steps 1, 2, 3 and 5 do not need the kill, so a partial
+# run is technically possible -- and it must not be the default, because the [PASS] banner claims
+# "survival across a snapshot and a member rebuilt from an empty disk" and a run that skipped step 4
+# has not shown that. EXIT 2, the sibling proofs' convention: a partial run must never read as the
+# claim, and a distinct exit code keeps "refused" separable from "passed" and "failed" by a caller.
+if [[ "${DESTRUCTIVE}" != "1" ]]; then
+  cat >&2 <<'REFUSED'
+[SKIP] DESTRUCTIVE=0 (the default). Step 4 of this proof DELETES a cluster member and rebuilds it
+       from an empty disk, which on a shared rig destroys state somebody else may be using. Nothing
+       has run and nothing was touched.
+
+       The kill is not incidental -- it is how this proof shows a replace surviving the
+       snapshot/restore boundary, which is one of the three things it exists to establish. Running
+       the other steps alone would print a PASS for a claim that was never tested, so this refuses
+       instead of reducing itself.
+
+       When you have a rig to spend, and the tape live (it asserts that too):
+
+         DESTRUCTIVE=1 CTX=<context> IMAGE=<the image all three members are on> \
+           bash scripts/proofs/yu13-gke-replace-proof.sh
+
+       SELFTEST=1 needs no cluster and no permission -- it exercises the read-model parsers offline.
+REFUSED
+  exit 2
+fi
+
 step "0. the divergence rule: every member on ${IMAGE##*:}, ready, and AGREEING before any traffic"
 for i in $(seq 1 120); do
   state="$(${K} get pods -l app=order-matcher-cluster \
@@ -575,8 +613,31 @@ step "3. three-member state identity through the replace sequence"
 # skew rate that exposed it. A single sequential sample of a moving global is not a reading.
 REFS="$(agree_on refs_all  "nextOrderRef")"
 TRD="$(agree_on trades_all "the trade counter")"
-STP="$(agree_on stp_all    "the STP counter")"
-echo "  nextOrderRef [${REFS}] trades [${TRD}] stp [${STP}] book [$(digest_consensus)]"
+# NO AGREEMENT ASSERTION ON THE STP COUNTER, AND THIS IS NOT AN OVERSIGHT.
+#
+# traderx_stp_cancels is PER-PROCESS: selfTradesPrevented is a plain field on MatchingEngine, in
+# neither the snapshot writer nor the reader. Cross-member equality on it is therefore a statement
+# about how long each member has been UP, not about the state machine, and it is permanently
+# unsatisfiable on any epoch where a member has restarted. Measured on kind 2026-08-27, minutes
+# after this proof's own step 4 had rebuilt member 2:
+#
+#     traderx_cluster_next_order_ref   28358  28358  28358   replicated+snapshotted -> agrees
+#     traderx_cluster_trades           23756  23756  23756   replicated+snapshotted -> agrees
+#     traderx_stp_cancels               1372   1372    632   per-process -> CANNOT agree
+#
+# AND THIS PROOF CREATES THAT CONDITION ITSELF. Step 4 destroys and rebuilds a member, so a second
+# run against the same epoch fails HERE -- "members disagree on the STP counter" -- accusing the
+# cluster of divergence when nothing diverged and the restart being reported was this proof's own.
+# The runs that passed did so only because step 3 precedes step 4 within a single run, which is not
+# a property anyone chose.
+#
+# There is nothing to repair with a retry: unlike the skew above, the claim itself was never true of
+# the system. The STP claim this proof actually needs is step 2's per-member DELTA on the operator
+# twin, which is correct across exactly this case -- same rig, absolutes [2 2 0] -> [3 3 1]: three
+# different starting points, +1 on every member.
+echo "  nextOrderRef [${REFS}] trades [${TRD}] book [$(digest_consensus)]"
+echo "  stp [$(stp_all)] — per-process, so it differs across members by UPTIME. Not asserted:"
+echo "       the STP claim is step 2's per-member delta on traderx_stp_operator_cancels."
 
 # ---------------------------------------------------------------------------------------------
 step "4. a replace survives a snapshot AND a member rebuilt from nothing"
