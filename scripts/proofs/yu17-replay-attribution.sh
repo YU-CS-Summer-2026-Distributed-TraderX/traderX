@@ -115,6 +115,21 @@ ACCEPTED0="$(printf '%s' "${HEALTH}" | jget printReplay.accepted)"
 SYMS="$(printf '%s' "${HEALTH}" | jget printReplay.symbols)"
 RATE="$(printf '%s' "${HEALTH}" | jget printReplay.ordersPerSecond)"
 echo "    replaying ${SYMS} symbols at ~${RATE}/s, ${SUBMITTED0} orders submitted so far"
+# GATE ON THE RATE, do not merely print it. `error: null` and a climbing `submitted` do NOT catch a
+# tape running at a fraction of its band -- a quarter-rate replay still climbs, still reports no
+# error, and still submits plausible orders. Measured 2026-08-27: the rig ran at 1.53/s for hours
+# because the print-sample Secret held a 99-symbol artifact (1 slot/window) while PRICE_TICKERS
+# carried 23, so only 23 of the sampled symbols were priced. Nothing anywhere reported the
+# disagreement, and THIS PROOF WOULD HAVE PASSED ON IT -- every arm below is a delta, and a slow
+# writer still moves a delta. The arms would have been true and the proof would have been about a
+# rig nobody intends to run.
+python3 -c "import sys; r=float('${RATE}' or 0); sys.exit(0 if 5.0 <= r <= 20.0 else 1)" 2>/dev/null \
+  || fail "the replay reports ${RATE}/s, outside ADR-072's 5-20/s band.
+  This is NOT a verdict about attribution -- the arms below would pass anyway, because a slow
+  writer still moves every delta they measure. It means the rig is misconfigured: the usual cause
+  is the taq-print-sample Secret and PRICE_TICKERS disagreeing about the universe, which nothing
+  reports. Check /health.printReplay.{symbols,sampledSymbols,slotsPerWindow} and rebuild the
+  sample against the live PRICE_TICKERS (scripts/yu17/build-taq-print-sample.sh)."
 
 GREF0="$(gmetric 0 traderx_cluster_next_order_ref)"
 GTRD0="$(gmetric 0 traderx_cluster_trades)"

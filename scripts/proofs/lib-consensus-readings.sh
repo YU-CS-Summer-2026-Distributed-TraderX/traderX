@@ -132,7 +132,36 @@ _k() {
 #   SOUND    cross-member agreement:  m0 == m1 == m2
 #            The claim is that the MEMBERS AGREE. Who wrote the orders is irrelevant, so a third
 #            writer cannot touch it. Fourteen of the seventeen readers of traderx_book_open_orders
-#            are this shape and need nothing.
+#            are this shape.
+#
+#            BUT SOUND IS NOT THE SAME AS SAFELY MEASURABLE, and this block said "need nothing"
+#            until 2026-08-27, when running one under the live tape proved otherwise:
+#
+#                [FAIL] members disagree on nextOrderRef: [20850 20850 20850]
+#
+#            Three IDENTICAL values, reported as disagreement. The reader takes three SEQUENTIAL
+#            `kubectl exec`s, one per pod, and a third writer advances the counter between them --
+#            so the three samples are from three different instants and the comparison is of
+#            things that were never meant to be equal. Measured at 6.13/s: refs
+#            [21580 21586 21586], trades [18006 18006 18010], 8 skews in 80 samples. **~90% pass
+#            rate**, which is the flaky-green failure mode again -- the red gets re-run, not fixed.
+#
+#            The CLAIM survives untouched; the MEASUREMENT does not. Reasoning about the claim
+#            cannot find this. Only running it under foreign write pressure can.
+#
+#            So a cross-member equality is safe from CONTAMINATION and exposed to SKEW. Two rules:
+#              * RETRY UNTIL COHERENT. If the counter moves under foreign writes, one sample is not
+#                a reading -- `_agreed()` below does this (`_AGREE_TRIES`, default 60) and is why
+#                the library's own readers were never exposed. THE FOURTEEN AT RISK ARE THE ONES
+#                THAT HAND-ROLL THEIR OWN COMPARISON instead of calling in here.
+#              * ASSERT AND REPORT THE SAME READING. The failure above printed three equal values
+#                because the message RE-SAMPLED after the assertion had already failed on an
+#                earlier one. A proof whose output contradicts its own verdict sends its reader
+#                looking for replication lag -- the `d26d9851` shape, one layer in.
+#
+#            This file already held the answer and pointed it at the wrong readers:
+#            `digest_consensus`'s comment says a single sample "looks exactly like a determinism
+#            failure and is not one" -- and the three checks it sits beside never got the retry.
 #
 #   EXPOSED  a delta or an absolute over a window:  AFTER - BEFORE == n,  AFTER == BEFORE
 #            The claim is about VOLUME, and every writer contributes to it.
