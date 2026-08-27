@@ -930,8 +930,9 @@ if [[ "${NEED_FRESH}" == "1" ]]; then
 fi
 
 mkdir -p /tmp/proofrun
-pass=0; skip=0; fail=0; results=()
+pass=0; skip=0; fail=0; attempted=0; results=()
 for p in "${PROOFS[@]}"; do
+  attempted=$((attempted + 1))
   script="${ROOT}/scripts/proofs/${p}.sh"
   # A NAMED PROOF THAT DOES NOT EXIST IS A FAILURE, NOT A WARNING.
   #
@@ -1132,8 +1133,26 @@ for p in "${PROOFS[@]}"; do
   fi
 done
 
+# A TRUNCATED SUITE IS A FAILED SUITE, NOT A SMALLER ONE.
+#
+# The two `start_forwards || { ...; break; }` sites leave this loop WITHOUT touching `fail`, so a
+# run that died at proof 26 of 41 printed 26 results and exited 0. Measured 2026-08-27: run 9
+# reported "21/0/5, truncated at 26 of 41" and the exit status said the suite was fine.
+#
+# This is the same defect the comment at the head of the loop describes about a missing proof
+# script -- "reported success having silently run a smaller suite than it claimed" -- which was
+# fixed there and left standing eighty lines below. Fixing the two `break`s would close the two
+# known exits; asserting the loop RAN EVERY PROOF closes the ones nobody has found yet, because it
+# checks the property (all proofs attempted) rather than the mechanism (these two breaks).
+if [[ ${attempted} -ne ${#PROOFS[@]} ]]; then
+  fail=$((fail + 1))
+  echo
+  echo "[fail] TRUNCATED: ${attempted} of ${#PROOFS[@]} proofs attempted -- this run did not finish,"
+  echo "       and its counts below describe only what ran. Do not read them as a suite result."
+fi
+
 echo
-echo "==== ${pass} passed, ${skip} skipped, ${fail} failed ===="
+echo "==== ${pass} passed, ${skip} skipped, ${fail} failed (of ${#PROOFS[@]} proofs, ${attempted} attempted) ===="
 # "${results[@]}" on an EMPTY array trips set -u ("unbound variable") and turned a clean
 # no-proofs-ran outcome into a shell error after the summary had already printed.
 if [[ ${#results[@]} -gt 0 ]]; then
