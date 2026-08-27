@@ -1,5 +1,36 @@
 # `yu13-cancel-ingress` has no image that can stage its regression demonstration
 
+**RESOLVED 2026-08-27** on `YU17-otc-rates`. The pre-cancel image exists and the demonstration runs
+by default. Proven **on the kind rig**, twice, not by argument: `POST /cancel` → `404 "No context
+found for request"` on the pre-fix gateway, the order still `NEW`; roll forward, the same cancel
+→ `200 canceled:true` and the order `CANCELED` on all three members.
+
+**The image**: `traderx/cluster-node:precancel-36e693ab`, built by the coordinator from `36e693ab`
+— the commit *before* `4200e0d7`, the oldest one registering the `/cancel` context. **Verified in
+both directions**, because "the route is absent" and "I looked in the wrong file" are otherwise the
+same reading: `36e693ab` registers it 0 times, `4200e0d7` once. Commit-pinned deliberately — a
+mutable tag is precisely how the old `:yu15` default came to hold a YU16-intermediate build.
+
+**What this also bought, and was the argument for doing it**: the probe strip/restore path — and
+its anti-latch guard, written after the 2026-08-14 latch and **never once executed since** — ran
+for the first time, twice, and restored cleanly both times. That guard could not be exercised
+without this image, which made it a guard that had only ever been asserted.
+
+**And running it found three live defects** the ADR-072 metric-name sweep could not see. Two sat
+behind `SKIP_REGRESSION == 0`, a branch that had never been true; the third was a helper-mediated
+inequality that **could not fail**. Fixed in `52752df4`; the general form is recorded in
+`scripts/proofs/lib-consensus-readings.sh`. **An audit's coverage is bounded by what can run**, and
+a permanently-skipped branch is covered by nothing — not the sweep, not the suite, not review,
+because all three read it as inert.
+
+**NOT resolved — the durable half.** The image is a local Docker artifact on one machine plus a
+copy on four kind nodes. It is **not in a registry, not in git, and no script rebuilds it**, which
+is the same exposure that lost its predecessor to a disk reclaim. The rebuild recipe is in the
+proof's header, but a recipe in a comment is not a build script. **A build script per historical
+image remains the fix**, and it is filed as the general case in
+`issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md`.
+
+
 > **The values below are a record, not a rig you can query.** Order refs (`1-66`), trade ids
 > (`4060-S`), trace ids, security ids, pod names and run counts come from the epoch this was
 > measured on. That epoch has been rolled and will be rolled again — order refs restart at 1, the

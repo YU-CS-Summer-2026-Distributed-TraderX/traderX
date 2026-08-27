@@ -77,9 +77,27 @@ IMAGE_PRE_NAMED=0
 # then stages a demonstration against the wrong build while looking correct. A name that cannot
 # resolve can only ever skip, loudly, with the remedy in its message.
 #
-# TO RESTORE THE DEMONSTRATION: build a pre-cancel image from the commit before the route landed and
-# name it here. See issues/open/cancel-regression-demo-has-no-stageable-image.md.
-IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:precancel-BUILD-ME}"
+# THE DEMONSTRATION IS RESTORED (2026-08-27). The default below is a real, built image and the
+# regression half runs by DEFAULT -- including from run-proofs.sh, which sets no environment.
+# That was the point of flipping it: a pre-image reachable only by remembering an env var gets
+# exercised once, by hand, and never by the suite, which is the same "asserted but never run"
+# condition the anti-latch guard it exercises was in for two weeks.
+#
+# COMMIT-PINNED, AND THAT IS THE WHOLE DESIGN. 36e693ab is the commit BEFORE 4200e0d7, which is the
+# oldest commit registering the /cancel context (`git log -S 'createContext("/cancel"'`). Verified
+# in BOTH directions rather than only the convenient one -- 36e693ab registers /cancel 0 times and
+# 4200e0d7 registers it once -- because "the route is absent" and "I looked in the wrong file" are
+# the same reading otherwise. A tag naming its own commit cannot be quietly rebuilt into something
+# else, which is exactly how the old `:yu15` default came to hold a YU16-intermediate build.
+#
+# If the image is absent (a fresh cluster, a pruned node), image_available finds it on NEITHER local
+# Docker nor the nodes, PRE_ABSENT is set, and the regression half SKIPS with the remedy in its
+# message. The forward claim still runs in full. Absence degrades; it does not fail.
+#
+# Rebuild:  git worktree add <tmp> 36e693ab && (build cluster-node from that tree)
+#           docker tag ... traderx/cluster-node:precancel-36e693ab && kind load docker-image ...
+# See issues/open/cancel-regression-demo-has-no-stageable-image.md.
+IMAGE_PRE="${IMAGE_PRE:-traderx/cluster-node:precancel-36e693ab}"
 IMAGE_FIX="${IMAGE_FIX:-traderx/cluster-node:yu15-cancel}"
 # 22214, NOT 99001. `orderbook.accountid` is a FOREIGN KEY onto `accounts`, and 99001 is in no
 # reference data — so every order this proof placed was refused by the read model and the account's
