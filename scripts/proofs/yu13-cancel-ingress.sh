@@ -528,7 +528,22 @@ done
   (venue-wide depth ${BEFORE_DEPTH} -> ${AFTER_DEPTH}, which the replay moves independently)"
 echo "  order ${PRE_REF} reads CANCELED in the read model — the cancel took effect on the members"
 [[ "${AFTER_FIX}" != "${BEFORE_FIX}" ]] || fail "book digest did not change on cancel"
-echo "[ok] exactly one order left the book, and all three members agree on the new digest:"
+# SAY WHAT WAS PROVEN, NOT WHAT THE COUNT USED TO MEAN. This line used to read "exactly one order
+# left the book" -- the claim the assertion above it deliberately stopped making when ADR-072 put a
+# third writer on the venue. It survived the fix because a success message is not an assertion and
+# nothing tests it, and on 2026-08-27 it printed directly beneath its own contradiction:
+#
+#     book before: 227 ...
+#     book after:  233 ...            <- SIX MORE, on a correct single cancel
+#     [ok] exactly one order left the book
+#
+# A passing proof narrating the exact falsehood that misled three people on three separate days,
+# two lines under the numbers that refute it. The verdict was right and the sentence was wrong, and
+# the sentence is the part an operator reads. Depth is CONTEXT here, printed and asserted on by
+# nothing; the verdict is the order's own CANCELED state on all three members.
+echo "[ok] order ${PRE_REF} reads CANCELED on all three members and they agree on the new digest"
+echo "     (venue depth ${BEFORE_DEPTH} -> ${AFTER_DEPTH}: context, not the verdict — replayed flow"
+echo "      moves it independently, so no delta on it could be this proof's evidence)"
 book_all
 
 step "5. the cancel verdict is decided from replicated state alone"
