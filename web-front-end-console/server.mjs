@@ -314,6 +314,41 @@ function taqSeries(req, res, url) {
 }
 
 /**
+ * The corpus flattened to rows, for the q console. ONE DAY at a time (100 symbols x 120 windows =
+ * 12k rows) rather than the whole corpus: 480k rows is not a query result, it is a download, and a
+ * q box that silently took thirty seconds to answer would be worse than one that says what it
+ * holds. `ticker` narrows to a single name across every session instead.
+ */
+function taqTable(req, res, url) {
+  try {
+    const e = tapeExtract();
+    const wpd = Math.round(e.sessionSeconds / e.windowSeconds);
+    const ticker = (url.searchParams.get('ticker') ?? '').toUpperCase();
+    const dayParam = url.searchParams.get('day');
+    const rows = [];
+    const push = (sym, dayIdx, series) => {
+      const open = series[0];
+      for (let w = 0; w < series.length; w += 1) {
+        rows.push({ date: e.days[dayIdx].date, win: w, sym, px: series[w],
+          chgPct: open ? Number((((series[w] - open) / open) * 100).toFixed(4)) : 0 });
+      }
+    };
+    if (ticker) {
+      const byDay = e.prices[ticker];
+      if (!byDay) { return json(res, 404, { error: `the corpus does not carry ${ticker}` }); }
+      byDay.forEach((series, d) => push(ticker, d, series));
+    } else {
+      const day = Number(dayParam ?? 0);
+      if (!Number.isInteger(day) || day < 0 || day >= e.days.length) {
+        return json(res, 400, { error: `day ${dayParam} is outside the corpus`, days: e.days.length });
+      }
+      for (const [sym, byDay] of Object.entries(e.prices)) { push(sym, day, byDay[day]); }
+    }
+    return json(res, 200, { windowsPerDay: wpd, windowSeconds: e.windowSeconds, rows });
+  } catch (e) { return tapeFail(res, e); }
+}
+
+/**
  * The cross-section: every symbol at ONE position of the tape. This is what the time slider reads,
  * and it is a slice of the cached extract rather than a fetch, so dragging costs nothing upstream.
  */
@@ -996,6 +1031,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/taq/meta') return taqMeta(req, res);
     if (p === '/taq/series') return taqSeries(req, res, url);
     if (p === '/taq/slice') return taqSlice(req, res, url);
+    if (p === '/taq/table') return taqTable(req, res, url);
     return json(res, 404, { error: `no tape surface at ${p}` });
   }
   if (p.startsWith('/fixorder')) {

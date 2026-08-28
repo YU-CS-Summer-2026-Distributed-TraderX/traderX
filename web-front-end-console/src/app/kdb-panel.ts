@@ -269,7 +269,7 @@ interface Gap { from: number; to: number; missing: number; }
     }
 
     <sec-head [s]="freeSec" label="Run q against the capture">
-      <help-tip text="Type the q yourself. It evaluates in the browser over the rows the bridge holds, not in a q process over the whole store — so it runs the select statements txstore.q is built from, and REFUSES anything outside that rather than approximating it. A box that quietly returned a plausible number for a statement it had not really understood would be worse than no box: every other panel here is careful about the line between a measurement and a guess. Supported: select with count/sum/avg/min/max/first/last, the (sum a*b)%sum c weighted-average idiom, by grouping, and where with = <> < > <= >= and like. Tables are txTrade and txOrder. Anything else names itself as unsupported." />
+      <help-tip text="Type the q yourself. It evaluates in the browser over the rows the bridge holds, not in a q process over the whole store — so it runs the select statements txstore.q is built from, and REFUSES anything outside that rather than approximating it. A box that quietly returned a plausible number for a statement it had not really understood would be worse than no box: every other panel here is careful about the line between a measurement and a guess. Supported: select with count/sum/avg/min/max/first/last, the (sum a*b)%sum c weighted-average idiom, by grouping, and where with = <> < > <= >= and like. Tables are txTrade and txOrder from the capture, plus txTape — the recorded market tape, loaded one session at a time because the whole corpus is 480k rows and a box that took thirty seconds to answer would be worse than one that says what it holds. txTape is empty until you load a day. Anything else names itself as unsupported." />
     </sec-head>
     @if (freeSec.open()) {
       <textarea class="qin" rows="3" spellcheck="false"
@@ -280,7 +280,18 @@ interface Gap { from: number; to: number; missing: number; }
           <button type="button" (click)="freeQ.set(e.q); runFree()">{{ e.label }}</button>
         }
         <span class="spacer"></span>
-        <span class="sub mono">txTrade · txOrder</span>
+        <span class="sub mono">txTrade · txOrder{{ tapeRows().length ? ' · txTape' : '' }}</span>
+      </div>
+      <!-- The tape is a THIRD table beside the capture's two, not a replacement: txTrade is what
+           this venue did, txTape is what the market did, and the interesting queries are the ones
+           that put them next to each other. Loaded explicitly so the cost is the operator's. -->
+      <div class="qbar">
+        <label class="sub">Load tape session
+          <input type="number" min="0" [value]="tapeDay()" (input)="tapeDay.set(+$any($event.target).value)"
+                 style="width: 5em" aria-label="Corpus day index" />
+        </label>
+        <button type="button" (click)="loadTape()">Load as txTape</button>
+        @if (tapeNote()) { <span class="sub">{{ tapeNote() }}</span> }
       </div>
       @if (freeErr()) { <div class="banner bad">{{ freeErr() }}</div> }
       @if (freeOut(); as o) {
@@ -513,11 +524,35 @@ export class KdbPanel implements OnInit, OnDestroy {
   readonly freeOut = signal<QResult | null>(null);
   readonly freeErr = signal('');
 
+  // The TAPE, queryable next to the tap's own tables. Loaded on demand and ONE DAY at a time --
+  // the corpus is 480k rows and a q box that answered in thirty seconds would be worse than one
+  // that says what it holds. `txTape` is empty until it is asked for, and runQ's unknown-table
+  // error names what IS loaded, so the failure explains itself.
+  readonly tapeDay = signal(0);
+  readonly tapeRows = signal<Record<string, string | number>[]>([]);
+  readonly tapeNote = signal('');
+
+  async loadTape(): Promise<void> {
+    this.tapeNote.set('loading…');
+    const r = await this.api.load<{ rows: Record<string, string | number>[] }>(
+      `/taq/table?day=${this.tapeDay()}`);
+    if (r.status !== 200 || !r.body) {
+      const b = r.body as unknown as { error?: string } | null;
+      this.tapeRows.set([]);
+      this.tapeNote.set(b?.error ?? (r.status === 401 ? 'sign in to load the tape' : `tape unavailable (${r.status})`));
+      return;
+    }
+    this.tapeRows.set(r.body.rows);
+    this.tapeNote.set(`${r.body.rows.length} rows loaded as txTape`);
+  }
+
   readonly examples = [
     { label: 'fills by sym', q: '.tx.fills:{[] 0!select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty, first_px:first px, last_px:last px by sym from txTrade}' },
     { label: 'by account', q: 'select execs:count i, volume:sum qty, vwap:(sum px*qty)%sum qty by account from txTrade' },
     { label: 'buys only', q: 'select execs:count i, volume:sum qty by sym from txTrade where side="B"' },
     { label: 'orders by status', q: 'select orders:count i, qty:sum qty by status from txOrder' },
+    { label: 'tape day range', q: 'select lo:min px, hi:max px, opened:first px, closed:last px by sym from txTape' },
+    { label: 'tape movers', q: 'select move:max chgPct by sym from txTape' },
   ];
 
   isNum(v: unknown): boolean { return typeof v === 'number'; }
@@ -529,6 +564,7 @@ export class KdbPanel implements OnInit, OnDestroy {
         // The q names, not the console's — someone typing `sym` should get sym.
         txTrade: this.allTrades() as unknown as Record<string, string | number>[],
         txOrder: this.allOrders() as unknown as Record<string, string | number>[],
+        txTape: this.tapeRows(),
       }));
     } catch (e) {
       this.freeOut.set(null);
