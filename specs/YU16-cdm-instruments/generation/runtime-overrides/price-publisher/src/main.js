@@ -727,19 +727,22 @@ function replayControl(handler) {
 }
 
 app.post('/replay/pause', replayBody, replayControl((_req, res) => {
-  taqReplay.pause(Date.now());
-  res.json(taqReplay.status());
+  taqReplay.pause(treasury.now());
+  res.json(taqReplay.status(treasury.now()));
 }));
 
 app.post('/replay/resume', replayBody, replayControl((_req, res) => {
-  taqReplay.resume(Date.now());
-  res.json(taqReplay.status());
+  taqReplay.resume(treasury.now());
+  res.json(taqReplay.status(treasury.now()));
 }));
 
 // { day: "2025-03-12" } | { dayIndex: 7 } | { tapeSeconds: 12345 }
 app.post('/replay/seek', replayBody, replayControl((req, res) => {
   const body = req.body || {};
-  const now = Date.now();
+  // treasury.now(), never Date.now(): the state has one fixed-clock contract
+  // (NFR-CDM09, TRADERX_FIXED_UTC_INSTANT), and a transport reading real time would
+  // seek against a different clock than the one the tape is derived from.
+  const now = treasury.now();
   let ok = false;
   if (body.day !== undefined) { ok = taqReplay.seekToDay(body.day, now); }
   else if (body.dayIndex !== undefined) { ok = taqReplay.seekToDay(Number(body.dayIndex), now); }
@@ -748,14 +751,14 @@ app.post('/replay/seek', replayBody, replayControl((req, res) => {
     return res.status(400).json({ error: 'seek target not in this tape',
       days: taqReplay.state.extract.days.map((d) => d.date) });
   }
-  res.json(taqReplay.status());
+  res.json(taqReplay.status(treasury.now()));
 }));
 
 app.get('/replay/status', (_req, res) => {
   const ex = taqReplay.state.extract;
   res.json({
     controls: REPLAY_CONTROLS,
-    tape: taqReplay.status(),
+    tape: taqReplay.status(treasury.now()),
     flow: printReplay.status(taqReplay),
     // The tape's own shape, so a client can offer a seek target and label a window position without
     // hardcoding either. A UI that assumed 120 windows/day would be asserting the corpus's shape
