@@ -129,6 +129,15 @@ function positionAt(nowMs) {
     dayIndex = ex.days.length - 1;
     windowIndex = windowsPerDay - 1;
   }
+  // The clamps above cover a clock past the end of the tape and one before its start. They do NOT
+  // cover a dayIndex that is not a number at all: NaN fails `>=` silently, so it walks past the
+  // `held` branch and indexes days[NaN], and the next line throws TypeError on `.openMs`. Observed
+  // once on a sandbox pod's first status call after start (2026-08-28) -- a 500 from /health, which
+  // is the surface whose whole job is to say what state the tape is in. Refuse instead: a caller
+  // that gets null reports "position unknown", which is true, where a throw reports nothing.
+  if (!Number.isInteger(dayIndex) || dayIndex < 0 || dayIndex >= ex.days.length) {
+    return null;
+  }
   // A window's median is the price AS OF the window's end; the last window's end is the close.
   const asOfMs = ex.days[dayIndex].openMs + (windowIndex + 1) * ex.windowSeconds * 1000;
   // `tapeSeconds` is the RAW, unclamped position — continuous, sub-window, and monotone in wall
@@ -147,6 +156,11 @@ function priceAt(ticker, nowMs) {
     return null;
   }
   const pos = positionAt(nowMs);
+  // Same contract as an unknown ticker: no addressable position means no replayed reference, and
+  // the caller falls through to the walk.
+  if (!pos) {
+    return null;
+  }
   return {
     price: series[pos.dayIndex][pos.windowIndex],
     source: state.extract.source,
@@ -167,6 +181,12 @@ function status(nowMs) {
     return base;
   }
   const pos = positionAt(nowMs);
+  if (!pos) {
+    // Loaded, but the clock does not address a day in it. Say so rather than 500 -- /health is the
+    // surface whose job is to report what state the tape is in.
+    return { ...base, source: state.extract.source, position: null,
+      error: state.error || 'the tape is loaded but the clock does not address a day in it' };
+  }
   return {
     ...base,
     source: state.extract.source,

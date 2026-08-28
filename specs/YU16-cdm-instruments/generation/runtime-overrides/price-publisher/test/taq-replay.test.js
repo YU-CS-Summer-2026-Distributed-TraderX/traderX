@@ -218,3 +218,26 @@ test('the price the engine sees follows the transport, not just the reported pos
   mod.seekToDay('2025-02-04', EPOCH);
   assert.equal(mod.priceAt('AAPL', EPOCH).price, 200 + 1000);  // day 1, window 0
 });
+
+test('an unaddressable clock is a null position, not a thrown TypeError', () => {
+  // The failure this pins actually happened: a sandbox pod threw
+  // "Cannot read properties of undefined (reading 'openMs')" out of status() on its first call,
+  // which turns /health -- the surface whose job is to say what state the tape is in -- into a 500
+  // at exactly the moment someone is asking why the tape is not running.
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod.state.epochStartMs = NaN;                    // NaN fails `>=`, so it slips past the held clamp
+  assert.equal(mod.positionAt(EPOCH), null);
+  const st = mod.status(EPOCH);
+  assert.equal(st.position, null);
+  assert.match(st.error, /does not address a day/);
+});
+
+test('an unaddressable clock makes priceAt fall through to the walk, not throw', () => {
+  // The sibling of the test above, and the reason it exists: the first attempt at that fix landed
+  // in priceAt by accident, referencing a `base` that does not exist there. `node --check` cannot
+  // see a ReferenceError, and no test covered priceAt on this path, so it would have shipped a
+  // worse crash than the one being fixed -- on the hot path rather than the health surface.
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod.state.epochStartMs = NaN;
+  assert.equal(mod.priceAt('AAPL', EPOCH), null);
+});
