@@ -235,8 +235,13 @@ Two consequences worth stating so they are not discovered later:
 
 ## Open questions
 
-1. **Does the console display external prices, or only consume them internally?** Display rights are
-   usually the expensive clause. Internal-only use is materially easier to license.
+1. ~~**Does the console display external prices, or only consume them internally?**~~ **Answered
+   2026-08-28 for the TAQ corpus: display is permitted, on the basis that this deployment's use is
+   educational, and the surface is gated behind the console's existing sign-in rather than served
+   anonymously.** The gate is the control that makes the basis hold — an anonymous public browser
+   over the same data is a different question and is not covered by this answer. Display rights are
+   usually the expensive clause, and this answer is scoped to the TAQ corpus under that basis; it
+   does not generalise to a future vendor feed, which must be read on its own terms.
 2. **Delayed or real-time?** Delayed is nearly always more permissive and is entirely sufficient here.
    Assume delayed unless something needs otherwise.
 3. ~~**What happens when a source is unreachable mid-run?**~~ **Answered for the rates slice
