@@ -29,6 +29,10 @@ build/
 package-lock.json
 !website/package-lock.json
 !templates/**/package-lock.json
+# A runtime-override layer that changes a module's package.json must be able to ship the
+# matching lock beside it. Without this, the overlay adds dependencies AFTER the generated
+# lock is settled from the template's manifest, and the composed tree fails `npm ci`.
+!specs/**/runtime-overrides/**/package-lock.json
 yarn.lock
 
 #NodeJS
