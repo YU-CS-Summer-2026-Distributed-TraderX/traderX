@@ -170,8 +170,14 @@ spec:
               value: "10"
             # The whole revert, alongside deleting the Secret below: set to 0 and the publisher
             # goes back to being a price publisher. ADR-068 rule 1.
+            #
+            # OFF as of 2026-08-28, by decision: replayed prints are no longer order flow on the
+            # LIVE venue. A recorded 2025 print judged against today's price collar is a category
+            # error, and it showed as one — a continuous ORDER-REJECT PRICE_COLLAR loop burning
+            # order refs. Replay moves to an isolated sandbox that shares no book, no risk state
+            # and no sequence space with this venue. The live venue is quiet until someone trades.
             - name: PRINT_REPLAY
-              value: "1"
+              value: "0"
           readinessProbe:
             httpGet:
               path: /health
