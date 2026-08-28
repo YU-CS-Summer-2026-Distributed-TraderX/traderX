@@ -241,3 +241,110 @@ test('an unaddressable clock makes priceAt fall through to the walk, not throw',
   mod.state.epochStartMs = NaN;
   assert.equal(mod.priceAt('AAPL', EPOCH), null);
 });
+
+// ---- ADR-073 session journal -------------------------------------------------------------------
+// The failure this guards is the one that cannot be seen from outside: after a seek, asking the
+// LIVE clock where a past instant landed returns a confident wrong answer, because the origin it
+// derives from is no longer the origin that instant was played under. Every test below is really
+// the same question -- does a trade booked at wall time T get dated to the day that was actually
+// on the tape at T.
+
+const DAY_WALL_MS = (SESSION / C) * 1000;   // wall ms to play one whole tape day
+
+test('journal: a running tape attributes a past instant to the day that was playing then', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const inDay0 = EPOCH + DAY_WALL_MS * 0.25;
+  const inDay1 = EPOCH + DAY_WALL_MS * 1.25;
+  assert.equal(m.tapeAtWall(inDay0, inDay1 + 1000).tapeDate, '2025-02-03');
+  assert.equal(m.tapeAtWall(inDay1, inDay1 + 1000).tapeDate, '2025-02-04');
+});
+
+test('journal: after a seek, a PAST instant keeps the day it was played under', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const played = EPOCH + DAY_WALL_MS * 0.25;          // played while day 0 was on the tape
+  const seekAt = EPOCH + DAY_WALL_MS * 0.5;
+  m.seekToDay(1, seekAt);                              // now day 1 is on the tape
+  const now = seekAt + 1000;
+
+  // The live clock says day 1 -- correct for NOW, wrong for `played`.
+  assert.equal(m.positionAt(now).tapeDate, '2025-02-04');
+  // The journal still dates the past instant to the day that was actually playing.
+  assert.equal(m.tapeAtWall(played, now).tapeDate, '2025-02-03');
+});
+
+test('journal: an instant while PAUSED belongs to no segment', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const pauseAt = EPOCH + DAY_WALL_MS * 0.25;
+  m.pause(pauseAt);
+  const whilePaused = pauseAt + 60_000;
+  assert.equal(m.tapeAtWall(whilePaused, whilePaused + 1000), null);
+  // and resuming does not retroactively claim the paused span
+  m.resume(whilePaused + 120_000);
+  assert.equal(m.tapeAtWall(whilePaused, whilePaused + 200_000), null);
+});
+
+test('journal: a pause does not advance coverage, a resume continues it', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const pauseAt = EPOCH + DAY_WALL_MS * 0.25;
+  m.pause(pauseAt);
+  const paused = m.coverage(pauseAt + 600_000);
+  m.resume(pauseAt + 600_000);
+  const after = m.coverage(pauseAt + 600_000 + DAY_WALL_MS * 0.25);
+
+  assert.deepEqual(paused.days.map((d) => d.date), ['2025-02-03']);
+  // a quarter day played, then 10 wall minutes of pause that must add nothing
+  assert.ok(Math.abs(paused.days[0].fraction - 0.25) < 0.01,
+    `paused coverage should hold at 0.25, got ${paused.days[0].fraction}`);
+  assert.ok(after.days[0].fraction > 0.49 && after.days[0].fraction < 0.51,
+    `resumed coverage should reach ~0.5, got ${after.days[0].fraction}`);
+});
+
+test('coverage: reports only the days actually played, not the days in the corpus', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const stop = EPOCH + DAY_WALL_MS * 0.5;   // half of day 0 only
+  m.pause(stop);
+  const cov = m.coverage(stop);
+  assert.deepEqual(cov.days.map((d) => d.date), ['2025-02-03'],
+    'day 1 exists in the extract but was never played, so it must not appear');
+  assert.ok(cov.days[0].fraction > 0.49 && cov.days[0].fraction < 0.51);
+});
+
+test('coverage: a day played in two separate visits accumulates once', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const t1 = EPOCH + DAY_WALL_MS * 0.25;
+  m.seekToDay(1, t1);                                  // leave day 0 after a quarter
+  const t2 = t1 + DAY_WALL_MS * 0.25;
+  m.seekToDay(0, t2);                                  // come back to day 0
+  const t3 = t2 + DAY_WALL_MS * 0.25;
+  m.pause(t3);
+  const cov = m.coverage(t3);
+  const day0 = cov.days.find((d) => d.date === '2025-02-03');
+  assert.equal(cov.days.length, 2);
+  assert.ok(Math.abs(day0.fraction - 0.5) < 0.02,
+    `two quarter-day visits should total ~0.5, got ${day0.fraction}`);
+});
+
+test('journal: the segment cap drops the oldest and says it did', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  for (let i = 0; i < 600; i += 1) {
+    m.seekToTapeSeconds((i % 100) * 10, EPOCH + i * 1000);
+  }
+  assert.ok(m.state.segments.length <= 512, `segments must stay bounded, got ${m.state.segments.length}`);
+  assert.equal(m.coverage(EPOCH + 600_000).segmentsDropped, true);
+});
+
+test('coverage: dayRanges date an instant the same way tapeAtWall does', () => {
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const t1 = EPOCH + DAY_WALL_MS * 0.25;
+  m.seekToDay(1, t1);
+  const now = t1 + DAY_WALL_MS * 0.25;
+  const { dayRanges } = m.coverage(now);
+  const dateByRange = (ms) => {
+    const r = dayRanges.find((x) => ms >= x.wallFromMs && (x.wallToMs === null || ms <= x.wallToMs));
+    return r ? r.tapeDate : null;
+  };
+  for (const probe of [EPOCH + 1000, EPOCH + DAY_WALL_MS * 0.2, t1 + 1000, now - 1000]) {
+    assert.equal(dateByRange(probe), m.tapeAtWall(probe, now).tapeDate,
+      `the interval lookup and the journal must agree at ${probe - EPOCH}ms after epoch`);
+  }
+});

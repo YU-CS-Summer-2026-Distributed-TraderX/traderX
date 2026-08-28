@@ -99,6 +99,16 @@ spec:
                   name: auth-secrets
                   key: console-session-secret
                   optional: true
+            # The sandbox engine's own admin gate. The sandbox is a SEPARATE cluster with its own
+            # secret, so this is deliberately not auth-secrets/jwt-secret: a token minted from the
+            # live secret must never be accepted by the sandbox, nor the reverse. Optional, because
+            # a tier without the sandbox deployed has no such Secret and the panel just 401s.
+            - name: SANDBOX_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-auth-secrets
+                  key: jwt-secret
+                  optional: true
             # Overrides the seeded password hash without a rebuild. Never a plaintext password.
             - name: ADMIN_PASSWORD_HASH
               valueFrom:

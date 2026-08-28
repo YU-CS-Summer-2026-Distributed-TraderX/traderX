@@ -768,6 +768,15 @@ app.get('/replay/status', (_req, res) => {
   });
 });
 
+// ADR-073: what this sandbox session ACTUALLY replayed. The results view is filtered by this and
+// not by the corpus -- a day that is loaded but was never played must not appear, which is exactly
+// the difference between "the sandbox holds three days in March" and "you played three days in
+// March". `dayRanges` are wall-clock intervals, so a consumer dates a record by interval lookup and
+// never has to re-derive the tape arithmetic.
+app.get('/replay/coverage', (_req, res) => {
+  res.json(taqReplay.coverage(treasury.now()));
+});
+
 app.get('/prices', (_req, res) => {
   const rows = Array.from(state.prices.values()).map((quote) => toPayload(quote));
   res.json({ prices: rows });

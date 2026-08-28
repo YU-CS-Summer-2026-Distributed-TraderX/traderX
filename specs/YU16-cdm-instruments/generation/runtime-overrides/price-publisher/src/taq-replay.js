@@ -47,9 +47,23 @@ const state = {
   // exactly one derivation of where the tape is. Never used on the live publisher, which never
   // pauses -- it stays null there and every expression below reduces to what it was.
   frozenAtMs: null,
+  // ADR-073: what this sandbox session ACTUALLY replayed, as wall-clock segments.
+  //
+  // Why a journal and not a covered-days Set: the wall->tape mapping is only valid between origin
+  // moves. After a seek, positionAt(t) for a PAST t returns where that instant would land under
+  // the NEW origin, which is not where it landed when it happened -- so a trade booked before the
+  // seek cannot be attributed by asking the live clock. Each segment freezes the origin that was
+  // in force over its span, which is what makes "which tape day was this trade on" answerable at
+  // all. Open segment = tape running; closed = paused or seeked away.
+  segments: [],
   // A sentence, never a boolean. Null ONLY while a loaded extract is actually replaying.
   error: null
 };
+
+// Bounded: a scrub-happy operator moves the origin once per drag frame, and this array would
+// otherwise grow for the life of the pod. 512 segments is far past any real session; the oldest
+// are dropped, and `segmentsDropped` says so rather than the coverage quietly getting shorter.
+const SEGMENT_CAP = 512;
 
 function fail(sentence) {
   state.extract = null;
@@ -106,10 +120,23 @@ function load() {
   }
   state.extract = extract;
   state.error = null;
+  // The tape is running from the instant it loads, so the first segment opens here. Without this
+  // everything replayed before the first pause would be attributed to nothing at all.
+  state.segments.length = 0;
+  openSegment(state.epochStartMs);
   console.log(`[taq-replay] replaying ${Object.keys(extract.prices).length} symbols, `
     + `${extract.days.length} days, window ${extract.windowSeconds}s, compression ${extract.compression}x, `
     + `epoch ${new Date(state.epochStartMs).toISOString()}`);
   return extract;
+}
+
+/**
+ * The wall->tape formula, in ONE place. positionAt derives the live position with it and the
+ * session journal attributes past instants with it; taking the origin as a parameter is what lets
+ * both do that without a second copy of the arithmetic drifting from this one.
+ */
+function tapeSecondsAt(atMs, epochStartMs, compression) {
+  return Math.max(0, (atMs - epochStartMs) / 1000) * compression;
 }
 
 /** The clock. Derived every call, stored nowhere. */
@@ -121,7 +148,7 @@ function positionAt(nowMs) {
   const windowsPerDay = ex.sessionSeconds / ex.windowSeconds;
   // While frozen the clock reads the instant it was frozen at. Still one derivation.
   const atMs = state.frozenAtMs === null ? nowMs : state.frozenAtMs;
-  const tapeSeconds = Math.max(0, (atMs - state.epochStartMs) / 1000) * ex.compression;
+  const tapeSeconds = tapeSecondsAt(atMs, state.epochStartMs, ex.compression);
   let dayIndex = Math.floor(tapeSeconds / ex.sessionSeconds);
   let windowIndex = Math.floor((tapeSeconds % ex.sessionSeconds) / ex.windowSeconds);
   const held = dayIndex >= ex.days.length;
@@ -219,9 +246,39 @@ function status(nowMs) {
 // Each of these MOVES THE ORIGIN. None of them computes a position; positionAt stays the only
 // place that does, which is what keeps "one clock" true while the tape gains a transport.
 
+// ---- the session journal -----------------------------------------------------------------
+// Segments are appended by the three transport calls below and by load(). Nothing else writes
+// them, so "what did this session replay" has exactly one author.
+
+/** Open a segment at the tape position `atMs` maps to under the CURRENT origin. */
+function openSegment(atMs) {
+  const ex = state.extract;
+  if (!ex) { return; }
+  if (state.segments.length >= SEGMENT_CAP) { state.segments.shift(); state.segmentsDropped = true; }
+  state.segments.push({
+    wallFromMs: atMs,
+    wallToMs: null,
+    tapeFromSec: tapeSecondsAt(atMs, state.epochStartMs, ex.compression),
+    epochStartMs: state.epochStartMs,
+    compression: ex.compression
+  });
+}
+
+/** Close the open segment, if one is open. Idempotent. */
+function closeSegment(atMs) {
+  const open = state.segments[state.segments.length - 1];
+  if (open && open.wallToMs === null) {
+    open.wallToMs = atMs;
+    open.tapeToSec = tapeSecondsAt(atMs, open.epochStartMs, open.compression);
+  }
+}
+
 /** Freeze the tape where it is. Idempotent. */
 function pause(nowMs) {
-  if (state.frozenAtMs === null) { state.frozenAtMs = nowMs; }
+  if (state.frozenAtMs === null) {
+    state.frozenAtMs = nowMs;
+    closeSegment(nowMs);
+  }
   return state.frozenAtMs;
 }
 
@@ -230,6 +287,9 @@ function resume(nowMs) {
   if (state.frozenAtMs !== null) {
     state.epochStartMs += (nowMs - state.frozenAtMs);
     state.frozenAtMs = null;
+    // After the origin has moved, so the new segment records the origin it will actually be read
+    // under. Opening it first would stamp the pre-resume origin and mis-date the whole segment.
+    openSegment(nowMs);
   }
   return state.epochStartMs;
 }
@@ -242,7 +302,11 @@ function seekToTapeSeconds(seconds, nowMs) {
   const ex = state.extract;
   if (!ex || !Number.isFinite(seconds) || seconds < 0) { return false; }
   const ref = state.frozenAtMs === null ? nowMs : state.frozenAtMs;
+  // Running: the old segment ends HERE, at the old origin, before the origin moves. Paused: there
+  // is no open segment -- resume() opens one at whatever position this seek landed on.
+  closeSegment(ref);
   state.epochStartMs = ref - (seconds / ex.compression) * 1000;
+  if (state.frozenAtMs === null) { openSegment(ref); }
   return true;
 }
 
@@ -257,5 +321,90 @@ function seekToDay(dayRef, nowMs) {
   return seekToTapeSeconds(idx * ex.sessionSeconds, nowMs);
 }
 
+/**
+ * Which tape instant a PAST wall instant landed on, read out of the journal rather than off the
+ * live clock. Returns null when `atMs` falls outside every segment -- which is the honest answer
+ * for anything booked while the tape was paused, or before it loaded, and is what keeps a trade
+ * the sandbox made by hand from being dated as if the tape had produced it.
+ */
+function tapeAtWall(atMs, nowMs) {
+  const ex = state.extract;
+  if (!ex || !Number.isFinite(atMs)) { return null; }
+  for (let i = state.segments.length - 1; i >= 0; i -= 1) {
+    const seg = state.segments[i];
+    const end = seg.wallToMs === null ? nowMs : seg.wallToMs;
+    if (atMs >= seg.wallFromMs && atMs <= end) {
+      const tapeSeconds = tapeSecondsAt(atMs, seg.epochStartMs, seg.compression);
+      const dayIndex = Math.floor(tapeSeconds / ex.sessionSeconds);
+      if (!(dayIndex >= 0 && dayIndex < ex.days.length)) { return null; }
+      return {
+        tapeSeconds,
+        dayIndex,
+        tapeDate: ex.days[dayIndex].date,
+        windowIndex: Math.floor((tapeSeconds % ex.sessionSeconds) / ex.windowSeconds)
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * The days this session actually replayed, and the segments that say so. This is what makes the
+ * sandbox results view show three days in March when three days in March is what was played --
+ * derived from the journal, never from the corpus, so a loaded-but-never-played day is absent.
+ */
+function coverage(nowMs) {
+  const ex = state.extract;
+  if (!ex) { return { days: [], segments: [], segmentsDropped: !!state.segmentsDropped }; }
+  const seen = new Map();
+  const ranges = [];
+  const segments = state.segments.map((seg) => {
+    const end = seg.wallToMs === null ? nowMs : seg.wallToMs;
+    const fromSec = seg.tapeFromSec;
+    const toSec = seg.wallToMs === null
+      ? tapeSecondsAt(end, seg.epochStartMs, seg.compression)
+      : seg.tapeToSec;
+    const first = Math.max(0, Math.floor(fromSec / ex.sessionSeconds));
+    const last = Math.min(ex.days.length - 1, Math.floor(toSec / ex.sessionSeconds));
+    const dates = [];
+    for (let d = first; d <= last; d += 1) {
+      dates.push(ex.days[d].date);
+      const prev = seen.get(ex.days[d].date) || 0;
+      // Tape seconds spent on that day, so "half a day" reads as half a day.
+      const dayFrom = Math.max(fromSec, d * ex.sessionSeconds);
+      const dayTo = Math.min(toSec, (d + 1) * ex.sessionSeconds);
+      seen.set(ex.days[d].date, prev + Math.max(0, dayTo - dayFrom));
+      // The same span back in WALL time. Emitting this is what lets a consumer date a trade by
+      // interval lookup instead of re-deriving the tape arithmetic -- a third copy of the formula
+      // in the browser would be a second clock in the one place nobody would think to check it.
+      ranges.push({
+        wallFromMs: seg.epochStartMs + (dayFrom / seg.compression) * 1000,
+        wallToMs: seg.wallToMs === null && d === last
+          ? null
+          : seg.epochStartMs + (dayTo / seg.compression) * 1000,
+        tapeDate: ex.days[d].date
+      });
+    }
+    return {
+      wallFromMs: seg.wallFromMs,
+      wallToMs: seg.wallToMs,
+      open: seg.wallToMs === null,
+      tapeFromSec: fromSec,
+      tapeToSec: toSec,
+      dates
+    };
+  });
+  return {
+    days: [...seen.entries()].map(([date, tapeSeconds]) => ({
+      date,
+      tapeSeconds,
+      fraction: Math.min(1, tapeSeconds / ex.sessionSeconds)
+    })).sort((a, b) => (a.date < b.date ? -1 : 1)),
+    dayRanges: ranges.sort((a, b) => a.wallFromMs - b.wallFromMs),
+    segments,
+    segmentsDropped: !!state.segmentsDropped
+  };
+}
+
 module.exports = { load, priceAt, positionAt, status, state,
-  pause, resume, seekToTapeSeconds, seekToDay };
+  pause, resume, seekToTapeSeconds, seekToDay, tapeAtWall, coverage };
