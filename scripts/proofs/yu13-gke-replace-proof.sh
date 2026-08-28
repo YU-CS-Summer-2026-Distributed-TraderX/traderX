@@ -816,3 +816,12 @@ echo "       NOT SHOWN HERE: id separation across a WIPED epoch (this proof neve
 echo "       the SQL trades read model; and any claim about behaviour under concurrent OPERATOR"
 echo "       load — the scenario is sequential, and a second operator writing at the same time"
 echo "       would move the operator counters the two volume claims bracket."
+echo
+echo "       BUT IT IS DETECTABLE BY EYE, and the number is already above: this proof submits"
+echo "       exactly SEVEN orders, and its four replaces consume NO ref (the ack preserves the"
+echo "       orderRef, which is the generator-level form of one-order-in-one-order-out). So the"
+echo "       operator ref row must read +7. More than that means another operator wrote during"
+echo "       the run and the volume claims outside the two bracketed windows are not yours."
+echo "       Deliberately NOT asserted: operator counters are global over order writers, so an"
+echo "       algo engine or a peer's proof on a shared rig would red a correct run. A reading a"
+echo "       human checks beats an assertion that gets re-run until it passes."
