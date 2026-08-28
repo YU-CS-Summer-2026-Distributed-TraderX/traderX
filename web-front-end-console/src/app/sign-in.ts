@@ -31,10 +31,6 @@ import { Api } from './api';
 
     @if (open() && !api.authUser()) {
       <form class="pop" (ngSubmit)="go()">
-        @if (api.authPrompt()) {
-          <div class="why">That change needs an administrator. Reads stay open — only changes are
-            signed.</div>
-        }
         <label>User
           <input name="u" [(ngModel)]="user" autocomplete="username" spellcheck="false"></label>
         <label>Password

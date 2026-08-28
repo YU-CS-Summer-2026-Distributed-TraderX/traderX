@@ -461,7 +461,17 @@ const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2' };
 
 function serveStatic(req, res, url) {
-  let rel = decodeURIComponent(url.pathname);
+  // decodeURIComponent THROWS on a malformed percent-escape (`/%`, `/%zz`), and an uncaught throw
+  // here is not a 500 — it unwinds out of the request handler and takes the whole Node process
+  // down, so one bad URL from any scanner logs every operator out until Kubernetes restarts the
+  // pod. Observed 2026-08-28: three restarts, and the 502s it produced read as a FIX fault
+  // because that was the endpoint being tested at the time.
+  let rel;
+  try {
+    rel = decodeURIComponent(url.pathname);
+  } catch {
+    return json(res, 400, { error: 'malformed path' });
+  }
   if (rel.endsWith('/')) rel += 'index.html';
   let file = path.join(ROOT, rel);
   // Path traversal guard: resolve first, then require the result to still be inside ROOT.
