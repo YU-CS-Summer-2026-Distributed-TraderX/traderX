@@ -1,7 +1,7 @@
 ---
 title: What's new
 sidebar_label: What's new
-description: What Yeshiva University's build adds to FINOS TraderX, state by state — an LMAX matching engine on Raft consensus, pre-trade risk, a crossing order book, listed options, an end-of-day risk extract, plus OpenTelemetry tracing and a KDB-X tick store.
+description: What Yeshiva University's build adds to FINOS TraderX, state by state — an LMAX matching engine on Raft consensus, pre-trade risk, a crossing order book, listed options, an end-of-day risk extract, plus OpenTelemetry tracing, a KDB-X tick store and a licensed market tape replayed as both the venue's price reference and its order flow.
 ---
 
 # What's new
@@ -16,8 +16,9 @@ members. Risk moved in front of the book. Settlement, reconciliation, regulatory
 ingress, listed options and an end-of-day risk extract were added on top. Every state below still
 generates, deploys and runs — and each links to the spec pack that defines it.
 
-Two further capabilities — OpenTelemetry tracing and a KDB-X tick store — extend existing states
-rather than adding new ones. See [Other additions](#other-additions).
+Four further capabilities — OpenTelemetry tracing, a KDB-X tick store, a replayed market tape and
+the operator-scoped counters that keep it attributable — extend existing states rather than adding
+new ones. See [Other additions](#other-additions).
 
 ## The seventeen states
 
@@ -168,9 +169,10 @@ engine matches, fills and moves positions on activity that genuinely happened.
 
 ## Other additions
 
-Two capabilities extend states that already exist rather than standing as states of their own, which
-is why they do not appear in the list above. Both were built to the same constraint: they may not
-change what the trading path costs.
+Four capabilities extend states that already exist rather than standing as states of their own.
+Tracing and the tick store were built to the same constraint — they may not change what the trading
+path costs. The tape replay and the counters that keep it attributable are the opposite case: they
+put load on the venue deliberately, and their design is about staying accountable for it.
 
 ### OpenTelemetry tracing
 
@@ -188,6 +190,28 @@ and replayed at real time or as fast as the machine will go, all in q. It holds 
 and our own engine's flow, the latter captured by a leader-side tap that sits off the consensus
 path. Built into [YU07](/specs/YU07-historical-tick-store) — the long version is in
 [Observability and replay](observability-and-replay.md#kdb-x-tick-store-kdbq).
+
+### The market tape as the venue's reference
+
+The NYSE TAQ corpus the tick store already holds is now also the venue's external price reference:
+resampled offline into one median price per symbol per interval, and replayed on a clock whose
+position is derived rather than stored, so a publisher restart resumes at the right point with
+nothing persisted. Prints from the same tape enter as sampled order flow through dedicated accounts.
+A tick carries a `source` and an `asOf` beside the `simulated` flag, because a real price at a
+fabricated time is neither live nor invented and a boolean cannot say which. Shipped with
+[YU17](/specs/YU17-otc-rates) over [YU07](/specs/YU07-historical-tick-store)'s corpus — the long
+version is in [Observability and replay](observability-and-replay.md#the-market-tape-replayed).
+
+### Operator-scoped attribution
+
+A continuously replaying tape is a second writer on the venue, so a venue-wide counter answers a
+question about the whole venue rather than about whoever is asking it. Five of the counters replayed
+flow moves gained an **operator-scoped twin** that excludes externally-generated flow by
+construction, letting a proof or an operator bracket their own work without knowing what else is
+running — and the two that matter across a rebuild are carried in the snapshot, so a scoped claim
+survives one. Shipped with
+[YU17](/specs/YU17-otc-rates) — the long version is in
+[Testing strategy](testing-strategy.md#auditing-the-proofs-against-a-live-writer).
 
 ## See how it is verified
 

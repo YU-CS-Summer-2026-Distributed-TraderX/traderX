@@ -90,6 +90,86 @@ They stay operator-run because they need a live cluster. That is an infrastructu
 than a reliability one, which is a meaningful difference: these scripts are dependable, they simply
 require a deployed system to run against.
 
+## Auditing the proofs against a live writer
+
+Tier 2 acquired an adversary. Since the market tape began replaying prints as order flow, the
+deployed system carries a **continuous foreign writer** — order-shaped commands arriving at roughly
+six a second that belong to no proof and stop for none of them.
+
+That is a permanent change in what an end-to-end assertion can mean, and it does not announce itself.
+A proof reading a venue-wide counter still runs, still prints a verdict, and is simply no longer
+measuring its own work. So the proof tier is audited assertion by assertion against that writer, and
+the taxonomy the audit produced is the durable part of it:
+
+| The assertion… | The question that finds it |
+|---|---|
+| reads a venue-wide counter a third writer moves | **is this metric contaminated?** |
+| is true, but cannot be sampled coherently while the venue moves | **how does it sample?** |
+| rests on a precondition the system no longer satisfies | **is the premise still true?** |
+| claims something that is not a property of the system at all | **is this even true?** |
+
+The last two are the ones no metric sweep reaches. A contaminated reading can be re-pointed at a
+better counter. **A falsified premise means the methodology has to change** — a quiet-venue guard is
+a true statement about a property the venue no longer has, and what it guards is the verdict. And a
+claim that was never a property of the system passes for the wrong reason until somebody reads the
+step against the code beneath it rather than against its title.
+
+### Why a widened tolerance is not one of the repairs
+
+The scale is what makes this a design constraint rather than a tuning problem. In one recorded run
+the venue took **1,172 foreign trade legs and 1,504 foreign order refs** while a proof asserted —
+against **4 legs and 7 refs of the proof's own work.** That ratio is what the venue-wide readings
+were being measured against.
+
+The same assertion, on two consecutive runs of a failover that was entirely correct, then reported
+**"3 DUPLICATED"** and **"46 LOST"**. **The contamination does not even have a consistent
+direction:** the venue-wide delta lands either side of the true count depending on what the tape
+happened to rest and fill inside the window, so the failure text accuses the system of opposite
+defects on consecutive runs.
+
+No tolerance covers a bias that changes sign, and one wide enough to try would no longer be able to
+fail. **Widening a tolerance does not fix the assertion, it deletes it** — so it is not on the list
+below.
+
+### The repairs that are
+
+- **Assert the identity of the thing itself** — an order's own row, a probe id, a book's tick size.
+  "Were any orders lost or duplicated" becomes set equality between the refs clients were
+  acknowledged for and the refs actually resting on a freshly minted ticker: a lost order is an acked
+  ref not resting, a duplicate is a resting ref nobody was acked for, and both are named individually
+  rather than summed into a number the tape contributes to.
+- **Read the operator-scoped twin**, where the counter has one. Five of them do, and each excludes
+  externally-generated flow by construction, so a proof can bracket its own work without knowing what
+  else is running. Two are carried in the snapshot, which is what lets a scoped equality survive a
+  member rebuild.
+- **Scope the equality rather than deleting it.** Where the equality *is* the proof — "nothing
+  changed across the rebuild", "the restore came back at the backup point" — it survives, scoped to
+  state the proof owns. Deleting it would leave the proof claiming less than its banner says.
+- **Assert a labelled floor** where the quantity legitimately moves and only its lower bound is
+  owned by the proof.
+
+The twins turned out to fix a second defect nobody was hunting. Under a tape running at about six
+prints a second, a four-quantity cross-member read was coherent in **5 of 20** unretried samples,
+while the operator twins were coherent in **20 of 20**. A counter that does not move cannot be
+sampled incoherently — so switching to a twin removes contamination and sampling skew together,
+where a retry removes only the second.
+
+### Destructive proofs refuse by default
+
+Proofs that kill a leader, restart a member or wipe an epoch require **`DESTRUCTIVE=1`**. Without it
+they print exactly what did not run and **exit 2 without touching the cluster.**
+
+They refuse rather than running a reduced subset, and the reason is the same one that governs this
+tier. Every one of these scripts ends in a banner claiming survival across a destructive event, and a
+run that skipped the destructive part has not shown that. **A partial run must never be able to read
+as the claim.**
+
+The irreversible ones ask for more than consent. `DESTRUCTIVE=1` records that an operator accepted
+destroying *a* cluster, not **this** one — and a context default is exactly the kind of setting that
+rots quietly, while a wrongly-pointed client answers perfectly truthfully about the wrong cluster. So
+those proofs also refuse unless the operator names the target context, which converts a forgotten
+variable from an outage into a refusal.
+
 ## Tier 3 — full-cluster and timing, on demand
 
 Three-member failover, snapshot and replay, cold-follower rejoin, and wall-clock budgets run on

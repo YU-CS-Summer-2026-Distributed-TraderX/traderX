@@ -1,13 +1,15 @@
 ---
 title: Observability and replay
 sidebar_label: Observability and replay
-description: How an order's trace survives Raft consensus without adding a byte to the replicated log, and how the platform's history is journalled and played back in kdb+/q, the time-series database this industry runs on.
+description: How an order's trace survives Raft consensus without adding a byte to the replicated log, how the platform's history is journalled and played back in kdb+/q, and how a licensed market tape is replayed on a stateless clock as both the venue's price reference and its order flow.
 ---
 
 # Observability and replay
 
-Two capabilities extend states that already exist rather than standing as states of their own. Both
-were built to the same constraint: **they may not change what the trading path costs.**
+Three capabilities extend states that already exist rather than standing as states of their own.
+Tracing and the tick store were both built to the same constraint — **they may not change what the
+trading path costs.** The tape replay is the opposite case: it deliberately puts load on the venue,
+and its whole design is about staying accountable for the load it adds.
 
 This page is the long version. The short one is on
 [What's new](whats-new.md#other-additions).
@@ -176,20 +178,107 @@ TICKSTORE_ROOT=/path/to/sample q kdb/selfcheck.q     # 17 gates over it
 
 `txstore.q` and `txselfcheck.q` take the same shape over a captured session.
 
+## The market tape, replayed
+
+### A real price at a fabricated time
+
+The reference price a book's collar is anchored to used to be an invented number — a random walk,
+honestly labelled as simulated. It is now the **licensed NYSE TAQ tape** covering February and March
+2025, the same corpus the tick store holds.
+
+That creates a category the wire format could not express. A replayed print is neither live nor
+invented; it is a **real price at a fabricated time**, and the existing `simulated` boolean is a lie
+whichever way it is set. So a tick now carries a `source` and an **`asOf`** — the true tape timestamp
+— beside that flag. Provenance that answers "was this invented?" but not "when was this true?" has
+answered the less interesting of the two questions.
+
+### Resampled offline, not streamed
+
+The publisher does not stream prints. For each symbol and each publish interval, **one reference
+price is computed offline** — a median over the window — and that series is what gets replayed.
+
+One choice doing four jobs, which is why no later reader should simplify away three of them:
+
+- **The message rate is set by the resample cadence and the universe size, never by the tape's real
+  print rate.** Sequenced ticks consume consensus, and a symbol's true print rate under time
+  compression is not a number anything downstream was sized for. It is also what makes time
+  compression free — a lookup index rather than a throttle.
+- **The unfiltered print is defused.** The corpus was ingested without its trade-correction and
+  sale-condition columns, so isolated erroneous or out-of-sequence prints survive in it. A median is
+  robust to those. That makes the series *sane*, which is all a collar reference needs to be — it
+  does not make it reference-grade and must never be described as such.
+- **The extract collapses.** One price per symbol per interval across forty trading days is a few
+  megabytes against a 650 GiB corpus, computed once, in-region.
+- **The whole thing stays revertible**, because a small named artifact can be switched off in a way
+  a streaming integration cannot.
+
+### The clock is stateless
+
+```
+replay_position = (now − epoch_start) × compression
+tape_timestamp  = FIRST_TRADING_DAY + replay_position   # skipping non-trading days
+```
+
+Position is **derived, never stored.** A publisher restart therefore resumes at the right point with
+no coordination and no persisted cursor, and two publishers would agree without talking to each
+other. That is the property to protect if this design is ever changed.
+
+**The members never see the mapping.** The publisher decides which tick to emit and the cluster
+sequences whatever arrives, so there is no replicated clock, no divergence risk, and no change to the
+deterministic core.
+
+### Prints become order flow
+
+A correct reference price moves a number on a screen. It does not make the engine do the thing it
+exists to do. So prints from the same tape also enter as **sampled order flow through dedicated
+replay accounts**, and the engine matches, fills, moves positions and exercises the collar on
+activity that genuinely occurred.
+
+Three properties of that flow are stated rather than implied:
+
+- **The side is inferred, not read.** TAQ trades carry no side, and it cannot be recovered from this
+  corpus — reconstructing it from the quote needs an NBBO, and the columns that would rebuild one
+  were dropped at ingest. The **tick rule** supplies it: an uptick is a buy, a downtick a sell. It is
+  an approximation, and it is labelled as one rather than presented as fact.
+- **The rate is sampled, and the sample is the design.** A single active symbol carries hundreds of
+  thousands of prints per trading day, against a thirty-minute wall-clock tape day. Replaying
+  one-for-one is the wrong target rather than a throughput problem to solve, so the flow is sampled
+  to a tunable order rate.
+- **The reference is still the reference.** Replayed orders do not set the collar's reference; that
+  stays the resampled median series. A replayed print that breaches the collar is **rejected, and
+  that is the band working rather than a defect.**
+
+Reference and order flow come from **the same process and the same clock**, deliberately: a second
+derivation of the position would be a second clock, and could put the order flow at a different tape
+instant from the reference it is being checked against. Every order is then a pure function of its
+symbol and its absolute tape slot — down to a client order ID naming both, which makes each submitted
+order self-identifying against the tape and idempotent on a retry.
+
+This is not a backtest, and no number derived from it is reference-grade. It is the system working on
+real activity.
+
 ## Where each lives
 
-Neither is a state of its own, so each sits in the layer of the state it extends:
+None is a state of its own, so each sits in the layer of the state it extends:
 
 - **Tracing** — the [YU13](/specs/YU13-limit-order-book) layer, alongside the order-matcher and
   gateway it instruments.
 - **Tick store** — the [YU07](/specs/YU07-historical-tick-store) layer, the historical tick store
   state.
+- **Tape replay** — shipped with [YU17](/specs/YU17-otc-rates), reading the corpus the tick store
+  state already holds and driving the book and collar that [YU13](/specs/YU13-limit-order-book)
+  defines.
 
 ## How this is verified
 
 The 35 q gates run as their own tier. The tick store's Python side runs 24 tests in CI against the
 module's pinned requirements, and the trace pipeline has two end-to-end proofs that assert a trace
 actually crosses consensus and that a rejected order's log line joins its trace.
+
+The tape replay is held to the standard its own attribution rule sets: an in-process test and an
+end-to-end proof together have to **name a counter the replay does not advance, and show it standing
+still on a live rig while the replay runs.** Nothing may claim attribution without passing both
+halves of that.
 
 - **[Testing strategy](testing-strategy.md)** — which tier proves what, and what stays manual.
 - **[Test coverage](test-coverage.md)** — what runs automatically, and how every number was counted.
