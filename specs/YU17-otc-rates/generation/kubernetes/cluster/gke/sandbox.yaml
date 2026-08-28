@@ -322,7 +322,7 @@ spec:
         cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: price-publisher
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu17-c74e7957
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu17-487608ee
           imagePullPolicy: Always
           env:
             # ON here, and only here. The live publisher runs PRINT_REPLAY=0 (ADR-073).
