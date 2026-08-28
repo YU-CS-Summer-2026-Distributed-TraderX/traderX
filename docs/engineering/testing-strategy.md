@@ -9,7 +9,7 @@ hardware. Nothing was weakened to make it fit a pipeline.
 
 ## Tier 1 — in-process tests, in CI on every push
 
-The engine, cluster, gateway, risk and post-trade logic are covered by **499 machine-verified
+The engine, cluster, gateway, risk and post-trade logic are covered by **698 machine-verified
 tests**, plus **48 baseline-service tests**. They need no cluster, no network and no
 database server, using an in-memory database where a datasource is required.
 
@@ -70,7 +70,7 @@ never reaching the assertion they claim to make.
 
 ## Tier 2 — end-to-end proofs, operator-run
 
-The **26 proof scripts** drive the deployed system end to end: REST, FIX and binary ingress →
+The **47 proof scripts** drive the deployed system end to end: REST, FIX and binary ingress →
 gateway → three-member Aeron cluster → asynchronous projection → SQL read model → egress, plus the
 risk control plane.
 
@@ -267,11 +267,11 @@ projector and order-book tests.
 
 ## Which tree the numbers describe
 
-Every figure here is counted on **YU15**, the tip state — the only branch carrying every ancestor's
-spec pack, and the tree the deployed system is built from. On the CI path that is engine 335 plus
-service modules 164, for **499 with zero failures**.
+Every figure here is counted on **YU17**, the tip state — the only branch carrying every ancestor's
+spec pack, and the tree the deployed system is built from. That is engine 489 plus service modules
+209, for **698 with zero failures**, from the JUnit XML of a run on the composed tree.
 
-The engine job additionally runs against YU15's two ancestor branches. That is a propagation check
-rather than three products under test: each renders its own effective tree, so a fix that is live on
-one spec layer while shadowed on another surfaces as a single red leg — and surfaces nowhere at all
+CI runs the same suites on every push across YU13, YU14 and YU15. That is a propagation check rather
+than three products under test: each renders its own effective tree, so a fix that is live on one
+spec layer while shadowed on another surfaces as a single red leg — and surfaces nowhere at all
 without it. The ancestors report fewer tests only because they compose fewer layers.

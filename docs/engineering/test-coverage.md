@@ -19,21 +19,21 @@ Where the two disagree, the executed number is the real one, and it is the one u
 
 ## Coverage summary
 
-### Tests that run on every push
+### The composed unit tier
 
 | Suite | Tests |
 |---|---:|
-| Composed engine (`order-matcher`) | 335 |
-| Composed service modules | 164 |
-| **Total** | **499** |
+| Composed engine (`order-matcher`) | 489 |
+| Composed service modules | 209 |
+| **Total** | **698** |
 
 Zero failures.
 
-Every number in this document is counted on **YU15**, the tip state: the only branch that carries
+Every number in this document is counted on **YU17**, the tip state: the only branch that carries
 every ancestor's spec pack, and the one the deployed system is built from. Earlier states remain
-buildable and are still exercised in CI (see [What CI runs](#what-ci-runs)), but they are ancestors
-of this one rather than separate products, so reporting three sets of numbers described a choice
-nobody makes.
+buildable and are the branches CI runs on every push (see [What CI runs](#what-ci-runs)), but they
+are ancestors of this one rather than separate products, so reporting three sets of numbers
+described a choice nobody makes.
 
 ### Everything else
 
@@ -43,25 +43,25 @@ nobody makes.
 | Cross-service integration | 5 suites | real MariaDB, and a real JetStream broker |
 | Allocation and no-GC gates | 6 | 4 allocation + 2 Epsilon-GC |
 | Market-data gates | 35 | 17 historical store + 18 live capture |
-| End-to-end proof scripts | 26 | operator-run against a live cluster |
+| End-to-end proof scripts | 47 | operator-run against a live cluster |
 | Composed Node and Python suites | 44 | reference-data 9 · price-publisher 11 · tick-store 24 |
-| Java test classes in the unit tier | 106 | the composed tree |
+| Java test classes in the unit tier | 130 | the composed tree |
 
 ## Java — the composed tree
 
-Counted on the YU15 effective tree — the code that exists once every ancestor's spec layers are
+Counted on the YU17 effective tree — the code that exists once every ancestor's spec layers are
 composed and the shadowed copies are resolved.
 
 | Module | Test classes | Tests executed | In CI |
 |---|---|---|---|
-| **order-matcher** (engine, book, journal, Aeron replication, cluster, gateways, risk, reporting, risk extract, tracing) | **74** | **335** | ✅ |
-| trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 11 | 69 | ✅ |
-| execution-algo-engine | 8 | 29 | ✅ |
+| **order-matcher** (engine, book, journal, Aeron replication, cluster, gateways, risk, reporting, risk extract, tracing) | **96** | **489** | ✅ |
+| trade-processor (settlement, reconciliation, end-of-day P&L, projection) | 13 | 86 | ✅ |
+| execution-algo-engine | 8 | 48 | ✅ |
 | position-service | 2 | 11 | ✅ |
 | account-service (account and user CRUD, people validation, outbox) | 8 | 32 | ✅ |
 | aeron-replication-sidecar (peer resolution, readiness and schema endpoints) | 2 | 15 | ✅ |
-| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 8 | ✅ |
-| **Total** | **106** | **499** | |
+| trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 17 | ✅ |
+| **Total** | **130** | **698** | |
 
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
@@ -194,7 +194,7 @@ The workflow has 10 job definitions and 11 legs on a push.
 
 | Job | Scope | Trigger |
 |---|---|---|
-| engine | composed order-matcher suite (335) + 4 allocation gates, then the six other service modules (164) — **499** | push and pull request |
+| engine | composed order-matcher suite + 4 allocation gates, then the six other service modules, on each of YU13, YU14 and YU15 | push and pull request |
 | baseline | 4 Java baseline services | push and pull request |
 | baseline (reference-data) | NestJS baseline | push and pull request |
 | baseline (people-service) | .NET baseline | push and pull request |
@@ -205,12 +205,12 @@ The workflow has 10 job definitions and 11 legs on a push.
 | integration (EOD stream repair + snapshot/P&L) | real JetStream broker and real MariaDB — 18 cases | push and pull request |
 | cluster and timing | three-node cluster, wall-clock budgets, 2 Epsilon gates | manual |
 
-The engine job also runs against YU15's two ancestor branches, which is why 8 job definitions
-produce 10 legs. That is not three products being tested; it is one propagation check. Each
-branch renders its own effective tree, so the same test name runs against differently composed
+The engine job runs across YU15 and its two ancestor branches, which is why 10 job definitions
+produce 11 legs on a push. That is not three products being tested; it is one propagation check.
+Each branch renders its own effective tree, so the same test name runs against differently composed
 code, and a fix that is live on one layer while shadowed on another appears as a single red leg
-beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests
-only because they carry fewer spec layers; **499 is the number that describes what is deployed**.
+beside two green ones — otherwise it appears nowhere at all. The ancestors count fewer tests only
+because they carry fewer spec layers; **698 is the number that describes what is deployed**.
 
 ## Verification tiers
 
@@ -218,9 +218,9 @@ The full rationale for what runs where is in [Testing strategy](testing-strategy
 
 | Layer | What | Where |
 |---|---|---|
-| In-process tests | 499, plus 48 baseline | CI, every push |
+| In-process tests | 698 on the composed tree, plus 48 baseline | CI, every push |
 | Cross-service integration | 5 suites against real MariaDB and a real JetStream broker | CI, every push |
-| End-to-end proofs | 26 scripts | operator-run against a live cluster |
+| End-to-end proofs | 47 scripts | operator-run against a live cluster |
 | Cluster and timing | three-node failover, snapshot and replay, wall-clock budgets | on demand, idle hardware |
 | Gates (cut across the rest) | 4 allocation gates, 2 no-GC gates | allocation gates every push; no-GC on demand |
 
