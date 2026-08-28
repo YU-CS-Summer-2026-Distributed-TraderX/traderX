@@ -8,14 +8,22 @@ name: Engine Tests (JUnit + gates)
 # effective tree (last-wins layering), so the same test name runs against
 # different actual code per branch. Running the matrix is how a propagation /
 # dead-layer regression — a fix live on one branch but shadowed/inert on another —
-# becomes visible. Enabled for YU15 first; adding YU13/YU14 is a one-line change.
+# becomes visible. All five states YU13-YU17 are on the matrix.
 
 on:
   push:
+    # Only a branch that CARRIES this file can fire it — GitHub reads workflows from the pushed
+    # commit, not from the matrix. This file lives on YU15, YU16 and YU17, so those are the
+    # branches whose pushes start a run; YU13 and YU14 are listed for the day they carry it and
+    # are covered meanwhile as matrix legs below. Until 2026-08-27 the list stopped at YU15 while
+    # the file had already been carried to YU16 and YU17, so pushes to the two newest states ran
+    # nothing and the tip state was never the tree under test.
     branches:
       - YU13-limit-order-book
       - YU14-listed-equity-options
       - YU15-eod-risk-extract
+      - YU16-cdm-instruments
+      - YU17-otc-rates
   pull_request:
   workflow_dispatch:
 
@@ -35,9 +43,23 @@ jobs:
         branch:
           # Each renders its OWN effective tree (last-wins layering), so the same test name
           # runs against different composed code per branch — this is where a dead-layer /
-          # propagation regression surfaces. All three validated green locally 2026-07-25
-          # (YU13 270 / YU14 284 / YU15 298, 0 fail). YU13/YU14 carry engine-tests.sh +
-          # exclude-heavy.gradle so the matrix leg's workspace checkout has them.
+          # propagation regression surfaces. Tip first, so the branch the deployed system is
+          # actually built from is the first leg to report.
+          #
+          # YU16 and YU17 joined on 2026-08-27, each after running these four steps locally:
+          # both green, YU16 at 572 tests over 7 modules and YU17 at 696. Those are HOSTED
+          # totals — exclude-heavy.gradle holds ThreeMemberClusterTest and
+          # SnapshotBarrierPerformanceTest back for the dedicated job, so the composed tree's
+          # own count is 2 higher (YU17 = 698). The older three were
+          # validated 2026-07-25 (YU13 270 / YU14 284 / YU15 298 functional tests) — a different
+          # measure, not comparable to the two above. YU13 and YU14 have been red since then on
+          # a compile error in NatsReplicationPhase0Test; they stay on the matrix because being
+          # on it is what makes that visible at all.
+          #
+          # Every branch here carries engine-tests.sh, service-tests.sh, assert-suites-executed.sh
+          # and exclude-heavy.gradle, which is what the leg's own checkout needs.
+          - YU17-otc-rates
+          - YU16-cdm-instruments
           - YU15-eod-risk-extract
           - YU14-listed-equity-options
           - YU13-limit-order-book
