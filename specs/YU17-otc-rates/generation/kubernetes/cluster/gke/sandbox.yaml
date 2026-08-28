@@ -205,3 +205,170 @@ spec:
             limits:
               cpu: "1"
               memory: 1Gi
+---
+# The sandbox's OWN message bus. Not a nicety: price-publisher awaits its NATS connection before
+# it starts the replay driver (main.js — `await connect(...)` precedes `printReplay.start(...)`),
+# so a replay pointed at an unreachable broker never replays at all. Pointing the sandbox copy at
+# the LIVE broker would publish sandbox prices onto the live bus, which is the leak ADR-073 exists
+# to prevent. A second small broker is the structural answer: the sandbox physically cannot reach
+# the live one, rather than being trusted not to.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-nats
+  labels:
+    app: sandbox-nats
+spec:
+  type: ClusterIP
+  selector:
+    app: sandbox-nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: websocket
+      port: 8081
+      targetPort: 8081
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-nats
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-nats
+  template:
+    metadata:
+      labels:
+        app: sandbox-nats
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+        - name: nats
+          image: nats:2.14-alpine
+          args: ["-c", "/etc/nats/nats.conf"]
+          ports:
+            - containerPort: 4222
+            - containerPort: 8222
+            - containerPort: 8081
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nats
+            - name: data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+      volumes:
+        # Same ConfigMap as the live broker — it is configuration, not state, and reusing it means
+        # the two brokers cannot drift into behaving differently.
+        - name: config
+          configMap:
+            name: nats-server-config
+        - name: data
+          emptyDir: {}
+---
+# The replay driver. This is the LIVE publisher's image and code, pointed at the sandbox: same
+# print-replay.js, so the one-clock and deterministic-by-position properties ADR-072 documented
+# carry over unchanged instead of being re-derived in a second implementation.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-replay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-replay
+  template:
+    metadata:
+      labels:
+        app: sandbox-replay
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+        - name: price-publisher
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu17-6374c110
+          imagePullPolicy: Always
+          env:
+            # ON here, and only here. The live publisher runs PRINT_REPLAY=0 (ADR-073).
+            - name: PRINT_REPLAY
+              value: "1"
+            - name: PRINT_REPLAY_GATEWAY
+              value: "http://sandbox-gateway:18110"
+            - name: PRINT_REPLAY_ACCOUNTS
+              value: "900001,900002,900003"
+            - name: PRINT_REPLAY_QTY
+              value: "10"
+            - name: PRINT_REPLAY_STRIDE
+              value: "1"
+            # The sandbox's OWN clock stamp, in its OWN ConfigMap. Where this points IS where the
+            # tape is, which makes it the date control: write a different epochStartMs and the
+            # session dives to a different point in the corpus. Deliberately not the live
+            # `replay-epoch` ConfigMap — two venues sharing one clock would be one venue.
+            # `optional: true` so an unstamped sandbox walks synthetically and says so on /health,
+            # rather than failing to start (ADR-068 rule 1).
+            - name: REPLAY_EPOCH_START_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: sandbox-replay-epoch
+                  key: epochStartMs
+                  optional: true
+            # The sandbox bus, NEVER `nats`. This one line is the difference between an isolated
+            # sandbox and a second writer on the live system.
+            - name: NATS_BROKER_HOST
+              value: "sandbox-nats"
+            - name: PRICE_PUBLISHER_PORT
+              value: "18100"
+            - name: PRICE_BOOTSTRAP_MODE
+              value: "snapshot"
+            - name: PRICE_TICKERS
+              value: "AAPL,MSFT,AMZN,GOOGL,META,NVDA,TSLA,IBM,BAC,C,JPM,GS,MS,UBS,DB,COF,DFS"
+          ports:
+            - containerPort: 18100
+          volumeMounts:
+            - name: taq-replay
+              mountPath: /etc/taq-replay
+            - name: taq-print-sample
+              mountPath: /etc/taq-print-sample
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 768Mi
+      volumes:
+        # Read-only inputs, shared with the live publisher on purpose: the corpus is the same
+        # corpus, and copying it would create two things that can disagree.
+        - name: taq-replay
+          secret:
+            secretName: taq-replay-extract
+            optional: true
+        - name: taq-print-sample
+          secret:
+            secretName: taq-print-sample
+            optional: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-replay
+  labels:
+    app: sandbox-replay
+spec:
+  type: ClusterIP
+  selector:
+    app: sandbox-replay
+  ports:
+    - name: http
+      port: 18100
+      targetPort: 18100
