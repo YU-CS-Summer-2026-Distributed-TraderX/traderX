@@ -184,7 +184,16 @@ function status(nowMs) {
   if (!pos) {
     // Loaded, but the clock does not address a day in it. Say so rather than 500 -- /health is the
     // surface whose job is to report what state the tape is in.
+    // Carry the numbers the refusal is ABOUT. The first version of this branch said only that the
+    // clock did not address a day, which is the shape of error this project keeps having to debug
+    // twice: true, and naming none of the inputs, so the reader has to reconstruct them from
+    // outside the process -- where they look correct, because the process is holding different
+    // ones.
     return { ...base, source: state.extract.source, position: null,
+      epochStartMs: state.epochStartMs,
+      paused: state.frozenAtMs !== null,
+      frozenAtMs: state.frozenAtMs,
+      days: state.extract.days.length,
       error: state.error || 'the tape is loaded but the clock does not address a day in it' };
   }
   return {
