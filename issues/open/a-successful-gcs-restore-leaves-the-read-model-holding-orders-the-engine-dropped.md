@@ -70,6 +70,10 @@ Not decided here, and the choice is a real one:
 - **Or state it as accepted risk in the runbook**, with the reconciliation left manual — legitimate,
   but only once it is written down, which is the minimum this file asks for.
 
+**The trap is that doing nothing is indistinguishable from the third option, while nobody has agreed
+to it.** Accepted risk and unexamined risk look identical from outside; the difference is entirely
+whether someone wrote it down. That is what makes this worth a file rather than a note.
+
 Whichever, the RPO statement should stop being a single number: **the engine's loss window and the
 read model's stale window are different quantities**, and today only one of them is quoted.
 
