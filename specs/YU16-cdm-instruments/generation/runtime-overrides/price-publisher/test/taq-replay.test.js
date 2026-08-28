@@ -32,7 +32,7 @@ function series(base) {
   return DAYS.map((_, d) => Array.from({ length: WPD }, (_, w) => base + d * 1000 + w));
 }
 
-function freshModule({ extract, epochStartMs } = {}) {
+function freshModule({ extract, epochStartMs, loadAt } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'taq-replay-'));
   const file = path.join(dir, 'extract.json.gz');
   if (extract) {
@@ -46,7 +46,7 @@ function freshModule({ extract, epochStartMs } = {}) {
   }
   delete require.cache[require.resolve('../src/taq-replay')];
   const mod = require('../src/taq-replay');
-  mod.load();
+  mod.load(loadAt);
   return mod;
 }
 
@@ -347,4 +347,17 @@ test('coverage: dayRanges date an instant the same way tapeAtWall does', () => {
     assert.equal(dateByRange(probe), m.tapeAtWall(probe, now).tapeDate,
       `the interval lookup and the journal must agree at ${probe - EPOCH}ms after epoch`);
   }
+});
+
+test('journal: a span this process did not watch is dated but flagged assumed', () => {
+  // The pod restarts; the origin is a ConfigMap value older than the process.
+  const startedAt = EPOCH + DAY_WALL_MS * 0.5;
+  const m = freshModule({ extract: validExtract(), epochStartMs: EPOCH, loadAt: startedAt });
+  const before = EPOCH + DAY_WALL_MS * 0.25;   // played by a PREVIOUS process
+  const after = startedAt + DAY_WALL_MS * 0.1; // watched by this one
+  const now = after + 1000;
+  assert.equal(m.tapeAtWall(before, now).assumed, true,
+    'an instant older than this process must not be asserted as observed');
+  assert.equal(m.tapeAtWall(after, now).assumed, false);
+  assert.equal(m.coverage(now).observedFromMs, startedAt);
 });

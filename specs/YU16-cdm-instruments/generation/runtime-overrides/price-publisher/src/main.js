@@ -797,7 +797,10 @@ async function main() {
   // exactly which is which at every instant.
   fred.start();
   // Sync, local, all-or-nothing; every failure path is a /health sentence and the walk (rule 1).
-  taqReplay.load();
+  // treasury.now(), never Date.now(): the boundary between "this process watched the tape here"
+  // and "this is the origin it inherited" has to be on the same clock as every position derived
+  // from it, or a fixed-clock run marks its whole session assumed.
+  taqReplay.load(treasury.now());
   await bootstrapPrices();
   bootstrapOptionContracts();
   assignStartupVolatilityBands();

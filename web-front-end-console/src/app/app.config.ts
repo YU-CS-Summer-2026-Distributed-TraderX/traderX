@@ -1,7 +1,7 @@
 import { ApplicationConfig, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
 import { provideRouter } from '@angular/router';
 import { TradingPage, SystemPage, EodPage, AdminPage, KdbPage, AccountsPage, FixPage,
-  GrafanaPage, LegacyPage, ReplayPage, SandboxPage } from './pages';
+  GrafanaPage, LegacyPage, ReplayPage, SandboxPage, CorpusPage } from './pages';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -13,6 +13,7 @@ export const appConfig: ApplicationConfig = {
       { path: 'eod', component: EodPage },
       { path: 'replay', component: ReplayPage },
       { path: 'sandbox', component: SandboxPage },
+      { path: 'corpus', component: CorpusPage },
       { path: 'admin', component: AdminPage },
       { path: 'accounts', component: AccountsPage },
       { path: 'fix', component: FixPage },

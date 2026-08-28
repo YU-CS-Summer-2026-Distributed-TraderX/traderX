@@ -237,34 +237,116 @@ function extractBypass(req, res) {
 const TAPE_JS = "const z=require('zlib'),f=require('fs');"
   + "const e=JSON.parse(z.gunzipSync(f.readFileSync("
   + "process.env.TAQ_REPLAY_EXTRACT_PATH||'/etc/taq-replay/extract.json.gz')).toString('utf8'));"
-  + "const s={};for(const[k,v]of Object.entries(e.prices))s[k]=v.map(d=>[d[0],d[d.length-1]]);"
-  + "process.stdout.write(JSON.stringify({source:e.source,windowSeconds:e.windowSeconds,"
-  + "sessionSeconds:e.sessionSeconds,compression:e.compression,days:e.days,symbols:s}));";
-const tapeCache = { at: 0, body: '' };
+  // The FULL extract, not a summary. It is ~3 MB for a 100-symbol, 40-day corpus, fetched once
+  // every five minutes, and having it here is what lets the corpus browser slice by window without
+  // a kubectl exec per slider drag -- which at one exec per frame would be both unusable and a
+  // steady load on the pod that is actually replaying the tape.
+  + "process.stdout.write(JSON.stringify(e));";
+const tapeCache = { at: 0, body: '', extract: null };
+
+/**
+ * The parsed extract, cached. Every tape surface reads through this, so there is one fetch and one
+ * copy of "what the publisher is actually replaying" rather than one per view drifting apart.
+ * Throws on failure -- callers turn that into a 502 that names the cause.
+ */
+function tapeExtract() {
+  if (Date.now() - tapeCache.at > 300_000 || !tapeCache.extract) {
+    const out = execFileSync('kubectl', ['-n', NS, 'exec', podByLabel('app=price-publisher'),
+      '--', 'node', '-e', TAPE_JS], { timeout: 30000, maxBuffer: 64 * 1024 * 1024 }).toString();
+    // Parse before caching: a pod that printed anything ahead of the JSON would otherwise be
+    // cached as the tape for five minutes.
+    const parsed = JSON.parse(out);
+    tapeCache.extract = parsed;
+    tapeCache.at = Date.now();
+  }
+  return tapeCache.extract;
+}
+
+const tapeFail = (res, e) =>
+  // Name the cause. The bare message was true and sent three people to the extract file, which
+  // was present and readable the whole time; the failure was the RBAC on the call that reads it.
+  json(res, 502, { error: 'could not read the replay extract off price-publisher',
+    cause: String(e && e.message || e).split('\n')[0].slice(0, 300) });
 
 function tapeBypass(req, res) {
   try {
-    // The extract only changes at a bring-up, so this is cached for minutes, not seconds.
-    if (Date.now() - tapeCache.at > 300_000) {
-      // Resolve the POD by label rather than `exec deploy/...`. The console's Role deliberately
-      // withholds `deployments`, so the deploy/ form needs a GET it will never have and 502s
-      // in-cluster while working perfectly from a laptop with cluster-admin — which is exactly the
-      // asymmetry the Role's own comment warns about. Every other call site here already does this.
-      const out = execFileSync('kubectl', ['-n', NS, 'exec', podByLabel('app=price-publisher'),
-        '--', 'node', '-e', TAPE_JS], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }).toString();
-      // Parse before caching: a pod that printed anything ahead of the JSON would otherwise be
-      // cached as the tape for five minutes.
-      JSON.parse(out);
-      tapeCache.at = Date.now();
-      tapeCache.body = out;
+    const e = tapeExtract();
+    // One [open, close] pair per symbol per day: window 0 and the last window of each day. The
+    // shape is the panel's contract, so it is built here rather than changed.
+    const symbols = {};
+    for (const [k, v] of Object.entries(e.prices)) { symbols[k] = v.map((d) => [d[0], d[d.length - 1]]); }
+    return json(res, 200, { source: e.source, windowSeconds: e.windowSeconds,
+      sessionSeconds: e.sessionSeconds, compression: e.compression, days: e.days, symbols });
+  } catch (e) { return tapeFail(res, e); }
+}
+
+// ---- the corpus browser (ADR-070): the tape as DATA, with no replay in the picture -------------
+// Deliberately independent of the sandbox and of the live clock. Nothing here starts, moves or
+// reads a replay -- the corpus is a file, and this is a view of the file. That is what makes the
+// tab answer "what is in the tape" without first having to play any of it.
+
+/** The corpus's shape and symbol list. Small, and the only call a browser needs to start. */
+function taqMeta(req, res) {
+  try {
+    const e = tapeExtract();
+    const wpd = Math.round(e.sessionSeconds / e.windowSeconds);
+    return json(res, 200, {
+      source: e.source, windowSeconds: e.windowSeconds, sessionSeconds: e.sessionSeconds,
+      compression: e.compression, windowsPerDay: wpd,
+      days: e.days.map((d) => d.date),
+      symbols: Object.keys(e.prices).sort(),
+      // Stated rather than left to the client to multiply out, so a corpus that changes shape
+      // cannot leave a slider addressing positions that no longer exist.
+      positions: e.days.length * wpd
+    });
+  } catch (e) { return tapeFail(res, e); }
+}
+
+/** Every window of one symbol across the whole corpus (~30 KB), for the chart. */
+function taqSeries(req, res, url) {
+  try {
+    const e = tapeExtract();
+    const ticker = (url.searchParams.get('ticker') ?? '').toUpperCase();
+    const series = e.prices[ticker];
+    if (!series) { return json(res, 404, { error: `the corpus does not carry ${ticker || '(no ticker)'}` }); }
+    return json(res, 200, { ticker, days: e.days.map((d) => d.date), series });
+  } catch (e) { return tapeFail(res, e); }
+}
+
+/**
+ * The cross-section: every symbol at ONE position of the tape. This is what the time slider reads,
+ * and it is a slice of the cached extract rather than a fetch, so dragging costs nothing upstream.
+ */
+function taqSlice(req, res, url) {
+  try {
+    const e = tapeExtract();
+    const wpd = Math.round(e.sessionSeconds / e.windowSeconds);
+    const pos = Number(url.searchParams.get('pos') ?? 0);
+    if (!Number.isInteger(pos) || pos < 0 || pos >= e.days.length * wpd) {
+      // Refuse rather than clamp: a clamped slider reports the last window for every position past
+      // the end, which looks like a tape that stopped moving rather than a request that was wrong.
+      return json(res, 400, { error: `position ${url.searchParams.get('pos')} is outside the corpus`,
+        positions: e.days.length * wpd });
     }
-    return json(res, 200, tapeCache.body);
-  } catch (e) {
-    // Name the cause. The bare message was true and sent three people to the extract file, which
-    // was present and readable the whole time; the failure was the RBAC on the call that reads it.
-    return json(res, 502, { error: 'could not read the replay extract off price-publisher',
-      cause: String(e && e.message || e).split('\n')[0].slice(0, 300) });
-  }
+    const day = Math.floor(pos / wpd);
+    const win = pos % wpd;
+    const rows = [];
+    for (const [ticker, byDay] of Object.entries(e.prices)) {
+      const d = byDay[day];
+      if (!d) { continue; }
+      const px = d[win];
+      const open = d[0];
+      rows.push({ ticker, price: px, open, changePct: open ? ((px - open) / open) * 100 : 0 });
+    }
+    rows.sort((a, b) => b.changePct - a.changePct);
+    return json(res, 200, {
+      pos, dayIndex: day, windowIndex: win, date: e.days[day].date,
+      // The wall time this window opened at, from the day's own openMs -- which IS the corpus's
+      // timezone handling, so a DST day lands right without this file knowing about DST.
+      atMs: e.days[day].openMs + win * e.windowSeconds * 1000,
+      windowsPerDay: wpd, rows
+    });
+  } catch (e) { return tapeFail(res, e); }
 }
 
 // ---- FIX 4.4 bridge: the gateway's second ingress ----------------------------------------------
@@ -718,6 +800,34 @@ const SANDBOX_TARGETS = {
 const sandboxRoute = (p) => Object.keys(SANDBOX_TARGETS)
   .find((x) => p === x || p.startsWith(`${x}/`));
 
+// The sandbox's regulatory/recon surfaces want an admin JWT, and it validates against the
+// SANDBOX's key, not the live one. So the console mints deliberately for the sandbox instead of
+// reusing INTERNAL_JWT — which would not validate there anyway, and if the two ever shared a key it
+// would mean one credential was authoritative over both venues.
+//
+// Minted here rather than fetched: the live path asks trade-processor for a token, and asking a
+// LIVE service to authorise a sandbox read is exactly the dependency this venue is not supposed to
+// have. HS256 over the same claim shape JwtTokenMinter produces (sub/admin/exp/accounts).
+const SANDBOX_JWT_SECRET = process.env.SANDBOX_JWT_SECRET ?? '';
+const b64u = (b) => Buffer.from(b).toString('base64url');
+
+function sandboxAdminToken() {
+  if (!SANDBOX_JWT_SECRET) { return ''; }
+  const header = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+  const payload = b64u(JSON.stringify({
+    sub: 'console-sandbox', admin: true,
+    exp: Math.floor(Date.now() / 1000) + 300, accounts: []
+  }));
+  const sig = createHmac('sha256', SANDBOX_JWT_SECRET)
+    .update(`${header}.${payload}`).digest('base64url');
+  return `${header}.${payload}.${sig}`;
+}
+
+// Only these need it. Everything else on the sandbox is open to a signed-in operator already, and
+// attaching an admin token to reads that do not ask for one is how a credential stops being
+// something a process spends and becomes something it sprays.
+const SANDBOX_NEEDS_JWT = (p) => p.startsWith('/regulatory') || p.startsWith('/recon');
+
 function proxySandbox(req, res, prefix) {
   const target = SANDBOX_TARGETS[prefix];
   const url = req.url ?? '/';
@@ -729,6 +839,10 @@ function proxySandbox(req, res, prefix) {
   delete headers['authorization'];
   delete headers['Authorization'];
   delete headers['x-auth-master-secret'];
+  if (prefix === '/sandbox/engine' && SANDBOX_NEEDS_JWT(upstreamPath)) {
+    const t = sandboxAdminToken();
+    if (t) { headers['authorization'] = `Bearer ${t}`; }
+  }
   // The engine's risk-control endpoints want their own token; it is the gateway's compiled-in dev
   // default and is not a live credential.
   if (prefix === '/sandbox/gw' && upstreamPath.startsWith('/risk/control/')) {
@@ -742,6 +856,106 @@ function proxySandbox(req, res, prefix) {
   });
   up.on('error', (e) => json(res, 502, { error: `sandbox ${prefix} unreachable`, cause: String(e.message) }));
   req.pipe(up);
+}
+
+/** One GET against a sandbox service, parsed. Used by the results join below. */
+function sandboxGet(prefix, path) {
+  return new Promise((resolve) => {
+    const target = SANDBOX_TARGETS[prefix];
+    const headers = { accept: 'application/json' };
+    if (prefix === '/sandbox/engine' && SANDBOX_NEEDS_JWT(path)) {
+      const t = sandboxAdminToken();
+      if (t) { headers.authorization = `Bearer ${t}`; }
+    }
+    const up = http.request({ host: target.host, port: target.port, path, method: 'GET', headers }, (r) => {
+      let buf = '';
+      r.setEncoding('utf8');
+      r.on('data', (c) => { buf += c; });
+      r.on('end', () => {
+        if ((r.statusCode ?? 0) !== 200) { resolve({ error: `${path} -> ${r.statusCode}`, body: buf.slice(0, 200) }); return; }
+        try { resolve({ ok: JSON.parse(buf) }); } catch (e) { resolve({ error: `${path}: ${e.message}` }); }
+      });
+    });
+    up.on('error', (e) => resolve({ error: `${prefix} unreachable: ${e.message}` }));
+    up.end();
+  });
+}
+
+// ADR-073 — the sandbox RESULTS view: what this throwaway session actually executed, by tape day.
+//
+// Joined here rather than in the browser for two reasons. The report is already 17k records on a
+// two-hour session and only grows, so shipping it per poll would put the whole audit log on the
+// wire to render four numbers. And the join itself -- wall timestamp to tape day -- has exactly one
+// correct implementation, the driver's dayRanges; doing it here keeps it next to the fetch that
+// produced the ranges instead of in a component that could drift from them.
+//
+// Nothing is derived from the CORPUS. A day the tape holds but never played has no range, so it
+// cannot appear, which is the whole distinction this view exists to make.
+const TRADE_KINDS = new Set(['TRADE_BOOKED']);
+const RESULTS_TRADE_SAMPLE = 200;
+
+async function sandboxResults(req, res) {
+  const [report, coverage] = await Promise.all([
+    sandboxGet('/sandbox/engine', '/regulatory/report'),
+    sandboxGet('/sandbox/pub', '/replay/coverage')
+  ]);
+  if (report.error) { json(res, 502, { error: 'the sandbox engine did not return its report', cause: report.error }); return; }
+  if (coverage.error) { json(res, 502, { error: 'the sandbox replay driver did not return its coverage', cause: coverage.error }); return; }
+
+  const ranges = coverage.ok.dayRanges ?? [];
+  const observedFromMs = coverage.ok.observedFromMs ?? null;
+  // Ranges are emitted sorted; a linear scan over a handful of them is cheaper than an index.
+  const dateAt = (ms) => {
+    for (const r of ranges) {
+      if (ms >= r.wallFromMs && (r.wallToMs === null || ms <= r.wallToMs)) { return r.tapeDate; }
+    }
+    return null;
+  };
+
+  const days = new Map();
+  let unattributed = 0;
+  const sample = [];
+  for (const rec of Array.isArray(report.ok) ? report.ok : []) {
+    const ms = rec.timestampMillis;
+    const date = Number.isFinite(ms) ? dateAt(ms) : null;
+    if (date === null) { unattributed += 1; continue; }
+    if (!days.has(date)) { days.set(date, { date, trades: 0, rejected: 0, canceled: 0, notional: 0, symbols: new Map() }); }
+    const day = days.get(date);
+    if (rec.kind === 'ORDER_REJECTED') { day.rejected += 1; continue; }
+    if (rec.kind === 'ORDER_CANCELED') { day.canceled += 1; continue; }
+    if (!TRADE_KINDS.has(rec.kind)) { continue; }
+    // Only EXECUTED flow reaches here, which is what makes a symbol that was quoted but never
+    // traded absent from this view rather than present with a zero.
+    const qty = Number(rec.quantity) || 0;
+    const px = Number(rec.price) || 0;
+    day.trades += 1;
+    day.notional += qty * px;
+    const sym = rec.security ?? '?';
+    if (!day.symbols.has(sym)) { day.symbols.set(sym, { ticker: sym, trades: 0, quantity: 0, notional: 0, firstMs: ms, lastMs: ms }); }
+    const e = day.symbols.get(sym);
+    e.trades += 1; e.quantity += qty; e.notional += qty * px;
+    e.firstMs = Math.min(e.firstMs, ms); e.lastMs = Math.max(e.lastMs, ms);
+    if (sample.length < RESULTS_TRADE_SAMPLE) {
+      sample.push({ tapeDate: date, ms, tradeId: rec.tradeId, orderId: rec.orderId,
+        security: sym, side: rec.side, quantity: qty, price: px, accountId: rec.accountId,
+        assumed: observedFromMs !== null && ms < observedFromMs });
+    }
+  }
+
+  json(res, 200, {
+    observedFromMs,
+    // Whether ANY of this session predates the process that is reporting it. Surfaced rather than
+    // silently folded in: those records are dated under an origin this driver inherited and did not
+    // watch, and a results view that cannot say which half it watched is the vacuous kind.
+    assumedSpan: observedFromMs !== null && sample.some((t) => t.assumed),
+    unattributed,
+    segmentsDropped: coverage.ok.segmentsDropped === true,
+    days: [...days.values()].map((d) => ({
+      ...d,
+      symbols: [...d.symbols.values()].sort((a, b) => b.notional - a.notional)
+    })).sort((a, b) => (a.date < b.date ? -1 : 1)),
+    trades: sample
+  });
 }
 
 function proxyToEdge(req, res, rewrite) {
@@ -770,7 +984,20 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/gcs/')) return gcsBypass(req, res, url);
   if (p.startsWith('/kdbtap')) return kdbBypass(req, res);
   if (p.startsWith('/extracts')) return extractBypass(req, res);
-  if (p.startsWith('/taq-tape')) return tapeBypass(req, res);
+  // ADR-068 (open question 1, answered 2026-08-28): the TAQ corpus may be DISPLAYED on the
+  // educational basis, and only behind sign-in. That decision is enforced HERE, at the one place
+  // every tape surface passes through, rather than per panel -- a display rule that lives in the UI
+  // is a display rule that a second UI, or a curl, walks straight past.
+  if (p === '/taq-tape' || p.startsWith('/taq-tape/') || p.startsWith('/taq/')) {
+    if (!readToken(req)) {
+      return json(res, 401, { code: 'signed_out', error: 'the tape is behind sign-in' });
+    }
+    if (p.startsWith('/taq-tape')) return tapeBypass(req, res);
+    if (p === '/taq/meta') return taqMeta(req, res);
+    if (p === '/taq/series') return taqSeries(req, res, url);
+    if (p === '/taq/slice') return taqSlice(req, res, url);
+    return json(res, 404, { error: `no tape surface at ${p}` });
+  }
   if (p.startsWith('/fixorder')) {
     if (req.method !== 'POST') return json(res, 405, {});
     try { return json(res, 200, await fixOrder(JSON.parse(await readBody(req)))); }
@@ -888,6 +1115,14 @@ const server = http.createServer(async (req, res) => {
   // The sandbox is behind the sign-in, in full rather than only its writes: it is a separate venue
   // an operator steps into, not a read of this one. Checked BEFORE the edge prefixes so a future
   // `/sandbox…` entry there could never shadow it.
+  // Ahead of sandboxRoute: this one is served BY the console rather than proxied to a sandbox
+  // service, and it is behind the same sign-in for the same reason.
+  if (p === '/sandbox/results') {
+    if (!readToken(req)) {
+      return json(res, 401, { code: 'signed_out', error: 'the sandbox is behind sign-in' });
+    }
+    return sandboxResults(req, res);
+  }
   const sbx = sandboxRoute(p);
   if (sbx) {
     if (!readToken(req)) {

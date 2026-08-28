@@ -72,6 +72,32 @@ spec:
               value: "9001"
             - name: CLUSTER_SNAPSHOT_INTERVAL_MS
               value: "300000"
+            # Its OWN signing key, from its OWN Secret -- never the live `auth-secrets`. The two
+            # systems share no credential, so a token minted for one is refused by the other, and
+            # the console has to mint deliberately for the sandbox rather than reusing what it
+            # already holds. Sharing the key would work and would quietly make one credential
+            # authoritative over both venues.
+            - name: AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-auth-secrets
+                  key: jwt-secret
+            # The sandbox's execution record, and the reason the results view can be honest about
+            # scope. This is the engine's OWN in-process blotter -- no read model, no NATS, nothing
+            # that leaves the pod -- so what it reports is exactly what THIS sandbox executed.
+            # Replay three days in March and it holds three days in March; replay one symbol and it
+            # holds one symbol. A results view built on the corpus instead could not tell either of
+            # those from a session that never ran.
+            #
+            # Sized well below the live members' 500k/200k/200k: this pod is capped at 2Gi and a
+            # blotter is a retained allocation, not a queue that drains. Raise it only alongside
+            # the memory limit.
+            - name: RECON_BLOTTER_CAPACITY
+              value: "100000"
+            - name: RECON_FULL_HISTORY_MAX
+              value: "50000"
+            - name: REGULATORY_MAX_RECORDS
+              value: "50000"
             # DELIBERATELY ABSENT — see the header. TRADE_BRIDGE_NATS_URL, RISK_EXTRACT_NATS_URL,
             # KDB_TAP_DIR. Adding any of them wires this engine into the live read model, the live
             # extract, or the live analytical store, and silently ends the isolation.
@@ -296,7 +322,7 @@ spec:
         cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: price-publisher
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu17-3973d271
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher:yu17-c74e7957
           imagePullPolicy: Always
           env:
             # ON here, and only here. The live publisher runs PRINT_REPLAY=0 (ADR-073).

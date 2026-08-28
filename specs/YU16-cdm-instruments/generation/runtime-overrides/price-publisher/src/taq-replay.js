@@ -56,6 +56,12 @@ const state = {
   // in force over its span, which is what makes "which tape day was this trade on" answerable at
   // all. Open segment = tape running; closed = paused or seeked away.
   segments: [],
+  // Wall instant THIS process started replaying. The origin is a ConfigMap value that outlives the
+  // pod, so after a restart the journal re-opens from it and can date instants this process never
+  // watched -- correct whenever nothing moved the origin beforehand, and confidently wrong when
+  // something did. Recording the boundary lets the answer be "2025-02-04, assumed" instead of
+  // either discarding a usable date or asserting one this process cannot vouch for.
+  observedFromMs: null,
   // A sentence, never a boolean. Null ONLY while a loaded extract is actually replaying.
   error: null
 };
@@ -74,7 +80,7 @@ function fail(sentence) {
 
 /** Load and validate the extract, or record why not. Sync and called once at startup: the file is
  *  a local Secret mount of a few hundred KB, not a network read. */
-function load() {
+function load(nowMs) {
   state.attempted = true;
   state.epochStartMs = Number(process.env.REPLAY_EPOCH_START_MS || NaN);
   if (!fs.existsSync(EXTRACT_PATH)) {
@@ -123,6 +129,7 @@ function load() {
   // The tape is running from the instant it loads, so the first segment opens here. Without this
   // everything replayed before the first pause would be attributed to nothing at all.
   state.segments.length = 0;
+  state.observedFromMs = Number.isFinite(nowMs) ? nowMs : null;
   openSegment(state.epochStartMs);
   console.log(`[taq-replay] replaying ${Object.keys(extract.prices).length} symbols, `
     + `${extract.days.length} days, window ${extract.windowSeconds}s, compression ${extract.compression}x, `
@@ -340,6 +347,7 @@ function tapeAtWall(atMs, nowMs) {
       return {
         tapeSeconds,
         dayIndex,
+        assumed: state.observedFromMs !== null && atMs < state.observedFromMs,
         tapeDate: ex.days[dayIndex].date,
         windowIndex: Math.floor((tapeSeconds % ex.sessionSeconds) / ex.windowSeconds)
       };
@@ -395,6 +403,7 @@ function coverage(nowMs) {
     };
   });
   return {
+    observedFromMs: state.observedFromMs,
     days: [...seen.entries()].map(([date, tapeSeconds]) => ({
       date,
       tapeSeconds,

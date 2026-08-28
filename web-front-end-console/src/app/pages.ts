@@ -1,6 +1,8 @@
 import { Component, inject } from '@angular/core';
 import { Api } from './api';
 import { SandboxPanel } from './sandbox-panel';
+import { SandboxResultsPanel } from './sandbox-results-panel';
+import { TaqCorpusPanel } from './taq-corpus-panel';
 import { ClusterPanel } from './cluster-panel';
 import { TicketPanel } from './ticket-panel';
 import { BlotterPanel } from './blotter-panel';
@@ -152,11 +154,14 @@ export class ReplayPage {
 
 @Component({
   selector: 'sandbox-page',
-  imports: [SandboxPanel],
+  imports: [SandboxPanel, SandboxResultsPanel],
   template: `
     @if (api.authUser()) {
       <div class="stack">
+        <!-- Transport first, results below it: the second section only ever shows what the first
+             one caused, so reading them top to bottom is the causal order. -->
         <section class="card"><sandbox-panel /></section>
+        <section class="card"><sandbox-results-panel /></section>
       </div>
     } @else {
       <section class="card">
@@ -173,6 +178,27 @@ export class ReplayPage {
   `,
 })
 export class SandboxPage {
+  readonly api = inject(Api);
+}
+
+@Component({
+  selector: 'corpus-page',
+  imports: [TaqCorpusPanel],
+  template: `
+    @if (api.authUser()) {
+      <section class="card" style="max-width: 1100px"><taq-corpus-panel /></section>
+    } @else {
+      <section class="card">
+        <h2>Tape corpus</h2>
+        <p class="muted">Every symbol and session in the recorded tape, as data. Nothing is replayed
+          to view it. Sign in to browse.</p>
+        <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
+      </section>
+    }
+  `,
+  styles: `.muted { color: var(--muted); margin: 4px 0 10px; }`,
+})
+export class CorpusPage {
   readonly api = inject(Api);
 }
 
