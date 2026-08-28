@@ -63,6 +63,11 @@ composed and the shadowed copies are resolved.
 | trade-service (validating edge: ticker and account checks, sequencer forward) | 1 | 17 | ✅ |
 | **Total** | **130** | **698** | |
 
+Of those 698, **696 run on each hosted CI leg**. The two held back are `ThreeMemberClusterTest` and
+`SnapshotBarrierPerformanceTest` — a real three-node cluster and a wall-clock budget, which a shared
+two-core runner cannot judge fairly. They run on the dedicated job instead, listed as *cluster and
+timing* below.
+
 
 These are the classes the unit task runs. The container-backed tests are tagged out of it and
 counted separately under [Cross-service integration](#cross-service-integration).
