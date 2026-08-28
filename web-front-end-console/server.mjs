@@ -712,6 +712,41 @@ function eodChain(req, res, url) {
     out.pnl = { state: 'unreadable', detail: 'could not read eod_position_pnl' };
   }
 
+  // ASK THE EXTRACT WHAT IT DID, exactly as the PnL stage above asks position-service.
+  //
+  // Same defect, one stage later, and it cost a real debugging session: a publish triggered the
+  // extract, the extract threw, and stages 3 and 4 went on reporting "remote" and "pending" --
+  // both of which read as WAITING. The operator refreshed, saw no change, and concluded the
+  // publish had not started anything. It had: it had run and failed, repeatedly.
+  //
+  // The bucket and the volume can only ever say whether an artifact EXISTS. Neither can tell a run
+  // that failed from a run that never happened, and that distinction is the whole question an
+  // operator is asking at this point in the chain. Only the service's own log knows.
+  let verdict = null;
+  try {
+    const log = execSync(
+      `kubectl -n ${NS} logs ${podByLabel('app=risk-extract')} --tail=4000 2>/dev/null || true`,
+      { shell: '/bin/sh', timeout: 25000, maxBuffer: 16 * 1024 * 1024 }).toString();
+    // Scanned in order rather than grepped: RISK-EXTRACT-FAILED carries no date of its own, so the
+    // only thing that attributes it to a session is the trigger line above it.
+    let cur = '';
+    for (const line of log.split('\n')) {
+      const t = /RISK-EXTRACT trigger sessionDate=(\S+) version=(\S+)/.exec(line);
+      if (t) {
+        cur = t[1];
+        if (cur === date) { verdict = { state: 'running', version: t[2], detail: `triggered for v${t[2]}` }; }
+        continue;
+      }
+      if (cur !== date) { continue; }
+      if (line.startsWith('RISK-EXTRACT-FAILED')) {
+        verdict = { state: 'failed', version: verdict?.version ?? null,
+          detail: line.slice('RISK-EXTRACT-FAILED'.length).trim() };
+      } else if (line.startsWith('RISK-EXTRACT-READY')) {
+        verdict = { state: 'ok', version: verdict?.version ?? null, detail: 'cut produced and announced' };
+      }
+    }
+  } catch { /* the log is the only verdict source; absent means fall back to artifact presence */ }
+
   // READ THE SINK FIRST — both stages below mean different things depending on it, and this bit
   // three times while building this endpoint. Where the cut LANDS is configuration, so "the local
   // volume is empty" and "no cut was produced" are the same observation only when the sink is local.
@@ -733,6 +768,14 @@ function eodChain(req, res, url) {
     const files = listed ? listed.split('\n').filter(Boolean) : [];
     out.extract = files.length
       ? { state: 'ok', pod, sink, files, detail: `${files.length} artifact(s) cut on ${pod}` }
+      : verdict?.state === 'failed'
+        // Ahead of the remote/pending branches: those describe WHERE a cut would land, which is
+        // beside the point once we know the run itself threw.
+        ? { state: 'failed', pod, sink, files: [],
+            detail: `the extract RAN AND FAILED for this date`
+              + (verdict.version ? ` (v${verdict.version})` : '') + `: ${verdict.detail}. `
+              + `It does not ack on failure, so JetStream keeps redelivering — this repeats until `
+              + `the cause is fixed, and clears itself once it is.` }
       : remoteSink
         // With a gs:// sink the cut never touches this volume, so an empty directory says nothing
         // about whether a cut happened — `published` is the stage that knows. Saying "no cut yet"
@@ -754,6 +797,10 @@ function eodChain(req, res, url) {
     // read the sink the extract is actually configured with rather than assuming it is this bucket.
     out.published = files.length
       ? { state: 'ok', bucket: BUCKET, sink, files, detail: `${files.length} object(s) in the bucket` }
+      : verdict?.state === 'failed'
+        ? { state: 'failed', bucket: BUCKET, sink, files: [],
+            detail: `nothing was published because the cut failed — see the stage above. This is a `
+              + `failure, not a wait.` }
       : sink && !remoteSink
         ? { state: 'not-configured', bucket: BUCKET, sink, files: [],
             detail: `the extract's sink is ${sink}, so the cut stays on the pod and nothing is `

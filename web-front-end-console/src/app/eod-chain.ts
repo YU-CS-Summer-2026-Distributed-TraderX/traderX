@@ -19,9 +19,11 @@ type StageState = string;
 
 /** Only these are claims about health; everything else is reported, not interpreted. */
 const GOOD = new Set(['ok']);
-const BAD = new Set(['halted', 'unreadable']);
+const BAD = new Set(['halted', 'unreadable', 'failed']);
 const WARN = new Set(['draft']);
-const KNOWN = new Set(['ok', 'draft', 'pending', 'halted', 'not-configured', 'unreadable', 'remote']);
+// 'failed' joined after a publish triggered the extract, the extract threw, and this panel
+// reported 'remote' and 'pending' -- both of which read as WAITING -- through every refresh.
+const KNOWN = new Set(['ok', 'draft', 'pending', 'halted', 'not-configured', 'unreadable', 'remote', 'failed']);
 
 interface Stage {
   state: StageState;
