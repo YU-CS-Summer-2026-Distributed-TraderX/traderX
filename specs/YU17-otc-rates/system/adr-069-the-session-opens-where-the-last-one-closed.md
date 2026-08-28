@@ -2,11 +2,11 @@
 
 ## Status
 
-**Proposed** (2026-08-23). **Not implemented.** Raised by yaakov while reviewing the day's work on
+**Proposed** (2026-08-23). **Not implemented.** Raised while reviewing the day's work on
 rig bring-up and seeding: *session close already produces a snapshot — what does session **start**
 do with it?*
 
-Two decisions are **taken** (yaakov, 2026-08-23) and recorded here rather than left open: the
+Two decisions are **taken** (2026-08-23) and recorded here rather than left open: the
 session **halts in consensus**, not at the gateway (decision 5), and the **feed keeps running
 through the halt** (decision 6), which is what makes the overnight gap real rather than fabricated.
 Everything else remains proposed.
@@ -99,7 +99,7 @@ state (unfilled), never market state. `price-publisher` has no knowledge that a 
 most recent at `00:07:32`), and the feed never paused.
 
 **What that observation does NOT establish**, and an earlier draft of this ADR wrongly inferred:
-that the system is *designed* to run continuously. It is not — yaakov is trading past EOD and
+that the system is *designed* to run continuously. It is not — the operator is trading past EOD and
 re-publishing **because he is testing**, deliberately not following OMS procedure. A real deployment
 **halts at EOD and does not continue trading**. So the absence of a halt is a **missing mechanism**,
 not a design position, and "what should the open be?" is a real question rather than a malformed one.
@@ -189,7 +189,7 @@ that resolves rule 2 server-side, where the version and status semantics already
 **4. Report which source won, per instrument class.** `/health` already carries `priceSource` for
 FRED. Opening source joins it. See the trap below — this is not optional polish.
 
-**5. The session halts, and it halts IN CONSENSUS** (yaakov, 2026-08-23). Session state becomes a
+**5. The session halts, and it halts IN CONSENSUS** (2026-08-23). Session state becomes a
 sequenced transition — a command enters the log, every member applies `OPEN`/`CLOSED` at the same
 position, and a halted book rejects order ingress.
 
@@ -210,8 +210,7 @@ emits `InputEvent.TYPE_PRICE_TICK`, a distinct event type from an order. So a ha
 *order* events can let price ticks through untouched, `BlpRiskState.lastPrice[]` keeps advancing,
 and the ADR-066 band re-anchors across the halt with no special case.
 
-**7. Resting orders are re-validated at the open, and what is stale is cancelled** (yaakov,
-2026-08-23). Two checks, and they answer different questions — running only one of them is the
+**7. Resting orders are re-validated at the open, and what is stale is cancelled** (2026-08-23). Two checks, and they answer different questions — running only one of them is the
 trap:
 
 | check | question | yardstick | status |
@@ -346,7 +345,7 @@ price that silently came from the seed looks exactly like one that came from a c
 
 **Does the open equal the close exactly, or gap? — ANSWERED: it gaps, and the gap is endogenous.**
 An earlier draft closed this as malformed, on the inference that the system has no closed period.
-That inference was wrong: the continuous trading measured on the rig is yaakov **testing**, not a
+That inference was wrong: the continuous trading measured on the rig is **testing**, not a
 design position, and a real deployment halts at EOD. With decisions 5 and 6 the answer falls out —
 the venue halts, the feed does not, and the open is wherever the feed walked to. Reconstructable
 tick by tick, carrying the same provenance as any daytime tick, and requiring no external source.
@@ -371,7 +370,7 @@ opening price of their own and must not be given one from a stored close, which 
 re-price. Equities and ETFs are covered by the hierarchy. Treasuries are covered and then superseded
 by FRED, as intended.
 
-## Decisions — settled 2026-08-24 (yaakov)
+## Decisions — settled 2026-08-24
 
 All four were "decide before building". They are decided; the reasoning is kept because the shape of
 the argument is what a later reader needs, not the verdict alone.
@@ -418,7 +417,7 @@ operator emit the identical command; the core cannot tell them apart and does no
 ### Epoch consequence — one mint, and what actually rides it
 
 The queue is **sequenced state**: it must survive snapshot and failover, so it bumps
-`SNAPSHOT_FORMAT` (7 → 8 on this branch). Yaakov's call is **one epoch mint, not two** — one PVC
+`SNAPSHOT_FORMAT` (7 → 8 on this branch). The call is **one epoch mint, not two** — one PVC
 wipe, one proof run, one mixed-version window to avoid. The cost is that everything riding it must be
 right before minting.
 

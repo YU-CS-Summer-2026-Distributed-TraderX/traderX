@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted and implemented** (2026-08-23). Decision by yaakov: the full re-anchoring collar, in
+**Accepted and implemented** (2026-08-23). Decision: the full re-anchoring collar, in
 the engine — not the seeder-only band-aid (cross demo equities at live prices so a fresh epoch
 starts sane), which was offered and rejected because it leaves the mechanism intact: a stray
 order still poisons a book mid-epoch, and it forces a suite-wide churn of every proof written

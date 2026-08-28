@@ -4,7 +4,7 @@
 
 **Proposed** (2026-08-26). **Not implemented.** Intended as its own state.
 
-Raised by yaakov after reviewing `AlexNeugroschl/JAX_Risk_Engine` against our two integration handoffs
+Raised after reviewing an external risk engine against our two integration handoffs
 (`docs/handoff/INTEGRATION-jax-risk-engine-2026-08-17.md` and its `-inbound-` companion): *we produce a
 file, he serves an API, and nothing sits between them — that may be us.*
 

@@ -164,7 +164,7 @@ protects the next one somebody adds.
 Free instrument identifiers — reference data, not prices. Worth having for the reference-data service
 independently of this decision.
 
-## Interim position (yaakov, 2026-08-23): use now, revert before anything public
+## Interim position (2026-08-23): use now, revert before anything public
 
 **Decision: integrate against these services during development, and disable them before any public
 demo or recorded talk.** That is a sound posture *only because rule 1 makes the revert real* — with

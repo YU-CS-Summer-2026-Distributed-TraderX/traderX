@@ -7,7 +7,7 @@
 [Open questions](#open-questions--dispositions-2026-08-26) below; the end-of-tape ruling (hold at
 Mar 31's close, never loop, never fall back) and the share-class scoping are recorded there too.
 
-Originally **Proposed** (2026-08-24). Raised by yaakov: we hold a licensed TAQ corpus
+Originally **Proposed** (2026-08-24). Raised on the basis that we hold a licensed TAQ corpus
 covering February and March 2025 — can it be the reference price, treating day 1 of any fresh epoch
 as the first day of the tape?
 
@@ -24,7 +24,7 @@ phases and the bring-up path, and it is far cheaper to disagree about here.
 
 ### The permission, recorded because ADR-068 records permissions
 
-**Use is authorised — stated by yaakov 2026-08-24, sourced from the head of the program.** This is an
+**Use is authorised — confirmed 2026-08-24, sourced from the head of the program.** This is an
 institutional grant over data the university already holds, not a vendor click-through, which makes it
 a different *kind* of permission from the Pyth / Massive / FRED terms ADR-068 had to read. What was
 asked and answered is **use**. Nothing here should be read as a finding about redistribution or
@@ -206,7 +206,7 @@ sampled symbol, fragmented into more files but missing nothing.)
 `dt=2025-02-03`, the same day the listable universe was pinned to (`473dff07`). The two exclusions
 are deliberate, and they do **not** fall back to the synthetic walk.
 
-**Widened to 100 symbols, 2026-08-26 (yaakov's request).** The extract now carries the 23
+**Widened to 100 symbols, 2026-08-26 (by request).** The extract now carries the 23
 incumbents — byte-identical series, verified against the running publisher's own mount — plus the
 77 most liquid S&P 500 names not already in it. It is a **union, deliberately**: the ranking alone
 would have dropped thirteen names that were already replaying (IBM, GS, UBS, DB, COF, DFS, FIS, FNF
@@ -247,7 +247,7 @@ There are in fact **five** provenances on the wire simultaneously — `taq-repla
 `black-scholes` (24), `fred-us-treasury-cmt-curve` (15), `simulated-corporate-credit-spread` (4) and
 `previous-close` (2) — so **any consumer that models provenance as tape-vs-synthetic is wrong twice**:
 it labels the FRED curve fake, and it labels a stale carried-forward close live. Found by the UI lane
-building the provenance chip; the wire was always right and the prose was not.
+building the provenance work; the wire was always right and the prose was not.
 
 - **GOOGL** — the store's `GOOG` partition merges Alphabet's two classes (the ingest dropped
   TAQ's `SYM_SUFFIX`; `issues/open/tick-store-drops-taq-sym-suffix-and-merges-share-classes.md`).
@@ -348,7 +348,7 @@ outside the suite should expect the same one-time override set on the first clos
 1. **Compression ratio: 13x, fixed.** Measured, with the reasoning and the numbers in
    [Sizing, measured](#sizing-measured-2026-08-26-not-picked). Fixed because window and compression
    are one decision (the flush identity), and both live in the extract, not in a knob.
-2. **End of tape: HOLD at Mar 31's close, and let `asOf` say so.** Ruled by yaakov 2026-08-26,
+2. **End of tape: HOLD at Mar 31's close, and let `asOf` say so.** Ruled 2026-08-26,
    before it could be discovered live. Looping fabricates the exact seam this ADR exists to make
    real (Mar 31's close to Feb 3's open is an invented overnight gap); falling back to synthetic
    silently changes provenance category mid-run, which is what decision 4 exists to prevent; and

@@ -114,8 +114,7 @@ version and it is wrong, for three reasons that should be recorded so they are n
 
 ## Open questions — ALL FOUR NOW DECIDED (2, 3 on filing; 1, 4 on 2026-08-24)
 
-1. **Does the collar's reference change, or only its inputs' clarity?** — **DECIDED 2026-08-24
-   (yaakov): SPLIT THEM.** ADR-067's hierarchy governs what the system *publishes* — `/bbo`, the
+1. **Does the collar's reference change, or only its inputs' clarity?** — **DECIDED 2026-08-24: SPLIT THEM.** ADR-067's hierarchy governs what the system *publishes* — `/bbo`, the
    console, market data generally: last trade, then book-derived BBO, then external reference. **The
    collar keeps ADR-066's exogenous-first reference unchanged** (feed price, else mark, else first
    limit).
@@ -135,8 +134,7 @@ version and it is wrong, for three reasons that should be recorded so they are n
    `issues/open/the-collar-is-inert-for-every-instrument-priced-below-par.md`. **It would not.** That
    issue is about the band's *width* (±$65.54, an absolute distance identical for every instrument),
    not about where the band is *centred*; the issue says so explicitly, and centring a $131 window
-   perfectly on a Treasury at 0.99 leaves it exactly as inert. The coordinator asserted the
-   connection and it was wrong. Recorded here because the wrong reason is more instructive than the
+   perfectly on a Treasury at 0.99 leaves it exactly as inert. The connection was asserted and it was wrong. Recorded here because the wrong reason is more instructive than the
    right verdict: **"where the band sits" and "how wide the band is" are independent, and a fix to
    one is not a fix to the other.**
 
@@ -157,7 +155,7 @@ version and it is wrong, for three reasons that should be recorded so they are n
    byte-identically across 69 books. The response carries `applied` so a consumer can tell whether two
    scrapes are comparable. The read is unsynchronized and off-thread, the same posture as
    `recoveryDigest` — it is a sample, not a sequenced fact.
-4. **Does `price-publisher` keep driving the demo?** — **DECIDED 2026-08-24 (yaakov): yes, but
+4. **Does `price-publisher` keep driving the demo?** — **DECIDED 2026-08-24: yes, but
    demoted from price AUTHORITY to flow GENERATOR.** It keeps producing order flow, because
    something must, and the session driver keeps taking its cue from it. What it stops being is the
    thing that says what a price *is* — that is the book, per decision 1 above.

@@ -53,7 +53,7 @@ retention order) survives snapshot + log-tail and zero-tail recovery with strict
 | Ingress gateway tier | REST + FIX built on one cluster client; FIX session-survival proven; /orders/batch + /metrics for the bench; live REST/FIX-vs-cluster verification still open |
 | Feed-adapter consensus ingress | Built (compiles); live NATS verification open |
 | Recovery matrix / failover | Unit slice green; kind E2E no-ID-reuse proven; consistent sub-1s failover needs timeout tuning |
-| GKE proofs | Packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); run by yaakov |
+| GKE proofs | Packaged as hand-over commands (`GKE-yu12-deploy-bench.md`); operator-run |
 
 ## GKE campaign evidence (2026-07-18/19 — user-authorized GKE session)
 

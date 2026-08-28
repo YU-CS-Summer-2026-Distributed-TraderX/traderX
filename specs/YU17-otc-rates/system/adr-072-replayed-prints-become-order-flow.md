@@ -2,7 +2,7 @@
 
 ## Status
 
-**Accepted** (2026-08-26) by yaakov, after being shown what it costs. **Implemented on YU17
+**Accepted** (2026-08-26), after being shown what it costs. **Implemented on YU17
 2026-08-26**, on `traderx/cluster-node:yu17-adr072` + `price-publisher:yu17-replay`, at snapshot
 format 9 on a fresh epoch. Intended as its own state.
 
@@ -76,6 +76,38 @@ this about the last two and said so, at the point where it explains why band mov
 rather than a floor: *"GLOBAL over order writers, exactly like the trade counter."* **It had named the
 category — "order writers", plural — while its own promise at the top still assumed the proofs were
 the only one.**
+
+### It is FIVE, not four (corrected again 2026-08-27) — and they do not share a persistence
+
+`traderx_stp_cancels` was missed by the count above and is the same shape: **global over order
+writers**, moved whenever replayed flow trips self-trade prevention. Its twin
+`traderx_stp_operator_cancels` landed in `6374c110` and is verified live on kind and GKE.
+
+**And the five twins split two ways, which matters more than the count.** A twin is a *subtraction*,
+so it inherits the persistence of **both** its terms — snapshotted parent means the shadow must be
+snapshotted too, or a restored member subtracts a shadow its parent outlived:
+
+| twin | terms | across a member RESTART |
+|---|---|---|
+| `traderx_cluster_operator_next_order_ref` | `nextOrderRef`(off 8) − 1 − `externalOrderRefs`(off 52) | **survives** |
+| `traderx_cluster_operator_trades` | `tradeCounter`(off 32) − `externalTradeLegs`(off 60) | **survives** |
+| `traderx_stp_operator_cancels` | `selfTradesPrevented` − `externalSelfTradesPrevented` | **resets to 0** |
+| `traderx_band_operator_reanchors` | `bandReanchors` − `externalBandReanchors` | **resets to 0** |
+| `traderx_band_operator_stranded_cancels` | `bandStrandedCancels` − `externalBandStrandedCancels` | **resets to 0** |
+
+The first two are why `SNAPSHOT_FORMAT` went to 9 and why that needed a mandatory mint. The last
+three cost neither, because their parents are per-process too and both sides restart together.
+
+**A RESTART AND AN EPOCH MINT ARE DIFFERENT EVENTS.** A restart restores from a snapshot, so the
+first two survive and the last three reset. **A mint wipes the PVCs, so there is no snapshot and ALL
+FIVE reset** — `nextOrderRef` initialises to 1, making `operatorOrderRefs()` exactly 0 at epoch
+start. No counter comparison of any kind can span a mint; the two epochs' counters are not
+commensurable, and that is not a contamination problem and no twin fixes it. Across a mint the
+claim has to be an identity.
+
+**Consequences for anyone reading a twin across a restart**: a per-process twin's cross-member
+*absolute* reads as divergence and is not one, and a *delta* straddling the restart of the member
+being measured goes **negative** — which reads as corruption rather than as a moved assertion.
 
 ### And therefore a snapshot format bump
 
@@ -221,6 +253,19 @@ feed adapter, and the adapter strands silently in exactly this shape. Assert `ap
 refused replayed prints with `PRICE_COLLAR`, counted by reason on `/health.printReplay`. A real
 February 2025 print that moved further from its window's median than the band allows is refused, and
 that is the band working.
+
+**But the collar count is NOT a volatility measure, and this ADR implied it was** (corrected
+2026-08-27). The sampler does not filter TAQ **sale conditions**: ADR-070's median extract is robust
+to them by construction, while this one takes *real prints at evenly spaced ranks*, so average-price,
+bunched, prior-reference-price and corrected prints arrive exactly as the tape carries them. Measured
+per symbol against its true Feb–Mar 2025 range, **every median is correct** and 84–100% of prints sit
+in-band — worst in financials, where odd-lot and off-exchange activity concentrates (COF 83.8%,
+JPM 91.2%, C 91.9%; AAPL, NVDA, TSLA, GLD and IBM 100%).
+
+So a substantial share of the steady `PRICE_COLLAR` rate is **condition-coded prints rather than
+genuine large moves**. The sentence above survives unchanged — an average-price print *is* a real
+print far from its window's median, and refusing it *is* the band working — but **the number cannot
+be read as market volatility or as rig health**, which is how it was being reported.
 
 **The demo claim, measured.** This ADR opens on *"3 of 69 books have ever printed, six trades total"*.
 Twenty minutes into the first epoch with the replay live: **23 of 69 books carrying live resting

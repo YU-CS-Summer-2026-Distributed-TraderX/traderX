@@ -134,8 +134,7 @@ runtime-harness wiring (`install-generated-runtime-harness.sh`, `install-generat
   and `ProjectorHandler`'s own doc comment) established `ProjectorHandler` is the real writer. The
   fix was relocated there; the original fixes were kept as correct improvements to the legacy path.
 - **Isolated worktree**: this state's work was done in a dedicated git worktree
-  (`/Users/yaakov/Desktop/Summer 26/lmax/traderX-YU05-post-trade-compliance`, branch
-  `YU05-post-trade-compliance`, based off `YU03-in-memory-risk-gateway`) after the shared
+  (branch `YU05-post-trade-compliance`, based off `YU03-in-memory-risk-gateway`) after the shared
   `traderX` working directory was found to be actively branch-switched by a parallel session
   working on `YU04-durable-control-feeds` — generation is single-writer, and an earlier attempt in
   the shared directory had already cost several tracked-file edits when that session checked out
