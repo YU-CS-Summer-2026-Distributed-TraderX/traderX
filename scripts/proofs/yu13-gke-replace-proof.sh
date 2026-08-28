@@ -159,8 +159,11 @@
 #      order-update AND an unsolicited STP cancel for a DIFFERENT order. The caller must get the
 #      replace's outcome, never the cancel. This is the one contract a unit test cannot check,
 #      because it is a property of the gateway's ack correlation, not of the engine.
-#   2. Three-member state identity through a replace — depth, book hash and the reference
-#      generator, agreed by all three, at every step.
+#   2. Three-member state identity through a replace — the book digest (depth AND order hash)
+#      agreed by all three at every digest_consensus call, and the reference generator and trade
+#      counter agreed at step 3. NOT "every counter at every step": the STP counter is
+#      deliberately not checked for agreement at all, because it is per-process and agreement on
+#      it would be a statement about uptime (see step 3).
 #   3. A replace surviving a snapshot/restore boundary mid-sequence — snapshot taken AFTER the
 #      replace, more replaces applied after it, then a member destroyed and rebuilt from nothing
 #      (emptyDir: the pod comes back with an empty disk and rejoins from snapshot + log). The
@@ -799,4 +802,17 @@ echo "       identity, and survival across a snapshot and a member rebuilt from 
 echo "       asserted while the ADR-072 tape replayed $(( SUBMITTED1 - SUBMITTED0 )) orders into the same venue."
 echo "       The order-level claims are the ORDER'S OWN read-model state (status, quantity, price),"
 echo "       which no other writer can move; the two volume claims are operator-scoped counters"
-echo "       bracketed by the operator ref generator. No assertion here reads a venue-wide count."
+echo "       bracketed by the operator ref generator."
+echo
+echo "       PRECISELY: no assertion here ATTRIBUTES a venue-wide count to this proof's own work."
+echo "       Three still READ venue-wide counters — the two step-3 agreement checks and every"
+echo "       digest_consensus call — and that is sound, because the claim is that the MEMBERS"
+echo "       AGREE, which no other writer can disturb. The earlier wording said \"no assertion"
+echo "       reads a venue-wide count\", which was false and would have sent a reader either to"
+echo "       fix step 3 for a defect it does not have, or to trust the line and miss it if"
+echo "       somebody later added a read that does attribute."
+echo
+echo "       NOT SHOWN HERE: id separation across a WIPED epoch (this proof never mints one);"
+echo "       the SQL trades read model; and any claim about behaviour under concurrent OPERATOR"
+echo "       load — the scenario is sequential, and a second operator writing at the same time"
+echo "       would move the operator counters the two volume claims bracket."
