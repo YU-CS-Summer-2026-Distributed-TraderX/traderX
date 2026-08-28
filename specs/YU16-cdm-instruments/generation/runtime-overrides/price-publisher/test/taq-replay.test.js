@@ -139,3 +139,82 @@ test('a day-count mismatch refuses the extract and names the symbol', () => {
   const mod = freshModule({ extract: bad, epochStartMs: EPOCH });
   assert.match(mod.state.error, /AAPL carries 1 day/);
 });
+
+// ---- ADR-073: the sandbox transport ----------------------------------------------------------
+// The property under test is not "pause works" — it is that pause, resume and seek are the SAME
+// clock moved, not a second one. Every assertion below reads position through positionAt, because
+// a transport that maintained its own idea of where the tape is would pass a test that asked it
+// where it thinks it is, and diverge from the reference series the engine actually prices against.
+
+test('pause freezes the tape, and time passing does not move it', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const before = mod.positionAt(EPOCH + 60_000);
+  mod.pause(EPOCH + 60_000);
+  const later = mod.positionAt(EPOCH + 600_000);   // ten minutes of wall clock later
+  assert.equal(later.tapeSeconds, before.tapeSeconds);
+  assert.equal(later.windowIndex, before.windowIndex);
+  assert.equal(mod.status(EPOCH + 600_000).paused, true);
+});
+
+test('resume continues from where it paused, not from where the wall clock got to', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const at = mod.positionAt(EPOCH + 60_000);
+  mod.pause(EPOCH + 60_000);
+  mod.resume(EPOCH + 600_000);                     // paused for nine minutes
+  // Immediately after resume the tape is exactly where it was frozen...
+  assert.equal(mod.positionAt(EPOCH + 600_000).tapeSeconds, at.tapeSeconds);
+  // ...and one further wall second advances it by exactly `compression` tape seconds.
+  assert.equal(mod.positionAt(EPOCH + 601_000).tapeSeconds, at.tapeSeconds + C);
+  assert.equal(mod.status(EPOCH + 600_000).paused, false);
+});
+
+test('pause is idempotent and resume without a pause is a no-op', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod.pause(EPOCH + 10_000);
+  mod.pause(EPOCH + 90_000);                       // must not re-freeze at the later instant
+  assert.equal(mod.positionAt(EPOCH + 900_000).tapeSeconds, 10 * C);
+  const origin = mod.state.epochStartMs;
+  mod.resume(EPOCH + 900_000);
+  mod.resume(EPOCH + 900_000);                     // second resume must not shift the origin again
+  assert.equal(mod.state.epochStartMs, origin + 890_000);
+});
+
+test('seek by date lands on that day open, and by index agrees with it', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  assert.equal(mod.seekToDay('2025-02-04', EPOCH), true);
+  const byDate = mod.positionAt(EPOCH);
+  assert.equal(byDate.tapeDate, '2025-02-04');
+  assert.equal(byDate.dayIndex, 1);
+  assert.equal(byDate.windowIndex, 0);
+  const mod2 = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod2.seekToDay(1, EPOCH);
+  assert.equal(mod2.positionAt(EPOCH).tapeSeconds, byDate.tapeSeconds);
+});
+
+test('seeking while paused stays paused at the new point — what a scrub bar has to do', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod.pause(EPOCH + 5_000);
+  assert.equal(mod.seekToDay('2025-02-04', EPOCH + 5_000), true);
+  assert.equal(mod.status(EPOCH + 5_000).paused, true);
+  const at = mod.positionAt(EPOCH + 5_000);
+  assert.equal(at.tapeDate, '2025-02-04');
+  // and still frozen a long while later
+  assert.equal(mod.positionAt(EPOCH + 900_000).tapeSeconds, at.tapeSeconds);
+});
+
+test('an out-of-tape seek is refused rather than clamped silently', () => {
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  const before = mod.positionAt(EPOCH).tapeSeconds;
+  assert.equal(mod.seekToDay('1999-01-01', EPOCH), false);
+  assert.equal(mod.seekToDay(99, EPOCH), false);
+  assert.equal(mod.seekToTapeSeconds(-1, EPOCH), false);
+  assert.equal(mod.positionAt(EPOCH).tapeSeconds, before);
+});
+
+test('the price the engine sees follows the transport, not just the reported position', () => {
+  // The whole point of moving the ORIGIN rather than tracking a position separately: priceAt has
+  // to land on the seeked window too, because that is the number the book is priced against.
+  const mod = freshModule({ extract: validExtract(), epochStartMs: EPOCH });
+  mod.seekToDay('2025-02-04', EPOCH);
+  assert.equal(mod.priceAt('AAPL', EPOCH).price, 200 + 1000);  // day 1, window 0
+});

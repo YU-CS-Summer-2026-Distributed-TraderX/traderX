@@ -41,6 +41,12 @@ const state = {
   // rebuild_fresh_epoch (derived from the member-0 PVC's creationTimestamp, which IS the mint).
   epochStartMs: NaN,
   extract: null,
+  // Wall instant the clock was frozen at, or null while running. ADR-073's sandbox needs
+  // pause/resume/seek, and this is the ONLY way to offer them without a second clock: freeze and
+  // seek both move THIS origin, so positionAt keeps deriving from one field and there is still
+  // exactly one derivation of where the tape is. Never used on the live publisher, which never
+  // pauses -- it stays null there and every expression below reduces to what it was.
+  frozenAtMs: null,
   // A sentence, never a boolean. Null ONLY while a loaded extract is actually replaying.
   error: null
 };
@@ -113,7 +119,9 @@ function positionAt(nowMs) {
     return null;
   }
   const windowsPerDay = ex.sessionSeconds / ex.windowSeconds;
-  const tapeSeconds = Math.max(0, (nowMs - state.epochStartMs) / 1000) * ex.compression;
+  // While frozen the clock reads the instant it was frozen at. Still one derivation.
+  const atMs = state.frozenAtMs === null ? nowMs : state.frozenAtMs;
+  const tapeSeconds = Math.max(0, (atMs - state.epochStartMs) / 1000) * ex.compression;
   let dayIndex = Math.floor(tapeSeconds / ex.sessionSeconds);
   let windowIndex = Math.floor((tapeSeconds % ex.sessionSeconds) / ex.windowSeconds);
   const held = dayIndex >= ex.days.length;
@@ -167,6 +175,7 @@ function status(nowMs) {
     windowSeconds: state.extract.windowSeconds,
     compression: state.extract.compression,
     epochStartMs: state.epochStartMs,
+    paused: state.frozenAtMs !== null,
     position: {
       tapeDate: pos.tapeDate,
       dayIndex: pos.dayIndex,
@@ -177,4 +186,47 @@ function status(nowMs) {
   };
 }
 
-module.exports = { load, priceAt, positionAt, status, state };
+// ---- ADR-073 sandbox controls -----------------------------------------------------------------
+// Each of these MOVES THE ORIGIN. None of them computes a position; positionAt stays the only
+// place that does, which is what keeps "one clock" true while the tape gains a transport.
+
+/** Freeze the tape where it is. Idempotent. */
+function pause(nowMs) {
+  if (state.frozenAtMs === null) { state.frozenAtMs = nowMs; }
+  return state.frozenAtMs;
+}
+
+/** Resume from where it was frozen, by shifting the origin forward over the paused span. */
+function resume(nowMs) {
+  if (state.frozenAtMs !== null) {
+    state.epochStartMs += (nowMs - state.frozenAtMs);
+    state.frozenAtMs = null;
+  }
+  return state.epochStartMs;
+}
+
+/**
+ * Put the tape at `seconds` of tape time. Keeps the paused/running state it was in: seeking while
+ * paused lands paused at the new point, which is what a scrub bar has to do.
+ */
+function seekToTapeSeconds(seconds, nowMs) {
+  const ex = state.extract;
+  if (!ex || !Number.isFinite(seconds) || seconds < 0) { return false; }
+  const ref = state.frozenAtMs === null ? nowMs : state.frozenAtMs;
+  state.epochStartMs = ref - (seconds / ex.compression) * 1000;
+  return true;
+}
+
+/** Seek to the open of a tape day, by index or by its `YYYY-MM-DD` date. */
+function seekToDay(dayRef, nowMs) {
+  const ex = state.extract;
+  if (!ex) { return false; }
+  const idx = typeof dayRef === 'number'
+    ? dayRef
+    : ex.days.findIndex((d) => d.date === String(dayRef));
+  if (!(idx >= 0 && idx < ex.days.length)) { return false; }
+  return seekToTapeSeconds(idx * ex.sessionSeconds, nowMs);
+}
+
+module.exports = { load, priceAt, positionAt, status, state,
+  pause, resume, seekToTapeSeconds, seekToDay };

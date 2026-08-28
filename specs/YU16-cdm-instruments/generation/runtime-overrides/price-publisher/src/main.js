@@ -701,6 +701,60 @@ app.get('/health', (_req, res) => {
   });
 });
 
+// ---- ADR-073 replay transport ------------------------------------------------------------------
+// Only where replay is ON, which today means the sandbox alone: the live publisher runs
+// PRINT_REPLAY=0 and therefore has no transport at all, rather than having one nobody should call.
+// A live publisher whose tape could be paused or seeked by an HTTP request would be a way to move
+// the market reference every book's price band is anchored to (ADR-070) from outside the system.
+const REPLAY_CONTROLS = (process.env.PRINT_REPLAY || '1') !== '0';
+
+// This app registered no body parser before now -- nothing POSTed to it. Scoped to the transport
+// routes rather than app-wide, so adding a seek cannot change how any existing endpoint parses.
+const replayBody = express.json({ limit: '4kb' });
+
+function replayControl(handler) {
+  return (req, res) => {
+    if (!REPLAY_CONTROLS) {
+      return res.status(404).json({ error: 'replay transport is not enabled on this publisher' });
+    }
+    if (!taqReplay.state.extract) {
+      // Name the cause. "cannot pause" would send the reader to the transport; the tape simply is
+      // not loaded, and taq-replay already holds a sentence saying why.
+      return res.status(409).json({ error: 'no tape loaded', cause: taqReplay.state.error });
+    }
+    return handler(req, res);
+  };
+}
+
+app.post('/replay/pause', replayBody, replayControl((_req, res) => {
+  taqReplay.pause(Date.now());
+  res.json(taqReplay.status());
+}));
+
+app.post('/replay/resume', replayBody, replayControl((_req, res) => {
+  taqReplay.resume(Date.now());
+  res.json(taqReplay.status());
+}));
+
+// { day: "2025-03-12" } | { dayIndex: 7 } | { tapeSeconds: 12345 }
+app.post('/replay/seek', replayBody, replayControl((req, res) => {
+  const body = req.body || {};
+  const now = Date.now();
+  let ok = false;
+  if (body.day !== undefined) { ok = taqReplay.seekToDay(body.day, now); }
+  else if (body.dayIndex !== undefined) { ok = taqReplay.seekToDay(Number(body.dayIndex), now); }
+  else if (body.tapeSeconds !== undefined) { ok = taqReplay.seekToTapeSeconds(Number(body.tapeSeconds), now); }
+  if (!ok) {
+    return res.status(400).json({ error: 'seek target not in this tape',
+      days: taqReplay.state.extract.days.map((d) => d.date) });
+  }
+  res.json(taqReplay.status());
+}));
+
+app.get('/replay/status', (_req, res) => {
+  res.json({ controls: REPLAY_CONTROLS, tape: taqReplay.status(), flow: printReplay.status(taqReplay) });
+});
+
 app.get('/prices', (_req, res) => {
   const rows = Array.from(state.prices.values()).map((quote) => toPayload(quote));
   res.json({ prices: rows });
