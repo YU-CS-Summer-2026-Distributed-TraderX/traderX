@@ -84,3 +84,10 @@ read model's stale window are different quantities**, and today only one of them
 - `issues/open/five-gke-proofs-read-a-global-counter-that-replayed-flow-now-moves.md` — the work this
   came out of
 - `docs/handoff/PROOF-yu12-gcs-backup-restore-2026-07-19.md` — the drill that predates the question
+- [`nothing-enforces-that-an-epoch-bump-and-a-db-wipe-happen-together`](nothing-enforces-that-an-epoch-bump-and-a-db-wipe-happen-together.md)
+  — **the same seam, the opposite direction**, and its sharpening applies here too: *only one
+  direction is silent*. There, a wipe without a bump collides silently on the paths that DEDUP
+  rather than refuse. Here, a restore without a reconciliation leaves the projection silently ahead
+  of the engine. Both are the engine and the read model disagreeing about which incarnation they are
+  in, and neither has anything that reds. (Restored 2026-08-27: this link was carried by the
+  duplicate file folded into this one and was the one thing the fold dropped.)
