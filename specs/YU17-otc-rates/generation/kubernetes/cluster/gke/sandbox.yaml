@@ -1,0 +1,207 @@
+# ADR-073 — the replay sandbox. A SECOND venue, deliberately not this one.
+#
+# The isolation here is STRUCTURAL, not a mode bit, and the structure is mostly what is ABSENT:
+# TRADE_BRIDGE_NATS_URL, RISK_EXTRACT_NATS_URL and KDB_TAP_DIR are each guarded in
+# MatchingEngineClusteredService by `!= null && !isBlank()`, so leaving them unset means the
+# publisher is never constructed — no NATS connection, no capture file, nothing to leak through.
+# Do not "disable" them by setting them to something harmless; the absence IS the mechanism.
+#
+# The test for any change here: if this whole StatefulSet were deleted mid-session, the live venue
+# must not be able to tell.
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-engine
+  labels:
+    app: sandbox-engine
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: sandbox-engine
+  ports:
+    - name: health
+      port: 8080
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: sandbox-engine
+spec:
+  serviceName: sandbox-engine
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-engine
+  template:
+    metadata:
+      labels:
+        app: sandbox-engine
+    spec:
+      # NOT the members' pool. blp-c4d-tuned-pool is tainted for the live cluster and its three
+      # nodes are sized for it; the sandbox is a guest on untainted capacity and must never
+      # compete with consensus for a core.
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: cluster-node
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110
+          imagePullPolicy: Always
+          # The members' own launch form, including the `& wait $!` that keeps signal delivery
+          # working through the shell.
+          command: ["/bin/sh", "-c", "java -cp /opt/app/classes:/opt/app/lib/* finos.traderx.ordermatcher.cluster.ClusterNodeMain & wait $!"]
+          env:
+            # ONE member. Raft with a single node is still Raft: it elects itself, commits on its
+            # own vote, and applies through the identical path — which is the point, because the
+            # sandbox has to match the live engine's behaviour to be worth replaying into.
+            - name: CLUSTER_HOSTNAMES
+              value: "sandbox-engine-0.sandbox-engine.traderx.svc.cluster.local"
+            - name: CLUSTER_PORT_BASE
+              value: "21800"
+            - name: CLUSTER_BASE_DIR
+              value: "/data"
+            - name: CLUSTER_AERON_DIR
+              value: "/dev/shm/aeron-cluster"
+            - name: CLUSTER_IDLE_STRATEGY
+              value: "lowpark"
+            # Its own epoch namespace. Nothing reads across the two, but an id that could collide
+            # in a log or a file name is a needless way to make two systems look like one.
+            - name: CLUSTER_EPOCH
+              value: "9001"
+            - name: CLUSTER_SNAPSHOT_INTERVAL_MS
+              value: "300000"
+            # DELIBERATELY ABSENT — see the header. TRADE_BRIDGE_NATS_URL, RISK_EXTRACT_NATS_URL,
+            # KDB_TAP_DIR. Adding any of them wires this engine into the live read model, the live
+            # extract, or the live analytical store, and silently ends the isolation.
+            - name: OTEL_TRACES
+              value: "0"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms512m -Xmx1536m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 24
+          # tcpSocket, for the same reason the members use it: a busy JVM answering slowly must not
+          # read as a dead one. Answered by the kernel from the accept backlog.
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 45
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 768Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: standard-rwo
+        resources:
+          requests:
+            # Sandbox state PERSISTS across sessions (ADR-073) — the reset control wipes it, a pod
+            # restart does not.
+            storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-gateway
+  labels:
+    app: sandbox-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: sandbox-gateway
+  ports:
+    - name: http
+      port: 18110
+      targetPort: 18110
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sandbox-gateway
+  template:
+    metadata:
+      labels:
+        app: sandbox-gateway
+    spec:
+      nodeSelector:
+        cloud.google.com/gke-nodepool: default-pool
+      containers:
+        - name: cluster-gateway
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110
+          imagePullPolicy: Always
+          # Copied verbatim from the live gateway. The classpath is the exploded
+          # /opt/app/classes:/opt/app/lib/* layout, NOT a fat jar.
+          command: ["java", "-cp", "/opt/app/classes:/opt/app/lib/*", "finos.traderx.ordermatcher.cluster.ClusterGatewayMain"]
+          env:
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            # id=host:port, port = CLUSTER_PORT_BASE + memberId*100 + 2. One member, so one entry.
+            - name: GATEWAY_INGRESS_ENDPOINTS
+              value: "0=sandbox-engine-0.sandbox-engine.traderx.svc.cluster.local:21802"
+            - name: GATEWAY_HTTP_PORT
+              value: "18110"
+            - name: GATEWAY_EGRESS_PORT
+              value: "40470"
+            - name: GATEWAY_PROBE_PORT
+              value: "18111"
+            - name: OTEL_TRACES
+              value: "0"
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Dsun.net.httpserver.nodelay=true -Xms256m -Xmx768m --add-exports=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED"
+          ports:
+            - name: http
+              containerPort: 18110
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 18111
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 24
+          resources:
+            requests:
+              cpu: 250m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
