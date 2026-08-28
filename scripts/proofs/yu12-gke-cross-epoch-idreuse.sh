@@ -1,7 +1,40 @@
 #!/usr/bin/env bash
-# yu12-gke-cross-epoch-idreuse.sh — proves the reference generator NEVER reissues an order id from
-# a prior epoch: across a real failover (leader killed, new leader elected), orderRefs continue
-# STRICTLY ABOVE everything the old epoch issued — no overlap, no reset, agreed by all members.
+# yu12-gke-cross-epoch-idreuse.sh — proves the reference generator does not reissue an order id
+# across a FAILOVER: leader killed, new leader elected, and orderRefs continue STRICTLY ABOVE
+# everything issued before the kill — no overlap, no reset, agreed by all members.
+#
+# ============================================================================================
+# READ THIS FIRST: THE NAME OVERCLAIMS, AND THE CORRECTION IS THE POINT (2026-08-27).
+#
+# This file was called "cross-epoch id reuse" and its header said the generator "NEVER reissues an
+# order id from a prior epoch". THAT IS NOT A PROPERTY OF THIS SYSTEM, and the proof never tested
+# it. Two different things were being called an epoch:
+#
+#   a LEADERSHIP TERM   — what this proof actually produces, by killing the leader. nextOrderRef is
+#                         snapshotted (the YU11->YU12 fix genuinely under test here), the restarted
+#                         pod reads the same CLUSTER_EPOCH, and refs continue. This proof shows it.
+#   a WIPED INCARNATION — a fresh epoch mint. nextOrderRef is initialised to 1
+#                         (MatchingEngineClusteredService:502, :716), so refs DO restart at 1 and DO
+#                         collide with the previous incarnation's. This proof never performs one and
+#                         shows nothing whatever about it.
+#
+# What keeps two incarnations apart is the EPOCH QUALIFIER on the read-model id, not the generator.
+# OrderNatsPublisher:20, verbatim:
+#
+#     "orderRef restarts at 1 on a fresh cluster incarnation, so a table keyed on the bare ref
+#      collides across epochs -- partially, silently. The read-model key is therefore
+#      epoch + \"-\" + orderRef ... stable across FAILOVER (orderRef does not reset on failover),
+#      and bumped together with wiping the DB on a fresh incarnation -- they are one artifact."
+#
+# and MatchingEngineClusteredService:1278 is blunt: "Nothing here makes ids unique ACROSS a wiped
+# epoch." So the hazard this file's own preamble cites — trade-processor dedup eating real trades
+# on 2026-07-22 — arises at a MINT, which this proof does not perform.
+#
+# The assertions were all sound for what the proof DOES; the claim wrapped around them was not.
+# Step 3 now also asserts the half that is testable here and was never checked: the epoch qualifier
+# is the SAME on both sides of the kill, which is exactly OrderNatsPublisher's "stable across
+# failover". The mint case is covered by NO proof we have — see the issue file's residual. Found by
+# asking what this proof establishes, not whether its counters were clean.
 #
 # Why this is its own proof (and not just a line in the recovery/failover scripts): id reuse is
 # the failure mode that silently corrupts every downstream identity — the ClOrdId ledger, the
@@ -63,9 +96,9 @@
 #   1. issue orders in the OLD epoch; record every orderRef the gateway returned AND the members'
 #      agreed next_order_ref high-water mark R_old;
 #   2. kill the leader; wait for the new epoch (new leader, all members back);
-#   3. issue orders in the NEW epoch; every returned orderRef must be >= R_old, the operator ref
-#      counter must have advanced by exactly our order count, and the old and new ref SETS must be
-#      disjoint;
+#   3. issue orders once the new leader is up; every returned orderRef must be >= R_old, the
+#      operator ref counter must have advanced by our order count, the old and new ref SETS must be
+#      disjoint, and the read model's EPOCH QUALIFIER must be unchanged across the kill;
 #   4. falsification arm: the new-epoch orders BOOK — proving the refs are real allocations, not a
 #      counter that wandered upward while allocation restarted from 1.
 #
@@ -101,23 +134,22 @@ member_metric() { ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
 # THE GLOBAL counter, for the CROSS-MEMBER AGREEMENT check and the high-water bar, and nothing
 # else. "The members agree" is a determinism claim a third writer cannot touch; the high-water is
 # a bar our own refs must clear, which foreign flow only raises.
-refs_all()   { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_next_order_ref 2>/dev/null)"; done; }
-uniq_one()   { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
-# RETRIED, and on this tier the retry is LOAD-BEARING rather than belt-and-braces. refs_all takes
-# three SEQUENTIAL `kubectl exec`s and the tape advances the counter between them, so a member that
-# sampled earlier reads lower and is reported as disagreeing. Measured on the GKE bench 2026-08-27:
-# a four-quantity read agreed on only 5 of 20 unretried attempts at 6.13/s. The CLAIM is sound; the
-# MEASUREMENT is not, without this loop.
-agreed() { # agreed <fn> — returns the agreed reading, and reports THAT reading on failure
-  local r i
-  for i in $(seq 1 90); do
-    r="$("$1")"
-    [[ "$(echo "${r}" | uniq_one)" == "1" && -n "${r// /}" ]] && { echo "${r%% *}"; return 0; }
-    sleep 2
-  done
-  fail "members never agreed on $1: [${r}]
-  Retried 90x, so this is a PERSISTENT split, not the sampling skew the retry exists for."
-}
+#
+# WRITTEN TO `_agreed`'s SIGNATURE ON PURPOSE — a reader taking a MEMBER ORDINAL, not one returning
+# all three. This file used to hand-roll its own retry around a space-joined triple, and the
+# ADR-072 lane's sharpest formulation of the sampling defect is that THE READERS AT RISK ARE EXACTLY
+# THE ONES THAT HAND-ROLL THEIR COMPARISON instead of calling in to the library, which has always
+# retried. Using `_agreed` also buys the fast-fail that a hand-rolled loop cannot have: if all three
+# members answer -1 it says "the metric is absent, this build predates the ADR-072 operator
+# counters" immediately, instead of burning two minutes waiting for agreement on a disagreement that
+# is not happening.
+#
+# The retry is LOAD-BEARING on this tier, not belt-and-braces: three sequential `kubectl exec`s at
+# ~0.35s each against a 6/s tape means a member that sampled earlier reads lower and is reported as
+# disagreeing. Measured on the GKE bench 2026-08-27, a four-quantity read agreed on 5 of 20
+# unretried attempts. The CLAIM is sound; the MEASUREMENT is not, without the loop.
+venue_refs() { member_metric "$1" traderx_cluster_next_order_ref 2>/dev/null; }
+quiesced_venue_refs() { _agreed venue_refs "the venue-wide order-ref high-water mark"; }
 leader() { for m in 0 1 2; do [[ "$(member_metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 
 PF_PID=""
@@ -161,6 +193,11 @@ require_destructive \
 step "0. preflight: the divergence rule, a live tape, gateway up, seeded"
 require_uniform_image "${IMAGE}"
 require_tape_live
+# The epoch-qualifier assertion in step 3 reads the order read model, so the reader must prove it
+# can READ before anything depends on it. A route answering "" or [] for every account is
+# indistinguishable from "not visible yet" until a timeout, and would then be reported as a verdict
+# about id reuse rather than as the probe failing.
+require_read_model "${ACCT}"
 PRESSURE0="$(pressure_row)"
 RUN_T0=${SECONDS}
 start_pf
@@ -180,7 +217,7 @@ OLD_REFS=""
 for i in $(seq 1 "${N_PER_EPOCH}"); do
   OLD_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "${PRICE}" "old-${i}")") "
 done
-R_OLD="$(agreed refs_all)"
+R_OLD="$(quiesced_venue_refs)"
 OPR_OLD="$(quiesced_order_refs)"
 echo "  old-epoch refs: [${OLD_REFS}]"
 echo "  members agree next_order_ref = ${R_OLD} (venue-wide); operator refs ${OPR_BASE} -> ${OPR_OLD}"
@@ -209,7 +246,7 @@ NEW_REFS=""
 for i in $(seq 1 "${N_PER_EPOCH}"); do
   NEW_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "$(python3 -c "print(${PRICE}-5)")" "new-${i}")") "
 done
-R_NEW="$(agreed refs_all)"
+R_NEW="$(quiesced_venue_refs)"
 OPR_NEW="$(quiesced_order_refs)"
 echo "  new-epoch refs: [${NEW_REFS}]"
 echo "  members agree next_order_ref = ${R_NEW} (venue-wide); operator refs ${OPR_OLD} -> ${OPR_NEW}"
@@ -227,8 +264,27 @@ for r in ${NEW_REFS}; do
   [[ "${r}" -ge "${R_OLD}" ]] || fail "new-epoch order was issued ref ${r} < old-epoch high-water ${R_OLD}: ID REUSED"
 done
 OVERLAP="$( (tr ' ' '\n' <<<"${OLD_REFS}"; tr ' ' '\n' <<<"${NEW_REFS}") | sed '/^$/d' | sort | uniq -d )"
-[[ -z "${OVERLAP}" ]] || fail "ref(s) issued in BOTH epochs: ${OVERLAP}"
-echo "  every new-epoch ref >= ${R_OLD}, and the two sets are disjoint"
+[[ -z "${OVERLAP}" ]] || fail "ref(s) issued on BOTH sides of the failover: ${OVERLAP}"
+echo "  every post-kill ref >= ${R_OLD}, and the two sets are disjoint"
+# THE HALF THIS PROOF CAN ACTUALLY TEST ABOUT EPOCHS, and it was never checked. The read-model id is
+# <epoch>-<orderRef> and the qualifier is what separates incarnations. OrderNatsPublisher's design
+# claim is that it is STABLE ACROSS FAILOVER (the restarted pod reads the same CLUSTER_EPOCH from
+# the manifest) and bumped only when the DB is wiped. If it HAD changed here, the refs continuing
+# would prove far less than it appears to: the two halves would sit in different keyspaces and could
+# not have collided whatever the generator did.
+E_OLD="$(order_epoch_of "${ACCT}" "${OLD_REFS%% *}")"
+E_NEW="$(order_epoch_of "${ACCT}" "${NEW_REFS%% *}")"
+[[ -n "${E_OLD}" && -n "${E_NEW}" ]] \
+  || fail "could not read the epoch qualifier off the read model (old '${E_OLD}', new '${E_NEW}').
+  That is the PROBE failing to read, NOT a verdict about id reuse — check trade-processor and its
+  NATS feed, and that account ${ACCT} is seeded (orderbook.accountid is a FK; an unseeded account
+  returns zero rows for every order ever written)."
+[[ "${E_OLD}" == "${E_NEW}" ]] \
+  || fail "the epoch qualifier changed across the leader kill (${E_OLD} -> ${E_NEW}). A failover must NOT
+  bump it — CLUSTER_EPOCH comes from the manifest and the restarted pod reads the same value. If it
+  moved, this rig performed a fresh INCARNATION rather than a failover, and the ref continuity
+  asserted above proves nothing about reuse: refs restart at 1 on a mint, by design."
+echo "  epoch qualifier UNCHANGED across the kill (${E_OLD}) — a failover, not a fresh incarnation"
 
 step "4. falsification arm: the new-epoch refs are real allocations that trade"
 # The window is post-election and contains exactly one order of ours, so the exact ref delta is
@@ -248,6 +304,11 @@ assert_observed_rate "$(( SECONDS - RUN_T0 ))" "cross-epoch id reuse"
 print_pressure "${PRESSURE0}" "$(pressure_row)"
 
 echo
-echo "[PASS] no cross-epoch id reuse: old epoch topped out at ref ${R_OLD}; every new-epoch ref"
-echo "       was >= that mark, the sets are disjoint, the operator ref generator advanced by our"
-echo "       own orders across the election, and the new-epoch allocations are live (they trade)."
+echo "[PASS] no id reuse ACROSS A FAILOVER: refs topped out at ${R_OLD} before the kill; every ref"
+echo "       issued after it was >= that mark, the sets are disjoint, the epoch qualifier was"
+echo "       unchanged (${E_OLD}), the operator ref generator advanced by our own orders across the"
+echo "       election, and the post-kill allocations are live (they trade)."
+echo
+echo "       NOT SHOWN HERE, and not shown by any proof we have: id separation across a WIPED"
+echo "       INCARNATION. Refs restart at 1 on a mint by design; the epoch qualifier is what keeps"
+echo "       those rows apart. Do not cite this run as cross-epoch coverage."

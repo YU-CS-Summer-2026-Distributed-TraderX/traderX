@@ -157,4 +157,8 @@ fi
 assert_row_terms "NEW 9 153.0" NEW 9 153.000000 "selftest"
 echo "ok   assert_row_terms accepts a real row and refuses an unreadable one"
 
+expect "epoch qualifier off an id"     "7"                "$(order_epoch_of x 101)"
+expect "qualifier absent ref reads empty" ""              "$(order_epoch_of x 999)"
+echo "ok   epoch qualifier reader"
+
 echo "ALL GREEN"

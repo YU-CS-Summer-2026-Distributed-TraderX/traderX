@@ -6,8 +6,10 @@ other four the same day; see the two resolutions at the bottom, the first of whi
 things this file got wrong about the fifth. **The file stays OPEN on one residual**: the DR proof
 `yu12-gke-restore-from-gcs` is landed but **cannot be exercised on any tier we have**, because the
 `yu12-snapshot-backup` CronJob is not deployed on the bench cluster. None of the five is in any
-suite, so nothing automated will red them — which is the condition that let twenty-seven defects
-accumulate across them (eleven in the fifth, sixteen in the other four).
+suite, so nothing automated will red them — which is the condition that let twenty-eight defects
+accumulate across them (eleven in the fifth, seventeen in the other four). **The seventeenth is a
+shape none of the first sixteen were**: every assertion in `yu12-gke-cross-epoch-idreuse` was sound,
+and the CLAIM ITS NAME AND BANNER MADE was not a property of the system — see the last section.
 
 ## Why this is worth a file rather than a fix-when-noticed
 
@@ -546,3 +548,108 @@ not a defect.
   `yu17-swap-netting`, `yu04-offline-catchup`, `yu15-risk-extract`, `yu17-keyed-ack-correlation`,
   `failover-nodeclock`). On the kind rig that is the expected mode and this is an **observation, not
   a filed defect** — but the shared-rig argument that earned these four a gate applies there too.
+
+---
+
+## A SEVENTEENTH, found after the sixteen were fixed and green: the proof's NAME was the defect
+
+Both sibling lanes replied after the first commit. The ADR-072 lane's persistence table matched what
+had already been derived independently from the writer and reader — but one of its points did not
+apply to `yu12-gke-cross-epoch-idreuse` as written, and chasing *why* it did not apply is what found
+the seventeenth.
+
+**The point raised:** a fresh epoch wipes the PVCs, `nextOrderRef` initialises to 1
+(`MatchingEngineClusteredService:502`, `:716`), so **no counter comparison can span a mint — twin or
+global**, and a twin cannot fix it.
+
+**Why it did not apply:** this proof kills a **leader**. Measured across four runs, the operator ref
+counter went `9 -> 19 -> 29 -> 30` and then `30 -> 40 -> 50 -> 51`, monotonic, no reset. So the
+assertions were correct.
+
+**And that is exactly the problem.** The proof is called *cross-epoch id reuse* and its header
+claimed the generator "NEVER reissues an order id from a prior epoch". **That is not a property of
+this system.** `OrderNatsPublisher:20`, verbatim:
+
+> "`orderRef` restarts at 1 on a fresh cluster incarnation, so a table keyed on the bare ref collides
+> across epochs — partially, silently. The read-model key is therefore `epoch + "-" + orderRef` …
+> **stable across FAILOVER** (orderRef does not reset on failover), and **bumped together with wiping
+> the DB on a fresh incarnation** — they are one artifact."
+
+and `MatchingEngineClusteredService:1278` is blunt: **"Nothing here makes ids unique ACROSS a wiped
+epoch."**
+
+So one word was doing two jobs:
+
+| "epoch" as used by... | ...means | and so |
+|---|---|---|
+| **the proof's code** | a LEADERSHIP TERM — a leader kill | `nextOrderRef` is snapshotted, the restarted pod reads the same `CLUSTER_EPOCH`, refs continue. **Real, and worth proving**: it is the YU11→YU12 snapshot fix. |
+| **the proof's NAME and banner** | a WIPED INCARNATION — a fresh mint | refs **restart at 1 and DO collide**. The proof never performs one and shows nothing whatever about it. |
+
+The hazard the file's own preamble cites — trade-processor dedup eating real trades on 2026-07-22 —
+arises at a **mint**, which this proof does not do. What actually prevents it is the epoch qualifier
+on the read-model id, which no proof was checking.
+
+> **The eleventh's question, asked of the proof rather than of an assertion.** Every assertion here
+> was sound; the CLAIM WRAPPED AROUND THEM was not. A file can be entirely correct line by line and
+> still establish something other than what its name, banner and header say — and a reader cites the
+> banner, not the lines. **Ask what the proof establishes, not only whether its readings are clean.**
+> This was invisible until the contamination was fixed, exactly as the fifth proof's tenth and
+> eleventh were: three passes, three different questions.
+
+**What changed.** The assertions were kept — they are correct for a failover. The header, the step
+titles and the PASS banner now say *failover*, and the banner explicitly names what is **not** shown.
+And the half that IS testable here, and never was, is now asserted: **the epoch qualifier is
+unchanged across the kill**, which is precisely `OrderNatsPublisher`'s "stable across failover". If
+it had moved, the ref continuity above it would prove far less than it appears to — the two halves
+would sit in different keyspaces and could not have collided whatever the generator did.
+
+### A REAL GAP, now named rather than papered over
+
+**No proof anywhere covers id separation across a wiped incarnation.** The mechanism is
+`CLUSTER_EPOCH` in the read-model key; it is off-consensus, set from the manifest, and "bumped
+together with wiping the DB" by convention rather than by construction — `OrderNatsPublisher` calls
+them "one artifact", which is a statement about operator discipline, not an invariant the system
+enforces. **A mint that bumps the epoch and does NOT wipe the DB, or wipes the DB and does NOT bump
+the epoch, silently reintroduces the 2026-07-22 collision**, and nothing would red. That is worth its
+own proof and its own issue; it is not in scope here and was not attempted, because minting an epoch
+on the shared bench rig is exactly the destruction this work spent the day gating.
+
+### Re-exercised after the correction
+
+`yu12-gke-cross-epoch-idreuse` was re-run **twice against one epoch** on the GKE bench with the new
+qualifier assertion and the `_agreed` reshape in place — green both times, tape observed at 6.21/s
+and 6.25/s, and the qualifier read `1` and **unchanged across the kill** on both. The banner now ends
+by naming what it does not show, so a future reader cannot cite the run as cross-epoch coverage.
+
+`yu12-gke-failover-transparency` was re-run once after its `_agreed` reshape — green, 529 acked
+orderRefs all resting on the minted ticker and nothing else, tape observed at 6.22/s.
+
+A fix is a probe, and this one had to be exercised for a specific reason: the new assertion reads the
+read model, so a proof that previously needed no reader now refuses without one. `require_read_model`
+was added to its step 0 for exactly that — a route answering `[]` for every account is
+indistinguishable from "not visible yet" until a timeout, and would then be reported as a verdict
+about id reuse rather than as the probe failing.
+
+**The STP arm in the write-pressure table was checked rather than assumed**, after the ADR-072 lane
+cautioned that `traderx_stp_operator_cancels` reading `+0` demonstrates attribution only if the
+GLOBAL was moving in the same window — otherwise the arm is quiet rather than passing. Across every
+run recorded here `traderx_stp_cancels` climbed by **+40 to +206** while the twin held at `1`. The arm
+was never quiet, so the demonstration stands.
+
+## Two changes taken from the sibling lanes' replies
+
+* **The hand-rolled retries are gone.** `yu12-gke-cross-epoch-idreuse` and
+  `yu12-gke-failover-transparency` each carried a private retry loop around a space-joined triple.
+  The readers at risk from the sampling defect are *exactly* the ones that hand-roll their comparison
+  instead of calling `_agreed`, which has always retried — so both are now written to `_agreed`'s
+  per-ordinal signature. That also buys the fast-fail a private loop cannot have: three members
+  answering `-1` is reported immediately as **"the metric is absent, this build predates the ADR-072
+  operator counters"** rather than burning two minutes on a disagreement that is not happening.
+  `identity_consensus` stays separate and must: `_agreed` requires `^[0-9]+$` and the order hash is
+  routinely negative.
+* **`EXPECT_CTX` on the irreversible proof.** `DESTRUCTIVE=1` records that the operator accepted
+  destroying *a* cluster, not **this** one, and `CTX` is a default that rots — these files shipped for
+  weeks pointing at `traderx-501015`, a project deleted 2026-08-01, and a wrong-context `kubectl`
+  answers truthfully about the wrong cluster. A member rebuild is recoverable; a scale-to-zero is
+  not, so `yu12-gke-restore-from-gcs` now refuses unless the operator NAMES the target context. That
+  converts "I forgot to set CTX" from an outage into a refusal.

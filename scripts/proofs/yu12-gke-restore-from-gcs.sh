@@ -175,6 +175,8 @@ require_destructive \
 
 # ---------------------------------------------------------------------------------------------
 step "0. preflight: healthy cluster, live tape, gateway up — then build state worth restoring"
+require_expected_context "${CTX}" \
+  "it scales the StatefulSet to ZERO, wiping every member's emptyDir, and restores from gs://"
 require_uniform_image "${IMAGE}"
 require_tape_live
 ${K} get cronjob yu12-snapshot-backup >/dev/null 2>&1 || fail "backup cronjob yu12-snapshot-backup is not

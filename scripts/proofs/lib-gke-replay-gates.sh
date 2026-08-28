@@ -189,3 +189,34 @@ gates_selftest() {
   echo "gates selftest: $(( t - f ))/${t} passed"
   return $(( f > 0 ))
 }
+
+# --- the context guard -------------------------------------------------------------------------
+#
+# DESTRUCTIVE=1 records that the operator accepted destroying *a* cluster. It does not record that
+# they accepted destroying THIS one. `CTX` is a default, and defaults rot: these proofs shipped for
+# weeks pointing at `traderx-501015`, a project deleted 2026-08-01, and a wrong-context kubectl
+# answers truthfully about the wrong cluster — which this project has already paid for once.
+#
+# For a member rebuild that is recoverable. For a scale-to-zero or a PVC delete it is not, so the
+# irreversible proofs require the operator to NAME the target and refuse on a mismatch. That turns
+# "I forgot to set CTX" from an outage into a refusal, which is free.
+require_expected_context() { # require_expected_context <ctx> <what-is-irreversible>
+  local ctx="${1:?ctx}" what="${2:?what}"
+  [[ -z "${EXPECT_CTX:-}" ]] && {
+    cat >&2 <<EOF
+[SKIP] EXPECT_CTX is not set, and this proof does something IRREVERSIBLE: ${what}
+       The data is not coming back. DESTRUCTIVE=1 says you accepted destroying a cluster; it does
+       not say you accepted destroying THIS one, and CTX is a default that rots.
+
+       Name the target to proceed:   EXPECT_CTX='${ctx}'
+
+       Nothing has run and nothing was touched.
+EOF
+    exit 2; }
+  [[ "${EXPECT_CTX}" == "${ctx}" ]] || fail "EXPECT_CTX does not match the context this run would use:
+    EXPECT_CTX = ${EXPECT_CTX}
+    CTX        = ${ctx}
+  Refusing. ${what} — on the wrong cluster that is unrecoverable, and a wrong-context kubectl
+  answers truthfully about the wrong place rather than erroring."
+  echo "  target confirmed: ${ctx} (ns ${NS:-traderx})"
+}

@@ -29,8 +29,11 @@
 #   step 2  `BOOKED == ACKED`, where BOOKED was the venue-wide traderx_book_open_orders delta.
 #           The tape rests and fills orders on 23 symbols throughout, so this delta is mostly
 #           foreign. It fails in the ACCUSATORY direction and prints one of two sentences — "N
-#           LOST" or "N DUPLICATED" — about a failover that lost and duplicated nothing. On the
-#           run below the venue moved 41 open orders while this proof booked 88.
+#           LOST" or "N DUPLICATED" — about a failover that lost and duplicated nothing. MEASURED
+#           on the GKE bench 2026-08-27, two consecutive runs: the venue moved +570 while this proof
+#           booked 567 ("3 DUPLICATED"), then +452 while it booked 498 ("46 LOST"). The same
+#           assertion on the same correct venue accuses the gateway of OPPOSITE defects on
+#           consecutive runs — the contamination is not even a consistent bias.
 #
 #           REPLACED BY THE IDENTITY CLAIM, which is what "zero lost, zero duplicated" always
 #           meant and what a count could only ever proxy: the set of orderRefs the clients were
@@ -103,21 +106,14 @@ member_metric() { ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
 # CONTEXT ONLY, and labelled as such at every use. The venue-wide depth is what the old verdict
 # rested on; it is kept because "the venue moved N while we booked M" is exactly the qualification
 # a future green needs, and deleting it would hide that.
-opens_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_book_open_orders 2>/dev/null)"; done; }
-uniq_one() { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
-# RETRIED, and load-bearing on this tier: three SEQUENTIAL execs with the tape advancing the gauge
-# between them read as disagreement. Measured on the GKE bench 2026-08-27 — a four-quantity read
-# agreed on 5 of 20 unretried attempts at 6.13/s.
-opens_agreed() {
-  local r i
-  for i in $(seq 1 90); do
-    r="$(opens_all)"
-    [[ "$(echo "${r}" | uniq_one)" == "1" && -n "${r// /}" ]] && { echo "${r%% *}"; return 0; }
-    sleep 2
-  done
-  fail "members never agreed on traderx_book_open_orders: [${r}]
-  Retried 90x, so this is a PERSISTENT split and not the sampling skew the retry exists for."
-}
+#
+# WRITTEN TO `_agreed`'s SIGNATURE — a reader taking a MEMBER ORDINAL. This file used to hand-roll
+# its own retry around a space-joined triple; the readers at risk from the ADR-072 sampling defect
+# are exactly the ones that hand-roll their comparison instead of calling the library, which has
+# always retried. The retry is load-bearing on this tier: three sequential execs at ~0.35s against
+# a 6/s tape read as disagreement (measured 5 of 20 coherent, GKE bench 2026-08-27).
+venue_depth() { member_metric "$1" traderx_book_open_orders 2>/dev/null; }
+opens_agreed() { _agreed venue_depth "the venue-wide open-order depth"; }
 leader() { for m in 0 1 2; do [[ "$(member_metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 
 PF_PID=""
