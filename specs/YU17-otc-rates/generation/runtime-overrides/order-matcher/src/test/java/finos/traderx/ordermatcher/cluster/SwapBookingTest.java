@@ -172,26 +172,34 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatNine() {
+    void aSnapshotFromThisBuildDeclaresFormatTen() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
-        assertEquals(9, header.getInt(4),
-            "format 9 (ADR-072): the header carries the REPLAYED halves of the ref generator and"
-                + " the trade counter, so an operator-only reading exists at all");
-        // Literals on BOTH sides, never the constants they pin. MIN_READABLE rises WITH
-        // SNAPSHOT_FORMAT here, and for format 9 the reason is not the T_BOOK tick that made the
-        // format-8 raise necessary: it is that a format-8 header carries NEITHER new field, so
-        // restoring one would leave both at zero and every operator counter would then be
-        // inflated by the whole epoch's replayed order flow. A wrong answer, silently — the same
-        // class the format-4 postmortem forbids, arriving by a different route.
+        assertEquals(10, header.getInt(4),
+            "format 10 (ADR-073): the snapshot may carry the sandbox reset marker, the boundary"
+                + " between one sandbox session and the last");
+        // Literals on BOTH sides, never the constants they pin.
+        //
+        // MIN_READABLE DELIBERATELY DOES NOT RISE HERE, and that is a departure from every raise
+        // before it. Formats 8 and 9 each widened the HEADER, so restoring an older one would have
+        // left new fields at zero and produced a wrong answer silently -- refusing was the only
+        // safe move. Format 10 adds an OPTIONAL RECORD TYPE and touches no existing record's
+        // width, so a format-9 snapshot restores exactly as it always did and simply carries no
+        // marker. Absent reads as "this venue has never been reset", which is not a zeroed field
+        // standing in for a real one: it is the true answer for every venue that has never been
+        // reset, which is every live one.
+        //
+        // The rule this preserves: raise MIN_READABLE when an older snapshot would restore WRONG,
+        // never merely when it would restore INCOMPLETE.
         assertEquals(9, MatchingEngineClusteredService.MIN_READABLE_SNAPSHOT_FORMAT,
-            "a format-8 snapshot has no replayed halves to restore; refuse it, do not zero them");
-        // The header is 68 bytes, and the two new longs are the last 16 of them. Asserted on the
-        // WRITTEN record rather than on a constant, because the failure this catches is a writer
-        // that grew the layout and a `writer.write(..., 52)` that did not.
+            "a format-9 snapshot is still restorable: format 10 only ADDS an optional record");
+        // The header is 68 bytes, and the two ADR-072 longs are the last 16 of them. Asserted on
+        // the WRITTEN record rather than on a constant, because the failure this catches is a
+        // writer that grew the layout and a `writer.write(..., 52)` that did not. Unchanged by
+        // format 10, which is the point -- the marker is its own record, not a wider header.
         assertEquals(68, records.get(0).length,
-            "the format-9 header record is 68 bytes: the two ADR-072 longs at 52 and 60");
+            "the header record is still 68 bytes: format 10 widened nothing");
     }
 
     @Test

@@ -1,5 +1,8 @@
 import { Component, computed, inject, signal, OnDestroy } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { Api } from './api';
+import { QResult, runQ } from './qeval';
+import { SecHead, SecPager, Section } from './section';
 
 interface Meta {
   source: string; windowSeconds: number; sessionSeconds: number; compression: number;
@@ -30,6 +33,7 @@ interface Series { ticker: string; days: string[]; series: number[][]; }
  */
 @Component({
   selector: 'taq-corpus-panel',
+  imports: [FormsModule, SecHead, SecPager],
   template: `
     <header class="head">
       <h2>Tape corpus</h2>
@@ -81,12 +85,14 @@ interface Series { ticker: string; days: string[]; series: number[][]; }
       </figure>
     }
 
-    @if (slice(); as sl) {
+    <sec-head [s]="rowsSec" label="Every symbol at this position" />
+    @if (rowsSec.open() && slice()) {
+      <sec-pager [s]="rowsSec" />
       <table>
         <thead><tr><th>Symbol</th><th class="n">Price</th><th class="n">Day open</th>
                    <th class="n">Change</th></tr></thead>
         <tbody>
-          @for (r of sl.rows; track r.ticker) {
+          @for (r of rowsSec.view(); track r.ticker) {
             <tr [class.sel]="r.ticker === ticker()">
               <td><button type="button" class="link mono" (click)="pickTicker(r.ticker)">{{ r.ticker }}</button></td>
               <td class="n mono">{{ r.price }}</td>
@@ -99,8 +105,44 @@ interface Series { ticker: string; days: string[]; series: number[][]; }
         </tbody>
       </table>
     }
+
+    <!-- q over the corpus. txSlice is the cross-section on screen (every symbol at this position);
+         txTape is a whole session loaded on demand, one at a time -- the full corpus is 480k rows,
+         which is a download rather than a query result. -->
+    <sec-head [s]="qSec" label="Query the corpus (q)" />
+    @if (qSec.open()) {
+      <div class="qbar">
+        <button type="button" (click)="loadTape()" [disabled]="!meta()">
+          Load {{ slice()?.date ?? 'this' }} session as txTape
+        </button>
+        @if (tapeNote()) { <span class="muted">{{ tapeNote() }}</span> }
+      </div>
+      <textarea class="qin" rows="2" spellcheck="false"
+        [ngModel]="freeQ()" (ngModelChange)="freeQ.set($event)"></textarea>
+      <div class="qbar">
+        <button type="button" (click)="runFree()">Run</button>
+        @for (e of examples; track e.label) {
+          <button type="button" (click)="freeQ.set(e.q); runFree()">{{ e.label }}</button>
+        }
+        <span class="muted mono">txSlice{{ tapeRows().length ? ' · txTape' : '' }}</span>
+      </div>
+      @if (qErr()) { <p class="err">{{ qErr() }}</p> }
+      @if (qOut(); as o) {
+        <table>
+          <thead><tr>@for (c of o.columns; track c) { <th>{{ c }}</th> }</tr></thead>
+          <tbody>
+            @for (r of o.rows; track $index) {
+              <tr>@for (v of r; track $index) { <td class="mono">{{ v }}</td> }</tr>
+            } @empty { <tr><td [attr.colspan]="o.columns.length" class="muted">no rows</td></tr> }
+          </tbody>
+        </table>
+        <div class="muted">{{ o.rows.length }} row{{ o.rows.length === 1 ? '' : 's' }}</div>
+      }
+    }
   `,
   styles: `
+    .qin { width: 100%; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+    .qbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 5px 0; }
     .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
     .scrub { margin: 12px 0 6px; }
     .scrub input { width: 100%; }
@@ -160,6 +202,53 @@ export class TaqCorpusPanel implements OnDestroy {
     if (!m || m.positions < 2) { return 0; }
     return ((this.pos() / (m.positions - 1)) * 1000).toFixed(1);
   });
+
+  readonly sliceRows = computed(() => this.slice()?.rows ?? []);
+  readonly rowsSec = new Section(this.sliceRows, (r) => r.ticker);
+  readonly qSec = new Section<unknown>(signal([]), () => '');
+
+  readonly tapeRows = signal<Record<string, string | number>[]>([]);
+  readonly tapeNote = signal('');
+  readonly freeQ = signal('select lo:min price, hi:max price by ticker from txSlice');
+  readonly qOut = signal<QResult | null>(null);
+  readonly qErr = signal('');
+  readonly examples = [
+    { label: 'movers here', q: 'select move:max changePct by ticker from txSlice' },
+    { label: 'session range', q: 'select lo:min px, hi:max px, opened:first px, closed:last px by sym from txTape' },
+    { label: 'one name', q: 'select windows:count i, lo:min px, hi:max px from txTape where sym="AAPL"' },
+  ];
+
+  /** The session currently under the slider, as flat rows. Explicit, so the cost is the reader's. */
+  async loadTape(): Promise<void> {
+    const day = this.slice()?.dayIndex;
+    if (day === undefined) { return; }
+    this.tapeNote.set('loading…');
+    const r = await this.api.load<{ rows: Record<string, string | number>[] }>(`/taq/table?day=${day}`);
+    if (r.status !== 200 || !r.body) {
+      const b = r.body as unknown as { error?: string } | null;
+      this.tapeRows.set([]);
+      this.tapeNote.set(b?.error ?? `tape unavailable (${r.status})`);
+      return;
+    }
+    this.tapeRows.set(r.body.rows);
+    this.tapeNote.set(`${r.body.rows.length} rows loaded as txTape`);
+  }
+
+  runFree(): void {
+    try {
+      this.qErr.set('');
+      const tables: Record<string, Record<string, string | number>[]> = {
+        txSlice: this.sliceRows() as unknown as Record<string, string | number>[],
+      };
+      // Only offered once loaded, so runQ's unknown-table error names what IS available rather
+      // than returning an empty result that reads like "this session had no data".
+      if (this.tapeRows().length) { tables['txTape'] = this.tapeRows(); }
+      this.qOut.set(runQ(this.freeQ(), tables));
+    } catch (e) {
+      this.qOut.set(null);
+      this.qErr.set(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   // A drag fires input per frame; without this every frame would be a request. The slice is a
   // slice of a cached extract server-side, so this is about not flooding the socket, not cost.

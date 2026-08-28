@@ -212,7 +212,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * flow -- a wrong ANSWER, silently, which is precisely the class the format-4 postmortem below
      * exists to forbid. A fresh epoch is mandatory.
      */
-    static final int SNAPSHOT_FORMAT = 9;
+    // Format 10 (ADR-073): adds the OPTIONAL T_SANDBOX_RESET marker. MIN_READABLE stays 9 on
+    // purpose -- a format-9 snapshot is still restorable here and simply carries no marker, which
+    // reads as "no reset known", the same answer a venue that has never been reset gives.
+    static final int SNAPSHOT_FORMAT = 10;
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -260,6 +263,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  restored in INSERTION ORDER -- which is the release order at the open, so the order of these
      *  rows is state, not presentation. */
     static final int T_QUEUED_ORDER = 15;
+    /** ADR-073 (format 10): the sequence the last sandbox reset applied at. Optional -- absent
+     *  until a venue has been reset even once, so it is never a REQUIRED record type. */
+    static final int T_SANDBOX_RESET = 16;
 
     /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
      *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
@@ -521,6 +527,17 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long externalOrderRefs;
     private long highestIssuedRef;
     private long appliedSeq;
+    /**
+     * ADR-073: the consensus sequence the most recent sandbox reset applied at, or 0 if this venue
+     * has never been reset.
+     *
+     * <p>Replicated state, and it has to be: the results view asks for "this session only", and the
+     * regulatory report is built by replaying the WHOLE log -- the reset clears the book, it cannot
+     * un-write the log. So the boundary between sessions is this number, and a member that lost it
+     * across a restart would silently start reporting every previous session again. Restored from
+     * the log for free on a full replay, and from T_SANDBOX_RESET when a snapshot skips the reset.
+     */
+    private long lastResetSeq;
     private boolean snapshotHeaderSeen;
     // Format-8 mint: the "read a record at its own width, dispatching on the restored format"
     // seam is GONE, because MIN_READABLE_SNAPSHOT_FORMAT now equals SNAPSHOT_FORMAT — exactly one
@@ -720,6 +737,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.externalOrderRefs = 0;
         this.highestIssuedRef = 0;
         this.appliedSeq = 0;
+        // NOT cleared here, because it is not session state -- it is the boundary BETWEEN
+        // sessions, and this method's job is to clear a session. Every current caller would
+        // survive clearing it (a cold start has it 0 already; a restore and the reset apply both
+        // assign it afterwards), so this line is about intent, not a live bug: the next caller of
+        // initEngine should inherit "clears the session, keeps the boundary" rather than have to
+        // rediscover which of the two this field is.
         this.snapshotHeaderSeen = false;
         this.recordTypesSeen = 0;
         this.restoredQueueDepth = -1L;
@@ -1092,6 +1115,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
 
         // ---- ack -----------------------------------------------------------------------------
         event.seq = ++appliedSeq;
+        // The session boundary. Set from the reset's OWN applied position, so "this session" means
+        // strictly after this command -- deterministic on every member and on every replay.
+        lastResetSeq = appliedSeq;
         final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
         event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
         activeSession = session;
@@ -1677,6 +1703,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // it would agree with a write loop that emitted nothing and catch exactly the defect it
         // exists to catch, never.
         writeTuple(writer, T_SESSION, new long[] { phase, queuedOrders.size() });
+        // ADR-073, format 10. Written only once a reset has happened, so it stays absent -- and
+        // therefore costs nothing and asserts nothing -- on every venue that has never been reset,
+        // which is every live one.
+        if (lastResetSeq != 0L) {
+            writeTuple(writer, T_SANDBOX_RESET, new long[] { lastResetSeq });
+        }
         // Insertion order, which IS the release order at the open (§1.4). Restore refuses rows out
         // of that order, the same rule T_CONTRACT follows and for the same reason: nothing else
         // validates it, so the invariant lives in the write order and the reader's check.
@@ -1951,6 +1983,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                     queuedByClientKey.put(queued[6], queuedOrders.size() - 1);
                 }
             }
+            case T_SANDBOX_RESET -> lastResetSeq = buffer.getLong(offset + 4);
             case T_END -> {
                 finishLoad();
                 return true;
@@ -2153,6 +2186,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * member caught up" means: a member restored from a snapshot holds state as of this sequence
      * even though its engine has applied no events since (YU15, T-RXT07).
      */
+    public long lastResetSeq() {
+        return lastResetSeq;
+    }
+
     public long appliedSeq() {
         return appliedSeq;
     }

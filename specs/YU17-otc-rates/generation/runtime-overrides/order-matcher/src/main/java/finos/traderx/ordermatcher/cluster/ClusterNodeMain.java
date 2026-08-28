@@ -276,6 +276,11 @@ public final class ClusterNodeMain {
                 // countermeasure for a halt that would otherwise be invisible until something
                 // failed to trade. Both are replicated state read off this member's own engine
                 // service, so three members disagreeing here is a real finding.
+                // ADR-073: the boundary between sandbox sessions. 0 = never reset. On /health because the
+                // results view needs it on every poll and it is one long, and because the
+                // alternative -- the console remembering the last reset it issued -- would be
+                // per-browser and wrong for anyone who did not issue it.
+                + ",\"lastResetSeq\":" + service.lastResetSeq()
                 + ",\"phase\":\"" + service.phaseName() + "\""
                 + ",\"queueDepth\":" + service.queueDepth() + "}";
             respond(exchange, 200, body);

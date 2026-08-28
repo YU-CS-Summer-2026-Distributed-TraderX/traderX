@@ -180,7 +180,74 @@ class SandboxResetTest {
         assertEquals(0, service.engine().openOrderTuples().size());
     }
 
+    // ----- the session boundary (format 10) ---------------------------------------------------
+
+    @Test
+    void aResetRecordsTheSequenceItAppliedAt() {
+        final MatchingEngineClusteredService service = seeded();
+        assertEquals(0L, service.lastResetSeq(), "a venue that has never been reset has no boundary");
+        place(service, ACCOUNT, 900L);
+
+        final UnsafeBuffer ack = reset(service);
+
+        assertEquals(ack.getLong(0), service.lastResetSeq(),
+            "the boundary IS the reset's own applied position; the results view asks for records"
+                + " strictly after it, so an off-by-one here shows the previous session again");
+    }
+
+    @Test
+    void theBoundarySurvivesASnapshotThatSkipsTheReset() {
+        // The regulatory report replays the WHOLE log -- a reset clears the book, it cannot
+        // un-write the log -- so this number is the only thing separating one session from the
+        // last. A member that lost it across a restore would silently report every earlier session
+        // again, which is precisely the bug this record type exists to prevent.
+        final MatchingEngineClusteredService source = seeded();
+        place(source, ACCOUNT, 901L);
+        reset(source);
+        final long boundary = source.lastResetSeq();
+        assertTrue(boundary > 0, "control: the source must actually hold a boundary");
+
+        final MatchingEngineClusteredService restored = roundTrip(source);
+
+        assertEquals(boundary, restored.lastResetSeq(),
+            "the reset marker must survive a snapshot restore");
+    }
+
+    @Test
+    void aVenueNeverResetWritesNoMarkerAtAll() {
+        final MatchingEngineClusteredService source = seeded();
+        place(source, ACCOUNT, 902L);
+
+        for (final byte[] record : snapshotOf(source)) {
+            assertNotEquals(MatchingEngineClusteredService.T_SANDBOX_RESET,
+                new UnsafeBuffer(record).getInt(0),
+                "the marker must be absent until a venue has been reset -- it costs nothing and"
+                    + " asserts nothing on every live venue, which is why it is never required");
+        }
+        assertEquals(0L, roundTrip(source).lastResetSeq());
+    }
+
     // ----- helpers ----------------------------------------------------------------------------
+
+    private List<byte[]> snapshotOf(final MatchingEngineClusteredService service) {
+        final List<byte[]> records = new ArrayList<>();
+        service.writeSnapshot((buffer, offset, length) -> {
+            final byte[] copy = new byte[length];
+            buffer.getBytes(offset, copy);
+            records.add(copy);
+        });
+        return records;
+    }
+
+    private MatchingEngineClusteredService roundTrip(final MatchingEngineClusteredService source) {
+        final MatchingEngineClusteredService restored = new MatchingEngineClusteredService();
+        restored.initEngine();
+        for (final byte[] record : snapshotOf(source)) {
+            restored.onSnapshotRecord(new UnsafeBuffer(record), 0);
+        }
+        return restored;
+    }
+
 
     /** Applies the reset and returns its ack. */
     private UnsafeBuffer reset(final MatchingEngineClusteredService service) {

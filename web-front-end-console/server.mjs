@@ -933,8 +933,18 @@ const TRADE_KINDS = new Set(['TRADE_BOOKED']);
 const RESULTS_TRADE_SAMPLE = 200;
 
 async function sandboxResults(req, res) {
+  // THIS SESSION ONLY. The regulatory report is built by replaying the whole log -- a reset clears
+  // the book, it cannot un-write the log -- so without a lower bound this view keeps showing every
+  // session the venue has ever had. The bound is the engine's own replicated lastResetSeq, read
+  // here rather than remembered by the console: a remembered one would be per-browser and wrong
+  // for anyone who did not personally issue the reset. 0 means never reset, and fromSeq 1 is the
+  // whole log, which is the right answer then.
+  const health = await sandboxGet('/sandbox/engine', '/health');
+  if (health.error) { json(res, 502, { error: 'the sandbox engine did not answer /health', cause: health.error }); return; }
+  const lastResetSeq = Number(health.ok.lastResetSeq ?? 0);
+  const fromSeq = lastResetSeq > 0 ? lastResetSeq + 1 : 1;
   const [report, coverage] = await Promise.all([
-    sandboxGet('/sandbox/engine', '/regulatory/report'),
+    sandboxGet('/sandbox/engine', `/regulatory/report?fromSeq=${fromSeq}`),
     sandboxGet('/sandbox/pub', '/replay/coverage')
   ]);
   if (report.error) { json(res, 502, { error: 'the sandbox engine did not return its report', cause: report.error }); return; }
@@ -981,6 +991,10 @@ async function sandboxResults(req, res) {
   }
 
   json(res, 200, {
+    // Surfaced so the view can say WHICH session it is showing rather than implying it is all of
+    // them, and so "empty" can be told from "nothing since the reset".
+    lastResetSeq,
+    fromSeq,
     observedFromMs,
     // Whether ANY of this session predates the process that is reporting it. Surfaced rather than
     // silently folded in: those records are dated under an origin this driver inherited and did not

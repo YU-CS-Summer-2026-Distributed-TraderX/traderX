@@ -1,5 +1,8 @@
 import { Component, computed, inject, signal, OnDestroy } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { Api } from './api';
+import { QResult, runQ } from './qeval';
+import { SecHead, SecPager, Section } from './section';
 
 /** `/sandbox/results` — the console's join of the sandbox blotter against the tape journal. */
 interface SymbolRow {
@@ -14,6 +17,8 @@ interface TradeRow {
   security: string; side: string; quantity: number; price: number; accountId: number; assumed: boolean;
 }
 interface Results {
+  lastResetSeq: number;
+  fromSeq: number;
   observedFromMs: number | null;
   assumedSpan: boolean;
   unattributed: number;
@@ -45,6 +50,7 @@ interface Results {
  */
 @Component({
   selector: 'sandbox-results-panel',
+  imports: [FormsModule, SecHead, SecPager],
   template: `
     <header class="head">
       <h2>Session results</h2>
@@ -67,14 +73,16 @@ interface Results {
       </ul>
     }
 
-    @if (days().length) {
+    <sec-head [s]="daysSec" label="By tape day" />
+    @if (daysSec.open() && days().length) {
+      <sec-pager [s]="daysSec" />
       <table class="days">
         <thead>
           <tr><th>Tape day</th><th class="n">Trades</th><th class="n">Rejected</th>
               <th class="n">Canceled</th><th class="n">Notional</th><th class="n">Symbols</th><th></th></tr>
         </thead>
         <tbody>
-          @for (d of days(); track d.date) {
+          @for (d of daysSec.view(); track d.date) {
             <tr [class.sel]="d.date === selected()">
               <td class="mono">{{ d.date }}</td>
               <td class="n mono">{{ d.trades }}</td>
@@ -109,13 +117,14 @@ interface Results {
       </table>
     }
 
-    @if (shownTrades().length) {
-      <h3>Executions <span class="muted">({{ shownTrades().length }} of {{ trades().length }} sampled)</span></h3>
+    <sec-head [s]="tradesSec" label="Executions" />
+    @if (tradesSec.open() && shownTrades().length) {
+      <sec-pager [s]="tradesSec" />
       <table class="trades">
         <thead><tr><th>Tape day</th><th>Booked</th><th>Symbol</th><th>Side</th>
                    <th class="n">Qty</th><th class="n">Price</th><th>Account</th><th>Trade</th></tr></thead>
         <tbody>
-          @for (t of shownTrades(); track t.tradeId ?? t.ms) {
+          @for (t of tradesSec.view(); track t.tradeId ?? t.ms) {
             <tr [class.assumed]="t.assumed">
               <td class="mono">{{ t.tapeDate }}</td>
               <td class="mono muted">{{ clock(t.ms) }}</td>
@@ -130,8 +139,38 @@ interface Results {
         </tbody>
       </table>
     }
+
+    <!-- q over THIS session's own rows. Same evaluator the kdb panel uses, so a statement it
+         cannot really run names itself as unsupported instead of returning a plausible number.
+         The tables are what this view is showing: bound at the last reset, like everything above. -->
+    <sec-head [s]="qSec" label="Query this session (q)" />
+    @if (qSec.open()) {
+      <textarea class="qin" rows="2" spellcheck="false"
+        [ngModel]="freeQ()" (ngModelChange)="freeQ.set($event)"></textarea>
+      <div class="qbar">
+        <button type="button" (click)="runFree()">Run</button>
+        @for (e of examples; track e.label) {
+          <button type="button" (click)="freeQ.set(e.q); runFree()">{{ e.label }}</button>
+        }
+        <span class="muted mono">txExec · txDays</span>
+      </div>
+      @if (qErr()) { <p class="err">{{ qErr() }}</p> }
+      @if (qOut(); as o) {
+        <table>
+          <thead><tr>@for (c of o.columns; track c) { <th>{{ c }}</th> }</tr></thead>
+          <tbody>
+            @for (r of o.rows; track $index) {
+              <tr>@for (v of r; track $index) { <td class="mono">{{ v }}</td> }</tr>
+            } @empty { <tr><td [attr.colspan]="o.columns.length" class="muted">no rows</td></tr> }
+          </tbody>
+        </table>
+        <div class="muted">{{ o.rows.length }} row{{ o.rows.length === 1 ? '' : 's' }}</div>
+      }
+    }
   `,
   styles: `
+    .qin { width: 100%; font-family: var(--mono, ui-monospace, monospace); font-size: 12px; }
+    .qbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 5px 0; }
     .head { display: flex; align-items: baseline; gap: 10px; }
     .pill { font-size: 11px; letter-spacing: .06em; padding: 2px 8px; border-radius: 999px;
             border: 1px solid var(--line); }
@@ -175,6 +214,12 @@ export class SandboxResultsPanel implements OnDestroy {
     const r = this.results();
     if (!r) { return [] as string[]; }
     const out: string[] = [];
+    // Say which session this is. Without it an empty view reads as "nothing ever traded here"
+    // rather than "nothing since you reset", and those send you to different places.
+    if (r.lastResetSeq > 0) {
+      out.push(`Showing this session only — everything after the reset at sequence ${r.lastResetSeq}. `
+        + 'Earlier sessions stay in the engine\'s audit log; a reset clears the book, not the log.');
+    }
     if (r.assumedSpan) {
       out.push('Some of this session was replayed before the current replay driver started. '
         + 'Those rows are dated from the origin it inherited rather than one it watched, and are dimmed.');
@@ -189,6 +234,35 @@ export class SandboxResultsPanel implements OnDestroy {
     }
     return out;
   });
+
+  // Collapse + 10-per-page with the ‹ / › pager, the same Section the blotter and ticket use.
+  readonly daysSec = new Section(this.days, (d) => d.date);
+  readonly tradesSec = new Section(this.shownTrades, (t) => String(t.tradeId ?? t.ms));
+  readonly qSec = new Section<unknown>(signal([]), () => '');
+
+  readonly freeQ = signal('select trades:count i, qty:sum quantity by security from txExec');
+  readonly qOut = signal<QResult | null>(null);
+  readonly qErr = signal('');
+  readonly examples = [
+    { label: 'by symbol', q: 'select trades:count i, qty:sum quantity, vwap:(sum price*quantity)%sum quantity by security from txExec' },
+    { label: 'by day', q: 'select trades:sum trades, notional:sum notional by date from txDays' },
+    { label: 'buys only', q: 'select trades:count i, qty:sum quantity by security from txExec where side="Buy"' },
+  ];
+
+  runFree(): void {
+    try {
+      this.qErr.set('');
+      this.qOut.set(runQ(this.freeQ(), {
+        txExec: this.trades() as unknown as Record<string, string | number>[],
+        // The per-day aggregates, without their nested symbol lists — runQ works over flat rows.
+        txDays: this.days().map((d) => ({ date: d.date, trades: d.trades, rejected: d.rejected,
+          canceled: d.canceled, notional: d.notional, symbols: d.symbols.length })),
+      }));
+    } catch (e) {
+      this.qOut.set(null);
+      this.qErr.set(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   private timer: ReturnType<typeof setInterval> | null = null;
 
