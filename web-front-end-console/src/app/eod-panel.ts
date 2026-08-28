@@ -63,6 +63,25 @@ interface EodReport {
               <td class="sub">{{ p.overrideReason || '' }}</td>
               <td>@if (p.quality !== 'OK' && isLatest()) { <button (click)="startOverride(p)">override…</button> }</td>
             </tr>
+            <!-- The form belongs to ONE instrument, so it renders in that instrument's own row
+                 rather than at the foot of the section. At the foot it was separated from the
+                 override… button by up to a full table of rows, and the form names its security in
+                 body text only — so on a long list the thing you were about to correct was off
+                 screen while you typed the price for it. -->
+            @if (overriding()?.security === p.security) {
+              <tr class="ovr-row">
+                <td colspan="5">
+                  <div class="ovr-form">
+                    Override <b>{{ p.security }}</b> (was {{ p.closingPrice }}, {{ p.quality }})
+                    <input type="number" [(ngModel)]="ovrPrice" step="0.000001" placeholder="price">
+                    <input [(ngModel)]="ovrReason" placeholder="reason (audit trail)">
+                    <button class="btn-primary" (click)="applyOverride()">Apply — creates v{{ latestVersion() + 1 }}</button>
+                    <gated />
+                    <button (click)="overriding.set(null)">cancel</button>
+                  </div>
+                </td>
+              </tr>
+            }
           }
         </tbody>
       </table>
@@ -73,17 +92,6 @@ interface EodReport {
         <button class="showall" (click)="showAll.set(false)">collapse to flagged + first rows</button>
       }
     } @else if (loaded()) { <div class="faint">no session for {{ date }}</div> }
-
-    @if (overriding(); as o) {
-      <div class="ovr-form">
-        Override <b>{{ o.security }}</b> (was {{ o.closingPrice }}, {{ o.quality }})
-        <input type="number" [(ngModel)]="ovrPrice" step="0.000001" placeholder="price">
-        <input [(ngModel)]="ovrReason" placeholder="reason (audit trail)">
-        <button class="btn-primary" (click)="applyOverride()">Apply — creates v{{ latestVersion() + 1 }}</button>
-        <gated />
-        <button (click)="overriding.set(null)">cancel</button>
-      </div>
-    }
   `,
   styles: `
     .bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
@@ -94,7 +102,9 @@ interface EodReport {
     .showall { margin-top: 8px; font-size: 12.5px; color: var(--accent); background: none; border: none; padding: 0;
                text-decoration: underline; }
     .ovr-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; background: var(--accent-soft);
-                padding: 10px; border-radius: 8px; font-size: 13px; margin-top: 10px; }
+                padding: 10px; border-radius: 8px; font-size: 13px; }
+    /* The cell carries no padding of its own so the form's own box lines up with the row above it. */
+    .ovr-row > td { padding: 4px 0; }
     a { color: var(--faint); cursor: pointer; text-decoration: underline; }
   `,
 })
