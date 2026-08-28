@@ -203,6 +203,10 @@ step() { echo; echo "=== $* ==="; }
 px() { python3 -c "print(${PRICE} + $1)"; }
 
 here="$(cd "$(dirname "$0")" && pwd)"; . "${here}/lib-consensus-readings.sh"
+# pressure_row/print_pressure/operator_expectation were written HERE and generalised into this
+# library by the lane fixing the other four GKE proofs. Sourcing it rather than keeping the private
+# copies: two definitions of one name in one directory is how a fix lands on the inert one.
+. "${here}/lib-gke-replay-gates.sh"
 
 member_metric() { # member_metric <ordinal> <metric-prefix>
   ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
@@ -379,26 +383,6 @@ fi
 # claiming it. Six counters from ONE scrape -- deliberately a single HTTP call, so the readings are
 # mutually coherent and this cannot reproduce the sequential-sampling skew that agree_on() exists to
 # survive. Reporting only: the rate gate in step 6 is what ASSERTS the pressure was real.
-pressure_row() {
-  ${K} exec order-matcher-cluster-0 -c cluster-node -- \
-    sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' \
-    | awk '/^traderx_cluster_trades[{ ]/                  {a=$2}
-           /^traderx_cluster_operator_trades[{ ]/         {b=$2}
-           /^traderx_stp_cancels[{ ]/                     {c=$2}
-           /^traderx_stp_operator_cancels[{ ]/            {d=$2}
-           /^traderx_cluster_next_order_ref[{ ]/          {e=$2}
-           /^traderx_cluster_operator_next_order_ref[{ ]/ {f=$2}
-           END{print a, b, c, d, e, f}'
-}
-print_pressure() { # print_pressure <before-row> <after-row>
-  awk -v b="$1" -v a="$2" 'BEGIN{
-    split(b,B," "); split(a,A," ");
-    n[1]="traderx_cluster_trades";             n[2]="  traderx_cluster_operator_trades";
-    n[3]="traderx_stp_cancels";                n[4]="  traderx_stp_operator_cancels";
-    n[5]="traderx_cluster_next_order_ref";     n[6]="  traderx_cluster_operator_next_order_ref";
-    for(i=1;i<=6;i++) printf "    %-44s %10s -> %-10s %+d\n", n[i], B[i], A[i], A[i]-B[i];
-  }'
-}
 
 # --- the tape, which must be writing while this proof passes -----------------------------------
 pub()  { ${K} exec deploy/price-publisher -- wget -qO- "http://localhost:18100$1" 2>/dev/null || true; }
@@ -789,7 +773,7 @@ echo "  tape wrote throughout: submitted ${SUBMITTED0} -> ${SUBMITTED1} (+$(( SU
 # only numbers any assertion above touched. A green with the global deltas near zero is a green from
 # a quiet venue and proves nothing about this class -- which is what the rate gate above refuses.
 echo "  write pressure across this run (member 0, indented rows are the operator halves):"
-print_pressure "${PRESSURE0}" "$(pressure_row)"
+print_pressure "${PRESSURE0}" "$(pressure_row)" 7
 awk -v r="${OBS_RATE}" -v lo="${REPLAY_MIN_RATE}" -v hi="${REPLAY_MAX_RATE}" \
   'BEGIN{exit !(r+0 >= lo+0 && r+0 <= hi+0)}' \
   || fail "the tape averaged ${OBS_RATE}/s across this run, outside ADR-072's ${REPLAY_MIN_RATE}-${REPLAY_MAX_RATE}/s
@@ -817,11 +801,7 @@ echo "       the SQL trades read model; and any claim about behaviour under conc
 echo "       load — the scenario is sequential, and a second operator writing at the same time"
 echo "       would move the operator counters the two volume claims bracket."
 echo
-echo "       BUT IT IS DETECTABLE BY EYE, and the number is already above: this proof submits"
-echo "       exactly SEVEN orders, and its four replaces consume NO ref (the ack preserves the"
-echo "       orderRef, which is the generator-level form of one-order-in-one-order-out). So the"
-echo "       operator ref row must read +7. More than that means another operator wrote during"
-echo "       the run and the volume claims outside the two bracketed windows are not yours."
-echo "       Deliberately NOT asserted: operator counters are global over order writers, so an"
-echo "       algo engine or a peer's proof on a shared rig would red a correct run. A reading a"
-echo "       human checks beats an assertion that gets re-run until it passes."
+echo "       BUT IT IS DETECTED, on the operator-ref line of the table above: this proof submits"
+echo "       exactly SEVEN orders, so that row reading +7 means no other operator wrote. The four"
+echo "       replaces consume NO ref — the ack preserves the orderRef, and the generator not"
+echo "       advancing is the same fact at the engine level, which nothing here asserts."
