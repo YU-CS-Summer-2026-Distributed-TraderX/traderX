@@ -4,6 +4,71 @@
 # positions, trade counter and reference generator are INTACT at exactly the last GCS backup —
 # and the restored cluster takes new business.
 #
+# ============================================================================================
+# ADR-072 EXPOSURE, FIXED 2026-08-27. Read this before adding an assertion to this file.
+#
+# The rig has a THIRD writer, replaying sampled TAQ prints as real orders at ~6/s. SIX assertions
+# here were measured against counters that writer moves, and this proof had the worst of the five:
+# its central claim was not merely contaminated, it became UNMEASURABLE. STEPS, NOT LINE NUMBERS.
+#
+#   step 4  `R == S` — "the restored state is EXACTLY the backup point". THE FLAGSHIP DEFECT, and
+#           the only one in this family that NO RETRY CAN FIX. The restored cluster resumes taking
+#           replayed order flow the instant it is up, so the venue-wide four-quantity state
+#           diverges from the backup point monotonically from the first second. There is no
+#           sampling window in which the equality holds; waiting makes it worse, not better.
+#           Its else-branch then fails with "restored state matches neither the backup nor the
+#           pre-wipe state — restore is corrupt", which is the single most damaging false
+#           accusation in the whole class: a green DR path reported as data loss.
+#
+#           REPLACED BY THE OPERATOR TWINS, which do exactly what the global hash was doing here
+#           and nothing it could not. Both are SNAPSHOTTED on both halves (externalOrderRefs at
+#           snapshot offset 52, externalTradeLegs at 60 — MatchingEngineClusteredService:1499-1500,
+#           read back at :1631), so they are restored FROM THE BACKUP along with everything else;
+#           and replayed flow cannot move them by construction, so they do not drift while the
+#           restored cluster comes up. That makes them a clean discriminator between the two
+#           outcomes this step exists to tell apart:
+#               restored == the values captured at backup time   -> restored from the tarball
+#               restored == the values after the post-backup work -> the cluster SURVIVED
+#           which is the restore-vs-survive distinction, stated on state this proof owns.
+#
+#   step 1  `S_CHECK == S` ("state moved during the backup — quiesce violated"). The backup Job
+#           runs for minutes; the tape writes throughout. Guaranteed red, and it blames quiesce.
+#           Now asserted on the operator twins: the venue is never quiet again, but OUR SLICE is,
+#           and that is what the equality below actually needs.
+#
+#   step 2  `SPLUS != S` ("post-backup orders changed nothing"). An anti-vacuity guard that the
+#           tape satisfies ~6 times a second — it held on a run where both post-backup orders had
+#           been silently dropped, which is precisely the run it exists to catch. Now on the
+#           operator ref counter, which only our orders move.
+#
+#   step 5  `T1 == T0 + 2` on traderx_cluster_trades — ACCUSATORY: any replayed fill inflates it
+#           and the proof reports "the RESTORED resting order did not fill", blaming the restore.
+#           Now assert_order_effects, so the trade delta is bracketed by the operator ref delta.
+#
+#   step 5  `POST_ref > S_ref` on the global generator — EXPOSED IN THE PASSING DIRECTION. The
+#           tape advances it continuously, so "the reference generator continued past the restored
+#           point" was true no matter what the restore did. Now on the operator counter.
+#
+# DO NOT REACH FOR THE READ MODEL HERE. It is fix #1 in lib-consensus-readings.sh and it is the
+# WRONG INSTRUMENT for this proof specifically: trade-processor's database is NOT restored with the
+# cluster, so after a restore it still holds the post-backup (S+) orders as open. An identity claim
+# read from it would report the S+ orders present and call a correct restore a failure — the same
+# false accusation, arrived at from the opposite direction. The engine's own snapshotted counters
+# are the only readings that move with the restore. (The other three proofs in this family DO use
+# the read model, correctly, because nothing in them wipes the cluster.)
+#
+# THE TAPE, AND WHY IT IS ASSERTED ASYMMETRICALLY HERE. The band is asserted across the PRE-DESTROY
+# window, which is where every rewritten assertion above is measured. After the restore it is only
+# required to be ALIVE and climbing, and its rate is printed rather than gated: a full-cluster
+# restore is a new epoch and this proof's own ops notes say clients must reconnect — price-publisher
+# IS a client, and whether it re-establishes its cluster session on its own is UNVERIFIED (see the
+# trailer). Gating the post-restore rate would turn that open question into a red about DR, which is
+# the failure mode this whole file was rewritten to remove.
+#
+# THIS PROOF DESTROYS THE ENTIRE CLUSTER. DESTRUCTIVE=1 is required; the default refuses and exits
+# 2 without touching anything.
+# ============================================================================================
+#
 # WHY GKE. The backup/restore path is GCS + HMAC + the member init container; it does not exist
 # on kind. And a whole-cluster restore is an election from a seeded disk — timing behaviour that
 # only means something on real hardware. (This drill was run live on 2026-07-19 — see
@@ -11,36 +76,41 @@
 # and made falsifiable end to end.)
 #
 # The accounting that makes it falsifiable:
-#   * the cluster is QUIESCED, state S is captured (4 agreed quantities), and only THEN is the
+#   * the cluster is QUIESCED (of operator traffic), state S is captured, and only THEN is the
 #     backup taken — so "restored == S" is an exact equality, not a fuzzy >=;
 #   * AFTER the backup, more orders are deliberately placed (state S+). The restore must come back
 #     at S, NOT S+ — proving it restored the backup rather than surviving in some replica; and the
 #     post-backup orders are the honestly-stated DR loss window (RPO = backup interval);
 #   * all three members must agree on the restored state (member-0 restores, 1 & 2 rejoin empty);
-#   * the restored cluster books a NEW cross (trades move on all three) — a museum-piece restore
-#     that cannot trade fails here.
+#   * the restored cluster books a NEW cross — a museum-piece restore that cannot trade fails here.
 #
 # Ops notes baked in from the 2026-07-19 drill: the backup CronJob `yu12-snapshot-backup` is
 # normally SUSPENDED — this proof triggers a one-off Job from it; a full-cluster restore is a NEW
 # epoch, so clients must reconnect (this script re-establishes its own tunnel + session); the
 # disarm step's `set env` causes one more rolling restart (harmless, gated by catch-up).
 #
-# Usage: ./yu12-gke-restore-from-gcs.sh   (GKE cluster up; HMAC secret + bucket in place)
+# Usage: DESTRUCTIVE=1 ./yu12-gke-restore-from-gcs.sh   (GKE cluster up; HMAC secret + bucket in place)
 set -euo pipefail
 
-CTX="${CTX:-gke_traderx-501015_us-east1-b_traderx-lmax}"
+CTX="${CTX:-gke_traderx-505400_us-east1-b_traderx-bench}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
 STS="order-matcher-cluster"
+IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18340}"
 ACCT="${ACCT:-42422}"
 OTHER="${OTHER:-22214}"
 TICKER="${TICKER:-DRP$(date +%H%M%S)}"
 PRICE="${PRICE:-130.00}"
+DESTRUCTIVE="${DESTRUCTIVE:-0}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
+
+here="$(cd "$(dirname "$0")" && pwd)"
+. "${here}/lib-consensus-readings.sh"
+. "${here}/lib-gke-replay-gates.sh"
 
 member_metric() { ${K} exec "${STS}-$1" -c cluster-node -- \
     sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' | awk -v m="^$2" '$0 ~ m {print $2}'; }
@@ -50,17 +120,21 @@ state() { # "<orderHash> <positionHash> <trades> <nextRef>"
     | awk '/^traderx_book_order_hash/{o=$2} /^traderx_book_position_hash/{p=$2}
            /^traderx_cluster_trades/{t=$2} /^traderx_cluster_next_order_ref/{r=$2} END{print o,p,t,r}'
 }
-identity_consensus() { # retried: one early sample looks like divergence and is not
+# THE THREE-MEMBER AGREEMENT CLAIM — member 0 restores from the tarball, members 1 and 2 rejoin
+# from empty disks, and this is what says they all converged. It is NOT the restore-point claim any
+# more; see the header. Retried, and the retry is load-bearing on this tier: three sequential execs
+# with the tape moving all four quantities between them agreed on only 5 of 20 unretried attempts
+# at 6.13/s (GKE bench, 2026-08-27).
+identity_consensus() {
   local s0 s1 s2 i
   for i in $(seq 1 90); do
     s0="$(state 0 2>/dev/null)"; s1="$(state 1 2>/dev/null)"; s2="$(state 2 2>/dev/null)"
     # SHAPE, not emptiness — same defect as yu12-gke-recovery.sh carried, and it is worse here.
     # state()'s awk ends in END{print o,p,t,r}, which fires on NO INPUT with all four variables
-    # unset and prints three spaces; `-n "   "` is true and all three "agree". This proof captures
-    # state S from a QUIESCED cluster, destroys the cluster, restores from GCS and asserts the
-    # restored state equals S exactly. Under the old guard a run where the members were
-    # unreachable at BOTH ends captured S = "   " and then confirmed "   " == "   " — a DR proof
-    # that passes without either reading having happened.
+    # unset and prints three spaces; `-n "   "` is true and all three "agree". This proof destroys
+    # the cluster and asserts on what comes back, so under the old guard a run where the members
+    # were unreachable at BOTH ends captured S = "   " and then confirmed "   " == "   " — a DR
+    # proof that passes without either reading having happened.
     if [[ "${s0}" =~ ^-?[0-9]+\ -?[0-9]+\ [0-9]+\ [0-9]+$ \
        && "${s0}" == "${s1}" && "${s1}" == "${s2}" ]]; then echo "${s0}"; return 0; fi
     sleep 2
@@ -87,16 +161,29 @@ trap stop_pf EXIT
 order() { curl -s --max-time 30 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
     -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4}"; }
 
+if [[ "${SELFTEST:-0}" == "1" ]]; then gates_selftest; exit $?; fi
+
+require_destructive \
+  "DESTROYS THE ENTIRE CLUSTER: it scales the StatefulSet to ZERO, which wipes every member's
+       emptyDir, then restores member-0 from gs:// and rebuilds 1 and 2 from nothing. Everything any
+       other lane has on this venue is GONE, back to the last backup. It also flips
+       RESTORE_FROM_GCS on the StatefulSet and triggers a backup Job." \
+  "state built and quiesced -> one-off backup Job -> post-backup traffic (the RPO window) ->
+                whole-cluster wipe -> restore from gs:// -> operator state back at the BACKUP point and not
+                the pre-wipe point, three members agreed -> the restored book trades." \
+  "FILLER=5000"
+
 # ---------------------------------------------------------------------------------------------
-step "0. preflight: healthy cluster, gateway live, seeded — then build state worth restoring"
-for i in $(seq 1 60); do
-  ready="$(${K} get pods -l app=order-matcher-cluster \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{" "}{end}')"
-  [[ "${ready}" == "true true true " ]] && break
-  [[ ${i} -lt 60 ]] || fail "members never all ready (saw: ${ready})"
-  sleep 5
-done
-${K} get cronjob yu12-snapshot-backup >/dev/null 2>&1 || fail "backup cronjob yu12-snapshot-backup is not deployed"
+step "0. preflight: healthy cluster, live tape, gateway up — then build state worth restoring"
+require_uniform_image "${IMAGE}"
+require_tape_live
+${K} get cronjob yu12-snapshot-backup >/dev/null 2>&1 || fail "backup cronjob yu12-snapshot-backup is not
+  deployed on this tier, so there is nothing to take a backup FROM and this proof cannot run. It is
+  absent on the yu17 bench cluster (checked 2026-08-27); the DR path needs the CronJob plus the GCS
+  HMAC secret and bucket from the 2026-07-19 drill. This is a MISSING PREREQUISITE, not a failure of
+  the restore path — do not report it as one."
+PRESSURE0="$(pressure_row)"
+RUN_T0=${SECONDS}
 start_pf
 for acct in "${ACCT}" "${OTHER}"; do
   curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
@@ -117,22 +204,52 @@ echo "[ok] state built on ${TICKER} (resting orders + positions + trades + ${FIL
 
 step "1. QUIESCE, capture S, then take the backup (a one-off Job from the suspended CronJob)"
 S="$(identity_consensus)"
-echo "  S (agreed, quiesced) = [${S}]"
+# THE BACKUP POINT, on state this proof owns. These two are what step 4 compares against, and they
+# are the reason it can still make its claim: both are SNAPSHOTTED, so they go into the tarball and
+# come back out of it, and replayed flow cannot move them while the restored cluster starts up.
+# The filler above is deliberately NOT counted into an exact delta — some of those 5000 fire-and-
+# forget sends may fail, and the baseline is taken here, after them, so it does not matter.
+S_OPR="$(quiesced_order_refs)"; S_OPT="$(quiesced_trades)"
+echo "  S (agreed, venue-wide) = [${S}]"
+echo "  S (operator)           = refs ${S_OPR}, trade legs ${S_OPT}   <- what step 4 compares against"
 JOB="yu12-backup-proof-$(date +%s)"
 ${K} create job --from=cronjob/yu12-snapshot-backup "${JOB}" >/dev/null || fail "could not create backup job"
 ${K} wait --for=condition=complete "job/${JOB}" --timeout=600s >/dev/null \
   || fail "backup job did not complete: $(${K} logs "job/${JOB}" --tail=5 2>/dev/null | tr '\n' ' ')"
-# No traffic ran between capture and backup, so the tarball holds exactly S.
-S_CHECK="$(identity_consensus)"
-[[ "${S_CHECK}" == "${S}" ]] || fail "state moved during the backup ([${S}] -> [${S_CHECK}]) — quiesce violated, equality would lie"
-echo "  backup complete; state still [${S}]"
+# QUIESCE, SCOPED. The venue is NOT quiet across a multi-minute backup Job and has not been since
+# ADR-072 — the old venue-wide equality here failed on every run and blamed quiesce. What the
+# equality needs is that no OPERATOR wrote during the backup, so the tarball holds exactly the
+# operator state captured above. Replayed flow is excluded from these counters at the writer.
+S_OPR_CHK="$(quiesced_order_refs)"; S_OPT_CHK="$(quiesced_trades)"
+[[ "${S_OPR_CHK}" == "${S_OPR}" && "${S_OPT_CHK}" == "${S_OPT}" ]] \
+  || fail "an OPERATOR wrote during the backup (refs ${S_OPR} -> ${S_OPR_CHK}, trade legs ${S_OPT} -> ${S_OPT_CHK}),
+  so the tarball does not hold the state captured above and step 4's equality would lie. The tape is
+  excluded from these counters by construction, so this is the algo engine, another lane's proof, or
+  a person with curl — not the replay."
+echo "  backup complete; operator state still refs ${S_OPR}, trade legs ${S_OPT}"
 
 step "2. post-backup traffic (state S+): the DR loss window, stated honestly"
 order "${ACCT}" Buy 2 "$(python3 -c "print(${PRICE}+1)")" >/dev/null
 order "${ACCT}" Buy 3 "$(python3 -c "print(${PRICE}+2)")" >/dev/null
 SPLUS="$(identity_consensus)"
-echo "  S+ = [${SPLUS}]"
-[[ "${SPLUS}" != "${S}" ]] || fail "post-backup orders changed nothing — the restore-vs-survive distinction would be untestable"
+SPLUS_OPR="$(quiesced_order_refs)"; SPLUS_OPT="$(quiesced_trades)"
+echo "  S+ (venue-wide) = [${SPLUS}]"
+echo "  S+ (operator)   = refs ${SPLUS_OPR}, trade legs ${SPLUS_OPT}"
+# ANTI-VACUITY, on the counter only our orders move. The old `SPLUS != S` compared the venue-wide
+# state, which the tape changes ~6 times a second, so it held on a run where both post-backup
+# orders had been dropped — the exact run it exists to catch. Two orders, neither crossing.
+(( SPLUS_OPR - S_OPR == 2 )) \
+  || fail "the post-backup orders moved the operator ref generator by $(( SPLUS_OPR - S_OPR )), not 2. Without a
+  real gap between S and S+ the restore-vs-survive distinction in step 4 is untestable: both arms
+  would be satisfied by the same reading."
+# THE TAPE IS GATED HERE, BEFORE THE DESTROY, and not at the end of the run. Every assertion this
+# file was rewritten for is measured in the window that closes on this line, so this is the window
+# whose write pressure has to be real. Measuring instead across the whole run would span the minutes
+# in which the cluster is scaled to ZERO and the tape cannot write at all, which would drag the
+# observed rate under the band and red a correct run — a proof failing for the shape of its own
+# timeline rather than for anything about DR.
+assert_observed_rate "$(( SECONDS - RUN_T0 ))" "disaster recovery (pre-destroy window)"
+PRESSURE_PRE="$(pressure_row)"
 
 step "3. DESTROY the whole cluster (scale 0 wipes every emptyDir) and restore from GCS"
 stop_pf
@@ -157,30 +274,64 @@ ${K} set env statefulset/${STS} RESTORE_FROM_GCS=0 --containers=restore-from-gcs
 ${K} rollout status statefulset/${STS} --timeout=600s >/dev/null 2>&1 || true
 echo "  restore disarmed (one more rolling restart, catch-up gated)"
 
-step "4. the verdict: restored state is EXACTLY S — not S+, not empty — on all three members"
+step "4. the verdict: restored to the BACKUP point — not the pre-wipe point, not empty"
 R="$(identity_consensus)"
-echo "  restored (agreed) = [${R}]"
-echo "  backup point   S  = [${S}]"
-echo "  pre-wipe       S+ = [${SPLUS}]"
-[[ "${R}" == "${S}" ]] || {
-  [[ "${R}" == "${SPLUS}" ]] && fail "restored state equals S+ — the cluster SURVIVED rather than restored; the DR path was not exercised"
-  fail "restored state matches neither the backup nor the pre-wipe state — restore is corrupt"
+R_OPR="$(quiesced_order_refs)"; R_OPT="$(quiesced_trades)"
+echo "  restored (operator) = refs ${R_OPR}, trade legs ${R_OPT}"
+echo "  backup point   S    = refs ${S_OPR}, trade legs ${S_OPT}"
+echo "  pre-wipe       S+   = refs ${SPLUS_OPR}, trade legs ${SPLUS_OPT}"
+echo "  (venue-wide agreed state is [${R}]; it is NOT compared to [${S}] — replayed flow moves it"
+echo "   continuously and the restored cluster resumes taking that flow the instant it is up.)"
+# THE RESTORE-VS-SURVIVE DISCRIMINATOR, on snapshotted counters no other writer can move. This is
+# what the venue-wide `R == S` was for, and it is the reading that still works.
+[[ "${R_OPR}" == "${S_OPR}" && "${R_OPT}" == "${S_OPT}" ]] || {
+  [[ "${R_OPR}" == "${SPLUS_OPR}" && "${R_OPT}" == "${SPLUS_OPT}" ]] \
+    && fail "restored operator state equals S+ (refs ${SPLUS_OPR}, legs ${SPLUS_OPT}) — the cluster SURVIVED rather
+  than restored, and the DR path was never exercised. These counters are snapshotted, so coming back
+  at the PRE-WIPE value means the wipe did not take."
+  fail "restored operator state (refs ${R_OPR}, legs ${R_OPT}) matches neither the backup point (refs ${S_OPR},
+  legs ${S_OPT}) nor the pre-wipe state (refs ${SPLUS_OPR}, legs ${SPLUS_OPT}). These are snapshotted counters that
+  no other writer on this venue can move, so this is the restore itself losing or inventing state."
 }
-echo "  ✔ intact at the backup point; the ${SPLUS##* }-vs-${S##* } ref gap is the stated RPO loss window"
+echo "  ✔ intact at the backup point; the $(( SPLUS_OPR - S_OPR )) post-backup order(s) are the stated RPO loss window"
+echo "  ✔ all three members agreed on the restored state (member-0 from the tarball, 1 & 2 from empty)"
 
 step "5. the restored cluster takes NEW business (a cross books on all three members)"
 start_pf   # new epoch: clients must reconnect — including this one
 curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
   -d "{\"accountId\":${ACCT},\"tickers\":\"${TICKER}\",\"price\":${PRICE}}" >/dev/null 2>&1 || true
-T0="$(echo "$(identity_consensus)" | awk '{print $3}')"
+T_OPR0="$(quiesced_order_refs)"; T_OPT0="$(quiesced_trades)"
 order "${ACCT}" Buy 5 "$(python3 -c "print(${PRICE}+4)")" >/dev/null   # crosses the restored +4 sell
-POST="$(identity_consensus)"; T1="$(echo "${POST}" | awk '{print $3}')"
-echo "  trades: ${T0} -> ${T1} (agreed)"
-[[ "${T1}" -eq "$(( T0 + 2 ))" ]] \
-  || fail "the RESTORED resting order did not fill — the restored book is not live state"
-[[ "${POST##* }" -gt "${S##* }" ]] || fail "reference generator did not continue past the restored point"
+T_OPR1="$(quiesced_order_refs)"; T_OPT1="$(quiesced_trades)"
+assert_order_effects "${T_OPR0}" "${T_OPR1}" 1 "${T_OPT0}" "${T_OPT1}" 2 \
+  "the RESTORED resting order did not fill — the restored book is not live state"
+echo "  operator refs ${T_OPR0} -> ${T_OPR1}, trade legs ${T_OPT0} -> ${T_OPT1} (2 legs, one match)"
+(( T_OPR1 > S_OPR )) \
+  || fail "the operator ref generator (${S_OPR} at the backup point -> ${T_OPR1} now) did not continue past the
+  restored point: a restore that reissues ids from the backup is cross-epoch id reuse."
+
+step "6. the write pressure this run actually ran under"
+# The pre-destroy window is the one that was GATED (end of step 2) — see the note there. This table
+# is the whole run, so a future reader can see how much foreign flow crossed the venue while these
+# assertions were made, and against how little of our own.
+echo "  across the PRE-DESTROY window, which is the one the rate gate covers:"
+print_pressure "${PRESSURE0}" "${PRESSURE_PRE}"
+echo "  across the WHOLE run, including the wipe and restore (the cluster was down for part of it,"
+echo "  and the counters below were reset to the backup point by the restore — read as context only):"
+print_pressure "${PRESSURE0}" "$(pressure_row)"
+POST_H="$(_pub /health)"
+POST_ERR="$(printf '%s' "${POST_H}" | _jget printReplay.error)" || POST_ERR=""
+POST_SUB="$(printf '%s' "${POST_H}" | _jget printReplay.submitted)" || POST_SUB=""
+POST_RATE="$(printf '%s' "${POST_H}" | _jget printReplay.ordersPerSecond)" || POST_RATE=""
+echo "  tape AFTER the restore: submitted ${POST_SUB:-?}, reported ${POST_RATE:-?}/s, error=${POST_ERR:-none}"
+[[ -z "${POST_ERR}" ]] \
+  || echo "    NOTE: the replay reports an error after the restore. A full-cluster restore is a new
+    epoch and every client must reconnect; price-publisher is a client. That is a finding about the
+    RESTORE RUNBOOK (and worth filing), not about the assertions above, which were all measured in
+    the pre-destroy window this step gates."
 
 echo
 echo "[PASS] disaster recovery: whole-cluster loss, restored from gs:// to exactly the backup"
-echo "       point (order hash, position hash, trades, nextOrderRef agreed by all three members),"
-echo "       post-backup orders correctly bounded as the RPO window, and the restored book trades."
+echo "       point — this proof's own snapshotted operator state came back at S and not at S+,"
+echo "       all three members agreed, the post-backup orders are correctly bounded as the RPO"
+echo "       window, and the restored book trades."

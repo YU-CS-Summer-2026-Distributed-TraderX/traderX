@@ -529,3 +529,104 @@ await_member_restored() { # await_member_restored <member> <old-pod-uid> <sequen
   echo "    member-${m} did NOT reach applied >= ${seq} within ${timeout}s (uid=${uid:-<none>} applied=${ap:-<none>})"
   return 1
 }
+
+# --- ASK THE ORDER: the read model as the effect end (YU17, 2026-08-27) -------------------------
+#
+# Fix #1 in the preference order at the top of this file, and the one all three of the authors who
+# hit this class reached for LAST. A count standing in for "THIS order did X" is replaced by the
+# order's own row: its status, quantity and limit price, or its own presence in the open set. It
+# needs no counter, no twin and no quiet venue, and it says something STRICTER than the count did —
+# "depth fell by one" is satisfied by any order leaving; "ref Q reads CANCELED" says WHICH.
+#
+# Written from the LEADER's egress, so a status here is a COMMITTED apply and not the gateway's
+# opinion of one. Present on BOTH tiers: trade-processor is in the GKE manifest set and exposes
+# 18091, and the route is in the operative YU17 layer of its OrderController.
+#
+# A READER THAT EXISTS IS NOT A READER THAT ANSWERS. Call `require_read_model` before any claim
+# depends on these: a route returning "" or an empty array for every account is indistinguishable
+# from "the order is not there yet" until a timeout, and would then be reported as a verdict about
+# the scenario rather than as the probe failing. That is this whole issue's defect, reintroduced at
+# the fix. (yu13-gke-replace-proof.sh carries private equivalents of the three readers below,
+# predating this block; collapsing them onto these is a tidy-up worth doing, not a defect.)
+tp_orders() { # tp_orders <account> [all] -> the raw JSON array of that account's orders
+  _k exec deploy/trade-processor -- \
+    wget -qO- "http://localhost:18091/accounts/$1/orders${2:+?status=all}" 2>/dev/null || true
+}
+
+require_read_model() { # require_read_model <probe-account>
+  [[ "$(_k get deploy trade-processor -o jsonpath='{.status.readyReplicas}' 2>/dev/null)" == "1" ]] \
+    || fail "trade-processor is not READY. The identity claims in this proof are read from the order
+  read model, so it cannot run without one. (The GKE bring-up deploys it; check the rollout.)"
+  local probe; probe="$(tp_orders "${1}" all)"
+  [[ "${probe}" == \[* ]] \
+    || fail "GET /accounts/${1}/orders?status=all did not answer with a JSON array (got: ${probe:-nothing}).
+  Every identity claim below would otherwise go green off a read that never worked."
+}
+
+# The order id is "<epoch>-<ref>", so the ref is the tail after the LAST dash. Anchor on that dash:
+# a plain suffix/endswith compare reads ref '4' out of order id '1-504', which is the dash-anchoring
+# bug yu13-readmodel-effect-end calls out in SQL.
+order_row() { # order_row <account> <ref> -> "<status> <quantity> <limitPrice>", or "" if not visible
+  tp_orders "$1" all | python3 -c "
+import sys, json
+want = sys.argv[1]
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+for r in rows:
+    if str(r.get('id', '')).rsplit('-', 1)[-1] == want:
+        print(r.get('status', ''), r.get('quantity', ''), float(r.get('limitPrice') or 0)); sys.exit(0)
+print('')" "$2" 2>/dev/null || true
+}
+
+# That account's OPEN refs on ONE ticker, ascending, space-separated. No ?status=all: the default
+# route returns only NEW/PARTIALLY_FILLED/QUEUED, which IS the open set. Scoped to a MINTED ticker
+# this is a statement no other writer on the venue can reach — which is what makes it usable as an
+# exact set equality while the tape writes ~6 orders a second to 23 other symbols.
+#
+# NUMERIC sort, not lexicographic: lexicographic gives "101 17" and turns a correct venue red.
+open_refs_on() { # open_refs_on <account> <ticker> -> "<ref> <ref> ..." ascending
+  tp_orders "$1" | python3 -c "
+import sys, json
+tic = sys.argv[1]
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+refs = [str(r.get('id','')).rsplit('-',1)[-1] for r in rows if r.get('security') == tic]
+print(' '.join(sorted((r for r in refs if r.isdigit()), key=int)))" "$2" 2>/dev/null || true
+}
+
+# Numeric compare, because the read model returns limitPrice as 153.000000 where python prints 153.0
+same_num() { awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0==b+0)}'; }
+
+assert_row_terms() { # assert_row_terms <row> <want-status> <want-qty> <want-price> <what>
+  local row="$1" s q p
+  [[ -n "${row}" ]] || fail "$5: the order is not visible in the read model AT ALL. That is the PROBE
+  failing to read — NOT a verdict about the scenario. Check trade-processor and its NATS feed."
+  s="${row%% *}"; q="$(awk '{print $2}' <<<"${row}")"; p="$(awk '{print $3}' <<<"${row}")"
+  [[ "${s}" == "$2" ]] || fail "$5: status reads '${s}', expected '$2'   (row: ${row})"
+  same_num "${q}" "$3"  || fail "$5: quantity reads ${q}, expected $3   (row: ${row})"
+  same_num "${p}" "$4"  || fail "$5: limit price reads ${p}, expected $4   (row: ${row})"
+}
+
+# Retry absorbs READ-MODEL LAG only. The assertion still fails on the last reading, with a diff, so
+# a venue that genuinely lost or duplicated an order goes red rather than being waited into green.
+await_open_set() { # await_open_set <account> <ticker> <want-refs-ascending> <what>
+  local got="" i
+  for i in $(seq 1 60); do
+    got="$(open_refs_on "$1" "$2")"
+    [[ "${got}" == "$3" ]] && { printf '%s' "${got}"; return 0; }
+    sleep 2
+  done
+  fail "$4: the open set on ${2} is
+    [${got}]
+  and the orders this proof was acked for are
+    [${3}]
+  MISSING (acked, not resting) : $(comm -13 <(tr ' ' '\n' <<<"${got}" | sort) <(tr ' ' '\n' <<<"${3}" | sort) | tr '\n' ' ')
+  UNEXPECTED (resting, never acked): $(comm -23 <(tr ' ' '\n' <<<"${got}" | sort) <(tr ' ' '\n' <<<"${3}" | sort) | tr '\n' ' ')
+  A missing ref is an order the client was told about that the venue does not hold; an unexpected
+  one is an order booked that no client was acked for. Scoped to a minted ticker, neither can be
+  the tape."
+}

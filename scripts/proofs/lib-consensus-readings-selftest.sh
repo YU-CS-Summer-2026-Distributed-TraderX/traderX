@@ -118,4 +118,43 @@ if ( _AGREE_TRIES=2 _agreed _disagreeing "a test counter" ) >/dev/null 2>&1; the
 fi
 echo "ok   genuine disagreement is retried and then refused"
 
+# --- the read-model identity readers (YU17, 2026-08-27) -----------------------------------------
+#
+# These are the instrument behind fix #1 ("ask the order"), and a bug in one does NOT read as a
+# parser bug: it reads as "the order never became visible", i.e. a verdict about the scenario. So
+# they get exercised offline, with fixture JSON, before any proof arms them on a rig.
+tp_orders() {
+  [[ "$1" == "empty"  ]] && { echo "[]"; return 0; }
+  [[ "$1" == "broken" ]] && { echo "<html>502</html>"; return 0; }
+  cat <<'JSON'
+[{"id":"7-101","accountId":22214,"security":"ACME","side":"Sell","quantity":9,"limitPrice":153.000000,"status":"NEW"},
+ {"id":"7-17","accountId":22214,"security":"ACME","side":"Buy","quantity":4,"limitPrice":150.000000,"status":"CANCELED"},
+ {"id":"7-2","accountId":22214,"security":"ZZZZ","side":"Buy","quantity":1,"limitPrice":9.500,"status":"NEW"}]
+JSON
+}
+expect "row reads status+qty+price"      "NEW 9 153.0"      "$(order_row x 101)"
+expect "row reads a terminal state"      "CANCELED 4 150.0" "$(order_row x 17)"
+expect "absent ref reads empty"          ""                 "$(order_row x 999)"
+# '-7' must not match '-17'. A suffix compare that used endswith/LIKE returns the WRONG order's
+# status here — the dash-anchoring bug yu13-readmodel-effect-end calls out in SQL.
+expect "no suffix bleed, 7 vs 17"        ""                 "$(order_row x 7)"
+# NUMERIC sort, not lexicographic: lexicographic gives "101 17" and turns a correct venue red.
+expect "open set is ticker-scoped, numeric" "17 101"        "$(open_refs_on x ACME)"
+expect "other tickers excluded"          "2"                "$(open_refs_on x ZZZZ)"
+expect "empty array is not a crash"      ""                 "$(order_row empty 101)"
+expect "empty array open set"            ""                 "$(open_refs_on empty ACME)"
+# A 502 must parse as "cannot read", never as "the order is absent" — require_read_model is what
+# turns that into a refusal to run, and this arm proves the parser does not throw first.
+expect "non-JSON is not a crash"         ""                 "$(order_row broken 101)"
+same_num 153.000000 153.0 || { echo "BAD  same_num 153.000000 == 153.0"; exit 1; }
+same_num 153.0 154.0 && { echo "BAD  same_num must reject 153.0 == 154.0"; exit 1; }
+echo "ok   read-model parsers (9 shapes + numeric price compare)"
+# assert_row_terms must REFUSE an empty row rather than pass it: an unreadable probe reported as a
+# satisfied claim is this whole issue's defect, reintroduced at the fix.
+if ( assert_row_terms "" NEW 9 153.0 "selftest" ) >/dev/null 2>&1; then
+  echo "BAD  assert_row_terms accepted an EMPTY row — an unreadable probe must never read as a pass"; exit 1
+fi
+assert_row_terms "NEW 9 153.0" NEW 9 153.000000 "selftest"
+echo "ok   assert_row_terms accepts a real row and refuses an unreadable one"
+
 echo "ALL GREEN"

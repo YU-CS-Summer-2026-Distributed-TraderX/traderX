@@ -9,46 +9,114 @@
 # real trades on 2026-07-22 for exactly this class of bug). The nextOrderRef-in-snapshot fix
 # (moved YU11→YU12) is the change under test; this script is its standing regression proof.
 #
+# ============================================================================================
+# ADR-072 EXPOSURE, FIXED 2026-08-27. Read this before adding an assertion to this file.
+#
+# The rig has a THIRD writer, replaying sampled TAQ prints as real orders at ~6/s. Two assertions
+# here were measured against counters that writer moves. STEPS, NOT LINE NUMBERS — a header
+# insertion renumbers the file and a stale number sends the next reader to the wrong assertion.
+#
+#   step 3  `R_NEW > R_OLD` on traderx_cluster_next_order_ref — EXPOSED IN THE PASSING DIRECTION.
+#           The tape advances that counter ~6 times a second, so the inequality held whether or
+#           not this proof's own orders were allocated anything. Zero coverage that read as
+#           coverage, and it would never have printed a red to tell anyone. Replaced by an
+#           OPERATOR-ref delta, which only this proof's orders can move.
+#   step 4  `T1 == T0 + 2` on traderx_cluster_trades — EXPOSED IN THE ACCUSATORY DIRECTION. Any
+#           replayed fill inside the window inflates it, and the proof would report "the new-epoch
+#           orders do not trade — the refs are not live allocations", naming id reuse for what the
+#           tape did. Replaced by assert_order_effects: the operator TRADE delta bracketed by the
+#           operator REF delta, so the trade reading is attributable to our one order.
+#
+# WHAT WAS ALREADY SOUND, AND STAYS — this is the part worth not re-deriving:
+#   * every new-epoch ref >= the old epoch's high-water. This is an IDENTITY claim on refs THIS
+#     proof was handed, measured against a venue high-water mark. The tape raises that mark, which
+#     makes the bar STRICTER, never wrong. (It is also N assertions, not one — it is a loop.)
+#   * the old and new ref SETS are disjoint. Pure identity on our own refs; no counter involved.
+#   These two carry the actual id-reuse claim, which is why this proof was never as exposed as its
+#   siblings: its central assertion was already the shape the library asks for.
+#
+# THE OPERATOR TWINS SURVIVE THE FAILOVER, and that is not incidental. Both halves of
+# traderx_cluster_operator_next_order_ref and _operator_trades are SNAPSHOTTED (externalOrderRefs
+# at snapshot offset 52, externalTradeLegs at 60 — MatchingEngineClusteredService:1499-1500, read
+# back at :1631), so the member this proof kills comes back with them intact and they can still be
+# quiesced across all three afterwards. A PER-PROCESS twin here (traderx_stp_operator_cancels,
+# traderx_band_operator_*) would have substituted a fresh bug for the one being removed: its
+# cross-member ABSOLUTE is unsatisfiable on any epoch where a member restarted, which is exactly
+# what step 2 does. THE FOUR TWINS ARE NOT UNIFORM — check the parent before assuming either.
+#
+# A RETRY BURNS A REF BY DESIGN. The ref is consumed in MatchingEngineClusteredService
+# (`event.orderRef = (int) nextOrderRef++`) BEFORE the engine answers idempotently, so a resend
+# allocates a ref and books nothing. assert_order_effects' exact ref delta is therefore only legal
+# in a window with no failover in it — which is why it is used in step 4 (post-election, quiet) and
+# NOT across step 2. The retry loop below now keeps the clientOrderId STABLE across attempts so a
+# resend is idempotent at the engine; it previously minted a fresh id per attempt, which made every
+# retry a genuinely new order and would have broken the step-4 bracket on any flaky send.
+#
+# THE TAPE MUST BE LIVE. Step 0 gates the REPORTED rate against ADR-072's 5-20/s band and the last
+# step gates the OBSERVED rate (submitted delta / elapsed), which a config field cannot fake. A
+# green with the tape stopped re-proves none of the above.
+#
+# THIS PROOF KILLS A CLUSTER MEMBER and now says so first: DESTRUCTIVE=1 is required.
+# ============================================================================================
+#
 # Method — assert at both ends of the failover, from the members' own counters:
 #   1. issue orders in the OLD epoch; record every orderRef the gateway returned AND the members'
 #      agreed next_order_ref high-water mark R_old;
 #   2. kill the leader; wait for the new epoch (new leader, all members back);
-#   3. issue orders in the NEW epoch; every returned orderRef must be >= R_old, the members'
-#      agreed counter must be strictly monotonic, and the old and new ref SETS must be disjoint;
-#   4. falsification arm: the new-epoch orders BOOK (trades move) — proving the refs are real
-#      allocations, not a counter that wandered upward while allocation restarted from 1.
+#   3. issue orders in the NEW epoch; every returned orderRef must be >= R_old, the operator ref
+#      counter must have advanced by exactly our order count, and the old and new ref SETS must be
+#      disjoint;
+#   4. falsification arm: the new-epoch orders BOOK — proving the refs are real allocations, not a
+#      counter that wandered upward while allocation restarted from 1.
 #
 # WHY GKE: the scenario is an election; kind's starved CPUs make election behaviour meaningless.
-# Usage: ./yu12-gke-cross-epoch-idreuse.sh   (GKE cluster up)
+# Usage: DESTRUCTIVE=1 ./yu12-gke-cross-epoch-idreuse.sh   (GKE cluster up, tape live)
 set -euo pipefail
 
-CTX="${CTX:-gke_traderx-501015_us-east1-b_traderx-lmax}"
+CTX="${CTX:-gke_traderx-505400_us-east1-b_traderx-bench}"
 NS="${NS:-traderx}"
 K="kubectl --context ${CTX} -n ${NS}"
+IMAGE="${IMAGE:-us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110}"
 GW_SVC="${GW_SVC:-order-matcher-gw}"
 MATCHER_URL="${MATCHER_URL:-http://localhost:18330}"
 ACCT="${ACCT:-42422}"
 OTHER="${OTHER:-22214}"
+# A MINTED ticker: the tape never trades this symbol, so nothing replayed can cross our orders and
+# the operator trade delta in step 4 is exactly ours. (The library's standing rule — a proof must
+# not leave an order resting on a REPLAYED symbol — is satisfied by construction here.)
 TICKER="${TICKER:-EPO$(date +%H%M%S)}"
 PRICE="${PRICE:-105.00}"
 N_PER_EPOCH="${N_PER_EPOCH:-10}"
+DESTRUCTIVE="${DESTRUCTIVE:-0}"
 
 fail() { echo "[FAIL] $*" >&2; exit 1; }
 step() { echo; echo "=== $* ==="; }
 
+here="$(cd "$(dirname "$0")" && pwd)"
+. "${here}/lib-consensus-readings.sh"
+. "${here}/lib-gke-replay-gates.sh"
+
 member_metric() { ${K} exec "order-matcher-cluster-$1" -c cluster-node -- \
     sh -c 'wget -qO- http://localhost:8080/metrics 2>/dev/null' | awk -v m="^$2" '$0 ~ m {print $2}'; }
+# THE GLOBAL counter, for the CROSS-MEMBER AGREEMENT check and the high-water bar, and nothing
+# else. "The members agree" is a determinism claim a third writer cannot touch; the high-water is
+# a bar our own refs must clear, which foreign flow only raises.
 refs_all()   { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_next_order_ref 2>/dev/null)"; done; }
-trades_all() { for m in 0 1 2; do printf "%s " "$(member_metric "${m}" traderx_cluster_trades 2>/dev/null)"; done; }
 uniq_one()   { tr ' ' '\n' | sed '/^$/d' | sort -u | wc -l | tr -d ' '; }
-agreed() { # agreed <fn> — retried; a mid-apply sample looks like divergence and is not
+# RETRIED, and on this tier the retry is LOAD-BEARING rather than belt-and-braces. refs_all takes
+# three SEQUENTIAL `kubectl exec`s and the tape advances the counter between them, so a member that
+# sampled earlier reads lower and is reported as disagreeing. Measured on the GKE bench 2026-08-27:
+# a four-quantity read agreed on only 5 of 20 unretried attempts at 6.13/s. The CLAIM is sound; the
+# MEASUREMENT is not, without this loop.
+agreed() { # agreed <fn> — returns the agreed reading, and reports THAT reading on failure
   local r i
   for i in $(seq 1 90); do
     r="$("$1")"
     [[ "$(echo "${r}" | uniq_one)" == "1" && -n "${r// /}" ]] && { echo "${r%% *}"; return 0; }
     sleep 2
   done
-  fail "members never agreed on $1: [${r}]"
+  fail "members never agreed on $1: [${r}]
+  Retried 90x, so this is a PERSISTENT split, not the sampling skew the retry exists for."
 }
 leader() { for m in 0 1 2; do [[ "$(member_metric "${m}" traderx_cluster_role 2>/dev/null)" == "1" ]] && { echo "${m}"; return 0; }; done; return 1; }
 
@@ -66,27 +134,35 @@ start_pf() {
 }
 trap stop_pf EXIT
 
-order() { # order <account> <side> <qty> <price> -> body (retried until acked; failover-safe)
-  local out t=0
+# The clientOrderId is minted ONCE and reused across every attempt, so a resend is idempotent at
+# the engine instead of becoming a second order. (It still BURNS a ref — the ref is allocated
+# before the idempotency check — which is why no exact ref delta spans a window containing a kill.)
+order() { # order <account> <side> <qty> <price> [cid-suffix] -> body
+  local out t=0 cid="epo-$$-${5:-${RANDOM}}"
   until out="$(curl -s --max-time 10 -X POST "${MATCHER_URL}/orders" -H 'Content-Type: application/json' \
-      -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4,\"clientOrderId\":\"epo-$$-${RANDOM}-${t}\"}" 2>/dev/null)" \
+      -d "{\"accountId\":$1,\"ticker\":\"${TICKER}\",\"side\":\"$2\",\"quantity\":$3,\"limitPrice\":$4,\"clientOrderId\":\"${cid}\"}" 2>/dev/null)" \
       && [[ "${out}" == *'"orderRef"'* ]]; do
-    t=$((t+1)); [[ ${t} -lt 60 ]] || fail "order never acked"
+    t=$((t+1)); [[ ${t} -lt 60 ]] || fail "order never acked (clientOrderId ${cid})"
     sleep 1
   done
   echo "${out}"
 }
 ref_of() { sed -n 's/.*"orderRef":\([0-9]*\).*/\1/p' <<<"$1"; }
 
+if [[ "${SELFTEST:-0}" == "1" ]]; then gates_selftest; exit $?; fi
+
+require_destructive \
+  "KILLS THE CLUSTER LEADER (step 2) to force an election, on what may be a shared rig." \
+  "old-epoch orders -> leader kill -> new-epoch refs strictly above the old high-water, sets
+                disjoint, operator ref delta exactly ours, and the new refs shown to be live allocations." \
+  "N_PER_EPOCH=10"
+
 # ---------------------------------------------------------------------------------------------
-step "0. preflight: three ready members, gateway live, seeded"
-for i in $(seq 1 60); do
-  ready="$(${K} get pods -l app=order-matcher-cluster \
-    -o jsonpath='{range .items[*]}{.status.containerStatuses[0].ready}{" "}{end}')"
-  [[ "${ready}" == "true true true " ]] && break
-  [[ ${i} -lt 60 ]] || fail "members never all ready (saw: ${ready})"
-  sleep 5
-done
+step "0. preflight: the divergence rule, a live tape, gateway up, seeded"
+require_uniform_image "${IMAGE}"
+require_tape_live
+PRESSURE0="$(pressure_row)"
+RUN_T0=${SECONDS}
 start_pf
 for acct in "${ACCT}" "${OTHER}"; do
   curl -sf --max-time 20 -X POST "${MATCHER_URL}/seed" -H 'Content-Type: application/json' \
@@ -94,16 +170,26 @@ for acct in "${ACCT}" "${OTHER}"; do
     || fail "seed failed for ${acct}"
 done
 LDR="$(leader)" || fail "no leader"
-echo "[ok] leader is member ${LDR}; ticker ${TICKER}"
+# /seed sequences TYPE_ACCOUNT_CONTROL and TYPE_SECURITY_CONTROL, never TYPE_ORDER_NEW, so it does
+# not consume an order ref — the operator brackets below start clean after it.
+OPR_BASE="$(quiesced_order_refs)"
+echo "[ok] leader is member ${LDR}; ticker ${TICKER}; operator refs at ${OPR_BASE}"
 
 step "1. OLD epoch: issue ${N_PER_EPOCH} orders, record their refs and the high-water mark"
 OLD_REFS=""
 for i in $(seq 1 "${N_PER_EPOCH}"); do
-  OLD_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "${PRICE}")") "
+  OLD_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "${PRICE}" "old-${i}")") "
 done
 R_OLD="$(agreed refs_all)"
+OPR_OLD="$(quiesced_order_refs)"
 echo "  old-epoch refs: [${OLD_REFS}]"
-echo "  members agree next_order_ref = ${R_OLD}"
+echo "  members agree next_order_ref = ${R_OLD} (venue-wide); operator refs ${OPR_BASE} -> ${OPR_OLD}"
+# ATTRIBUTABLE, where the old `R_NEW > R_OLD` was not: only this proof's orders move this counter.
+(( OPR_OLD - OPR_BASE == N_PER_EPOCH )) \
+  || fail "the operator ref generator moved by $(( OPR_OLD - OPR_BASE )), not the ${N_PER_EPOCH} orders this
+  proof submitted. Either one of ours was never sequenced, or another OPERATOR writer (the algo
+  engine, another lane's proof, a human with curl) is on this rig — the tape is excluded by
+  construction, so this is not the replay."
 
 step "2. kill the leader — force a new epoch"
 ${K} delete pod "order-matcher-cluster-${LDR}" --wait=false >/dev/null
@@ -121,26 +207,47 @@ step "3. NEW epoch: refs continue strictly above the old epoch — no reuse, no 
 start_pf
 NEW_REFS=""
 for i in $(seq 1 "${N_PER_EPOCH}"); do
-  NEW_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "$(python3 -c "print(${PRICE}-5)")")") "
+  NEW_REFS+="$(ref_of "$(order "${ACCT}" Buy 1 "$(python3 -c "print(${PRICE}-5)")" "new-${i}")") "
 done
 R_NEW="$(agreed refs_all)"
+OPR_NEW="$(quiesced_order_refs)"
 echo "  new-epoch refs: [${NEW_REFS}]"
-echo "  members agree next_order_ref = ${R_NEW}"
-[[ "${R_NEW}" -gt "${R_OLD}" ]] || fail "next_order_ref did not advance across the epoch (${R_OLD} -> ${R_NEW})"
+echo "  members agree next_order_ref = ${R_NEW} (venue-wide); operator refs ${OPR_OLD} -> ${OPR_NEW}"
+# THE ADVANCE CLAIM, on the counter the tape cannot move. The old form asserted the GLOBAL counter
+# advanced, which replayed flow satisfies ~6 times a second whether or not a single order of ours
+# was allocated anything. A retry across the election burns a ref without booking, so this is a
+# FLOOR on our own allocations rather than an equality — and it is bracketed above by the per-ref
+# identity checks, which is what keeps it from going vacuously green.
+(( OPR_NEW - OPR_OLD >= N_PER_EPOCH )) \
+  || fail "the operator ref generator moved by $(( OPR_NEW - OPR_OLD )) across the new epoch, fewer than the
+  ${N_PER_EPOCH} orders submitted (${OPR_OLD} -> ${OPR_NEW}). Refs are allocated on apply, so orders that were
+  acked but never sequenced is the one thing this cannot be — the generator RESET is what it looks like."
+# IDENTITY, and the real id-reuse claim: N assertions, one per ref this proof was handed.
 for r in ${NEW_REFS}; do
   [[ "${r}" -ge "${R_OLD}" ]] || fail "new-epoch order was issued ref ${r} < old-epoch high-water ${R_OLD}: ID REUSED"
 done
 OVERLAP="$( (tr ' ' '\n' <<<"${OLD_REFS}"; tr ' ' '\n' <<<"${NEW_REFS}") | sed '/^$/d' | sort | uniq -d )"
 [[ -z "${OVERLAP}" ]] || fail "ref(s) issued in BOTH epochs: ${OVERLAP}"
+echo "  every new-epoch ref >= ${R_OLD}, and the two sets are disjoint"
 
 step "4. falsification arm: the new-epoch refs are real allocations that trade"
-T0="$(agreed trades_all)"
-LAST_NEW="$(order "${OTHER}" Sell 1 "$(python3 -c "print(${PRICE}-5)")")"   # crosses a new-epoch buy
+# The window is post-election and contains exactly one order of ours, so the exact ref delta is
+# legal here (no failover inside it to burn a ref on a retry). assert_order_effects brackets the
+# operator TRADE delta by the operator REF delta: "exactly my one order was sequenced in this
+# window, and it had exactly this trade effect". Either half alone is the vacuous form.
+R_B="$(quiesced_order_refs)"; T_B="$(quiesced_trades)"
+LAST_NEW="$(order "${OTHER}" Sell 1 "$(python3 -c "print(${PRICE}-5)")" "cross")"   # crosses a new-epoch buy
 echo "  cross against a new-epoch resting order -> ${LAST_NEW}"
-T1="$(agreed trades_all)"
-[[ "${T1}" -eq "$(( T0 + 2 ))" ]] || fail "the new-epoch orders do not trade — the refs are not live allocations"
+R_A="$(quiesced_order_refs)"; T_A="$(quiesced_trades)"
+assert_order_effects "${R_B}" "${R_A}" 1 "${T_B}" "${T_A}" 2 \
+  "the new-epoch orders do not trade — the refs are not live allocations"
+echo "  operator refs ${R_B} -> ${R_A}, operator trades ${T_B} -> ${T_A} (2 legs, one match)"
+
+step "5. the write pressure this run actually ran under"
+assert_observed_rate "$(( SECONDS - RUN_T0 ))" "cross-epoch id reuse"
+print_pressure "${PRESSURE0}" "$(pressure_row)"
 
 echo
 echo "[PASS] no cross-epoch id reuse: old epoch topped out at ref ${R_OLD}; every new-epoch ref"
-echo "       was >= that mark, the sets are disjoint, the counter is monotonic on all three"
-echo "       members, and the new-epoch allocations are live (they trade)."
+echo "       was >= that mark, the sets are disjoint, the operator ref generator advanced by our"
+echo "       own orders across the election, and the new-epoch allocations are live (they trade)."

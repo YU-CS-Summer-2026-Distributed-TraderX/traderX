@@ -1,9 +1,13 @@
 # Five GKE proofs read a global counter that ADR-072's replayed flow now moves
 
 **Filed 2026-08-26** on YU17, at the coordinator's request, alongside the ADR-072 implementation.
-**Four of the five are still not fixed.** They are not in `run-proofs.sh`, so nothing on the kind
-rig will ever red them. `yu13-gke-replace-proof.sh` **is fixed** (`d7144170`, 2026-08-27) — see the
-resolution at the bottom, which also corrects two things this file got wrong about it.
+**ALL FIVE ARE NOW FIXED** — `yu13-gke-replace-proof.sh` first (`d7144170`, 2026-08-27), then the
+other four the same day; see the two resolutions at the bottom, the first of which also corrects two
+things this file got wrong about the fifth. **The file stays OPEN on one residual**: the DR proof
+`yu12-gke-restore-from-gcs` is landed but **cannot be exercised on any tier we have**, because the
+`yu12-snapshot-backup` CronJob is not deployed on the bench cluster. None of the five is in any
+suite, so nothing automated will red them — which is the condition that let twenty-seven defects
+accumulate across them (eleven in the fifth, sixteen in the other four).
 
 ## Why this is worth a file rather than a fix-when-noticed
 
@@ -333,3 +337,212 @@ and this proof kills a member and waits on a snapshot, so an entry there would r
 structural reason. `SELFTEST=1` runs the read-model parsers offline in about a second and wants a CI
 home beside the root gates, which is separate work. Until then nothing automated will red this file,
 which is the condition that let nine assertions rot here in the first place.
+
+---
+
+## RESOLUTION for the remaining FOUR (2026-08-27) — and two shapes the fifth did not have
+
+`yu12-gke-recovery`, `yu12-gke-failover-transparency`, `yu12-gke-cross-epoch-idreuse` and
+`yu12-gke-restore-from-gcs`. **Fifteen exposed assertions, one claim asserted nowhere, and four
+missing DESTRUCTIVE gates — sixteen findings.** Three are GREEN on the GKE bench under a live tape, run twice against
+one epoch; the DR proof is landed and **cannot be exercised on any tier we have** — see the residual.
+
+| proof | exposed | shape |
+|---|---|---|
+| `yu12-gke-recovery` | 5 | 1 guaranteed-red flagship, 1 accusatory delta, 3 that could not fail |
+| `yu12-gke-restore-from-gcs` | 6 | 1 **unmeasurable** flagship, 1 guaranteed-red, 1 dead else-arm, 3 others |
+| `yu12-gke-failover-transparency` | 2 + 1 absent | 1 **falsified premise**, 1 accusatory verdict, 1 claim in a step title the code never asserted |
+| `yu12-gke-cross-epoch-idreuse` | 2 | its central claim was ALREADY an identity claim and was never exposed |
+
+### The counting method again, because it changed the answer again
+
+Enumerating by **assertion** (`grep -nE '^\s*\[\[|^\s*\(\('`) rather than by metric read found sites
+no metric sweep reaches: `R1 > R0 && R0 >= PRE_REF` is **two** assertions on one line; the
+`for r in ${NEW_REFS}` loop is **N**; and `yu12-gke-failover-transparency`'s step 3 asserted
+**nothing at all** while its title claimed "no member bounced except the leader this proof killed" —
+the `yu13-otel-trace-join` shape, found only by reading the step against its code.
+
+### THE TWELFTH: a falsified PREMISE, not a contaminated reading
+
+`yu12-gke-failover-transparency` step 0 sampled `next_order_ref` and `book_open_orders`, slept 5s,
+and required both **unchanged** — the quiet-cluster guard the whole `booked == acked` verdict rested
+on. Since ADR-072 that window moves the ref counter by ~30 on the GKE bench. **It fails on every run,
+on a correct cluster.**
+
+This is not the sibling's class. There is no better counter to retreat to and no retry to add: the
+guard was a **true statement about a property the system no longer has**. Widening it deletes it, and
+what it guards is the verdict.
+
+> **Ask whether the proof's PRECONDITION still holds, not only whether its readings are clean.** A
+> contaminated reading can be re-pointed. A falsified premise means the METHODOLOGY has to change.
+
+Fixed by scoping the premise rather than the tolerance: the venue is never quiet again, but **our
+slice of it is**, and that is what the equality always needed. The guard now reads the operator
+twins, which replayed flow cannot move by construction.
+
+### THE THIRTEENTH: sound, and NOT SAMPLEABLE AT ALL
+
+The sibling's tenth was a sound claim that could not be sampled *coherently* — three sequential
+execs, fixed by a retry. `yu12-gke-restore-from-gcs` step 4 is the same family one step further on:
+
+    [[ "${R}" == "${S}" ]]      # "the restored state is EXACTLY the backup point"
+
+The restored cluster **resumes taking replayed order flow the instant it is up**, so the venue-wide
+state diverges from the backup point monotonically from the first second. There is no window in
+which the equality holds, and **waiting makes it strictly worse**. A retry converges on the tenth;
+here it cannot converge at all. Its else-branch then reports *"restored state matches neither the
+backup nor the pre-wipe state — restore is corrupt"*: a green DR path reported as data loss, which is
+the most damaging false accusation in this whole issue.
+
+> Retry fixes a claim you can sample at the wrong INSTANT. It does nothing for a claim whose subject
+> is moving away from you. Ask which one you have before reaching for `agree_on`.
+
+### The repair that is NOT in the library's list of three: SCOPE the equality, do not delete it
+
+The sibling deleted its equality across a member kill, correctly — its content was "the venue was
+quiet across a rejoin", which is not a claim worth having. **Here the equality IS the proof.**
+"Nothing changed across the rebuild" and "the restore came back at the backup point" are what these
+two files exist to establish, and deleting them would have left the proofs claiming less than their
+banners say.
+
+They survive because the operator twins are **snapshotted** — so they are carried through a rebuild
+and restored *from the tarball* — **and** tape-proof. So the equality holds, scoped to state the
+proof owns, across the entire destructive sequence:
+
+* `yu12-gke-recovery` now asserts operator refs and trade legs **unchanged across the follower
+  rebuild AND every leader election in step 4** — a wider window than the original covered.
+* `yu12-gke-restore-from-gcs` uses them as the **restore-vs-survive discriminator**: back at the
+  captured `S` means restored from the tarball; back at `S+` means the cluster survived and the DR
+  path was never exercised. That is exactly what the venue-wide hash was for, on a reading that works.
+
+**This only works because those two twins are snapshotted.** `traderx_stp_operator_cancels` and
+`traderx_band_operator_*` are per-process (plain fields, in neither the snapshot writer nor the
+reader — `MatchingEngine:139,161`, and the `PER-PROCESS` javadoc at `:1549,:1556`). A cross-member
+absolute on those is a statement about **uptime**, unsatisfiable on every epoch these four proofs
+produce. **Neither is used in any of the four.** Verified in the writer/reader, not taken on trust.
+
+### The twins fix SAMPLING too, which is why they beat a retry here
+
+Measured on the GKE bench, 2026-08-27, tape at 6.13/s, 20 unretried three-member samples each:
+
+| reading | coherent samples |
+|---|---|
+| four-quantity `identity_consensus` (order hash, position hash, trades, refs) | **5 / 20** |
+| two-field book digest | **5 / 20** |
+| the operator twins (`operator_next_order_ref`, `operator_trades`) | **20 / 20** |
+
+A counter that does not move **cannot be sampled incoherently**. So swapping to a twin removes
+contamination and skew together, where `agree_on()` removes only the second. The corollary matters
+for the readings that must stay global: `identity_consensus`'s retry loop is **load-bearing on this
+tier at 75% of samples skewed** — it is spending those tries, not holding them in reserve. It was
+kept at full budget in both proofs that use it. **Do not trim it as excessive.**
+
+### Exercised: GREEN on the GKE bench, twice each against one epoch
+
+`gke_traderx-505400_us-east1-b_traderx-bench`, `cluster-node:yu17-6374c110`, all five twins present,
+images uniform. Every run gates the REPORTED rate at step 0 and the OBSERVED rate (submitted delta ÷
+elapsed) at the end, so a quiet or quarter-rate tape cannot produce a green.
+
+**The write pressure each green ran under — printed by the proofs themselves, so every future run is
+self-qualifying:**
+
+| proof | observed tape | foreign trade legs | foreign order refs | OUR legs | OUR refs |
+|---|---|---|---|---|---|
+| `cross-epoch-idreuse` run 1 | 6.23/s | **+352** | **+488** | 2 | 21 |
+| `cross-epoch-idreuse` run 2 | 6.20/s | **+478** | **+604** | 2 | 21 |
+| `failover-transparency` run 1 | 6.24/s | **+576** | **+1248** | 0 | 567 |
+| `failover-transparency` run 2 | 6.23/s | **+710** | **+1295** | 0 | 498 |
+| `recovery` run 1 | 6.16/s | **+1262** | **+1470** | 4 | 4 |
+| `recovery` run 2 | 6.17/s | **+862** | **+1022** | 4 | 4 |
+
+Every one of these ran **twice against a single epoch**, because idempotence across runs is a
+separate property from correctness within one — and it is what exposed the fifth proof's eleventh
+defect (a proof whose own step 4 restarted the member its step 3 asserted about, so the second run
+red and blamed the cluster for its own damage). Nothing of that shape survives here: every reading
+is either a delta, an equality scoped to snapshotted state, or an identity claim on a freshly minted
+ticker, and none of them carries state between runs.
+
+**The counterfactuals, measured rather than argued:**
+
+| proof | what the venue actually did | what the old assertion would have done |
+|---|---|---|
+| `failover-transparency` run 1 | depth `1481 -> 2051`, **+570 net for 567 orders of ours** | **failed: "3 DUPLICATED"** — against a failover that duplicated nothing |
+| `failover-transparency` run 2 | depth `1940 -> 2392`, **+452 net for 498 orders of ours** | **failed: "46 LOST"** — against a failover that lost nothing |
+| `recovery` step 3 | agreed refs `77674 -> 78006` across the follower rebuild (**+332**) | **failed by 332** — "the cluster's agreed state changed across a follower rebuild" |
+| `recovery` step 5 | `traderx_cluster_trades` +1262 across the run | `T1 == T0+2` **failed**, blaming the rebuilt leader |
+| `cross-epoch` step 3 | tape advances the global ref counter ~6/s | `R_NEW > R_OLD` **passed for the wrong reason**, as it always had |
+
+`failover-transparency`'s is the one worth remembering, and the two runs together are the argument:
+the same assertion on the same correct venue would have said **"3 DUPLICATED"** on the first run and
+**"46 LOST"** on the second. **The contamination is not even a consistent bias** — the venue-wide
+depth delta lands either side of the true count depending on what the tape happened to rest and fill
+in the window, so the failure text accuses the gateway of opposite defects on consecutive runs. The
+identity claim that replaced it names all 567 (then 498) refs individually and cannot do either.
+
+### What replaced the sixteen
+
+* **Identity claims (the read model).** `failover-transparency`'s `booked == acked` became **set
+  equality between the orderRefs the clients were ACKED for and the refs RESTING on a minted
+  ticker** — a lost order is an acked ref not resting, a duplicate is a resting ref nobody was acked
+  for, and both are named individually instead of summed into a number the tape contributes to.
+* **Scoped equalities on the snapshotted twins** — the two flagship claims above.
+* **`assert_order_effects`** (4 sites) where the claim is about volume and must be attributable.
+* **Operator anti-vacuity guards** replacing three that the tape satisfied unconditionally.
+* **One assertion added** where a step title had been claiming something the code never checked:
+  exactly one member is a new pod, read on **pod UIDs captured before the kill** — a deleted-and-
+  recreated pod has `restartCount` 0, identical to one that never bounced, so the old printout could
+  not have carried the claim even if it had been asserted.
+
+### Not the read model, for the DR proof — and the reason generalises
+
+Fix #1 is "ask the order", and it is the **wrong instrument** for `restore-from-gcs`:
+trade-processor's database is **not restored with the cluster**, so after a restore it still holds
+the post-backup `S+` orders as open. An identity claim read from it would report `S+` present and
+call a correct restore a failure — the same false accusation, reached from the opposite direction.
+
+> **The read model is the effect end for anything that does not wipe the cluster.** When the scenario
+> restores replicated state, only readings that move WITH the restore can carry the claim.
+
+### Gates: all four now refuse by default
+
+All four performed pod deletes, scale-to-zero or PVC-wiping restores with `DESTRUCTIVE` mention
+count **0**. Each now requires `DESTRUCTIVE=1` and otherwise prints what did not run and exits 2
+without touching the cluster, per `yu17-halt-survives-failover`. **They refuse rather than running a
+reduced subset**: every one prints a PASS banner claiming survival across the destructive event, and
+a run that skipped it has not shown that.
+
+### New shared library, because a private reimplementation is what the sweeps kept missing
+
+`scripts/proofs/lib-gke-replay-gates.sh` — the destructive gate, the uniform-image divergence rule,
+the tape-live + rate-band gate, the observed-rate assertion and the six-counter write-pressure table
+(**one scrape**, so the six readings are mutually coherent). `SELFTEST=1` on any of the four
+exercises the rate-band and pressure arithmetic offline in about a second, including that an
+**unreadable** rate is refused rather than read as 0.
+
+`lib-consensus-readings.sh` gained the read-model identity readers (`tp_orders`, `order_row`,
+`open_refs_on`, `require_read_model`, `await_open_set`, `assert_row_terms`), with nine parser shapes
+covered in the library selftest — dash-anchoring (`ref 4` must not match order id `1-504`), numeric
+rather than lexicographic ref sort, and empty/non-JSON parsing as "cannot read" rather than "absent".
+`yu13-gke-replace-proof` carries private equivalents that predate these; collapsing them is a tidy-up,
+not a defect.
+
+### STILL OPEN
+
+* **`yu12-gke-restore-from-gcs` is LANDED BUT NOT EXERCISED, and cannot be on any tier we have.**
+  The `yu12-snapshot-backup` CronJob **does not exist** on the yu17 bench cluster (checked
+  2026-08-27), and the DR path also needs the GCS HMAC secret and bucket from the 2026-07-19 drill.
+  The proof now refuses at step 0 naming this as a **missing prerequisite, not a restore failure**.
+  Standing up that CronJob on a shared rig was not in scope and was not done.
+* **Whether `price-publisher` re-establishes its cluster session after a full-cluster restore is
+  UNVERIFIED.** A restore is a new epoch and every client must reconnect; the publisher is a client.
+  The proof therefore gates the tape rate across the **pre-destroy** window — where every rewritten
+  assertion is measured — and only reports it afterwards. Gating the post-restore rate would turn
+  this open question into a red about DR, which is the failure mode this file exists to remove.
+* **None of the four is in any suite.** `run-proofs.sh` is kind-only and all four kill members, so an
+  entry there would red the suite structurally. Nothing automated will red these files, which is the
+  condition that let sixteen assertions rot in them.
+* **Ten kind-tier proofs perform pod deletes or scale-downs with no `DESTRUCTIVE` gate**
+  (`yu13-readmodel-effect-end`, `yu13-stp-and-replace`, `yu16-book-grid`, `yu17-fx-credit`,
+  `yu17-swap-netting`, `yu04-offline-catchup`, `yu15-risk-extract`, `yu17-keyed-ack-correlation`,
+  `failover-nodeclock`). On the kind rig that is the expected mode and this is an **observation, not
+  a filed defect** — but the shared-rig argument that earned these four a gate applies there too.
