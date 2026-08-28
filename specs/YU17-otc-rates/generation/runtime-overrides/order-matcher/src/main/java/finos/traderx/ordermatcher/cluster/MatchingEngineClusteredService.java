@@ -444,6 +444,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      */
     public static final byte KIND_SESSION_PHASE = 103;
 
+    /** ADR-073: a sandbox reset landed. Carries the sequence it applied at and what it cleared. */
+    public static final byte KIND_SANDBOX_RESET = 104;
+
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
     //  22 riskReason   — RiskReason ordinal, so a synchronous /trades reject can answer WHY
@@ -763,6 +766,13 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             onFxRate();
             return;
         }
+        if (event.type == InputEvent.TYPE_SANDBOX_RESET) {
+            // ADR-073. Unconditional here BY DESIGN -- see InputEvent.TYPE_SANDBOX_RESET: an
+            // env-gated apply would let one member refuse what its peers applied, which is
+            // divergence wearing a safety check's clothes. The gateway decides whether to issue.
+            onSandboxReset(session, timestamp);
+            return;
+        }
         if (event.type == InputEvent.TYPE_SESSION_CONTROL) {
             // YU17 (ADR-069): the venue phase is a sequenced command applied HERE, never handed to
             // the engine — same posture as the FX rate above. Its apply may release or cancel the
@@ -980,6 +990,127 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      * build's log entry, and "ignored identically on every member" is the only apply that cannot
      * diverge.
      */
+    /**
+     * ADR-073 sandbox reset: clear the SESSION, keep the VENUE, and never rewind a generator.
+     *
+     * <p><b>Rebuild rather than clear field by field.</b> {@link #initEngine()} already constructs
+     * a fresh deterministic core, and it is the same call {@code onStart} makes before a restore.
+     * Reusing it makes "everything not explicitly re-seeded below is gone" a structural property
+     * of the code rather than a checklist that a later field can silently fall off -- and a field
+     * missed by a hand-written clear is not a cosmetic bug here, it is one member holding state
+     * another dropped.
+     *
+     * <p><b>The captured set is exactly the snapshot's configuration records.</b> Policy, accounts,
+     * securities with their multipliers, symbols, prices, FX rates and the phase are read through
+     * the same accessors {@code writeSnapshot} uses and re-seeded through the same {@code
+     * bootstrap*} calls {@code onSnapshotRecord} uses. Both halves are therefore exercised by every
+     * snapshot round trip this suite already runs, rather than by this path alone.
+     *
+     * <p><b>What deliberately is NOT re-seeded:</b> resting orders, positions, book occupancy, OTC
+     * contracts, the pre-open queue and the idempotency window. That set IS the session.
+     *
+     * <p><b>Generators keep counting.</b> appliedSeq, nextOrderRef, highestIssuedRef and the trade
+     * counter survive, because {@code initEngine} zeroes them and this restores them afterwards.
+     * That is the property that makes this better than wiping the volume: an identifier issued
+     * before a reset can never be issued again after one, so a blotter that spans a reset stays
+     * readable. Getting this wrong is silent -- ids would simply start repeating -- so it has its
+     * own test.
+     */
+    private void onSandboxReset(final ClientSession session, final long timestamp) {
+        // ---- capture the venue ---------------------------------------------------------------
+        final long[] policy = risk.policyTuple();
+        final java.util.List<long[]> accounts = new java.util.ArrayList<>();
+        for (final long[] a : risk.accountTuples()) {
+            accounts.add(a.clone());
+        }
+        final java.util.List<long[]> securities = new java.util.ArrayList<>();
+        for (final long[] sec : risk.securityTuples()) {
+            final long multiplier = risk.contractMultiplier((int) sec[0]);
+            securities.add(new long[] { sec[0], sec[1], sec[2], sec[3], sec[4],
+                multiplier == 0L ? 1L : multiplier });
+        }
+        final java.util.List<long[]> prices = new java.util.ArrayList<>();
+        for (final long[] px : engine.priceTuples()) {
+            prices.add(px.clone());
+        }
+        final String[] symbols = tickerById.clone();
+        final int symbolCount = nextSymbolId;
+        final long[] fx = fxUsdTicksPerCurrency.clone();
+        final byte keptPhase = phase;
+        // Generators: read BEFORE the rebuild zeroes them.
+        final long keptAppliedSeq = appliedSeq;
+        final long keptNextOrderRef = nextOrderRef;
+        final long keptHighestIssuedRef = highestIssuedRef;
+        final long keptExternalOrderRefs = externalOrderRefs;
+        final long keptTradeCounter = engine.tradeCounter();
+        final long keptExternalTradeLegs = engine.externalTradeLegs();
+        // snapshotOrderRefsAscending() is the snapshot's own definition of "the orders that
+        // exist", so the count reported here cannot drift from what a cut would have carried.
+        final int clearedOrders = engine.snapshotOrderRefsAscending().length;
+        final int clearedContracts = contracts.size();
+        final int clearedQueued = queuedOrders.size();
+
+        // ---- rebuild -------------------------------------------------------------------------
+        initEngine();
+
+        // ---- restore the generators, so no identifier is ever issued twice --------------------
+        appliedSeq = keptAppliedSeq;
+        nextOrderRef = keptNextOrderRef;
+        highestIssuedRef = keptHighestIssuedRef;
+        externalOrderRefs = keptExternalOrderRefs;
+        engine.bootstrapTradeCounter(keptTradeCounter);
+        engine.bootstrapExternalTradeLegs(keptExternalTradeLegs);
+
+        // ---- re-seed the venue ---------------------------------------------------------------
+        risk.bootstrapPolicy(policy);
+        for (final long[] a : accounts) {
+            risk.bootstrapAccount((int) a[0], a[1] != 0, a[2]);
+        }
+        for (final long[] sec : securities) {
+            risk.bootstrapSecurity((int) sec[0], sec[1] != 0, sec[2] != 0, sec[3], sec[4]);
+            risk.putContractMultiplier((int) sec[0], sec[5]);
+        }
+        // Symbols before prices and before any book work, exactly as the snapshot orders them: the
+        // bond grid is DERIVED from the ticker, so a price seeded ahead of its symbol would anchor
+        // on the default grid and the book would come back on a different one than it was cut on.
+        nextSymbolId = symbolCount;
+        for (int id = 0; id < symbolCount; id++) {
+            tickerById[id] = symbols[id];
+            if (symbols[id] == null) {
+                continue;
+            }
+            final long derivedTickPx = derivedBookTickPxFor(symbols[id]);
+            if (derivedTickPx != 0L) {
+                engine.overrideBookTickPx(id, derivedTickPx);
+            }
+        }
+        for (final long[] px : prices) {
+            engine.bootstrapPrice((int) px[0], px[1]);
+        }
+        System.arraycopy(fx, 0, fxUsdTicksPerCurrency, 0, fx.length);
+        phase = keptPhase;
+
+        // ---- ack -----------------------------------------------------------------------------
+        event.seq = ++appliedSeq;
+        final boolean nanosClusterClock = cluster != null && cluster.timeUnit() == TimeUnit.NANOSECONDS;
+        event.eventTimeMillis = nanosClusterClock ? timestamp / 1_000_000L : timestamp;
+        activeSession = session;
+        applyRequestId = 0L;
+        drainOutputs(session);
+        ackBuffer.putLong(0, appliedSeq);
+        // What was actually dropped, so the caller can report a cleared venue as cleared and an
+        // already-empty one as already empty -- the two look identical from a 200 alone.
+        ackBuffer.putInt(8, clearedOrders);
+        ackBuffer.putByte(12, KIND_SANDBOX_RESET);
+        ackBuffer.putLong(13, event.clientOrderKey());
+        ackBuffer.putByte(21, (byte) clearedContracts);
+        ackBuffer.putByte(22, (byte) clearedQueued);
+        ackBuffer.putByte(23, (byte) 0);
+        ackBuffer.putLong(24, 0L);
+        offerEgress(session);
+        activeSession = null;
+    }
+
     private void onSessionControl(final ClientSession session, final long timestamp) {
         // Sequenced and time-stamped exactly as the order path is: the queue's cancel/release acks
         // are ordinary order-lifecycle events and must carry this apply's position and cluster

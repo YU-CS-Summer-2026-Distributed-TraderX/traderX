@@ -140,6 +140,32 @@ public final class InputEvent {
     public static final byte TYPE_SESSION_CONTROL = 15;
 
     /**
+     * ADR-073: clear a SANDBOX venue's trading state, as a sequenced command.
+     *
+     * <p><b>Why a command and not a disk wipe.</b> A sandbox is meant to be reset between
+     * sessions, and the obvious way -- stop the member, delete its volume, mint a fresh epoch --
+     * restarts every identifier from 1. A results view spanning such a reset then shows two
+     * different trades sharing a trade id, which is a corrupt record rather than a cleared one.
+     * Applied as a command, the reset is a log entry like any other: the generators keep counting,
+     * so an id issued before a reset can never be issued again after it.
+     *
+     * <p><b>What it clears, and what it deliberately does not.</b> It clears the SESSION -- resting
+     * orders, positions, book occupancy, OTC contracts, the pre-open queue and the idempotency
+     * window. It keeps the VENUE -- policy, account and security admission, symbol registrations,
+     * prices, FX rates and the session phase. A reset that also cleared admission would leave a
+     * venue where nothing can trade until several hundred instruments are re-admitted, which is a
+     * teardown, not a reset.
+     *
+     * <p><b>The enable gate is at INGRESS, never here.</b> Apply is unconditional and therefore
+     * identical on every member. Gating the apply on an environment variable would let a member
+     * that has it unset refuse a command its peers applied, which is not a refusal -- it is
+     * permanent divergence, produced by the very safety check meant to prevent it. What protects a
+     * live venue is that its gateway will not ISSUE this command (ADR-073: SANDBOX_RESET_ENABLED),
+     * plus the admin credential every control route already demands.
+     */
+    public static final byte TYPE_SANDBOX_RESET = 16;
+
+    /**
      * YU17 (ADR-072): the account range replayed TAQ print flow trades on, and therefore the tag
      * that separates externally-generated order flow from everything else.
      *

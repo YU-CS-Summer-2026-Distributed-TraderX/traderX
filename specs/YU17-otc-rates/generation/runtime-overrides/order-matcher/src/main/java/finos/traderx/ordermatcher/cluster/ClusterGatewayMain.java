@@ -123,6 +123,12 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Same default as the Spring controller's risk.control.token, so a proof written against one
     // tier authenticates against the other without being told which it is talking to.
     private final String riskControlToken = env("RISK_CONTROL_TOKEN", "dev-risk-control");
+    /**
+     * ADR-073: whether this venue will ISSUE a sandbox reset. Off unless explicitly enabled, and
+     * read once here rather than per request so the answer cannot change under a running venue.
+     * The live tier never sets it; the sandbox manifest does.
+     */
+    private final boolean sandboxResetEnabled = "1".equals(env("SANDBOX_RESET_ENABLED", "0"));
     // Stamped once per process: a restarted gateway is a new epoch, which is exactly what a
     // consumer comparing epochs needs in order to know its watermark is no longer comparable.
     private final long controlEpoch = System.currentTimeMillis();
@@ -226,6 +232,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long[] lastSwapAck;    // YU17 {contractId, booked, riskReason, clientOrderKey}
     private long[] lastSessionAck; // YU17 {appliedSeq, phase, requestId}
+    private long[] lastResetAck;   // ADR-073 {appliedSeq, clearedOrders, requestId, contracts, queued}
     private long nextSymbolRequestId = 1;
     // Pipelined-batch ack accounting (owner thread only; pollEgress runs on the owner thread).
     // Acks per session are FIFO in log order, so counting order-lifecycle acks matches offers.
@@ -339,6 +346,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/session", this::handleSession);
+        server.createContext("/sandbox/reset", this::handleSandboxReset);
         server.createContext("/swaps", this::handleSwapBook);
         server.createContext("/swaptions", this::handleSwaptionBook);
         server.createContext("/metrics", this::handleMetrics);
@@ -703,6 +711,11 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // the ratcheting-offset bug that wedged this gateway once already.
             lastSessionAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
+        } else if (kind == MatchingEngineClusteredService.KIND_SANDBOX_RESET) {
+            // ADR-073. Its own kind and its own request id at 13, for the reason the phase ack
+            // above spells out: a reset's apply drains whatever the cleared session had pending.
+            lastResetAck = new long[] { buffer.getLong(offset), buffer.getInt(offset + 8),
+                buffer.getLong(offset + 13), buffer.getByte(offset + 21), buffer.getByte(offset + 22) };
         } else if (OutputEvent.isOrderLifecycleKind(kind) || kind == OutputEvent.KIND_ORDER_NOT_FOUND) {
             if (batchActive && batchFenceAwaiting && kind == OutputEvent.KIND_ORDER_NOT_FOUND
                     && buffer.getInt(offset + 8) == 0) {
@@ -1564,6 +1577,71 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * <p>Correlation: offered with request id 0, answered by {@code KIND_SESSION_PHASE} carrying
      * this call's own nonce at ack byte 13 — see {@link #onEgress}.
      */
+    /**
+     * ADR-073: clear this venue's trading session. POST /sandbox/reset, 200
+     * {"sequence":N,"clearedOrders":n,"clearedContracts":n,"clearedQueued":n}.
+     *
+     * <p><b>This route is where a live venue is protected, and it is the ONLY place it can be.</b>
+     * The apply is deliberately unconditional so every member does the same thing with the same
+     * committed command; a member-side env check would turn a safety flag into a divergence
+     * source. So the gate lives at the producer: without {@code SANDBOX_RESET_ENABLED=1} this
+     * gateway refuses to issue the command at all, and a live deployment simply never sets it.
+     *
+     * <p>404, not 403, when disabled: a route that answers "forbidden" tells a prober the
+     * capability is there and only the credential is missing. On a venue that will never offer it,
+     * the honest answer is that there is no such route here.
+     *
+     * <p>Credentials are the risk-control pair every other control route on this gateway uses, so
+     * this adds no new secret and no new trust path.
+     */
+    private void handleSandboxReset(final HttpExchange exchange) {
+        try {
+            if (!sandboxResetEnabled) {
+                respond(exchange, 404, "{\"error\":\"no such route on this venue\"}");
+                return;
+            }
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{\"error\":\"POST only\"}");
+                return;
+            }
+            final String token = exchange.getRequestHeaders().getFirst("X-Risk-Control-Token");
+            final String operator = exchange.getRequestHeaders().getFirst("X-Risk-Operator");
+            if (!riskControlToken.equals(token) || operator == null || operator.isBlank()) {
+                respond(exchange, 401, "{\"error\":\"invalid risk-control credentials\"}");
+                return;
+            }
+            final long requestId = clientOrderKey("sandbox-reset-" + System.nanoTime());
+            final long[] ack = onOwner(() -> {
+                event.type = InputEvent.TYPE_SANDBOX_RESET;
+                event.side = 0;
+                event.setClientOrderKey(requestId);
+                event.accountId = 0;
+                event.securityId = 0;
+                event.orderRef = 0;
+                event.qty = 0;
+                event.limitPx = 0L;
+                event.eventTimeMillis = 0;
+                codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                lastResetAck = null;
+                if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES,
+                        () -> lastResetAck != null && lastResetAck[2] == requestId)) {
+                    return null; // ambiguous, NOT a failure -- the command may yet commit
+                }
+                return lastResetAck;
+            });
+            if (ack == null) {
+                respond(exchange, 504, "{\"error\":\"no committed decision\"}");
+                return;
+            }
+            respond(exchange, 200, "{\"sequence\":" + ack[0]
+                + ",\"clearedOrders\":" + ack[1]
+                + ",\"clearedContracts\":" + ack[3]
+                + ",\"clearedQueued\":" + ack[4] + "}");
+        } catch (final Exception e) {
+            respond(exchange, 503, "{\"error\":\"" + e.getClass().getSimpleName() + "\"}");
+        }
+    }
+
     private void handleSession(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {

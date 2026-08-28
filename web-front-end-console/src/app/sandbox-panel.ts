@@ -73,11 +73,22 @@ interface EngineHealth {
       <button type="button" (click)="seek()" [disabled]="busy() || !selectedDay()">Go</button>
     </div>
 
-    <!-- Deliberately not wired yet: resetting SANDBOX STATE is not the same action as rewinding the
-         tape. The tape is this driver's clock; the book, positions and order refs live in the
-         sandbox engine, and clearing them is an engine-side operation. A button here that only
-         rewound the tape would read as "reset" and leave every fill from the last session in the
-         book, which is the kind of half-true control this project keeps finding. -->
+    <!-- Resetting SANDBOX STATE is not the same action as rewinding the tape, so this is a
+         separate control from the transport above and says which one it is. The tape is the
+         driver's clock; the book, positions and contracts live in the engine, and this clears
+         those by issuing ADR-073's sequenced command -- not by rewinding anything. -->
+    <div class="reset">
+      <button type="button" class="danger" (click)="confirmReset()" [disabled]="busy()">
+        {{ confirming() ? 'Confirm reset' : 'Reset sandbox state' }}
+      </button>
+      @if (confirming()) {
+        <button type="button" (click)="confirming.set(false)">Cancel</button>
+      }
+      <span class="muted">
+        @if (resetNote()) { {{ resetNote() }} }
+        @else { Clears orders, positions and contracts. Keeps accounts, instruments and the tape. }
+      </span>
+    </div>
   `,
   styles: `
     .head { display: flex; align-items: baseline; gap: 10px; }
@@ -91,6 +102,10 @@ interface EngineHealth {
     .mono { font-variant-numeric: tabular-nums; font-family: var(--mono, ui-monospace, monospace); }
     .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
     .err { color: var(--bad); }
+    .reset { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+             margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .danger { color: var(--bad); }
+    .muted { color: var(--muted); font-size: 12px; }
   `,
 })
 export class SandboxPanel implements OnDestroy {
@@ -101,6 +116,8 @@ export class SandboxPanel implements OnDestroy {
   readonly error = signal<string | null>(null);
   readonly busy = signal(false);
   readonly selectedDay = signal('');
+  readonly confirming = signal(false);
+  readonly resetNote = signal('');
 
   readonly tape = computed(() => this.status()?.tape ?? null);
   readonly hasTape = computed(() => !!this.tape()?.position);
@@ -135,6 +152,37 @@ export class SandboxPanel implements OnDestroy {
   }
 
   pick(v: string): void { this.selectedDay.set(v); }
+
+  /**
+   * Two clicks, because this one is not undoable and the tape controls beside it are. The second
+   * click is the action; the first only arms it. No modal -- the button's own label carries the
+   * state, so there is nothing to dismiss and nothing that can be confirmed by reflex.
+   */
+  async confirmReset(): Promise<void> {
+    if (!this.confirming()) { this.confirming.set(true); return; }
+    this.confirming.set(false);
+    this.busy.set(true);
+    const r = await this.api.load<{ sequence: number; clearedOrders: number;
+      clearedContracts: number; clearedQueued: number; error?: string }>(
+      '/sandbox/gw/sandbox/reset', { method: 'POST' });
+    this.busy.set(false);
+    if (r.status === 404) {
+      // The venue does not offer the capability at all, which is what a live tier answers.
+      this.error.set('This venue does not offer a reset.');
+      return;
+    }
+    if (r.status !== 200 || !r.body) {
+      this.error.set(r.body?.error ? `reset refused: ${r.body.error}` : `reset refused (${r.status})`);
+      return;
+    }
+    this.error.set(null);
+    // Report what was actually dropped. "Reset" alone cannot tell a cleared venue from one that
+    // was already empty, and those are different answers when a session looked wrong.
+    const b = r.body;
+    this.resetNote.set(`Cleared at sequence ${b.sequence}: ${b.clearedOrders} order(s), `
+      + `${b.clearedContracts} contract(s), ${b.clearedQueued} queued.`);
+    await this.refresh();
+  }
 
   async toggle(): Promise<void> {
     const to = this.paused() ? 'resume' : 'pause';

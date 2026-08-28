@@ -880,7 +880,10 @@ function proxySandbox(req, res, prefix) {
   }
   // The engine's risk-control endpoints want their own token; it is the gateway's compiled-in dev
   // default and is not a live credential.
-  if (prefix === '/sandbox/gw' && upstreamPath.startsWith('/risk/control/')) {
+  // ADR-073's reset uses the same risk-control credential pair as every other control route on
+  // that gateway, so it needs the same headers and no new secret.
+  if (prefix === '/sandbox/gw'
+      && (upstreamPath.startsWith('/risk/control/') || upstreamPath === '/sandbox/reset')) {
     headers['x-risk-control-token'] = process.env.SANDBOX_RISK_TOKEN ?? 'dev-risk-control';
     headers['x-risk-operator'] = 'console-sandbox';
   }

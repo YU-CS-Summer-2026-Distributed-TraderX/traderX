@@ -101,6 +101,14 @@ spec:
             # DELIBERATELY ABSENT — see the header. TRADE_BRIDGE_NATS_URL, RISK_EXTRACT_NATS_URL,
             # KDB_TAP_DIR. Adding any of them wires this engine into the live read model, the live
             # extract, or the live analytical store, and silently ends the isolation.
+            # ADR-073: this gateway may ISSUE the reset command. The live tier never sets this, and
+            # that asymmetry is the ONLY thing separating the two -- the members' apply is
+            # deliberately unconditional, because a member-side env check would let one member
+            # refuse what its peers applied, which is divergence produced by the safety check
+            # itself. Unset, the route answers 404 rather than 403: on a venue that will never
+            # offer the capability, "forbidden" would tell a prober it is there.
+            - name: SANDBOX_RESET_ENABLED
+              value: "1"
             - name: OTEL_TRACES
               value: "0"
             - name: JAVA_TOOL_OPTIONS
