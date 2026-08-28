@@ -311,7 +311,9 @@ echo "  operator refs ${OPR_0} -> ${OPR_1}, trade legs ${OPT_0} -> ${OPT_1} (2 l
 
 step "6. the write pressure this run actually ran under"
 assert_observed_rate "$(( SECONDS - RUN_T0 ))" "cluster recovery"
-print_pressure "${PRESSURE0}" "$(pressure_row)"
+# three orders in step 1 and the closing cross in step 5 -- counted from the call sites, and
+# matched +4 on both GKE runs recorded in the issue file.
+print_pressure "${PRESSURE0}" "$(pressure_row)" 4
 
 echo
 echo "[PASS] cluster recovery: a member destroyed to an empty disk rejoined to byte-identity on"

@@ -269,7 +269,10 @@ echo
 
 step "4. the write pressure this run actually ran under"
 assert_observed_rate "$(( SECONDS - RUN_T0 ))" "failover transparency"
-print_pressure "${PRESSURE0}" "$(pressure_row)"
+# A FLOOR, not an equality: the stream length is time-bounded so the count is not known ahead,
+# and a retry across the election burns a ref without booking. Measured +567/+498/+529 against
+# exactly that many acks on the three GKE runs -- so those retries never reached the engine.
+print_pressure "${PRESSURE0}" "$(pressure_row)" "min:${ACKED}"
 
 rm -f "${STREAM_LOG}"
 echo

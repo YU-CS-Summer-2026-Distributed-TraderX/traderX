@@ -660,6 +660,40 @@ by saying what the run does NOT establish. Three limits were surfaced that were 
 > The audit is cheap and the failure it prevents is not: a wrong assertion reds and gets
 > investigated; **a wrong banner gets quoted.**
 
+### …and then the limit got a DETECTOR, which is better than a caveat
+
+Naming "no claim under concurrent operator load" and leaving the reader nothing to do about it is
+honest and not much use. The replace-proof lane's answer (`a5abe888`) was that **the detecting number
+was already being printed and merely unlabelled**: the write-pressure table carries
+`traderx_cluster_operator_next_order_ref`, and a proof knows exactly how many orders it submits, so
+the row can be checked against that count **across the whole run** — which is precisely what a step-0
+quiescence check cannot do.
+
+Adopted here as `operator_expectation` in `lib-gke-replay-gates.sh`. Counted from the call sites, not
+recalled, and matched on every run already recorded:
+
+| proof | expected | measured |
+|---|---|---|
+| `cross-epoch-idreuse` | `2 x N_PER_EPOCH + 1` = **21** | +21 on all five runs |
+| `recovery` | 3 in step 1 + 1 in step 5 = **4** | +4 on both runs |
+| `failover-transparency` | **floor** of `ACKED` (time-bounded stream; a retry burns a ref) | +567 / +498 / +529 against exactly that many acks |
+
+**Deliberately a reading, not an assertion**, and the reasoning is the library's own: operator
+counters are global over order *writers*, so the algo engine or another lane's proof would red a
+correct run on a shared rig. That is a flake, and **a flake gets re-run until it passes — the exact
+failure mode this whole file exists to remove.** A number a human checks beats an assertion that
+erodes. The `assert_order_effects` windows still assert their own tight brackets; this covers the
+gaps between them.
+
+Verified on the GKE bench: `operator refs +21 == the 21 order(s) this proof submitted: no OTHER
+operator wrote at any point during this run`. Four selftest arms cover the exact, mismatch and both
+floor outcomes — a detector that cannot tell them apart is worse than none, because it reads as one.
+
+**A free corroboration fell out of the count**, the same way one did for the sibling: `failover-
+transparency` measured `+567` refs for 567 acks *with 1 retry reported*. If every retry burned a ref
+the count would be 568 — so that retried send never reached the engine at all. The floor was the
+right shape and an equality would have been wrong in the other direction.
+
 ## Two changes taken from the sibling lanes' replies
 
 * **The hand-rolled retries are gone.** `yu12-gke-cross-epoch-idreuse` and

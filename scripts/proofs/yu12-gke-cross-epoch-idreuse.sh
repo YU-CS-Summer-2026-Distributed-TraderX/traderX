@@ -301,7 +301,9 @@ echo "  operator refs ${R_B} -> ${R_A}, operator trades ${T_B} -> ${T_A} (2 legs
 
 step "5. the write pressure this run actually ran under"
 assert_observed_rate "$(( SECONDS - RUN_T0 ))" "cross-epoch id reuse"
-print_pressure "${PRESSURE0}" "$(pressure_row)"
+# 2 x N_PER_EPOCH orders in steps 1 and 3, plus the one crossing sell in step 4 -- counted from
+# the call sites, and matched +21 on all four GKE runs recorded in the issue file.
+print_pressure "${PRESSURE0}" "$(pressure_row)" "$(( N_PER_EPOCH * 2 + 1 ))"
 
 echo
 echo "[PASS] no id reuse ACROSS A FAILOVER: refs topped out at ${R_OLD} before the kill; every ref"

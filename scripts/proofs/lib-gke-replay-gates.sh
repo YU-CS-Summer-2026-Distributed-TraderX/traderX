@@ -159,7 +159,18 @@ pressure_row() {
            /^traderx_cluster_operator_next_order_ref[{ ]/ {f=$2}
            END{print a, b, c, d, e, f}'
 }
-print_pressure() { # print_pressure <before-row> <after-row>
+# The optional third argument turns the operator-ref row into a WHOLE-RUN detector for a second
+# operator, which is the one exposure the repair introduced and the one a step-0 quiescence check
+# cannot see: that check covers a MOMENT, this covers the run. Pass the exact number of orders the
+# proof submits ("21"), or a floor where retries can burn a ref without booking ("min:567").
+#
+# DELIBERATELY A READING, NOT AN ASSERTION. Operator counters are global over order WRITERS -- the
+# algo engine, another lane's proof, or a person with curl all land in them -- so asserting this on
+# a shared rig would red a CORRECT run whenever someone else was working. That is a flake, and a
+# flake gets re-run until it passes, which is the precise failure mode this whole file exists to
+# remove. A number a human checks beats an assertion that erodes. The two assert_order_effects
+# windows still assert their own tight brackets; this covers the gaps BETWEEN them.
+print_pressure() { # print_pressure <before-row> <after-row> [expected-operator-ref-delta]
   awk -v b="$1" -v a="$2" 'BEGIN{
     split(b,B," "); split(a,A," ");
     n[1]="traderx_cluster_trades";             n[2]="  traderx_cluster_operator_trades";
@@ -167,6 +178,32 @@ print_pressure() { # print_pressure <before-row> <after-row>
     n[5]="traderx_cluster_next_order_ref";     n[6]="  traderx_cluster_operator_next_order_ref";
     for(i=1;i<=6;i++) printf "    %-44s %10s -> %-10s %+d\n", n[i], B[i], A[i], A[i]-B[i];
   }'
+  [[ -n "${3:-}" ]] && operator_expectation "$1" "$2" "$3"
+  return 0
+}
+
+operator_expectation() { # operator_expectation <before-row> <after-row> <expected|min:N>
+  local want="${3}" got floor=0
+  got="$(awk -v b="$1" -v a="$2" 'BEGIN{split(b,B," ");split(a,A," ");print A[6]-B[6]}')"
+  [[ "${want}" == min:* ]] && { floor=1; want="${want#min:}"; }
+  if (( floor )); then
+    if (( got >= want )); then
+      echo "    ^ operator refs +${got}, at or above the ${want} order(s) this proof submitted — consistent"
+      echo "      with no second operator (a retry burns a ref without booking, so this is a floor)."
+    else
+      echo "    ^ operator refs +${got} is BELOW the ${want} order(s) submitted. Refs are allocated on"
+      echo "      apply, so this means orders were acked without being sequenced. Investigate."
+    fi
+  elif (( got == want )); then
+    echo "    ^ operator refs +${got} == the ${want} order(s) this proof submitted: no OTHER operator"
+    echo "      wrote at any point during this run, so every reading above is attributable."
+  else
+    echo "    ^ operator refs +${got}, but this proof submitted ${want} order(s). A SECOND OPERATOR wrote"
+    echo "      during the run (algo engine, another lane, a person with curl) — the tape is excluded"
+    echo "      from this counter by construction. The bracketed windows still hold; readings OUTSIDE"
+    echo "      them are not attributable to this run. Not asserted, because on a shared rig that"
+    echo "      would red a correct run — but do not cite this green without accounting for it."
+  fi
 }
 
 # --- selftest -------------------------------------------------------------------------------------
@@ -186,6 +223,16 @@ gates_selftest() {
   chk "pressure delta arithmetic" \
     "$(print_pressure "10 1 20 2 30 3" "18 3 24 2 41 5" | awk '{printf "%s ", $NF}')" \
     "+8 +2 +4 +0 +11 +2 "
+  # The whole-run operator detector: exact match, a mismatch naming a second operator, and the
+  # floor form. A detector that cannot distinguish these is worse than none, because it reads as one.
+  chk "operator expectation: exact match" \
+    "$(operator_expectation "10 1 20 2 30 3" "18 3 24 2 41 5" 2 | grep -c 'no OTHER operator')" "1"
+  chk "operator expectation: mismatch names a second operator" \
+    "$(operator_expectation "10 1 20 2 30 3" "18 3 24 2 41 5" 1 | grep -c 'SECOND OPERATOR')" "1"
+  chk "operator expectation: floor satisfied" \
+    "$(operator_expectation "10 1 20 2 30 3" "18 3 24 2 41 5" min:2 | grep -c 'at or above')" "1"
+  chk "operator expectation: floor breached" \
+    "$(operator_expectation "10 1 20 2 30 3" "18 3 24 2 41 5" min:9 | grep -c 'BELOW')" "1"
   echo "gates selftest: $(( t - f ))/${t} passed"
   return $(( f > 0 ))
 }
