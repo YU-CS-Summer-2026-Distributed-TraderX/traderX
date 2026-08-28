@@ -59,6 +59,36 @@ the existing by-day opens/closes/gaps view, which stays.
 | Does anything reach the live system | **No** — not positions, not P&L, not the extract, not kdb |
 | Live venue when the tape is gone | **Quiet until someone trades.** No synthetic flow to replace it |
 
+## The reset is a sequenced command, not a volume wipe
+
+*Decided 2026-08-28, after the "does sandbox state persist" parameter above forced the question of
+what clearing it actually means.*
+
+The obvious reset is the fresh-epoch procedure this project already uses for the deterministic core:
+scale to zero, delete the PVC, mint a new epoch. It is rejected here for one reason — **it restarts
+every generator from 1.** Order refs and trade ids begin again, so a results view spanning a reset
+shows two different trades under one trade id. That is a corrupt record, not a cleared one, and the
+results surface is the thing this sandbox exists to produce.
+
+So the reset is `TYPE_SANDBOX_RESET`, applied like any other command. `commandType` was already a
+`uint8`, so the wire is untouched. It clears the **session** — resting orders, positions, book
+occupancy, OTC contracts, the pre-open queue, the idempotency window — and keeps the **venue** —
+policy, account and security admission with multipliers, symbol registrations, prices, FX rates and
+the session phase. A reset that dropped admission would leave a venue where nothing trades until
+several hundred instruments are re-admitted, which is a teardown wearing a reset's name.
+
+**The enable gate is at ingress, and this is not a stylistic choice.** The apply is unconditional
+and therefore identical on every member. Gating the *apply* on an environment variable would let a
+member with it unset refuse a command its peers applied — which is not a refusal, it is permanent
+divergence, produced by the very safety check meant to prevent it. What protects a live venue is
+that its gateway will not *issue* the command: `SANDBOX_RESET_ENABLED` is set only in the sandbox
+manifest. Disabled, the route answers **404 rather than 403**, because "forbidden" tells a prober
+the capability is there and only the credential is missing.
+
+The rule for anyone changing this: **an identifier issued before a reset must never be issued
+again after one.** It has a negative-controlled test, because the failure is silent — ids simply
+start repeating and every surface keeps returning 200.
+
 ## The isolation must be structural
 
 "Nothing reaches the live system" is the whole value of this, so it cannot rest on a flag someone
@@ -71,7 +101,12 @@ not be able to tell.**
 
 ## Open, and load-bearing
 
-- **TAQ display rights (ADR-068 open question 1) are still unsettled** — *"Does the console display
+- ~~**TAQ display rights (ADR-068 open question 1) are still unsettled**~~ — **ANSWERED 2026-08-28
+  in ADR-068**: display is permitted on the educational basis, to a signed-in operator only. Enforced
+  in the console server at the single point every tape surface passes through, rather than per panel:
+  a display rule that lives in the UI is one a second UI, or a curl, walks straight past. The
+  original wording is kept below for the reasoning it carries.
+  - *(superseded)*  — *"Does the console display
   external prices, or only consume them internally? Display rights are usually the expensive
   clause."* Surface 3 is a display surface over the full corpus, and surface 2 displays executed
   prints. Building them commits an answer to that question. Resolve the licence before either ships
