@@ -47,7 +47,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-712a505b
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-session-scope
           imagePullPolicy: Always
           # The members' own launch form, including the `& wait $!` that keeps signal delivery
           # working through the shell.
@@ -189,7 +189,7 @@ spec:
         cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: cluster-gateway
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-712a505b
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-session-scope
           imagePullPolicy: Always
           # Copied verbatim from the live gateway. The classpath is the exploded
           # /opt/app/classes:/opt/app/lib/* layout, NOT a fat jar.

@@ -62,8 +62,16 @@ interface Results {
 
     @if (loaded() && !days().length && !error()) {
       <p class="muted">
-        Nothing has traded in this sandbox yet. Start the tape on the Sandbox tab — this view fills in
-        as orders execute, and stays empty for any day the tape passed through without trading.
+        @if (results()?.lastResetSeq) {
+          <!-- "yet" would be wrong here and misread as data loss: the venue HAS traded, this
+               session just has not. Say which of the two it is. -->
+          Nothing has traded since the reset. Resume the tape on the Sandbox tab and this fills in as
+          orders execute. Earlier sessions are still in the engine's audit log — a reset clears the
+          book, not the log.
+        } @else {
+          Nothing has traded in this sandbox yet. Start the tape on the Sandbox tab — this view fills
+          in as orders execute, and stays empty for any day the tape passed through without trading.
+        }
       </p>
     }
 
