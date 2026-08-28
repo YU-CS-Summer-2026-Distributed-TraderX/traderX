@@ -246,7 +246,11 @@ function tapeBypass(req, res) {
   try {
     // The extract only changes at a bring-up, so this is cached for minutes, not seconds.
     if (Date.now() - tapeCache.at > 300_000) {
-      const out = execFileSync('kubectl', ['-n', NS, 'exec', 'deploy/price-publisher',
+      // Resolve the POD by label rather than `exec deploy/...`. The console's Role deliberately
+      // withholds `deployments`, so the deploy/ form needs a GET it will never have and 502s
+      // in-cluster while working perfectly from a laptop with cluster-admin — which is exactly the
+      // asymmetry the Role's own comment warns about. Every other call site here already does this.
+      const out = execFileSync('kubectl', ['-n', NS, 'exec', podByLabel('app=price-publisher'),
         '--', 'node', '-e', TAPE_JS], { timeout: 30000, maxBuffer: 32 * 1024 * 1024 }).toString();
       // Parse before caching: a pod that printed anything ahead of the JSON would otherwise be
       // cached as the tape for five minutes.
@@ -255,8 +259,11 @@ function tapeBypass(req, res) {
       tapeCache.body = out;
     }
     return json(res, 200, tapeCache.body);
-  } catch {
-    return json(res, 502, { error: 'could not read the replay extract off price-publisher' });
+  } catch (e) {
+    // Name the cause. The bare message was true and sent three people to the extract file, which
+    // was present and readable the whole time; the failure was the RBAC on the call that reads it.
+    return json(res, 502, { error: 'could not read the replay extract off price-publisher',
+      cause: String(e && e.message || e).split('\n')[0].slice(0, 300) });
   }
 }
 
