@@ -199,6 +199,18 @@ _kx() { # _kx <pod> -- <cmd...>   exec into a member's cluster-node container
 #
 # THE FIX, IN PREFERENCE ORDER — and the first one is the one all three reached for last:
 #
+#   AND A TWIN OUTRANKS A RETRY WHEN BOTH ARE AVAILABLE -- measured on GKE 2026-08-27, 20 unretried
+#   three-member samples of each at 6.13/s:
+#
+#       four-quantity read      coherent  5/20
+#       two-field book digest   coherent  5/20
+#       operator twins          coherent 20/20
+#
+#   A COUNTER THAT DOES NOT MOVE CANNOT BE SAMPLED INCOHERENTLY. So an operator-scoped reading fixes
+#   the skew below AND the contamination above, in one move, while a retry fixes only the skew. The
+#   retry is for readings that MUST stay global -- `digest_consensus` and friends, where the claim
+#   is about the venue rather than about your own orders and no twin exists or could.
+#
 #   1. ASK THE ORDER WHAT HAPPENED TO IT. A count standing in for "THIS order did X" can almost
 #      always be replaced by the identity claim itself: the row's own CANCELED/FILLED status, its
 #      own orderRef in the ack, its own absence from the open set. It needs no counter, no twin
@@ -629,4 +641,34 @@ await_open_set() { # await_open_set <account> <ticker> <want-refs-ascending> <wh
   A missing ref is an order the client was told about that the venue does not hold; an unexpected
   one is an order booked that no client was acked for. Scoped to a minted ticker, neither can be
   the tape."
+}
+
+# The EPOCH QUALIFIER out of a read-model order id. The id is `<epoch>-<orderRef>`
+# (OrderNatsPublisher:20, ClusterRecon:484), and the qualifier is what actually separates two
+# incarnations' orders — NOT the ref generator:
+#
+#   "orderRef restarts at 1 on a fresh cluster incarnation, so a table keyed on the bare ref
+#    collides across epochs — partially, silently. The read-model key is therefore
+#    epoch + "-" + orderRef ... stable across FAILOVER (orderRef does not reset on failover),
+#    and bumped together with wiping the DB on a fresh incarnation."
+#
+# So a proof that kills a leader and observes refs continuing has shown that a FAILOVER does not
+# reset the generator (real, and the YU11->YU12 snapshot fix is what makes it true). It has NOT
+# shown anything about a MINT, where refs DO restart at 1 by design and only this qualifier keeps
+# the two incarnations' rows apart. Do not let a proof's use of the word "epoch" for a leadership
+# term stand in for the wiped-incarnation case — MatchingEngineClusteredService:1278 is explicit
+# that "nothing here makes ids unique ACROSS a wiped epoch".
+order_epoch_of() { # order_epoch_of <account> <ref> -> the "<epoch>" prefix, or "" if not visible
+  tp_orders "$1" all | python3 -c "
+import sys, json
+want = sys.argv[1]
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    print(''); sys.exit(0)
+for r in rows:
+    rid = str(r.get('id', ''))
+    if rid.rsplit('-', 1)[-1] == want and '-' in rid:
+        print(rid.rsplit('-', 1)[0]); sys.exit(0)
+print('')" "$2" 2>/dev/null || true
 }
