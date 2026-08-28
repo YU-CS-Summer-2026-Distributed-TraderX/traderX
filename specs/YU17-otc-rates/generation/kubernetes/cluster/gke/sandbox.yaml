@@ -47,7 +47,7 @@ spec:
       terminationGracePeriodSeconds: 10
       containers:
         - name: cluster-node
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-712a505b
           imagePullPolicy: Always
           # The members' own launch form, including the `& wait $!` that keeps signal delivery
           # working through the shell.
@@ -101,14 +101,6 @@ spec:
             # DELIBERATELY ABSENT — see the header. TRADE_BRIDGE_NATS_URL, RISK_EXTRACT_NATS_URL,
             # KDB_TAP_DIR. Adding any of them wires this engine into the live read model, the live
             # extract, or the live analytical store, and silently ends the isolation.
-            # ADR-073: this gateway may ISSUE the reset command. The live tier never sets this, and
-            # that asymmetry is the ONLY thing separating the two -- the members' apply is
-            # deliberately unconditional, because a member-side env check would let one member
-            # refuse what its peers applied, which is divergence produced by the safety check
-            # itself. Unset, the route answers 404 rather than 403: on a venue that will never
-            # offer the capability, "forbidden" would tell a prober it is there.
-            - name: SANDBOX_RESET_ENABLED
-              value: "1"
             - name: OTEL_TRACES
               value: "0"
             - name: JAVA_TOOL_OPTIONS
@@ -197,7 +189,7 @@ spec:
         cloud.google.com/gke-nodepool: default-pool
       containers:
         - name: cluster-gateway
-          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-6374c110
+          image: us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node:yu17-712a505b
           imagePullPolicy: Always
           # Copied verbatim from the live gateway. The classpath is the exploded
           # /opt/app/classes:/opt/app/lib/* layout, NOT a fat jar.
@@ -214,6 +206,14 @@ spec:
               value: "18110"
             - name: GATEWAY_EGRESS_PORT
               value: "40470"
+            # ADR-073: this gateway may ISSUE the reset command. The live tier never sets this, and
+            # that asymmetry is the ONLY thing separating the two -- the members' apply is
+            # deliberately unconditional, because a member-side env check would let one member
+            # refuse what its peers applied, which is divergence produced by the safety check
+            # itself. Unset, the route answers 404 rather than 403: on a venue that will never
+            # offer the capability, "forbidden" would tell a prober it is there.
+            - name: SANDBOX_RESET_ENABLED
+              value: "1"
             - name: GATEWAY_PROBE_PORT
               value: "18111"
             - name: OTEL_TRACES
