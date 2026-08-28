@@ -752,7 +752,17 @@ app.post('/replay/seek', replayBody, replayControl((req, res) => {
 }));
 
 app.get('/replay/status', (_req, res) => {
-  res.json({ controls: REPLAY_CONTROLS, tape: taqReplay.status(), flow: printReplay.status(taqReplay) });
+  const ex = taqReplay.state.extract;
+  res.json({
+    controls: REPLAY_CONTROLS,
+    tape: taqReplay.status(),
+    flow: printReplay.status(taqReplay),
+    // The tape's own shape, so a client can offer a seek target and label a window position without
+    // hardcoding either. A UI that assumed 120 windows/day would be asserting the corpus's shape
+    // from memory, and would keep reporting confidently after the corpus changed.
+    days: ex ? ex.days.map((d) => d.date) : [],
+    windowsPerDay: ex ? Math.round(ex.sessionSeconds / ex.windowSeconds) : null
+  });
 });
 
 app.get('/prices', (_req, res) => {

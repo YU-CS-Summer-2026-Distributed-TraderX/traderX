@@ -704,6 +704,46 @@ mintInternalToken();
 // for no visible reason, which is the failure this whole file keeps being written to avoid.
 setInterval(mintInternalToken, (JWT_TTL_S / 2) * 1000).unref?.();
 
+// ---- ADR-073: the sandbox --------------------------------------------------------------------
+// A SEPARATE proxy, not three more PROXY_PREFIXES entries, because those all resolve to edge-proxy
+// and none of the sandbox services are behind it. Routing them through the edge would either 404 or
+// -- worse, if a name ever collided -- reach the LIVE component of the same name. The sandbox is a
+// second venue; its front door is its own.
+const SANDBOX_TARGETS = {
+  '/sandbox/gw':     { host: process.env.SANDBOX_GATEWAY_HOST ?? 'sandbox-gateway', port: 18110 },
+  '/sandbox/engine': { host: process.env.SANDBOX_ENGINE_HOST  ?? 'sandbox-engine',  port: 8080  },
+  '/sandbox/pub':    { host: process.env.SANDBOX_REPLAY_HOST  ?? 'sandbox-replay',  port: 18100 }
+};
+
+const sandboxRoute = (p) => Object.keys(SANDBOX_TARGETS)
+  .find((x) => p === x || p.startsWith(`${x}/`));
+
+function proxySandbox(req, res, prefix) {
+  const target = SANDBOX_TARGETS[prefix];
+  const url = req.url ?? '/';
+  const upstreamPath = url.slice(prefix.length) || '/';
+  // Deliberately NOT forwarding the console's internal JWT here. That token authenticates this
+  // process to the LIVE services; handing it to the sandbox would be the first thread of a path
+  // between the two, and ADR-073's whole claim is that there is none.
+  const headers = { ...req.headers, host: `${target.host}:${target.port}` };
+  delete headers['authorization'];
+  delete headers['Authorization'];
+  delete headers['x-auth-master-secret'];
+  // The engine's risk-control endpoints want their own token; it is the gateway's compiled-in dev
+  // default and is not a live credential.
+  if (prefix === '/sandbox/gw' && upstreamPath.startsWith('/risk/control/')) {
+    headers['x-risk-control-token'] = process.env.SANDBOX_RISK_TOKEN ?? 'dev-risk-control';
+    headers['x-risk-operator'] = 'console-sandbox';
+  }
+  const up = http.request({ host: target.host, port: target.port, path: upstreamPath,
+    method: req.method, headers }, (r) => {
+    res.writeHead(r.statusCode ?? 502, r.headers);
+    r.pipe(res);
+  });
+  up.on('error', (e) => json(res, 502, { error: `sandbox ${prefix} unreachable`, cause: String(e.message) }));
+  req.pipe(up);
+}
+
 function proxyToEdge(req, res, rewrite) {
   const headers = { ...req.headers };
   // Attach the console's OWN token, overwriting anything the client sent. Overwriting is the point:
@@ -845,6 +885,16 @@ const server = http.createServer(async (req, res) => {
   // certificate) either. Strip the prefix; the edge proxy serves that app at its root.
   if (p === '/legacy' ) { res.statusCode = 302; res.setHeader('Location', '/legacy/'); return res.end(); }
   if (p.startsWith('/legacy/')) return proxyToEdge(req, res, (u) => u.slice('/legacy'.length) || '/');
+  // The sandbox is behind the sign-in, in full rather than only its writes: it is a separate venue
+  // an operator steps into, not a read of this one. Checked BEFORE the edge prefixes so a future
+  // `/sandbox…` entry there could never shadow it.
+  const sbx = sandboxRoute(p);
+  if (sbx) {
+    if (!readToken(req)) {
+      return json(res, 401, { code: 'signed_out', error: 'the sandbox is behind sign-in' });
+    }
+    return proxySandbox(req, res, sbx);
+  }
   if (PROXY_PREFIXES.some(x => p === x || p.startsWith(`${x}/`))) return proxyToEdge(req, res);
   return serveStatic(req, res, url);
 });

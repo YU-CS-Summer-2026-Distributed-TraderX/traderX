@@ -1,5 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { Api } from './api';
+import { SandboxPanel } from './sandbox-panel';
 import { ClusterPanel } from './cluster-panel';
 import { TicketPanel } from './ticket-panel';
 import { BlotterPanel } from './blotter-panel';
@@ -146,6 +147,32 @@ export class AdminPage {
   `,
 })
 export class ReplayPage {
+  readonly api = inject(Api);
+}
+
+@Component({
+  selector: 'sandbox-page',
+  imports: [SandboxPanel],
+  template: `
+    @if (api.authUser()) {
+      <div class="stack">
+        <section class="card"><sandbox-panel /></section>
+      </div>
+    } @else {
+      <section class="card">
+        <h2>Sandbox</h2>
+        <p class="muted">A separate venue that replays the recorded tape. Nothing done here touches
+          the live system. Sign in to use it.</p>
+        <button type="button" (click)="api.authPrompt.set(true)">Sign in</button>
+      </section>
+    }
+  `,
+  styles: `
+    .stack { display: grid; gap: 14px; max-width: 980px; }
+    .muted { color: var(--muted); margin: 4px 0 10px; }
+  `,
+})
+export class SandboxPage {
   readonly api = inject(Api);
 }
 
