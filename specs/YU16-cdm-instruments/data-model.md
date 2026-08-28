@@ -113,9 +113,13 @@ percent space and converts to fraction at emission):
 Step: `change = maxStep × (0.8 × sharedRoll + 0.2 × localRoll) + 0.02 × (seed − current)`, then
 clamp to `seed ± maxDistance`, round to 3 dp in percent space (= 5 dp in fraction space, inside
 the 6-dp budget). One shared roll per publish batch correlates the curve; the local roll breaks
-lockstep. Approximate YTM (percent space, per 100 par):
-`((coupon + (100 − clean)/years) / ((100 + clean)/2)) × 100`, `years = (maturity − quote) /
-365.25d`, `null` at or after maturity.
+lockstep. YTM (percent space, per 100 par) is a real price→yield **solve** (FR-CDM20):
+safeguarded Newton with a bisection fallback, over a coupon schedule generated from the issue date
+forward, on ACT/ACT (ICMA) and a single `SEMIANNUAL_BOND` basis, with the zero-coupon path for an
+instrument that has no schedule to walk. `null` at or after maturity. The one-line approximation
+`((coupon + (100 − clean)/years) / ((100 + clean)/2)) × 100` this state shipped first is
+**superseded** and is not what the publisher computes — it has no schedule, no day count and no
+solve, and cannot express a zero at all.
 
 ## SQL schema delta (MariaDB `database-init-configmap.yaml`, this state's layer)
 
