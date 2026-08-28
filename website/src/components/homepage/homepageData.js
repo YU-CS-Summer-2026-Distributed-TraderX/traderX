@@ -1,7 +1,20 @@
 import stateCatalog from '../../../../catalog/state-catalog.json';
 import liveEnvironments from '../../../../catalog/live-environments.json';
 
-const repoBaseUrl = 'https://github.com/finos/traderX';
+// This deployment's repository, not upstream's. Every catalog/source link built from this constant
+// was pointing readers at finos/traderX, where our state branches and catalog files do not exist.
+export const repoBaseUrl = 'https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX';
+export const upstreamRepoUrl = 'https://github.com/finos/traderX';
+
+// Where a "go to the repository" link should land. main is the branch this site is built and
+// deployed from, and it carries all 31 spec packs, so a reader following a repository link lands on
+// the tree these pages were rendered from. This pointed at YU15-eod-risk-extract back when that was
+// the tip state and main carried none of the packs — neither holds now.
+// NOTE: docusaurus.config.js keeps its own copy of this branch (repoBranch, used for editUrl and the
+// navbar/footer links). They are separate constants: change both together.
+// repoBaseUrl stays the bare root because catalog and per-state links build their own
+// /blob/<ref>/ and /tree/<branch>/ paths from it — do not fold the branch into that constant.
+export const repoTreeUrl = `${repoBaseUrl}/tree/main`;
 const trackLabels = {
   prelude: 'Prelude Track',
   baseline: 'Baseline Track',
@@ -24,8 +37,12 @@ function stripNumberedPrefix(pathSegment) {
   return pathSegment.replace(/^\d{3}-/, '');
 }
 
+// The badge shown on each state card. `slice(0, 3)` was written for the numeric `001-…` ids and
+// truncated every YU state to "YU0" or "YU1", so fifteen states shared two labels. Take the segment
+// before the first dash instead, which is correct for both `001-baseline…` and `YU13-limit-order…`.
 function stateNumber(stateId) {
-  return stateId.slice(0, 3);
+  const head = stateId.split('-')[0];
+  return /^\d/.test(head) ? head.slice(0, 3) : head;
 }
 
 function featurePackSlug(featurePack) {
@@ -124,25 +141,29 @@ export const internalNav = [
   {to: '/docs/blog', label: 'Blog'},
 ];
 
+// Reframed from upstream's positioning ("Serving FINOS", "Reinvent the FINOS hackathon", "sponsors
+// who need proof of value"). That is FINOS describing its own project to its own community; on this
+// site it read as though FINOS were the publisher. These cards say what THIS deployment did, and the
+// upstream relationship is stated as what it actually is — a fork that tracks its parent.
 export const overviewCards = [
   {
     title: 'The Goal',
     description:
-      'Teach financial-services architecture through a runnable reference system, not diagrams alone.',
+      'Take the reference demo to a system a sell-side desk would recognise: correctness, risk controls, post-trade and audit first — latency second.',
     tone: 'blue',
     icon: 'target',
   },
   {
-    title: 'Serving FINOS',
+    title: 'Upstream, Tracked',
     description:
-      'Reinvent the FINOS hackathon: turn ideas into sophisticated reference demos in hours, not days, using SDD.',
+      'A fork that stays a fork. All fifteen states were rebased onto current FINOS TraderX, absorbing upstream commits and security fixes with every suite still green.',
     tone: 'cyan',
     icon: 'handshake',
   },
   {
-    title: 'The Audiences',
+    title: 'Tested Continuously',
     description:
-      'Support developers learning the domain, platform teams testing integrations, architects comparing patterns, and sponsors who need compelling proof of value.',
+      'Every architectural claim is pinned by tests that run on each push, backed by end-to-end proofs against a live cluster.',
     tone: 'slate',
     icon: 'users',
   },

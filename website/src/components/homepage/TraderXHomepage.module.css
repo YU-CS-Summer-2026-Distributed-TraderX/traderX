@@ -1,8 +1,8 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 
 .page {
-  --home-blue: #008cc1;
-  --home-cyan: #00b0d2;
+  --home-blue: #0a5c9b;
+  --home-cyan: #1c68a2;
   --home-slate: #0f172a;
   --home-text: #334155;
   --home-border: #e2e8f0;
@@ -62,7 +62,7 @@
 .brand:hover,
 .navLink:hover,
 .footerLinks a:hover {
-  color: #e0f2fe;
+  color: #e7eff7;
   text-decoration: none;
 }
 
@@ -72,10 +72,18 @@
   width: 2rem;
 }
 
+/* The YU crest, on a white disc because the supplied PNG is opaque-on-white (see .heroMark).
+   The crest is a round seal, so the disc is round — and the padding is not decorative: a circular
+   clip on a square box cuts the corners, which sliced through the "YESHIVA UNIVERSITY" ring text.
+   Padding of ~15% of the box inscribes the artwork inside the circle so nothing is cut. */
 .brandLogo {
+  background: #ffffff;
+  border-radius: 50%;
   display: block;
-  height: 2.15rem;
-  width: 2.15rem;
+  height: 2.4rem;
+  object-fit: contain;
+  padding: 0.34rem;
+  width: 2.4rem;
 }
 
 .logoLarge {
@@ -162,11 +170,29 @@
   margin-bottom: 2.25rem;
 }
 
+/* Sized in rem, NOT vw. `max-width: min(34rem, 72vw)` collapsed the wordmark to 0x0 in any renderer
+   that reports a viewport width of 0 — an embedded preview pane did exactly that, and the logo
+   simply vanished while the image itself had loaded fine (naturalWidth 300x96). A brand mark whose
+   presence depends on the viewport being measurable is a mark that sometimes is not there. rem has
+   no such dependency; the mobile media query below still handles narrow screens. */
 .heroLogo {
   display: block;
   height: auto;
-  max-width: min(42rem, 88vw);
-  width: 100%;
+  max-width: 100%;
+  min-width: 14rem;
+  width: 34rem;
+}
+
+/* The YU CS mark, paired with the TraderX wordmark so the lockup itself says whose build this is.
+   Now a true-alpha PNG, so the white plate it used to need is gone — the shield sits directly on the
+   hero blue. Sized in rem, never vw (see the note on .heroLogo), and larger than the plated version
+   was, since without the plate and its padding the artwork itself reads smaller at the same box. */
+.heroMark {
+  aspect-ratio: 1;
+  display: block;
+  flex-shrink: 0;
+  object-fit: contain;
+  width: 9rem;
 }
 
 .heroTitleGroup h1 {
@@ -195,7 +221,29 @@
 }
 
 .heroCopy a:hover {
-  color: #e0f2fe;
+  color: #e7eff7;
+}
+
+/* The verification link is its own sentence, so it sits on its own line with tighter spacing than a
+   full paragraph would give it. */
+.heroCopyLink {
+  color: rgba(255, 255, 255, 0.92);
+  font-size: 1.125rem;
+  font-weight: 600;
+  line-height: 1.7;
+  margin: -1.25rem auto 2.5rem;
+  max-width: 44rem;
+}
+
+.heroCopyLink a {
+  color: #ffffff;
+  font-weight: 850;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.heroCopyLink a:hover {
+  color: #e7eff7;
 }
 
 .heroActions {
@@ -402,8 +450,8 @@
 }
 
 .tone-blue {
-  border-color: #0284c7;
-  color: #0284c7;
+  border-color: #015697;
+  color: #015697;
 }
 
 .tone-cyan {
@@ -428,12 +476,12 @@
 
 .tone-blue .cardIcon,
 .tone-blue.demoIconLink {
-  background: #e0f2fe;
+  background: #e7eff7;
 }
 
 .tone-cyan .cardIcon,
 .tone-cyan.demoIconLink {
-  background: #cffafe;
+  background: #dde8f2;
 }
 
 .tone-slate .cardIcon {
@@ -492,7 +540,7 @@
 }
 
 .demoSource a:hover {
-  background: #e0f2fe;
+  background: #e7eff7;
   color: var(--home-blue);
   text-decoration: none;
 }
@@ -546,8 +594,8 @@
 
 .demoLinks a:hover,
 .demoLinks a:focus-visible {
-  background: #e0f2fe;
-  border-color: #7dd3fc;
+  background: #e7eff7;
+  border-color: #8fb8d8;
   color: var(--home-blue);
   text-decoration: none;
   transform: translateY(-1px);
@@ -570,15 +618,15 @@
 }
 
 .tone-blue.demoIconLink {
-  --demo-icon-bg: #e0f2fe;
-  --demo-icon-color: #0284c7;
-  --demo-icon-hover-bg: #0284c7;
+  --demo-icon-bg: #e7eff7;
+  --demo-icon-color: #015697;
+  --demo-icon-hover-bg: #015697;
 }
 
 .tone-cyan.demoIconLink {
-  --demo-icon-bg: #cffafe;
-  --demo-icon-color: #0891b2;
-  --demo-icon-hover-bg: #0891b2;
+  --demo-icon-bg: #dde8f2;
+  --demo-icon-color: #23437c;
+  --demo-icon-hover-bg: #23437c;
 }
 
 .tone-violet.demoIconLink {
@@ -637,13 +685,13 @@
 }
 
 .catalogCallout a {
-  background: #e0f2fe;
+  background: #e7eff7;
   padding: 0.35rem 0.75rem;
 }
 
 .catalogCallout a:hover,
 .stateTitleLink:hover {
-  color: #0369a1;
+  color: #013f6f;
   text-decoration: underline;
 }
 
@@ -772,8 +820,8 @@
 
 .stateIconLink:hover,
 .stateIconLink:focus-visible {
-  background: #e0f2fe;
-  border-color: #bae6fd;
+  background: #e7eff7;
+  border-color: #c2d7e8;
   color: var(--home-blue);
   text-decoration: none;
 }
@@ -828,7 +876,7 @@
 }
 
 .phase-blue {
-  color: #0284c7;
+  color: #015697;
 }
 
 .phase-violet {
@@ -836,7 +884,7 @@
 }
 
 .phase-cyan {
-  color: #0891b2;
+  color: #23437c;
 }
 
 .phase-green {
@@ -1016,9 +1064,24 @@
   gap: 1rem;
 }
 
-.footerFinosLogo {
+/* Renamed from .footerFinosLogo — it is the YU crest now, and a class name that lies about its
+   contents is how the next person reintroduces the wrong logo. */
+.footerYuLogoLink {
+  display: inline-block;
+  line-height: 0;
+}
+
+/* The crest PNG is opaque on pure #ffffff, but this footer is #f8fafc — a seven-unit difference,
+   which is just enough to read as a white square sitting on the page. `multiply` maps white onto
+   whatever is beneath it (white × anything = that thing), so the ground disappears exactly rather
+   than being approximated with a hardcoded colour that would drift if the footer is ever retoned.
+   The crest's own blue linework is unaffected on a near-white backdrop.
+   This footer is light-only — the homepage sets its own palette and does not follow the theme
+   toggle — so there is no dark-mode case where multiply would swallow the artwork. */
+.footerYuLogo {
   display: block;
   height: 3.5rem;
+  mix-blend-mode: multiply;
   width: auto;
 }
 
@@ -1130,4 +1193,210 @@
   .demoPanel {
     padding: 1.5rem;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Measured-results band (Results.jsx)
+   Sits between the hero and the tab nav. Uses the existing --home-* tokens so it
+   inherits the YU palette rather than introducing a fourth blue.
+   --------------------------------------------------------------------------- */
+
+.resultsBand {
+  background: var(--home-slate);
+  color: #e8eef6;
+  padding: clamp(2.5rem, 6vw, 4rem) 1.5rem;
+}
+
+/* Width is FOUR WHOLE CARDS plus the three gaps between them, expressed as the arithmetic rather
+   than a magic number so it stays true if the column width changes. At the previous 72rem the band
+   was 60px narrower than four cards, so the fourth sat 79% visible and looked sliced. Making the
+   viewport an exact multiple of the card pitch also makes the scroll land cleanly: total scroll is
+   now exactly one card step, so a single arrow click moves cards 1-4 to cards 2-5 with no card ever
+   straddling an edge. */
+.resultsInner {
+  margin: 0 auto;
+  max-width: calc(4 * 18rem + 3 * 1.25rem);
+}
+
+.resultsHeading h2 {
+  color: #ffffff;
+  font-size: clamp(1.5rem, 3.5vw, 2.125rem);
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  margin: 0 0 0.75rem;
+}
+
+.resultsHeading p {
+  color: #b9c8da;
+  font-size: 1rem;
+  line-height: 1.65;
+  margin: 0 0 2.25rem;
+  max-width: 54rem;
+}
+
+/* Lightened against the dark band: --home-blue (#0a5c9b) on #0f172a is about 1.8:1 and effectively
+   unreadable. Brand fidelity does not outrank being legible. */
+.resultsHeading a {
+  color: #8fb8d8;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.resultsHeading a:hover {
+  color: #c2d7e8;
+}
+
+/* One line, sliding horizontally. grid-auto-flow: column keeps every card on a single row instead
+   of wrapping a lonely last card onto a second row (.resultsInner is a fixed four-card width, so
+   auto-fit could never seat more than four columns).
+
+   COLUMN WIDTH IS SET BY THE WIDEST FIGURE, not by how many cards fit on screen. At 13rem each card
+   offered 164px of inner width while "0.45–0.57" needs 197px at the 40px figure size, so two of the
+   five numbers broke across two lines. 18rem gives 240px inner — enough for the widest figure AND
+   its unit on one line. Five of those exceed the 1152px cap, which is exactly what the slider is
+   for: readable cards that slide beat cramped cards that all fit. If you add a card with a longer
+   figure, re-measure rather than assuming this width still holds.
+
+   Scrolling is contained here so the page body never scrolls sideways. */
+.resultsGrid {
+  display: grid;
+  gap: 1.25rem;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(18rem, 1fr);
+  margin: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  /* NO scroll snapping. It fought the arrows: the track scrolls 368px total against a 308px card
+     step, so a scrollTo() aimed at the very end sat 60px past the last snap point and proximity
+     snapping dragged it back — the end of the row became unreachable in one click. The arrows
+     already move exactly one card plus gap, so alignment needs no help. */
+  /* Scrollbar hidden deliberately: a full-width track under a dark band reads as a stray white rule
+     rather than a control. The arrow bubbles carry the affordance instead, and shift+wheel, drag and
+     keyboard scrolling all still work — the element is still overflow: auto, only the paint is gone. */
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.resultsGrid::-webkit-scrollbar {
+  display: none;
+}
+
+/* Focus ring for keyboard users: with the scrollbar hidden, the scroller is still tabbable and
+   arrow-key scrollable, and it must show where focus is. */
+.resultsGrid:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 4px;
+  border-radius: 0.75rem;
+}
+
+.resultsSlider {
+  position: relative;
+}
+
+.resultsArrow {
+  align-items: center;
+  background: rgba(14, 22, 40, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 999px;
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  height: 2.5rem;
+  justify-content: center;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  transition: background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  width: 2.5rem;
+  z-index: 2;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.resultsArrow:hover {
+  background: rgba(30, 44, 74, 0.98);
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.resultsArrow:focus-visible {
+  outline: 2px solid #ffffff;
+  outline-offset: 2px;
+}
+
+.resultsArrow[hidden] {
+  display: none;
+}
+
+.resultsArrowLeft {
+  left: -3.25rem;
+}
+
+.resultsArrowRight {
+  right: -3.25rem;
+}
+
+/* Clear of the cards entirely on wide screens. The band is now 1212px, so it needs 1212 + 2×52px of
+   arrow before the bubbles fit outside it — below ~1320px they overlay the row edge instead. The
+   alternative is an arrow clipped by the page's overflow-x: hidden, which would silently amputate
+   the control rather than move it. */
+@media (max-width: 1320px) {
+  .resultsArrowLeft {
+    left: 0.25rem;
+  }
+
+  .resultsArrowRight {
+    right: 0.25rem;
+  }
+}
+
+.resultCard {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.75rem;
+  padding: 1.5rem;
+}
+
+.resultCard dt {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.85rem;
+}
+
+.resultFigure {
+  color: #ffffff;
+  font-size: clamp(1.75rem, 4vw, 2.5rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1;
+  /* A headline number must never break across lines — "185–227" split after the dash reads as two
+     different figures. The column is sized to fit the widest one; this guarantees it regardless. */
+  white-space: nowrap;
+}
+
+.resultUnit {
+  color: #8fb8d8;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.resultCard dd {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.resultCard dd strong {
+  color: #ffffff;
+  font-size: 0.975rem;
+  font-weight: 700;
+}
+
+.resultCard dd span {
+  color: #aebcce;
+  font-size: 0.875rem;
+  line-height: 1.6;
 }

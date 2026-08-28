@@ -36,10 +36,14 @@ function InfoCard({item}) {
 function WhatPanel() {
   return (
     <div className={styles.panelStack}>
-      <SectionIntro title='The "Trading Application Pet Store"'>
-        In software training, a pet store is a simplified, manageable application. TraderX mimics
-        the core functionalities of complex trading platforms found at major FSIs, but is built
-        approachably so it can run locally on a laptop.
+      <SectionIntro title="From reference demo to order management system">
+        FINOS TraderX is a teaching platform: a deliberately approachable trading application that
+        runs on a laptop. This deployment keeps that property — every state still runs locally — and
+        pushes the architecture underneath it much further. The synchronous, database-backed matcher
+        became an event-sourced LMAX Disruptor engine replicated over an Aeron Raft cluster, and the
+        surrounding system grew the parts a real desk cannot do without: pre-trade risk controls,
+        settlement and reconciliation, a FIX gateway, listed options, and a reproducible end-of-day
+        risk extract.
       </SectionIntro>
 
       <div className={styles.cardGrid}>
@@ -261,10 +265,13 @@ function CodeBlock({title, label, children}) {
 function SddPanel() {
   return (
     <div className={styles.panelStack}>
-      <SectionIntro title="Reinventing the FINOS Hackathon">
-        TraderX turns hackathon energy into a repeatable spec-driven demo factory: teams can
-        assemble sophisticated financial-services demos in hours, not days, while keeping every
-        experiment connected to the core requirements and learning path.
+      <SectionIntro title="Seventeen states, each one specified before it was built">
+        Every state here began as a spec. Each declares what it must make true, layers its changes
+        over its ancestors, and renders into a complete, independently runnable system — so
+        &ldquo;the version with the order book but without options&rdquo; is something you can boot
+        and benchmark directly. That layering has one sharp edge: a fix landed in a layer that a
+        later state overrides is inert, which is why the test suite runs against three separately
+        composed trees.
       </SectionIntro>
 
       <div className={styles.codeGrid}>
@@ -289,18 +296,26 @@ function SddPanel() {
         </CodeBlock>
       </div>
 
+      {/* Was an abstract pitch about what SDD "lets firms" do. We actually did it, and the measured
+          cost of doing it is far more useful to another organisation than the promise. */}
       <section className={styles.auditPanel}>
-        <h3>Customize the Journey, Preserve the Contract</h3>
+        <h3>Diverging without forking away</h3>
         <p>
-          Spec-Driven Development lets firms adapt TraderX to internal platforms, controls, and
-          training goals without forking away from the FINOS reference architecture. The core
-          spec remains the shared contract; overlays describe what changes for a particular
-          audience or environment.
+          The point of layering the changes rather than editing the baseline is that upstream stays
+          reachable. We tested that the hard way: all fifteen states were rebased onto current FINOS
+          TraderX after seven weeks of upstream movement. Upstream had shipped{' '}
+          <strong>62 commits and changed zero lines of application code</strong> — and catching up
+          still took roughly <strong>150 hand edits</strong>, none of which <code>git</code> could
+          show us, because the work is in the layers rather than the files.
         </p>
         <ul>
-          <li>Reference requirements stay traceable across specs, docs, generated code, and demos.</li>
-          <li>Internal overlays add enterprise controls without rewriting the upstream state packs.</li>
-          <li>Generated branches turn reviewed specifications into demo-ready environments quickly.</li>
+          <li>
+            Requirements stay traceable from spec to generated code to the demo that runs it.
+          </li>
+          <li>
+            Our states are overlays, so an upstream change lands underneath them instead of
+            conflicting with them.
+          </li>
         </ul>
       </section>
     </div>

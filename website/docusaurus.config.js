@@ -1,9 +1,21 @@
 // Docs at https://docusaurus.io/docs
 
-const projectName = 'TraderX'
+const projectName = 'traderX'
 const projectSlug = 'traderX'
-const docsUrl = process.env.DOCUSAURUS_URL || 'https://traderx.finos.org'
-const docsBaseUrl = process.env.DOCUSAURUS_BASE_URL || '/'
+// Site identity. This deployment is Yeshiva University's own build of TraderX, so YU is the primary
+// identity — but TraderX is a FINOS project and the upstream credit stays visible and correct
+// (footer logo, an Upstream links column, and the copyright line below). Presenting a fork as if it
+// were unaffiliated would be both wrong and useless to Dov, who wants to point at it AS a FINOS
+// showcase of an outside organisation running with TraderX.
+const siteTitle = 'Distributed TraderX'
+// The wordmark shown beside the logo in the top-left of every page. Deliberately shorter than
+// siteTitle: next to the YU mark it only needs to say which application this is.
+const navbarTitle = 'TraderX'
+const siteOrg = 'Yeshiva University'
+const siteTagline = 'A sell-side OMS on the LMAX architecture — Yeshiva University CS'
+const copyrightOwner = 'Yeshiva University CS · built on TraderX, a FINOS project'
+const docsUrl = process.env.DOCUSAURUS_URL || 'https://YU-CS-Summer-2026-Distributed-TraderX.github.io'
+const docsBaseUrl = process.env.DOCUSAURUS_BASE_URL || '/traderX/'
 
 function pathBrowserPolyfillPlugin() {
   return {
@@ -20,21 +32,19 @@ function pathBrowserPolyfillPlugin() {
   }
 }
 
-function mermaidZoomClientPlugin() {
-  return {
-    name: 'mermaid-zoom-client',
-    getClientModules() {
-      return [require.resolve('./src/mermaid-zoom-client.js')]
-    },
-  }
-}
-
-
 // GitHub repo configuration - update these for forks/branches
-const repoOwner = 'finos';
-// Allow override via environment (e.g., DOCS_BRANCH=feature-branch)
+const repoOwner = 'YU-CS-Summer-2026-Distributed-TraderX';
+// Allow override via environment (e.g., DOCS_BRANCH=feature-branch).
+// main is the branch this site is built and deployed from, and it now carries the docs/ and specs/
+// trees these pages are written against -- so "Edit this page" and every repository link resolve
+// there. This defaulted to YU15-eod-risk-extract while main was only the upstream sync and carried
+// neither; that stopped being true once the YU spec packs and docs landed here. Change this only if
+// the site starts deploying from a different branch.
 const repoBranch = process.env.DOCS_BRANCH || 'main';
 const repoUrl = `https://github.com/${repoOwner}/${projectSlug}`;
+// Where "go to the repository" should land. repoUrl stays the bare root because the editUrl below
+// builds its own /edit/<branch>/ paths from it; only the human-facing links get the branch.
+const repoTreeUrl = `${repoUrl}/tree/${repoBranch}`;
 
 // Remark plugin to transform relative links to GitHub URLs
 const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
@@ -42,44 +52,47 @@ const transformRelativeLinks = require('./src/remark/transformRelativeLinks');
 module.exports = {
   markdown: {
     mermaid: true,
-    // Parse .md as CommonMark, not MDX. The spec packs are plain Markdown written for
-    // humans and for git, and they legitimately contain angle-bracket placeholders such as
-    // <state-id> and <branch-name>. MDX reads those as JSX tags and fails the build --
-    // 18 files across the YU packs did exactly that. .mdx files are unaffected and still
-    // compile as MDX; no .md file in docs/ or specs/ uses an import or a JSX component.
     format: 'md',
   },
   themes: ['@docusaurus/theme-mermaid'],
+  // src/mermaid-zoom-client.js was written and styled (see .tx-mermaid-zoom-* in custom.css) but
+  // never registered, so the zoom controls never mounted on any page — which is why the diagrams
+  // read as small and un-zoomable. A client module has to be declared here to run.
+  clientModules: [require.resolve('./src/mermaid-zoom-client.js')],
   onBrokenLinks: 'ignore',
-  title: `${projectName}`,
-  tagline: `${projectName}`, 
+  title: `${siteTitle} · ${siteOrg}`,
+  tagline: siteTagline,
   url: docsUrl,
   baseUrl: docsBaseUrl,
   trailingSlash: false,
-  favicon: 'img/favicon/favicon-traderX.ico',
+  favicon: 'img/yu/yu-cs-shield-transparent.png',
   projectName: `${projectName}`,
-  organizationName: 'FINOS',
+  organizationName: 'YU-CS-Summer-2026-Distributed-TraderX',
   customFields: {
     repoUrl: repoUrl,
   },
   scripts: ['https://buttons.github.io/buttons.js'],
   stylesheets: ['https://fonts.googleapis.com/css?family=Overpass:400,400i,700'],
-  markdown: {
-    mermaid: true,
-    // Parse .md as CommonMark, not MDX. The spec packs are plain Markdown written for
-    // humans and for git, and they legitimately contain angle-bracket placeholders such as
-    // <state-id> and <branch-name>. MDX reads those as JSX tags and fails the build --
-    // 18 files across the YU packs did exactly that. .mdx files are unaffected and still
-    // compile as MDX; no .md file in docs/ or specs/ uses an import or a JSX component.
-    format: 'md',
-  },
-  themes: ['@docusaurus/theme-mermaid'],
   themeConfig: {
+    announcementBar: {
+      id: 'yu-traderx-welcome',
+      backgroundColor: '#23437c',
+      textColor: '#ffffff',
+      isCloseable: false,
+      content:
+        // The href is built from docsBaseUrl on purpose. announcementBar.content is raw HTML that
+        // Docusaurus does not run through its link resolver, so a root-absolute "/docs/..." here
+        // resolves to https://host/docs/... and 404s on every page — the homepage only worked
+        // because its own banner is a <Link>, which does apply baseUrl.
+        `<strong>Yeshiva University CS</strong> — TraderX rebuilt on the LMAX architecture over an Aeron Raft cluster. <a href="${docsBaseUrl}docs/engineering/whats-new"><strong>See what’s new</strong></a>.`,
+    },
     navbar: {
-      title: `TraderX`,
+      title: navbarTitle,
       logo: {
-        alt: 'TraderX Logo',
-        src: 'img/favicon/favicon-traderX.ico',
+        alt: 'Yeshiva University Computer Science',
+        // Transparent PNG. The original is opaque-on-white, which rendered as a white card around
+        // the shield on the navy navbar.
+        src: 'img/yu/yu-cs-shield-transparent.png',
       },
       items: [
         {to: '/docs/home', label: 'Overview', position: 'right'},
@@ -90,18 +103,24 @@ module.exports = {
         {to: '/docs/learning', label: 'Learning', position: 'right'},
         {type: 'search', position: 'right'},
         {
-          href: repoUrl,
+          // Was https://github.com/finos/ — the FINOS org root, which is neither this fork nor even
+          // the upstream repo. Points at our repository now; upstream is credited in the footer.
+          href: repoTreeUrl,
           label: 'GitHub',
           position: 'right',
         }
       ],
     },
     footer: {
-      copyright: `Copyright © ${new Date().getFullYear()} Fintech Open Source Foundation.`,
+      // Attribution without a copyright notice: the line exists to say whose work this is, and a
+      // rendered "Copyright © <year>" adds a legal assertion nobody asked this footer to make.
+      copyright: copyrightOwner,
       logo: {
-        alt: 'Fintech Open Source Foundation Logo',
-        src: 'img/finos/finos-white.png',
-        href: 'https://finos.org'
+        alt: 'Yeshiva University',
+        // Navy-ground crest rather than the white-ground one: the footer is dark, and a white plate
+        // sitting on it read as a stray tile.
+        src: 'img/yu/yu-crest-navy.jpg',
+        href: 'https://www.yu.edu'
       },
       links: [
         {
@@ -130,44 +149,47 @@ module.exports = {
             {
               label: 'Specs',
               to: '/specs',
-            },
-            {
-              label: 'Source Code',
-              to: repoUrl,
             }
           ]
         },
         {
-          title: 'FINOS',
+          // YU column added, and the two FINOS columns below consolidated into one. Six upstream
+          // links and none of our own made the site read as FINOS's rather than an organisation's
+          // own deployment, which is the exact thing this site is supposed to demonstrate.
+          title: 'Yeshiva University',
           items: [
+            {
+              label: 'Yeshiva University',
+              to: 'https://www.yu.edu',
+            },
+            {
+              label: 'YU Computer Science',
+              to: 'https://www.yu.edu/yeshiva-college/ug/computer-science',
+            },
+            {
+              label: 'This deployment on GitHub',
+              to: repoTreeUrl,
+            }
+          ]
+        },
+        {
+          title: 'Upstream — FINOS',
+          items: [
+            {
+              label: 'TraderX (upstream)',
+              to: 'https://github.com/finos/traderX',
+            },
             {
               label: 'FINOS Website',
               to: 'https://www.finos.org/',
             },
             {
-              label: 'Community Handbook',
-              to: 'https://community.finos.org/',
-            },
-            {
               label: 'FINOS Projects',
               to: 'https://landscape.finos.org',
-            }
-          ]
-        },
-        {
-          title: 'About FINOS',
-          items: [
-            {
-              label: 'FINOS Projects on GitHub',
-              to: 'https://github.com/finos',
             },
             {
-              label: 'Engage the FINOS Community',
-              to: 'https://www.finos.org/engage-with-our-community',
-            },
-            {
-              label: 'FINOS News and Events',
-              to: 'https://www.finos.org/news-and-events',
+              label: 'Community Handbook',
+              to: 'https://community.finos.org/',
             }
           ]
         },
@@ -180,9 +202,26 @@ module.exports = {
       {
         docs: {
           path: '../docs',
-          exclude: ['prompt-ideas/**', 'migration/**', 'migration/**/*', '**/migration/**', 'guide/adr/**', 'guide/adr/**/*'],
+          // `handoff/**` is internal working material — planning briefs, per-session recaps,
+          // cross-lane critiques and proposals. It was being published in full, which put internal
+          // decisions, named collaborators and private correspondence on a public, crawlable site.
+          // The public-facing versions of the material worth sharing live in docs/engineering/.
+          // Do not remove this exclusion to fix a broken link; move the page instead.
+          exclude: [
+            'prompt-ideas/**', 'migration/**', 'migration/**/*', '**/migration/**',
+            'guide/adr/**', 'guide/adr/**/*',
+            'handoff/**', 'handoff/**/*', '**/handoff/**',
+            // Third-party risk-engine integration detail. Unlike the four engineering pages beside
+            // them these are not wired into sidebars.js -- which is NOT what keeps them off the
+            // site: an unsidebarred page still builds, gets a public URL and enters sitemap.xml.
+            // Only this exclusion keeps them unpublished. They are not carried onto this branch
+            // either; the exclusion is here so a later bulk carry of docs/ cannot publish them.
+            'engineering/risk-engine-integration-fit.md',
+            'engineering/risk-engine-integration-status.md',
+            'engineering/risk-extract-consumer-guide.md',
+          ],
           editUrl:
-            'https://github.com/finos/traderX/edit/main/website/',
+            `${repoUrl}/edit/${repoBranch}/website/`,
           sidebarPath: require.resolve('./sidebars.js')
         },
         theme: {
@@ -202,6 +241,11 @@ module.exports = {
       'docusaurus-plugin-llms',
       {
         docsDir: '../docs',
+        // This plugin walks docsDir ITSELF and does not honour the docs preset's `exclude`, so the
+        // internal handoff tree was still being indexed into llms.txt — 45 entries, each with its
+        // title and an excerpt of its opening lines. Excluding it in one place is not enough; every
+        // generator that reads ../docs needs telling separately.
+        ignoreFiles: ['handoff/**', 'handoff/**/*', 'prompt-ideas/**', 'migration/**'],
         includeBlog: false,
         generateLLMsTxt: true,
         generateLLMsFullTxt: true,
@@ -220,7 +264,7 @@ module.exports = {
         sidebarItemsGenerator: require('./plugins/specs-sidebar-items-generator'),
         remarkPlugins: [require('./plugins/remark-speckit-reference-links')],
         include: ['**/*.md'],
-        editUrl: 'https://github.com/finos/traderX/edit/main/specs/',
+        editUrl: `${repoUrl}/edit/${repoBranch}/specs/`,
       },
     ],
     [
@@ -231,10 +275,9 @@ module.exports = {
         routeBasePath: 'specify',
         sidebarPath: require.resolve('./traderspec-specify.sidebars.js'),
         include: ['memory/**/*.md'],
-        editUrl: 'https://github.com/finos/traderX/edit/main/.specify/',
+        editUrl: `${repoUrl}/edit/${repoBranch}/.specify/`,
       },
     ],
-    mermaidZoomClientPlugin,
     pathBrowserPolyfillPlugin,
   ],
 };

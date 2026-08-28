@@ -1,6 +1,19 @@
 module.exports = {
   mainSidebar: [
     'home',
+    // Top-level, directly under the portal: "what's new" is the entry point for a reader who has
+    // not been told what this build IS yet, so burying it inside Testing put the answer behind the
+    // question. It still sits immediately before the Testing category, which keeps its pager
+    // pointing at Testing strategy — what was built, then how each claim is checked.
+    'engineering/whats-new',
+    {
+      type: 'category',
+      label: 'Testing',
+      items: ['engineering/testing-strategy', 'engineering/test-coverage'],
+    },
+    // After Testing, and top-level rather than inside it: tracing and the tick store are neither
+    // states nor test tiers, so they had nowhere to live. What's new links here for the long version.
+    'engineering/observability-and-replay',
     {
       type: 'category',
       label: 'Engineering Blog',
