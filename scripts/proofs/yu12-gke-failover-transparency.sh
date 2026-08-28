@@ -277,3 +277,12 @@ echo "[PASS] failover transparency: a leader kill under a live order stream lost
 echo "       duplicated zero orders — all ${ACKED} acked orderRefs are resting on ${TICKER} and"
 echo "       nothing else is; ${RETRIED} in-flight send(s) were made whole by idempotent retry;"
 echo "       exactly the killed member was replaced."
+echo
+echo "       NOT SHOWN, so that a reader citing this banner is not citing more than was tested:"
+echo "         * the identity claim is scoped to account ${ACCT}. An order double-booked under a"
+echo "           DIFFERENT account would not appear in this open set and would not be caught."
+echo "         * the operator-quiet guard ran at step 0 only. It establishes that no second"
+echo "           operator was writing THEN, not that none arrived during the ${STREAM_SECONDS}s stream —"
+echo "           which would move the operator ref floor reported above."
+echo "         * no TIMING claim. This is the correctness verdict; the outage duration is the"
+echo "           bench probe's (failover-client-probe.mjs) and is not asserted anywhere here."

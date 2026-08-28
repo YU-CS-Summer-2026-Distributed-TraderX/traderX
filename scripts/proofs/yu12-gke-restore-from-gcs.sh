@@ -337,3 +337,13 @@ echo "[PASS] disaster recovery: whole-cluster loss, restored from gs:// to exact
 echo "       point — this proof's own snapshotted operator state came back at S and not at S+,"
 echo "       all three members agreed, the post-backup orders are correctly bounded as the RPO"
 echo "       window, and the restored book trades."
+echo
+echo "       NOT SHOWN, so that a reader citing this banner is not citing more than was tested:"
+echo "         * NOTHING about the read model after DR. trade-processor's database is not restored"
+echo "           with the cluster, so it still holds the S+ orders this run just proved the ENGINE"
+echo "           dropped. Engine and read model are knowingly divergent at this point and no"
+echo "           assertion here touches that — it is a real gap in the DR story, not an oversight."
+echo "         * whether price-publisher re-establishes its cluster session unaided. The tape rate"
+echo "           was gated across the PRE-DESTROY window only; afterwards it is reported."
+echo "         * no claim under concurrent OPERATOR load. Quiescence was checked across the backup"
+echo "           window; a second operator writing later would move the counters step 4 compares."

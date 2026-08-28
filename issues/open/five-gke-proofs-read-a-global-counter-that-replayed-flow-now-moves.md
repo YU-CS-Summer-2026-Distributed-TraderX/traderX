@@ -636,6 +636,30 @@ GLOBAL was moving in the same window — otherwise the arm is quiet rather than 
 run recorded here `traderx_stp_cancels` climbed by **+40 to +206** while the twin held at `1`. The arm
 was never quiet, so the demonstration stands.
 
+### The fourth question, turned on this work's OWN four files
+
+The replace-proof lane applied the seventeenth's question to its own proof and found two overclaims
+in its banner (`8cdfe465`). Running the same audit here: **no banner among these four stated anything
+false — but three of them named no limits at all**, and a reader cites the banner. All four now end
+by saying what the run does NOT establish. Three limits were surfaced that were nowhere in the files:
+
+* **No claim under concurrent OPERATOR load, in any of the four.** Every volume claim brackets an
+  operator counter, and every scoped equality rests on one — a SECOND operator writing during the run
+  moves exactly those. `failover-transparency` and `restore-from-gcs` check quiescence and
+  `yu12-gke-recovery` does not even do that; and a check at step 0 covers **a moment, not a run**. This
+  is a real limit of the repair, not of the old assertions, and it arrived with the fix.
+* **`failover-transparency`'s identity claim is scoped to one ACCOUNT.** An order double-booked under
+  a different account is invisible to `open_refs_on` and would not be caught. The claim is "none of
+  *this account's* acked orders were lost or duplicated", which is narrower than the banner implied.
+* **`restore-from-gcs` says nothing about the read model after DR** — and cannot, since
+  trade-processor's database is not restored with the cluster. So a passing run leaves the engine and
+  the read model **knowingly divergent**, the engine having dropped exactly the S+ orders the read
+  model still shows open. That is a genuine gap in the DR story rather than an oversight in the proof,
+  and it is now stated where someone citing the [PASS] will see it.
+
+> The audit is cheap and the failure it prevents is not: a wrong assertion reds and gets
+> investigated; **a wrong banner gets quoted.**
+
 ## Two changes taken from the sibling lanes' replies
 
 * **The hand-rolled retries are gone.** `yu12-gke-cross-epoch-idreuse` and

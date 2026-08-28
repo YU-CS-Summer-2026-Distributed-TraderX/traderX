@@ -318,3 +318,13 @@ echo "[PASS] cluster recovery: a member destroyed to an empty disk rejoined to b
 echo "       order hash, position hash, trades and nextOrderRef; then won leadership and booked a"
 echo "       cross on all three members — with this proof's own operator state unchanged across"
 echo "       the rebuild AND every election, and the operator ref generator strictly monotonic."
+echo
+echo "       NOT SHOWN, so that a reader citing this banner is not citing more than was tested:"
+echo "         * no claim under concurrent OPERATOR load. The scenario is sequential, and a second"
+echo "           operator writing during the run would move the very counters the volume claims"
+echo "           bracket and the unchanged-across-the-rebuild equalities rest on. This proof does"
+echo "           not even check quiescence at the start (failover-transparency and restore-from-gcs"
+echo "           do) — and that check would only cover a MOMENT, never the run."
+echo "         * byte-identity is four quantities agreed, not the books compared order by order."
+echo "         * nothing about a WIPED INCARNATION. Every kill here is a leadership term change;"
+echo "           refs restart at 1 on a mint and this proof never performs one."
