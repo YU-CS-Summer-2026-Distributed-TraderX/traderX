@@ -460,6 +460,23 @@ data:
     ALTER TABLE orderbook MODIFY COLUMN lastexecutionprice DECIMAL(18,6);
     ALTER TABLE trades ADD COLUMN IF NOT EXISTS rejectionreason VARCHAR(255);
     ALTER TABLE trades ADD COLUMN IF NOT EXISTS sourceorderid VARCHAR(50);
+    -- MariaDB will not drop a COLUMN-LEVEL check by name, and says nothing when it declines.
+    -- 001-initialSchema.sql declares `state VARCHAR(20) CHECK (state in (...))`, which auto-names
+    -- the constraint after the column. On such a constraint `DROP CONSTRAINT IF EXISTS state`
+    -- reports SUCCESS and removes NOTHING, so the ADD below then fails 1826 "Duplicate CHECK
+    -- constraint name" on every restart after the first -- taking eod-price-db, and with it
+    -- account-service and reference-data, into CrashLoopBackOff. `DROP CHECK` is not MariaDB
+    -- syntax (1064), so redefining the column is the only way to clear it.
+    --
+    -- Measured on mariadb:11.4 against this exact schema: DROP CONSTRAINT leaves the check in
+    -- place; MODIFY COLUMN clears it; the ADD then creates a TABLE-level constraint, which
+    -- DROP CONSTRAINT *can* remove -- so from the first successful run this pair is genuinely
+    -- idempotent and the MODIFY is a no-op.
+    --
+    -- The other inline CHECKs in 001-initialSchema.sql (orderbook.status, trades.side,
+    -- eod_price_session.status, eod_price.quality, ...) carry the same trap: any future migration
+    -- that tries to re-add one by name needs this MODIFY first.
+    ALTER TABLE trades MODIFY COLUMN state VARCHAR(20);
     ALTER TABLE trades DROP CONSTRAINT IF EXISTS state;
     ALTER TABLE trades ADD CONSTRAINT state CHECK (state in ('New', 'Processing', 'Settled', 'Cancelled', 'Rejected'));
 
