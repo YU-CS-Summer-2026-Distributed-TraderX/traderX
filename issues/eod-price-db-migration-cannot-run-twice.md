@@ -1,6 +1,6 @@
 # The eod-price-db schema migration cannot run a second time
 
-**Status:** open
+**Status:** RESOLVED 2026-09-02 — root cause was not the migration's shape but MariaDB's silent refusal to drop a column-level check; fixed in the YU17 layer with one MODIFY COLUMN, no wipe
 **Found:** 2026-08-27 during a GKE bring-up; hit again 2026-08-28 on the next bring-up
 **Class:** non-idempotent migration — fails closed, but only after the volume has state
 
@@ -65,3 +65,49 @@ second-boot path, and the second boot is the only path that matters here.
 Either guard each statement, or gate the whole script on a schema-version row it writes on success,
 which is the version that also stops a partially-applied migration from being re-attempted from the
 top.
+
+
+---
+
+## Root cause (2026-09-02) — and why the wipe recipe below was never necessary
+
+The migration already contained `DROP CONSTRAINT IF EXISTS state` immediately before the failing
+ADD, so on paper it *was* idempotent. It is not, because of a MariaDB behaviour worth knowing:
+
+**MariaDB will not drop a COLUMN-LEVEL check by name, and reports success when it declines.**
+
+`001-initialSchema.sql` declares `state VARCHAR(20) CHECK (state in (...))`. That is a column-level
+check, auto-named after the column. Against it:
+
+| statement | result |
+|---|---|
+| `ALTER TABLE trades DROP CONSTRAINT IF EXISTS state` | **succeeds, removes nothing** |
+| `ALTER TABLE trades DROP CHECK state` | `ERROR 1064` — not MariaDB syntax |
+| `ALTER TABLE trades DROP CHECK IF EXISTS state` | `ERROR 1064` — not MariaDB syntax |
+| `ALTER TABLE trades MODIFY COLUMN state VARCHAR(20)` | **clears it** |
+
+Measured on `mariadb:11.4` against this exact schema, not inferred. The silence is what made it
+expensive: a statement that declines and returns success is indistinguishable from one that worked,
+so a drop/add pair that is *visibly* idempotent kept passing review while failing every restart.
+
+**The fix** is one line before the existing pair:
+
+    ALTER TABLE trades MODIFY COLUMN state VARCHAR(20);
+
+After the first successful run the constraint is TABLE-level, which `DROP CONSTRAINT` *can* remove,
+so the pair is genuinely idempotent from then on and the MODIFY is a no-op.
+
+**No wipe.** The recipe recorded above destroys the volume; it was never needed. On the rig the fix
+applied in place and the data survived two consecutive restarts: 25 EOD price sessions, 11 accounts,
+25 trades, with the second restart logging `migrations applied` instead of 1826.
+
+**Blast radius, for the next reader:** eod-price-db down takes account-service (MariaDB connect
+timeout) and reference-data (`ECONNREFUSED :3306`) into CrashLoopBackOff with it. The visible
+symptom is a console whose Account and Ticker dropdowns are empty and whose demo preset selects
+nothing — three services away from the actual fault.
+
+**Latent:** eight other inline CHECKs in `001-initialSchema.sql` (`trades.side`, `trades.quantity`,
+`orderbook.status`, `eod_price_session.status`, `eod_price.quality`, ...) carry the identical trap.
+Any future migration that re-adds one of them by name needs the MODIFY first.
+
+**Propagation:** YU16 carries the same `database-init-configmap.yaml` and is still unfixed.
