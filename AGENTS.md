@@ -33,6 +33,13 @@ This repository follows a SpecKit-first, multi-state architecture. Agents should
 - `YU09-ops-hardening`
 - `YU10-fix-ingress`
 - `YU11-aeron-replication`
+- `YU12-aeron-cluster`
+- `YU13-limit-order-book`
+- `YU14-listed-equity-options`
+- `YU15-eod-risk-extract`
+- `YU16-cdm-instruments`
+- `YU17-otc-rates`
+- `YU18-eod-risk-bundles`
 
 ## Learning Doc Front-Matter Contract
 
@@ -117,3 +124,7 @@ npm run build
 
 ## Recent Changes
 - 001-baseline-uncontainerized-parity: Added Java 21 (Spring Boot services), TypeScript/Node.js (Nest + Socket.IO + Angular), C# (.NET 9), SQL (H2) + Spring Boot, Gradle, NestJS, Socket.IO, ASP.NET Core, Angular, H2
+
+## Local EOD bundle state
+
+`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.

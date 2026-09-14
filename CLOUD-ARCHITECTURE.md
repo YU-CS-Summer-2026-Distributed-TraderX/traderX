@@ -284,3 +284,7 @@ StatefulSet pods unchanged — same image, same creation timestamps) until expli
   crash/partition durability test is recommended before production trust.
 - See `HANDOFF-ha-throughput-improvements.md` for further HA replication levers (larger batchRecords,
   deeper pipelining).
+
+## Local EOD bundle state
+
+`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.

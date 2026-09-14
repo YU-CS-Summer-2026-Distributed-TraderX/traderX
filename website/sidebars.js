@@ -148,6 +148,7 @@ module.exports = {
         'learning/state-YU15-eod-risk-extract',
         'learning/state-YU16-cdm-instruments',
         'learning/state-YU17-otc-rates',
+        'learning/state-YU18-eod-risk-bundles',
         'learning-paths/index',
         'spec-kit/spec-kit-learning-path-strategy',
         'spec-kit/state-transition-generation-plan',
