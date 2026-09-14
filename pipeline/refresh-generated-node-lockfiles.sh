@@ -14,6 +14,13 @@ if [[ ! -d "${TARGET_ROOT}" ]]; then
   exit 1
 fi
 
+# Renderers also invoke this helper directly; honor the same opt-out as the
+# top-level generator so local generation does not unexpectedly resolve npm data.
+if [[ "${TRADERX_SKIP_LOCKFILE_REFRESH:-0}" == "1" ]]; then
+  echo "[info] TRADERX_SKIP_LOCKFILE_REFRESH=1; skipping lockfile refresh"
+  exit 0
+fi
+
 if ! command -v npm >/dev/null 2>&1; then
   echo "[warn] npm not found; skipping node lockfile refresh under ${TARGET_ROOT}"
   exit 0

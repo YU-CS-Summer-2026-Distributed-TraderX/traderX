@@ -240,3 +240,7 @@ Full details — exact IAM setup, why the artifact bucket had to be custom, the 
 **Scope:** order-matcher only right now. Other services (`account-service`, `trade-processor`,
 etc.) still deploy via the manual commands in `CLOUD-ARCHITECTURE.md` §5 — extending CI/CD to
 those is a reasonable next task if you want one.
+
+## Local EOD bundle state
+
+`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.

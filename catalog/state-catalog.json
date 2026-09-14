@@ -786,6 +786,30 @@
         "branch": "code/generated-state-YU17-otc-rates",
         "tag": "generated/YU17-otc-rates/v1"
       }
+    },
+    {
+      "id": "YU18-eod-risk-bundles",
+      "title": "Local EOD Risk Bundles",
+      "status": "implemented",
+      "track": "functional",
+      "convergenceLevel": "none",
+      "isConvergence": false,
+      "dottedParents": [],
+      "primaryLineageRole": "optional",
+      "featurePack": "specs/YU18-eod-risk-bundles",
+      "previous": [
+        "YU17-otc-rates"
+      ],
+      "generation": {
+        "mode": "implemented",
+        "entrypoint": "bash pipeline/generate-state.sh YU18-eod-risk-bundles",
+        "runtime": "python3 eod-risk-bundles/bundle.py --help"
+      },
+      "publish": {
+        "branch": "code/generated-state-YU18-eod-risk-bundles",
+        "tag": "generated/YU18-eod-risk-bundles/v1"
+      },
+      "authoringBranch": "YU18-eod-risk-bundles"
     }
   ]
 }

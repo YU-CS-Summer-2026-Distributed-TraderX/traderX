@@ -398,6 +398,7 @@ const writeLearningGuides = () => {
     const architectureRoute = `${specRoute}/system/architecture`
     const topologyRoute = topologyRouteFor(state)
     const generatedBranch = state.publish?.branch
+    const authoringBranch = state.authoringBranch || sourceAuthoringBranch
     const generatedBranchLink = generatedBranch ? branchLinkFor(generatedBranch) : null
     const compareLinks = compareLinksMarkdown(state, previousIds)
     const deltaBullets = plainEnglishDeltaFor(state)
@@ -432,7 +433,7 @@ title: "State ${stateDisplayToken(state.id)}: ${state.title}"
 ## Rendered Code
 
 - Generated branch: ${generatedBranch ? `[${generatedBranch}](${generatedBranchLink})` : '`n/a`'}
-- Authoring branch (spec source): [${sourceAuthoringBranch}](${branchLinkFor(sourceAuthoringBranch)})
+- Authoring branch (spec source): [${authoringBranch}](${branchLinkFor(authoringBranch)})
 
 ## Code Comparison With Previous State
 

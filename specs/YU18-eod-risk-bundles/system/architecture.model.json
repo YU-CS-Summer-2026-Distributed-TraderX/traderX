@@ -1,0 +1,74 @@
+{
+  "title": "YU18-eod-risk-bundles architecture",
+  "stateId": "YU18-eod-risk-bundles",
+  "parentState": "YU17-otc-rates",
+  "inheritsFrom": "YU17-otc-rates",
+  "description": "Local EOD bundle creation, integrity validation and identified mock consumption.",
+  "flowDoc": "architecture.md",
+  "mermaidDirection": "LR",
+  "nodes": [
+    {
+      "id": "exports",
+      "label": "YU17 position and OTC exports",
+      "kind": "store",
+      "description": "YU17 position and OTC exports"
+    },
+    {
+      "id": "builder",
+      "label": "Local bundle builder",
+      "kind": "service",
+      "description": "Local bundle builder"
+    },
+    {
+      "id": "bundle",
+      "label": "Private immutable bundle",
+      "kind": "store",
+      "description": "Private immutable bundle"
+    },
+    {
+      "id": "validator",
+      "label": "Bundle validator",
+      "kind": "service",
+      "description": "Bundle validator"
+    },
+    {
+      "id": "mock",
+      "label": "Transport mock",
+      "kind": "service",
+      "description": "Transport mock"
+    },
+    {
+      "id": "result",
+      "label": "Private mock result: no prices",
+      "kind": "store",
+      "description": "Private mock result: no prices"
+    }
+  ],
+  "edges": [
+    {
+      "from": "exports",
+      "to": "builder",
+      "label": "same-cut files"
+    },
+    {
+      "from": "builder",
+      "to": "bundle",
+      "label": "manifest and original bytes"
+    },
+    {
+      "from": "bundle",
+      "to": "validator",
+      "label": "validate hashes and identities"
+    },
+    {
+      "from": "validator",
+      "to": "mock",
+      "label": "accepted bundle"
+    },
+    {
+      "from": "mock",
+      "to": "result",
+      "label": "echo identities; priced count zero"
+    }
+  ]
+}
