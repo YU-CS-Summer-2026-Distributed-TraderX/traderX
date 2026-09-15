@@ -11,8 +11,7 @@ import uuid
 
 import bundle
 
-PROFILE = {'adapter': 'transport-mock-v1', 'calculations': ['transport-check'],
-           'marketInputs': 'NOT_SUPPLIED', 'usableForRisk': False}
+from worker_protocol import PROFILE, HTTP_PROFILE, Deferred
 
 
 def now():
@@ -45,6 +44,7 @@ def private_directory(path):
 
 class MockAdapter:
     profile = PROFILE
+    result_files = {'results.json'}
 
     def execute(self, input_directory, result_directory):
         bundle.mock(input_directory, result_directory)
@@ -53,7 +53,7 @@ class MockAdapter:
         manifest, parsed = bundle.validate(input_directory)
         root = Path(result_directory)
         bundle.require(not root.is_symlink() and root.is_dir(), 'invalid result directory')
-        bundle.require({p.name for p in root.iterdir()} == {'results.json'}, 'invalid result files')
+        bundle.require({p.name for p in root.iterdir()} == self.result_files, 'invalid result files')
         path = root / 'results.json'
         bundle.require(path.is_file() and not path.is_symlink(), 'invalid result file')
         data = path.read_bytes()
@@ -104,7 +104,7 @@ class Coordinator:
         self.state = Path(state).absolute()
         self.adapter = adapter or MockAdapter()
         # New worker semantics require a new adapter implementation and profile version.
-        bundle.require(self.adapter.profile == PROFILE, 'unsupported adapter profile')
+        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE), 'unsupported adapter profile')
         self.db = None
         self.lock = None
 
@@ -143,6 +143,9 @@ class Coordinator:
                     error TEXT, result_path TEXT NOT NULL);
                 PRAGMA user_version=1;
             ''')
+            profiles = [json.loads(r[0]) for r in self.db.execute('SELECT DISTINCT profile FROM jobs')]
+            bundle.require(all(p == self.adapter.profile for p in profiles),
+                           'state uses another adapter profile; choose its adapter or a separate state directory')
             return self
         except BaseException:
             self.__exit__(None, None, None)
@@ -174,7 +177,7 @@ class Coordinator:
             try:
                 manifest, _ = bundle.validate(path)
                 bundle_id = manifest['bundleId']
-                job_id = bundle.digest(bundle.encoded({'bundleId': bundle_id, 'profile': PROFILE}))
+                job_id = bundle.digest(bundle.encoded({'bundleId': bundle_id, 'profile': self.adapter.profile}))
                 # Copy privately, then validate those exact bytes, so later inbox changes cannot
                 # change the accepted workload. Existing snapshots are verified, never overwritten.
                 target = self.state / 'inputs' / bundle_id
@@ -184,7 +187,7 @@ class Coordinator:
                 bundle.require(stored == manifest, 'snapshot differs from discovered bundle')
                 with self.db:
                     cursor = self.db.execute('INSERT OR IGNORE INTO jobs VALUES (?,?,?,?,?,?,?,?,?,?)',
-                        (job_id, bundle_id, json.dumps(manifest), json.dumps(PROFILE), 'QUEUED',
+                        (job_id, bundle_id, json.dumps(manifest), json.dumps(self.adapter.profile), 'QUEUED',
                          now(), now(), None, None, None))
                 report['queued' if cursor.rowcount else 'duplicates'].append(job_id)
             except (ValueError, OSError, KeyError, TypeError) as exc:
@@ -222,10 +225,28 @@ class Coordinator:
                     self._finish(job, attempt)
                 except (ValueError, OSError, KeyError, TypeError) as exc:
                     self._failed(job, attempt, f'RESULT_INVALID: {exc}')
+            elif getattr(self.adapter, 'resumable', False):
+                self._work(job, attempt)
             else:
                 self._failed(job, attempt, 'INTERRUPTED: worker ended before result publication', 'INTERRUPTED')
             recovered.append(job['job_id'])
         return recovered
+
+    def _work(self, job, attempt):
+        phase = 'INPUT_INVALID'
+        try:
+            manifest, _ = bundle.validate(self.state / 'inputs' / job['bundle_id'])
+            bundle.require(manifest == json.loads(job['manifest']), 'stored input changed')
+            phase = 'WORKER_FAILURE'
+            self.adapter.execute(self.state / 'inputs' / job['bundle_id'], self.state / attempt['result_path'])
+            phase = 'RESULT_INVALID'
+            self._finish(job, attempt)
+        except Deferred as exc:
+            with self.db:
+                self.db.execute('UPDATE jobs SET updated_at=?, error=? WHERE job_id=?',
+                                (now(), f'REMOTE_PENDING: {exc}', job['job_id']))
+        except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
+            self._failed(job, attempt, f'{phase}: {exc}')
 
     def run(self):
         recovered = self.recover()
@@ -240,16 +261,7 @@ class Coordinator:
                 self.db.execute('UPDATE jobs SET status=?, updated_at=?, error=NULL WHERE job_id=?',
                                 ('RUNNING', now(), job['job_id']))
             attempt = self.db.execute('SELECT * FROM attempts WHERE attempt_id=?', (attempt_id,)).fetchone()
-            phase = 'INPUT_INVALID'
-            try:
-                manifest, _ = bundle.validate(self.state / 'inputs' / job['bundle_id'])
-                bundle.require(manifest == json.loads(job['manifest']), 'stored input changed')
-                phase = 'WORKER_FAILURE'
-                self.adapter.execute(self.state / 'inputs' / job['bundle_id'], self.state / relative)
-                phase = 'RESULT_INVALID'
-                self._finish(job, attempt)
-            except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
-                self._failed(job, attempt, f'{phase}: {exc}')
+            self._work(job, attempt)
             processed.append(job['job_id'])
         return {'recovered': recovered, 'processed': processed, **self.status()}
 
@@ -301,6 +313,7 @@ class Coordinator:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True, help='private local state directory outside checkout')
+    parser.add_argument('--http-worker', help='provisional local fake-worker URL: http://127.0.0.1:PORT')
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('discover').add_argument('inbox')
     sub.add_parser('run')
@@ -310,7 +323,11 @@ def main():
     # SQLite sidecars and newly made result parents inherit private permissions.
     os.umask(0o077)
     try:
-        with Coordinator(args.state) as coordinator:
+        adapter = None
+        if args.http_worker:
+            from http_adapter import HttpAdapter
+            adapter = HttpAdapter(args.http_worker)
+        with Coordinator(args.state, adapter) as coordinator:
             if args.command == 'discover':
                 result = coordinator.discover(args.inbox)
                 failed = bool(result['invalid'])
@@ -322,7 +339,8 @@ def main():
                 failed = any(j['status'] == 'FAILED' or j.get('resultIntegrity') == 'INVALID'
                              for j in result['jobs'])
             print(json.dumps(result, indent=2, allow_nan=False))
-            return int(failed)
+            return 1 if failed else (2 if args.command == 'run' and any(
+                j['status'] == 'RUNNING' for j in result['jobs']) else 0)
     except (ValueError, OSError, KeyError, TypeError, sqlite3.Error) as exc:
         parser.exit(1, f'error: {exc}\n')
 

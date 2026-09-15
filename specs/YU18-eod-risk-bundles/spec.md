@@ -35,9 +35,14 @@
 - FR-EB16: Opt-in GCS staging SHALL restrict reads to an allowed prefix, pin each object's generation, enforce caller-selected per-object byte limits and retain source generations and SHA-256 hashes privately.
 - FR-EB17: Receipt staging SHALL validate the original completion payload before publishing a local receipt. Archive-only staging SHALL verify the source cut hash and SHALL NOT synthesize a completion receipt, cluster epoch or valuation time.
 
+
+- FR-EB18: The provisional HTTP mock SHALL have a distinct workload profile and SHALL refuse reuse of a coordinator state containing another profile.
+- FR-EB19: Uncertain or pending HTTP execution SHALL retain its durable attempt for lookup/reconciliation on the next run; declared failures SHALL require explicit retry.
+- FR-EB20: HTTP result acceptance SHALL verify workload identity, result hashes, worker attempt provenance and the existing strict non-pricing result contract.
+
 ## Non-Functional Requirements
 
-- NFR-EB01: Core local commands SHALL use Python 3.10+ standard library with no network connections. The opt-in GCS staging command SHALL use installed gcloud credentials for bounded read-only downloads; no listener or cloud compute is started.
+- NFR-EB01: Default local commands SHALL use Python 3.10+ standard library without network access. Opt-in GCS staging SHALL use installed gcloud credentials for bounded read-only downloads. Provisional HTTP transport SHALL connect only to a literal loopback endpoint; its fake worker SHALL bind only to loopback and perform no pricing.
 - NFR-EB02: Actual market data, exports and results SHALL reside outside the public checkout; repository fixtures SHALL be synthetic.
 - NFR-EB03: The state SHALL own its additive component under its generation runtime-overrides directory.
 - NFR-EB04: Tests SHALL exercise integrity failures, identity collisions, empty portfolios and repeatable output identity.

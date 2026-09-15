@@ -1,6 +1,6 @@
 # Quickstart: EOD Risk Bundles
 
-Run from the repository root with Python 3.10+. The core workflow uses no cluster, TAQ conversion or paid runtime resources. Section 8 may download development dependencies. Optional section 9 reads private GCS objects using an authenticated gcloud installation.
+Run from the repository root with Python 3.10+. The core workflow uses no cluster, TAQ conversion or paid runtime resources. The test suite includes localhost HTTP socket tests; loopback networking must be permitted. Section 8 may download development dependencies. Optional section 9 reads private GCS objects using an authenticated gcloud installation.
 
 ## 1. Test the source component
 
@@ -150,3 +150,45 @@ python3 "$component/gcs_stage.py" \
 Archive mode reads the positions object and its `-contracts.csv` and `.cut` siblings. It verifies source-cut SHA-256 and matching metadata, records each immutable generation, and emits `ARCHIVE_ONLY_NO_COMPLETION_RECEIPT`. It does not queue a job or fabricate epoch/valuation-time/adjacent-witness evidence. A missing OTC object is an error; a valid empty OTC file is accepted. A specific positions generation can be selected with a quoted `gs://...csv#GENERATION` URI; sibling generations are resolved individually and recorded.
 
 The 1,000,000-byte limit in these examples is a caller-selected transfer ceiling per object, not a throughput setting or a proven production sizing recommendation. All objects must fit before publication. Authentication, permission, timeout, missing-generation and integrity failures exit nonzero and publish no new staging directory. Existing cloud objects are never changed. Keep real exports and results outside the public repository.
+
+## 10. Exercise the provisional HTTP worker locally
+
+Run the standalone demonstration (it starts and stops its own fake worker):
+
+```bash
+python3 scripts/demo-state-YU18-http.py
+```
+
+The demo uses synthetic equity/bill/SOFR exports. It completes one HTTP mock job, repeats delivery,
+restarts the fake-worker process, and uses a fresh consumer to retrieve the same durable worker
+result. Both consumers have one local job/attempt; they refer to the same worker attempt. The
+original worker result bytes and modification time must remain unchanged. Private evidence stays
+in the printed temporary directory; the fake-worker processes are stopped even on failure.
+
+For interactive use, start the fake worker in a terminal:
+
+```bash
+component="$PWD/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles"
+http_demo_dir="$(mktemp -d /private/tmp/traderx-http.XXXXXX)"
+python3 "$component/fake_worker.py" --state "$http_demo_dir/worker"
+```
+
+The first line prints its `http://127.0.0.1:PORT` URL. In another terminal, set `component` and
+`http_demo_dir` to the same paths, then supply that URL with every coordinator command:
+
+```bash
+worker_url=http://127.0.0.1:PORT
+python3 "$component/coordinator.py" --state "$http_demo_dir/coordinator" --http-worker "$worker_url" discover /private/path/to/inbox
+python3 "$component/coordinator.py" --state "$http_demo_dir/coordinator" --http-worker "$worker_url" run
+python3 "$component/coordinator.py" --state "$http_demo_dir/coordinator" --http-worker "$worker_url" status
+```
+
+Use a separate coordinator state from earlier in-process mock runs. HTTP run exits 2 when remote
+work remains pending/uncertain, 1 on a failure or invalid result, and 0 when no pending/failed work
+remains. Run again to reconcile a pending attempt; use explicit retry only for FAILED jobs. Status
+can verify accepted local results while the worker is offline. Stop the fake worker with Ctrl-C.
+
+This deliberately uses a local mock protocol, inline base64 CSVs, a fixed non-pricing profile and
+no authentication. It accepts only literal 127.0.0.1 URLs and refuses redirects/proxies. It must not
+be presented as Alex's API or a deployed risk service. See contracts/http-mock-draft-1.md for the
+exact boundary and production gaps. No cloud operation is needed.

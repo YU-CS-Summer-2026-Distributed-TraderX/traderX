@@ -197,3 +197,45 @@ resize operations completed successfully. Final live checks found zero Compute E
 in traderx-505400 and zero Kubernetes nodes. Buckets and persistent disks were retained. No images
 or manifests were changed. The documentation-only update passed root Spec Kit gates and scoped
 whitespace checks; runtime verification is the live proof above, not a repeated unit-test claim.
+
+## Provisional local HTTP worker adapter — 2026-09-15
+
+The coordinator can now use a separate loopback-only fake worker through HTTP. The distinct
+`http-transport-mock-draft-1` profile preserves the existing in-process mock's workload identities
+and prevents switching a populated state directory to another adapter. This is a local test
+protocol, not Alex's agreed API or a financial engine. See
+[the wire contract](../contracts/http-mock-draft-1.md) and
+[ADR-077](../system/adr-077-provisional-http-mock-recovery.md).
+
+Submission first looks up the workload. Lost replies, socket timeouts, HTTP 429/5xx and pending
+work retain the same durable local attempt for the next explicit run. The fake worker persists
+accepted requests and results across restart. The coordinator verifies workload identity, result
+hash, exact item coverage and the non-pricing result contract before accepting completion. Local
+result and transport provenance are both covered by the stored integrity hash. A command-line
+regression test caught a duplicate Python module exception identity that incorrectly failed
+pending work; the recovery signal now lives in a shared module.
+
+Verification on this branch:
+
+- All 73 tests passed against both authoritative source and generated output (18 HTTP tests
+  added to the previous 55). Checks include dropped submission replies, socket timeout, pending
+  work across worker restart, actual coordinator process termination before/after local result
+  publication, explicit retry, malformed or financially misleading results, changed provenance,
+  symlink rejection and separate-process pending exit code 2 followed by successful recovery.
+- Full YU18 generation completed. The final owner renderer was rerun after the CLI fix; all 16
+  component source/fixture/test files were byte-identical to their generated counterparts.
+- The generated-component CLI demo launched and restarted a real fake-worker process using a
+  private durable store. Two separate consumer states each held one job and one attempt; both
+  recovered the same worker attempt. The stored worker result bytes and modification time were
+  unchanged after restart lookup. Each result contained three submitted items and zero priced.
+- Root Spec Kit gates, front-matter, readiness and spec-coverage checks passed.
+
+Run the repeatable demo with `python3 scripts/demo-state-YU18-http.py`; it cleans up its worker
+processes and prints its private evidence directory. This run's generated-output evidence was
+`/private/var/folders/cy/w468zcxs19j6vl8337g248n40000gn/T/traderx-http-demo-fhtc1r7n`.
+All fixtures used here were synthetic. No GKE resources or external worker were contacted.
+
+The adapter accepts only 127.0.0.1, disables proxies/redirects and uses a bounded inline payload.
+It adds no authentication, production scheduler, cloud worker deployment, market package or
+pricing. Alex's actual contract, remote-attempt policy, authenticated artifact access and financial
+result validation still need implementation. Mock coverage remains priced=0 and usableForRisk=false.

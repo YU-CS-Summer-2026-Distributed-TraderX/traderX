@@ -24,6 +24,8 @@ flowchart LR
   gcs["Private GCS export objects"]
   stager["Opt-in GCS staging"]
   archive["Verified archive: not ready work"]
+  httpmock["Loopback HTTP mock adapter"]
+  fakeworker["Local fake worker"]
   exports -->|"same-cut files"| builder
   builder -->|"manifest and original bytes"| bundle
   bundle -->|"validate hashes and identities"| validator
@@ -39,6 +41,9 @@ flowchart LR
   gcs -->|"read exact generations"| stager
   stager -->|"only verified supplied receipt"| bridge
   stager -->|"archive mode without receipt"| archive
+  coordinator -->|"explicit HTTP mock profile"| httpmock
+  httpmock -->|"submit or lookup by workload"| fakeworker
+  fakeworker -->|"identified mock result and hash"| httpmock
 ```
 
 ## Node Catalog
@@ -59,4 +64,6 @@ flowchart LR
 | `gcs` | store | Private GCS export objects | Existing export objects; no compute required |
 | `stager` | service | Opt-in GCS staging | Generation-pinned bounded reads and private source provenance |
 | `archive` | store | Verified archive: not ready work | No inferred completion receipt or epoch |
+| `httpmock` | service | Loopback HTTP mock adapter | Provisional non-pricing protocol and pending recovery |
+| `fakeworker` | service | Local fake worker | Durable request/result artifacts; no pricing |
 

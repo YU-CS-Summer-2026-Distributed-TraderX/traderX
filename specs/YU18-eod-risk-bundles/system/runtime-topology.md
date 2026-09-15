@@ -10,7 +10,7 @@ Inherited YU17 services supply exported positions/contracts. The added eod-risk-
 
 ## Networking
 
-Core local commands make no network calls. Opt-in gcs_stage.py invokes gcloud for read-only metadata and generation-pinned object downloads. No network listener or NATS subscriber is added.
+Core local commands make no network calls. Opt-in gcs_stage.py invokes gcloud for read-only metadata and generation-pinned object downloads. The separate fake_worker.py process binds only to 127.0.0.1; --http-worker opts the coordinator into that loopback test protocol. No NATS subscriber is added.
 
 ## Startup / Health Order
 
@@ -30,6 +30,6 @@ Core local commands make no network calls. Opt-in gcs_stage.py invokes gcloud fo
 | Hard-killed publisher | Staging/lock can remain; operator inspects before cleanup |
 | Unsupported pricing capability | Every mock row is NOT_PRICED with MOCK_ONLY |
 
-Local coordinator commands use a private filesystem inbox and a single-host SQLite store. An OS lock spans each command and worker execution; another command refuses while the owner is active. There are no new ports or messaging subjects. Process-restart recovery occurs on run; real pricing is not implemented; GCS input staging is a separate explicit command.
+Local coordinator commands use a private filesystem inbox and a single-host SQLite store. An OS lock spans each command and worker execution; another command refuses while the owner is active. Default coordination has no new ports; the explicit fake worker uses a caller-selected or ephemeral loopback port. There are no new messaging subjects. Process-restart recovery occurs on run; real pricing is not implemented; GCS input staging is a separate explicit command.
 
 The risk-extract producer optionally writes local completion receipts via RISK_EXTRACT_READY_DIRECTORY. The bridge reads those receipts and allowed local artifacts into the coordinator inbox. This adds no ports or messaging subjects. The in-process demo invokes sequenced service ingress and production renderers without deploying the EOD service chain.

@@ -40,7 +40,7 @@ CLI-created files use owner-only permissions in private staging directories. Inp
 `python3 coordinator.py --state PRIVATE_DIRECTORY discover INBOX|run|status|retry JOB_ID`.
 Use the corresponding subcommand arguments: `discover INBOX`, `run`, `status`, or `retry JOB_ID`.
 The state directory must be outside a Git checkout, owned by the caller and mode 0700.
-No daemon, scheduler, network transport or pricing service is started.
+By default, no daemon, scheduler, network transport or pricing service is started. The explicit --http-worker option uses the provisional loopback transport described in http-mock-draft-1.md.
 
 Discovery validates direct child bundle directories, skips hidden staging and reports incomplete
 (non-manifest) directories separately. Manifest-bearing invalid bundles make the CLI exit nonzero.
@@ -103,3 +103,7 @@ Receipt mode accepts a locally captured producer event naming both GCS objects. 
 Archive mode derives the contracts and cut sibling paths from date/vN/seq-N.csv. It verifies both export schemas, shared metadata, the path's date/version/sequence and the actual source cut's SHA-256. It writes `ARCHIVE_ONLY_NO_COMPLETION_RECEIPT`, null epoch/time, and no ready receipt. This does not establish that the producer completed its notification/witness protocol. Neither mode infers epoch, valuation time or input origin. Retain the staging provenance alongside any later bundle; the current coordinator does not ingest that sidecar.
 
 The CLI uses installed gcloud authentication, no SDK dependency, and a 60-second timeout per subprocess. `--max-bytes` bounds each of two receipt artifacts or three archive artifacts, not the entire invocation. Original receipt size is also bounded. No GCS writes, automatic listing, scheduler, pricing, or cluster changes are performed.
+
+## Provisional HTTP mock transport
+
+See [http-mock-draft-1.md](http-mock-draft-1.md). This is a local test protocol, separate from the unapproved financial schemas under proposed/. It does not implement Alex's API.

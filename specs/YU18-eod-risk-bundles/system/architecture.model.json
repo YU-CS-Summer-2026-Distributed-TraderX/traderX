@@ -90,6 +90,18 @@
       "label": "Verified archive: not ready work",
       "kind": "store",
       "description": "No inferred completion receipt or epoch"
+    },
+    {
+      "id": "httpmock",
+      "label": "Loopback HTTP mock adapter",
+      "kind": "service",
+      "description": "Provisional non-pricing protocol and pending recovery"
+    },
+    {
+      "id": "fakeworker",
+      "label": "Local fake worker",
+      "kind": "service",
+      "description": "Durable request/result artifacts; no pricing"
     }
   ],
   "edges": [
@@ -167,6 +179,21 @@
       "from": "stager",
       "to": "archive",
       "label": "archive mode without receipt"
+    },
+    {
+      "from": "coordinator",
+      "to": "httpmock",
+      "label": "explicit HTTP mock profile"
+    },
+    {
+      "from": "httpmock",
+      "to": "fakeworker",
+      "label": "submit or lookup by workload"
+    },
+    {
+      "from": "fakeworker",
+      "to": "httpmock",
+      "label": "identified mock result and hash"
     }
   ]
 }

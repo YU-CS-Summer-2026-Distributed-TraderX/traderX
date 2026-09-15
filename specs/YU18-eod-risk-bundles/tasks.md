@@ -19,4 +19,5 @@
 - [x] Add bounded generation-pinned GCS staging with private provenance and local failure tests.
 - [x] Verify an existing cloud archive and repeated staging without starting compute.
 - [x] Exercise a live producer completion receipt through GCS staging and the local coordinator with recorded operational epoch identity and operator-selected demo valuation time.
-- [ ] Connect the agreed Alex HTTP/result contract after schema agreement.
+- [x] Implement the provisional loopback HTTP mock adapter, durable fake worker and response/restart recovery tests.
+- [ ] Connect Alex's real HTTP/result contract, authentication and financial capabilities after schema agreement.

@@ -25,3 +25,5 @@ Local coordination workstreams: immutable input snapshots, serialized SQLite job
 Exporter integration: centralize the unchanged ready payload, add opt-in private receipt publication, validate receipts into bundles, and prove the path using the actual sequenced service and exporters with synthetic inputs.
 
 GCS input workstream: bounded read-only downloads through gcloud, per-object generation provenance, receipt validation before local readiness publication, and separate archive-only inspection without inferred run context. No cluster deployment or worker API is required.
+
+Local HTTP workstream: isolate a provisional mock wire contract behind an adapter, retain running attempts across uncertain responses, prove durable worker lookup and process-exit recovery, and keep real Alex capabilities/financial schemas unimplemented until agreement.

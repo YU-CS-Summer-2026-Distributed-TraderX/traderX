@@ -40,3 +40,5 @@ A live GKE EOD → GCS staging → local coordinator proof was completed on 2026
 rows and one SOFR contract, matching cut evidence from all three members, and one deduplicated mock
 job. The user explicitly approved historical-tape mark overrides for this transport demonstration.
 See generation/implementation-status.md for evidence and limits; no Alex pricing was performed.
+
+The optional HTTP mock adapter now exercises submission, workload lookup, polling, uncertain-response recovery and immutable result ingestion against a loopback fake worker. It uses a distinct profile and remains non-pricing. Run `python3 scripts/demo-state-YU18-http.py`; see quickstart section 10 and contracts/http-mock-draft-1.md.
