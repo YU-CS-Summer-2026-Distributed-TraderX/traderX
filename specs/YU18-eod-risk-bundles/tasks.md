@@ -10,3 +10,8 @@
 - [x] Add private local coordinator, durable attempts, explicit retry and mock-result validation.
 - [x] Exercise process interruption before/after publication, duplicate discovery and late results.
 - [x] Add unapproved exchange schema drafts and synthetic equity/bill/SOFR fixtures.
+
+- [x] Add completed-export receipt publication and local bridge.
+- [x] Exercise real in-process engine/exporter output through the coordinator.
+- [x] Correct zero-coupon and SOFR fixture assumptions against production output.
+- [x] Validate draft schemas with positive and negative cases using format checking.

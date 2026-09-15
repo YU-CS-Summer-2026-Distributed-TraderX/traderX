@@ -30,6 +30,13 @@ these guarantees from a schema-valid document.
 Synthetic source fixtures are in `generation/runtime-overrides/eod-risk-bundles/tests/fixtures/exchange/`
 (relative to the state pack). They use the exported CSV shapes but were constructed locally, not
 captured from a running exporter. They contain an equity, zero-coupon Treasury bill and SOFR swap.
-The bill's `lastCouponDate` is a source-schema placeholder; it does not assert a coupon schedule.
+The bill's coupon-schedule and accrued-interest fields are empty, matching the zero-coupon exporter contract.
 All three remain `NOT_PRICED` under the current mock. SOFR refusal and actual NPV/Greek fixtures
 belong to the agreed pricing adapter, not to this mock.
+
+## Validation and examples
+
+Run the development-only validator suite from quickstart section 8. The pinned jsonschema package
+includes format-checking extras. Both meta-schemas and positive/negative examples are exercised.
+`examples/` contains hand-authored shape illustrations, not engine outputs: values are synthetic,
+all hashes are placeholders, paths do not resolve, and usableForRisk remains false.

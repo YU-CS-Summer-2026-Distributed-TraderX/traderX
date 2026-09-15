@@ -1,0 +1,30 @@
+{
+  "schema": "traderx.risk-request.draft-1",
+  "requestId": "synthetic-request",
+  "portfolioBundle": {
+    "bundleId": "0000000000000000000000000000000000000000000000000000000000000000",
+    "manifestUri": "file:///SYNTHETIC-EXAMPLE-NOT-A-REAL-FILE/manifest.json",
+    "manifestFileSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "marketPackage": {
+    "artifact": {
+      "id": "synthetic-example-market",
+      "uri": "file:///SYNTHETIC-EXAMPLE-NOT-A-REAL-FILE/market",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "label": "assumed"
+  },
+  "referenceData": {
+    "id": "synthetic-example-reference",
+    "uri": "file:///SYNTHETIC-EXAMPLE-NOT-A-REAL-FILE/reference",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "valuationTime": "2025-06-02T20:00:00Z",
+  "reportingCurrency": "USD",
+  "calculations": [
+    "npv",
+    "rateSensitivity"
+  ],
+  "coveragePolicy": "partial-allowed",
+  "profileId": "synthetic-profile"
+}

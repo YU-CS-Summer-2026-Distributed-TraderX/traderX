@@ -1,0 +1,130 @@
+{
+  "schema": "traderx.risk-result.draft-1",
+  "requestId": "synthetic-request",
+  "attemptId": "synthetic-attempt",
+  "status": "partial",
+  "inputs": {
+    "bundleId": "0000000000000000000000000000000000000000000000000000000000000000",
+    "manifestFileSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "clusterEpoch": "synthetic-epoch",
+    "marketPackage": {
+      "id": "synthetic-example-market",
+      "uri": "file:///SYNTHETIC-EXAMPLE-NOT-A-REAL-FILE/market",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "marketLabel": "assumed",
+    "referenceData": {
+      "id": "synthetic-example-reference",
+      "uri": "file:///SYNTHETIC-EXAMPLE-NOT-A-REAL-FILE/reference",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "cut": {
+      "consensusSequence": "42",
+      "sessionDate": "2025-06-02",
+      "priceSnapshotVersion": "1",
+      "cutSha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "valuationTime": "2025-06-02T20:00:00Z",
+  "completedAt": "2025-06-03T06:00:00Z",
+  "usableForRisk": false,
+  "execution": {
+    "engineVersion": "synthetic-example-only",
+    "adapterVersion": "draft-1",
+    "profileId": "synthetic-profile",
+    "workerBootEpoch": "synthetic-boot",
+    "device": "not-executed",
+    "actualPrecision": "float64"
+  },
+  "items": [
+    {
+      "itemId": "equity",
+      "sourceIdentity": {
+        "source": "positions",
+        "accountId": "22214",
+        "security": "SYNTH"
+      },
+      "npv": {
+        "status": "ok",
+        "value": 100,
+        "currency": "USD",
+        "method": "synthetic-example",
+        "reason": null,
+        "bump": null
+      },
+      "rateSensitivity": {
+        "status": "unsupported",
+        "value": null,
+        "currency": "USD",
+        "method": null,
+        "reason": "NOT_REQUESTED_FOR_EQUITY",
+        "bump": null
+      }
+    },
+    {
+      "itemId": "bill",
+      "sourceIdentity": {
+        "source": "positions",
+        "accountId": "22214",
+        "security": "UST-BILL-20251202"
+      },
+      "npv": {
+        "status": "ok",
+        "value": 98500,
+        "currency": "USD",
+        "method": "synthetic-example",
+        "reason": null,
+        "bump": null
+      },
+      "rateSensitivity": {
+        "status": "unsupported",
+        "value": null,
+        "currency": "USD",
+        "method": null,
+        "reason": "ILLUSTRATION_HAS_NO_CURVE",
+        "bump": null
+      }
+    },
+    {
+      "itemId": "swap",
+      "sourceIdentity": {
+        "source": "contracts",
+        "accountId": "22214",
+        "contractId": "SW-EXAMPLE"
+      },
+      "npv": {
+        "status": "unsupported",
+        "value": null,
+        "currency": "USD",
+        "method": null,
+        "reason": "SOFR_BUILDER_UNAVAILABLE",
+        "bump": null
+      },
+      "rateSensitivity": {
+        "status": "unsupported",
+        "value": null,
+        "currency": "USD",
+        "method": null,
+        "reason": "SOFR_BUILDER_UNAVAILABLE",
+        "bump": null
+      }
+    }
+  ],
+  "coverage": {
+    "npv": {
+      "requested": 3,
+      "ok": 2,
+      "unsupported": 1,
+      "failed": 0
+    },
+    "rateSensitivity": {
+      "requested": 3,
+      "ok": 0,
+      "unsupported": 3,
+      "failed": 0
+    }
+  },
+  "warnings": [
+    "Hand-authored shape example; no engine ran and no artifact references resolve."
+  ]
+}

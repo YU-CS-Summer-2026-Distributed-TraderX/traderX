@@ -30,7 +30,7 @@ The first generation attempt was stopped in inherited 014 frontend dependency re
 
 Tests use synthetic exports. No live cluster close, actual portfolio valuation, external risk-engine request, GKE workload, TAQ conversion or licensed-data processing is performed. The added CLI has no network activity. SHA-256 checks establish internal integrity, not authenticated producer provenance. Inherited service health and financial model accuracy are not asserted by this local transport proof.
 
-## Local coordinator extension — verified 2026-09-14
+## Historical local coordinator extension — verified 2026-09-14
 
 The state now contains a stdlib SQLite coordinator with private snapshots, immutable workload IDs,
 serialized mock execution, attempt history, explicit retry, result reconciliation and cut-scoped status.
@@ -54,3 +54,50 @@ Synthetic equity/bill/SOFR fixtures are constructed in exporter-compatible forma
 a running OMS. Every mock item remains NOT_PRICED; no pricing, risk result, GCS worker, HTTP adapter
 or financial benchmark is implemented by this extension. No GKE workload or TAQ conversion was run.
 Recovery evidence is for process termination on a local filesystem, not power loss or multi-host use.
+
+## Exporter bridge extension — verified 2026-09-14
+
+Implemented on traderX-risk-integration after 316da356. The producer's ready payload construction
+now lives in RiskExtractReady and optionally publishes a private immutable local receipt via
+RISK_EXTRACT_READY_DIRECTORY. The unchanged NATS event is still published. bridge.py checks receipt
+schemas, individual hashes/counts, shared cut identity, business date and adjacent witness, then
+publishes source bytes into the coordinator inbox. Other dates are skipped; remote URIs are refused.
+
+The in-process proof drives the real service message handler: two matched pairs book four signed
+position rows, and one SOFR booking enters the contract store. A real extract marker produces the
+cut; another marker proves adjacency. The actual production renderers and completion helper produce
+the private files used by the Python bridge/coordinator. Repeated delivery creates one logical job
+and one attempt. No CSV output is hand-constructed in this Java demonstration.
+
+| Check | Result |
+|---|---|
+| Source and generated Python suites | 40 tests plus bundle/coordinator CLI demonstrations pass |
+| Final generated Java suites | EodBundleExportTest 1, RiskExtractTest 23, SwapBookingTest 29; all pass, none skipped |
+| Exporter-to-coordinator script | Pass after full generation; 4 positions + 1 contract; all NOT_PRICED, priced=0 |
+| Draft schemas | Both meta-schemas validated; 4 positive/negative test methods pass with jsonschema 4.25.1 and format-checking extras |
+| Full sequential generation | TRADERX_SKIP_LOCKFILE_REFRESH=1 generation exits 0 |
+| Root gates/readiness/coverage/front-matter | Pass (33 state specs; 33 front-matter files) |
+| Overlay review | YU18 RiskExtractMain differs from YU17 only in ready-payload/optional-receipt block; CSV renderer and matching engine algorithms unchanged |
+| Syntax/whitespace | Shell syntax and scoped diff checks pass |
+
+Final private demonstration artifacts: /private/tmp/traderx-export-demo.mnsuaZ (temporary local
+location, not a durable external delivery). Reproduce with scripts/demo-state-YU18-eod-export.sh.
+
+Actual exporter checks exposed two fixture errors: zero-coupon bonds emit empty lastCouponDate and
+accruedInterestFraction; SOFR exports carry USD-SOFR / 1Y / ACT/360, not the combined convention name.
+The validator and fixtures now match those source semantics. Old manually built bill bundles with
+fabricated coupon placeholders must be rebuilt, not silently migrated. The corrected synthetic
+fixtures have new content hashes; older hashes above are historical measurements.
+
+The new proof initially mistook the trade counter for matched pairs; inspecting the increment site
+showed it counts account trade legs, and the proof now checks four legs plus exact signed holdings.
+A negative schema test also caught date-time validation being skipped without optional dependencies;
+requirements-test.txt now includes format-nongpl extras and that negative test passes.
+
+Limits: this is an in-process engine/exporter proof, not HTTP ingress, three-member consensus, SQL
+mark loading, live EOD pricing/P&L orchestration, NATS delivery or GCS integration. The optional hook
+is compiled and its shared helper exercised, but no live risk-extract service was deployed. Schema
+examples are illustrative, not engine outputs; cross-file and financial semantics still need the
+agreed Alex adapter. No financial valuation, cloud workload, licensed-data processing or TAQ
+conversion was performed. Java/Python artifacts and logs remain private; runtime Python remains
+stdlib-only and the schema validator is a separate development dependency.

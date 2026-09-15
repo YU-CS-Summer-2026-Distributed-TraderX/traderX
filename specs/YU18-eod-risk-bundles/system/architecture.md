@@ -19,6 +19,8 @@ flowchart LR
   coordinator["Local coordinator"]
   jobs["Private SQLite jobs and attempts"]
   status["Local status: no financial results"]
+  receipt["Private completed-export receipt"]
+  bridge["Local receipt bridge"]
   exports -->|"same-cut files"| builder
   builder -->|"manifest and original bytes"| bundle
   bundle -->|"validate hashes and identities"| validator
@@ -28,6 +30,9 @@ flowchart LR
   coordinator -->|"execute local adapter"| mock
   result -->|"validate identities and non-pricing semantics"| coordinator
   jobs -->|"history and current cut"| status
+  exports -->|"optional completion publication"| receipt
+  receipt -->|"discover by business date"| bridge
+  bridge -->|"validated original CSV bytes"| bundle
 ```
 
 ## Node Catalog
@@ -43,4 +48,6 @@ flowchart LR
 | `coordinator` | service | Local coordinator | Discovery, serialized execution and restart recovery |
 | `jobs` | store | Private SQLite jobs and attempts | Durable logical workloads, attempts and accepted hashes |
 | `status` | service | Local status: no financial results | Version-scoped selection, history and integrity |
+| `receipt` | store | Private completed-export receipt | Actual ready payload after both exports exist |
+| `bridge` | service | Local receipt bridge | Verify hashes, cut and witness; publish bundle |
 

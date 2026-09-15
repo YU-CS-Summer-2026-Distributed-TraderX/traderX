@@ -60,6 +60,18 @@
       "label": "Local status: no financial results",
       "kind": "service",
       "description": "Version-scoped selection, history and integrity"
+    },
+    {
+      "id": "receipt",
+      "label": "Private completed-export receipt",
+      "kind": "store",
+      "description": "Actual ready payload after both exports exist"
+    },
+    {
+      "id": "bridge",
+      "label": "Local receipt bridge",
+      "kind": "service",
+      "description": "Verify hashes, cut and witness; publish bundle"
     }
   ],
   "edges": [
@@ -107,6 +119,21 @@
       "from": "jobs",
       "to": "status",
       "label": "history and current cut"
+    },
+    {
+      "from": "exports",
+      "to": "receipt",
+      "label": "optional completion publication"
+    },
+    {
+      "from": "receipt",
+      "to": "bridge",
+      "label": "discover by business date"
+    },
+    {
+      "from": "bridge",
+      "to": "bundle",
+      "label": "validated original CSV bytes"
     }
   ]
 }

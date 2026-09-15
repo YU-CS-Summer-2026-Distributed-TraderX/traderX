@@ -77,10 +77,14 @@ def read_extract(data, kind):
                 decimal(row[f], f)
             require(decimal(row['contractMultiplier'], 'contractMultiplier') > 0, 'invalid multiplier')
             if row['instrumentType'] in ('TREASURY', 'CORPORATE'):
-                for f in ('coupon', 'accruedInterestFraction'):
-                    decimal(row[f], f)
-                for f in ('maturityDate', 'lastCouponDate'):
-                    date.fromisoformat(row[f])
+                coupon = decimal(row['coupon'], 'coupon')
+                date.fromisoformat(row['maturityDate'])
+                if coupon == 0:
+                    require(not row['lastCouponDate'] and not row['accruedInterestFraction'],
+                            'zero-coupon bonds must have empty coupon schedule/accrual fields')
+                else:
+                    decimal(row['accruedInterestFraction'], 'accruedInterestFraction')
+                    date.fromisoformat(row['lastCouponDate'])
         else:
             require(row['productType'] in ('SWAP', 'SWAPTION'), 'unknown OTC product')
             require(row['payReceive'] in ('PAY_FIXED', 'RECEIVE_FIXED'), 'invalid fixed-leg direction')

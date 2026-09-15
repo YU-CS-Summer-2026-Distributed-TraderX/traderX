@@ -29,9 +29,9 @@ EQUITY = dict(accountId='demo-account', security='SYNTH', instrumentType='EQUITY
               markSource='EOD_SNAPSHOT', markQuality='SYNTHETIC', marketValue='100',
               unrealizedPnl='10', currency='USD')
 SWAP = dict(contractId='SW-41', accountId='demo-account', payReceive='PAY_FIXED',
-            notional='1000000', fixedRate='0.04', floatIndex='USD-SOFR-1Y-ACT360',
-            effectiveDate='2025-06-03', maturityDate='2030-06-03', paymentFrequency='ANNUAL',
-            dayCount='ACT360', currency='USD', productType='SWAP')
+            notional='1000000', fixedRate='0.04', floatIndex='USD-SOFR',
+            effectiveDate='2025-06-03', maturityDate='2030-06-03', paymentFrequency='1Y',
+            dayCount='ACT/360', currency='USD', productType='SWAP')
 
 
 class BundleTests(unittest.TestCase):

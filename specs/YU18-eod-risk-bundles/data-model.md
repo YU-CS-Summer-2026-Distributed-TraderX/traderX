@@ -22,3 +22,5 @@ execution and commit acceptance after validation. Host-local advisory locking se
 
 Status derives selection from the largest numeric cut sequence/version per epoch and business date.
 It retains all history and refuses to pick among conflicting bundles with equal cut order.
+
+Completed-export receipts carry the existing readiness payload: individual CSV hashes and counts, schemas, cut metadata, file URIs and adjacent quiescence witness. They are stored independently of bundles and identify when the pair is ready for packaging; they do not supply epoch or market/reference-data versions.

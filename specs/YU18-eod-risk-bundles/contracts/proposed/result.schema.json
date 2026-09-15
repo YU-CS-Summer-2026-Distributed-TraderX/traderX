@@ -312,40 +312,7 @@
                 ]
               },
               "bump": {
-                "oneOf": [
-                  {
-                    "type": "null"
-                  },
-                  {
-                    "type": "object",
-                    "additionalProperties": false,
-                    "required": [
-                      "curveId",
-                      "pillarDate",
-                      "size",
-                      "type"
-                    ],
-                    "properties": {
-                      "curveId": {
-                        "type": "string",
-                        "minLength": 1
-                      },
-                      "pillarDate": {
-                        "type": [
-                          "string",
-                          "null"
-                        ]
-                      },
-                      "size": {
-                        "type": "number",
-                        "exclusiveMinimum": 0
-                      },
-                      "type": {
-                        "const": "absolute-zero-rate"
-                      }
-                    }
-                  }
-                ]
+                "type": "null"
               }
             },
             "allOf": [
@@ -494,6 +461,28 @@
                     "reason": {
                       "type": "string",
                       "minLength": 1
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "status": {
+                      "const": "ok"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "method": {
+                      "enum": [
+                        "ad-first-order",
+                        "bumped-revaluation"
+                      ]
+                    },
+                    "bump": {
+                      "type": "object"
                     }
                   }
                 }

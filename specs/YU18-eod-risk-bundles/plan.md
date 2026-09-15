@@ -21,3 +21,5 @@ The CLI consumes exported files explicitly; operator-supplied epoch is part of i
 Source and generated component tests pass. The demo completes without cloud access. The spec pack records generation and validation evidence separately from financial integration evidence.
 
 Local coordination workstreams: immutable input snapshots, serialized SQLite job/attempt transitions, mock adapter validation, recovery after process termination, version-aware status and proposed exchange schemas. Implemented on traderX-risk-integration after the YU18 merge; the YU18 home branch has not yet received this extension.
+
+Exporter integration: centralize the unchanged ready payload, add opt-in private receipt publication, validate receipts into bundles, and prove the path using the actual sequenced service and exporters with synthetic inputs.

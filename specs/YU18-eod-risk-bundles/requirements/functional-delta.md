@@ -13,3 +13,7 @@
 - Recover abandoned RUNNING attempts under an exclusive OS lock.
 - Validate result identities, non-pricing semantics and artifact integrity.
 - Select mock results by input cut identity, never completion order.
+
+- Publish opt-in local completion receipts only after both exporter artifacts exist.
+- Validate source hashes, counts, cut identity, business date and adjacent witness before packaging.
+- Preserve empty zero-coupon schedule/accrual fields from production exports.

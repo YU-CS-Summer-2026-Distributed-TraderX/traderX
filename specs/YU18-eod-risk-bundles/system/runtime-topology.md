@@ -31,3 +31,5 @@ The added component opens no network listeners and makes no network calls. It su
 | Unsupported pricing capability | Every mock row is NOT_PRICED with MOCK_ONLY |
 
 Local coordinator commands use a private filesystem inbox and a single-host SQLite store. An OS lock spans each command and worker execution; another command refuses while the owner is active. There are no new ports or messaging subjects. Process-restart recovery occurs on run; real pricing and cloud transports are not implemented.
+
+The risk-extract producer optionally writes local completion receipts via RISK_EXTRACT_READY_DIRECTORY. The bridge reads those receipts and allowed local artifacts into the coordinator inbox. This adds no ports or messaging subjects. The in-process demo invokes sequenced service ingress and production renderers without deploying the EOD service chain.

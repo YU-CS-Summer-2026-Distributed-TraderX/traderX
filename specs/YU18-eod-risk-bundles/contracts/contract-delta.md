@@ -69,3 +69,24 @@ The status view lists all jobs, attempts, failures and integrity findings. There
 across epochs, currencies or unrelated portfolio runs, and no approved financial-result consumer.
 
 The `proposed/` schemas are explicitly unapproved exchange drafts and do not change these contracts.
+
+## Completed-export receipt bridge
+
+The producer's existing `risk.extract.ready` JSON shape is unchanged. `RiskExtractReady` centralizes
+its construction and checks witness sequence = cut sequence + 1. When `RISK_EXTRACT_READY_DIRECTORY`
+is configured, the producer also publishes exactly those payload bytes with a final LF in a private,
+write-once local receipt after writing both artifacts. Temporary files have no `.ready.json` suffix.
+Publication uses an atomic same-filesystem hard link and never overwrites; equal-byte retry is accepted.
+No power-loss durability or producer authentication is claimed.
+
+The bridge scans a specified business date, validates individual artifact hashes/counts/schemas,
+shared cut metadata and adjacent witness, then writes the original CSV bytes into a content-addressed
+bundle inbox. Epoch, valuation time and source origin remain caller-supplied. Other dates are reported
+as skipped; missing artifacts are failures, while a zero-row contracts file is valid. Duplicate receipts
+produce the same bundle and do not overwrite it. Only non-symlink local file artifacts within the
+allowed root are read; remote schemes fail explicitly. There is no notification listener or scheduler.
+
+Producer compatibility correction: zero-coupon bonds have empty lastCouponDate AND
+accruedInterestFraction. Coupon-bearing bonds retain required date/decimal fields. Synthetic SOFR
+fixtures now mirror the actual export values: floatIndex=USD-SOFR, paymentFrequency=1Y, dayCount=ACT/360.
+These fields do not constitute a complete agreed SOFR pricing convention set.
