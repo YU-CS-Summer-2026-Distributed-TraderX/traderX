@@ -1,0 +1,37 @@
+{
+  "observations": [
+    {
+      "identity": {
+        "dataset": "dated-demo",
+        "instrument": "USD-TREASURY-2Y",
+        "observationDate": "2025-06-02",
+        "series": "treasury-par-2y",
+        "source": "synthetic"
+      },
+      "observationTime": "2025-06-02T12:00:00Z",
+      "provenance": "synthetic",
+      "publicationTime": "2025-06-02T13:00:00Z",
+      "quoteType": "par-yield",
+      "retrievalTime": "2025-06-02T14:00:00Z",
+      "units": "percent",
+      "value": "4.1250"
+    },
+    {
+      "identity": {
+        "dataset": "dated-demo",
+        "instrument": "USD-SOFR",
+        "observationDate": "2025-06-02",
+        "series": "sofr",
+        "source": "synthetic"
+      },
+      "observationTime": "2025-06-02T12:00:00Z",
+      "provenance": "synthetic",
+      "publicationTime": "2025-06-02T13:00:00Z",
+      "quoteType": "overnight-fixing",
+      "retrievalTime": "2025-06-02T14:00:00Z",
+      "units": "percent",
+      "value": "4.3300"
+    }
+  ],
+  "schema": "traderx.market-observations.v1"
+}

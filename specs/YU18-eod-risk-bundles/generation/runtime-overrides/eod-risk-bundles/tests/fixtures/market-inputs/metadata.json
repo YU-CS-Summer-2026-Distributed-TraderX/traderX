@@ -1,0 +1,43 @@
+{
+  "availabilityCutoff": "2025-06-02T20:00:00Z",
+  "businessDate": "2025-06-02",
+  "selection": {
+    "allowedProvenance": [
+      "synthetic"
+    ],
+    "maxAgeCalendarDays": 0,
+    "required": [
+      {
+        "dataset": "dated-demo",
+        "instrument": "USD-TREASURY-2Y",
+        "observationDate": "2025-06-02",
+        "series": "treasury-par-2y",
+        "source": "synthetic"
+      },
+      {
+        "dataset": "dated-demo",
+        "instrument": "USD-SOFR",
+        "observationDate": "2025-06-02",
+        "series": "sofr",
+        "source": "synthetic"
+      }
+    ],
+    "selected": [
+      {
+        "dataset": "dated-demo",
+        "instrument": "USD-TREASURY-2Y",
+        "observationDate": "2025-06-02",
+        "series": "treasury-par-2y",
+        "source": "synthetic"
+      },
+      {
+        "dataset": "dated-demo",
+        "instrument": "USD-SOFR",
+        "observationDate": "2025-06-02",
+        "series": "sofr",
+        "source": "synthetic"
+      }
+    ]
+  },
+  "valuationTime": "2025-06-02T20:00:00Z"
+}

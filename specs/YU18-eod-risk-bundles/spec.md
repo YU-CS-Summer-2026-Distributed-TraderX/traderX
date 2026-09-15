@@ -69,3 +69,15 @@
 ### Pinned local W0 result acceptance
 
 The local coordinator supports an independent `alex-w0-local-v1` file-intake profile for the reviewed Alex adapter commit. Its accepted result status is `W0_VALIDATED`, with zero priced items and `usableForRisk=false`; it must not select a mock result or claim portfolio risk. Before publication it reconciles all source identities, input echoes, item-order hashes, per-calculation outcomes, coverage counts and signed exported-accrual conversions. Stored output bytes and the local receipt are revalidated on status reads. Missing files remain pending on the same attempt; published results can be recovered after interruption. This compatibility profile accepts only terms-v1 Treasury and incomplete-SWAP bundles with no market computation. Terms-v2 support, authenticated remote delivery and financial pricing remain unimplemented at this boundary.
+
+### Dated observation packages (I1)
+
+- FR-EB25: A standalone versioned market-input package SHALL preserve exact observation bytes,
+  source/dataset/series/instrument identity, distinct observation/publication/retrieval dates and
+  times, raw decimal units, quote types and observation provenance.
+- FR-EB26: It SHALL hash artifacts and deterministic package metadata, reject duplicate identities,
+  and report structural integrity separately from caller-selected as-of suitability. Missing
+  required inputs, unknown publication, stale/future/unavailable observations and disallowed
+  provenance SHALL NOT silently pass suitability.
+- FR-EB27: Synthetic fixtures SHALL remain explicit; no normalization, derived curve, financial
+  readiness or W0 market-input support SHALL be implied. See contracts/market-input-package-v1.md.

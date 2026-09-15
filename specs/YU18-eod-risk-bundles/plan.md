@@ -31,3 +31,7 @@ Local HTTP workstream: isolate a provisional mock wire contract behind an adapte
 ## Versioned reference inputs and shared exporter cases
 
 Preserve the v1 contract with fixed cross-language hash vectors. Add an explicit v2 terms artifact for the initial Treasury/SWAP exchange, validate coverage and agreement with exported economics, and preserve incomplete SOFR conventions. Reproduce bill, fixed-rate note long/short, and SOFR cases through the in-process exporter. This extends the owning EOD bundle state; no deterministic-core behavior or cloud deployment changes.
+
+I1 adds a standalone dated observation package, exact-byte custody and explicit selected/required
+as-of rules. It leaves EOD bundle and W0 identities frozen. Future normalized or calibrated artifacts
+need a separately agreed contract, parent hashes and distinct curve assumptions.

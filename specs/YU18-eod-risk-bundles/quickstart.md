@@ -226,3 +226,20 @@ Run `python3 scripts/test-state-YU18-checkout.py` to prove byte preservation thr
 ### Actual Alex W0 adapter, locally
 
 Run `python3 scripts/demo-state-YU18-alex-w0.py --engine /path/to/JAX_Risk_Engine` against clean engine commit `cb9b277a9de702b2ba4f0bcda431a396f54c029a`. This accepts bill/note accrual conversions and explicit SOFR refusals into a separate local coordinator profile. `W0_VALIDATED` is not pricing completion; `usableForRisk` remains false. See `docs/risk-integration/local-w0-intake.md` for compatibility limits, manual intake and evidence semantics.
+
+## 13. Dated synthetic market inputs
+
+```bash
+python3 scripts/demo-state-YU18-market-inputs.py
+component=specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles
+python3 "$component/market_inputs.py" build \
+  --metadata "$component/tests/fixtures/market-inputs/metadata.json" \
+  --observations "$component/tests/fixtures/market-inputs/observations.json" \
+  --output /private/tmp/CHOOSE-A-NEW-MARKET-PACKAGE-DIRECTORY
+python3 "$component/market_inputs.py" validate /private/tmp/CHOOSE-A-NEW-MARKET-PACKAGE-DIRECTORY
+```
+
+The demo repeats the build and checks a fixed package ID. Its par-yield/fixing values and timestamps
+are invented synthetic examples, not observed market data or release schedules. Exit 2 means valid
+structure but unsuitable selection; exit 1 means corrupt/invalid structure. See
+[the contract](contracts/market-input-package-v1.md). Pricing remains unavailable.
