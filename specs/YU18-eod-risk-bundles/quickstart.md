@@ -218,3 +218,7 @@ No terms argument means v1. The local coordinator accepts either; use separate c
 for demonstrations so equivalent cuts with distinct bundle versions are not ambiguous. The HTTP
 draft-1 adapter refuses v2. Terms/reference format and assumptions are documented in
 [the v2 contract](contracts/bundle-v2-and-terms.md); exact v1 encoding is in [golden vectors](contracts/golden-v1.md).
+
+## 12. Cross-platform fixture compatibility
+
+Run `python3 scripts/test-state-YU18-checkout.py` to prove byte preservation through real Git CRLF checkout filters. This creates only temporary local repositories and requires no network. See [compatibility-v3](contracts/compatibility-v3.md) for the new terms-version example and the deliberately invalid missing-accrual fixture.

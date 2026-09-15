@@ -1,0 +1,15 @@
+{
+  "alexExpectationAgreed": false,
+  "alexMappingExpectation": {
+    "reason": "ACCRUED_NOT_SUPPLIED",
+    "status": "unavailable"
+  },
+  "errorContains": "accruedInterestFraction",
+  "mutation": "Blank accruedInterestFraction on both coupon-bearing positions",
+  "notACompletedExport": true,
+  "note": "Deliberately mutated raw input, not a valid bundle or authentic completed-export receipt. Source cut metadata retained only to isolate the missing-field failure.",
+  "schema": "traderx.negative-fixture.v1",
+  "sourceCase": "shared/note/v2",
+  "synthetic": true,
+  "traderxExpected": "REJECT_BEFORE_BUNDLE_PUBLICATION"
+}

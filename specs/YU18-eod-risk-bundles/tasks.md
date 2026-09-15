@@ -28,3 +28,8 @@
 - [x] Exercise v2 local coordination and refusal by the frozen v1-only HTTP draft.
 - [ ] Agree final terms field names, real reference sources, and missing/stub conventions with Alex.
 - [ ] Observe Alex's numerical bill/note results and identified SOFR unsupported outcome against shared examples.
+
+- [x] Protect hash-critical fixtures against Git text conversion; exercise real CRLF checkout filters and improve diagnostics.
+- [x] Add a deliberately invalid blank-accrual note with explicit TraderX rejection and proposed Alex mapper expectations.
+- [x] Add terms v2 with structured accrual basis without changing original terms-v1 fixtures.
+- [ ] Agree the structured basis and worker publication/submission recovery semantics with Alex.

@@ -115,3 +115,5 @@ Run `bash scripts/demo-state-YU18-shared-examples.sh` after generation. It execu
 exports, validates completion receipts/cuts, compares every delivered case file byte-for-byte,
 and exercises both versions through separate local coordinator states. A changed exporter requires
 reviewing the fixtures and provenance, not automatically rewriting expected results.
+
+See [the v3 compatibility follow-up](compatibility-v3.md) for scoped checkout attributes, CRLF diagnostics, the additive terms-v2 accrual basis and the invalid missing-accrual fixture. Existing examples and v1 hashes remain unchanged.

@@ -16,6 +16,11 @@ def sha(value):
 
 def verify(root):
     root = Path(root)
+    for path in sorted(root.rglob('*')):
+        if path.is_file() and path.suffix in ('.json', '.csv') and b'\r\n' in path.read_bytes():
+            raise ValueError(f'CRLF line endings in {path}: these fixtures require original LF bytes. '
+                             'Check Git attributes and obtain a fresh checkout or pristine committed files; '
+                             'do not regenerate expected hashes or normalize real input data.')
     expected = json.loads((root/'expected.json').read_bytes())
     assert expected['schema'] == 'traderx.golden-v1.1' and len(expected['cases']) == 2
     assert {c['name'] for c in expected['cases']} == {'basic', 'exchange'}
@@ -44,5 +49,8 @@ def verify(root):
 if __name__ == '__main__':
     if not __debug__:
         raise SystemExit('Run without Python -O: verification requires assertions.')
-    count = verify(Path(sys.argv[1]) if len(sys.argv)>1 else Path(__file__).parent/'tests/fixtures/golden-v1')
+    try:
+        count = verify(Path(sys.argv[1]) if len(sys.argv)>1 else Path(__file__).parent/'tests/fixtures/golden-v1')
+    except (ValueError, OSError, AssertionError) as exc:
+        raise SystemExit('FAIL: '+(str(exc) or 'golden bytes or expected hashes differ'))
     print(f'PASS: {count} fixed v1 golden cases; both workload profiles verified')

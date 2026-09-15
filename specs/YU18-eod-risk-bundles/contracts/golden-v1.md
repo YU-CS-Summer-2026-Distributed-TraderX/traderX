@@ -34,3 +34,5 @@ Object keys in this contract are ASCII. A compact JSON encoder produces a differ
 Alex can implement his encoder, compare generated **bytes** to these preimages, and then compare
 hashes. Existing fixture hashes must not be changed to accommodate a new encoder. Real pricing
 profiles are not defined by these mock profiles and need their own agreed versioned vectors.
+
+See [the v3 compatibility follow-up](compatibility-v3.md) for scoped checkout attributes, CRLF diagnostics, the additive terms-v2 accrual basis and the invalid missing-accrual fixture. Existing examples and v1 hashes remain unchanged.

@@ -289,3 +289,29 @@ Run `bash scripts/demo-state-YU18-shared-examples.sh` after generation to reprod
 The human-readable contracts are [bundle v2 and terms](../contracts/bundle-v2-and-terms.md) and
 [v1 golden vectors](../contracts/golden-v1.md). Alex still needs to confirm the exchange field names,
 return real bill/note results under an agreed assumed curve, and demonstrate the SOFR refusal.
+
+## Alex v3 compatibility follow-up — 2026-09-15
+
+Added scoped byte-preserving Git attributes for the YU18 fixture tree and actionable CRLF
+diagnostics in the standalone golden verifier. A local test creates real Git repositories and
+clones with core.autocrlf=true: the unprotected control translates and fails; the protected
+fixtures preserve bytes and pass; an unrelated CSV still translates. This tests Git filters,
+not execution on a native Windows host.
+
+Added traderx.instrument-terms.v2 with structured Treasury accrual basis, pinned in the existing
+bundle-v2 artifact manifest. The original terms-v1 and golden/shared fixtures are byte-identical
+to their prior committed versions. The new synthetic note bundle has a distinct identity. Basis
+validation requires the session date, six-decimal HALF_EVEN fraction rounding and the explicitly
+unadjusted same-day-settlement fixture model. No real-market reference or curve is inferred.
+
+The missing-accrual negative fixture changes only the two note accrual cells. It is deliberately
+invalid raw input, without a bundle manifest or completed-export receipt. Tests prove rejection
+before publication. Alex's unavailable/ACCRUED_NOT_SUPPLIED mapping is an expectation awaiting
+agreement, not an observed result.
+
+Verification: 99 Python tests passed against authoritative source and generated output; the
+checkout-filter test passed; original golden/shared bytes matched Git HEAD; root Spec Kit,
+front-matter, readiness and coverage checks passed. Regenerated the owner component with the
+YU18 renderer; no Java/exporter code changed, so Java tests were not repeated. No cloud work.
+The maintained reply is docs/risk-integration/eod-response-to-alex-v3.md. It covers rounding,
+signed face, identity timing, fresh-attempt retry identity and publication/lookup recovery.

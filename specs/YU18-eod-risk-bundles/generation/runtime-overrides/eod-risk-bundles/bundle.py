@@ -123,7 +123,7 @@ def manifest_for(payloads, epoch, valuation_time, origin, terms=None):
         doc = instrument_terms.validate(terms, parsed, epoch, origin)
         manifest['schema'] = 'traderx.eod-bundle.v2'
         manifest['artifacts']['instrumentTerms'] = {
-            'path': 'instrument-terms.json', 'schema': instrument_terms.SCHEMA,
+            'path': 'instrument-terms.json', 'schema': doc['schema'],
             'sha256': digest(terms), 'entries': len(doc['entries'])}
     manifest['bundleId'] = digest(encoded(manifest))
     return manifest

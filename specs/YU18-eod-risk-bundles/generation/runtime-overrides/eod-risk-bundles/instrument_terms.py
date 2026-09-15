@@ -5,6 +5,7 @@ from calendar import monthrange
 import bundle
 
 SCHEMA = 'traderx.instrument-terms.v1'
+SCHEMA_V2 = 'traderx.instrument-terms.v2'
 BOND = {'currency', 'issueDate', 'maturityDate', 'couponRatePercent', 'couponFrequency',
         'dayCount', 'calendar', 'businessDayAdjustment', 'paymentLagBusinessDays',
         'settlementDays', 'firstCouponDate', 'penultimateCouponDate', 'stubConvention',
@@ -44,7 +45,7 @@ def schedule(periods, start, end):
 
 def validate(data, parsed, epoch, origin):
     doc = decode(data)
-    bundle.require(isinstance(doc, dict) and set(doc) == {'schema', 'entries'} and doc['schema'] == SCHEMA,
+    bundle.require(isinstance(doc, dict) and set(doc) == {'schema', 'entries'} and doc['schema'] in (SCHEMA, SCHEMA_V2),
                    'invalid terms artifact schema or fields')
     bundle.require(isinstance(doc['entries'], list), 'terms entries must be an array')
     expected = {}
@@ -54,8 +55,11 @@ def validate(data, parsed, epoch, origin):
             expected.setdefault(key, []).append(row)
     seen = set()
     for entry in doc['entries']:
-        bundle.require(isinstance(entry, dict) and set(entry) == {
-            'identity', 'instrumentType', 'provenance', 'terms', 'missingTerms'}, 'invalid terms entry fields')
+        bundle.require(isinstance(entry, dict), 'invalid terms entry')
+        fields = {'identity', 'instrumentType', 'provenance', 'terms', 'missingTerms'}
+        if doc['schema'] == SCHEMA_V2 and entry.get('instrumentType') == 'TREASURY':
+            fields.add('accrualBasis')
+        bundle.require(set(entry) == fields, 'invalid terms entry fields')
         identity = entry['identity']
         bundle.require(isinstance(identity, dict) and identity.get('source') in bundle.KINDS, 'invalid terms identity')
         kind = identity['source']
@@ -109,6 +113,22 @@ def validate(data, parsed, epoch, origin):
         for name in ('faceDenomination', 'redemptionFraction'):
             if name in terms:
                 bundle.require(isinstance(terms[name], str) and bundle.decimal(terms[name],name) > 0, 'invalid '+name)
+        if product == 'TREASURY' and doc['schema'] == SCHEMA_V2:
+            basis = entry['accrualBasis']
+            bundle.require(isinstance(basis, dict) and set(basis) == {
+                'schema', 'dateBasis', 'valuationDate', 'settlementAdjustment', 'fractionDecimals', 'rounding'},
+                'invalid accrual basis fields')
+            bundle.require(basis['schema'] == 'traderx.accrual-basis.v1'
+                           and basis['dateBasis'] == 'SESSION_DATE'
+                           and basis['valuationDate'] == parsed['positions'][0]['sessionDate']
+                           and basis['settlementAdjustment'] == 'NONE'
+                           and type(basis['fractionDecimals']) is int and basis['fractionDecimals'] == 6
+                           and basis['rounding'] == 'HALF_EVEN', 'unsupported or inconsistent accrual basis')
+            # This first structured basis describes only the current unadjusted fixture model.
+            # Other settlement/calendar conventions require an explicit new basis contract.
+            bundle.require(terms.get('settlementDays') == 0 and terms.get('calendar') == 'NONE'
+                           and terms.get('businessDayAdjustment') == 'UNADJUSTED',
+                           'accrual basis conflicts with reference terms')
         if product == 'TREASURY':
             if 'issueDate' in terms:
                 bundle.require(date.fromisoformat(terms['issueDate']) < date.fromisoformat(terms['maturityDate']), 'invalid bond dates')

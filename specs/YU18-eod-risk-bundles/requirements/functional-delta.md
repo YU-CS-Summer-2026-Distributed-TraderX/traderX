@@ -28,3 +28,5 @@
 - FR-EB21: Preserve frozen v1 bundle and mock workload hash vectors with an independent verifier and production compatibility tests.
 - FR-EB22: Explicit terms input selects bundle v2; pin original CSV bytes and a versioned terms artifact by exact hashes, reject missing/duplicate joins or disagreement with exported economics, and enumerate missing conventions.
 - FR-EB23: Reproduce synthetic bill, fixed-rate note long/short, and current SOFR convention examples through the sequenced service and production exporter; separate acceptance expectations from observed mock results.
+
+- FR-EB24: Preserve committed fixture bytes across Git checkout filters, reject malformed missing-accrual inputs, and version structural accrual-basis extensions without changing existing terms-v1 fixtures.
