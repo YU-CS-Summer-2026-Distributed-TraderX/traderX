@@ -21,3 +21,10 @@
 - [x] Exercise a live producer completion receipt through GCS staging and the local coordinator with recorded operational epoch identity and operator-selected demo valuation time.
 - [x] Implement the provisional loopback HTTP mock adapter, durable fake worker and response/restart recovery tests.
 - [ ] Connect Alex's real HTTP/result contract, authentication and financial capabilities after schema agreement.
+
+- [x] Freeze v1 golden inputs/preimages/expected bundle and workload hashes with an independent verifier.
+- [x] Add optional bundle v2 and versioned Treasury/SWAP terms with source reconciliation and explicit missing conventions.
+- [x] Produce and reproduce synthetic bill, note long/short, and SOFR shared examples using the production exporter.
+- [x] Exercise v2 local coordination and refusal by the frozen v1-only HTTP draft.
+- [ ] Agree final terms field names, real reference sources, and missing/stub conventions with Alex.
+- [ ] Observe Alex's numerical bill/note results and identified SOFR unsupported outcome against shared examples.

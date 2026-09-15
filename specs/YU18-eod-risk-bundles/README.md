@@ -42,3 +42,5 @@ job. The user explicitly approved historical-tape mark overrides for this transp
 See generation/implementation-status.md for evidence and limits; no Alex pricing was performed.
 
 The optional HTTP mock adapter now exercises submission, workload lookup, polling, uncertain-response recovery and immutable result ingestion against a loopback fake worker. It uses a distinct profile and remains non-pricing. Run `python3 scripts/demo-state-YU18-http.py`; see quickstart section 10 and contracts/http-mock-draft-1.md.
+
+Bundle v2 adds hash-pinned instrument terms while preserving v1 bytes and identities. See [terms and shared examples](contracts/bundle-v2-and-terms.md) and [frozen v1 hash vectors](contracts/golden-v1.md). The [quickstart](quickstart.md#11-frozen-v1-hashes-and-exporter-produced-bundle-v2-examples) describes the POSIX local demo for fresh exporter fixtures and both bundle versions.

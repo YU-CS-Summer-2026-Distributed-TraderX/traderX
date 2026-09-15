@@ -1,0 +1,27 @@
+{
+  "cases": [
+    {
+      "bundleId": "9a0cb99550dd2e18c15ea92a1b05b03d1035f0bb44eb1717a296312dec7c5d36",
+      "contractsSha256": "d542657b2e2a358bcf7838408f1f012713c5aa3d1b0f577817dc34a8bbea27dc",
+      "manifestFileSha256": "c3aa19bb8a9f1d86f0f828cf8db466d068962b853d097358702f999a9b9f7674",
+      "name": "basic",
+      "positionsSha256": "659086e493b402293b667a83b943268571fdb0e06fd8c657ee9ffe9f852c4758",
+      "workloads": {
+        "http": "2330fab41e635527ab3200e39ebcfd4576eda9299d716dc7f2cec229c7c139bf",
+        "local": "e1be064df142160015e59de9b62d3464902c9e51442a1d90b3b4ca52dab3f2c1"
+      }
+    },
+    {
+      "bundleId": "de73a94990867ef85f7969e83f3edea1eed4293ca2f9d2b19f7c229f885d5288",
+      "contractsSha256": "d542657b2e2a358bcf7838408f1f012713c5aa3d1b0f577817dc34a8bbea27dc",
+      "manifestFileSha256": "13228b65a0af01d14b5d7a121093602ea9e0f1bf617c24769e4f19cd4137111c",
+      "name": "exchange",
+      "positionsSha256": "07416900def4178efee06d888f44ee6ee8b5b9c2a10e14ba8ed81c2270de4b6d",
+      "workloads": {
+        "http": "14706eb62515030737ac5fafbfd438ad6de2a9cf1a43c54ec9002d7abfee9118",
+        "local": "ed041040e74d216a291fc3ce07bc8c8d469376a0b6b3da2b0668d3fdb889e1d2"
+      }
+    }
+  ],
+  "schema": "traderx.golden-v1.1"
+}

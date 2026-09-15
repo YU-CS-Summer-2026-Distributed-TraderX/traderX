@@ -105,7 +105,7 @@ def read_pair(payloads):
     return parsed
 
 
-def manifest_for(payloads, epoch, valuation_time, origin):
+def manifest_for(payloads, epoch, valuation_time, origin, terms=None):
     require(isinstance(epoch, str) and bool(epoch.strip()), 'cluster epoch is required')
     require(origin in ('synthetic', 'export'), 'unknown input origin')
     timestamp = datetime.fromisoformat(valuation_time.replace('Z', '+00:00'))
@@ -118,6 +118,13 @@ def manifest_for(payloads, epoch, valuation_time, origin):
                 'artifacts': {kind: {'path': f'{kind}.csv', 'schema': KINDS[kind][0],
                                    'sha256': digest(payloads[kind]), 'rows': len(parsed[kind][1])}
                               for kind in KINDS}}
+    if terms is not None:
+        import instrument_terms
+        doc = instrument_terms.validate(terms, parsed, epoch, origin)
+        manifest['schema'] = 'traderx.eod-bundle.v2'
+        manifest['artifacts']['instrumentTerms'] = {
+            'path': 'instrument-terms.json', 'schema': instrument_terms.SCHEMA,
+            'sha256': digest(terms), 'entries': len(doc['entries'])}
     manifest['bundleId'] = digest(encoded(manifest))
     return manifest
 
@@ -150,21 +157,32 @@ def publish_directory(output, files):
         lock.unlink()
 
 
-def build(positions, contracts, output, epoch, valuation_time, origin):
+def build(positions, contracts, output, epoch, valuation_time, origin, terms=None):
     payloads = {'positions': Path(positions).read_bytes(), 'contracts': Path(contracts).read_bytes()}
-    manifest = manifest_for(payloads, epoch, valuation_time, origin)
-    publish_directory(output, {**{f'{k}.csv': v for k, v in payloads.items()}, 'manifest.json': encoded(manifest)})
+    term_bytes = Path(terms).read_bytes() if terms is not None else None
+    manifest = manifest_for(payloads, epoch, valuation_time, origin, term_bytes)
+    files = {**{f'{k}.csv': v for k, v in payloads.items()}, 'manifest.json': encoded(manifest)}
+    if term_bytes is not None:
+        files['instrument-terms.json'] = term_bytes
+    publish_directory(output, files)
     return manifest
 
 
 def validate(bundle):
     root = Path(bundle)
+    require((root / 'manifest.json').is_file() and not (root / 'manifest.json').is_symlink(), 'invalid manifest file')
+    manifest = json.loads((root / 'manifest.json').read_text())
+    require(isinstance(manifest, dict) and manifest.get('schema') in ('traderx.eod-bundle.v1', 'traderx.eod-bundle.v2'), 'unsupported bundle schema')
     expected_files = {'manifest.json', 'positions.csv', 'contracts.csv'}
+    terms = None
+    if manifest['schema'] == 'traderx.eod-bundle.v2':
+        expected_files.add('instrument-terms.json')
     require({p.name for p in root.iterdir()} == expected_files, 'unexpected or missing bundle files')
     require(all((root / p).is_file() and not (root / p).is_symlink() for p in expected_files), 'bundle files must be regular, non-symlink files')
-    manifest = json.loads((root / 'manifest.json').read_text())
+    if 'instrument-terms.json' in expected_files:
+        terms = (root / 'instrument-terms.json').read_bytes()
     payloads = {k: (root / f'{k}.csv').read_bytes() for k in KINDS}
-    expected = manifest_for(payloads, manifest['clusterEpoch'], manifest['valuationTime'], manifest['inputOrigin'])
+    expected = manifest_for(payloads, manifest['clusterEpoch'], manifest['valuationTime'], manifest['inputOrigin'], terms)
     require(manifest == expected, 'manifest identity, schema, provenance or integrity mismatch')
     return manifest, read_pair(payloads)
 
@@ -194,6 +212,7 @@ def main():
     for flag in ('positions', 'contracts', 'output', 'epoch', 'valuation-time'):
         create.add_argument('--' + flag, required=True)
     create.add_argument('--origin', choices=('synthetic', 'export'), required=True)
+    create.add_argument('--terms', help='versioned instrument terms JSON; selects bundle v2')
     check = sub.add_parser('validate')
     check.add_argument('bundle')
     consume = sub.add_parser('mock')
@@ -202,7 +221,7 @@ def main():
     args = parser.parse_args()
     try:
         if args.command == 'build':
-            result = build(args.positions, args.contracts, args.output, args.epoch, args.valuation_time, args.origin)
+            result = build(args.positions, args.contracts, args.output, args.epoch, args.valuation_time, args.origin, args.terms)
         elif args.command == 'validate':
             result, _ = validate(args.bundle)
         else:

@@ -1,0 +1,5 @@
+#cut schema=3 seq=4 sessionDateEpochDay=20241 priceVersion=1 rows=0 contracts=1
+accountId,security,quantity,avgCostTicks,contractMultiplier,lastTradePxTicks
+#contracts
+contractId,accountId,payFixed,notional,fixedRateTicks,conventionIndex,effectiveEpochDay,maturityEpochDay,productType,expiryEpochDay,exerciseStyle
+3,22214,1,1000000,40000,0,20242,22068,0,0,0

@@ -1,0 +1,6 @@
+#cut schema=3 seq=8 sessionDateEpochDay=20241 priceVersion=1 rows=2 contracts=0
+accountId,security,quantity,avgCostTicks,contractMultiplier,lastTradePxTicks
+22214,UST-BILL-20251202,100000,985000,1,985000
+42422,UST-BILL-20251202,-100000,985000,1,985000
+#contracts
+contractId,accountId,payFixed,notional,fixedRateTicks,conventionIndex,effectiveEpochDay,maturityEpochDay,productType,expiryEpochDay,exerciseStyle

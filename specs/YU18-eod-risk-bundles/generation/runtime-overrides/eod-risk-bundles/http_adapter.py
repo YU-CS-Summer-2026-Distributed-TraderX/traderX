@@ -81,6 +81,8 @@ class HttpAdapter(MockAdapter):
 
     def execute(self, source, destination):
         manifest, _ = bundle.validate(source)
+        bundle.require(manifest['schema'] == 'traderx.eod-bundle.v1',
+                       'HTTP draft-1 supports bundle v1 only; use local mock for v2')
         key = workload(manifest)
         path = '/risk/results/by-workload/' + key
         code, data = self.request('GET', path)

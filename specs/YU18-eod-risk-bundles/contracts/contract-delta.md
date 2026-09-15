@@ -107,3 +107,7 @@ The CLI uses installed gcloud authentication, no SDK dependency, and a 60-second
 ## Provisional HTTP mock transport
 
 See [http-mock-draft-1.md](http-mock-draft-1.md). This is a local test protocol, separate from the unapproved financial schemas under proposed/. It does not implement Alex's API.
+
+## Bundle v2 and compatibility vectors
+
+The v1 contract above remains frozen. Optional `--terms` selects the separately versioned [bundle v2 and instrument terms](bundle-v2-and-terms.md), supported by the local mock. The original HTTP mock draft remains v1-only. [Golden v1 vectors](golden-v1.md) pin both existing mock workload profiles.

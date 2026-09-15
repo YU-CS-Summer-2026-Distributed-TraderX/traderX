@@ -192,3 +192,29 @@ This deliberately uses a local mock protocol, inline base64 CSVs, a fixed non-pr
 no authentication. It accepts only literal 127.0.0.1 URLs and refuses redirects/proxies. It must not
 be presented as Alex's API or a deployed risk service. See contracts/http-mock-draft-1.md for the
 exact boundary and production gaps. No cloud operation is needed.
+
+## 11. Frozen v1 hashes and exporter-produced bundle v2 examples
+
+After generating YU18, run:
+
+```bash
+python3 specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/verify_golden.py
+bash scripts/demo-state-YU18-shared-examples.sh
+```
+
+The first command needs only Python. The second uses cached Java 21/Gradle dependencies offline,
+creates a private temporary evidence directory, runs the in-process exporter for three cases,
+and compares fresh output with committed synthetic fixtures. No GKE, market download or TAQ
+conversion is performed. Local Gradle cache/daemon permissions may be needed.
+
+The package for Alex lives under
+`specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/shared/`.
+Each case contains v1/v2 directories, a cut and a case.json acceptance expectation; provenance.json
+pins the exporter source. The note contains both long and short positions. SOFR unsupported is
+an expected response from Alex, not a result fabricated by our mock.
+
+For an explicit v2 build, use the existing build arguments and add `--terms instrument-terms.json`.
+No terms argument means v1. The local coordinator accepts either; use separate candidate inputs
+for demonstrations so equivalent cuts with distinct bundle versions are not ambiguous. The HTTP
+draft-1 adapter refuses v2. Terms/reference format and assumptions are documented in
+[the v2 contract](contracts/bundle-v2-and-terms.md); exact v1 encoding is in [golden vectors](contracts/golden-v1.md).

@@ -239,3 +239,53 @@ The adapter accepts only 127.0.0.1, disables proxies/redirects and uses a bounde
 It adds no authentication, production scheduler, cloud worker deployment, market package or
 pricing. Alex's actual contract, remote-attempt policy, authenticated artifact access and financial
 result validation still need implementation. Mock coverage remains priced=0 and usableForRisk=false.
+
+## Frozen v1 vectors, bundle v2 terms and shared exporter cases — 2026-09-15
+
+Implemented on traderX-risk-integration. `--terms` explicitly selects bundle v2 with a fourth,
+hash-pinned `instrument-terms.json` artifact. Without it the v1 bytes and identity remain unchanged.
+Treasury security terms join both signed positions; swap terms join contract identity and epoch.
+Validation checks exported economic fields, explicit missing terms and the initial note schedule
+assumptions. The local coordinator copies/validates v2; the frozen HTTP draft refuses v2 before
+network access. Real reference ingestion and Alex's real API are not implemented by this change.
+
+Two synthetic v1 golden examples pin exact CSV bytes, manifest bytes, bundle preimages and both
+mock workload profiles. One uses Unicode/non-BMP epoch text. The independent stdlib verifier
+compares fixed values; production tests compare their implementation to those same vectors, and
+a deliberately changed CSV fails verification.
+
+SharedEodExamplesTest applies commands through MatchingEngineClusteredService and renders the
+production cut/position/contract exports plus completion receipt. The delivered three cases are:
+
+- Bill: two signed 100,000 face positions, zero coupon and no coupon schedule.
+- Note: two signed 100,000 face positions, 4% annual coupon and nonzero accrued fraction; one
+  synthetic security-terms entry supplies explicit regular coupon periods and named assumptions.
+- SOFR: one 1,000,000 USD PAY_FIXED booking under the current compiled 1Y/ACT360 convention,
+  with thirteen missing fields enumerated. Unsupported is an acceptance expectation for Alex,
+  not an observed engine response.
+
+Evidence:
+
+- 90 Python tests passed against authoritative source and generated output (17 new tests plus
+  the existing 73). Positive/negative cases cover joins, terms/export disagreement, wrong epoch,
+  schedule gaps/conventions, artifact tampering/path/symlink checks, synthetic-origin refusal,
+  v2 CLI/local coordinator behavior, v1 HTTP refusal and frozen hash compatibility.
+- 56 Java tests passed: SharedEodExamplesTest 3, EodBundleExportTest 1, RiskExtractTest 23,
+  SwapBookingTest 29; zero failures/errors/skips. This is in-process proof, not live consensus.
+- Full YU18 generation completed. The final local shared-example script reproduced every
+  frozen case file byte-for-byte, validated receipts/cuts, and ran six coordinator jobs in
+  separate states (v1/v2 for each case), each with one attempt and verified mock completion.
+- Root Spec Kit gates, readiness, front-matter and coverage checks passed. Website dependencies
+  were absent; no website build was run.
+
+Final private demo evidence: `/private/tmp/traderx-shared-examples.ORYtCg`. The synthetic package
+is committed under the component's `tests/fixtures/shared/`; source hashes are in provenance.json.
+The additional reference terms are explicitly synthetic, not fields extracted from a real
+security directory. Original v1/v2 CSV bytes are identical. The valuation context is pinned to
+2025-06-02; no private live booking or market observations were copied. No cloud resource, curve
+construction, TAQ conversion or financial valuation was used.
+
+Run `bash scripts/demo-state-YU18-shared-examples.sh` after generation to reproduce the proof.
+The human-readable contracts are [bundle v2 and terms](../contracts/bundle-v2-and-terms.md) and
+[v1 golden vectors](../contracts/golden-v1.md). Alex still needs to confirm the exchange field names,
+return real bill/note results under an agreed assumed curve, and demonstrate the SOFR refusal.

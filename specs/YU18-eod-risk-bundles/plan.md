@@ -27,3 +27,7 @@ Exporter integration: centralize the unchanged ready payload, add opt-in private
 GCS input workstream: bounded read-only downloads through gcloud, per-object generation provenance, receipt validation before local readiness publication, and separate archive-only inspection without inferred run context. No cluster deployment or worker API is required.
 
 Local HTTP workstream: isolate a provisional mock wire contract behind an adapter, retain running attempts across uncertain responses, prove durable worker lookup and process-exit recovery, and keep real Alex capabilities/financial schemas unimplemented until agreement.
+
+## Versioned reference inputs and shared exporter cases
+
+Preserve the v1 contract with fixed cross-language hash vectors. Add an explicit v2 terms artifact for the initial Treasury/SWAP exchange, validate coverage and agreement with exported economics, and preserve incomplete SOFR conventions. Reproduce bill, fixed-rate note long/short, and SOFR cases through the in-process exporter. This extends the owning EOD bundle state; no deterministic-core behavior or cloud deployment changes.

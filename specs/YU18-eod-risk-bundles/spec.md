@@ -59,3 +59,7 @@
 - SC-EB07: Duplicate discovery and out-of-order completion do not create duplicate workloads or select an older cut.
 
 - SC-EB08: Real in-process sequenced orders and an OTC booking export four positions and one contract, then complete one mock job under repeated receipt delivery.
+
+- FR-EB21: Preserve frozen v1 bundle and mock workload hash vectors with an independent verifier and production compatibility tests.
+- FR-EB22: Explicit terms input selects bundle v2; pin original CSV bytes and a versioned terms artifact by exact hashes, reject missing/duplicate joins or disagreement with exported economics, and enumerate missing conventions.
+- FR-EB23: Reproduce synthetic bill, fixed-rate note long/short, and current SOFR convention examples through the sequenced service and production exporter; separate acceptance expectations from observed mock results.

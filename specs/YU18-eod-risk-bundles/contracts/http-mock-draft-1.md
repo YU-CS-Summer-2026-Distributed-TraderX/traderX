@@ -43,3 +43,5 @@ The test transport has a 4 MiB JSON body ceiling, including base64 overhead. Def
 ## Still needed for Alex
 
 Agree the actual wire schemas, capability matrix, authentication/TLS, private artifact references, all calculation-affecting workload fields, remote attempt/benchmark policy, failure codes and per-calculation coverage. Add the versioned market/reference packages and financial result validator. Then implement a new real adapter/profile against his service and exchange shared acceptance fixtures. The local fake must never silently substitute for that engine.
+
+Bundle v2 is explicitly rejected by this adapter before network access. Its new instrument-terms artifact cannot be transported by the frozen two-CSV draft. Use the local mock to exercise v2 pending a newly agreed HTTP contract.

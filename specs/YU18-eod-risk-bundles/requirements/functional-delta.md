@@ -24,3 +24,7 @@
 - FR-EB18: The provisional HTTP mock SHALL have a distinct workload profile and SHALL refuse reuse of a coordinator state containing another profile.
 - FR-EB19: Uncertain or pending HTTP execution SHALL retain its durable attempt for lookup/reconciliation on the next run; declared failures SHALL require explicit retry.
 - FR-EB20: HTTP result acceptance SHALL verify workload identity, result hashes, worker attempt provenance and the existing strict non-pricing result contract.
+
+- FR-EB21: Preserve frozen v1 bundle and mock workload hash vectors with an independent verifier and production compatibility tests.
+- FR-EB22: Explicit terms input selects bundle v2; pin original CSV bytes and a versioned terms artifact by exact hashes, reject missing/duplicate joins or disagreement with exported economics, and enumerate missing conventions.
+- FR-EB23: Reproduce synthetic bill, fixed-rate note long/short, and current SOFR convention examples through the sequenced service and production exporter; separate acceptance expectations from observed mock results.

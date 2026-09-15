@@ -1,0 +1,11 @@
+{
+  "bundleId": "de73a94990867ef85f7969e83f3edea1eed4293ca2f9d2b19f7c229f885d5288",
+  "profile": {
+    "adapter": "transport-mock-v1",
+    "calculations": [
+      "transport-check"
+    ],
+    "marketInputs": "NOT_SUPPLIED",
+    "usableForRisk": false
+  }
+}
