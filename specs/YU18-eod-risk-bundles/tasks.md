@@ -6,3 +6,7 @@
 - [x] T-EB04 Add synthetic fixtures and failure-path tests.
 - [x] T-EB05 Register state and generation entrypoints.
 - [x] T-EB06 Record source/generated verification evidence.
+
+- [x] Add private local coordinator, durable attempts, explicit retry and mock-result validation.
+- [x] Exercise process interruption before/after publication, duplicate discovery and late results.
+- [x] Add unapproved exchange schema drafts and synthetic equity/bill/SOFR fixtures.

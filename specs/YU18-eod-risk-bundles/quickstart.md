@@ -37,3 +37,27 @@ bash scripts/test-state-YU18-eod-risk-bundles.sh generated/code/target-generated
 ```
 
 Full generation composes the inherited runtime locally. Skipping lockfile refresh avoids npm lockfile network refresh; the local component commands above do not depend on generation.
+
+## 5. Run the local durable coordinator
+
+Continue using `component` and `eod_demo_dir` from step 2, or set fresh private paths:
+
+```bash
+mkdir -p "$eod_demo_dir/inbox"
+python3 "$component/bundle.py" build \
+  --positions "$component/tests/fixtures/exchange/positions.csv" \
+  --contracts "$component/tests/fixtures/exchange/contracts.csv" \
+  --epoch synthetic-demo-epoch --valuation-time 2025-06-02T16:00:00-04:00 \
+  --origin synthetic --output "$eod_demo_dir/inbox/cut-1"
+python3 "$component/coordinator.py" --state "$eod_demo_dir/coordinator" discover "$eod_demo_dir/inbox"
+python3 "$component/coordinator.py" --state "$eod_demo_dir/coordinator" run
+python3 "$component/coordinator.py" --state "$eod_demo_dir/coordinator" status
+```
+
+Expected: one job, one MOCK_COMPLETE attempt, VERIFIED result integrity and usableForRisk=false.
+All three fixture instruments remain NOT_PRICED. Repeating discover/run adds no job or attempt.
+Stopping and restarting `run` recovers interrupted jobs. To retry a FAILED job explicitly, copy its
+`job_id` from status and run `coordinator.py --state DIRECTORY retry JOB_ID`, then `run` again.
+Inputs, SQLite state and results remain in this private directory. Keep it on a local filesystem;
+shared/network filesystems and multi-host workers are not supported by this locking protocol.
+The tests intentionally terminate worker processes before and after result publication to check recovery.

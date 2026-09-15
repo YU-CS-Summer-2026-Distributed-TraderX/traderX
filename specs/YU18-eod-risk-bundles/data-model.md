@@ -11,3 +11,14 @@ Positions retain YU17 schema 3 at `(accountId, security)` grain. OTC records ret
 ## Mock result
 
 `results.json` contains the input bundle ID, epoch, valuation time and one item per input row. Position items carry account/security; OTC items carry account/contractId. Each item carries currency, source kind, NOT_PRICED, MOCK_ONLY, null NPV and empty Greeks. The result contains no portfolio valuation total.
+
+## Coordinator state
+
+Private state contains `jobs.sqlite3`, `inputs/<bundleId>/`, and
+`results/<jobId>/<attemptId>/results.json`. Jobs retain canonical workload identity, manifest,
+profile, lifecycle, error and accepted result path/hash. Attempts retain their own identity,
+start/end times, status, error and result path. SQLite transactions commit RUNNING before worker
+execution and commit acceptance after validation. Host-local advisory locking serializes commands.
+
+Status derives selection from the largest numeric cut sequence/version per epoch and business date.
+It retains all history and refuses to pick among conflicting bundles with equal cut order.

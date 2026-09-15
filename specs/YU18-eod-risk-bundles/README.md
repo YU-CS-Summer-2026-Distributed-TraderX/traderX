@@ -29,3 +29,5 @@ Target runtime behavior:
 - Bundle and result directories publish once; an existing destination is refused.
 - `marketInputs.status=NOT_SUPPLIED` and mock `usableForRisk=false` are explicit.
 - Caller-supplied epoch distinguishes identities across cluster resets.
+
+The local coordinator adds SQLite job/attempt tracking, duplicate discovery suppression, process-restart recovery and strict mock-result ingestion. See quickstart section 5. Exchange schemas in contracts/proposed are negotiation drafts, not released runtime contracts.

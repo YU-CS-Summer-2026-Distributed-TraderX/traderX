@@ -8,3 +8,8 @@
 - FR-EB06: Publication SHALL stage files privately and refuse existing output destinations.
 - FR-EB07: The mock SHALL validate its input and echo every position/contract identity with null NPV, empty Greeks, NOT_PRICED and MOCK_ONLY.
 - FR-EB08: The result SHALL identify its input bundle and explicitly declare synthetic=true, usableForRisk=false and priced coverage zero.
+
+- Persist local jobs and attempt history; deduplicate immutable mock workloads.
+- Recover abandoned RUNNING attempts under an exclusive OS lock.
+- Validate result identities, non-pricing semantics and artifact integrity.
+- Select mock results by input cut identity, never completion order.

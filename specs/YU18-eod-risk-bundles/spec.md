@@ -2,7 +2,7 @@
 
 **Feature Branch**: `YU18-eod-risk-bundles`  
 **Created**: 2026-09-14  
-**Status**: Implemented local transport prototype  
+**Status**: Implemented local transport and durable mock coordination
 **Input**: Delta over `YU17-otc-rates` position schema 3 and OTC schema 2 exports
 
 ## User Stories
@@ -22,6 +22,11 @@
 - FR-EB07: The mock SHALL validate its input and echo every position/contract identity with null NPV, empty Greeks, NOT_PRICED and MOCK_ONLY.
 - FR-EB08: The result SHALL identify its input bundle and explicitly declare synthetic=true, usableForRisk=false and priced coverage zero.
 
+- FR-EB09: The coordinator SHALL snapshot valid discovered bundles and deduplicate workloads in local SQLite.
+- FR-EB10: The coordinator SHALL preserve attempts and recover interrupted work without stealing a live worker.
+- FR-EB11: Result ingestion SHALL reject missing, duplicate or mismatched identities and financial claims from the mock.
+- FR-EB12: Status SHALL distinguish current cuts, historical results, ambiguous versions and artifact integrity failures.
+
 ## Non-Functional Requirements
 
 - NFR-EB01: The added runtime SHALL use Python 3.10+ standard library only and open no network connections.
@@ -35,3 +40,7 @@
 - SC-EB02: A changed artifact or mixed-cut pair is rejected before a result is published.
 - SC-EB03: Repeated input bundles have equal IDs while changed cluster epochs produce different IDs.
 - SC-EB04: Generated component tests exercise the same implementation as the source-owned component.
+
+- SC-EB05: Process termination before publication creates a preserved interrupted attempt and a new successful mock attempt.
+- SC-EB06: Process termination after publication ingests that result without recomputing.
+- SC-EB07: Duplicate discovery and out-of-order completion do not create duplicate workloads or select an older cut.

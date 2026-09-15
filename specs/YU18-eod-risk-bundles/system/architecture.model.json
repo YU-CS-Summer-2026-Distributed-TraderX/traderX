@@ -3,7 +3,7 @@
   "stateId": "YU18-eod-risk-bundles",
   "parentState": "YU17-otc-rates",
   "inheritsFrom": "YU17-otc-rates",
-  "description": "Local EOD bundle creation, integrity validation and identified mock consumption.",
+  "description": "Local EOD bundles, durable single-host coordination, strict mock ingestion and recovery.",
   "flowDoc": "architecture.md",
   "mermaidDirection": "LR",
   "nodes": [
@@ -42,6 +42,24 @@
       "label": "Private mock result: no prices",
       "kind": "store",
       "description": "Private mock result: no prices"
+    },
+    {
+      "id": "coordinator",
+      "label": "Local coordinator",
+      "kind": "service",
+      "description": "Discovery, serialized execution and restart recovery"
+    },
+    {
+      "id": "jobs",
+      "label": "Private SQLite jobs and attempts",
+      "kind": "store",
+      "description": "Durable logical workloads, attempts and accepted hashes"
+    },
+    {
+      "id": "status",
+      "label": "Local status: no financial results",
+      "kind": "service",
+      "description": "Version-scoped selection, history and integrity"
     }
   ],
   "edges": [
@@ -61,14 +79,34 @@
       "label": "validate hashes and identities"
     },
     {
-      "from": "validator",
-      "to": "mock",
-      "label": "accepted bundle"
-    },
-    {
       "from": "mock",
       "to": "result",
       "label": "echo identities; priced count zero"
+    },
+    {
+      "from": "validator",
+      "to": "coordinator",
+      "label": "validated private input snapshot"
+    },
+    {
+      "from": "coordinator",
+      "to": "jobs",
+      "label": "persist job and attempt"
+    },
+    {
+      "from": "coordinator",
+      "to": "mock",
+      "label": "execute local adapter"
+    },
+    {
+      "from": "result",
+      "to": "coordinator",
+      "label": "validate identities and non-pricing semantics"
+    },
+    {
+      "from": "jobs",
+      "to": "status",
+      "label": "history and current cut"
     }
   ]
 }

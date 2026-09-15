@@ -29,3 +29,5 @@ The added component opens no network listeners and makes no network calls. It su
 | Existing output or active publication lock | Command fails; existing output stays intact |
 | Hard-killed publisher | Staging/lock can remain; operator inspects before cleanup |
 | Unsupported pricing capability | Every mock row is NOT_PRICED with MOCK_ONLY |
+
+Local coordinator commands use a private filesystem inbox and a single-host SQLite store. An OS lock spans each command and worker execution; another command refuses while the owner is active. There are no new ports or messaging subjects. Process-restart recovery occurs on run; real pricing and cloud transports are not implemented.

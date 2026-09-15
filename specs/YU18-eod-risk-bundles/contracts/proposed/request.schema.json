@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proposed EOD request; not agreed or used by coordinator",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "requestId",
+    "portfolioBundle",
+    "marketPackage",
+    "referenceData",
+    "valuationTime",
+    "reportingCurrency",
+    "calculations",
+    "coveragePolicy",
+    "profileId"
+  ],
+  "properties": {
+    "schema": {
+      "const": "traderx.risk-request.draft-1"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "portfolioBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundleId",
+        "manifestUri",
+        "manifestFileSha256"
+      ],
+      "properties": {
+        "bundleId": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "manifestUri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestFileSha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "marketPackage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact",
+        "label"
+      ],
+      "properties": {
+        "artifact": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "id",
+            "uri",
+            "sha256"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uri": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "label": {
+          "enum": [
+            "assumed",
+            "market-derived"
+          ]
+        }
+      }
+    },
+    "referenceData": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uri",
+        "sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "uri": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "valuationTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "reportingCurrency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$"
+    },
+    "calculations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "npv",
+          "rateSensitivity"
+        ]
+      }
+    },
+    "coveragePolicy": {
+      "enum": [
+        "partial-allowed",
+        "all-or-nothing"
+      ]
+    },
+    "profileId": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
