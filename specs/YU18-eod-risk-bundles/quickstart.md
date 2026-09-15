@@ -222,3 +222,7 @@ draft-1 adapter refuses v2. Terms/reference format and assumptions are documente
 ## 12. Cross-platform fixture compatibility
 
 Run `python3 scripts/test-state-YU18-checkout.py` to prove byte preservation through real Git CRLF checkout filters. This creates only temporary local repositories and requires no network. See [compatibility-v3](contracts/compatibility-v3.md) for the new terms-version example and the deliberately invalid missing-accrual fixture.
+
+### Actual Alex W0 adapter, locally
+
+Run `python3 scripts/demo-state-YU18-alex-w0.py --engine /path/to/JAX_Risk_Engine` against clean engine commit `cb9b277a9de702b2ba4f0bcda431a396f54c029a`. This accepts bill/note accrual conversions and explicit SOFR refusals into a separate local coordinator profile. `W0_VALIDATED` is not pricing completion; `usableForRisk` remains false. See `docs/risk-integration/local-w0-intake.md` for compatibility limits, manual intake and evidence semantics.

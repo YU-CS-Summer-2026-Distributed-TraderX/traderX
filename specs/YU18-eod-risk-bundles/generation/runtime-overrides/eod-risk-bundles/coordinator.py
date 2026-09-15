@@ -11,7 +11,7 @@ import uuid
 
 import bundle
 
-from worker_protocol import PROFILE, HTTP_PROFILE, Deferred
+from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, Deferred
 
 
 def now():
@@ -44,6 +44,7 @@ def private_directory(path):
 
 class MockAdapter:
     profile = PROFILE
+    completion_status = 'MOCK_COMPLETE'
     result_files = {'results.json'}
 
     def execute(self, input_directory, result_directory):
@@ -104,7 +105,7 @@ class Coordinator:
         self.state = Path(state).absolute()
         self.adapter = adapter or MockAdapter()
         # New worker semantics require a new adapter implementation and profile version.
-        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE), 'unsupported adapter profile')
+        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE, W0_PROFILE), 'unsupported adapter profile')
         self.db = None
         self.lock = None
 
@@ -201,10 +202,10 @@ class Coordinator:
                                                    self.state / attempt['result_path'])
         with self.db:
             self.db.execute('UPDATE attempts SET status=?, ended_at=? WHERE attempt_id=?',
-                            ('MOCK_COMPLETE', now(), attempt['attempt_id']))
+                            (self.adapter.completion_status, now(), attempt['attempt_id']))
             self.db.execute('UPDATE jobs SET status=?, updated_at=?, error=NULL, result_path=?, '
                             'result_hash=? WHERE job_id=?',
-                            ('MOCK_COMPLETE', now(), attempt['result_path'], result_hash, job['job_id']))
+                            (self.adapter.completion_status, now(), attempt['result_path'], result_hash, job['job_id']))
 
     def _failed(self, job, attempt, error, status='FAILED'):
         with self.db:
@@ -244,7 +245,7 @@ class Coordinator:
         except Deferred as exc:
             with self.db:
                 self.db.execute('UPDATE jobs SET updated_at=?, error=? WHERE job_id=?',
-                                (now(), f'REMOTE_PENDING: {exc}', job['job_id']))
+                                (now(), f'{getattr(self.adapter, "pending_label", "REMOTE_PENDING")}: {exc}', job['job_id']))
         except (ValueError, OSError, KeyError, TypeError, RuntimeError) as exc:
             self._failed(job, attempt, f'{phase}: {exc}')
 
@@ -296,7 +297,7 @@ class Coordinator:
             job['usableForRisk'] = False
             job['attempts'] = [dict(r) for r in self.db.execute(
                 'SELECT * FROM attempts WHERE job_id=? ORDER BY started_at, attempt_id', (job['job_id'],))]
-            if job['status'] == 'MOCK_COMPLETE':
+            if job['status'] in ('MOCK_COMPLETE', 'W0_VALIDATED'):
                 try:
                     actual = self.adapter.validate_result(self.state / 'inputs' / job['bundle_id'],
                                                           self.state / job['result_path'])
@@ -307,6 +308,10 @@ class Coordinator:
                     job['integrityError'] = str(exc)
             job['selectedMockResult'] = (job['currentCut'] and job['status'] == 'MOCK_COMPLETE'
                                           and job.get('resultIntegrity') == 'VERIFIED')
+            job['selectedW0Result'] = (job['currentCut'] and job['status'] == 'W0_VALIDATED'
+                                        and job.get('resultIntegrity') == 'VERIFIED')
+            if job['status'] == 'W0_VALIDATED':
+                job.update(pricedItems=0, portfolioRiskAvailable=False)
         return {'jobs': jobs, 'usableForRisk': False}
 
 
@@ -314,6 +319,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state', required=True, help='private local state directory outside checkout')
     parser.add_argument('--http-worker', help='provisional local fake-worker URL: http://127.0.0.1:PORT')
+    parser.add_argument('--w0-results', help='local Alex W0 result directory, files named BUNDLE_ID.json')
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('discover').add_argument('inbox')
     sub.add_parser('run')
@@ -323,7 +329,11 @@ def main():
     # SQLite sidecars and newly made result parents inherit private permissions.
     os.umask(0o077)
     try:
+        bundle.require(not (args.http_worker and args.w0_results), 'choose one worker adapter')
         adapter = None
+        if args.w0_results:
+            from w0_result import W0FileAdapter
+            adapter = W0FileAdapter(args.w0_results)
         if args.http_worker:
             from http_adapter import HttpAdapter
             adapter = HttpAdapter(args.http_worker)

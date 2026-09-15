@@ -33,3 +33,6 @@
 - [x] Add a deliberately invalid blank-accrual note with explicit TraderX rejection and proposed Alex mapper expectations.
 - [x] Add terms v2 with structured accrual basis without changing original terms-v1 fixtures.
 - [ ] Agree the structured basis and worker publication/submission recovery semantics with Alex.
+
+- [x] Independently validate actual pinned Alex W0 bill/note/SOFR outcomes and store them through a local file adapter as W0_VALIDATED, never usable financial risk.
+- [x] Add corruption, identity, coverage, pending/resume, stored-integrity and adapter-profile isolation checks plus a real-checkout local demo.

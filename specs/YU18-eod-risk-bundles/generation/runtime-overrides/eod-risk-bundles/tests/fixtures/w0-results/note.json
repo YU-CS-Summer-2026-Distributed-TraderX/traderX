@@ -1,0 +1,180 @@
+{
+  "bundleId": "1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9",
+  "clusterEpoch": "synthetic-shared-examples-v1",
+  "sessionDate": "2025-06-02",
+  "valuationTime": "2025-06-02T16:00:00-04:00",
+  "mappingVersion": "traderx-adapter-v1",
+  "engineVersion": "0.1.0",
+  "marketProvenance": null,
+  "marketInputs": null,
+  "measure": null,
+  "items": [
+    {
+      "itemId": "cfdee2f35df37f6713c3d16784c287e0",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "22214",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-NOTE-20261215"
+      },
+      "calculations": {
+        "npv": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": 1857.1000000000001,
+          "provenance": "converted",
+          "currency": "USD",
+          "observedCleanPrice": 1.015,
+          "signedFaceAmount": 100000.0
+        },
+        "rateSensitivity": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    },
+    {
+      "itemId": "6aafc684aa8432c745f6d3431f6ac844",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "42422",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-NOTE-20261215"
+      },
+      "calculations": {
+        "npv": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": -1857.1000000000001,
+          "provenance": "converted",
+          "currency": "USD",
+          "observedCleanPrice": 1.015,
+          "signedFaceAmount": -100000.0
+        },
+        "rateSensitivity": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but this delivery stage (W0) implements contract and refusal machinery only and ships no pricer. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    }
+  ],
+  "itemOrder": {
+    "scheme": "traderx-item-v1",
+    "itemIds": [
+      "cfdee2f35df37f6713c3d16784c287e0",
+      "6aafc684aa8432c745f6d3431f6ac844"
+    ],
+    "itemCount": 2,
+    "sha256": "491e63818af8466923e1ba650cc24e58c3afed3b66333bdc248a4c2005724b95"
+  },
+  "coverage": {
+    "byCalculation": {
+      "npv": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "accruedInterest": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateSensitivity": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateGamma": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "theta": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "vega": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      },
+      "varEs": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      }
+    },
+    "itemCount": 2,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+  },
+  "warnings": [
+    "bundle declares marketInputs.status=NOT_SUPPLIED: it carries no observed market data. Any pricing must therefore name an assumed profile explicitly, and its results will be labelled marketProvenance='assumed'.",
+    "no marketInputs were requested: this result was computed against no curve at all, and marketProvenance is null rather than 'observed'. Legal only because this delivery stage (W0) prices nothing."
+  ]
+}

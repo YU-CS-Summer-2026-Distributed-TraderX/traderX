@@ -65,3 +65,7 @@
 - FR-EB23: Reproduce synthetic bill, fixed-rate note long/short, and current SOFR convention examples through the sequenced service and production exporter; separate acceptance expectations from observed mock results.
 
 - FR-EB24: Preserve committed fixture bytes across Git checkout filters, reject malformed missing-accrual inputs, and version structural accrual-basis extensions without changing existing terms-v1 fixtures.
+
+### Pinned local W0 result acceptance
+
+The local coordinator supports an independent `alex-w0-local-v1` file-intake profile for the reviewed Alex adapter commit. Its accepted result status is `W0_VALIDATED`, with zero priced items and `usableForRisk=false`; it must not select a mock result or claim portfolio risk. Before publication it reconciles all source identities, input echoes, item-order hashes, per-calculation outcomes, coverage counts and signed exported-accrual conversions. Stored output bytes and the local receipt are revalidated on status reads. Missing files remain pending on the same attempt; published results can be recovered after interruption. This compatibility profile accepts only terms-v1 Treasury and incomplete-SWAP bundles with no market computation. Terms-v2 support, authenticated remote delivery and financial pricing remain unimplemented at this boundary.

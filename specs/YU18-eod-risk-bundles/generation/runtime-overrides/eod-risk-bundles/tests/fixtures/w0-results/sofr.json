@@ -1,0 +1,221 @@
+{
+  "bundleId": "db954a3ce11b0cfe112c3ac9a081609dc2d8541fface10419bcb3bd982a44ab5",
+  "clusterEpoch": "synthetic-shared-examples-v1",
+  "sessionDate": "2025-06-02",
+  "valuationTime": "2025-06-02T16:00:00-04:00",
+  "mappingVersion": "traderx-adapter-v1",
+  "engineVersion": "0.1.0",
+  "marketProvenance": null,
+  "marketInputs": null,
+  "measure": null,
+  "items": [
+    {
+      "itemId": "f81d34ed56ee436b86c726d9305fd984",
+      "sourceIdentity": {
+        "kind": "contract",
+        "accountId": "22214",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "contractId": "SW-3"
+      },
+      "calculations": {
+        "npv": {
+          "status": "unsupported",
+          "reason": "CONVENTION_NOT_SUPPORTED",
+          "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+          "missingTerms": [
+            "businessDayAdjustment",
+            "calendar",
+            "fixedPaymentLagBusinessDays",
+            "fixedSchedule",
+            "fixingCalendar",
+            "fixingHistoryReference",
+            "floatingDayCount",
+            "floatingPaymentLagBusinessDays",
+            "floatingSchedule",
+            "lockoutBusinessDays",
+            "lookbackBusinessDays",
+            "observationShift",
+            "overnightCompounding"
+          ]
+        },
+        "accruedInterest": {
+          "status": "unsupported",
+          "reason": "CONVENTION_NOT_SUPPORTED",
+          "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+          "missingTerms": [
+            "businessDayAdjustment",
+            "calendar",
+            "fixedPaymentLagBusinessDays",
+            "fixedSchedule",
+            "fixingCalendar",
+            "fixingHistoryReference",
+            "floatingDayCount",
+            "floatingPaymentLagBusinessDays",
+            "floatingSchedule",
+            "lockoutBusinessDays",
+            "lookbackBusinessDays",
+            "observationShift",
+            "overnightCompounding"
+          ]
+        },
+        "rateSensitivity": {
+          "status": "unsupported",
+          "reason": "CONVENTION_NOT_SUPPORTED",
+          "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+          "missingTerms": [
+            "businessDayAdjustment",
+            "calendar",
+            "fixedPaymentLagBusinessDays",
+            "fixedSchedule",
+            "fixingCalendar",
+            "fixingHistoryReference",
+            "floatingDayCount",
+            "floatingPaymentLagBusinessDays",
+            "floatingSchedule",
+            "lockoutBusinessDays",
+            "lookbackBusinessDays",
+            "observationShift",
+            "overnightCompounding"
+          ]
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "CONVENTION_NOT_SUPPORTED",
+          "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+          "missingTerms": [
+            "businessDayAdjustment",
+            "calendar",
+            "fixedPaymentLagBusinessDays",
+            "fixedSchedule",
+            "fixingCalendar",
+            "fixingHistoryReference",
+            "floatingDayCount",
+            "floatingPaymentLagBusinessDays",
+            "floatingSchedule",
+            "lockoutBusinessDays",
+            "lookbackBusinessDays",
+            "observationShift",
+            "overnightCompounding"
+          ]
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "CONVENTION_NOT_SUPPORTED",
+          "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+          "missingTerms": [
+            "businessDayAdjustment",
+            "calendar",
+            "fixedPaymentLagBusinessDays",
+            "fixedSchedule",
+            "fixingCalendar",
+            "fixingHistoryReference",
+            "floatingDayCount",
+            "floatingPaymentLagBusinessDays",
+            "floatingSchedule",
+            "lockoutBusinessDays",
+            "lookbackBusinessDays",
+            "observationShift",
+            "overnightCompounding"
+          ]
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "SWAP has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "refusal": {
+        "reason": "CONVENTION_NOT_SUPPORTED",
+        "detail": "instrument terms are incomplete: the export enumerates 13 required term(s) it does not supply. An incompletely specified instrument is refused, not approximated from the terms that were supplied.",
+        "missingTerms": [
+          "businessDayAdjustment",
+          "calendar",
+          "fixedPaymentLagBusinessDays",
+          "fixedSchedule",
+          "fixingCalendar",
+          "fixingHistoryReference",
+          "floatingDayCount",
+          "floatingPaymentLagBusinessDays",
+          "floatingSchedule",
+          "lockoutBusinessDays",
+          "lookbackBusinessDays",
+          "observationShift",
+          "overnightCompounding"
+        ],
+        "offendingFields": []
+      }
+    }
+  ],
+  "itemOrder": {
+    "scheme": "traderx-item-v1",
+    "itemIds": [
+      "f81d34ed56ee436b86c726d9305fd984"
+    ],
+    "itemCount": 1,
+    "sha256": "ad25220808a81a7cc0bf8496587eee8805dcd17d7422df63c9a130b26cbceb76"
+  },
+  "coverage": {
+    "byCalculation": {
+      "npv": {
+        "ok": 0,
+        "unsupported": 1,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "accruedInterest": {
+        "ok": 0,
+        "unsupported": 1,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateSensitivity": {
+        "ok": 0,
+        "unsupported": 1,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateGamma": {
+        "ok": 0,
+        "unsupported": 1,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "theta": {
+        "ok": 0,
+        "unsupported": 1,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "vega": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 1
+      },
+      "varEs": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 1
+      }
+    },
+    "itemCount": 1,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+  },
+  "warnings": [
+    "bundle declares marketInputs.status=NOT_SUPPLIED: it carries no observed market data. Any pricing must therefore name an assumed profile explicitly, and its results will be labelled marketProvenance='assumed'.",
+    "no marketInputs were requested: this result was computed against no curve at all, and marketProvenance is null rather than 'observed'. Legal only because this delivery stage (W0) prices nothing."
+  ]
+}

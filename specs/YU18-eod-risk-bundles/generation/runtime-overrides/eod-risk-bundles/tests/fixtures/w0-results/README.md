@@ -1,0 +1,1 @@
+Synthetic outputs captured from Alex’s actual `engine.integration.price_bundle` at commit `cb9b277a9de702b2ba4f0bcda431a396f54c029a`, using the unchanged sibling `shared/*/v2` fixtures with no market inputs. These are adapter outcomes, not financial valuations. Reproduce with `scripts/demo-state-YU18-alex-w0.py`.
