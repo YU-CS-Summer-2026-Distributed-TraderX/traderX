@@ -420,7 +420,26 @@ function ytmPercent(bond, quoteTs, cleanPercent, dayCount = DAY_COUNT.ACT_ACT_IC
   if (isMatured(bond.maturityDate, quoteTs)) {
     return null;
   }
-  const solved = yieldFromCleanPrice(bond, settle, cleanPercent, dayCount);
+  // A malformed price stays loud: it is a data defect, and a null here would hide it.
+  if (!(Number(cleanPercent) > 0)) {
+    throw new Error(`a clean price must be positive, got ${cleanPercent}`);
+  }
+  // A price the solver cannot invert is a MISSING yield, not a dead feed. `yieldFromCleanPrice`
+  // stays strict for callers that want the error; the publisher's entry point degrades to null,
+  // which is the absent-yield contract FR-CDM20 already defines at maturity and every consumer
+  // already types as nullable.
+  //
+  // Why this is reachable in normal operation, not just on bad data: a discount bill's yield
+  // diverges as time to maturity goes to zero. Measured on the seeded UST-BILL-20261112 (98.969),
+  // the solve returns 1146.42% one day out and then leaves the bracket entirely. Before this,
+  // that throw escaped the publish loop's timer callback and stopped ALL instruments — observed
+  // live 2026-09-09, when UST-BILL-20260910 took the whole feed down the day before it matured.
+  let solved;
+  try {
+    solved = yieldFromCleanPrice(bond, settle, cleanPercent, dayCount);
+  } catch (err) {
+    return null;
+  }
   return solved === null ? null : round6(solved);
 }
 

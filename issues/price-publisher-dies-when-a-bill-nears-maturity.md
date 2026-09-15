@@ -1,6 +1,42 @@
 # price-publisher crashes on the day before a Treasury bill matures
 
-**Status:** OPEN (worked around live 2026-09-09; self-heals once the bill is matured)
+**Status:** FIXED IN SOURCE 2026-09-15 on branch `platform-fixes` (base `789df72a`), not yet
+deployed and not yet propagated to other branches. Verified before the fix: the operative
+`treasury-pricing.js` was byte-identical across all six worktrees (sha prefix `d10ef9bf3f54`) and
+every copy still threw, so this was uniformly unfixed rather than partly propagated.
+
+The report below was one defect short. There were two, and the second is the reason a single bond
+silenced all 44 instruments:
+
+1. **The yield solve threw** for a clean price no yield can reproduce. `ytmPercent` now returns
+   `null` — the absent-yield contract FR-CDM20 already defines at maturity and every consumer
+   already types as nullable. `yieldFromCleanPrice` stays strict for callers that want the error,
+   and a non-positive price still throws rather than degrading to `null`.
+2. **The publish loop had no per-instrument guard.** The batch body runs inside a `setTimeout`
+   callback, so an escaping throw is an uncaught exception that ends the process, and the next tick
+   was scheduled only *after* the body, so nothing rescheduled the feed either. An unpriceable
+   instrument is now skipped for that round — no fabricated price, no stale value republished, its
+   state untouched — logged once per instrument, and the reschedule moved into a `finally`.
+
+Measured on the seeded `UST-BILL-20261112` (98.969), which shows the yield diverging into the
+failure rather than a cliff:
+
+| Date | Matured | Yield before | Yield after |
+|---|---|---|---|
+| 2026-11-10 | no | 1146.419799 | 1146.419799 |
+| 2026-11-11 | no | **throws** | `null` |
+| 2026-11-12 | yes | `null` | `null` |
+| 2026-11-13 | yes | `null` | `null` |
+
+Verification: 103/103 tests pass in the generated tree (`generated/code/target-generated/price-publisher`),
+which is byte-identical to the source layer. The two new tests fail against the pre-fix module.
+A stand-in for the old loop, using the pre-fix module, exits non-zero having published nothing and
+without rescheduling.
+
+Not covered: no live deployment was made under this fix, so the running cluster still carries the
+old image and the live `PRICE_TICKERS` workaround from 2026-09-09.
+
+## Original report follows
 
 ## Symptom
 

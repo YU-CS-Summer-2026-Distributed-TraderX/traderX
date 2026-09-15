@@ -398,3 +398,90 @@ test('main.js: a zero-coupon bill quotes on the same basis, with no coupon anywh
   // The price IS the discount factor — literally what a bootstrapper wants.
   assert.equal(main.encodeBinaryTick(bill).readBigInt64BE(0), 959560n);
 });
+
+// P1 (2026-09-09 outage): a bill one day from maturity threw out of the yield solve, the throw
+// escaped the publish loop's timer callback, and every instrument stopped quoting. Both halves are
+// asserted here: the solve degrades to an absent yield, and one unpriceable instrument cannot take
+// the batch down with it.
+test('a clean price no yield can reproduce gives an absent yield, not a throw (P1, FR-CDM20)', () => {
+  const snapshot = require('../data/snapshot-prices.json');
+  const seed = snapshot['UST-BILL-20261112'];
+  const bill = {
+    maturityDate: seed.maturityDate,
+    couponRatePercent: seed.couponRatePercent,
+    originalTermYears: seed.originalTermYears,
+    issueDate: seed.issueDate
+  };
+  const px = seed.runtimeSeedCleanPrice;
+  const at = (day) => Date.parse(`${day}T14:00:00.000Z`);
+
+  // Two days out the solve still inverts — and the yield is already diverging, which is the
+  // approach to the unattainable bracket rather than a separate defect.
+  const twoDaysOut = treasury.ytmPercent(bill, at('2026-11-10'), px, seed.dayCount);
+  assert.ok(Number.isFinite(twoDaysOut) && twoDaysOut > 100, `expected a large finite yield, got ${twoDaysOut}`);
+
+  // One day out: outside any attainable yield. Absent, not fatal.
+  assert.equal(treasury.ytmPercent(bill, at('2026-11-11'), px, seed.dayCount), null);
+
+  // At and after maturity: unchanged.
+  assert.equal(treasury.ytmPercent(bill, at('2026-11-12'), px, seed.dayCount), null);
+  assert.equal(treasury.ytmPercent(bill, at('2026-11-13'), px, seed.dayCount), null);
+
+  // The low-level solver stays strict for callers that want the error.
+  assert.throws(
+    () => treasury.yieldFromCleanPrice(bill, new Date(at('2026-11-11')), px, seed.dayCount),
+    /not attainable/
+  );
+
+  // A malformed price is a data defect and stays loud rather than degrading to null.
+  assert.throws(() => treasury.ytmPercent(bill, at('2026-11-10'), 0, seed.dayCount), /must be positive/);
+});
+
+test('main.js: an unpriceable instrument is skipped and the rest of the batch still publishes (P1)', () => {
+  const main = require('../src/main');
+  const published = [];
+  const priorNats = main.state.nats;
+  const errors = [];
+  const priorError = console.error;
+  main.state.nats = { publish: (topic) => { published.push(topic); } };
+  console.error = (msg) => { errors.push(String(msg)); };
+  try {
+    // Unpriceable: term 4 has no walk bucket, so pricing it throws — the generic stand-in for any
+    // instrument the model cannot value on this tick.
+    const bad = {
+      ticker: 'UST-BADTERM', price: 0.99, openPrice: 0.99, closePrice: 0.99,
+      cleanPercent: 99, seedCleanPercent: 99, couponRatePercent: 4,
+      originalTermYears: 4, issueDate: '2026-05-15', maturityDate: '2030-05-15',
+      simulated: true, source: 'test'
+    };
+    const good = {
+      ticker: 'UST-GOODTERM', price: 0.99293, openPrice: 0.99293, closePrice: 0.99293,
+      cleanPercent: 99.293, seedCleanPercent: 99.293, couponRatePercent: 5,
+      originalTermYears: 30, issueDate: '2026-05-15', maturityDate: '2056-05-15',
+      simulated: true, source: 'test'
+    };
+    for (const q of [bad, good]) {
+      main.state.prices.set(q.ticker, q);
+      main.state.treasuries.set(q.ticker, q);
+    }
+
+    assert.equal(main.tickAndPublish(bad.ticker, 0), false, 'the unpriceable instrument reports failure');
+    assert.equal(main.tickAndPublish(good.ticker, 0), true, 'the next instrument still publishes');
+    assert.ok(published.some((t) => t.includes(good.ticker)), 'the healthy instrument reached NATS');
+    assert.ok(!published.some((t) => t.includes(bad.ticker)), 'the failing instrument published nothing');
+
+    // Its state is left alone: no fabricated price and no stale value republished.
+    assert.equal(main.state.prices.get(bad.ticker).cleanPercent, 99);
+
+    // Reported once, not at tick rate.
+    assert.equal(main.tickAndPublish(bad.ticker, 0), false);
+    assert.equal(errors.filter((m) => m.includes(bad.ticker)).length, 1, `expected one report, got ${errors.length}`);
+  } finally {
+    console.error = priorError;
+    main.state.nats = priorNats;
+    main.state.prices.delete('UST-BADTERM');
+    main.state.prices.delete('UST-GOODTERM');
+    main.state.treasuries.delete('UST-BADTERM');
+    main.state.treasuries.delete('UST-GOODTERM');
+  }
+});

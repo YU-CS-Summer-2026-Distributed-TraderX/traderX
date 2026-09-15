@@ -585,22 +585,55 @@ function pickRandomSubset(items, count) {
   return shuffled.slice(0, Math.max(1, Math.min(count, items.length)));
 }
 
+// One instrument that cannot be priced must not silence the other 43. Everything in this function
+// runs inside a timer callback, so an escaping throw is an uncaught exception that ends the
+// process — and the next tick is only scheduled AFTER the batch, so nothing would reschedule it
+// either. That is the mechanism behind the 2026-09-09 outage: one Treasury bill a day from
+// maturity threw in the yield solve and the entire feed stopped.
+//
+// The failing instrument is SKIPPED for this round, not substituted: no fabricated price, no
+// stale value republished, and its state is left exactly as it was. Logged once per instrument so
+// a permanently unpriceable one is visible without filling the log at tick rate.
+const unpriceableReported = new Set();
+
+function tickAndPublish(ticker, sharedRoll) {
+  try {
+    const quote = updateTick(ticker, sharedRoll);
+    publishTick(quote);
+    unpriceableReported.delete(ticker);
+    return true;
+  } catch (err) {
+    if (!unpriceableReported.has(ticker)) {
+      unpriceableReported.add(ticker);
+      console.error(`[publish] ${ticker} cannot be priced, skipping it and continuing: ${err.message}`);
+    }
+    return false;
+  }
+}
+
 function schedulePublishLoop() {
   const publishCfg = normalizePublishConfig();
   const loop = () => {
-    const tickers = Array.from(state.prices.keys());
-    if (tickers.length > 0) {
-      const batchSize = Math.max(1, Math.ceil(tickers.length * publishCfg.ratio));
-      const selected = pickRandomSubset(tickers, batchSize);
-      // YU16: one shared roll per batch correlates the Treasury curve (FR-CDM18).
-      const sharedRoll = Math.random() * 2 - 1;
-      for (const ticker of selected) {
-        const quote = updateTick(ticker, sharedRoll);
-        publishTick(quote);
+    try {
+      const tickers = Array.from(state.prices.keys());
+      if (tickers.length > 0) {
+        const batchSize = Math.max(1, Math.ceil(tickers.length * publishCfg.ratio));
+        const selected = pickRandomSubset(tickers, batchSize);
+        // YU16: one shared roll per batch correlates the Treasury curve (FR-CDM18).
+        const sharedRoll = Math.random() * 2 - 1;
+        for (const ticker of selected) {
+          tickAndPublish(ticker, sharedRoll);
+        }
       }
+    } catch (err) {
+      // Batch-level failure (selection, config): report and keep the feed alive.
+      console.error(`[publish] batch failed, continuing: ${err.message}`);
+    } finally {
+      // In `finally` deliberately: the reschedule is what keeps the feed alive, so it must not be
+      // reachable only on the success path.
+      const delayMs = publishCfg.minMs + Math.floor(Math.random() * (publishCfg.maxMs - publishCfg.minMs + 1));
+      setTimeout(loop, delayMs);
     }
-    const delayMs = publishCfg.minMs + Math.floor(Math.random() * (publishCfg.maxMs - publishCfg.minMs + 1));
-    setTimeout(loop, delayMs);
   };
   setTimeout(loop, 600);
 }
@@ -825,4 +858,4 @@ if (require.main === module) {
 
 // Exported for tests (state inspection + the fallback/404 rule); the service entrypoint above
 // only runs when launched directly.
-module.exports = { ensureTicker, updateTick, toPayload, encodeBinaryTick, state };
+module.exports = { ensureTicker, updateTick, toPayload, encodeBinaryTick, tickAndPublish, state };
