@@ -101,3 +101,43 @@ examples are illustrative, not engine outputs; cross-file and financial semantic
 agreed Alex adapter. No financial valuation, cloud workload, licensed-data processing or TAQ
 conversion was performed. Java/Python artifacts and logs remain private; runtime Python remains
 stdlib-only and the schema validator is a separate development dependency.
+
+## GCS staging extension — 2026-09-15
+
+Implemented on traderX-risk-integration; not propagated to the YU18 home branch. gcs_stage.py adds
+read-only downloads through installed gcloud credentials, literal prefix-restricted object paths,
+generation pinning, caller-selected per-object byte limits, private source provenance and atomic
+local staging. Receipt mode reuses the bridge validator and emits one local ready receipt. Archive
+mode verifies the stored source cut and deliberately emits no completion receipt or inferred epoch/time.
+The coordinator remains mock-only. The frozen bundle v1 shape and hashes are unchanged.
+
+Source tests: 55 methods pass, including 15 new GCS staging tests. Local fake-store receipt tests
+exercise staging → bridge → coordinator with one accepted mock job and no extra attempt on repeat.
+They cover nonempty OTC rows; the actual cloud archive below has an empty OTC file.
+
+Read-only cloud observation: the configured GKE cluster had no nodes and all listed TraderX pods
+were Pending. The existing August 28 archive (price version 24, sequence 50052) was downloaded from
+GCS using pinned generations: 70 positions, zero OTC contracts, 19,103 total bytes across three
+objects. Both CSV cut identities matched, and the SHA-256 of the downloaded source cut matched
+both preambles. Repeated staging at the same destination returned duplicate=true and preserved
+existing files. No nodes were started, no session was closed, and no cloud objects were written.
+
+The initial real read exposed gcloud's exact-range behavior: requesting one byte beyond EOF fails
+even when all file bytes arrived. The reader now requests bytes 0 through size-1, and both actual
+archive reads passed with that correction. Local argument tests enforce the corrected endpoint.
+
+Private artifacts and full generation/hash metadata remain at /private/tmp/traderx-gcs-smoke.RClXJA;
+this temporary directory is not a durable shared delivery. No CSV rows or actual financial results
+were copied into the repository. No risk values were computed.
+
+Evidence limit: this is a real GCS archive-staging check plus an offline receipt-to-mock proof,
+not a new live GKE EOD chain or a combined Alex pricing run. The archive lacks a persisted completion
+receipt, actual cluster epoch and valuation timestamp. It was not submitted as a production job.
+The next cloud proof needs those recorded facts rather than inferred placeholders.
+
+Final checks: source and generated suites each passed 55 tests plus CLI demonstrations. Full
+sequential generation exited 0; after the checksum addition the state renderer refreshed the final
+component and all 12 source/generated component files compared byte-identical. Root Spec Kit gates,
+readiness, coverage (33 states) and front-matter (33 files) passed. The final real GCS repeat also
+passed metadata MD5 verification where supplied. Scoped whitespace checks passed. No inherited Java
+or deterministic-engine code changed in this extension; the Java suites were not rerun.

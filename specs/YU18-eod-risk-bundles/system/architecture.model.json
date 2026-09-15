@@ -72,6 +72,24 @@
       "label": "Local receipt bridge",
       "kind": "service",
       "description": "Verify hashes, cut and witness; publish bundle"
+    },
+    {
+      "id": "gcs",
+      "label": "Private GCS export objects",
+      "kind": "store",
+      "description": "Existing export objects; no compute required"
+    },
+    {
+      "id": "stager",
+      "label": "Opt-in GCS staging",
+      "kind": "service",
+      "description": "Generation-pinned bounded reads and private source provenance"
+    },
+    {
+      "id": "archive",
+      "label": "Verified archive: not ready work",
+      "kind": "store",
+      "description": "No inferred completion receipt or epoch"
     }
   ],
   "edges": [
@@ -134,6 +152,21 @@
       "from": "bridge",
       "to": "bundle",
       "label": "validated original CSV bytes"
+    },
+    {
+      "from": "gcs",
+      "to": "stager",
+      "label": "read exact generations"
+    },
+    {
+      "from": "stager",
+      "to": "bridge",
+      "label": "only verified supplied receipt"
+    },
+    {
+      "from": "stager",
+      "to": "archive",
+      "label": "archive mode without receipt"
     }
   ]
 }

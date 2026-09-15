@@ -21,6 +21,9 @@ flowchart LR
   status["Local status: no financial results"]
   receipt["Private completed-export receipt"]
   bridge["Local receipt bridge"]
+  gcs["Private GCS export objects"]
+  stager["Opt-in GCS staging"]
+  archive["Verified archive: not ready work"]
   exports -->|"same-cut files"| builder
   builder -->|"manifest and original bytes"| bundle
   bundle -->|"validate hashes and identities"| validator
@@ -33,6 +36,9 @@ flowchart LR
   exports -->|"optional completion publication"| receipt
   receipt -->|"discover by business date"| bridge
   bridge -->|"validated original CSV bytes"| bundle
+  gcs -->|"read exact generations"| stager
+  stager -->|"only verified supplied receipt"| bridge
+  stager -->|"archive mode without receipt"| archive
 ```
 
 ## Node Catalog
@@ -50,4 +56,7 @@ flowchart LR
 | `status` | service | Local status: no financial results | Version-scoped selection, history and integrity |
 | `receipt` | store | Private completed-export receipt | Actual ready payload after both exports exist |
 | `bridge` | service | Local receipt bridge | Verify hashes, cut and witness; publish bundle |
+| `gcs` | store | Private GCS export objects | Existing export objects; no compute required |
+| `stager` | service | Opt-in GCS staging | Generation-pinned bounded reads and private source provenance |
+| `archive` | store | Verified archive: not ready work | No inferred completion receipt or epoch |
 

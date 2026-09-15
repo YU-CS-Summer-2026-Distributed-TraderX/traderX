@@ -1,6 +1,6 @@
 # Quickstart: EOD Risk Bundles
 
-Run from the repository root with Python 3.10+. The added workflow uses no cluster, network, TAQ conversion or paid resources.
+Run from the repository root with Python 3.10+. The core workflow uses no cluster, TAQ conversion or paid runtime resources. Section 8 may download development dependencies. Optional section 9 reads private GCS objects using an authenticated gcloud installation.
 
 ## 1. Test the source component
 
@@ -121,3 +121,32 @@ cases. Format-checking dependencies are required: plain jsonschema can silently 
 Examples are hand-authored, non-executed illustrations with non-resolving paths and placeholder hashes;
 they must not be submitted to a worker or treated as prices measured from an engine. These checks do
 not establish cross-file identity, correct financial terms or Alex's acceptance of the draft.
+
+## 9. Stage private GCS exports locally
+
+This command makes read-only GCS requests and starts no compute. Select a narrow allowed prefix and a per-object byte limit. Use a private, canonical local path outside Git (on macOS, `/private/tmp` avoids the `/tmp` symlink).
+
+For an actual captured `risk.extract.ready` payload whose two URIs are GCS objects:
+
+```bash
+component="$PWD/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles"
+gcs_demo_dir="$(mktemp -d /private/tmp/traderx-gcs.XXXXXX)"
+python3 "$component/gcs_stage.py" --receipt /private/path/to/producer-event.json \
+  --allowed-prefix gs://YOUR_BUCKET/YOUR_EXPORT_PREFIX/ --max-bytes 1000000 \
+  --output "$gcs_demo_dir/staged"
+```
+
+Then pass `--receipts "$gcs_demo_dir/staged" --artifact-root "$gcs_demo_dir/staged"` to the bridge command in section 7, supplying the recorded cluster epoch, business date, valuation time and origin. Continue with coordinator discovery/run in section 5. Retain `source.json` and `source-receipt.json` with the private staging directory: the current three-file bundle does not embed GCS provenance. Repeating staging at the same destination accepts identical bytes/generations; changed inputs require a new destination.
+
+For historical files without a completion receipt:
+
+```bash
+python3 "$component/gcs_stage.py" \
+  --archive-positions gs://YOUR_BUCKET/2025-06-02/v1/seq-42.csv \
+  --allowed-prefix gs://YOUR_BUCKET/2025-06-02/v1/ --max-bytes 1000000 \
+  --output "$gcs_demo_dir/archive"
+```
+
+Archive mode reads the positions object and its `-contracts.csv` and `.cut` siblings. It verifies source-cut SHA-256 and matching metadata, records each immutable generation, and emits `ARCHIVE_ONLY_NO_COMPLETION_RECEIPT`. It does not queue a job or fabricate epoch/valuation-time/adjacent-witness evidence. A missing OTC object is an error; a valid empty OTC file is accepted. A specific positions generation can be selected with a quoted `gs://...csv#GENERATION` URI; sibling generations are resolved individually and recorded.
+
+The 1,000,000-byte limit in these examples is a caller-selected transfer ceiling per object, not a throughput setting or a proven production sizing recommendation. All objects must fit before publication. Authentication, permission, timeout, missing-generation and integrity failures exit nonzero and publish no new staging directory. Existing cloud objects are never changed. Keep real exports and results outside the public repository.

@@ -31,9 +31,13 @@
 - FR-EB14: The bridge SHALL validate ready receipts and package source bytes without manual artifact pairing.
 - FR-EB15: Zero-coupon exports SHALL retain empty coupon-schedule/accrual fields.
 
+
+- FR-EB16: Opt-in GCS staging SHALL restrict reads to an allowed prefix, pin each object's generation, enforce caller-selected per-object byte limits and retain source generations and SHA-256 hashes privately.
+- FR-EB17: Receipt staging SHALL validate the original completion payload before publishing a local receipt. Archive-only staging SHALL verify the source cut hash and SHALL NOT synthesize a completion receipt, cluster epoch or valuation time.
+
 ## Non-Functional Requirements
 
-- NFR-EB01: The local Python integration commands SHALL use Python 3.10+ standard library only and open no network connections; producer hooks SHALL use the inherited Java runtime.
+- NFR-EB01: Core local commands SHALL use Python 3.10+ standard library with no network connections. The opt-in GCS staging command SHALL use installed gcloud credentials for bounded read-only downloads; no listener or cloud compute is started.
 - NFR-EB02: Actual market data, exports and results SHALL reside outside the public checkout; repository fixtures SHALL be synthetic.
 - NFR-EB03: The state SHALL own its additive component under its generation runtime-overrides directory.
 - NFR-EB04: Tests SHALL exercise integrity failures, identity collisions, empty portfolios and repeatable output identity.

@@ -33,3 +33,5 @@ Target runtime behavior:
 The local coordinator adds SQLite job/attempt tracking, duplicate discovery suppression, process-restart recovery and strict mock-result ingestion. See quickstart section 5. Exchange schemas in contracts/proposed are negotiation drafts, not released runtime contracts.
 
 The completed-export bridge consumes private readiness receipts and feeds the coordinator. Quickstart section 6 exercises real in-process engine bookings and production CSV renderers. The live EOD service chain is not part of that proof.
+
+Optional GCS staging downloads generation-pinned objects into private local storage. A captured completion receipt can feed the existing bridge; an archive without a receipt is verified separately and cannot create ready work automatically. See quickstart section 9.

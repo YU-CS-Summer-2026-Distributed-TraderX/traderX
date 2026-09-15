@@ -17,3 +17,6 @@
 - Publish opt-in local completion receipts only after both exporter artifacts exist.
 - Validate source hashes, counts, cut identity, business date and adjacent witness before packaging.
 - Preserve empty zero-coupon schedule/accrual fields from production exports.
+
+- FR-EB16: Opt-in GCS staging SHALL restrict reads to an allowed prefix, pin each object's generation, enforce caller-selected per-object byte limits and retain source generations and SHA-256 hashes privately.
+- FR-EB17: Receipt staging SHALL validate the original completion payload before publishing a local receipt. Archive-only staging SHALL verify the source cut hash and SHALL NOT synthesize a completion receipt, cluster epoch or valuation time.

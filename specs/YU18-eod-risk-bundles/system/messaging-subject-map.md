@@ -187,3 +187,6 @@ position to project.
 YU18 adds no messaging subjects. Its CLI consumes completed files explicitly and does not subscribe to risk.extract.ready. The inherited entries above are preserved verbatim as lineage documentation; their historical descriptions are not delivery guarantees made by the bundle CLI.
 
 The optional local .ready.json receipt contains the unchanged risk.extract.ready payload and precedes the notification. The bridge consumes receipt files, not the NATS subject; missed notifications therefore do not prevent local receipt discovery.
+
+Optional GCS staging adds no messaging subject. It accepts a locally captured completion event or
+explicitly selected archive URI. Archive mode never emits a ready receipt from object presence alone.

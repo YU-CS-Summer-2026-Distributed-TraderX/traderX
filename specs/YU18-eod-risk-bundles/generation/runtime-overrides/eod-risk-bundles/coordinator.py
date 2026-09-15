@@ -19,7 +19,7 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def load_json(path):
+def decode_json(data):
     def pairs(items):
         result = {}
         for key, value in items:
@@ -28,7 +28,11 @@ def load_json(path):
         return result
     def invalid(value):
         raise ValueError(f'non-finite JSON value: {value}')
-    return json.loads(path.read_bytes(), object_pairs_hook=pairs, parse_constant=invalid)
+    return json.loads(data, object_pairs_hook=pairs, parse_constant=invalid)
+
+
+def load_json(path):
+    return decode_json(path.read_bytes())
 
 
 def private_directory(path):

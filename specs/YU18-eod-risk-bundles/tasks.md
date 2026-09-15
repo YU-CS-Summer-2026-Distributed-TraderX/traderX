@@ -15,3 +15,8 @@
 - [x] Exercise real in-process engine/exporter output through the coordinator.
 - [x] Correct zero-coupon and SOFR fixture assumptions against production output.
 - [x] Validate draft schemas with positive and negative cases using format checking.
+
+- [x] Add bounded generation-pinned GCS staging with private provenance and local failure tests.
+- [x] Verify an existing cloud archive and repeated staging without starting compute.
+- [ ] Exercise a live producer completion receipt through GCS staging and the local coordinator with recorded epoch and valuation time.
+- [ ] Connect the agreed Alex HTTP/result contract after schema agreement.

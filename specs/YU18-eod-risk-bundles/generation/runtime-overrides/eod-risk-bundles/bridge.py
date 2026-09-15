@@ -33,10 +33,7 @@ def artifact(uri, root):
     return path.read_bytes()
 
 
-def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, session_date):
-    receipt, artifact_root, inbox = Path(receipt), Path(artifact_root), Path(inbox)
-    bundle.require(receipt.is_file() and not receipt.is_symlink(), 'invalid receipt file')
-    event = load_json(receipt)
+def validate_event(event, payloads, session_date):
     bundle.require(isinstance(event, dict), 'receipt must be an object')
     fields = {'schema', 'uri', 'consensusSequence', 'sessionDate', 'priceSnapshotVersion', 'rows',
               'sha256', 'cutSha256', 'quiesceWitnessSequence', 'contractsSchema', 'contractsUri',
@@ -49,8 +46,6 @@ def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, sessio
     version = integer(event['priceSnapshotVersion'], 'priceSnapshotVersion')
     bundle.require(integer(event['schema'], 'schema') == 3
                    and integer(event['contractsSchema'], 'contractsSchema') == 2, 'unsupported export schema')
-    payloads = {'positions': artifact(event['uri'], artifact_root),
-                'contracts': artifact(event['contractsUri'], artifact_root)}
     parsed = bundle.read_pair(payloads)
     for kind, hash_field, count in [('positions', 'sha256', 'rows'),
                                      ('contracts', 'contractsSha256', 'contracts')]:
@@ -60,6 +55,15 @@ def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, sessio
         expected = {'consensusSequence': str(sequence), 'sessionDate': event['sessionDate'],
                     'priceSnapshotVersion': str(version), 'cutSha256': event['cutSha256']}
         bundle.require(all(metadata[key] == value for key, value in expected.items()), 'receipt cut mismatch')
+
+
+def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, session_date):
+    receipt, artifact_root, inbox = Path(receipt), Path(artifact_root), Path(inbox)
+    bundle.require(receipt.is_file() and not receipt.is_symlink(), 'invalid receipt file')
+    event = load_json(receipt)
+    payloads = {'positions': artifact(event['uri'], artifact_root),
+                'contracts': artifact(event['contractsUri'], artifact_root)}
+    validate_event(event, payloads, session_date)
     manifest = bundle.manifest_for(payloads, epoch, valuation_time, origin)
     bundle.require(not any((p / '.git').exists() for p in (inbox.resolve(), *inbox.resolve().parents)),
                    'inbox must be outside a Git checkout')

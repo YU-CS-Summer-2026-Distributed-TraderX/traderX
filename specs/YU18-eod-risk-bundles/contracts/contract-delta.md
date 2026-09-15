@@ -90,3 +90,16 @@ Producer compatibility correction: zero-coupon bonds have empty lastCouponDate A
 accruedInterestFraction. Coupon-bearing bonds retain required date/decimal fields. Synthetic SOFR
 fixtures now mirror the actual export values: floatIndex=USD-SOFR, paymentFrequency=1Y, dayCount=ACT/360.
 These fields do not constitute a complete agreed SOFR pricing convention set.
+
+## Optional GCS staging v1
+
+`python3 gcs_stage.py --receipt LOCAL_JSON|--archive-positions GS_URI --allowed-prefix GS_PREFIX/ --max-bytes N --output PRIVATE_DIRECTORY`.
+Exactly one source mode is required. The parent directory must be caller-owned mode 0700, outside Git, with no symlink path components. Literal object URIs may include a numeric generation; wildcard, encoded and traversal-like paths are refused. The prefix must end in `/`.
+
+The command resolves metadata, downloads the exact generation within the supplied per-object byte budget, checks length and the GCS MD5 checksum when supplied by metadata, and retains URI/generation/size/SHA-256 in `source.json` (`traderx.gcs-stage.v1`). It never falls back to another generation after a missing-version or download failure. Downloads happen before atomic local directory publication. Identical repeated staging is accepted; changed source generations or local bytes refuse reuse of the same destination. Retries re-read cloud objects; this is not an offline cache.
+
+Receipt mode accepts a locally captured producer event naming both GCS objects. It preserves original bytes as `source-receipt.json`, verifies schemas/hashes/counts/shared cut/adjacent witness, and writes `local.ready.json` with only the two URIs rewritten to local paths. This allows bridge.scan to find one ready receipt. `PRODUCER_RECEIPT_VERIFIED` means consistency with that supplied event, not authenticated producer identity. Source provenance stays beside the staged files; it does not change the frozen three-file bundle v1 schema.
+
+Archive mode derives the contracts and cut sibling paths from date/vN/seq-N.csv. It verifies both export schemas, shared metadata, the path's date/version/sequence and the actual source cut's SHA-256. It writes `ARCHIVE_ONLY_NO_COMPLETION_RECEIPT`, null epoch/time, and no ready receipt. This does not establish that the producer completed its notification/witness protocol. Neither mode infers epoch, valuation time or input origin. Retain the staging provenance alongside any later bundle; the current coordinator does not ingest that sidecar.
+
+The CLI uses installed gcloud authentication, no SDK dependency, and a 60-second timeout per subprocess. `--max-bytes` bounds each of two receipt artifacts or three archive artifacts, not the entire invocation. Original receipt size is also bounded. No GCS writes, automatic listing, scheduler, pricing, or cluster changes are performed.
