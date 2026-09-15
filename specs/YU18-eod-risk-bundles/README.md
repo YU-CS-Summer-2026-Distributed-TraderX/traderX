@@ -35,3 +35,8 @@ The local coordinator adds SQLite job/attempt tracking, duplicate discovery supp
 The completed-export bridge consumes private readiness receipts and feeds the coordinator. Quickstart section 6 exercises real in-process engine bookings and production CSV renderers. The live EOD service chain is not part of that proof.
 
 Optional GCS staging downloads generation-pinned objects into private local storage. A captured completion receipt can feed the existing bridge; an archive without a receipt is verified separately and cannot create ready work automatically. See quickstart section 9.
+
+A live GKE EOD → GCS staging → local coordinator proof was completed on 2026-09-15: four position
+rows and one SOFR contract, matching cut evidence from all three members, and one deduplicated mock
+job. The user explicitly approved historical-tape mark overrides for this transport demonstration.
+See generation/implementation-status.md for evidence and limits; no Alex pricing was performed.

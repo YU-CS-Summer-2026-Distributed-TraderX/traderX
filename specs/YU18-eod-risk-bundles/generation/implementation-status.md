@@ -141,3 +141,59 @@ component and all 12 source/generated component files compared byte-identical. R
 readiness, coverage (33 states) and front-matter (33 files) passed. The final real GCS repeat also
 passed metadata MD5 verification where supplied. Scoped whitespace checks passed. No inherited Java
 or deterministic-engine code changed in this extension; the Java suites were not rerun.
+
+## Live EOD receipt-to-coordinator proof — 2026-09-15
+
+The existing GKE deployment was exercised without changing images. After post-scale-up admission
+and read-model recovery, the test submitted one matched IBM pair, one matched Treasury bill pair
+(UST-BILL-20261112), and a USD SOFR booking through the gateway. Their effects were verified in
+SQL and then against the exported position/contract identities. The existing initialization cross
+also held IBM, so the final portfolio had four position rows, not six, and one OTC contract.
+
+The initial session close returned DRAFT with 23 STALE tape marks. No overrides were applied until
+the user explicitly approved accepting those existing marks for the transport demonstration. Each
+override recorded that the price was a historical tape mark and not current-market validation.
+The resulting session was PUBLISHED at version 24. This is an operational EOD proof, not financial
+validation of the marks or risk pricing.
+
+| Observed check | Result |
+|---|---|
+| Session/date | 2026-09-15, published price version 24 |
+| P&L event | 2 accounts marked, 4 rows, 0 halted |
+| Actual producer completion event | Captured from RISK-EXTRACT-READY log after the existing NATS publish/flush |
+| Cut agreement | All 3 members logged the receipt's same cut hash at sequence 1150 |
+| Adjacent witness | 1151, exactly cut sequence + 1 |
+| GCS staging | Both receipt-named files downloaded at pinned generations and passed receipt/hash/count checks |
+| Exact portfolio | Signed IBM and bill positions in both accounts; original SOFR contract identity and notional retained |
+| Local coordinator | 1 job, 1 attempt, MOCK_COMPLETE, VERIFIED result integrity |
+| Repeated bridge/discovery/run | No second job or attempt |
+| Risk coverage | 5 identified mock items; priced=0; usableForRisk=false |
+
+The recorded clusterEpoch is an operator-defined identity derived from the three engine container
+instances, including their IDs and start times. It is not an engine-issued epoch. The verifier
+confirmed those instances did not change between context capture and receipt verification. The
+valuationTime was explicitly selected immediately before the demo close request, separate from the
+business date and completion time. This is a mid-day demonstration, not an assertion that the cut
+occurred at the exchange's official closing time.
+
+Private evidence: /private/tmp/traderx-live-eod-20260915/ contains context/epoch basis, original
+requests/responses, the draft/published reports, producer receipt, all three member logs, GCS staging
+provenance, bundle, coordinator state/result and verification.json. Original exports also remain
+in the private risk-extract bucket. No portfolio rows, observed marks or calculated P&L were added
+to this repository. The locally implemented optional receipt hook was not deployed: this proof
+used the older producer's actual completion log. NATS delivery into a new subscriber was not tested.
+
+Alex's HTTP worker and real pricing remain unconnected. No risk-engine numerical claims follow
+from the mock result. No TAQ conversion or large computation was performed.
+
+A 36,880-byte evidence archive was also retained with a create-only upload at
+`gs://traderx-505400-risk-extracts/proof/yu18-eod/2026-09-15/598446bc46fc3c7f54922294ca61ba781c84ee4e8d3505c5b014100ea4284f09/evidence.zip`.
+The uploaded object's size and metadata checksum matched the local archive. Bucket inspection
+showed uniform bucket-level access and no public IAM principals. The archive holds the actual
+private inputs/results/logs and executable local verification script; these are not public fixtures.
+
+Cleanup completed in the guide's order: default-pool → engine pool → support-pool. All three
+resize operations completed successfully. Final live checks found zero Compute Engine instances
+in traderx-505400 and zero Kubernetes nodes. Buckets and persistent disks were retained. No images
+or manifests were changed. The documentation-only update passed root Spec Kit gates and scoped
+whitespace checks; runtime verification is the live proof above, not a repeated unit-test claim.

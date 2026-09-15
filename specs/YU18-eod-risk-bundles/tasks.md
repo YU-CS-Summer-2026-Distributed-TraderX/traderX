@@ -18,5 +18,5 @@
 
 - [x] Add bounded generation-pinned GCS staging with private provenance and local failure tests.
 - [x] Verify an existing cloud archive and repeated staging without starting compute.
-- [ ] Exercise a live producer completion receipt through GCS staging and the local coordinator with recorded epoch and valuation time.
+- [x] Exercise a live producer completion receipt through GCS staging and the local coordinator with recorded operational epoch identity and operator-selected demo valuation time.
 - [ ] Connect the agreed Alex HTTP/result contract after schema agreement.
