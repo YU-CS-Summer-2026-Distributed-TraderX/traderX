@@ -1,0 +1,281 @@
+{
+ "schema": "traderx.risk-demo.v1",
+ "scope": "synthetic-fixture-validation",
+ "usableForRisk": false,
+ "portfolioRiskAvailable": false,
+ "workerConnectivity": "NOT_PROBED",
+ "businessDate": "2025-06-02",
+ "valuationTime": "2025-06-02T16:00:00-04:00",
+ "assumedMarketProfile": "flat-3pct-v1",
+ "marketProvenance": "assumed",
+ "generatedAt": "2026-09-16T18:30:00Z",
+ "traderxCommit": "e045a03e01e4161b244f3e0144a8d54316dfc858",
+ "compatibilityProfile": {
+  "adapter": "alex-pricing-local-provisional-v1",
+  "engineCommit": "e7246e1765a2f9b4d4dd6049c97d1baa66319be7"
+ },
+ "producerExecution": {
+  "location": "LOCAL",
+  "completedAt": "2026-09-16T18:29:00Z"
+ },
+ "jobs": [
+  {
+   "instrument": "bill",
+   "jobId": "fixture-bill-job",
+   "bundleId": "c3211337d0c3e61b5276613972fd6af9b6e7e8ec18070019963c61fc8c1b525d",
+   "status": "SYNTHETIC_PRICING_VALIDATED",
+   "resultIntegrity": "VERIFIED",
+   "resultSha256": "e65a841a76c5771ecea2976455d0f8cfcbf6540e0acf3b2f016375eab9b1c544",
+   "validatedAt": "2026-09-16T18:30:00Z",
+   "attemptCount": 1,
+   "clusterEpoch": "synthetic-shared-examples-v1",
+   "cut": {
+    "sessionDate": "2025-06-02",
+    "consensusSequence": "8",
+    "priceSnapshotVersion": "1",
+    "cutSha256": "ca93efcb545ae518edde9fc81bfa74991e6fd3f73fe3231b58a2e2201e043469"
+   },
+   "positions": [
+    {
+     "side": "long",
+     "signedFaceUsd": "100000",
+     "npv": {
+      "alexUsd": "98507.14563826029",
+      "referenceUsd": "98507.145638260290",
+      "differenceUsd": "-0.000000000000",
+      "toleranceUsd": "0.00000001",
+      "withinTolerance": true
+     },
+     "noteDetail": null
+    },
+    {
+     "side": "short",
+     "signedFaceUsd": "-100000",
+     "npv": {
+      "alexUsd": "-98507.14563826029",
+      "referenceUsd": "-98507.145638260290",
+      "differenceUsd": "0.000000000000",
+      "toleranceUsd": "0.00000001",
+      "withinTolerance": true
+     },
+     "noteDetail": null
+    }
+   ],
+   "coverage": {
+    "byCalculation": {
+     "npv": {
+      "ok": 2,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "accruedInterest": {
+      "ok": 2,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "rateSensitivity": {
+      "ok": 0,
+      "unsupported": 2,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "rateGamma": {
+      "ok": 0,
+      "unsupported": 2,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "theta": {
+      "ok": 0,
+      "unsupported": 2,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "vega": {
+      "ok": 0,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 2
+     },
+     "varEs": {
+      "ok": 0,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 2
+     }
+    },
+    "itemCount": 2,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+   }
+  },
+  {
+   "instrument": "note",
+   "jobId": "fixture-note-job",
+   "bundleId": "1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9",
+   "status": "SYNTHETIC_PRICING_VALIDATED",
+   "resultIntegrity": "VERIFIED",
+   "resultSha256": "ca1abf8393539b70da44f8cbc3dd2c6377491b11aae3cf2cfbf1d8fa9e7755e4",
+   "validatedAt": "2026-09-16T18:30:00Z",
+   "attemptCount": 1,
+   "clusterEpoch": "synthetic-shared-examples-v1",
+   "cut": {
+    "sessionDate": "2025-06-02",
+    "consensusSequence": "8",
+    "priceSnapshotVersion": "1",
+    "cutSha256": "e5e737ed7469250809536a7484f37ca751f401a64c0bb8acdbff1d80aec5b84e"
+   },
+   "positions": [
+    {
+     "side": "long",
+     "signedFaceUsd": "100000",
+     "npv": {
+      "alexUsd": "103308.32664442991",
+      "referenceUsd": "103308.326644429909",
+      "differenceUsd": "0.000000000001",
+      "toleranceUsd": "0.00000001",
+      "withinTolerance": true
+     },
+     "noteDetail": {
+      "cleanNpv": {
+       "alexUsd": "101451.2266444299",
+       "referenceUsd": "101451.226644429909",
+       "differenceUsd": "-0.000000000009",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      },
+      "accruedInterest": {
+       "alexUsd": "1857.1000000000001",
+       "referenceUsd": "1857.100000000000",
+       "differenceUsd": "0.000000000000",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      },
+      "dirtyMinusCleanMinusAccruedUsd": "0.0000000000099",
+      "accrualReconciliation": {
+       "exportedFraction": "0.018571",
+       "recomputedFraction": "0.018571428571428572",
+       "differenceUsd": "-0.042857142857136155",
+       "boundUsd": "0.060000000000000005",
+       "withinBound": true
+      },
+      "parallelBump1bpUsd": {
+       "alexUsd": "-15.283220896104467",
+       "referenceUsd": "-15.283220896112",
+       "differenceUsd": "0.000000000008",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      }
+     }
+    },
+    {
+     "side": "short",
+     "signedFaceUsd": "-100000",
+     "npv": {
+      "alexUsd": "-103308.32664442991",
+      "referenceUsd": "-103308.326644429909",
+      "differenceUsd": "-0.000000000001",
+      "toleranceUsd": "0.00000001",
+      "withinTolerance": true
+     },
+     "noteDetail": {
+      "cleanNpv": {
+       "alexUsd": "-101451.2266444299",
+       "referenceUsd": "-101451.226644429909",
+       "differenceUsd": "0.000000000009",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      },
+      "accruedInterest": {
+       "alexUsd": "-1857.1000000000001",
+       "referenceUsd": "-1857.100000000000",
+       "differenceUsd": "-0.000000000000",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      },
+      "dirtyMinusCleanMinusAccruedUsd": "-0.0000000000099",
+      "accrualReconciliation": {
+       "exportedFraction": "0.018571",
+       "recomputedFraction": "0.018571428571428572",
+       "differenceUsd": "0.042857142857136155",
+       "boundUsd": "0.060000000000000005",
+       "withinBound": true
+      },
+      "parallelBump1bpUsd": {
+       "alexUsd": "15.283220896104467",
+       "referenceUsd": "15.283220896112",
+       "differenceUsd": "-0.000000000008",
+       "toleranceUsd": "0.00000001",
+       "withinTolerance": true
+      }
+     }
+    }
+   ],
+   "coverage": {
+    "byCalculation": {
+     "npv": {
+      "ok": 2,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "accruedInterest": {
+      "ok": 2,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "rateSensitivity": {
+      "ok": 2,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "rateGamma": {
+      "ok": 0,
+      "unsupported": 2,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "theta": {
+      "ok": 0,
+      "unsupported": 2,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 0
+     },
+     "vega": {
+      "ok": 0,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 2
+     },
+     "varEs": {
+      "ok": 0,
+      "unsupported": 0,
+      "unavailable": 0,
+      "failed": 0,
+      "notApplicable": 2
+     }
+    },
+    "itemCount": 2,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+   }
+  }
+ ]
+}

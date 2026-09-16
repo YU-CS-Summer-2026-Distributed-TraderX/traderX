@@ -13,6 +13,7 @@
 // are worse than one that is slightly awkward, and this pair is already the pair we have.
 import http from 'node:http';
 import { readEodJobs } from './eod-jobs.mjs';
+import { readRiskDemo } from './risk-demo.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1155,6 +1156,12 @@ const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
     const result = await readEodJobs();
+    return json(res, result.status, result.body);
+  }
+  if (p === '/risk/demo') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
+    const result = await readRiskDemo();
     return json(res, result.status, result.body);
   }
   if (p === '/eod/chain') return eodChain(req, res, url);
