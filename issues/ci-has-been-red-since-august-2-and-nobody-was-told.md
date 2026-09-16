@@ -1,6 +1,6 @@
 # CI has been red since 2026-08-02, and nothing said so
 
-**Status:** open
+**Status:** green on GitHub since 2026-09-16 (see the last section); the notification gap below is still open
 **Found:** 2026-08-27, by the coordinator, while adding YU16 and YU17 to the engine-tests matrix
 **Class:** silent red — a pipeline reporting failure to nobody, while the docs it feeds claim zero failures
 
@@ -94,3 +94,42 @@ All five matrix legs run green locally through the four CI steps, on 2026-08-27:
   change that, and it is a design question rather than a defect.
 - The YU04-layer lock reaches YU13–YU17. YU04–YU12 carry the same latent gap and are not on the
   matrix, so nothing exercises them.
+
+## Verified 2026-09-16: the fixes were committed, not pushed
+
+The 2026-09-15 run (35017261221, pushed from YU17 at 592bc3c6) failed with **the same three
+failures this report calls fixed**: `EodPnlConsumerTest` expected 3 meters and got 4 on YU13–YU16,
+the composed reference-data `npm ci` was missing the same 7 dependencies, and on YU13 and YU14
+`scripts/ci/assert-suites-executed.sh: No such file or directory` (exit 127).
+
+Nothing about the fixes was wrong. Every leg checks out `origin/<branch>`, and the 2026-08-27
+commits (f4ab9670 YU13, 3415c214 YU14, 3a6b54b8 YU15, 4521d81f YU16) were on the local
+branches but not on origin when that run fetched. Once they were pushed, both runs of
+2026-09-16 were green: 35118802132 (YU16 push) and 35118802955 (YU15 push), each with 13
+jobs succeeding and `dedicated` skipped (it runs only on `workflow_dispatch`). Hosted legs
+executed YU13 495, YU14 511, YU15 547, YU16 572 and YU17 706 tests. The
+`NatsReplicationPhase0Test` compile error did not recur on either run.
+
+Read from the Actions REST API (`gh api .../actions/runs/<id>/jobs`, `gh run view --log`).
+Cross-checked locally at 04403104 (traderX-risk-integration, YU18 render into an empty
+generated root, JDK 21, Node 25 where CI uses 22): hosted engine + service suites + suite
+assertion green at 718 tests over 7 modules; composed reference-data 23/23, tick-store 24/24,
+baseline Java suites, template reference-data 7/7, people-service 16/16. The four
+Testcontainers jobs were not run locally, because no Docker daemon was running. They were
+green in both GitHub runs.
+
+**One job-definition gap, fixed:** the composed price-publisher step ran `npm test` without
+installing. YU15's 11 tests need no dependency, so it passed; on a YU18 render 7 of 107 fail
+on `Cannot find module 'express'`. The step now runs `npm ci` first (YU15 11/11, YU18 107/107).
+
+Still open:
+- **No failure notification.** Unchanged from above.
+- **Every job but `hosted` pins YU15**, and the matrix stops at YU17, so composed-extras runs
+  11 of the publisher's 107 tests and CI never renders YU18 or `traderX-risk-integration`.
+  The P1 bill-maturity tests and the YU18 EOD component suite run in no pipeline.
+  Extending the matrix is a design decision, not a defect fix.
+- The YU06-layer `EodPnlConsumerTest` still asserts a count of 3 on YU15–YU18. YU15's
+  layer shadows it there, so it is inert, but a copy would bring the old assertion back.
+- **"Committed" is not "fixed" when the check reads origin.** A fix only counts once the
+  branch the workflow checks out contains it. `git rev-parse <branch> origin/<branch>`
+  would have shown this on 2026-08-27.

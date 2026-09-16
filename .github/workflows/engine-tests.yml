@@ -52,9 +52,10 @@ jobs:
           # SnapshotBarrierPerformanceTest back for the dedicated job, so the composed tree's
           # own count is 2 higher (YU17 = 698). The older three were
           # validated 2026-07-25 (YU13 270 / YU14 284 / YU15 298 functional tests) — a different
-          # measure, not comparable to the two above. YU13 and YU14 have been red since then on
-          # a compile error in NatsReplicationPhase0Test; they stay on the matrix because being
-          # on it is what makes that visible at all.
+          # measure, not comparable to the two above. YU13 and YU14 were red from 2026-08-02 until
+          # the 2026-08-27 fixes reached origin; every leg was green on 2026-09-16 (YU13 495 /
+          # YU14 511 / YU15 547 / YU16 572 / YU17 706 executed). They stay on the matrix because
+          # being on it is what makes a regression visible at all.
           #
           # Every branch here carries engine-tests.sh, service-tests.sh, assert-suites-executed.sh
           # and exclude-heavy.gradle, which is what the leg's own checkout needs.
