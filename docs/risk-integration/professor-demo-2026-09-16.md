@@ -67,7 +67,7 @@ Registry prefix: `us-east1-docker.pkg.dev/traderx-505400/traderx`. Tag: `yu18-de
 | trade-processor | trade-processor | `sha256:d699b7df85496b1e8cf48b10dd978e88fb56c0d78fdc86c8e1068d0a0e3dcde6` |
 | price-publisher | price-publisher | `sha256:78e4c7cbd4815733f595cb40543c7c833bf12f14dff5daa30998d877d6a52ed3` |
 | risk-extract | cluster-node | `sha256:a9e7eb960c1b851ca7bd1931da78612620d7818dfd775fd214f63cacc21472ee` |
-| web-front-end-console | web-front-end-console | `sha256:697e28af4fda7425f2425e43050c190df3b99d582243aa80eb39bbffe8c87a5c` |
+| web-front-end-console | web-front-end-console | `sha256:5c4dd9eed8ad4e4a17ec998ef37dfe2dac610c179229ae087e2aa434398b9de2` |
 
 The matcher/gateway core images were retained, avoiding an unrelated deterministic-core upgrade.
 The new cluster-node image is used only for the read-side risk extractor and its completion hook.
@@ -143,7 +143,7 @@ claimed. Keep the separate local pricing and live operational evidence labels vi
 ## Final public console verification
 
 Accepted UI commits: `70347c16`, `1f87ca80`, `1396161d`, `a1f5ceaf` (including the bounded
-1 MiB + 1-byte filesystem read). Console image tag: `yu18-risk-a1f5ceaf-20260916`; digest above.
+1 MiB + 1-byte filesystem read). Console image tag: `yu18-risk-private-ui-20260916`; digest above.
 The serving Pod has Node 20.19.2 and Python 3.13.5, private state mode 0700 owned by the runtime
 user, and read-only state/report mounts. The exact report bytes were checked through public
 `/risk/demo`; `/eod/jobs` returned both jobs VERIFIED. Public POST `/risk/demo` returned 405,
@@ -170,3 +170,13 @@ kubectl --context gke_traderx-505400_us-east1-b_traderx-bench -n traderx patch d
 The init container copies the archive, sets root ownership and private directory mode; the main
 container reads it without mutating or recovering jobs. A rollout reconstructs the snapshot from
 the Secret. The runtime image contains no coordinator state or raw portfolio artifacts.
+
+### Presentation correction
+
+The deployed presentation removes contributor names, commits, hashes, job/bundle identifiers,
+operational timestamps, internal codes and expandable custody details. It retains separate bill/note
+statuses, numeric comparisons, date 2025-06-02, the assumed flat 3% curve and the local/synthetic/
+non-production labels. The nine focused rendered UI tests passed, including exclusion of internal
+provenance and raw errors. Safari's actual public accessibility tree confirmed the corrected content;
+native screenshot capture still returned an unusable thumbnail. No new visual-layout claim is made.
+This changes the presentation only; the read-only API contracts retain their existing fields.
