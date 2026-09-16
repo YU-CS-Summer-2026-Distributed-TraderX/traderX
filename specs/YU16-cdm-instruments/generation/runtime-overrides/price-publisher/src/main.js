@@ -614,9 +614,10 @@ function pickRandomSubset(items, count) {
 // either. That is the mechanism behind the 2026-09-09 outage: one Treasury bill a day from
 // maturity threw in the yield solve and the entire feed stopped.
 //
-// The failing instrument is SKIPPED for this round, not substituted: no fabricated price, no
-// stale value republished, and its state is left exactly as it was. Logged once per instrument so
-// a permanently unpriceable one is visible without filling the log at tick rate.
+// The failing instrument is SKIPPED for this round, never substituted: no price is fabricated and
+// no stale value is republished. What happens to its STATE depends on which phase failed — see
+// tickAndPublish below, which is the authority on that. Reported once per instrument so a
+// permanently broken one is visible without filling the log at tick rate.
 const instrumentFailureReported = new Set();
 
 function reportInstrumentFailure(ticker, what, err) {

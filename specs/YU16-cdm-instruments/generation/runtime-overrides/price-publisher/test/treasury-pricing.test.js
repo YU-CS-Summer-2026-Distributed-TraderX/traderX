@@ -527,14 +527,17 @@ test('failures after pricing keep the feed alive and report state truthfully (P1
   const priorNats = main.state.nats;
   console.error = (msg) => { errors.push(String(msg)); };
   try {
-    // TRANSPORT: publishing throws after updateTick has already committed the new price.
+    // TRANSPORT: publishing throws after updateTick has already committed the new tick.
     const equity = main.ensureTicker('ZZLATE');
     assert.ok(equity && equity.price > 0);
     main.state.nats = { publish: () => { throw new Error('transport down'); } };
-    const before = main.state.prices.get('ZZLATE').price;
+    // Commitment is asserted by IDENTITY, not by the price moving: every update path builds a new
+    // quote object and stores it, so this holds for any random step, including one that rounds to
+    // no visible change.
+    const before = main.state.prices.get('ZZLATE');
     assert.equal(main.tickAndPublish('ZZLATE', 0), false);
-    const after = main.state.prices.get('ZZLATE').price;
-    assert.notEqual(after, before, 'the tick is committed before publication can fail');
+    const after = main.state.prices.get('ZZLATE');
+    assert.notStrictEqual(after, before, 'the tick is committed before publication can fail');
     assert.ok(
       errors.some((m) => m.includes('ZZLATE') && m.includes('publication failed')),
       `expected a transport report, got ${JSON.stringify(errors)}`
@@ -623,5 +626,56 @@ test('the publish loop schedules its next round even when an instrument fails (P
     for (const [k, v] of priorPrices) { main.state.prices.set(k, v); }
     for (const [k, v] of priorTreasuries) { main.state.treasuries.set(k, v); }
     scheduled.length = 0;                          // injected scheduler: nothing real pending
+  }
+});
+
+// P1 closeout: the JSON envelope and the binary tick are two separate messages. If the second
+// fails the first is already gone, and the report must say so rather than implying nothing was
+// sent. The feed must also keep working for everything else afterwards.
+test('a partial publication is reported as partial and does not stop the feed (P1 closeout)', () => {
+  const main = require('../src/main');
+  const sent = [];
+  const errors = [];
+  const priorError = console.error;
+  const priorNats = main.state.nats;
+  console.error = (msg) => { errors.push(String(msg)); };
+  try {
+    const partial = main.ensureTicker('ZZPARTIAL');
+    const healthy = main.ensureTicker('ZZHEALTHY');
+    assert.ok(partial && healthy);
+
+    // First publish succeeds, second throws — only while the partial instrument is ticking.
+    let failSecond = true;
+    main.state.nats = {
+      publish: (topic) => {
+        if (failSecond && sent.length === 1) {
+          throw new Error('binary subject rejected');
+        }
+        sent.push(topic);
+      }
+    };
+
+    assert.equal(main.tickAndPublish('ZZPARTIAL', 0), false);
+    assert.equal(sent.length, 1, 'exactly the first subject was sent');
+    assert.ok(sent[0].startsWith('pricing.'), `expected the JSON subject first, got ${sent[0]}`);
+    assert.ok(
+      errors.some((m) => m.includes('ZZPARTIAL') && m.includes('publication may be partial')),
+      `expected a partial-publication diagnostic, got ${JSON.stringify(errors)}`
+    );
+
+    // The next instrument still publishes both of its messages.
+    failSecond = false;
+    sent.length = 0;
+    assert.equal(main.tickAndPublish('ZZHEALTHY', 0), true);
+    assert.equal(sent.length, 2, 'the healthy instrument published both subjects');
+    assert.ok(sent.some((t) => t.startsWith('pricing.ZZHEALTHY')));
+    assert.ok(sent.some((t) => t.startsWith('pricing-tick-bin.ZZHEALTHY')));
+  } finally {
+    console.error = priorError;
+    main.state.nats = priorNats;
+    for (const t of ['ZZPARTIAL', 'ZZHEALTHY']) {
+      main.state.prices.delete(t);
+      main.state.treasuries.delete(t);
+    }
   }
 });
