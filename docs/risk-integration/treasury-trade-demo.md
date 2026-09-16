@@ -87,3 +87,23 @@ version 2 with no flags or overrides. The worker then stopped on an EodReport fi
 run evidence remains preserved. Offline analysis of those exact exported bytes passed the real
 library and independent validator. Recovery of the displayed run is a separate operator action;
 it must never create another order or EOD close.
+
+## Completed recovery and live result
+
+The user explicitly approved recovery of the existing failed run. Its original export, original
+producer bytes and acceptance were revalidated before the public result was persisted. The failed
+run record is preserved alongside the recovered record on the persistent volume. The console was
+restarted to read that approved recovery. No new order or EOD close was submitted.
+
+Public API and actual browser verification now show Completed and checked, USD 1,000 face booked
+at 98.966% of par and USD 995.33 present value under the assumed 3% curve. Independent difference
+is about USD 6.7e-15, within USD 1e-8. Public position/trade reads confirm exactly one Treasury trade
+side per account and +1,000/-1,000 face positions. Reload presents the same completed run.
+This was a real booked/exported demo position with operator-assisted analysis recovery, not a
+claim that the original automated attempt completed uninterrupted.
+
+The local worker remains running for health reporting; the completed single-run API cannot create
+a second trade. The cluster remains running. The source mapping fix passed 138 backend tests;
+earlier integrated UI and route checks passed 90 and 13 respectively. Browser verification used
+the in-app browser after Safari capture became unavailable; a reload resolved its initial startup
+failure. Desktop layout and the actual resulting values were visually inspected.
