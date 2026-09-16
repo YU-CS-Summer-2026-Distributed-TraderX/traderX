@@ -89,7 +89,7 @@ def execute(run):
         if 'closeMillis' not in j['proof']:j['proof']['closeMillis']=int(time.time()*1000);save()
         report=action('close',lambda:json.loads(kube('exec','deploy/web-front-end-console','--','node','-e',js)))
         check(report['status']=='PUBLISHED' and report['flaggedCount']==0,'EOD quality gate refused')
-        mark=next(r for r in report['prices'] if r['security']==profile.SECURITY);j['proof']['eodMark']=mark;save()
+        mark=profile.eod_mark(report);j['proof']['eodMark']=mark;save()
         receipt=None
         for _ in range(40):
             raw=kube('exec','deploy/risk-extract','--','sh','-c','for f in /data/risk-extracts/ready/*.ready.json; do cat "$f"; echo; done')

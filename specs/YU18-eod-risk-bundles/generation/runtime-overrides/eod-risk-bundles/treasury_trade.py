@@ -68,3 +68,12 @@ def validate(source,original,proof,reference,data):
     pricing_result.validate_inputs(manifest,selected,terms,data)
     result=decode(data);priced=D(str(result['items'][0]['calculations']['npv']['value']));ref=pricing_result.reference(row,terms,DAY)[0]['value'].value
     return {'instrument':SECURITY,'currency':'USD','quantity':'1000','signedFaceUsd':'1000','bookedPrice':proof['bookedPrice'],'bookedPriceUnit':'fraction of par','valuationDate':DAY,'pricingUsd':format(priced,'f'),'referenceUsd':format(ref,'f'),'differenceUsd':format(priced-ref,'f'),'toleranceUsd':'0.00000001','withinTolerance':True,'rateSensitivity':'unsupported','executionLocation':'local','assumedCurve':'Flat 3%','usableForRisk':False}
+
+
+def eod_mark(report):
+    """Admit the actual EodReport API shape; never substitute a quote on a missing field."""
+    require(report.get('status')=='PUBLISHED' and report.get('flaggedCount')==0, 'EOD quality gate refused')
+    require(report.get('sessionDate')==DAY and isinstance(report.get('instruments'),list), 'invalid EOD report')
+    marks=[r for r in report['instruments'] if r.get('security')==SECURITY]
+    require(len(marks)==1 and marks[0].get('quality')=='OK' and marks[0].get('flagged') is False, 'invalid bill closing mark')
+    return marks[0]

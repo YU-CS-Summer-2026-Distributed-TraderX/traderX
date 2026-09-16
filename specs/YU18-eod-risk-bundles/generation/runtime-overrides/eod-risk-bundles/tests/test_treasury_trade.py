@@ -17,6 +17,12 @@ class TradedBill(unittest.TestCase):
   self.reference={'instrumentKey':t.SECURITY,'currency':'USD','debtEconomics':{'issueDate':'2026-08-13','maturityDate':'2026-11-12','zeroCoupon':{'couponRatePercent':0},'principalRepayment':{'parAmount':100}}}
   self.out=self.root/'bundle';t.prepare(self.original,self.out,self.proof,self.reference)
  def tearDown(self):self.tmp.cleanup()
+ def test_actual_eod_report_contract_and_no_quote_fallback(self):
+  mark={'security':t.SECURITY,'quality':'OK','flagged':False,'closingPrice':0.98966}
+  report={'sessionDate':t.DAY,'status':'PUBLISHED','flaggedCount':0,'instruments':[mark]}
+  self.assertEqual(t.eod_mark(report),mark)
+  for bad in [{**report,'instruments':[]},{**report,'instruments':[mark,mark]},{**report,'status':'DRAFT'},{**report,'instruments':None,'prices':[mark]}]:
+   with self.assertRaises(ValueError):t.eod_mark(bad)
  def test_exact_export_scope_and_old_profile_refusal(self):
   manifest,parsed=bundle.validate(self.out);self.assertEqual(parsed['positions'][1],[self.row]);self.assertEqual(manifest['inputOrigin'],'export')
   with self.assertRaisesRegex(ValueError,'exact provisional'):pricing_result.inputs(self.out)

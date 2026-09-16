@@ -76,3 +76,14 @@ worker update (401). The configured public status correctly reports worker unava
 Automatic approval review blocked launching the local worker pending direct user approval in the
 GKE task. No new Treasury orders, fills, EOD version or live priced result have been created yet.
 The full live trade-to-analysis acceptance remains pending that approval; do not present it as done.
+
+## Local runtime and recovery evidence
+
+The external Python environment requires `SSL_CERT_FILE=/opt/homebrew/etc/openssl@3/cert.pem`
+on this operator machine to use its installed trusted CA bundle. TLS verification remains enabled.
+After direct user approval, the single run booked the expected two trade sides and created EOD
+version 2 with no flags or overrides. The worker then stopped on an EodReport field-name mismatch
+(`instruments`, not `prices`). That mapping is corrected and regression-tested. Original failed
+run evidence remains preserved. Offline analysis of those exact exported bytes passed the real
+library and independent validator. Recovery of the displayed run is a separate operator action;
+it must never create another order or EOD close.
