@@ -215,6 +215,30 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pytest tests/ -q
 
+  counterparty-reference:
+    # The risk extract reads counterparties.csv from the cluster-node image, which carries the spec
+    # pack's copy (specs/<state>/reference-data/). On 2026-08-21 a hand-applied ConfigMap was mounted
+    # over that file on the GKE rig; the image moved to 11 accounts, the mount kept serving 8, and
+    # every EOD extract failed closed. See issues/risk-extract-counterparties-configmap-shadows-the-image.md.
+    #
+    # This fails if any tracked manifest mounts over the image's reference-data, redirects the reader
+    # with RISK_EXTRACT_REFERENCE_DATA, or carries a counterparties.csv ConfigMap key. It checks out
+    # the PUSHED commit, not a pinned branch like the jobs above, so it tests the script and the
+    # manifests of the same commit and needs no other branch to carry the script first.
+    # A tracked manifest is all it can see: an object applied by hand is only visible live, with
+    #   kubectl -n traderx get deploy risk-extract -o json | python3 scripts/ci/check-counterparty-reference-not-shadowed.py -
+    name: config — counterparty reference not shadowed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Self-test (the 2026-08-21 mount and its variants must fail)
+        run: python3 scripts/ci/check-counterparty-reference-not-shadowed.py --self-test
+      - name: Scan every tracked Kubernetes manifest
+        run: python3 scripts/ci/check-counterparty-reference-not-shadowed.py specs/*/generation/kubernetes
+
   baseline-people-service:
     # Baseline people-service (.NET / xUnit). Separate test project referencing the WebApi.
     name: baseline — people-service (.NET unit)
