@@ -1,0 +1,9 @@
+# Build the normal console first, then add the matching read-only status component.
+# Context: a staging directory containing this Dockerfile and eod-risk-bundles/*.py.
+# Private coordinator state and the synthetic report are mounted separately, never baked in.
+ARG CONSOLE_IMAGE
+FROM ${CONSOLE_IMAGE}
+USER root
+RUN python3 -c 'import sqlite3; import sys; assert sys.version_info >= (3, 10)'
+COPY eod-risk-bundles /opt/traderx/eod-risk-bundles
+ENV EOD_PYTHON=python3 EOD_STATUS_SCRIPT=/opt/traderx/eod-risk-bundles/job_status.py

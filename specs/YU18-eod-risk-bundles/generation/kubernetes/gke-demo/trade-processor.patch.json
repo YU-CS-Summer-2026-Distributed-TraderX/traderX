@@ -1,0 +1,14 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "trade-processor",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/trade-processor@sha256:d699b7df85496b1e8cf48b10dd978e88fb56c0d78fdc86c8e1068d0a0e3dcde6"
+          }
+        ]
+      }
+    }
+  }
+}

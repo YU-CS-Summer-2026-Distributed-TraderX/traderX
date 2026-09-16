@@ -1,0 +1,98 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "initContainers": [
+          {
+            "name": "risk-demo-state",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:697e28af4fda7425f2425e43050c190df3b99d582243aa80eb39bbffe8c87a5c",
+            "command": [
+              "/bin/sh",
+              "-ec",
+              "mkdir -p /runtime/state; tar -xzf /seed/state.tar.gz -C /runtime/state; chown -R 0:0 /runtime/state; chmod 700 /runtime/state"
+            ],
+            "volumeMounts": [
+              {
+                "name": "risk-demo-seed",
+                "mountPath": "/seed",
+                "readOnly": true
+              },
+              {
+                "name": "risk-demo-state",
+                "mountPath": "/runtime"
+              }
+            ],
+            "resources": {
+              "requests": {
+                "cpu": "50m",
+                "memory": "64Mi"
+              },
+              "limits": {
+                "cpu": "250m",
+                "memory": "128Mi"
+              }
+            }
+          }
+        ],
+        "containers": [
+          {
+            "name": "console",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:697e28af4fda7425f2425e43050c190df3b99d582243aa80eb39bbffe8c87a5c",
+            "env": [
+              {
+                "name": "EOD_COORDINATOR_STATE",
+                "value": "/runtime/state"
+              },
+              {
+                "name": "EOD_STATUS_SCRIPT",
+                "value": "/opt/traderx/eod-risk-bundles/job_status.py"
+              },
+              {
+                "name": "EOD_PYTHON",
+                "value": "python3"
+              },
+              {
+                "name": "RISK_DEMO_ARTIFACT",
+                "value": "/demo/risk-demo.json"
+              }
+            ],
+            "volumeMounts": [
+              {
+                "name": "risk-demo-state",
+                "mountPath": "/runtime",
+                "readOnly": true
+              },
+              {
+                "name": "risk-demo-report",
+                "mountPath": "/demo",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "risk-demo-seed",
+            "secret": {
+              "secretName": "risk-demo-state-20260916",
+              "defaultMode": 256
+            }
+          },
+          {
+            "name": "risk-demo-state",
+            "emptyDir": {
+              "sizeLimit": "32Mi"
+            }
+          },
+          {
+            "name": "risk-demo-report",
+            "configMap": {
+              "name": "risk-demo-report-20260916",
+              "defaultMode": 292
+            }
+          }
+        ]
+      }
+    }
+  }
+}

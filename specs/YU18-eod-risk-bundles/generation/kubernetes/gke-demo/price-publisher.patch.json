@@ -1,0 +1,20 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "price-publisher",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/price-publisher@sha256:78e4c7cbd4815733f595cb40543c7c833bf12f14dff5daa30998d877d6a52ed3",
+            "env": [
+              {
+                "name": "PRINT_REPLAY",
+                "value": "0"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

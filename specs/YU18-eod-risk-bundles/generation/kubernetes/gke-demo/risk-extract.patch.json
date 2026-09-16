@@ -1,0 +1,20 @@
+{
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "risk-extract",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/cluster-node@sha256:a9e7eb960c1b851ca7bd1931da78612620d7818dfd775fd214f63cacc21472ee",
+            "env": [
+              {
+                "name": "RISK_EXTRACT_READY_DIRECTORY",
+                "value": "/data/risk-extracts/ready"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}
