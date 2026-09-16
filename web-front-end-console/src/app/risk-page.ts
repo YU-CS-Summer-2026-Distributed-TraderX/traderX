@@ -1,6 +1,7 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { Api } from './api';
+import { TreasuryDemo } from './treasury-demo';
 
 // Read-only Risk tab. Two independent reads, each cleared before it is retried so a failed refresh
 // never leaves the previous answer on screen: GET /eod/jobs (coordinator status, unchanged route)
@@ -45,7 +46,14 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
   selector: 'risk-page',
   template: `
 <div class="stack">
-  <p class="banner warn scope"><strong>Synthetic pricing demo</strong> · business date 2025-06-02 · assumed flat 3% curve · <strong>not usable for production risk</strong>.</p>
+  <p class="banner warn scope"><strong>Synthetic pricing demo</strong> · assumed flat 3% curve · <strong>not usable for production risk</strong>.</p>
+
+  <section class="card"><treasury-demo /></section>
+
+  <div class="ref-head">
+    <h2>Reference examples</h2>
+    <p class="sub">Fixed synthetic bill and note positions, business date 2025-06-02. These are not the trade from the run above.</p>
+  </div>
 
   <section class="card">
     <div class="head"><h2>Calculation status</h2>
@@ -153,9 +161,11 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
 </div>`,
   styles: `
     .stack { display: grid; gap: 14px; max-width: 1100px; }
+    .stack > * { min-width: 0; } /* grid items otherwise grow to their widest table on a phone */
     .head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
     h3 { margin: 0; font-size: 14px; } h4 { margin: 14px 0 6px; font-size: 13px; font-weight: 600; }
     .scope { margin: 0; }
+    .ref-head { margin: 10px 2px 0; } .ref-head .sub { margin: 2px 0 0; }
     .banner.warn { background: var(--warn-soft); color: var(--warn); }
     .flow { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; list-style: none; padding: 0; margin: 6px 0 10px; counter-reset: s; }
     .flow li { position: relative; padding: 8px 12px 8px 14px; border: 1px solid var(--border); background: #fafbfc;
@@ -174,7 +184,7 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
     @media (max-width: 760px) { .flow { grid-template-columns: 1fr; } .flow li { margin: 0 0 14px; } .flow li:not(:last-child)::after { content: '↓'; right: 50%; top: auto; bottom: -15px; transform: none; }
       table { display: block; overflow-x: auto; } dl { grid-template-columns: 1fr; } }
   `,
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, TreasuryDemo],
 })
 export class RiskPage implements OnInit {
   private api = inject(Api);

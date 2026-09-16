@@ -113,7 +113,7 @@ describe('Risk tab (read-only)', () => {
     expect(text()).toContain('Portfolio VaR / ES');
     expect(text()).not.toContain('bb9cf0e');
     expect(el.querySelectorAll('input, select, textarea, form').length).toBe(0);
-    expect([...el.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual(['Refresh', 'Refresh']);
+    expect([...el.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual(['Check status', 'Refresh', 'Refresh']);
   });
 
   it('keeps internal provenance and raw errors out of rendered content', async () => {
