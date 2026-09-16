@@ -46,7 +46,7 @@ separate behavior change is agreed:
 - `observationTime`: original observation instant when supplied with known semantics; otherwise
   null plus an allowlisted reason such as not-supplied, invalid-source-time or legacy-unavailable.
   Preserve the raw source timestamp privately where permitted; never substitute receivedAt.
-- `timestampMeaning`: original-observation, derived-quote-generation or synthetic-generation.
+- `timestampMeaning`: original-observation, aggregate-window-end, derived-quote-generation or synthetic-generation.
   Treasury derived quotes must retain input observation references and valuation/generation context;
   their generated `asOf` alone cannot establish the underlying curve's observation time.
 - `sourceClass`: observed, derived, synthetic or unknown, independent of delivery mode.
@@ -56,6 +56,15 @@ separate behavior change is agreed:
   record/window identity. For replay: recorded epoch/run identity, tape business date/window,
   held-at-end indicator and replay transport revision where actually emitted. Do not mint run IDs
   independently at consumers or deduce replay provenance from a ticker or free-form source name.
+
+For resampled tape aggregates, preserve the source window start/end, aggregation method and
+source timestamp semantics explicitly. The replay's current `asOf` is the aggregate **window end**,
+not the timestamp of an exact last trade or of every trade contributing to the aggregate. A median
+window value need not correspond to a trade at its endpoint. Represent this with
+`timestampMeaning=aggregate-window-end` and explicit interval bounds; keep an exact contributing
+trade observation timestamp unknown unless the source actually supplies and identifies that trade.
+Suitability policy must evaluate the interval and aggregate semantics rather than relabel its end
+as an exact observation instant. This is a design requirement, not an implemented field contract.
 
 Publisher support is needed to make these fields trustworthy enough to validate structurally. The
 existing free-form source/asOf pair is an incomplete compatibility input, not automatic current-feed
