@@ -198,7 +198,13 @@ jobs:
           npm test
       - name: price-publisher (composed, node:test)
         working-directory: generated/code/target-generated/price-publisher
-        run: npm test
+        # Install first. YU15's 11 tests happen to need no dependency, so a bare `npm test` passed
+        # here; from YU16 the suite loads main.js, which requires express, and without an install
+        # 7 of its 107 tests fail on "Cannot find module 'express'" (measured 2026-09-16 on a YU18
+        # render). With `npm ci` YU15 stays 11/11 and YU18 is 107/107.
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
       - name: tick-store (composed, pytest)
         working-directory: generated/code/target-generated/tick-store
         # Deps come from the module's own pinned requirements.txt. Installing them is what makes
