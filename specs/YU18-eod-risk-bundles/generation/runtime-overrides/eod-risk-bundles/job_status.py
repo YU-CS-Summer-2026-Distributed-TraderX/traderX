@@ -8,7 +8,7 @@ from pathlib import Path
 import sqlite3
 import bundle
 from coordinator import Coordinator, MockAdapter, now
-from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE
+from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE
 
 SCHEMA = 'traderx.eod-job-status.v1'
 
@@ -61,6 +61,9 @@ def snapshot(state):
         elif profile == W0_PROFILE:
             from w0_result import W0FileAdapter
             adapter = W0FileAdapter(state/'results')  # Intake location is unused for validation.
+        elif profile == PRICING_PROFILE:
+            from pricing_result import PricingFileAdapter
+            adapter = PricingFileAdapter(state/'results')
         else:
             bundle.require(profile == PROFILE, 'unsupported coordinator profile')
         coordinator = Coordinator(state, adapter)
@@ -81,6 +84,9 @@ def snapshot(state):
                                == job['result_hash'], 'result changed during status read')
                 bundle.require(path.read_bytes() == data, 'coverage bytes changed during status read')
                 job['coverage'] = result_doc['coverage']
+                if profile == PRICING_PROFILE:
+                    job['pricingAvailable'] = True
+                    job['pricingScope'] = 'provisional-dated-synthetic-fixtures'
             # Internal filesystem paths and raw result items are not part of this read surface.
             job.pop('result_path', None)
             public_error(job)

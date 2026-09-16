@@ -39,3 +39,7 @@ need a separately agreed contract, parent hashes and distinct curve assumptions.
 I2 reads an existing local coordinator snapshot through the maintained console server, with no
 recovery/mutation on GET and explicit mock/W0/unavailable semantics. Deployment and remote
 worker liveness/authentication remain separate work.
+
+## Provisional pricing profile (existing-state extension)
+
+Extend the existing YU18 local acceptance boundary, not the deterministic core or state lineage. Keep W0 intact; add pricing_result.py with exact original bundle admission and independent Decimal/date cashflow reference, a distinct worker profile/receipt/status, existing durable file intake and read-only snapshot integration. Adversarial producer-output mutations, interrupted publication, late arrival, old-cut selection and stored-byte corruption exercise the boundary. Regenerate YU18 and verify source/output parity, original golden/W0 behavior, and the real pinned Alex checkout via a repeatable local demo. No remote service or general financial-pricing support is implied.

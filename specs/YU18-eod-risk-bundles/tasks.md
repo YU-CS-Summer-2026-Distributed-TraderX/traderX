@@ -40,3 +40,7 @@
 - [x] I1: Add versioned dated observation packaging, explicit selection/as-of validation, deterministic synthetic fixture and local demo.
 - [ ] Agree Alex's curve shape and a derived-input contract before wiring market inputs into pricing.
 - [x] I2: Add coordinator-backed local EOD job-status console and verify unavailable/empty/integrity states.
+
+- [x] Provisional pricing: implement FR-EB30 closed fixture profile and independent reference; reject unsupported capabilities and altered identities/economics.
+- [x] Provisional pricing: implement FR-EB31 durable local intake/status and adversarial recovery/selection checks.
+- [x] Provisional pricing: verify real pinned Alex demo, source/generated suites/parity and unchanged W0/golden evidence; record limitations.

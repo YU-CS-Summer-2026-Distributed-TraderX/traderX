@@ -1,0 +1,322 @@
+{
+  "bundleId": "1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9",
+  "clusterEpoch": "synthetic-shared-examples-v1",
+  "sessionDate": "2025-06-02",
+  "valuationTime": "2025-06-02T16:00:00-04:00",
+  "mappingVersion": "traderx-adapter-v1",
+  "engineVersion": "0.1.0",
+  "marketProvenance": "assumed",
+  "marketInputs": {
+    "mode": "assumed-profile",
+    "assumedProfileId": "flat-3pct-v1",
+    "curveProvenance": {
+      "curveId": "flat-3pct-v1",
+      "inputOrigin": "assumed",
+      "construction": "flat-constant",
+      "inputHashes": []
+    }
+  },
+  "measure": "risk-neutral-pricing",
+  "items": [
+    {
+      "itemId": "cfdee2f35df37f6713c3d16784c287e0",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "22214",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-NOTE-20261215"
+      },
+      "calculations": {
+        "npv": {
+          "status": "ok",
+          "value": 103308.32664442991,
+          "method": "discounted-cashflow",
+          "priceType": "dirty",
+          "cleanNpv": 101451.2266444299,
+          "accruedInterest": 1857.1000000000001,
+          "signedFaceAmount": 100000.0,
+          "couponRate": 0.04,
+          "redemptionFraction": 1.0,
+          "redemptionPvPerUnitFace": 0.9549373057925737,
+          "redemptionDiscountFactor": 0.9549373057925737,
+          "accrualDayCount": "ACT/ACT (ICMA)",
+          "discountDayCount": "ACT/365 (Fixed)",
+          "maturityDate": "2026-12-15",
+          "valuationDate": "2025-06-02",
+          "coupons": [
+            {
+              "startDate": "2024-12-15",
+              "endDate": "2025-06-15",
+              "paymentDate": "2025-06-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9989320774848635,
+              "yearFraction": 0.03561643835616438
+            },
+            {
+              "startDate": "2025-06-15",
+              "endDate": "2025-12-15",
+              "paymentDate": "2025-12-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9840194763953135,
+              "yearFraction": 0.536986301369863
+            },
+            {
+              "startDate": "2025-12-15",
+              "endDate": "2026-06-15",
+              "paymentDate": "2026-06-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.969409172913518,
+              "yearFraction": 1.0356164383561643
+            },
+            {
+              "startDate": "2026-06-15",
+              "endDate": "2026-12-15",
+              "paymentDate": "2026-12-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9549373057925737,
+              "yearFraction": 1.536986301369863
+            }
+          ],
+          "accrualReconciliation": {
+            "accrualSource": "exported-fraction",
+            "exportedFraction": 0.018571,
+            "recomputedFraction": 0.018571428571428572,
+            "difference": -0.042857142857136155,
+            "tolerance": 0.060000000000000005
+          },
+          "curveProvenance": {
+            "curveId": "flat-3pct-v1",
+            "inputOrigin": "assumed",
+            "construction": "flat-constant",
+            "inputHashes": []
+          }
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": 1857.1000000000001,
+          "provenance": "converted",
+          "currency": "USD",
+          "observedCleanPrice": 1.015,
+          "signedFaceAmount": 100000.0
+        },
+        "rateSensitivity": {
+          "status": "ok",
+          "value": -15.283220896104467,
+          "method": "bumped-revaluation",
+          "derivative": "dNPV/dZeroRate",
+          "shockedFactor": "zero-curve-parallel",
+          "bump": 0.0001,
+          "currency": "USD"
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    },
+    {
+      "itemId": "6aafc684aa8432c745f6d3431f6ac844",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "42422",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-NOTE-20261215"
+      },
+      "calculations": {
+        "npv": {
+          "status": "ok",
+          "value": -103308.32664442991,
+          "method": "discounted-cashflow",
+          "priceType": "dirty",
+          "cleanNpv": -101451.2266444299,
+          "accruedInterest": -1857.1000000000001,
+          "signedFaceAmount": -100000.0,
+          "couponRate": 0.04,
+          "redemptionFraction": 1.0,
+          "redemptionPvPerUnitFace": 0.9549373057925737,
+          "redemptionDiscountFactor": 0.9549373057925737,
+          "accrualDayCount": "ACT/ACT (ICMA)",
+          "discountDayCount": "ACT/365 (Fixed)",
+          "maturityDate": "2026-12-15",
+          "valuationDate": "2025-06-02",
+          "coupons": [
+            {
+              "startDate": "2024-12-15",
+              "endDate": "2025-06-15",
+              "paymentDate": "2025-06-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9989320774848635,
+              "yearFraction": 0.03561643835616438
+            },
+            {
+              "startDate": "2025-06-15",
+              "endDate": "2025-12-15",
+              "paymentDate": "2025-12-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9840194763953135,
+              "yearFraction": 0.536986301369863
+            },
+            {
+              "startDate": "2025-12-15",
+              "endDate": "2026-06-15",
+              "paymentDate": "2026-06-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.969409172913518,
+              "yearFraction": 1.0356164383561643
+            },
+            {
+              "startDate": "2026-06-15",
+              "endDate": "2026-12-15",
+              "paymentDate": "2026-12-15",
+              "accrualFraction": 0.5,
+              "amountPerUnitFace": 0.02,
+              "discountFactor": 0.9549373057925737,
+              "yearFraction": 1.536986301369863
+            }
+          ],
+          "accrualReconciliation": {
+            "accrualSource": "exported-fraction",
+            "exportedFraction": 0.018571,
+            "recomputedFraction": 0.018571428571428572,
+            "difference": 0.042857142857136155,
+            "tolerance": 0.060000000000000005
+          },
+          "curveProvenance": {
+            "curveId": "flat-3pct-v1",
+            "inputOrigin": "assumed",
+            "construction": "flat-constant",
+            "inputHashes": []
+          }
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": -1857.1000000000001,
+          "provenance": "converted",
+          "currency": "USD",
+          "observedCleanPrice": 1.015,
+          "signedFaceAmount": -100000.0
+        },
+        "rateSensitivity": {
+          "status": "ok",
+          "value": 15.283220896104467,
+          "method": "bumped-revaluation",
+          "derivative": "dNPV/dZeroRate",
+          "shockedFactor": "zero-curve-parallel",
+          "bump": 0.0001,
+          "currency": "USD"
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    }
+  ],
+  "itemOrder": {
+    "scheme": "traderx-item-v1",
+    "itemIds": [
+      "cfdee2f35df37f6713c3d16784c287e0",
+      "6aafc684aa8432c745f6d3431f6ac844"
+    ],
+    "itemCount": 2,
+    "sha256": "491e63818af8466923e1ba650cc24e58c3afed3b66333bdc248a4c2005724b95"
+  },
+  "coverage": {
+    "byCalculation": {
+      "npv": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "accruedInterest": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateSensitivity": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateGamma": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "theta": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "vega": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      },
+      "varEs": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      }
+    },
+    "itemCount": 2,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+  },
+  "warnings": [
+    "bundle declares marketInputs.status=NOT_SUPPLIED: it carries no observed market data. Any pricing must therefore name an assumed profile explicitly, and its results will be labelled marketProvenance='assumed'."
+  ]
+}

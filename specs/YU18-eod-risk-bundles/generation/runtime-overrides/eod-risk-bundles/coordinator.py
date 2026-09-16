@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Single-host EOD coordinator. Local transport mock only; no financial results."""
+"""Single-host EOD coordinator. Local mock, W0 and provisional synthetic pricing intake."""
 import argparse
 from datetime import datetime, timezone
 import fcntl
@@ -11,7 +11,7 @@ import uuid
 
 import bundle
 
-from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, Deferred
+from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE, Deferred
 
 
 def now():
@@ -105,7 +105,7 @@ class Coordinator:
         self.state = Path(state).absolute()
         self.adapter = adapter or MockAdapter()
         # New worker semantics require a new adapter implementation and profile version.
-        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE, W0_PROFILE), 'unsupported adapter profile')
+        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE), 'unsupported adapter profile')
         self.db = None
         self.lock = None
 
@@ -297,7 +297,7 @@ class Coordinator:
             job['usableForRisk'] = False
             job['attempts'] = [dict(r) for r in self.db.execute(
                 'SELECT * FROM attempts WHERE job_id=? ORDER BY started_at, attempt_id', (job['job_id'],))]
-            if job['status'] in ('MOCK_COMPLETE', 'W0_VALIDATED'):
+            if job['status'] in ('MOCK_COMPLETE', 'W0_VALIDATED', 'SYNTHETIC_PRICING_VALIDATED'):
                 try:
                     actual = self.adapter.validate_result(self.state / 'inputs' / job['bundle_id'],
                                                           self.state / job['result_path'])
@@ -310,6 +310,9 @@ class Coordinator:
                                           and job.get('resultIntegrity') == 'VERIFIED')
             job['selectedW0Result'] = (job['currentCut'] and job['status'] == 'W0_VALIDATED'
                                         and job.get('resultIntegrity') == 'VERIFIED')
+            if job['profile'] == PRICING_PROFILE:
+                job['selectedSyntheticPricingResult'] = (job['currentCut'] and
+                    job['status'] == 'SYNTHETIC_PRICING_VALIDATED' and job.get('resultIntegrity') == 'VERIFIED')
             if job['status'] == 'W0_VALIDATED':
                 job.update(pricedItems=0, portfolioRiskAvailable=False)
         return {'jobs': jobs, 'usableForRisk': False}
@@ -320,6 +323,7 @@ def main():
     parser.add_argument('--state', required=True, help='private local state directory outside checkout')
     parser.add_argument('--http-worker', help='provisional local fake-worker URL: http://127.0.0.1:PORT')
     parser.add_argument('--w0-results', help='local Alex W0 result directory, files named BUNDLE_ID.json')
+    parser.add_argument('--pricing-results', help='opt-in provisional synthetic Alex pricing result directory')
     sub = parser.add_subparsers(dest='command', required=True)
     sub.add_parser('discover').add_argument('inbox')
     sub.add_parser('run')
@@ -329,11 +333,14 @@ def main():
     # SQLite sidecars and newly made result parents inherit private permissions.
     os.umask(0o077)
     try:
-        bundle.require(not (args.http_worker and args.w0_results), 'choose one worker adapter')
+        bundle.require(sum(bool(x) for x in (args.http_worker, args.w0_results, args.pricing_results)) <= 1, 'choose one worker adapter')
         adapter = None
         if args.w0_results:
             from w0_result import W0FileAdapter
             adapter = W0FileAdapter(args.w0_results)
+        if args.pricing_results:
+            from pricing_result import PricingFileAdapter
+            adapter = PricingFileAdapter(args.pricing_results)
         if args.http_worker:
             from http_adapter import HttpAdapter
             adapter = HttpAdapter(args.http_worker)

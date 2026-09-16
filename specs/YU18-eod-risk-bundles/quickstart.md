@@ -250,3 +250,7 @@ Run `python3 scripts/demo-state-YU18-job-status.py` for a synthetic proof throug
 server. It stops its server afterward and prints private evidence. See
 [local job status](../../docs/risk-integration/local-job-status.md) for configuration, read semantics
 and remaining deployment requirements. No financial risk is calculated.
+
+## Provisional priced synthetic round trip
+
+See [local pricing acceptance](../../../docs/risk-integration/local-pricing-acceptance.md) and [the exact provisional contract](contracts/provisional-pricing-local-v1.md). Use the separate `--pricing-results` profile and a new private state directory. This does not change the W0 demo pin.

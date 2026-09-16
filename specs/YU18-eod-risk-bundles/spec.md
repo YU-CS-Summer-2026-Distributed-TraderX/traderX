@@ -89,3 +89,8 @@ The local coordinator supports an independent `alex-w0-local-v1` file-intake pro
 - FR-EB29: The console SHALL distinguish unavailable/empty, pending/running/failed, mock completion
   and W0 validation, retain input/cut identity and recheck result integrity before reporting coverage.
   Mock/W0 SHALL remain usableForRisk=false. Local custody SHALL NOT imply producer authentication.
+
+### Provisional local synthetic pricing acceptance
+
+- FR-EB30: A separate operator-selected provisional e7246e1/flat-3pct-v1 profile SHALL admit only the exact dated original bill/note bundles and independently validate closed result shapes, identities, units/signs, numerical cashflows, accrual reconciliation, actual +1bp parallel price changes and calculation-level coverage. See contracts/provisional-pricing-local-v1.md.
+- FR-EB31: Local intake SHALL retain original result bytes and a distinct receipt through durable attempts/recovery and integrity revalidation; expose SYNTHETIC_PRICING_VALIDATED separately from W0/mock; suppress old/ambiguous/invalid selection and always retain usableForRisk=false. Preserve frozen W0 behavior and fixtures. This is unilateral provisional synthetic acceptance, not financial approval or a frozen producer schema.

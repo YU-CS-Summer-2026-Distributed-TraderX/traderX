@@ -1,0 +1,214 @@
+{
+  "bundleId": "c3211337d0c3e61b5276613972fd6af9b6e7e8ec18070019963c61fc8c1b525d",
+  "clusterEpoch": "synthetic-shared-examples-v1",
+  "sessionDate": "2025-06-02",
+  "valuationTime": "2025-06-02T16:00:00-04:00",
+  "mappingVersion": "traderx-adapter-v1",
+  "engineVersion": "0.1.0",
+  "marketProvenance": "assumed",
+  "marketInputs": {
+    "mode": "assumed-profile",
+    "assumedProfileId": "flat-3pct-v1",
+    "curveProvenance": {
+      "curveId": "flat-3pct-v1",
+      "inputOrigin": "assumed",
+      "construction": "flat-constant",
+      "inputHashes": []
+    }
+  },
+  "measure": "risk-neutral-pricing",
+  "items": [
+    {
+      "itemId": "389c658c1cc130bc4acea7496b59bd82",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "22214",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-BILL-20251202"
+      },
+      "calculations": {
+        "npv": {
+          "status": "ok",
+          "value": 98507.14563826029,
+          "method": "discounted-cashflow",
+          "signedFaceAmount": 100000.0,
+          "redemptionFraction": 1.0,
+          "discountFactor": 0.9850714563826029,
+          "yearFraction": 0.5013698630136987,
+          "dayCount": "ACT/365 (Fixed)",
+          "maturityDate": "2025-12-02",
+          "valuationDate": "2025-06-02",
+          "curveProvenance": {
+            "curveId": "flat-3pct-v1",
+            "inputOrigin": "assumed",
+            "construction": "flat-constant",
+            "inputHashes": []
+          }
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": 0.0,
+          "provenance": "structural-zero",
+          "currency": "USD",
+          "observedCleanPrice": 0.985,
+          "signedFaceAmount": 100000.0
+        },
+        "rateSensitivity": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    },
+    {
+      "itemId": "f453f240304ece1785bfae9645f4b652",
+      "sourceIdentity": {
+        "kind": "position",
+        "accountId": "42422",
+        "clusterEpoch": "synthetic-shared-examples-v1",
+        "security": "UST-BILL-20251202"
+      },
+      "calculations": {
+        "npv": {
+          "status": "ok",
+          "value": -98507.14563826029,
+          "method": "discounted-cashflow",
+          "signedFaceAmount": -100000.0,
+          "redemptionFraction": 1.0,
+          "discountFactor": 0.9850714563826029,
+          "yearFraction": 0.5013698630136987,
+          "dayCount": "ACT/365 (Fixed)",
+          "maturityDate": "2025-12-02",
+          "valuationDate": "2025-06-02",
+          "curveProvenance": {
+            "curveId": "flat-3pct-v1",
+            "inputOrigin": "assumed",
+            "construction": "flat-constant",
+            "inputHashes": []
+          }
+        },
+        "accruedInterest": {
+          "status": "ok",
+          "value": 0.0,
+          "provenance": "structural-zero",
+          "currency": "USD",
+          "observedCleanPrice": 0.985,
+          "signedFaceAmount": -100000.0
+        },
+        "rateSensitivity": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "rateGamma": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "theta": {
+          "status": "unsupported",
+          "reason": "NO_PRICER_AT_THIS_STAGE",
+          "detail": "conventions for this TREASURY are supported, but no pricer for this calculation has been delivered yet. Closed by W1 build work; no external decision is required."
+        },
+        "vega": {
+          "status": "not-applicable",
+          "detail": "TREASURY has no optionality, so vega is not defined for it"
+        },
+        "varEs": {
+          "status": "not-applicable",
+          "detail": "VaR/ES is a portfolio-level statistic, not a per-item one"
+        }
+      },
+      "currency": "USD",
+      "mappingVersion": "traderx-adapter-v1"
+    }
+  ],
+  "itemOrder": {
+    "scheme": "traderx-item-v1",
+    "itemIds": [
+      "389c658c1cc130bc4acea7496b59bd82",
+      "f453f240304ece1785bfae9645f4b652"
+    ],
+    "itemCount": 2,
+    "sha256": "5475633f77d2815071484368260c52aaa9717939e183a1e40c30def0a7893daa"
+  },
+  "coverage": {
+    "byCalculation": {
+      "npv": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "accruedInterest": {
+        "ok": 2,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateSensitivity": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "rateGamma": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "theta": {
+        "ok": 0,
+        "unsupported": 2,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 0
+      },
+      "vega": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      },
+      "varEs": {
+        "ok": 0,
+        "unsupported": 0,
+        "unavailable": 0,
+        "failed": 0,
+        "notApplicable": 2
+      }
+    },
+    "itemCount": 2,
+    "allOutcomesAccountedFor": true,
+    "allApplicableComputed": false
+  },
+  "warnings": [
+    "bundle declares marketInputs.status=NOT_SUPPLIED: it carries no observed market data. Any pricing must therefore name an assumed profile explicitly, and its results will be labelled marketProvenance='assumed'."
+  ]
+}
