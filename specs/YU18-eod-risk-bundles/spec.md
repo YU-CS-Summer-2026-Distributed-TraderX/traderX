@@ -81,3 +81,11 @@ The local coordinator supports an independent `alex-w0-local-v1` file-intake pro
   provenance SHALL NOT silently pass suitability.
 - FR-EB27: Synthetic fixtures SHALL remain explicit; no normalization, derived curve, financial
   readiness or W0 market-input support SHALL be implied. See contracts/market-input-package-v1.md.
+
+### Local job-status read surface (I2)
+
+- FR-EB28: A read-only snapshot SHALL expose committed coordinator jobs and attempts while a worker
+  holds its execution lock, without creating state, recovery, submission or worker network calls.
+- FR-EB29: The console SHALL distinguish unavailable/empty, pending/running/failed, mock completion
+  and W0 validation, retain input/cut identity and recheck result integrity before reporting coverage.
+  Mock/W0 SHALL remain usableForRisk=false. Local custody SHALL NOT imply producer authentication.

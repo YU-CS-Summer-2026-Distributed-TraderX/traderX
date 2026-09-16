@@ -12,6 +12,7 @@
 // Everything else is the same shape as the dev bypasses on purpose: two implementations that drift
 // are worse than one that is slightly awkward, and this pair is already the pair we have.
 import http from 'node:http';
+import { readEodJobs } from './eod-jobs.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1150,6 +1151,12 @@ const server = http.createServer(async (req, res) => {
     return json(res, 401, { code: 'admin_auth_required', error: 'sign in as an administrator to make this change' });
   }
   if (p === '/gateways') return gatewaysBypass(req, res);
+  if (p === '/eod/jobs') {
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
+    const result = await readEodJobs();
+    return json(res, result.status, result.body);
+  }
   if (p === '/eod/chain') return eodChain(req, res, url);
   // THE MEMBER COUNT IS ALSO A CONFIGURATION, not a constant. An Aeron cluster is normally 3 or 5;
   // the console hardcoded exactly three member rows, so a 5-member cluster would have shown 3 and a

@@ -39,4 +39,4 @@
 
 - [x] I1: Add versioned dated observation packaging, explicit selection/as-of validation, deterministic synthetic fixture and local demo.
 - [ ] Agree Alex's curve shape and a derived-input contract before wiring market inputs into pricing.
-- [ ] I2: Add coordinator-backed local EOD job-status console and verify unavailable/empty/integrity states.
+- [x] I2: Add coordinator-backed local EOD job-status console and verify unavailable/empty/integrity states.

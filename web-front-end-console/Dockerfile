@@ -20,7 +20,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /src/dist ./dist
-COPY server.mjs ./server.mjs
+COPY server.mjs eod-jobs.mjs ./
 ENV PORT=8080 STATIC_ROOT=/app/dist/web-front-end-console/browser
 EXPOSE 8080
 CMD ["node", "server.mjs"]

@@ -35,3 +35,7 @@ Preserve the v1 contract with fixed cross-language hash vectors. Add an explicit
 I1 adds a standalone dated observation package, exact-byte custody and explicit selected/required
 as-of rules. It leaves EOD bundle and W0 identities frozen. Future normalized or calibrated artifacts
 need a separately agreed contract, parent hashes and distinct curve assumptions.
+
+I2 reads an existing local coordinator snapshot through the maintained console server, with no
+recovery/mutation on GET and explicit mock/W0/unavailable semantics. Deployment and remote
+worker liveness/authentication remain separate work.

@@ -243,3 +243,10 @@ The demo repeats the build and checks a fixed package ID. Its par-yield/fixing v
 are invented synthetic examples, not observed market data or release schedules. Exit 2 means valid
 structure but unsuitable selection; exit 1 means corrupt/invalid structure. See
 [the contract](contracts/market-input-package-v1.md). Pricing remains unavailable.
+
+## 14. Local job-status console
+
+Run `python3 scripts/demo-state-YU18-job-status.py` for a synthetic proof through the actual console
+server. It stops its server afterward and prints private evidence. See
+[local job status](../../docs/risk-integration/local-job-status.md) for configuration, read semantics
+and remaining deployment requirements. No financial risk is calculated.

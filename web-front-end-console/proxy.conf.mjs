@@ -383,6 +383,7 @@ export default [
   // broken bootstrap: hashed asset names that 404 against the dev server, and an empty app-root.
   // curl misses it entirely, because curl asks for / and for the API path and never for the route.
   plain('/eod/chain'),
+  plain('/eod/jobs'),
   // Grafana serves from this sub-path (GF_SERVER_SERVE_FROM_SUB_PATH), so proxying the prefix is
   // enough for the whole app — and without the route the dev server answers its SPA fallback with
   // a 200, which any "is it up?" check reads as healthy. Same fallthrough that made /mN lie.

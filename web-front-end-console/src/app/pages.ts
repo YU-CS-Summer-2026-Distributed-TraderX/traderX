@@ -10,6 +10,7 @@ import { MetricsPanel } from './metrics-panel';
 import { ActivityPanel } from './activity-panel';
 import { EodPanel } from './eod-panel';
 import { EodChain } from './eod-chain';
+import { EodJobs } from './eod-jobs';
 import { AdminPanel } from './admin-panel';
 import { ProvenancePanel } from './provenance-panel';
 import { KdbPanel } from './kdb-panel';
@@ -64,7 +65,7 @@ export class SystemPage {}
 
 @Component({
   selector: 'eod-page',
-  imports: [EodChain, EodPanel, ProvenancePanel],
+  imports: [EodChain, EodPanel, ProvenancePanel, EodJobs],
   template: `
     <div class="stack">
       <!-- The chain first: it is the story the other two panels are chapters of. Prices and the
@@ -72,6 +73,7 @@ export class SystemPage {}
            the extract — an operator who does not know that reads a missing cut as a broken
            extract when nobody had published. -->
       <section class="card"><eod-chain /></section>
+      <section class="card"><eod-jobs /></section>
       <section class="card"><eod-panel /></section>
       <!-- The cut is the artifact of the session above it: same day, same version chain. It sat on
            the System page beside cluster health, which is where it was built rather than where it
