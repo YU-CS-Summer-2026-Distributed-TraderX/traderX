@@ -8,24 +8,30 @@ name: Engine Tests (JUnit + gates)
 # effective tree (last-wins layering), so the same test name runs against
 # different actual code per branch. Running the matrix is how a propagation /
 # dead-layer regression — a fix live on one branch but shadowed/inert on another —
-# becomes visible. All five states YU13-YU17 are on the matrix.
+# becomes visible. Historical events use YU13-YU17; risk-integration events test YU18 at the event commit.
 
 on:
   push:
-    # Only a branch that CARRIES this file can fire it — GitHub reads workflows from the pushed
-    # commit, not from the matrix. This file lives on YU15, YU16 and YU17, so those are the
-    # branches whose pushes start a run; YU13 and YU14 are listed for the day they carry it and
-    # are covered meanwhile as matrix legs below. Until 2026-08-27 the list stopped at YU15 while
-    # the file had already been carried to YU16 and YU17, so pushes to the two newest states ran
-    # nothing and the tip state was never the tree under test.
+    # The workflow must be present on the pushed branch. Integration events below
+    # test their own event commit; historical pushes retain cross-branch coverage.
     branches:
       - YU13-limit-order-book
       - YU14-listed-equity-options
       - YU15-eod-risk-extract
       - YU16-cdm-instruments
       - YU17-otc-rates
+      - traderX-risk-integration
   pull_request:
   workflow_dispatch:
+
+# Integration events test the event commit (the merge commit for pull requests).
+# Historical branch events retain their existing matrix and YU15 baseline coverage.
+permissions:
+  contents: read
+
+env:
+  CI_CHECKOUT_REF: ${{ (github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && github.sha || 'YU15-eod-risk-extract' }}
+  CI_RENDER_STATE: ${{ (github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && 'YU18-eod-risk-bundles' || 'YU15-eod-risk-extract' }}
 
 concurrency:
   # Never let two runs of the same ref race — concurrent gradle is exactly what
@@ -40,34 +46,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          # Each renders its OWN effective tree (last-wins layering), so the same test name
-          # runs against different composed code per branch — this is where a dead-layer /
-          # propagation regression surfaces. Tip first, so the branch the deployed system is
-          # actually built from is the first leg to report.
-          #
-          # YU16 and YU17 joined on 2026-08-27, each after running these four steps locally:
-          # both green, YU16 at 572 tests over 7 modules and YU17 at 696. Those are HOSTED
-          # totals — exclude-heavy.gradle holds ThreeMemberClusterTest and
-          # SnapshotBarrierPerformanceTest back for the dedicated job, so the composed tree's
-          # own count is 2 higher (YU17 = 698). The older three were
-          # validated 2026-07-25 (YU13 270 / YU14 284 / YU15 298 functional tests) — a different
-          # measure, not comparable to the two above. YU13 and YU14 were red from 2026-08-02 until
-          # the 2026-08-27 fixes reached origin; every leg was green on 2026-09-16 (YU13 495 /
-          # YU14 511 / YU15 547 / YU16 572 / YU17 706 executed). They stay on the matrix because
-          # being on it is what makes a regression visible at all.
-          #
-          # Every branch here carries engine-tests.sh, service-tests.sh, assert-suites-executed.sh
-          # and exclude-heavy.gradle, which is what the leg's own checkout needs.
-          - YU17-otc-rates
-          - YU16-cdm-instruments
-          - YU15-eod-risk-extract
-          - YU14-listed-equity-options
-          - YU13-limit-order-book
+        # Integration has one YU18 leg at the event SHA, not five older branch heads.
+        branch: ${{ fromJSON((github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && '["YU18-eod-risk-bundles"]' || '["YU17-otc-rates","YU16-cdm-instruments","YU15-eod-risk-extract","YU14-listed-equity-options","YU13-limit-order-book"]') }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ matrix.branch }}
+          ref: ${{ matrix.branch == 'YU18-eod-risk-bundles' && github.sha || matrix.branch }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -126,7 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
@@ -152,7 +136,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -176,7 +160,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -190,8 +174,22 @@ jobs:
           python-version: '3.12'
       - name: Install shell dependencies
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
-      - name: Render effective tree (YU15)
-        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+      - name: Render effective tree (${{ env.CI_RENDER_STATE }})
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
+      - name: EOD source suite (integration)
+        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        run: bash scripts/test-state-YU18-eod-risk-bundles.sh
+      - name: EOD generated suite (integration)
+        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        run: bash scripts/test-state-YU18-eod-risk-bundles.sh generated/code/target-generated/eod-risk-bundles
+      - name: Check frozen fixture bytes survive checkout (integration)
+        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        run: python3 scripts/test-state-YU18-checkout.py
+      - name: Check rendered counterparty reference (integration)
+        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        run: |
+          python3 -m pip install pyyaml==6.0.2
+          python3 scripts/ci/check-counterparty-reference-not-shadowed.py --rendered generated/code/target-generated/order-matcher/src/main/resources/reference-data/counterparties.csv --state "$CI_RENDER_STATE"
       - name: reference-data (composed, jest)
         working-directory: generated/code/target-generated/reference-data
         run: |
@@ -224,7 +222,7 @@ jobs:
     #
     # This fails if any tracked manifest mounts over the image's reference-data, redirects the reader
     # with RISK_EXTRACT_REFERENCE_DATA, or carries a counterparties.csv ConfigMap key. It checks out
-    # the PUSHED commit, not a pinned branch like the jobs above, so it tests the script and the
+    # the event commit, so it tests the script and the
     # manifests of the same commit and needs no other branch to carry the script first.
     # Manifests are parsed (PyYAML, pinned below), not text-matched; empty, malformed or object-free
     # input fails. A tracked manifest is all this job can see: an object applied by hand is only
@@ -252,7 +250,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-dotnet@v4
         with:
@@ -273,7 +271,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
@@ -298,7 +296,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -310,7 +308,7 @@ jobs:
       - name: Install shell dependencies
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree
-        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
       - name: Context load against real MariaDB + NATS
         run: cd generated/code/target-generated/trade-processor && ./gradlew --no-daemon --console=plain integrationTest
       - uses: actions/upload-artifact@v4
@@ -332,7 +330,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -344,7 +342,7 @@ jobs:
       - name: Install shell dependencies
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree
-        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
       - name: Outbox atomicity against real MariaDB
         run: cd generated/code/target-generated/account-service && ./gradlew --no-daemon --console=plain integrationTest
       - uses: actions/upload-artifact@v4
@@ -369,7 +367,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -381,7 +379,7 @@ jobs:
       - name: Install shell dependencies
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree
-        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
       - name: Stream repair against a real broker
         run: cd generated/code/target-generated/position-service && ./gradlew --no-daemon --console=plain integrationTest
       - uses: actions/upload-artifact@v4
@@ -396,13 +394,13 @@ jobs:
     # 3-node cluster test and the 50 ms wall-clock budget are unreliable, so this
     # job is opt-in (manual) rather than gating every PR. To move it onto real
     # dedicated hardware, change `runs-on` to a self-hosted label — nothing else.
-    name: dedicated — cluster + timing + Epsilon (YU15)
+    name: dedicated — cluster + timing + Epsilon
     if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: YU15-eod-risk-extract
+          ref: ${{ env.CI_CHECKOUT_REF }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -413,13 +411,13 @@ jobs:
           java-version: '21'
       - name: Install shell dependencies
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
-      - name: Render effective tree (YU15)
-        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU15-eod-risk-extract
+      - name: Render effective tree (${{ env.CI_RENDER_STATE }})
+        run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
       - name: Run cluster + timing + Epsilon gates
         run: bash scripts/ci/engine-tests.sh dedicated
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: junit-dedicated-YU15
+          name: junit-dedicated-${{ env.CI_RENDER_STATE }}
           path: generated/code/target-generated/order-matcher/build/test-results/**/*.xml
           if-no-files-found: warn
