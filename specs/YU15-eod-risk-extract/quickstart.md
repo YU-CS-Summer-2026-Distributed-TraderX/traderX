@@ -156,4 +156,4 @@ YU15_PLATFORM=linux/amd64 bash scripts/yu15/build-cluster-image.sh
 | `CLUSTER_INGRESS_ENDPOINTS` | `0=localhost:21802` | Member ingress endpoints; the client finds the leader. |
 | `RISK_EXTRACT_JDBC_URL` | *(unset)* | Published closes. Unset marks every row from the cluster's last trade. |
 | `RISK_EXTRACT_SINK_URI` | `file:///data/risk-extracts` | `file://` or `gs://`. |
-| `RISK_EXTRACT_REFERENCE_DATA` | `/opt/app/classes/reference-data` | Where `counterparties.csv` is read from. |
+| `RISK_EXTRACT_REFERENCE_DATA` | `/opt/app/classes/reference-data` | Where `counterparties.csv` is read from. Leave it unset: the image carries `specs/YU15-eod-risk-extract/reference-data/counterparties.csv`, which is authoritative. Never mount over it; CI fails if a manifest does. |

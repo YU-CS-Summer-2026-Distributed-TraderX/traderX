@@ -1,5 +1,8 @@
 # A hand-applied ConfigMap shadows the risk-extract's counterparty reference data
 
+**Status:** rig incident resolved 2026-08-28; recurrence guard added 2026-09-16 for tracked
+manifests. Whether the unmounted ConfigMap still exists on a live cluster was not re-checked.
+
 **Found** 2026-08-28, on the GKE bench rig, while diagnosing why publishing an EOD session left
 chain stages 3 and 4 grey.
 
@@ -55,13 +58,54 @@ the tracked source of truth and already correct. JetStream had never acked the f
 it redelivered on its own and the cut succeeded with no operator action:
 `gs://traderx-505400-risk-extracts/2026-08-28/v24/seq-50052.{csv,cut}` + contracts, 70 rows.
 
+## Authoritative source (decided 2026-09-16 from the tracked delivery path)
+
+The spec pack's CSV is the only source, and the image is its only carrier:
+
+1. `specs/YU15-eod-risk-extract/reference-data/counterparties.csv` for YU15 and every later
+   state (YU16, YU17 and YU18 carry no copy and inherit it). YU14's copy governs YU14 only.
+2. `pipeline/render-state-YU15-eod-risk-extract.sh` copies it into
+   `order-matcher/src/main/resources/reference-data/`.
+3. `Dockerfile.cluster` copies the built classes to `/opt/app/classes`.
+4. `RiskExtractMain` reads `/opt/app/classes/reference-data/counterparties.csv` (and
+   `instruments.csv` from the same directory).
+
+No tracked manifest mounts anything there or sets `RISK_EXTRACT_REFERENCE_DATA` at
+04403104. To change counterparties, edit the spec CSV, re-render, rebuild the
+cluster-node image and roll it. Do not mount a ConfigMap over the file or the directory.
+A tracked ConfigMap generated from the CSV was the alternative: it would change
+counterparties without a rebuild, at the cost of a second delivery path that has to stay in
+step with the image. It was not adopted. Adopting it means changing this guard, not getting
+around it.
+
+## Guard
+
+`scripts/ci/check-counterparty-reference-not-shadowed.py` fails on a mountPath at, inside or
+above `/opt/app/classes/reference-data`, on `RISK_EXTRACT_REFERENCE_DATA` being set, and on a
+`counterparties.csv` ConfigMap key. With `--rendered`/`--state` it also requires the rendered
+CSV to match the lineage's spec copy byte for byte. The `counterparty-reference` job in
+`engine-tests.yml` runs the self-test and scans `specs/*/generation/kubernetes`.
+
+    python3 scripts/ci/check-counterparty-reference-not-shadowed.py specs/*/generation/kubernetes
+    python3 scripts/ci/check-counterparty-reference-not-shadowed.py \
+      generated/code/target-generated/*/runtime/kubernetes \
+      --rendered generated/code/target-generated/order-matcher/src/main/resources/reference-data/counterparties.csv \
+      --state YU18-eod-risk-bundles
+
+The 2026-08-21 incident was an object applied by hand, which no repository check can see.
+Only a live read catches that:
+
+    kubectl -n traderx get deploy risk-extract -o json \
+      | python3 scripts/ci/check-counterparty-reference-not-shadowed.py -
+
+Bring-up step 3f in `scripts/yu15/bring-up-gke.sh` reads the file the pod serves, so it
+reports what a shadowing mount serves and cannot tell that apart from the image copy.
+
 ## Still open
 
-- **The ConfigMap object itself still exists** on the rig, now unmounted and unreferenced. Left in
-  place rather than deleted, since nothing reads it and deleting it is not this change's business.
-- **Decide where counterparty data should live.** A ConfigMap is a reasonable way to change
-  counterparties without rebuilding an image — but only if it is *tracked*, so it moves when the
-  CSV moves. Untracked, it is a second source of truth that silently goes stale. Either add it to
-  `cluster/risk-extract.yaml` generated from the CSV, or keep the image as the only source and
-  never mount over it again.
+- **The ConfigMap object** was left on the rig on 2026-08-28, unmounted and unreferenced.
+  The live cluster was not inspected for this update.
+- **The live read above has never run against a cluster.** It was exercised on `kubectl
+  kustomize` output of the YU17 gke tier and on a copy of its risk-extract manifest with the
+  incident mount re-inserted (fails), not on a live object.
 - A fresh bring-up from the tracked manifests was never broken: it has no such mount.
