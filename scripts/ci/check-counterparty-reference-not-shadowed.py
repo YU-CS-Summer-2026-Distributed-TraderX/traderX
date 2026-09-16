@@ -15,6 +15,13 @@ Every input is PARSED (YAML 1.1 via PyYAML, which also reads JSON), then walked.
 keys, block scalars, flow style and JSON escapes are resolved by the parser, not guessed at. Input
 that is empty, malformed, uses an unsupported tag, or holds no object is a failure, never a pass.
 
+Kustomize patches are strings or file references after that parse, so they are parsed too: an
+inline `patch:` string, inline `patchesStrategicMerge` entries, and patch files named by
+`patches[].path`, `patchesJson6902[].path` or `patchesStrategicMerge` (resolved beside the
+kustomization and walked with the same rules). A patch that cannot be parsed or found fails, and
+so do `replacements`/`vars` that mention a mountPath or the reference directory, because their
+effect cannot be evaluated without rendering.
+
 Failures, anywhere in the parsed objects:
   1. a mountPath (or a JSON6902 op on a .../mountPath) that is, is inside, or is an ancestor of
      /opt/app/classes/reference-data, after path normalisation;
@@ -62,6 +69,49 @@ def shadows(raw):
     return path == REF_DIR or path.startswith(REF_DIR + "/") or path == "/" or REF_DIR.startswith(path + "/")
 
 
+def embedded(text, where, problems, stats):
+    """Walk a patch carried as a string; a patch that cannot be checked is a failure."""
+    try:
+        docs = [d for d in yaml.safe_load_all(text) if d is not None]
+    except yaml.YAMLError as e:
+        problems.append(f"{where}: patch is not parseable ({type(e).__name__}); it cannot be checked")
+        return
+    if not docs:
+        problems.append(f"{where}: empty patch; it cannot be checked")
+    for i, doc in enumerate(docs):
+        if not isinstance(doc, (dict, list)):
+            problems.append(f"{where}#{i}: patch document is {doc!r}; it cannot be checked")
+            continue
+        walk(doc, f"{where}#{i}", problems, stats)
+
+
+def patch_file(ref, where, problems, stats):
+    base = stats.get("base")
+    if base is None:
+        problems.append(f"{where}: patch file {ref!r} has no directory to resolve against; it cannot be checked")
+        return
+    path = (base / ref).resolve()
+    if path in stats["visited"]:
+        return
+    stats["visited"].add(path)
+    if not path.is_file():
+        problems.append(f"{where}: patch file {ref!r} not found at {path}; it cannot be checked")
+        return
+    embedded(path.read_text(errors="replace"), f"{where}->{ref}", problems, stats)
+
+
+def strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for k, v in node.items():
+            yield from strings(k)
+            yield from strings(v)
+    elif isinstance(node, list):
+        for item in node:
+            yield from strings(item)
+
+
 def walk(node, where, problems, stats):
     if isinstance(node, dict):
         if node.get("name") == ENV_NAME:
@@ -83,6 +133,24 @@ def walk(node, where, problems, stats):
                 problems.append(f"{here}: key {ENV_NAME} redirects the extract off the image copy")
             if key == CSV_NAME:
                 problems.append(f"{here}: a {CSV_NAME} data key is a second source of counterparty truth")
+            if key == "patch" and isinstance(value, str):
+                embedded(value, f"{here}(inline)", problems, stats)
+            if key in ("patches", "patchesJson6902") and isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, dict) and isinstance(item.get("path"), str):
+                        patch_file(item["path"], f"{here}[{i}].path", problems, stats)
+            if key == "patchesStrategicMerge" and isinstance(value, list):
+                for i, item in enumerate(value):
+                    if not isinstance(item, str):
+                        continue
+                    if "\n" in item or ": " in item or item.strip().startswith(("{", "[")):
+                        embedded(item, f"{here}[{i}](inline)", problems, stats)
+                    else:
+                        patch_file(item.strip(), f"{here}[{i}]", problems, stats)
+            if key in ("replacements", "vars") and any(
+                    "mountPath" in t or "reference-data" in t for t in strings(value)):
+                problems.append(f"{here}: a {key} entry touches a mountPath or reference-data; "
+                                f"its effect cannot be checked without rendering")
             if key in GENERATOR_KEYS and isinstance(value, list):
                 for item in value:
                     if isinstance(item, str) and posixpath.basename(item.split("=")[-1].strip()) == CSV_NAME:
@@ -115,9 +183,11 @@ def live_deployment_problems(name, docs):
     return [f"no Deployment named {name} in the input; nothing about a live deployment was established"]
 
 
-def check_text(name, text, live_deployment=None):
-    """Return (problems, stats). Unparseable or object-free input is a problem, never a pass."""
-    stats = {"docs": 0, "mounts": 0}
+def check_text(name, text, live_deployment=None, base=None):
+    """Return (problems, stats). Unparseable or object-free input is a problem, never a pass.
+
+    base is the directory patch-file references resolve against (None for stdin)."""
+    stats = {"docs": 0, "mounts": 0, "base": base, "visited": set()}
     if not text.strip():
         return [f"{name}: empty input; nothing was checked"], stats
     try:
@@ -135,7 +205,7 @@ def check_text(name, text, live_deployment=None):
         walk(doc, f"{name}#{i}", problems, stats)
     if live_deployment:
         problems += live_deployment_problems(live_deployment, docs)
-    return problems, stats
+    return list(dict.fromkeys(problems)), stats
 
 
 def manifest_files(arg):
@@ -192,6 +262,18 @@ spec:
 """
 
 
+REASONS = ("shadows", "redirects", "second source")
+
+INLINE_PATCH = """\
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+patches:
+  - target: {{kind: Deployment, name: risk-extract}}
+    patch: |-
+      {patch}
+"""
+
+
 def self_test():
     must_fail = {
         "incident (block)": "volumeMounts:\n  - name: c\n    mountPath: /opt/app/classes/reference-data/counterparties.csv\n    subPath: counterparties.csv\n",
@@ -210,7 +292,19 @@ def self_test():
         "configmap data key": "kind: ConfigMap\ndata:\n  counterparties.csv: |\n    accountId,x\n",
         "configMapGenerator files": "configMapGenerator:\n  - name: c\n    files: [refdata/counterparties.csv]\n",
         "configMapGenerator literal": "configMapGenerator:\n  - name: c\n    literals: ['RISK_EXTRACT_REFERENCE_DATA=/etc/refdata']\n",
-        "non-string mountPath": "mountPath: [/opt/app/classes]\n",
+        "review: inline JSON6902 patch": INLINE_PATCH.format(patch=(
+            "- op: add\n        path: /spec/template/spec/containers/0/volumeMounts/-\n        value:\n"
+            "          name: counterparties\n          mountPath: /opt/app/classes/reference-data/counterparties.csv")),
+        "inline strategic-merge patch": INLINE_PATCH.format(patch=(
+            "apiVersion: apps/v1\n      kind: Deployment\n      metadata: {name: risk-extract}\n"
+            "      spec: {template: {spec: {containers: [{name: risk-extract, volumeMounts: "
+            "[{name: c, mountPath: /opt/app/classes/reference-data}]}]}}}")),
+        "inline JSON6902 replace on mountPath": INLINE_PATCH.format(patch=(
+            '[{"op": "replace", "path": "/spec/template/spec/containers/0/volumeMounts/0/mountPath", '
+            '"value": "/opt/app/classes"}]')),
+        "inline patchesStrategicMerge": "kind: Kustomization\npatchesStrategicMerge:\n  - |\n"
+            "    kind: Deployment\n    metadata: {name: risk-extract}\n    spec: {template: {spec: {volumes: [],"
+            " containers: [{name: x, volumeMounts: [{name: c, mountPath: /opt/app/classes/reference-data}]}]}}}\n",
     }
     must_refuse = {
         "empty": "",
@@ -221,12 +315,46 @@ def self_test():
         "scalar document": "just a string\n",
         "review: empty object": "{}",
         "empty list": "[]",
+        "non-string mountPath": "mountPath: [/opt/app/classes]\n",
+        "unparseable inline patch": INLINE_PATCH.format(patch="- op: add\n        value: [unclosed"),
+        "patch file from stdin": "kind: Kustomization\npatches:\n  - path: add-mount.yaml\n",
+        "replacements into a mountPath": "kind: Kustomization\nreplacements:\n  - source: {kind: ConfigMap, name: c}\n"
+            "    targets:\n      - select: {kind: Deployment}\n        fieldPaths: [spec.template.spec.containers.0.volumeMounts.0.mountPath]\n",
     }
-    for label, text in {**must_fail, **must_refuse}.items():
+    # A shadowing form must fail BECAUSE it shadows, not because the fixture failed to parse.
+    for label, text in must_fail.items():
         problems, _ = check_text(label, text)
-        assert problems, f"{label}: expected a failure, got a pass"
+        assert any(r in p for p in problems for r in REASONS), f"{label}: expected a shadowing failure, got {problems}"
+        assert not any("cannot be checked" in p for p in problems), f"{label}: fixture itself is uncheckable: {problems}"
+    for label, text in must_refuse.items():
+        problems, _ = check_text(label, text)
+        assert problems and not any(r in p for p in problems for r in REASONS), f"{label}: expected a refusal, got {problems}"
     problems, stats = check_text("benign deployment", DEPLOYMENT + "---\n" + DEPLOYMENT)
     assert not problems and stats["mounts"] == 6, (problems, stats)
+    benign_patch = INLINE_PATCH.format(patch=(
+        "apiVersion: apps/v1\n      kind: Deployment\n      metadata: {name: risk-extract}\n"
+        "      spec: {replicas: 1, template: {spec: {containers: [{name: risk-extract, volumeMounts: "
+        "[{name: scratch, mountPath: /data/scratch}]}]}}}")) + "  - target: {kind: Deployment, name: gone}\n    patch: |\n      $patch: delete\n"
+    problems, stats = check_text("benign inline patches", benign_patch)
+    assert not problems and stats["mounts"] == 1, ("benign inline patch must be parsed and pass", problems, stats)
+
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        base = pathlib.Path(tmp)
+        (base / "bad.yaml").write_text("- op: add\n  path: /spec/template/spec/containers/0/volumeMounts/-\n"
+                                       "  value: {name: c, mountPath: /opt/app/classes/reference-data/counterparties.csv}\n")
+        (base / "good.yaml").write_text("- op: replace\n  path: /spec/replicas\n  value: 2\n")
+        files = {
+            "patches[].path incident": ("patches:\n  - path: bad.yaml\n    target: {kind: Deployment}\n", "shadows"),
+            "patchesJson6902[].path incident": ("patchesJson6902:\n  - path: bad.yaml\n    target: {kind: Deployment}\n", "shadows"),
+            "patchesStrategicMerge file incident": ("patchesStrategicMerge:\n  - bad.yaml\n", "shadows"),
+            "missing patch file": ("patches:\n  - path: nowhere.yaml\n", "cannot be checked"),
+            "benign patch file": ("patches:\n  - path: good.yaml\n    target: {kind: Deployment}\n", None),
+        }
+        for label, (body, reason) in files.items():
+            problems, _ = check_text(label, "kind: Kustomization\n" + body, base=base)
+            ok = not problems if reason is None else any(reason in p for p in problems)
+            assert ok, f"{label}: expected {reason or 'a pass'}, got {problems}"
     live = {
         "review: empty object": ("{}", True),
         "other deployment": (DEPLOYMENT.replace("risk-extract}", "gateway}"), True),
@@ -237,8 +365,9 @@ def self_test():
     for label, (text, fails) in live.items():
         problems, _ = check_text(label, text, live_deployment="risk-extract")
         assert bool(problems) == fails, f"live {label}: expected {'fail' if fails else 'pass'}, got {problems}"
-    print(f"[ok] self-test: {len(must_fail)} shadowing forms fail, {len(must_refuse)} unusable inputs refuse, "
-          f"benign controls pass, live mode {sum(f for _, f in live.values())} refuse / "
+    print(f"[ok] self-test: {len(must_fail)} shadowing forms fail (incl. inline patches), "
+          f"{len(must_refuse)} unusable inputs refuse, benign deployment + inline patch pass, "
+          f"patch files {sum(bool(r) for _, r in files.values())} fail / {sum(r is None for _, r in files.values())} pass, live mode {sum(f for _, f in live.values())} refuse / "
           f"{sum(not f for _, f in live.values())} pass")
 
 
@@ -269,13 +398,13 @@ def main():
     inputs = []
     for arg in args.manifests:
         if arg == "-":
-            inputs.append(("<stdin>", sys.stdin.read()))
+            inputs.append(("<stdin>", sys.stdin.read(), None))
         else:
-            inputs += [(str(f), f.read_text(errors="replace")) for f in manifest_files(arg)]
+            inputs += [(str(f), f.read_text(errors="replace"), f.parent) for f in manifest_files(arg)]
     if args.manifests and not inputs:
         problems.append(f"no manifests found under {' '.join(args.manifests)}; nothing was checked")
-    for name, text in inputs:
-        found, stats = check_text(name, text, args.live_deployment)
+    for name, text, base in inputs:
+        found, stats = check_text(name, text, args.live_deployment, base)
         problems += found
         docs += stats["docs"]
         mounts += stats["mounts"]

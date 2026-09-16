@@ -83,8 +83,11 @@ around it.
 `scripts/ci/check-counterparty-reference-not-shadowed.py` parses manifests with PyYAML (YAML or
 JSON) and walks the objects. It fails on a mountPath at, inside or above
 `/opt/app/classes/reference-data`, on `RISK_EXTRACT_REFERENCE_DATA` being set, and on a
-`counterparties.csv` ConfigMap key or kustomize generator source. Empty, malformed or object-free
-input fails instead of passing. With `--rendered`/`--state` it also requires the rendered
+`counterparties.csv` ConfigMap key or kustomize generator source. Kustomize patches are parsed
+as well, inline (`patch:`, `patchesStrategicMerge`) or by file (`patches[].path`,
+`patchesJson6902[].path`). A patch that cannot be parsed or found fails, and so do `replacements`
+or `vars` that touch a mountPath, since their effect needs a render. Empty, malformed or
+object-free input fails instead of passing. With `--rendered`/`--state` it also requires the rendered
 CSV to match the lineage's spec copy byte for byte. The `counterparty-reference` job in
 `engine-tests.yml` runs the self-test and scans `specs/*/generation/kubernetes`.
 
