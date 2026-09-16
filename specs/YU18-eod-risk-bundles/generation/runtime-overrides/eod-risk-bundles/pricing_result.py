@@ -124,6 +124,11 @@ def reference(row, terms, valuation):
 
 def validate(source, data):
     manifest, rows, terms = inputs(source)
+    return validate_inputs(manifest, rows, terms, data)
+
+
+def validate_inputs(manifest, rows, terms, data):
+    """Shared numerical/shape checks; caller MUST admit its own closed input profile first."""
     result = decode(data)  # rejects duplicate keys and all nonfinite numbers
     items = []
     counts = {c:{s:0 for s in STATUSES} for c in CALCULATIONS}

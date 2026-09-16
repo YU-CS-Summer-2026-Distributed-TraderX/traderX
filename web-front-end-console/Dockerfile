@@ -24,3 +24,5 @@ COPY server.mjs eod-jobs.mjs risk-demo.mjs ./
 ENV PORT=8080 STATIC_ROOT=/app/dist/web-front-end-console/browser
 EXPOSE 8080
 CMD ["node", "server.mjs"]
+
+COPY treasury-demo.mjs ./treasury-demo.mjs

@@ -1,3 +1,4 @@
+import { createTreasuryDemo } from './treasury-demo.mjs';
 // In-cluster server for the TraderX console.
 //
 // The dev setup is `ng serve` + proxy.conf.mjs, whose four bypasses shell out to `gcloud` and
@@ -44,6 +45,7 @@ const SOH = '\x01';
 // That distinction matters for more than tidiness: a client-side route guard is not a control at
 // all — the endpoints are reachable with curl whether or not an Angular route rendered. Gating here
 // is the part that actually holds, and the UI work is presentation on top of it.
+const treasuryDemo = createTreasuryDemo();
 const ADMIN_USER = process.env.ADMIN_USER ?? 'admin';
 // scrypt$<salt-hex>$<64-byte-hash-hex>. Seeded default; override with ADMIN_PASSWORD_HASH from the
 // auth-secrets Secret to change the credential without rebuilding the image. The PLAINTEXT is never
@@ -1157,6 +1159,19 @@ const server = http.createServer(async (req, res) => {
     if (req.method !== 'GET') return json(res, 405, { error: 'GET only' });
     const result = await readEodJobs();
     return json(res, result.status, result.body);
+  }
+  if (p === '/risk/treasury-demo' || p.startsWith('/risk/treasury-demo/')) {
+    res.setHeader('Cache-Control', 'no-store');
+    try {
+      let body = {};
+      if (req.method === 'POST') {
+        const chunks=[]; let size=0;
+        for await (const chunk of req) { size += chunk.length; if(size>16384) return json(res,413,{message:'Request too large.'}); chunks.push(chunk); }
+        body=JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      }
+      const r=await treasuryDemo.handle({method:req.method,pathname:p,headers:req.headers,authenticated:!!readToken(req),body});
+      return json(res,r.status,r.body);
+    } catch { return json(res,503,{code:'unavailable',message:'The demo is temporarily unavailable. No automatic trade retry will occur.'}); }
   }
   if (p === '/risk/demo') {
     res.setHeader('Cache-Control', 'no-store');
