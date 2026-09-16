@@ -54,6 +54,32 @@
               {
                 "name": "RISK_DEMO_ARTIFACT",
                 "value": "/demo/risk-demo.json"
+              },
+              {
+                "name": "TREASURY_DEMO_STATE",
+                "value": "/treasury-demo"
+              },
+              {
+                "name": "TREASURY_DEMO_ORIGIN",
+                "value": "https://yaakovseif.dev"
+              },
+              {
+                "name": "TREASURY_WORKER_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "name": "treasury-demo-worker",
+                    "key": "worker-secret"
+                  }
+                }
+              },
+              {
+                "name": "AUTH_SESSION_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "name": "treasury-demo-worker",
+                    "key": "session-secret"
+                  }
+                }
               }
             ],
             "volumeMounts": [
@@ -66,6 +92,10 @@
                 "name": "risk-demo-report",
                 "mountPath": "/demo",
                 "readOnly": true
+              },
+              {
+                "name": "treasury-demo-state",
+                "mountPath": "/treasury-demo"
               }
             ]
           }
@@ -90,9 +120,20 @@
               "name": "risk-demo-report-20260916",
               "defaultMode": 292
             }
+          },
+          {
+            "name": "treasury-demo-state",
+            "persistentVolumeClaim": {
+              "claimName": "treasury-demo-state"
+            }
           }
         ]
       }
+    },
+    "replicas": 1,
+    "strategy": {
+      "type": "Recreate",
+      "rollingUpdate": null
     }
   }
 }

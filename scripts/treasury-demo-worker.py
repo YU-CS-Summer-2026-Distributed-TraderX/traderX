@@ -42,7 +42,10 @@ def execute(run):
     work=args.state/run['id'];work.mkdir(exist_ok=True,mode=0o700);jp=work/'journal.json'
     j=json.loads(jp.read_text()) if jp.exists() else {'stage':'QUEUED','actions':{},'proof':{'profile':profile.PROFILE,'security':profile.SECURITY,'account':profile.ACCOUNT,'seller':profile.SELLER,'valuationDate':profile.DAY,'epoch':'2026091601'}}
     def save():put(jp,j)
-    def stage(value):j['stage']=value;save();pulse({'id':run['id'],'status':'RUNNING','stage':value})
+    def stage(value):
+        order=['QUEUED','TRADE_SUBMITTED','TRADE_BOOKED','POSITION_EXPORTED','PRICING','INDEPENDENTLY_CHECKED']
+        if order.index(value)<order.index(j['stage']):return
+        j['stage']=value;save();pulse({'id':run['id'],'status':'RUNNING','stage':value})
     def action(name,fn):
         old=j['actions'].get(name)
         if old and old.get('done'):return old['result']
@@ -54,6 +57,8 @@ def execute(run):
     try:
         check(datetime.now(timezone.utc).date().isoformat()==profile.DAY,'demo valuation date is no longer current')
         reference=request('/reference-data/instruments/'+profile.SECURITY);put(work/'reference.json',reference)
+        debt=reference['debtEconomics']
+        check(reference['instrumentKey']==profile.SECURITY and reference['currency']=='USD' and debt['issueDate']=='2026-08-13' and debt['maturityDate']=='2026-11-12' and debt['zeroCoupon']['couponRatePercent']==0 and debt['principalRepayment']['parAmount']==100,'unsupported reference economics')
         if 'baselineBuyerFace' not in j['proof']:
             bp=positions(profile.ACCOUNT);sp=positions(profile.SELLER)
             check(face(bp)==face(sp)==0,'demo account already holds the bill')
@@ -87,7 +92,7 @@ def execute(run):
         mark=next(r for r in report['prices'] if r['security']==profile.SECURITY);j['proof']['eodMark']=mark;save()
         receipt=None
         for _ in range(40):
-            raw=kube('exec','deploy/risk-extract','--','sh','-c','cat /data/risk-extracts/ready/*.ready.json')
+            raw=kube('exec','deploy/risk-extract','--','sh','-c','for f in /data/risk-extracts/ready/*.ready.json; do cat "$f"; echo; done')
             found=[json.loads(line) for line in raw.decode().splitlines() if line.strip()]
             found=[v for v in found if v['sessionDate']==profile.DAY and v['priceSnapshotVersion']==report['version']]
             if len(found)==1:receipt=found[0];break
