@@ -485,3 +485,143 @@ test('main.js: an unpriceable instrument is skipped and the rest of the batch st
     main.state.treasuries.delete('UST-GOODTERM');
   }
 });
+
+// P1 R1: only a numerical solve failure may degrade to an absent yield. A malformed instrument is
+// a data defect and has to reach the caller's per-instrument report instead of being filed as an
+// ordinary missing yield.
+test('malformed terms stay loud while an unsolvable well-formed price degrades (P1 R1)', () => {
+  const snapshot = require('../data/snapshot-prices.json');
+  const seed = snapshot['UST-BILL-20261112'];
+  const at = (day) => Date.parse(`${day}T14:00:00.000Z`);
+  const wellFormed = {
+    maturityDate: seed.maturityDate,
+    couponRatePercent: seed.couponRatePercent,
+    originalTermYears: seed.originalTermYears,
+    issueDate: seed.issueDate
+  };
+  const malformed = { ...wellFormed, issueDate: '2030-01-01' };
+
+  // Well formed, but the price is outside the bracket this solver searches: absent yield.
+  assert.equal(treasury.ytmPercent(wellFormed, at('2026-11-11'), seed.runtimeSeedCleanPrice, seed.dayCount), null);
+
+  // Malformed schedule: propagates. A null here would hide a data defect behind a normal-looking
+  // absent yield, and the instrument would never be reported.
+  assert.throws(
+    () => treasury.ytmPercent(malformed, at('2026-11-10'), seed.runtimeSeedCleanPrice, seed.dayCount),
+    /does not follow issue/
+  );
+
+  // The degradation is keyed on a typed error, not on matching a message.
+  assert.throws(
+    () => treasury.yieldFromCleanPrice(wellFormed, new Date(at('2026-11-11')), seed.runtimeSeedCleanPrice, seed.dayCount),
+    (err) => err instanceof treasury.UnsolvableYieldError && err.code === 'YIELD_UNSOLVABLE'
+  );
+});
+
+// P1 R2: failures after the tick is committed. The earlier version of this fix claimed state was
+// untouched, which is only true when pricing itself fails.
+test('failures after pricing keep the feed alive and report state truthfully (P1 R2)', () => {
+  const main = require('../src/main');
+  const errors = [];
+  const priorError = console.error;
+  const priorNats = main.state.nats;
+  console.error = (msg) => { errors.push(String(msg)); };
+  try {
+    // TRANSPORT: publishing throws after updateTick has already committed the new price.
+    const equity = main.ensureTicker('ZZLATE');
+    assert.ok(equity && equity.price > 0);
+    main.state.nats = { publish: () => { throw new Error('transport down'); } };
+    const before = main.state.prices.get('ZZLATE').price;
+    assert.equal(main.tickAndPublish('ZZLATE', 0), false);
+    const after = main.state.prices.get('ZZLATE').price;
+    assert.notEqual(after, before, 'the tick is committed before publication can fail');
+    assert.ok(
+      errors.some((m) => m.includes('ZZLATE') && m.includes('publication failed')),
+      `expected a transport report, got ${JSON.stringify(errors)}`
+    );
+
+    // PREPARATION: malformed terms reach the yield solve while building the payload. Nothing is
+    // published, and the report must not call this a transport problem.
+    errors.length = 0;
+    const published = [];
+    main.state.nats = { publish: (topic) => { published.push(topic); } };
+    const badTerms = {
+      ticker: 'UST-BADTERMS', price: 0.98969, openPrice: 0.98969, closePrice: 0.98969,
+      cleanPercent: 98.969, seedCleanPercent: 98.969, couponRatePercent: 0,
+      originalTermYears: 0.08, issueDate: '2030-01-01', maturityDate: '2026-11-12',
+      dayCount: 'ACT/ACT ICMA', simulated: true, source: 'test'
+    };
+    main.state.prices.set(badTerms.ticker, badTerms);
+    main.state.treasuries.set(badTerms.ticker, badTerms);
+    assert.equal(main.tickAndPublish(badTerms.ticker, 0), false);
+    assert.equal(published.length, 0, 'a preparation failure publishes nothing');
+    assert.ok(
+      errors.some((m) => m.includes('UST-BADTERMS') && m.includes('could not be built')),
+      `expected a preparation report, got ${JSON.stringify(errors)}`
+    );
+  } finally {
+    console.error = priorError;
+    main.state.nats = priorNats;
+    for (const t of ['ZZLATE', 'UST-BADTERMS']) {
+      main.state.prices.delete(t);
+      main.state.treasuries.delete(t);
+    }
+  }
+});
+
+// P1 R3: the loop's own continuation. Direct calls to tickAndPublish cannot show that the NEXT
+// round is still scheduled after a failure, which is the half that made the 2026-09-09 outage
+// total. Driven with an injected scheduler: no real timers, no network, nothing left pending.
+test('the publish loop schedules its next round even when an instrument fails (P1 R3)', () => {
+  const main = require('../src/main');
+  const scheduled = [];
+  const published = [];
+  const priorNats = main.state.nats;
+  const priorError = console.error;
+  const priorPrices = new Map(main.state.prices);
+  const priorTreasuries = new Map(main.state.treasuries);
+  console.error = () => {};
+  try {
+    main.state.prices.clear();
+    main.state.treasuries.clear();
+    main.state.nats = { publish: (topic) => { published.push(topic); } };
+    const bad = {
+      ticker: 'UST-LOOPBAD', price: 0.99, openPrice: 0.99, closePrice: 0.99,
+      cleanPercent: 99, seedCleanPercent: 99, couponRatePercent: 4,
+      originalTermYears: 4, issueDate: '2026-05-15', maturityDate: '2030-05-15',
+      simulated: true, source: 'test'
+    };
+    const good = {
+      ticker: 'UST-LOOPGOOD', price: 0.99293, openPrice: 0.99293, closePrice: 0.99293,
+      cleanPercent: 99.293, seedCleanPercent: 99.293, couponRatePercent: 5,
+      originalTermYears: 30, issueDate: '2026-05-15', maturityDate: '2056-05-15',
+      simulated: true, source: 'test'
+    };
+    for (const q of [bad, good]) {
+      main.state.prices.set(q.ticker, q);
+      main.state.treasuries.set(q.ticker, q);
+    }
+
+    const schedule = (fn, ms) => { scheduled.push({ fn, ms }); };
+    main.schedulePublishLoop({ schedule, firstDelayMs: 0, publishCfg: { ratio: 1, minMs: 5, maxMs: 5 } });
+    assert.equal(scheduled.length, 1, 'the first round is scheduled');
+
+    scheduled.shift().fn();                       // round 1: one instrument throws
+    assert.ok(published.some((t) => t.includes('UST-LOOPGOOD')), 'the healthy instrument published in round 1');
+    assert.equal(scheduled.length, 1, 'the next round is scheduled despite the failure');
+
+    published.length = 0;
+    scheduled.shift().fn();                       // round 2: the feed is still alive
+    assert.ok(published.some((t) => t.includes('UST-LOOPGOOD')), 'the healthy instrument published in round 2');
+    assert.equal(scheduled.length, 1, 'the loop keeps rescheduling');
+    assert.ok(!published.some((t) => t.includes('UST-LOOPBAD')), 'the failing instrument never published');
+  } finally {
+    console.error = priorError;
+    main.state.nats = priorNats;
+    main.state.prices.clear();
+    main.state.treasuries.clear();
+    for (const [k, v] of priorPrices) { main.state.prices.set(k, v); }
+    for (const [k, v] of priorTreasuries) { main.state.treasuries.set(k, v); }
+    scheduled.length = 0;                          // injected scheduler: nothing real pending
+  }
+});

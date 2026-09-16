@@ -14,9 +14,23 @@ silenced all 44 instruments:
    and a non-positive price still throws rather than degrading to `null`.
 2. **The publish loop had no per-instrument guard.** The batch body runs inside a `setTimeout`
    callback, so an escaping throw is an uncaught exception that ends the process, and the next tick
-   was scheduled only *after* the body, so nothing rescheduled the feed either. An unpriceable
-   instrument is now skipped for that round — no fabricated price, no stale value republished, its
-   state untouched — logged once per instrument, and the reschedule moved into a `finally`.
+   was scheduled only *after* the body, so nothing rescheduled the feed either. A failing
+   instrument is now skipped for that round, reported once per instrument, with the reschedule
+   moved into a `finally`.
+
+   Only a **pricing** failure leaves state untouched. The first version of this fix claimed that of
+   every failure, which was wrong: the tick is committed to `state.prices` before the payload is
+   built or published. The three cases are now distinguished, and each reports what is actually
+   true:
+
+   | Failure | State | Published |
+   |---|---|---|
+   | Pricing (the walk or curve threw) | unchanged | nothing |
+   | Preparation (payload or encoding threw) | new tick already committed | nothing |
+   | Transport (a publish threw) | new tick already committed | possibly partial: the JSON envelope and the binary tick are separate messages |
+
+   No rollback is attempted in any case. State is a walk, not a ledger, so re-deriving a previous
+   tick would invent a price; the next round republishes from committed state.
 
 Measured on the seeded `UST-BILL-20261112` (98.969), which shows the yield diverging into the
 failure rather than a cliff:

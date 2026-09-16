@@ -333,6 +333,20 @@ function cleanPriceFromYield(bond, settle, yieldPercent, dayCount = DAY_COUNT.AC
   return dirty === null ? null : dirty - accrued(bond, settle, dayCount).percentOfPar;
 }
 
+/**
+ * The solver could not return a yield for well-formed terms: the price lies outside the bracket it
+ * can search, or the iteration did not converge within its budget. TYPED deliberately — the caller
+ * that degrades to an absent yield must be able to tell this from a malformed instrument, which is
+ * a data defect and has to stay loud. Never throw this for bad input.
+ */
+class UnsolvableYieldError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'UnsolvableYieldError';
+    this.code = 'YIELD_UNSOLVABLE';
+  }
+}
+
 const SOLVE_TOLERANCE = 1e-11;
 const SOLVE_MAX_ITERATIONS = 100;
 
@@ -383,7 +397,8 @@ function yieldFromCleanPrice(bond, settle, cleanPercent, dayCount = DAY_COUNT.AC
     fhi = f(hi);
   }
   if (!(flo > 0) || !(fhi < 0)) {
-    throw new Error(`clean price ${cleanPercent} is not attainable for ${bond.maturityDate}`);
+    throw new UnsolvableYieldError(
+      `clean price ${cleanPercent} is not attainable for ${bond.maturityDate}`);
   }
 
   // Seed at the current yield — close enough that Newton usually lands in two or three steps.
@@ -406,7 +421,8 @@ function yieldFromCleanPrice(bond, settle, cleanPercent, dayCount = DAY_COUNT.AC
     // THE SAFEGUARD: take Newton's step only if it stayed inside the bracket. Otherwise bisect.
     y = Number.isFinite(step) && step > lo && step < hi ? step : (lo + hi) / 2;
   }
-  throw new Error(`yield solve did not converge for ${bond.maturityDate} at ${cleanPercent}`);
+  throw new UnsolvableYieldError(
+    `yield solve did not converge for ${bond.maturityDate} at ${cleanPercent}`);
 }
 
 /**
@@ -424,21 +440,31 @@ function ytmPercent(bond, quoteTs, cleanPercent, dayCount = DAY_COUNT.ACT_ACT_IC
   if (!(Number(cleanPercent) > 0)) {
     throw new Error(`a clean price must be positive, got ${cleanPercent}`);
   }
-  // A price the solver cannot invert is a MISSING yield, not a dead feed. `yieldFromCleanPrice`
-  // stays strict for callers that want the error; the publisher's entry point degrades to null,
-  // which is the absent-yield contract FR-CDM20 already defines at maturity and every consumer
-  // already types as nullable.
+  // A yield THIS SOLVER cannot produce for well-formed terms is a MISSING yield, not a dead feed:
+  // the price is outside the bracket it searches, or the iteration did not converge. That is a
+  // limitation of this numerical method, not proof that no yield exists mathematically, and the
+  // honest report is an absent one — the same contract FR-CDM20 already defines at maturity and
+  // every consumer already types as nullable.
   //
-  // Why this is reachable in normal operation, not just on bad data: a discount bill's yield
-  // diverges as time to maturity goes to zero. Measured on the seeded UST-BILL-20261112 (98.969),
-  // the solve returns 1146.42% one day out and then leaves the bracket entirely. Before this,
-  // that throw escaped the publish loop's timer callback and stopped ALL instruments — observed
-  // live 2026-09-09, when UST-BILL-20260910 took the whole feed down the day before it matured.
+  // Reachable in ordinary operation, not only on bad data: a discount bill's yield rises steeply
+  // as time to maturity goes to zero. Measured on the seeded UST-BILL-20261112 (98.969), the solve
+  // returns 1146.42% TWO days from maturity and is outside the bracket ONE day from maturity.
+  // Before this, that throw escaped the publish loop's timer callback and stopped ALL instruments
+  // — observed live 2026-09-09, when UST-BILL-20260910 took the whole feed down the day before it
+  // matured.
+  //
+  // ONLY that typed failure degrades. A malformed instrument — a schedule that does not follow its
+  // issue date, a bad day count — throws from the schedule code, not the solver, and must keep
+  // propagating: swallowing it here would file a data defect as an ordinary missing yield and hide
+  // it from the caller's per-instrument report.
   let solved;
   try {
     solved = yieldFromCleanPrice(bond, settle, cleanPercent, dayCount);
   } catch (err) {
-    return null;
+    if (err instanceof UnsolvableYieldError || err.code === 'YIELD_UNSOLVABLE') {
+      return null;
+    }
+    throw err;
   }
   return solved === null ? null : round6(solved);
 }
@@ -448,6 +474,7 @@ function round6(value) {
 }
 
 module.exports = {
+  UnsolvableYieldError,
   TREASURY_PROFILE_BY_TERM,
   DAY_COUNT,
   PERIODS_PER_YEAR,

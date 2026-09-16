@@ -560,13 +560,15 @@ function encodeBinaryTick(quote) {
   return buf;
 }
 
-function publishTick(quote) {
-  if (!state.nats) {
-    return;
-  }
+// Split from sending deliberately: building the payload can fail for reasons that belong to the
+// INSTRUMENT (a malformed schedule reaching the yield solve), while sending fails for reasons that
+// belong to the TRANSPORT. They need different reports, and by this point the tick is already
+// committed to state either way — see tickAndPublish.
+// Returns null when this quote must not be published at all.
+function prepareTick(quote) {
   if (quote.matured) {
     // A matured Treasury stops quoting (FR-CDM21): no JSON envelope, no binary tick.
-    return;
+    return null;
   }
   const topic = `pricing.${quote.ticker}`;
   const envelope = {
@@ -576,8 +578,29 @@ function publishTick(quote) {
     from: 'price-publisher',
     type: 'PriceTick'
   };
-  state.nats.publish(topic, Buffer.from(JSON.stringify(envelope)));
-  state.nats.publish(`pricing-tick-bin.${quote.ticker}`, encodeBinaryTick(quote));
+  return {
+    topic,
+    json: Buffer.from(JSON.stringify(envelope)),
+    binTopic: `pricing-tick-bin.${quote.ticker}`,
+    bin: encodeBinaryTick(quote)
+  };
+}
+
+// The two publishes are separate messages on separate subjects. If the second throws the first is
+// already gone; nothing here can recall it, and this function does not pretend otherwise.
+function sendTick(prepared) {
+  if (!state.nats || prepared === null) {
+    return;
+  }
+  state.nats.publish(prepared.topic, prepared.json);
+  state.nats.publish(prepared.binTopic, prepared.bin);
+}
+
+function publishTick(quote) {
+  if (!state.nats) {
+    return;
+  }
+  sendTick(prepareTick(quote));
 }
 
 function pickRandomSubset(items, count) {
@@ -594,25 +617,70 @@ function pickRandomSubset(items, count) {
 // The failing instrument is SKIPPED for this round, not substituted: no fabricated price, no
 // stale value republished, and its state is left exactly as it was. Logged once per instrument so
 // a permanently unpriceable one is visible without filling the log at tick rate.
-const unpriceableReported = new Set();
+const instrumentFailureReported = new Set();
 
-function tickAndPublish(ticker, sharedRoll) {
-  try {
-    const quote = updateTick(ticker, sharedRoll);
-    publishTick(quote);
-    unpriceableReported.delete(ticker);
-    return true;
-  } catch (err) {
-    if (!unpriceableReported.has(ticker)) {
-      unpriceableReported.add(ticker);
-      console.error(`[publish] ${ticker} cannot be priced, skipping it and continuing: ${err.message}`);
-    }
-    return false;
+function reportInstrumentFailure(ticker, what, err) {
+  // Once per instrument per failing streak, so a permanently broken one is visible without filling
+  // the log at tick rate. Cleared by the next success.
+  if (instrumentFailureReported.has(ticker)) {
+    return;
   }
+  instrumentFailureReported.add(ticker);
+  console.error(`[publish] ${ticker} ${what}: ${err.message}`);
 }
 
-function schedulePublishLoop() {
-  const publishCfg = normalizePublishConfig();
+/**
+ * One instrument's failure must not silence the others. THREE distinct failures, with different
+ * state consequences — stated precisely because an earlier version of this function claimed the
+ * instrument's state was untouched, which is only true of the first:
+ *
+ *   1. PRICING (updateTick threw) — nothing was committed. No price is fabricated and no stale
+ *      value is republished; the instrument keeps the quote it already had.
+ *   2. PREPARATION (payload or binary encoding threw) — updateTick ALREADY committed this tick to
+ *      state.prices, so the new price is in memory and will be the basis of the next walk. Nothing
+ *      was published. The usual cause is the instrument itself, e.g. malformed terms reaching the
+ *      yield solve.
+ *   3. TRANSPORT (a publish threw) — the tick is likewise already committed, and because the JSON
+ *      envelope and the binary tick are two separate messages, the first may have gone out before
+ *      the second failed. Partial publication is possible and is not rolled back.
+ *
+ * No rollback is attempted in any case: state is a walk, not a ledger, and re-deriving a previous
+ * tick would invent a price. The next round republishes from the committed state.
+ */
+function tickAndPublish(ticker, sharedRoll) {
+  let quote;
+  try {
+    quote = updateTick(ticker, sharedRoll);
+  } catch (err) {
+    reportInstrumentFailure(ticker, 'cannot be priced; state unchanged, nothing published', err);
+    return false;
+  }
+  if (!state.nats) {
+    instrumentFailureReported.delete(ticker);
+    return true;
+  }
+  let prepared;
+  try {
+    prepared = prepareTick(quote);
+  } catch (err) {
+    reportInstrumentFailure(
+      ticker, 'priced but its tick could not be built; the new price is in state, nothing published', err);
+    return false;
+  }
+  try {
+    sendTick(prepared);
+  } catch (err) {
+    reportInstrumentFailure(
+      ticker, 'priced but publication failed; the new price is in state and publication may be partial', err);
+    return false;
+  }
+  instrumentFailureReported.delete(ticker);
+  return true;
+}
+
+// `schedule` and `firstDelayMs` are injectable so the loop's own continuation can be tested without
+// real timers: a test drives round N and asserts round N+1 was scheduled. Production passes nothing.
+function schedulePublishLoop({ schedule = setTimeout, firstDelayMs = 600, publishCfg = normalizePublishConfig() } = {}) {
   const loop = () => {
     try {
       const tickers = Array.from(state.prices.keys());
@@ -632,10 +700,10 @@ function schedulePublishLoop() {
       // In `finally` deliberately: the reschedule is what keeps the feed alive, so it must not be
       // reachable only on the success path.
       const delayMs = publishCfg.minMs + Math.floor(Math.random() * (publishCfg.maxMs - publishCfg.minMs + 1));
-      setTimeout(loop, delayMs);
+      schedule(loop, delayMs);
     }
   };
-  setTimeout(loop, 600);
+  schedule(loop, firstDelayMs);
 }
 
 function ensureTicker(ticker) {
@@ -858,4 +926,6 @@ if (require.main === module) {
 
 // Exported for tests (state inspection + the fallback/404 rule); the service entrypoint above
 // only runs when launched directly.
-module.exports = { ensureTicker, updateTick, toPayload, encodeBinaryTick, tickAndPublish, state };
+module.exports = {
+  ensureTicker, updateTick, toPayload, encodeBinaryTick, tickAndPublish, schedulePublishLoop, state
+};
