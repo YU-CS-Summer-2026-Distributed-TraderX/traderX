@@ -61,3 +61,18 @@ A successful result is retained with its actual business date. This worker refus
 outside 2026-09-16. Hosting this result on GKE does not turn the local worker into a deployed pricing
 service. Terms v2, producer versioned result schemas and durable producer HTTP remain outside this
 implementation.
+
+## Deployment verification (2026-09-16)
+
+The UI/backend is deployed with console digest
+`sha256:d7e7faa99bc2a023ab0263136d1facb622c9aec90124c8e761c8f71d573fbda2`.
+Source and regenerated backend suites passed 137 tests each; combined console UI passed 90,
+and Node route suites passed 13. Required repository gates passed. A real pinned-library run
+against explicit dated test inputs agreed with the independent check; that is test evidence,
+not evidence of an actual venue trade.
+
+The public endpoint rejects unauthenticated start (401), GET start (405), and an unauthenticated
+worker update (401). The configured public status correctly reports worker unavailable and no run.
+Automatic approval review blocked launching the local worker pending direct user approval in the
+GKE task. No new Treasury orders, fills, EOD version or live priced result have been created yet.
+The full live trade-to-analysis acceptance remains pending that approval; do not present it as done.

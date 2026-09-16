@@ -5,7 +5,7 @@
         "initContainers": [
           {
             "name": "risk-demo-state",
-            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:5c4dd9eed8ad4e4a17ec998ef37dfe2dac610c179229ae087e2aa434398b9de2",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:d7e7faa99bc2a023ab0263136d1facb622c9aec90124c8e761c8f71d573fbda2",
             "command": [
               "/bin/sh",
               "-ec",
@@ -37,7 +37,7 @@
         "containers": [
           {
             "name": "console",
-            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:5c4dd9eed8ad4e4a17ec998ef37dfe2dac610c179229ae087e2aa434398b9de2",
+            "image": "us-east1-docker.pkg.dev/traderx-505400/traderx/web-front-end-console@sha256:d7e7faa99bc2a023ab0263136d1facb622c9aec90124c8e761c8f71d573fbda2",
             "env": [
               {
                 "name": "EOD_COORDINATOR_STATE",
