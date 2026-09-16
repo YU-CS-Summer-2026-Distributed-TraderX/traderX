@@ -32,8 +32,8 @@ describe('Risk tab (read-only)', () => {
 
   it('shows loading while both reads are in flight', async () => {
     const f = TestBed.createComponent(RiskPage); f.detectChanges();
-    expect(f.nativeElement.textContent).toContain('Reading coordinator status');
-    expect(f.nativeElement.textContent).toContain('Reading validated demo artifact');
+    expect(f.nativeElement.textContent).toContain('Checking calculation status');
+    expect(f.nativeElement.textContent).toContain('Loading pricing results');
     expect(f.nativeElement.textContent).not.toContain('pass');
   });
 
@@ -41,9 +41,9 @@ describe('Risk tab (read-only)', () => {
     replies['/eod/jobs'] = { status: 503, body: { availability: 'UNAVAILABLE', code: 'NOT_CONFIGURED' } };
     replies['/risk/demo'] = { status: 503, body: { availability: 'UNAVAILABLE', code: 'NOT_CONFIGURED' } };
     const { text, el } = await render();
-    expect(text()).toContain('no EOD coordinator is configured');
-    expect(text()).toContain('no validated demo artifact is configured');
-    expect(text()).not.toContain('no discovered EOD jobs');
+    expect(text()).toContain('results have not been configured');
+    expect(text()).toContain('no validated examples are configured');
+    expect(text()).not.toContain('No calculations are available yet');
     expect(el.querySelector('[data-state=coverage-unavailable]')).not.toBeNull();
     expect(el.querySelector('[data-coverage]')).toBeNull();
     expect(text()).not.toMatch(/\b0\.00\b|\$0|exact|pass\b/);
@@ -53,8 +53,8 @@ describe('Risk tab (read-only)', () => {
     replies['/eod/jobs'] = { status: 200, body: '<html>' };
     replies['/risk/demo'] = { status: 200, body: { availability: 'AVAILABLE', artifact: { schema: 'traderx.risk-demo.v1', usableForRisk: true, jobs: [] } } };
     const { text } = await render();
-    expect(text()).toContain('Coordinator status unavailable: the status read failed');
-    expect(text()).toContain('Synthetic pricing comparison unavailable: the read failed');
+    expect(text()).toContain('Calculation status unavailable');
+    expect(text()).toContain('Pricing results unavailable');
     replies['/risk/demo'] = { status: 503, body: { code: 'ARTIFACT_INVALID' } };
     const again = await render();
     expect(again.text()).toContain('failed validation');
@@ -65,14 +65,14 @@ describe('Risk tab (read-only)', () => {
     replies['/risk/demo'] = demo();
     const { f, text } = await render();
     expect(text()).toContain('98,507.15');
-    expect(text()).toContain('job-SYNTHETIC_PRICING_VALIDATED');
+    expect(text()).toContain('Independently checked');
     replies['/eod/jobs'] = { status: 0, body: null };
     replies['/risk/demo'] = { status: 0, body: null };
     await f.componentInstance.loadJobs(); await f.componentInstance.loadDemo();
     expect(text()).not.toContain('98,507.15');
     expect(text()).not.toContain('job-SYNTHETIC_PRICING_VALIDATED');
-    expect(text()).toContain('Coordinator status unavailable');
-    expect(text()).toContain('Last successful read 2026-09-16T18:00:00Z');
+    expect(text()).toContain('Calculation status unavailable');
+    expect(text()).not.toContain('2026-09-16T18:00:00Z');
   });
 
   it('distinguishes queued, awaiting, failed, mock, W0 and synthetic pricing and never claims a live worker', async () => {
@@ -81,9 +81,9 @@ describe('Risk tab (read-only)', () => {
     replies['/risk/demo'] = demo();
     const { text, el } = await render();
     const labels = [...el.querySelectorAll('[data-status]')].map((e) => e.textContent!.trim());
-    expect(labels).toEqual(['Queued', 'Awaiting result', 'Failed', 'Mock transport only', 'W0 outcomes validated — no pricing', 'Synthetic pricing validated']);
-    expect(text()).toContain('Shared synthetic cut');
-    expect(text()).toContain('not probed');
+    expect(labels).toEqual(['Queued', 'Awaiting result', 'Failed', 'Mock transport only', 'Outcomes checked — no pricing', 'Synthetic pricing validated']);
+    expect(text()).toContain('Treasury bill');
+    expect(text()).toContain('Live pricing connectivity has not been checked');
     expect(text()).not.toMatch(/\b(worker|Alex|engine)\s+(is\s+)?(connected|live|online)\b/i);
   });
 
@@ -91,13 +91,13 @@ describe('Risk tab (read-only)', () => {
     replies['/eod/jobs'] = jobs(); replies['/risk/demo'] = demo();
     const { text, el } = await render();
     expect(el.querySelectorAll('article[data-instrument]').length).toBe(2);
-    for (const label of ['synthetic fixture validation', 'date 2025-06-02', 'assumed flat-3pct-v1', 'not usable for production risk',
-      'Producer executed locally', 'Price change, +1bp parallel', 'Recomputed ICMA', 'within bound', 'not a per-unit derivative']) {
+    for (const label of ['Synthetic pricing demo', 'business date 2025-06-02', 'assumed flat 3% curve', 'not usable for production risk',
+      'Calculated locally; results displayed here', 'Price change, +1bp parallel', 'Recomputed ICMA', 'within bound', 'not a per-unit derivative']) {
       expect(text()).toContain(label);
     }
     expect(text()).toContain('-15.28');
-    expect(text()).toContain('fixture-bill-job');
-    expect(text()).toContain('fixture-note-job');
+    expect(text()).not.toContain('fixture-bill-job');
+    expect(text()).not.toContain('fixture-note-job');
     const results = [...el.querySelectorAll('article[data-instrument] td .pill')].map((e) => e.textContent!.trim());
     expect(results.length).toBe(2 + 8 + 2); // bill NPV x2; note NPV/clean/accrued/bump x2; reconciliation x2
     expect(results.every((r) => r === 'pass' || r === 'within bound')).toBeTrue();
@@ -111,9 +111,22 @@ describe('Risk tab (read-only)', () => {
     expect(rows).toContain(['Rate gamma', 'unsupported', 'unsupported']);
     expect(rows).toContain(['Theta', 'unsupported', 'unsupported']);
     expect(text()).toContain('Portfolio VaR / ES');
-    expect(text()).toContain('bb9cf0e');
+    expect(text()).not.toContain('bb9cf0e');
     expect(el.querySelectorAll('input, select, textarea, form').length).toBe(0);
     expect([...el.querySelectorAll('button')].map((b) => b.textContent!.trim())).toEqual(['Refresh', 'Refresh']);
+  });
+
+  it('keeps internal provenance and raw errors out of rendered content', async () => {
+    replies['/eod/jobs'] = jobs(job('FAILED', { error: 'PRIVATE_ERROR_SENTINEL', integrityError: 'PRIVATE_INTEGRITY_SENTINEL', profile: { adapter: 'PRIVATE_ADAPTER_SENTINEL', engineCommit: 'PRIVATE_COMMIT_SENTINEL' } }));
+    replies['/risk/demo'] = demo();
+    const { text, el } = await render();
+    for (const internal of ['PRIVATE_', 'job-FAILED', 'fixture-bill-job', 'fixture-note-job', 'c'.repeat(64), 'synthetic-shared-examples-v1', 'bb9cf0e', 'e7246e1', '2026-09-16T18:00:00Z', 'Alex', 'sha256', 'flat-3pct-v1', 'W1.6']) {
+      expect(el.innerHTML).not.toContain(internal);
+    }
+    expect(text()).toContain('This result could not be verified');
+    expect(text()).toContain('Pricing result');
+    expect(text()).toContain('Independent check');
+    expect(text()).toContain('98,507.15');
   });
 
   it('is routed at /risk', async () => {

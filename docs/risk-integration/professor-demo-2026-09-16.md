@@ -5,10 +5,9 @@ through and after the demo. No shutdown is scheduled. Git changes are local; not
 
 ## A four-minute walkthrough
 
-1. **0:00–0:45 — Input and job identity.** Open Risk. Explain that TraderX freezes an EOD cut,
-   retains exact input bytes, accepts an external result and independently validates it. Show the
-   two separate bill/note jobs, their bundle/cut identity and verified custody. They share a synthetic
-   cut rank, so neither is falsely selected as the single current result.
+1. **0:00–0:45 — Calculation status.** Open Risk. Show the separate Treasury bill and note
+   statuses: Input prepared → Pricing completed → Independently checked. Keep the presentation
+   focused on outcomes; internal provenance remains in private operational evidence.
 2. **0:45–2:00 — Real library, synthetic assumptions.** Show the bill and note long/short
    comparisons. Alex's real pinned library ran **locally on the operator's Mac**, for synthetic
    2025-06-02 fixtures under the explicit assumed `flat-3pct-v1` curve. GKE serves static evidence

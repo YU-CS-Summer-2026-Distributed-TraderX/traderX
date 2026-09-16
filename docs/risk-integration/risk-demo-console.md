@@ -76,3 +76,7 @@ PORT=8097 AUTH_MASTER_SECRET='' RISK_DEMO_ARTIFACT=/abs/risk-demo.json \
 ```
 
 The console is root source only: the state pipeline renders no copy of it, so there is no generated tree to compare.
+
+## Presentation privacy
+
+The Risk page shows plain calculation status and separate Treasury bill/note comparisons. Names, commits, hashes, job identifiers, operational timestamps and raw error codes are not rendered, including in expandable details. The business date, assumed flat 3% curve, synthetic scope, local execution and non-production caveats remain visible. Internal API fields are unchanged; this is a presentation cleanup, not an API access-control change.

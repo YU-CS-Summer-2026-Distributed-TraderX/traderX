@@ -45,45 +45,25 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
   selector: 'risk-page',
   template: `
 <div class="stack">
-  <p class="banner warn scope"><strong>Synthetic fixture validation</strong> · business date 2025-06-02 · assumed curve
-    flat-3pct-v1 · <strong>not usable for production risk</strong>. Nothing on this page is live financial readiness.</p>
+  <p class="banner warn scope"><strong>Synthetic pricing demo</strong> · business date 2025-06-02 · assumed flat 3% curve · <strong>not usable for production risk</strong>.</p>
 
-  <!-- 1. Integration overview ---------------------------------------------------------------- -->
   <section class="card">
-    <div class="head"><h2>Integration overview</h2>
+    <div class="head"><h2>Calculation status</h2>
       <button type="button" (click)="loadJobs()" [disabled]="jobsLoading()">Refresh</button></div>
-    <ol class="flow">
-      <li><b>EOD input bundle</b><span class="sub">TraderX cut → bundle</span></li>
-      <li><b>Alex result</b><span class="sub">risk engine output</span></li>
-      <li><b>TraderX validation</b><span class="sub">shape, identity, integrity</span></li>
-    </ol>
-    <p class="sub">Worker connectivity <b>not probed</b>: this read never contacts Alex's engine, so it says nothing
-      about whether it is connected or live.
-      @if (jobsLastOk()) { Last successful read {{ jobsLastOk() }}. }</p>
-    @if (jobsLoading()) { <p role="status" class="sub">Reading coordinator status…</p> }
+    <p class="sub">Calculated locally; results displayed here. Live pricing connectivity has not been checked.</p>
+    @if (jobsLoading()) { <p role="status" class="sub">Checking calculation status…</p> }
     @if (jobsError(); as e) { <p role="status" class="banner bad" data-state="jobs-unavailable">{{ e }}</p> }
     @if (jobs(); as view) {
-      @if (!view.jobs.length) { <p>The coordinator is configured and has no discovered EOD jobs.</p> }
+      @if (!view.jobs.length) { <p>No calculations are available yet.</p> }
       @for (job of view.jobs; track job.job_id) {
         <article class="job">
-          <div class="head"><h3>{{ instrumentOf(job.bundle_id) }} job</h3>
+          <div class="head"><h3>{{ instrumentOf(job.bundle_id) }}</h3>
             <span class="pill" [class.good]="tone(job) === 'good'" [class.warn]="tone(job) === 'warn'" [class.bad]="tone(job) === 'bad'"
                   data-status>{{ statusLabel(job.status) }}</span></div>
           <ol class="flow steps">
             @for (s of stages(job); track $index) { <li [class]="s.tone"><b>{{ s.state }}</b><span class="sub">{{ s.detail }}</span></li> }
           </ol>
-          <dl>
-            <dt>Job</dt><dd class="mono">{{ job.job_id }}</dd>
-            <dt>Input bundle</dt><dd class="mono">{{ job.bundle_id }}</dd>
-            <dt>Cut</dt><dd>{{ job.cut.sessionDate }} · sequence {{ job.cut.consensusSequence }} · price version {{ job.cut.priceSnapshotVersion }}</dd>
-            <dt>Cut hash</dt><dd class="mono">{{ job.cut.cutSha256 }}</dd>
-            <dt>Epoch / valuation</dt><dd>{{ job.clusterEpoch }} · {{ job.valuationTime }}</dd>
-            <dt>Run profile</dt><dd>{{ job.profile.adapter }}@if (job.profile.engineCommit) { · engine {{ job.profile.engineCommit.slice(0, 7) }} }@if (job.profile.assumedProfileId) { · {{ job.profile.assumedProfileId }} }</dd>
-            <dt>Attempts</dt><dd>{{ job.attempts.length }}@if (job.attempts.length) { · last {{ job.attempts[job.attempts.length - 1].status }} }</dd>
-            <dt>Result integrity</dt><dd>{{ job.resultIntegrity }}</dd>
-            <dt>Selection</dt><dd data-selection>{{ selection(job) }}</dd>
-          </dl>
-          @if (job.integrityError || job.error) { <p class="banner bad">{{ job.integrityError || job.error }}</p> }
+          @if (job.integrityError || job.error) { <p class="banner bad">This result could not be verified. Refresh to check again.</p> }
         </article>
       }
     }
@@ -93,20 +73,16 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
   <section class="card">
     <div class="head"><h2>Synthetic pricing comparison</h2>
       <button type="button" (click)="loadDemo()" [disabled]="demoLoading()">Refresh</button></div>
-    <p class="sub">Alex's NPV against an independent Decimal reference calculated by TraderX (no Alex code). Signed USD.</p>
-    @if (demoLoading()) { <p role="status" class="sub">Reading validated demo artifact…</p> }
+    <p class="sub">Pricing results compared with an independent calculation. All amounts are signed USD.</p>
+    @if (demoLoading()) { <p role="status" class="sub">Loading pricing results…</p> }
     @if (demoError(); as e) { <p role="status" class="banner bad" data-state="demo-unavailable">{{ e }}</p> }
     @if (demo(); as d) {
-      <p class="labels"><span class="pill warn">synthetic fixture validation</span><span class="pill warn">date {{ d.businessDate }}</span>
-        <span class="pill warn">assumed {{ d.assumedMarketProfile }}</span><span class="pill bad">not usable for production risk</span></p>
-      <p class="sub">Producer executed locally (operator machine) at {{ d.producerExecution.completedAt }} · static evidence served by this console ·
-        report generated {{ d.generatedAt }} · valuation {{ d.valuationTime }}</p>
       @for (job of d.jobs; track job.jobId) {
         <article class="job" [attr.data-instrument]="job.instrument">
           <div class="head"><h3>{{ job.instrument === 'bill' ? 'Treasury bill' : 'Treasury note' }}</h3>
             <span class="pill good">{{ statusLabel(job.status) }}</span></div>
           <table>
-            <thead><tr><th>Position</th><th>Measure</th><th class="num">Alex</th><th class="num">Reference</th>
+            <thead><tr><th>Position</th><th>Measure</th><th class="num">Pricing result</th><th class="num">Independent check</th>
               <th class="num">Difference</th><th class="num">Tolerance</th><th>Result</th></tr></thead>
             <tbody>
             @for (p of job.positions; track p.side) {
@@ -135,15 +111,6 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
             </table>
             <p class="sub">+1bp is the signed USD price change P(3.01%) − P(3.00%) for the whole position — not a per-unit derivative and not per-pillar DV01.</p>
           }
-          <details><summary class="sub">Job identity and custody</summary>
-            <dl>
-              <dt>Job</dt><dd class="mono">{{ job.jobId }}</dd><dt>Input bundle</dt><dd class="mono">{{ job.bundleId }}</dd>
-              <dt>Cut</dt><dd>{{ job.cut.sessionDate }} · sequence {{ job.cut.consensusSequence }} · price version {{ job.cut.priceSnapshotVersion }} · {{ job.clusterEpoch }}</dd>
-              <dt>Result integrity</dt><dd>{{ job.resultIntegrity }} · validated {{ job.validatedAt }} · {{ job.attemptCount }} attempt(s)</dd>
-              <dt>Result sha256</dt><dd class="mono">{{ job.resultSha256 }}</dd>
-              <dt>Profile</dt><dd>{{ d.compatibilityProfile.adapter }} · engine {{ d.compatibilityProfile.engineCommit.slice(0, 7) }} · TraderX {{ d.traderxCommit.slice(0, 7) }}</dd>
-            </dl>
-          </details>
         </article>
       }
     }
@@ -154,10 +121,10 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
     </ng-template>
   </section>
 
-  <!-- 3. Coverage and remaining work ----------------------------------------------------------- -->
+  <!-- 3. Calculation coverage ----------------------------------------------------------- -->
   <section class="card">
-    <h2>Coverage and remaining work</h2>
-    <p class="sub">Per-calculation outcomes from the validated result coverage of each job. Unsupported is not zero.</p>
+    <h2>Calculation coverage</h2>
+    <p class="sub">Available calculations for these examples. Unsupported calculations have no result.</p>
     @if (demo(); as d) {
       <table data-coverage>
         <thead><tr><th>Calculation</th><th>Bill</th><th>Note</th></tr></thead>
@@ -177,16 +144,11 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
       <tbody>
         <tr><td>Bill rate sensitivity</td><td><span class="pill warn">unsupported</span></td><td>No pricer at this stage; reported unsupported, never 0</td></tr>
         <tr><td>Note rate gamma, theta</td><td><span class="pill warn">unsupported</span></td><td>Note has NPV and the +1bp parallel bump only</td></tr>
-        <tr><td>SOFR swaps</td><td><span class="pill warn">unsupported</span></td><td>Outside the accepted profile; fails closed</td></tr>
-        <tr><td>Equity</td><td><span class="pill warn">unsupported</span></td><td>Outside the accepted profile; fails closed</td></tr>
+        <tr><td>SOFR swaps</td><td><span class="pill warn">unsupported</span></td><td>Not supported by this demo</td></tr>
+        <tr><td>Equity</td><td><span class="pill warn">unsupported</span></td><td>Not supported by this demo</td></tr>
         <tr><td>Portfolio VaR / ES</td><td><span class="pill bad">unavailable</span></td><td>Not produced; per-item "not applicable" does not imply it</td></tr>
-        <tr><td>Instrument terms v2</td><td><span class="pill">pending</span></td><td>Reviewed: terms-v2 join still refused; bundles carry terms v1</td></tr>
-        <tr><td>Versioned result schemas</td><td><span class="pill">pending</span></td><td>Reviewed: no producer result schema version (W1.6 not delivered)</td></tr>
-        <tr><td>Durable EOD HTTP service</td><td><span class="pill">pending</span></td><td>Reviewed: planned, not delivered; results arrive as local files</td></tr>
       </tbody>
     </table>
-    <p class="sub">"Pending" rows come from the review of Alex's engine at commit {{ reviewed.commit }} on {{ reviewed.at }}, not a live
-      capability probe. The accepted pricing profile stays pinned to {{ reviewed.pinned }}.</p>
   </section>
 </div>`,
   styles: `
@@ -237,8 +199,8 @@ export class RiskPage implements OnInit {
       this.jobs.set(b); this.jobsLastOk.set(b.observedAt);
     } else {
       this.jobsError.set(b?.code === NOT_CONFIGURED
-        ? 'Coordinator status unavailable: no EOD coordinator is configured on this deployment. This is not an empty result.'
-        : 'Coordinator status unavailable: the status read failed or returned an unrecognised response. Refresh to retry.');
+        ? 'Calculation status unavailable: results have not been configured.'
+        : 'Calculation status unavailable. Refresh to retry.');
     }
     this.jobsLoading.set(false);
   }
@@ -254,18 +216,18 @@ export class RiskPage implements OnInit {
       this.demo.set(a);
     } else {
       this.demoError.set(r.body?.code === NOT_CONFIGURED
-        ? 'Synthetic pricing comparison unavailable: no validated demo artifact is configured on this deployment.'
+        ? 'Pricing results unavailable: no validated examples are configured.'
         : r.body?.code === 'ARTIFACT_INVALID'
-          ? 'Synthetic pricing comparison unavailable: the configured artifact is missing or failed validation.'
-          : 'Synthetic pricing comparison unavailable: the read failed. Refresh to retry.');
+          ? 'Pricing results unavailable: the results are missing or failed validation.'
+          : 'Pricing results unavailable. Refresh to retry.');
     }
     this.demoLoading.set(false);
   }
 
   statusLabel(status: string): string {
     return ({ QUEUED: 'Queued', RUNNING: 'Awaiting result', FAILED: 'Failed', MOCK_COMPLETE: 'Mock transport only',
-      W0_VALIDATED: 'W0 outcomes validated — no pricing', SYNTHETIC_PRICING_VALIDATED: 'Synthetic pricing validated' } as Record<string, string>)[status]
-      ?? `Unrecognised status ${status}`;
+      W0_VALIDATED: 'Outcomes checked — no pricing', SYNTHETIC_PRICING_VALIDATED: 'Synthetic pricing validated' } as Record<string, string>)[status]
+      ?? 'Status unavailable';
   }
 
   tone(job: EodJob): 'good' | 'warn' | 'bad' | '' {
@@ -281,25 +243,25 @@ export class RiskPage implements OnInit {
   }
 
   instrumentOf(bundleId: string): string {
-    return ({ c3211337d0c3e61b5276613972fd6af9b6e7e8ec18070019963c61fc8c1b525d: 'Synthetic bill',
-      '1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9': 'Synthetic note' } as Record<string, string>)[bundleId] ?? 'EOD';
+    return ({ c3211337d0c3e61b5276613972fd6af9b6e7e8ec18070019963c61fc8c1b525d: 'Treasury bill',
+      '1b64bdcb2497423a72ddd7ca70b664a9a1cf6b8b6b595a562b87e6b2ac211dc9': 'Treasury note' } as Record<string, string>)[bundleId] ?? 'Calculation';
   }
 
   /** The three flow stages for one job. Each job is its own run; bill and note are never combined. */
   stages(job: EodJob): { state: string; detail: string; tone: string }[] {
-    const bundle = { state: 'Bundle discovered', detail: `cut ${job.cut.sessionDate} seq ${job.cut.consensusSequence}`, tone: 'good' };
+    const bundle = { state: 'Input prepared', detail: 'Calculation inputs ready', tone: 'good' };
     const invalid = job.resultIntegrity === 'INVALID';
     switch (job.status) {
       case 'QUEUED': return [bundle, { state: 'Not yet requested', detail: 'queued', tone: '' }, { state: 'Not started', detail: '—', tone: '' }];
       case 'RUNNING': return [bundle, { state: 'Awaiting result', detail: 'no result file yet', tone: 'warn' }, { state: 'Pending', detail: 'nothing to validate', tone: '' }];
-      case 'FAILED': return [bundle, { state: 'Attempt failed', detail: 'see public error code', tone: 'bad' }, { state: 'Failed', detail: 'no accepted result', tone: 'bad' }];
-      case 'MOCK_COMPLETE': return [bundle, { state: 'Mock transport', detail: 'not Alex, not pricing', tone: 'warn' },
+      case 'FAILED': return [bundle, { state: 'Attempt failed', detail: 'Calculation did not complete', tone: 'bad' }, { state: 'Failed', detail: 'no accepted result', tone: 'bad' }];
+      case 'MOCK_COMPLETE': return [bundle, { state: 'Mock transport', detail: 'Transport test only', tone: 'warn' },
         { state: invalid ? 'Integrity invalid' : 'Mock result', detail: 'unusable for risk', tone: invalid ? 'bad' : 'warn' }];
-      case 'W0_VALIDATED': return [bundle, { state: 'W0 outcomes', detail: 'no pricing', tone: 'warn' },
-        { state: invalid ? 'Integrity invalid' : 'W0 validated', detail: 'outcomes only, no priced risk', tone: invalid ? 'bad' : 'warn' }];
-      case 'SYNTHETIC_PRICING_VALIDATED': return [bundle, { state: 'Result received', detail: 'synthetic fixture pricing', tone: 'good' },
-        { state: invalid ? 'Integrity invalid' : 'Synthetic pricing validated', detail: invalid ? 'stored result failed custody check' : 'fixture only, usableForRisk=false', tone: invalid ? 'bad' : 'good' }];
-      default: return [bundle, { state: 'Unknown', detail: job.status, tone: 'bad' }, { state: 'Unknown', detail: '—', tone: 'bad' }];
+      case 'W0_VALIDATED': return [bundle, { state: 'Outcomes received', detail: 'no pricing', tone: 'warn' },
+        { state: invalid ? 'Integrity invalid' : 'Outcomes checked', detail: 'outcomes only, no priced risk', tone: invalid ? 'bad' : 'warn' }];
+      case 'SYNTHETIC_PRICING_VALIDATED': return [bundle, { state: 'Pricing completed', detail: 'synthetic fixture pricing', tone: 'good' },
+        { state: invalid ? 'Integrity invalid' : 'Independently checked', detail: invalid ? 'Verification failed' : 'Synthetic example only', tone: invalid ? 'bad' : 'good' }];
+      default: return [bundle, { state: 'Unknown', detail: 'Status unavailable', tone: 'bad' }, { state: 'Unknown', detail: '—', tone: 'bad' }];
     }
   }
 
