@@ -1,7 +1,7 @@
 // Read-only synthetic pricing demo artifact for the Risk tab. The path is server configuration only;
 // the file is re-read and re-validated on every request, so a removed or corrupted artifact reads as
 // unavailable rather than as the last good copy. Contract: docs/risk-integration/risk-demo-console.md.
-import { readFile } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import path from 'node:path';
 
 const SCHEMA = 'traderx.risk-demo.v1';
@@ -31,7 +31,7 @@ function comparison(c) {
   fields(c, ['alexUsd', 'referenceUsd', 'differenceUsd', 'toleranceUsd', 'withinTolerance']);
   const alex = dec(c.alexUsd), ref = dec(c.referenceUsd), diff = dec(c.differenceUsd), tol = dec(c.toleranceUsd);
   check(c.toleranceUsd === '0.00000001' && c.withinTolerance === true);
-  // ponytail: float cross-check of the generator's Decimal arithmetic; 1e-9 slack covers binary rounding.
+  // Float cross-check of the generator's Decimal arithmetic; 1e-9 slack covers binary rounding.
   check(Math.abs(alex - ref - diff) <= 1e-9 && Math.abs(diff) <= tol);
 }
 
@@ -98,13 +98,32 @@ export function validateRiskDemo(a) {
   return a;
 }
 
-export async function readRiskDemo(env = process.env, read = readFile) {
+// Reads at most MAX_BYTES + 1 bytes from a regular file (symlinks are followed, as volume mounts use
+// them), so an oversized or unbounded file is refused without loading it.
+export async function readBounded(file, openFile = open) {
+  const handle = await openFile(file, 'r');
+  try {
+    check((await handle.stat()).isFile());
+    const buffer = Buffer.alloc(MAX_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    check(length <= MAX_BYTES);
+    return buffer.subarray(0, length);
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function readRiskDemo(env = process.env, openFile = open) {
   const unavailable = (code) => ({ status: 503, body: { schema: SCHEMA, availability: 'UNAVAILABLE', code, usableForRisk: false } });
   if (!env.RISK_DEMO_ARTIFACT) return unavailable('NOT_CONFIGURED');
   if (!path.isAbsolute(env.RISK_DEMO_ARTIFACT)) return unavailable('INVALID_CONFIGURATION');
   try {
-    const bytes = await read(env.RISK_DEMO_ARTIFACT);
-    check(bytes.length <= MAX_BYTES);
+    const bytes = await readBounded(env.RISK_DEMO_ARTIFACT, openFile);
     const artifact = validateRiskDemo(JSON.parse(bytes.toString('utf8')));
     return { status: 200, body: { schema: SCHEMA, availability: 'AVAILABLE', servedAt: new Date().toISOString(), artifact } };
   } catch {

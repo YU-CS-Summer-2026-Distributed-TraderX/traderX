@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, truncateSync, writeFileSync } from 'node:fs';
+import { open } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { readRiskDemo } from './risk-demo.mjs';
@@ -37,6 +38,28 @@ test('missing, oversized and non-JSON artifacts are unavailable without detail',
     const { result } = await serve(bad);
     assert.equal(result.status, 503); assert.equal(result.body.code, 'ARTIFACT_INVALID');
   }
+});
+
+test('the filesystem read itself is bounded, not just checked after loading', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'risk-demo-'));
+  const huge = path.join(dir, 'huge.json');
+  writeFileSync(huge, ''); truncateSync(huge, 64 * 1024 * 1024); // sparse 64 MiB
+  let requested = 0, closed = 0;
+  const counting = async (file, flags) => {
+    const handle = await open(file, flags);
+    return { stat: () => handle.stat(), close: async () => { closed++; await handle.close(); },
+      read: async (buffer, offset, length, position) => { requested += length; return handle.read(buffer, offset, length, position); } };
+  };
+  const result = await readRiskDemo({ RISK_DEMO_ARTIFACT: huge }, counting);
+  assert.equal(result.status, 503); assert.equal(result.body.code, 'ARTIFACT_INVALID');
+  assert.ok(requested <= 1024 * 1024 + 1, `requested ${requested} bytes`);
+  assert.equal(closed, 1);
+  const exact = path.join(dir, 'exact.json');
+  writeFileSync(exact, JSON.stringify(good()).padEnd(1024 * 1024, ' '));
+  assert.equal((await readRiskDemo({ RISK_DEMO_ARTIFACT: exact })).status, 200);
+  const sub = path.join(dir, 'directory'); mkdirSync(sub);
+  const directory = await readRiskDemo({ RISK_DEMO_ARTIFACT: sub });
+  assert.equal(directory.status, 503); assert.equal(directory.body.code, 'ARTIFACT_INVALID');
 });
 
 test('a corrupted artifact replaces the previous good read instead of falling back to it', async () => {
