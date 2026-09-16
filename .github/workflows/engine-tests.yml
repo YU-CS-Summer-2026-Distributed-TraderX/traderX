@@ -226,8 +226,11 @@ jobs:
     # with RISK_EXTRACT_REFERENCE_DATA, or carries a counterparties.csv ConfigMap key. It checks out
     # the PUSHED commit, not a pinned branch like the jobs above, so it tests the script and the
     # manifests of the same commit and needs no other branch to carry the script first.
-    # A tracked manifest is all it can see: an object applied by hand is only visible live, with
-    #   kubectl -n traderx get deploy risk-extract -o json | python3 scripts/ci/check-counterparty-reference-not-shadowed.py -
+    # Manifests are parsed (PyYAML, pinned below), not text-matched; empty, malformed or object-free
+    # input fails. A tracked manifest is all this job can see: an object applied by hand is only
+    # visible live, with
+    #   kubectl -n traderx get deploy risk-extract -o json \
+    #     | python3 scripts/ci/check-counterparty-reference-not-shadowed.py --live-deployment risk-extract -
     name: config — counterparty reference not shadowed
     runs-on: ubuntu-latest
     steps:
@@ -235,6 +238,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install the manifest parser
+        run: python3 -m pip install pyyaml==6.0.2
       - name: Self-test (the 2026-08-21 mount and its variants must fail)
         run: python3 scripts/ci/check-counterparty-reference-not-shadowed.py --self-test
       - name: Scan every tracked Kubernetes manifest

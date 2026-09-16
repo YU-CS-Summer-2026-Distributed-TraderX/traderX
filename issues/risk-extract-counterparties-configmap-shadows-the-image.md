@@ -80,9 +80,11 @@ around it.
 
 ## Guard
 
-`scripts/ci/check-counterparty-reference-not-shadowed.py` fails on a mountPath at, inside or
-above `/opt/app/classes/reference-data`, on `RISK_EXTRACT_REFERENCE_DATA` being set, and on a
-`counterparties.csv` ConfigMap key. With `--rendered`/`--state` it also requires the rendered
+`scripts/ci/check-counterparty-reference-not-shadowed.py` parses manifests with PyYAML (YAML or
+JSON) and walks the objects. It fails on a mountPath at, inside or above
+`/opt/app/classes/reference-data`, on `RISK_EXTRACT_REFERENCE_DATA` being set, and on a
+`counterparties.csv` ConfigMap key or kustomize generator source. Empty, malformed or object-free
+input fails instead of passing. With `--rendered`/`--state` it also requires the rendered
 CSV to match the lineage's spec copy byte for byte. The `counterparty-reference` job in
 `engine-tests.yml` runs the self-test and scans `specs/*/generation/kubernetes`.
 
@@ -93,10 +95,13 @@ CSV to match the lineage's spec copy byte for byte. The `counterparty-reference`
       --state YU18-eod-risk-bundles
 
 The 2026-08-21 incident was an object applied by hand, which no repository check can see.
-Only a live read catches that:
+Only a live read catches that, and live mode fails unless the stream actually contains that
+Deployment with containers:
 
     kubectl -n traderx get deploy risk-extract -o json \
-      | python3 scripts/ci/check-counterparty-reference-not-shadowed.py -
+      | python3 scripts/ci/check-counterparty-reference-not-shadowed.py --live-deployment risk-extract -
+
+It reads the Deployment only; a mount injected by a webhook shows on the Pods, not here.
 
 Bring-up step 3f in `scripts/yu15/bring-up-gke.sh` reads the file the pod serves, so it
 reports what a shadowing mount serves and cannot tell that apart from the image copy.
