@@ -39,9 +39,9 @@ Schema: `traderx.eod-job-status.v1`. Successful GET returns `availability=AVAILA
 `jobs`, `workerConnectivity=NOT_PROBED`, `producerAuthentication=NOT_ESTABLISHED` and
 `usableForRisk=false`. Jobs include input bundle/cut/epoch/valuation identity, profile, status,
 attempts and errors, current/ambiguous selection, result integrity and validated coverage when
-available. Raw portfolio items and internal result paths are omitted. Error text is existing local
-coordinator diagnostic text; configure only state appropriate for the audience of this open-read
-console. This is not an authenticated remote producer attestation.
+available. Raw portfolio items and internal result paths are omitted. Job, attempt and integrity errors expose allowlisted public codes with fixed descriptions.
+Raw exception text stays in private coordinator state and local CLI diagnostics; it is never sent
+through this open-read route. Configure only state appropriate for the console audience. This is not an authenticated remote producer attestation.
 
 `QUEUED` displays Pending; `RUNNING` displays Running / awaiting result, since local W0 intake can be
 waiting for a file. `FAILED`, `MOCK_COMPLETE` and `W0_VALIDATED` stay distinct. The panel never selects

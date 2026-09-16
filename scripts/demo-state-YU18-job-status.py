@@ -53,9 +53,21 @@ try:
         assert job['status']=='W0_VALIDATED' and job['selectedW0Result'] and not job['usableForRisk']
         assert job['coverage']['itemCount']==2
         (root/'accepted-status.json').write_text(json.dumps(body,indent=2)+'\n')
+        private_error = '/private/worker/missing.json token=SYNTHETIC_CREDENTIAL_MARKER'
+        with ctl.db:
+            ctl.db.execute('UPDATE jobs SET error=?', ('WORKER_FAILURE: '+private_error,))
+            ctl.db.execute('UPDATE attempts SET error=?', ('WORKER_FAILURE: '+private_error,))
+        public = request()[1]
+        assert private_error not in json.dumps(public) and 'SYNTHETIC_CREDENTIAL_MARKER' not in json.dumps(public)
+        assert public['jobs'][0]['errorCode'] == 'WORKER_FAILURE'
+        assert public['jobs'][0]['attempts'][0]['errorCode'] == 'WORKER_FAILURE'
+        assert private_error in ctl.db.execute('SELECT error FROM jobs').fetchone()[0]
+
         output=state/done['result_path']/'results.json';output.write_bytes(output.read_bytes()+b' ')
         job=request()[1]['jobs'][0]
         assert job['resultIntegrity']=='INVALID' and not job['selectedW0Result'] and job['coverage'] is None
+        assert job['integrityErrorCode']=='RESULT_INTEGRITY_INVALID'
+        assert 'SYNTHETIC_CREDENTIAL_MARKER' not in json.dumps(job)
     print(f'Actual console GET route passed missing/empty/pending/running/W0/tamper cases and POST refusal. Evidence: {root}')
 finally:
     server.terminate()

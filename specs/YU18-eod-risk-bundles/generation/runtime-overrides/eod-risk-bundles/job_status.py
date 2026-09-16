@@ -13,6 +13,31 @@ from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE
 SCHEMA = 'traderx.eod-job-status.v1'
 
 
+PUBLIC_ERRORS = {
+    'INPUT_INVALID': 'Stored input validation failed.',
+    'WORKER_FAILURE': 'The worker attempt failed.',
+    'RESULT_INVALID': 'Result validation failed.',
+    'INTERRUPTED': 'The worker attempt was interrupted.',
+    'LOCAL_RESULT_PENDING': 'Awaiting a local result.',
+    'REMOTE_PENDING': 'Awaiting worker reconciliation.',
+    'JOB_ERROR': 'Job diagnostics are available to the local operator.',
+    'RESULT_INTEGRITY_INVALID': 'Stored result integrity validation failed.',
+}
+
+
+def public_error(record, field='error'):
+    raw = record.get(field)
+    if raw is None:
+        return
+    # Only a coordinator-owned prefix can select a fixed public description. Never copy any
+    # exception text, even if it has no obvious path/token. Private DB/CLI diagnostics stay intact.
+    code = 'RESULT_INTEGRITY_INVALID' if field == 'integrityError' else str(raw).partition(':')[0]
+    if code not in PUBLIC_ERRORS:
+        code = 'JOB_ERROR'
+    record[field + 'Code'] = code
+    record[field] = PUBLIC_ERRORS[code]
+
+
 def snapshot(state):
     state = Path(state).absolute()
     bundle.require(state.is_dir() and not state.is_symlink() and state.stat().st_uid == os.getuid()
@@ -58,8 +83,11 @@ def snapshot(state):
                 job['coverage'] = result_doc['coverage']
             # Internal filesystem paths and raw result items are not part of this read surface.
             job.pop('result_path', None)
+            public_error(job)
+            public_error(job, 'integrityError')
             for attempt in job['attempts']:
                 attempt.pop('result_path', None)
+                public_error(attempt)
         return {'schema': SCHEMA, 'availability': 'AVAILABLE', 'observedAt': now(),
                 'workerConnectivity': 'NOT_PROBED', 'producerAuthentication': 'NOT_ESTABLISHED',
                 **result}

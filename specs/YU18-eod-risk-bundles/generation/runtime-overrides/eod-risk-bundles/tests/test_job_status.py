@@ -4,6 +4,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import bundle
 from coordinator import Coordinator, MockAdapter
@@ -55,7 +56,8 @@ class JobStatusTest(unittest.TestCase):
         with Coordinator(self.state,Fail()) as ctl:
             ctl.discover(self.inbox);ctl.run()
         job=snapshot(self.state)['jobs'][0]
-        self.assertEqual(job['status'],'FAILED');self.assertIn('worker unavailable',job['error'])
+        self.assertEqual(job['status'],'FAILED');self.assertEqual(job['errorCode'],'WORKER_FAILURE')
+        self.assertEqual(job['error'],'The worker attempt failed.')
 
     def test_w0_pending_then_validated(self):
         incoming=self.root/'incoming';incoming.mkdir()
@@ -69,3 +71,27 @@ class JobStatusTest(unittest.TestCase):
         self.assertEqual(job['status'],'W0_VALIDATED');self.assertTrue(job['selectedW0Result'])
         self.assertFalse(job['selectedMockResult']);self.assertEqual(job['coverage']['itemCount'],2)
         self.assertFalse(job['portfolioRiskAvailable'])
+
+    def test_public_errors_never_copy_private_diagnostics(self):
+        secret = '/private/local-worker-input/missing.json token=SYNTHETIC_CREDENTIAL_MARKER'
+        with Coordinator(self.state) as ctl:
+            ctl.discover(self.inbox); ctl.run()
+            with ctl.db:
+                ctl.db.execute('UPDATE jobs SET error=?', ('LOCAL_RESULT_PENDING: '+secret,))
+                ctl.db.execute('UPDATE attempts SET error=?', ('WORKER_FAILURE: '+secret,))
+            with patch.object(MockAdapter, 'validate_result', side_effect=ValueError(secret)):
+                view = snapshot(self.state)
+            encoded = json.dumps(view)
+            self.assertNotIn(secret, encoded)
+            self.assertNotIn('/private/', encoded)
+            self.assertNotIn('SYNTHETIC_CREDENTIAL_MARKER', encoded)
+            job = view['jobs'][0]
+            self.assertEqual(job['errorCode'], 'LOCAL_RESULT_PENDING')
+            self.assertEqual(job['attempts'][0]['errorCode'], 'WORKER_FAILURE')
+            self.assertEqual(job['integrityErrorCode'], 'RESULT_INTEGRITY_INVALID')
+            self.assertEqual(job['resultIntegrity'], 'INVALID')
+            self.assertIn(secret, ctl.db.execute('SELECT error FROM jobs').fetchone()[0])
+            self.assertIn(secret, ctl.db.execute('SELECT error FROM attempts').fetchone()[0])
+            with ctl.db:
+                ctl.db.execute('UPDATE jobs SET error=?', (secret,))
+            self.assertEqual(snapshot(self.state)['jobs'][0]['errorCode'], 'JOB_ERROR')
