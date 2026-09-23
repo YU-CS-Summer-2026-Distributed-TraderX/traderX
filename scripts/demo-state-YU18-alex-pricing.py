@@ -15,7 +15,7 @@ import tempfile
 ROOT=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--engine',type=Path,required=True)
-p.add_argument('--component',type=Path,default=ROOT/'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles')
+p.add_argument('--component',type=Path,default=ROOT/'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles')
 a=p.parse_args();engine=a.engine.resolve();component=a.component.resolve()
 sys.path.insert(0,str(component))
 import bundle

@@ -1,6 +1,6 @@
 # Implementation Status: EOD Risk Bundles
 
-Verified: 2026-09-14. Parent commit: `592bc3c66faccba04e12a9307bce36119aac67f2` (`YU17-otc-rates`). Original bundle owner branch: `YU18-eod-risk-bundles`. The local coordinator extension below is authored on `traderX-risk-integration`; it has not been propagated to the YU18 home branch.
+Verified: 2026-09-14. Parent commit: `592bc3c66faccba04e12a9307bce36119aac67f2` (`YU17-otc-rates`). Original bundle owner branch: `YU18-risk-integration`. The local coordinator extension below is authored on `traderX-risk-integration`; it has not been propagated to the YU18 home branch.
 
 ## Implemented behavior
 
@@ -11,7 +11,7 @@ The local Python CLI packages position schema 3 and OTC schema 2 exports, checks
 | Check | Result |
 |---|---|
 | Source state test script | 16 unit tests and build/validate/mock CLI demo pass |
-| Full sequential generation | `TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-eod-risk-bundles` exits 0 |
+| Full sequential generation | `TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-risk-integration` exits 0 |
 | Generated `test-env.sh` | Same 16 tests and CLI demo pass |
 | Generated component byte comparison | Source Python, tests and synthetic fixtures match generated copies |
 | Parent override audit | Additive eod-risk-bundles component shadows no ancestor runtime file |

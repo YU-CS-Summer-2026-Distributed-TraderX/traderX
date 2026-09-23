@@ -8,7 +8,7 @@ title: "State YU17-otc-rates: OTC Interest-Rate Swaps"
 
 - Previous state(s): [YU16-cdm-instruments](/docs/learning/state-YU16-cdm-instruments)
 - Dotted-line parent(s): none
-- Next state(s): [YU18-eod-risk-bundles](/docs/learning/state-YU18-eod-risk-bundles)
+- Next state(s): [YU18-risk-integration](/docs/learning/state-YU18-risk-integration)
 
 ## Convergence Metadata
 

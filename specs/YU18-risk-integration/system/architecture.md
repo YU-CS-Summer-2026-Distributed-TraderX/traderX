@@ -1,4 +1,4 @@
-# YU18-eod-risk-bundles architecture
+# YU18-risk-integration architecture
 
 Local EOD bundles, durable single-host coordination, strict mock ingestion and recovery.
 

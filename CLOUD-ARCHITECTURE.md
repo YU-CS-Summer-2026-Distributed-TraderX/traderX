@@ -287,4 +287,4 @@ StatefulSet pods unchanged — same image, same creation timestamps) until expli
 
 ## Local EOD bundle state
 
-`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.
+`YU18-risk-integration` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-risk-integration/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-risk-integration.sh`; see the state quickstart for its local demo.

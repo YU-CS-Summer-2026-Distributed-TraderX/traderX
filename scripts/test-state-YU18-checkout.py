@@ -8,7 +8,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PREFIX = Path('specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/tests/fixtures')
+PREFIX = Path('specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/tests/fixtures')
 
 
 def run(*args, cwd=None):

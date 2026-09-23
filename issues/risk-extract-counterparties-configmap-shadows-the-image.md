@@ -95,7 +95,7 @@ CSV to match the lineage's spec copy byte for byte. The `counterparty-reference`
     python3 scripts/ci/check-counterparty-reference-not-shadowed.py \
       generated/code/target-generated/*/runtime/kubernetes \
       --rendered generated/code/target-generated/order-matcher/src/main/resources/reference-data/counterparties.csv \
-      --state YU18-eod-risk-bundles
+      --state YU18-risk-integration
 
 The 2026-08-21 incident was an object applied by hand, which no repository check can see.
 Only a live read catches that, and live mode fails unless the stream actually contains that

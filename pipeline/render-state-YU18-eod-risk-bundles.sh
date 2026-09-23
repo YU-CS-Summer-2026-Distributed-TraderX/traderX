@@ -1,13 +1,5 @@
 #!/usr/bin/env bash
+# Compatibility wrapper; canonical state is YU18-risk-integration.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACK="${ROOT}/specs/YU18-eod-risk-bundles"
-TARGET="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated"
-[[ -d "${TARGET}/YU17-otc-rates" ]] || { echo '[fail] generate parent YU17 first'; exit 1; }
-mkdir -p "${TARGET}/eod-risk-bundles" "${TARGET}/YU18-eod-risk-bundles/spec-source"
-tar -C "${PACK}/generation/runtime-overrides/eod-risk-bundles" --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "${TARGET}/eod-risk-bundles" -xf -
-tar -C "${PACK}" --exclude='runtime-overrides' --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "${TARGET}/YU18-eod-risk-bundles/spec-source" -xf -
-# YU18's additive exporter completion helper, producer override and in-process proof.
-tar -C "${PACK}/generation/runtime-overrides/order-matcher" -cf - . | tar -C "${TARGET}/order-matcher" -xf -
-cp "${PACK}/README.md" "${TARGET}/YU18-eod-risk-bundles/README.md"
-echo '[ok] rendered local EOD bundle component'
+exec bash "${ROOT}/pipeline/render-state-YU18-risk-integration.sh" "$@"

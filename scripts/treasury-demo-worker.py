@@ -4,7 +4,7 @@ import argparse,fcntl,hashlib,io,json,os,subprocess,sys,tarfile,threading,time,u
 from datetime import datetime,timezone
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-sys.path.insert(0,str(ROOT/'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles'))
+sys.path.insert(0,str(ROOT/'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles'))
 import bundle,treasury_trade as profile,pricing_result
 P=argparse.ArgumentParser();P.add_argument('--state',type=Path,required=True);P.add_argument('--secret-file',type=Path,required=True);P.add_argument('--engine',type=Path,required=True);P.add_argument('--url',default='https://yaakovseif.dev');P.add_argument('--check',action='store_true');args=P.parse_args()
 args.state.mkdir(parents=True,exist_ok=True,mode=0o700);os.chmod(args.state,0o700)

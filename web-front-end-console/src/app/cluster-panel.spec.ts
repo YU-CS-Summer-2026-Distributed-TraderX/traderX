@@ -19,8 +19,7 @@ describe('bookVerdict', () => {
   it('is a consensus reading only when the sequence is BOTH matched and advancing', () => {
     const v = bookVerdict([read(100, 'x'), read(100, 'x'), read(100, 'x')], true, 0);
     expect(v.tone).toContain('good');
-    expect(v.text).toContain('agree on the book');
-    expect(v.text).toContain('advancing');
+    expect(v.text).toBe('✓ 3 members hold an identical book at 100');
   });
 
   /** A stopped cluster agrees with itself perfectly. Going green for that is the vacuous pass. */
@@ -28,7 +27,7 @@ describe('bookVerdict', () => {
     const v = bookVerdict([read(100, 'x'), read(100, 'x')], false, 42000);
     expect(v.tone).not.toContain('good');
     expect(v.tone).not.toContain('bad');
-    expect(v.text).toContain('quiet 42s');
+    expect(v.text).toBe('· 2 members hold an identical book at 100');
   });
 
   /** THE ARM THAT MUST NEVER FIRE FOR REAL. Only ever exercised here. */

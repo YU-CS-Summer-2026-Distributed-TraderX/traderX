@@ -8,7 +8,7 @@ non-BMP characters in its synthetic epoch to expose JSON escaping differences ac
 Run the standalone verifier (Python standard library; no TraderX imports):
 
 ```bash
-python3 specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/verify_golden.py
+python3 specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/verify_golden.py
 ```
 
 Do not run with Python optimization enabled: the verifier refuses `-O`. CI also compares the

@@ -1,2 +1,2 @@
 # These fixtures are byte-hashed contracts. Never translate line endings on checkout.
-/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/** -text
+/specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/** -text

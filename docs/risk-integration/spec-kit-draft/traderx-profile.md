@@ -2,10 +2,10 @@
 
 The generic engine spec must remain usable without TraderX. This profile maps the first producer into that boundary. It references current maintained source contracts instead of rewriting them:
 
-- [Bundle and terms](../../../specs/YU18-eod-risk-bundles/contracts/bundle-v2-and-terms.md)
-- [Terms-v2/accrual compatibility](../../../specs/YU18-eod-risk-bundles/contracts/compatibility-v3.md)
-- [Market-input package](../../../specs/YU18-eod-risk-bundles/contracts/market-input-package-v1.md)
-- [Existing provisional pricing profile](../../../specs/YU18-eod-risk-bundles/contracts/provisional-pricing-local-v1.md)
+- [Bundle and terms](../../../specs/YU18-risk-integration/contracts/bundle-v2-and-terms.md)
+- [Terms-v2/accrual compatibility](../../../specs/YU18-risk-integration/contracts/compatibility-v3.md)
+- [Market-input package](../../../specs/YU18-risk-integration/contracts/market-input-package-v1.md)
+- [Existing provisional pricing profile](../../../specs/YU18-risk-integration/contracts/provisional-pricing-local-v1.md)
 
 Initial acceptance includes signed bill/note values, explicit assumed curve provenance, clean/dirty/accrued reconciliation, exported versus structural-zero accrued source, and note +1bp sensitivity with the agreed sign and units. Keep the original dated synthetic examples immutable; add new fixtures for new conventions.
 

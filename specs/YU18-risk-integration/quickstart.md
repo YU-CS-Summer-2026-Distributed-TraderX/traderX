@@ -5,13 +5,13 @@ Run from the repository root with Python 3.10+. The core workflow uses no cluste
 ## 1. Test the source component
 
 ```bash
-bash scripts/test-state-YU18-eod-risk-bundles.sh
+bash scripts/test-state-YU18-risk-integration.sh
 ```
 
 ## 2. Build, validate and consume a synthetic bundle
 
 ```bash
-component="$PWD/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles"
+component="$PWD/specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles"
 eod_demo_dir="$(mktemp -d /tmp/traderx-eod-demo.XXXXXX)"
 python3 "$component/bundle.py" build \
   --positions "$component/tests/fixtures/positions.csv" \
@@ -32,8 +32,8 @@ Use the same build command with actual position/contract paths, `--origin export
 ## 4. Generate the state
 
 ```bash
-TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-eod-risk-bundles
-bash scripts/test-state-YU18-eod-risk-bundles.sh generated/code/target-generated/eod-risk-bundles
+TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-risk-integration
+bash scripts/test-state-YU18-risk-integration.sh generated/code/target-generated/eod-risk-bundles
 ```
 
 Full generation composes the inherited runtime locally. Skipping lockfile refresh avoids npm lockfile network refresh; the local component commands above do not depend on generation.
@@ -111,9 +111,9 @@ The validator is a development dependency, separate from the stdlib runtime:
 ```bash
 python3 -m venv /private/tmp/traderx-schema-check
 /private/tmp/traderx-schema-check/bin/python -m pip install \
-  -r specs/YU18-eod-risk-bundles/contracts/proposed/requirements-test.txt
+  -r specs/YU18-risk-integration/contracts/proposed/requirements-test.txt
 PYTHONDONTWRITEBYTECODE=1 /private/tmp/traderx-schema-check/bin/python -m unittest discover \
-  -s specs/YU18-eod-risk-bundles/contracts/proposed -p 'test_schemas.py' -v
+  -s specs/YU18-risk-integration/contracts/proposed -p 'test_schemas.py' -v
 ```
 
 Four tests check both meta-schemas, positive examples and negative field/date/identity-shape/measure
@@ -129,7 +129,7 @@ This command makes read-only GCS requests and starts no compute. Select a narrow
 For an actual captured `risk.extract.ready` payload whose two URIs are GCS objects:
 
 ```bash
-component="$PWD/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles"
+component="$PWD/specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles"
 gcs_demo_dir="$(mktemp -d /private/tmp/traderx-gcs.XXXXXX)"
 python3 "$component/gcs_stage.py" --receipt /private/path/to/producer-event.json \
   --allowed-prefix gs://YOUR_BUCKET/YOUR_EXPORT_PREFIX/ --max-bytes 1000000 \
@@ -168,7 +168,7 @@ in the printed temporary directory; the fake-worker processes are stopped even o
 For interactive use, start the fake worker in a terminal:
 
 ```bash
-component="$PWD/specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles"
+component="$PWD/specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles"
 http_demo_dir="$(mktemp -d /private/tmp/traderx-http.XXXXXX)"
 python3 "$component/fake_worker.py" --state "$http_demo_dir/worker"
 ```
@@ -198,7 +198,7 @@ exact boundary and production gaps. No cloud operation is needed.
 After generating YU18, run:
 
 ```bash
-python3 specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/verify_golden.py
+python3 specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/verify_golden.py
 bash scripts/demo-state-YU18-shared-examples.sh
 ```
 
@@ -208,7 +208,7 @@ and compares fresh output with committed synthetic fixtures. No GKE, market down
 conversion is performed. Local Gradle cache/daemon permissions may be needed.
 
 The package for Alex lives under
-`specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/shared/`.
+`specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/tests/fixtures/shared/`.
 Each case contains v1/v2 directories, a cut and a case.json acceptance expectation; provenance.json
 pins the exporter source. The note contains both long and short positions. SOFR unsupported is
 an expected response from Alex, not a result fabricated by our mock.
@@ -231,7 +231,7 @@ Run `python3 scripts/demo-state-YU18-alex-w0.py --engine /path/to/JAX_Risk_Engin
 
 ```bash
 python3 scripts/demo-state-YU18-market-inputs.py
-component=specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles
+component=specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles
 python3 "$component/market_inputs.py" build \
   --metadata "$component/tests/fixtures/market-inputs/metadata.json" \
   --observations "$component/tests/fixtures/market-inputs/observations.json" \

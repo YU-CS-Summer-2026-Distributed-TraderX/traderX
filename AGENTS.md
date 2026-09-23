@@ -39,7 +39,7 @@ This repository follows a SpecKit-first, multi-state architecture. Agents should
 - `YU15-eod-risk-extract`
 - `YU16-cdm-instruments`
 - `YU17-otc-rates`
-- `YU18-eod-risk-bundles`
+- `YU18-risk-integration`
 
 ## Learning Doc Front-Matter Contract
 
@@ -127,4 +127,20 @@ npm run build
 
 ## Local EOD bundle state
 
-`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.
+`YU18-risk-integration` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-risk-integration/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-risk-integration.sh`; see the state quickstart for its local demo.
+
+## Maintained integration and trading backlog
+
+For risk integration, engine containerization, risk pipelines, order-type extensions and related
+demo/recovery work, read [issues/risk-integration/README.md](issues/risk-integration/README.md).
+At task claim, material discovery, handoff and completion, update the matching RI task and index
+with date, status, owner, revision, blockers, next action and evidence. Reverify historical findings
+on new revisions; do not mark queued work done from a plan alone. The queue tracks work and does
+not itself authorize implementation, deployments, Git pushes or cross-worktree changes.
+
+## Component-based state development
+
+Follow [state component rules](docs/spec-kit/state-components.md). YU18-risk-integration is the
+canonical YU18 pack; add order types, service packaging and pipeline feature specs under its
+components/ directory. Keep shared quickstart, architecture, contracts and generation in the parent.
+A feature does not require a new state branch; isolated task worktrees remain available for concurrency.

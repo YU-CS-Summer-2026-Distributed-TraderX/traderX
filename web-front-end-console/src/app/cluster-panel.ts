@@ -53,9 +53,9 @@ export function bookVerdict(
     return { text: `⚠ members DISAGREE on the book at the same applied sequence ${applied}`, tone: 'banner bad' };
   }
   if (!advancing) {
-    return { text: `· ${seen.length} members hold an identical book (${seen[0].books} securities) at ${applied} · quiet ${Math.round(quietMs / 1000)}s`, tone: 'banner' };
+    return { text: `· ${seen.length} members hold an identical book at ${applied}`, tone: 'banner' };
   }
-  return { text: `✓ ${seen.length} members agree on the book (${seen[0].books} securities) at applied ${applied}, and advancing`, tone: 'banner good' };
+  return { text: `✓ ${seen.length} members hold an identical book at ${applied}`, tone: 'banner good' };
 }
 
 @Component({

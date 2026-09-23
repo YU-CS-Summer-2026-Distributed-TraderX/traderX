@@ -377,7 +377,7 @@ def main():
     ap.add_argument("--live-deployment", metavar="NAME",
                     help="the input is a live object stream that must contain Deployment NAME")
     ap.add_argument("--rendered", type=pathlib.Path, help="rendered order-matcher counterparties.csv")
-    ap.add_argument("--state", help="state id the rendered tree was generated for, e.g. YU18-eod-risk-bundles")
+    ap.add_argument("--state", help="state id the rendered tree was generated for, e.g. YU18-risk-integration")
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
 

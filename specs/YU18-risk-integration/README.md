@@ -1,4 +1,10 @@
-# Feature Pack: YU18-eod-risk-bundles
+# YU18 — Risk Integration
+
+This state inherits YU17-otc-rates and contains multiple component specs. EOD foundations are implemented; order types, service packaging and pipeline extensions are planned.
+
+See [state spec](spec.md), [plan](plan.md), [tasks](tasks.md), [quickstart](quickstart.md) and [components](components/README.md). Runtime directory `eod-risk-bundles` and existing wire/schema identities remain unchanged.
+
+## Existing EOD foundations
 
 ![linux/mac support](https://badgen.net/badge/linux%2Fmac/supported/green?icon=linux) ![windows support](https://badgen.net/badge/windows/not%20supported/red?icon=windows)
 

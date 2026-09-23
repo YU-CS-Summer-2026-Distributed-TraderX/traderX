@@ -46,7 +46,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU15-eod-risk-extract`
 - `YU16-cdm-instruments`
 - `YU17-otc-rates`
-- `YU18-eod-risk-bundles`
+- `YU18-risk-integration`
 
 ### Non-Functional
 
@@ -74,7 +74,7 @@ This file is generated from `catalog/state-catalog.json`.
 - `YU15-eod-risk-extract`
 - `YU16-cdm-instruments`
 - `YU17-otc-rates`
-- `YU18-eod-risk-bundles`
+- `YU18-risk-integration`
 
 ### Convergence
 
@@ -118,4 +118,4 @@ This file is generated from `catalog/state-catalog.json`.
 | `YU15-eod-risk-extract` | YU14-listed-equity-options | `none` | `false` | `optional` | `specs/YU15-eod-risk-extract/spec.md` |
 | `YU16-cdm-instruments` | YU15-eod-risk-extract | `none` | `false` | `optional` | `specs/YU16-cdm-instruments/spec.md` |
 | `YU17-otc-rates` | YU16-cdm-instruments | `none` | `false` | `optional` | `specs/YU17-otc-rates/spec.md` |
-| `YU18-eod-risk-bundles` | YU17-otc-rates | `none` | `false` | `optional` | `specs/YU18-eod-risk-bundles/spec.md` |
+| `YU18-risk-integration` | YU17-otc-rates | `none` | `false` | `optional` | `specs/YU18-risk-integration/spec.md` |

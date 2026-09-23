@@ -127,7 +127,7 @@ curl --max-time 20 -fsS https://yaakovseif.dev/eod/jobs
 curl --max-time 20 -fsS https://yaakovseif.dev/order-matcher/health
 ```
 
-Use scoped strategic patches under `specs/YU18-eod-risk-bundles/generation/kubernetes/gke-demo/`.
+Use scoped strategic patches under `specs/YU18-risk-integration/generation/kubernetes/gke-demo/`.
 Do not apply historical full overlays: they would revert newer live configuration/images. Rollback
 uses the saved preflight workload snapshot and targeted `kubectl set image`; do not restore whole
 objects blindly or restore stale trading rows into the new epoch. Previous service tags were
@@ -164,7 +164,7 @@ tar -czf /private/path/state.tar.gz -C /private/path/new-package/state .
 kubectl --context gke_traderx-505400_us-east1-b_traderx-bench -n traderx create secret generic risk-demo-state-NEW --from-file=state.tar.gz=/private/path/state.tar.gz
 kubectl --context gke_traderx-505400_us-east1-b_traderx-bench -n traderx create configmap risk-demo-report-NEW --from-file=risk-demo.json=/private/path/new-package/risk-demo.json
 # Update the two names and immutable console digest in a reviewed copy of console.patch.json.
-kubectl --context gke_traderx-505400_us-east1-b_traderx-bench -n traderx patch deployment/web-front-end-console --type=strategic --patch-file specs/YU18-eod-risk-bundles/generation/kubernetes/gke-demo/console.patch.json
+kubectl --context gke_traderx-505400_us-east1-b_traderx-bench -n traderx patch deployment/web-front-end-console --type=strategic --patch-file specs/YU18-risk-integration/generation/kubernetes/gke-demo/console.patch.json
 ```
 
 The init container copies the archive, sets root ownership and private directory mode; the main

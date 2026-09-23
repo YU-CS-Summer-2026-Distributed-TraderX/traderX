@@ -2,7 +2,7 @@
 
 `.github/workflows/engine-tests.yml` runs on pushes to `traderX-risk-integration`, pull requests, and manual dispatch. Events on, targeting, or originating from the integration branch select the event commit: the pushed SHA, or GitHub's proposed merge commit for a pull request. Each job uses that same revision; none of these integration runs checks out a moving YU15 branch head.
 
-Integration runs render `YU18-eod-risk-bundles`. The hosted engine/allocation and composed service suites run against that generated tree. Baseline Java, reference-data and .NET suites use the same event checkout. The existing four Testcontainers jobs remain enabled and render YU18 where they need composed services.
+Integration runs render `YU18-risk-integration`. The hosted engine/allocation and composed service suites run against that generated tree. Baseline Java, reference-data and .NET suites use the same event checkout. The existing four Testcontainers jobs remain enabled and render YU18 where they need composed services.
 
 The composed-extras job installs dependencies and tests reference-data, price-publisher and tick-store, and additionally runs:
 

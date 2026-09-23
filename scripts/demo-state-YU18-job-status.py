@@ -15,7 +15,7 @@ import urllib.request
 
 ROOT=Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--component',type=Path,default=ROOT/'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles')
+parser.add_argument('--component',type=Path,default=ROOT/'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles')
 args=parser.parse_args();component=args.component.resolve();sys.path.insert(0,str(component))
 from coordinator import Coordinator
 from w0_result import W0FileAdapter

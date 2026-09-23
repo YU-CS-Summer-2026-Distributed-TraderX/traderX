@@ -87,4 +87,4 @@ If your organization needs private runtime constraints, internal-only states, or
 4. Tailor the included profile, transform, and internal-docs examples to your environment policy.
 5. Publish an internal docs portal that includes only your sanctioned internal learning graph branches.
 
-Local EOD bundle state: `YU18-eod-risk-bundles` (parent `YU17-otc-rates`). Its configured generated branch is `code/generated-state-YU18-eod-risk-bundles`; this local implementation has not been published. Run its source quickstart under `specs/YU18-eod-risk-bundles/quickstart.md`.
+Local EOD bundle state: `YU18-risk-integration` (parent `YU17-otc-rates`). Its configured generated branch is `code/generated-state-YU18-risk-integration`; this local implementation has not been published. Run its source quickstart under `specs/YU18-risk-integration/quickstart.md`.

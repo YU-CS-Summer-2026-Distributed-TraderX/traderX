@@ -31,7 +31,7 @@ permissions:
 
 env:
   CI_CHECKOUT_REF: ${{ (github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && github.sha || 'YU15-eod-risk-extract' }}
-  CI_RENDER_STATE: ${{ (github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && 'YU18-eod-risk-bundles' || 'YU15-eod-risk-extract' }}
+  CI_RENDER_STATE: ${{ (github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && 'YU18-risk-integration' || 'YU15-eod-risk-extract' }}
 
 concurrency:
   # Never let two runs of the same ref race — concurrent gradle is exactly what
@@ -47,11 +47,11 @@ jobs:
       fail-fast: false
       matrix:
         # Integration has one YU18 leg at the event SHA, not five older branch heads.
-        branch: ${{ fromJSON((github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && '["YU18-eod-risk-bundles"]' || '["YU17-otc-rates","YU16-cdm-instruments","YU15-eod-risk-extract","YU14-listed-equity-options","YU13-limit-order-book"]') }}
+        branch: ${{ fromJSON((github.ref_name == 'traderX-risk-integration' || github.base_ref == 'traderX-risk-integration' || github.head_ref == 'traderX-risk-integration') && '["YU18-risk-integration"]' || '["YU17-otc-rates","YU16-cdm-instruments","YU15-eod-risk-extract","YU14-listed-equity-options","YU13-limit-order-book"]') }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ matrix.branch == 'YU18-eod-risk-bundles' && github.sha || matrix.branch }}
+          ref: ${{ matrix.branch == 'YU18-risk-integration' && github.sha || matrix.branch }}
           fetch-depth: 0
       - uses: actions/setup-node@v5
         with:
@@ -177,16 +177,16 @@ jobs:
       - name: Render effective tree (${{ env.CI_RENDER_STATE }})
         run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
       - name: EOD source suite (integration)
-        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
-        run: bash scripts/test-state-YU18-eod-risk-bundles.sh
+        if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
+        run: bash scripts/test-state-YU18-risk-integration.sh
       - name: EOD generated suite (integration)
-        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
-        run: bash scripts/test-state-YU18-eod-risk-bundles.sh generated/code/target-generated/eod-risk-bundles
+        if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
+        run: bash scripts/test-state-YU18-risk-integration.sh generated/code/target-generated/eod-risk-bundles
       - name: Check frozen fixture bytes survive checkout (integration)
-        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
         run: python3 scripts/test-state-YU18-checkout.py
       - name: Check rendered counterparty reference (integration)
-        if: ${{ env.CI_RENDER_STATE == 'YU18-eod-risk-bundles' }}
+        if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
         run: |
           python3 -m pip install pyyaml==6.0.2
           python3 scripts/ci/check-counterparty-reference-not-shadowed.py --rendered generated/code/target-generated/order-matcher/src/main/resources/reference-data/counterparties.csv --state "$CI_RENDER_STATE"

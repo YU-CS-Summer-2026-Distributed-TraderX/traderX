@@ -13,7 +13,7 @@ def main():
     os.umask(0o077)
     root = Path(__file__).resolve().parents[1]
     component = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else (
-        root / 'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles')
+        root / 'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles')
     output = Path(tempfile.mkdtemp(prefix='traderx-http-demo-')).resolve()
     worker = None
     log = None

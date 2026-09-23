@@ -42,7 +42,7 @@ This repository now uses the GitHub Spec Kit canonical structure at repo root:
 - `YU15-eod-risk-extract`
 - `YU16-cdm-instruments`
 - `YU17-otc-rates`
-- `YU18-eod-risk-bundles`
+- `YU18-risk-integration`
 
 ## References
 
@@ -52,4 +52,4 @@ State lineage and generated-branch publish conventions are tracked in:
 
 ## Local EOD bundle state
 
-`YU18-eod-risk-bundles` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-eod-risk-bundles/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-eod-risk-bundles.sh`; see the state quickstart for its local demo.
+`YU18-risk-integration` inherits `YU17-otc-rates`. Its state pack is `specs/YU18-risk-integration/`. The added Python component builds and validates local EOD bundles and produces explicitly non-pricing mock results. It uses no cloud resources. Run `bash scripts/test-state-YU18-risk-integration.sh`; see the state quickstart for its local demo.

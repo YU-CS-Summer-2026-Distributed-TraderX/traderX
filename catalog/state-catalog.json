@@ -788,28 +788,28 @@
       }
     },
     {
-      "id": "YU18-eod-risk-bundles",
-      "title": "Local EOD Risk Bundles",
+      "id": "YU18-risk-integration",
+      "title": "Risk Integration",
       "status": "implemented",
       "track": "functional",
       "convergenceLevel": "none",
       "isConvergence": false,
       "dottedParents": [],
       "primaryLineageRole": "optional",
-      "featurePack": "specs/YU18-eod-risk-bundles",
+      "featurePack": "specs/YU18-risk-integration",
       "previous": [
         "YU17-otc-rates"
       ],
       "generation": {
         "mode": "implemented",
-        "entrypoint": "bash pipeline/generate-state.sh YU18-eod-risk-bundles",
+        "entrypoint": "bash pipeline/generate-state.sh YU18-risk-integration",
         "runtime": "python3 eod-risk-bundles/bundle.py --help"
       },
       "publish": {
-        "branch": "code/generated-state-YU18-eod-risk-bundles",
-        "tag": "generated/YU18-eod-risk-bundles/v1"
+        "branch": "code/generated-state-YU18-risk-integration",
+        "tag": "generated/YU18-risk-integration/v1"
       },
-      "authoringBranch": "YU18-eod-risk-bundles"
+      "authoringBranch": "traderX-risk-integration"
     }
   ]
 }

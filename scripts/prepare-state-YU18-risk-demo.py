@@ -15,7 +15,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-COMPONENT = ROOT / 'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles'
+COMPONENT = ROOT / 'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles'
 sys.path.insert(0, str(COMPONENT))
 import bundle
 import coordinator

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PACK="${ROOT}/specs/YU18-eod-risk-bundles"
+PACK="${ROOT}/specs/YU18-risk-integration"
 GENERATED="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated"
 MATCHER="${GENERATED}/order-matcher"
 COMPONENT="${GENERATED}/eod-risk-bundles"

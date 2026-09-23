@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GENERATED_ROOT="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}"
 STATE_ID="${1:-}"
+# Retain old callers while publishing only the canonical state identity.
+[[ "${STATE_ID}" != "YU18-eod-risk-bundles" ]] || STATE_ID="YU18-risk-integration"
 TARGET_ROOT="${GENERATED_ROOT}/code/target-generated"
 COMPONENTS_ROOT="${GENERATED_ROOT}/code/components"
 GEN_DEPTH="${TRADERX_GENERATION_DEPTH:-0}"

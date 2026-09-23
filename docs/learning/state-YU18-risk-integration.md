@@ -1,8 +1,8 @@
 ---
-title: "State YU18-eod-risk-bundles: Local EOD Risk Bundles"
+title: "State YU18-risk-integration: Risk Integration"
 ---
 
-# State YU18-eod-risk-bundles Learning Guide
+# State YU18-risk-integration Learning Guide
 
 ## Position In Learning Graph
 
@@ -20,12 +20,12 @@ title: "State YU18-eod-risk-bundles: Local EOD Risk Bundles"
 
 ## Rendered Code
 
-- Generated branch: [code/generated-state-YU18-eod-risk-bundles](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-eod-risk-bundles)
-- Authoring branch (spec source): [YU18-eod-risk-bundles](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/YU18-eod-risk-bundles)
+- Generated branch: [code/generated-state-YU18-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-risk-integration)
+- Authoring branch (spec source): [traderX-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/traderX-risk-integration)
 
 ## Code Comparison With Previous State
 
-- Compare against `YU17-otc-rates`: [code/generated-state-YU17-otc-rates...code/generated-state-YU18-eod-risk-bundles](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU17-otc-rates...code%2Fgenerated-state-YU18-eod-risk-bundles)
+- Compare against `YU17-otc-rates`: [code/generated-state-YU17-otc-rates...code/generated-state-YU18-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/compare/code%2Fgenerated-state-YU17-otc-rates...code%2Fgenerated-state-YU18-risk-integration)
 
 ## Plain-English Code Delta
 
@@ -46,10 +46,10 @@ python3 eod-risk-bundles/bundle.py --help
 
 ## Canonical Spec Links
 
-- State spec pack: [/specs/YU18-eod-risk-bundles](/specs/YU18-eod-risk-bundles)
-- Architecture: [/specs/YU18-eod-risk-bundles/system/architecture](/specs/YU18-eod-risk-bundles/system/architecture)
-- Flows / topology: [/specs/YU18-eod-risk-bundles/system/runtime-topology](/specs/YU18-eod-risk-bundles/system/runtime-topology)
-- Research: [link](/specs/YU18-eod-risk-bundles/research)
-- Data model: [link](/specs/YU18-eod-risk-bundles/data-model)
-- Quickstart: [link](/specs/YU18-eod-risk-bundles/quickstart)
+- State spec pack: [/specs/YU18-risk-integration](/specs/YU18-risk-integration)
+- Architecture: [/specs/YU18-risk-integration/system/architecture](/specs/YU18-risk-integration/system/architecture)
+- Flows / topology: [/specs/YU18-risk-integration/system/runtime-topology](/specs/YU18-risk-integration/system/runtime-topology)
+- Research: [link](/specs/YU18-risk-integration/research)
+- Data model: [link](/specs/YU18-risk-integration/data-model)
+- Quickstart: [link](/specs/YU18-risk-integration/quickstart)
 

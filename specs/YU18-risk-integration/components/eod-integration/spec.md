@@ -1,6 +1,7 @@
 # Feature Specification: EOD Risk Bundles
 
-**Feature Branch**: `YU18-eod-risk-bundles`  
+**State**: `YU18-risk-integration`
+**Integration branch**: `traderX-risk-integration`  
 **Created**: 2026-09-14  
 **Status**: Implemented local transport and durable mock coordination
 **Input**: Delta over `YU17-otc-rates` position schema 3 and OTC schema 2 exports

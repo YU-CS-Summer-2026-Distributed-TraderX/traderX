@@ -11,7 +11,7 @@ python3 - "${ROOT}" "${GENERATED}" <<'PY'
 from pathlib import Path
 import hashlib,json,sys
 root,generated=map(Path,sys.argv[1:])
-source=root/'specs/YU18-eod-risk-bundles/generation/runtime-overrides'
+source=root/'specs/YU18-risk-integration/generation/runtime-overrides'
 for p in source.rglob('*'):
     if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc':
         target=generated/p.relative_to(source)

@@ -66,7 +66,7 @@ flowchart TB
   SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
   SYU16_cdm_instruments["YU16-cdm-instruments: CDM Instruments"]
   SYU17_otc_rates["YU17-otc-rates: OTC Interest-Rate Swaps"]
-  SYU18_eod_risk_bundles["YU18-eod-risk-bundles: Local EOD Risk Bundles"]
+  SYU18_risk_integration["YU18-risk-integration: Risk Integration"]
   S001_baseline_uncontainerized_parity --> S002_edge_proxy_uncontainerized
   S002_edge_proxy_uncontainerized --> S003_agentic_harness_foundation
   S003_agentic_harness_foundation --> S004_containerized_compose_runtime
@@ -97,7 +97,7 @@ flowchart TB
   SYU14_listed_equity_options --> SYU15_eod_risk_extract
   SYU15_eod_risk_extract --> SYU16_cdm_instruments
   SYU16_cdm_instruments --> SYU17_otc_rates
-  SYU17_otc_rates --> SYU18_eod_risk_bundles
+  SYU17_otc_rates --> SYU18_risk_integration
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   click S001_baseline_uncontainerized_parity href "/specs/baseline-uncontainerized-parity" "Open State 001 Spec Pack"
   click S002_edge_proxy_uncontainerized href "/specs/edge-proxy-uncontainerized" "Open State 002 Spec Pack"
@@ -130,7 +130,7 @@ flowchart TB
   click SYU15_eod_risk_extract href "/specs/YU15-eod-risk-extract" "Open State YU15-eod-risk-extract Spec Pack"
   click SYU16_cdm_instruments href "/specs/YU16-cdm-instruments" "Open State YU16-cdm-instruments Spec Pack"
   click SYU17_otc_rates href "/specs/YU17-otc-rates" "Open State YU17-otc-rates Spec Pack"
-  click SYU18_eod_risk_bundles href "/specs/YU18-eod-risk-bundles" "Open State YU18-eod-risk-bundles Spec Pack"
+  click SYU18_risk_integration href "/specs/YU18-risk-integration" "Open State YU18-risk-integration Spec Pack"
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
   class S004_containerized_compose_runtime convergence
   class S007_observability_lgtm_compose convergence
@@ -173,7 +173,7 @@ flowchart TB
 | [`YU15-eod-risk-extract`](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract) | [link](pathname:///specs/YU15-eod-risk-extract/system/architecture) | [link](pathname:///specs/YU15-eod-risk-extract/system/runtime-topology) | [link](pathname:///docs/learning/state-YU15-eod-risk-extract) | [code/generated-state-YU15-eod-risk-extract](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU15-eod-risk-extract) |
 | [`YU16-cdm-instruments`](pathname:///specs/YU16-cdm-instruments) | [link](pathname:///specs/YU16-cdm-instruments) | [link](pathname:///specs/YU16-cdm-instruments/system/architecture) | [link](pathname:///specs/YU16-cdm-instruments/system/runtime-topology) | [link](pathname:///docs/learning/state-YU16-cdm-instruments) | [code/generated-state-YU16-cdm-instruments](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU16-cdm-instruments) |
 | [`YU17-otc-rates`](pathname:///specs/YU17-otc-rates) | [link](pathname:///specs/YU17-otc-rates) | [link](pathname:///specs/YU17-otc-rates/system/architecture) | [link](pathname:///specs/YU17-otc-rates/system/runtime-topology) | [link](pathname:///docs/learning/state-YU17-otc-rates) | [code/generated-state-YU17-otc-rates](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU17-otc-rates) |
-| [`YU18-eod-risk-bundles`](pathname:///specs/YU18-eod-risk-bundles) | [link](pathname:///specs/YU18-eod-risk-bundles) | [link](pathname:///specs/YU18-eod-risk-bundles/system/architecture) | [link](pathname:///specs/YU18-eod-risk-bundles/system/runtime-topology) | [link](pathname:///docs/learning/state-YU18-eod-risk-bundles) | [code/generated-state-YU18-eod-risk-bundles](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-eod-risk-bundles) |
+| [`YU18-risk-integration`](pathname:///specs/YU18-risk-integration) | [link](pathname:///specs/YU18-risk-integration) | [link](pathname:///specs/YU18-risk-integration/system/architecture) | [link](pathname:///specs/YU18-risk-integration/system/runtime-topology) | [link](pathname:///docs/learning/state-YU18-risk-integration) | [code/generated-state-YU18-risk-integration](https://github.com/YU-CS-Summer-2026-Distributed-TraderX/traderX/tree/code/generated-state-YU18-risk-integration) |
 
 ## Swimlane View
 
@@ -215,7 +215,7 @@ flowchart TB
     SYU15_eod_risk_extract["YU15-eod-risk-extract: EOD Risk Extract"]
     SYU16_cdm_instruments["YU16-cdm-instruments: CDM Instruments"]
     SYU17_otc_rates["YU17-otc-rates: OTC Interest-Rate Swaps"]
-    SYU18_eod_risk_bundles["YU18-eod-risk-bundles: Local EOD Risk Bundles"]
+    SYU18_risk_integration["YU18-risk-integration: Risk Integration"]
   end
   subgraph DEVEX["Devex Track"]
     S010_kubernetes_runtime["010: Kubernetes Runtime on C2"]
@@ -253,7 +253,7 @@ flowchart TB
   SYU14_listed_equity_options --> SYU15_eod_risk_extract
   SYU15_eod_risk_extract --> SYU16_cdm_instruments
   SYU16_cdm_instruments --> SYU17_otc_rates
-  SYU17_otc_rates --> SYU18_eod_risk_bundles
+  SYU17_otc_rates --> SYU18_risk_integration
   S009_order_management_matcher -.-> S012_platform_convergence_c3
   classDef convergence fill:#d7f5dd,stroke:#2e7d32,stroke-width:2px
 ```

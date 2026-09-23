@@ -1,6 +1,6 @@
 {
-  "title": "YU18-eod-risk-bundles architecture",
-  "stateId": "YU18-eod-risk-bundles",
+  "title": "YU18-risk-integration architecture",
+  "stateId": "YU18-risk-integration",
   "parentState": "YU17-otc-rates",
   "inheritsFrom": "YU17-otc-rates",
   "description": "Local EOD bundles, durable single-host coordination, strict mock ingestion and recovery.",

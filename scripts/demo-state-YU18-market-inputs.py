@@ -6,7 +6,7 @@ import sys
 import tempfile
 
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--component', type=Path, default=Path(__file__).resolve().parents[1]/'specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles')
+parser.add_argument('--component', type=Path, default=Path(__file__).resolve().parents[1]/'specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles')
 args=parser.parse_args()
 sys.path.insert(0,str(args.component.resolve()))
 import market_inputs

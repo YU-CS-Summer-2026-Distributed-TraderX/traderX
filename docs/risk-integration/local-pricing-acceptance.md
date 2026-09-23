@@ -1,6 +1,6 @@
 # Local provisional synthetic pricing acceptance
 
-TraderX has a separate acceptance profile for Alex commit `e7246e1765a2f9b4d4dd6049c97d1baa66319be7` with explicitly selected `flat-3pct-v1`. It is deliberately limited to the original dated bill/note bundles. W0 retains its old pin and non-pricing semantics. See [the full contract](../../specs/YU18-eod-risk-bundles/contracts/provisional-pricing-local-v1.md) for accepted fields, independent formulas, units and tolerances.
+TraderX has a separate acceptance profile for Alex commit `e7246e1765a2f9b4d4dd6049c97d1baa66319be7` with explicitly selected `flat-3pct-v1`. It is deliberately limited to the original dated bill/note bundles. W0 retains its old pin and non-pricing semantics. See [the full contract](../../specs/YU18-risk-integration/contracts/provisional-pricing-local-v1.md) for accepted fields, independent formulas, units and tolerances.
 
 ## Repeatable real-checkout demo
 
@@ -17,23 +17,23 @@ For generated validation pass `--component generated/code/target-generated/eod-r
 ## Local intake commands
 
 ```sh
-python3 specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/coordinator.py --state /private/tmp/my-pricing-state --pricing-results /private/tmp/my-incoming-results discover /private/tmp/my-bundle-inbox
-python3 specs/YU18-eod-risk-bundles/generation/runtime-overrides/eod-risk-bundles/coordinator.py --state /private/tmp/my-pricing-state --pricing-results /private/tmp/my-incoming-results run
+python3 specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/coordinator.py --state /private/tmp/my-pricing-state --pricing-results /private/tmp/my-incoming-results discover /private/tmp/my-bundle-inbox
+python3 specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/coordinator.py --state /private/tmp/my-pricing-state --pricing-results /private/tmp/my-incoming-results run
 ```
 
 Supply original results as `BUNDLE_ID.json`. Use an unused private state directory; adapter profiles cannot mix. Completion is SYNTHETIC_PRICING_VALIDATED, never production risk. Read-only status reports explicit synthetic scope and keeps usableForRisk=false; existing console UI is not redesigned or deployed here.
 
 ## Verification and remaining limitations
 
-Run `bash scripts/test-state-YU18-eod-risk-bundles.sh` for the source suite, then the same command with the generated component path. New tests cover producer-output leaf tampering, closed shapes, numerical/sign/bump mistakes, unsupported capabilities, nonfinite values, input scope, original retention, real process exit recovery, late results, duplicate discovery, old-cut selection and receipt integrity. Independent references use Decimal exponentials and date arithmetic, not Alex's expected-answer generator. The committed priced JSON files are real producer test inputs.
+Run `bash scripts/test-state-YU18-risk-integration.sh` for the source suite, then the same command with the generated component path. New tests cover producer-output leaf tampering, closed shapes, numerical/sign/bump mistakes, unsupported capabilities, nonfinite values, input scope, original retention, real process exit recovery, late results, duplicate discovery, old-cut selection and receipt integrity. Independent references use Decimal exponentials and date arithmetic, not Alex's expected-answer generator. The committed priced JSON files are real producer test inputs.
 
 No terms-v2 acceptance, producer result-schema upgrade, authentication, remote worker service, equity, faithful SOFR, bill sensitivity, additional Greeks, observed market data or production/financial approval is provided. Alex's unrounded-tolerance and impossible-date bugs remain external; exact admitted fixtures avoid them and other inputs fail closed. Changes to his engine require a fresh explicit review/profile decision.
 
 ## Measured implementation evidence (2026-09-16)
 
-Dedicated branch `codex/pricing-acceptance-e7246e1`, based on accepted `c020c20d5493fa01a3c9e6afa31b83bc4db7d448`. Authoritative owner is YU18; searches found no competing EOD component overrides. Full `TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-eod-risk-bundles` succeeded, followed by the final YU18 renderer. No generated-only edit or broad propagation was made.
+Dedicated branch `codex/pricing-acceptance-e7246e1`, based on accepted `c020c20d5493fa01a3c9e6afa31b83bc4db7d448`. Authoritative owner is YU18; searches found no competing EOD component overrides. Full `TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh YU18-risk-integration` succeeded, followed by the final YU18 renderer. No generated-only edit or broad propagation was made.
 
-- Source and generated `scripts/test-state-YU18-eod-risk-bundles.sh`: **133 tests passed each** (original 122 plus 11 new tests, including 360 producer-result leaf mutations as subtests).
+- Source and generated `scripts/test-state-YU18-risk-integration.sh`: **133 tests passed each** (original 122 plus 11 new tests, including 360 producer-result leaf mutations as subtests).
 - Real pinned Alex demo against the generated component: both bill/note pairs accepted as SYNTHETIC_PRICING_VALIDATED, one attempt each after pending/restart, W0 rejected pricing, original result bytes retained, tracked Alex bytes unchanged and checkout clean at e7246e1.
 - **88 component files** byte-identical between source/generated; **63 original fixture/W0/verifier files** byte-identical to the accepted base. Original W0 profile definition remains unchanged. The real Git core.autocrlf checkout proof passed, including an unprotected negative control.
 - Frontmatter, root SpecKit gates, readiness and spec-coverage commands all exited 0.
