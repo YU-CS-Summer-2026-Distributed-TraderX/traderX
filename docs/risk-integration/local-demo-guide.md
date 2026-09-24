@@ -1,9 +1,13 @@
 # Local demo and acceptance guide (RI-07)
 
 Maintained command guide for the full local rig: trading tier, console, algo engine and
-observability on your own disposable kind cluster. Last verified 2026-09-24 18:45Z on macOS arm64
-(Docker Desktop, 11 CPU / 10 GB) from `claude/demo-acceptance` at `e96bf28a` (integration
-`9931b3e5` plus RI-07), with no local patches.
+observability on your own disposable kind cluster. Independently reproduced 2026-09-24 on macOS arm64
+(Docker Desktop, 11 CPU / 10 GB) from integration `920a2fff3d678d153dfd10fa1f348196009dc686`.
+Unchanged trading build: full readiness 16/16 after startup settled, order acceptance 31/31,
+and an already-open blotter ratchet 102 → 101 without reload. The original risk command failed its
+exporter-provenance guard; correction `a7bb6e30` refreshes only the reviewed exporter hash and source
+revision after 56 exporter tests and all 27 frozen fixture files reproduced unchanged. The corrected
+container/intake/Risk UI flow passed. This is not an unchanged-branch risk-flow pass.
 Component contract: [demo-acceptance](../../specs/YU18-risk-integration/components/demo-acceptance/README.md).
 
 **Labels used below.** *Live*: exercised on the kind rig. *Synthetic*: fixture or generated
@@ -15,10 +19,11 @@ Nothing here is financial validation; `usableForRisk` stays `false` throughout.
 | ID | What | Effect | Owner |
 |---|---|---|---|
 | F1 | FIXED in integration `9931b3e5`. Builds before it encode typed orders (96 bytes) into a 64-byte buffer. | On an older build every order with `orderType` returns 504 `no committed ack` and is never sequenced. | Fixed by the RI-06 lane, integrated by the coordinator |
-| F3 | FIXED on `claude/f3-trailing-stop` (pending integration). Before it a trailing stop's ratchet emitted no order update. | On an older build the blotter kept the level from the order's last event. | Claude F3 lane |
-| C1 | At integration `72870ca9` the YU18 schema ConfigMap is invalid YAML: RI-06 SQL sits outside any block. | `start-cluster-kind.sh` stops at "[apply] database schema configmap". | RI-06 owner (board 20260924T200611Z) |
+| F3 | FIXED in integration `4c3b9c59`. | Independently exercised at `920a2fff`: current level in SQL and already-open UI. | Integrated |
+| C1 | FIXED in integration `920a2fff`. | Fresh kind startup passed with the committed schema, no YAML workaround. | Integrated |
 | O1 | Trades booked while trade-processor is down are not replayed when it returns. | Read-model rows are lost for that window (4 of 4 in the repro). | RI-06 |
-| O2 | `orderbook.orderid` is `1-<ref>` but `trades.sourceorderid` is `0-<ref>`. | Joins between the two tables on order id miss. | RI-06 |
+| O2 | Managed identity/projection migration integrated at `72870ca9`; this guide uses the legacy default. | This fresh-rig proof does not activate or validate managed identity. Legacy ID joins remain outside its acceptance. | RI-06 |
+| P1 | Exporter provenance at `920a2fff` still pins pre-migration `RiskExtractReady.java`. | Section 5 refuses before engine startup. Use correction `a7bb6e30`; do not disable the guard or change frozen economics. | Corrected in local acceptance |
 
 Build from a commit with both the F1 and F3 fixes, and with C1 fixed, for section 4 to exit 0.
 
@@ -32,6 +37,7 @@ on the board before starting one next to another lane's rig.
 export RIG=traderx-ri07-demo                    # any unused name; never a retained rig's name
 export KUBECONFIG="$PWD/.kube-$RIG"             # keeps ~/.kube/config and other rigs out of reach
 export KIND_CLUSTER_NAME=$RIG CTX=kind-$RIG RIG_OFFLINE=1
+export RISK_RUN=/private/tmp/traderx-ri07-risk-$(date +%s) # new, absent directory
 TAG=ri07-$(git rev-parse --short=8 HEAD)
 ```
 
@@ -60,7 +66,10 @@ bash scripts/yu15/start-observability-kind.sh  # collector, Tempo, Prometheus, L
 bash scripts/yu15/start-frontend-kind.sh       # account/people/trade services, edge proxy, API docs
 kubectl --context $CTX -n traderx port-forward svc/order-matcher 28110:18110 &
 kubectl --context $CTX -n traderx port-forward svc/edge-proxy 28080:8080 &
-(cd web-front-end-console && PORT=28090 EDGE_PROXY=localhost:28080 POD_HTTP_VIA_EXEC=1 node server.mjs) &
+(cd web-front-end-console && PORT=28090 EDGE_PROXY=localhost:28080 POD_HTTP_VIA_EXEC=1 \
+  EOD_COORDINATOR_STATE="$RISK_RUN/state" \
+  EOD_STATUS_SCRIPT="$PWD/../generated/code/target-generated/eod-risk-bundles/job_status.py" \
+  EOD_PYTHON="$PWD/../.venv-ri07/bin/python3" node server.mjs) &
 ```
 
 Observability must come before the frontend: the edge proxy's config names `tempo`, `grafana`,
@@ -70,7 +79,9 @@ a synthetic walk and no tape order flow is replayed. The first bring-up pulls pu
 the observability stack); MariaDB alone took about 3 minutes here.
 
 The console runs from this checkout's build. Its server calls `kubectl` with no `--context`,
-so keep `KUBECONFIG` scoped to this rig.
+so keep `KUBECONFIG` scoped to this rig. Keep the shell/session hosting the background processes
+alive and record their PIDs for cleanup. The Risk job reader becomes available after section 5
+creates its environment and state; it never starts the risk worker itself.
 
 ## 3. Validate readiness
 
@@ -78,7 +89,12 @@ so keep `KUBECONFIG` scoped to this rig.
 MATCHER_URL=http://localhost:28110 CONSOLE_URL=http://localhost:28090 bash scripts/ri07/rig-ready.sh
 ```
 
-Expect `[ready] full rig ready` and 16 `[ok]` lines. Each check tests function, not a pod phase:
+Expect `[ready] full rig ready`, exit 0, and 16 `[ok]` lines. Preserve any failed run.
+The independent run initially failed workload readiness while `feed-adapter` restarted after the
+observability member roll (Aeron cluster-connect timeout). Its logs later showed `FEED ADAPTER up`;
+the unchanged readiness proof then passed 16/16 without intervention. Diagnose and wait for a
+specific transient dependency to recover before a rerun; never suppress a failing check.
+Each check tests function, not a pod phase:
 
 - Every member applies the probe's orders, with exactly one leader.
 - The isolated probe books 4 legs into the read model.
@@ -114,7 +130,7 @@ BUSINESS_DATE=$(date +%F) CONSOLE_URL=http://localhost:28090 python3 scripts/ri0
 This runs 31 cases, all through the console's `/order-matcher` proxy. With F3 fixed the trailing
 read-model case is ordinary; no known gap remains. Exit codes:
 
-- 0: every case matched. This is the only acceptance, and it is the result on the F3 branch.
+- 0: every case matched. This is the only acceptance; independently obtained on the combined `920a2fff` trading build.
 - 3: INCOMPLETE. The ordinary cases matched but a named known gap still reproduces (none today).
 - 1: a mismatch, or a failed or malformed read. The run aborts and draws no verdict.
 - 2: a precondition refused the run. Each case is judged at the read model and member `/bbo`, never by the HTTP answer alone.
@@ -142,7 +158,7 @@ with `curl`.
 ```bash
 python3 -m venv .venv-ri07 && .venv-ri07/bin/pip install -r \
   specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/requirements-container.txt
-PATH="$PWD/.venv-ri07/bin:$PATH" bash scripts/ri07/risk-flow-local.sh /private/tmp/traderx-ri07-risk-$(date +%s)
+PATH="$PWD/.venv-ri07/bin:$PATH" bash scripts/ri07/risk-flow-local.sh "$RISK_RUN"
 ```
 
 The supported path is synthetic, with the assumed curve:
@@ -154,7 +170,16 @@ The supported path is synthetic, with the assumed curve:
 5. The job reads `CONTAINER_PRICING_VALIDATED`.
 
 The script checks the result independently against a USD 1e-8 Decimal reference, runs the
-four upstream refusal cases, and removes its container on exit.
+four HTTP refusal cases, and removes its container on exit. If a run refuses after creating its
+output directory, preserve it and choose a new absent `RISK_RUN` for a subsequent run; restart the
+console with the matching state path. Never replace the initial failed evidence.
+
+Open the console's **Risk** page after completion. Under **Calculation status**, expect Treasury
+bill / Container pricing validated, signed faces ±100,000.00 and NPVs ±98,507.15, synthetic export,
+assumed flat 3% curve, business date 2025-06-02, and the production-risk restriction. The separate
+Treasury-demo control and historical comparison panels remain unconfigured in this profile. Reading
+the validated result after the container is removed verifies offline custody, not current worker
+connectivity. The independent run captured both the actual rendered page and `/eod/jobs`.
 
 **Profile restriction.** RI-03 admits only bundle `c3211337…` with origin `synthetic`
 (`container_adapter.inputs`). Every other bundle is refused before staging, and so is every
@@ -171,11 +196,14 @@ and `risk-flow-local.sh` (its directory). Add the rig identity:
 
 ```bash
 kubectl --context $CTX -n traderx get deploy,sts -o jsonpath='{range .items[*]}{.metadata.name} {.spec.template.spec.containers[0].image}{"\n"}{end}'
-shasum -a 256 <files>
+shasum -a 256 evidence.json "$RISK_RUN/evidence.json" "$RISK_RUN/status.json"
 ```
 
 Evidence stays outside Git. The 2026-09-24 run is in
 `coordination/eod-integration/review-evidence/ri07-demo-acceptance-20260924/`.
+Independent combined-branch evidence: `coordination/eod-integration/review-evidence/local-acceptance-920a2fff-20260924/`
+(`review.md`, exact commands/exits, failed and corrected logs, image identities, JUnit, custody,
+before/after browser screenshots and `SHA256SUMS`).
 
 ## 7. Clean up only what you own
 
@@ -191,8 +219,9 @@ is unset. Always set it.
 ## Clean start versus retained state
 
 This guide always starts clean: a new cluster, a fresh epoch and an empty database. It says
-nothing about recovering a retained rig. Fresh-epoch safety over retained SQL is an open RI-06
-item; trade ids restart per epoch and deduplicate against old rows. To reuse a rig, rerun
+nothing about recovering a retained rig. The RI-06 managed transition capability is integrated, but this guide does not activate it or test
+retained SQL. The legacy default must not be treated as safe retained-state recovery; managed
+identity requires its separate transition procedure and authorization. To reuse a rig, rerun
 sections 3–5; section 4 needs a later `BUSINESS_DATE`. Minted `PRB`/`OTA`/`OTB` instruments leave
 positions that an EOD run would report as unpriced, so use a disposable rig for section 4.
 

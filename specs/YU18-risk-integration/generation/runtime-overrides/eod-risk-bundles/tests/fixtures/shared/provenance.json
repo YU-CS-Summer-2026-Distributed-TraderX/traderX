@@ -2,7 +2,7 @@
   "files": {
     "src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractCsv.java": "115735afb3f5d21e880e45106efcbce56f994b9e2d75ca5574b497a9b847a634",
     "src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractCut.java": "242354577702554403f30500ecb24f2605aa557814d9fdc0f6b2111e32a4cb8e",
-    "src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractReady.java": "619139b4a030e9005df86c659103b44dd06296328b35a304d81aa3f4e72864cd",
+    "src/main/java/finos/traderx/ordermatcher/cluster/RiskExtractReady.java": "69f8e9da79c577b2832821dba90dd44227d8f1150403cb2b3137d7406d6d3c7c",
     "src/main/java/finos/traderx/ordermatcher/cluster/SwapContractCsv.java": "1d2fe40377174f85fdbb09b9e77f2dee4710f2c323986cc879d2b90825d80497",
     "src/main/java/finos/traderx/ordermatcher/lmax/SwapConventions.java": "3f4cf082ec4df8ccff601dd6adcd9d1dc4f62d95011dc1b2136b9d45fc761021",
     "src/test/java/finos/traderx/ordermatcher/cluster/SharedEodExamplesTest.java": "bbf86c0336cdc968e1fc10a40c0368d87a0649b8238e7a6086450d8f0ceabdfd"
@@ -10,6 +10,6 @@
   "generator": "SharedEodExamplesTest",
   "schema": "traderx.exporter-example-provenance.v1",
   "scope": "In-process sequenced service and production exporters, no live consensus, no financial risk engine",
-  "sourceBaseCommit": "bc30ed6625968ae27d4cf85fa68464a2d68ec5c4",
+  "sourceBaseCommit": "920a2fff3d678d153dfd10fa1f348196009dc686",
   "synthetic": true
 }
