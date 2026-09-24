@@ -24,4 +24,11 @@ The real consensus proof and fault-injected SQL transition proof are separate. M
 - [x] M1: reproduce exact/case-equivalent legacy-v0/v1 epoch reuse on MariaDB; globally reserve order namespaces with SQL uniqueness and pre-prepare collation/prefix checks. Keep all historical IDs unchanged. Corrected suite19/19 includes accent collation, unattributed prefix and interrupted conflicting-schema upgrade.
 - [x] M2: connect actual old/fresh Aeron nodes and gateways, production NATS paths, Spring HTTP controller/JPA and MariaDB; complete migration after a dropped committed freeze reply, reject premature activation, and verify exact first fresh IDs/positions plus unchanged nonempty old history. Delivered launcher passes1/1 without skips.
 - [x] Affected unit regressions98/98; generated parity and source/spec gates rerun for correction delivery.
-- [ ] Coordinator acceptance/integration of the corrections. No retained activation or UI rollout.
+- [x] Coordinator accepted/integrated the migration and M1/M2 corrections at72870ca9 on2026-09-24. No retained activation or UI rollout.
+
+## C1 generated ConfigMap correction
+
+- [x] Reproduce malformed generated YAML using a parser regression; the RI06 SQL began outside both literals after a dedented section comment.
+- [x] Relocate only that comment; preserve canonical RI06 SQL in both fresh001 and retained900 keys. Parse the generated Deployment to verify both mount paths and retained900-only selection.
+- [x] Execute parsed fresh001+900 and retained900-only SQL on disposable MariaDB with repeatable application, full historical-column preservation and deleted-demo-row controls.
+- [ ] Coordinator review of C1; no deployment or retained mutation.

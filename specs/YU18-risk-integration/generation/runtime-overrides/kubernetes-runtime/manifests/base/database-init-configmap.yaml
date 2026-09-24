@@ -255,16 +255,6 @@ data:
     CREATE TABLE stocks_source_epoch (
       epoch BIGINT NOT NULL
     );
-  # Idempotent desired-state schema for a PERSISTENT (PVC-backed) datadir. The MariaDB
-  # entrypoint runs /docker-entrypoint-initdb.d only on an EMPTY volume, so this key is
-  # (a) run by the entrypoint right after 001 on first boot (every statement no-ops), and
-  # (b) applied by the schema-migrate initContainer on every later start, bringing a
-  # populated volume from any older state's schema up to this state's (new tables,
-  # trades.settlementdate, one index, and from YU15 the widened instrument-identifier
-  # columns - the first migration that MODIFIES rather than only adds).
-  # Reference seeds (accounts/accountusers) are re-asserted with INSERT IGNORE because FKs
-  # and entitlements need them; demo trades/positions are NOT re-asserted, so deliberately
-  # deleted rows stay deleted. Derived mechanically from 001 - keep the two in sync.
     -- RI-06: serialize deduplication and position read-modify-write across consumer processes.
     CREATE TABLE IF NOT EXISTS projection_write_lock (lock_id INTEGER PRIMARY KEY);
     INSERT IGNORE INTO projection_write_lock (lock_id) VALUES (1);
@@ -331,6 +321,16 @@ data:
     CREATE TABLE IF NOT EXISTS projection_schema (singleton_id INTEGER PRIMARY KEY, version INTEGER NOT NULL);
     INSERT INTO projection_schema VALUES (1,2) ON DUPLICATE KEY UPDATE version=GREATEST(version,2);
 
+  # Idempotent desired-state schema for a PERSISTENT (PVC-backed) datadir. The MariaDB
+  # entrypoint runs /docker-entrypoint-initdb.d only on an EMPTY volume, so this key is
+  # (a) run by the entrypoint right after 001 on first boot (every statement no-ops), and
+  # (b) applied by the schema-migrate initContainer on every later start, bringing a
+  # populated volume from any older state's schema up to this state's (new tables,
+  # trades.settlementdate, one index, and from YU15 the widened instrument-identifier
+  # columns - the first migration that MODIFIES rather than only adds).
+  # Reference seeds (accounts/accountusers) are re-asserted with INSERT IGNORE because FKs
+  # and entitlements need them; demo trades/positions are NOT re-asserted, so deliberately
+  # deleted rows stay deleted. Derived mechanically from 001 - keep the two in sync.
   900-migrations.sql: |
 
     CREATE TABLE IF NOT EXISTS accounts (
