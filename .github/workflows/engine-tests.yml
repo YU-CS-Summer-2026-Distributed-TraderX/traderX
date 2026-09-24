@@ -176,6 +176,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq ripgrep
       - name: Render effective tree (${{ env.CI_RENDER_STATE }})
         run: TRADERX_SKIP_LOCKFILE_REFRESH=1 bash pipeline/generate-state.sh "$CI_RENDER_STATE"
+      - name: Install EOD container intake dependencies (integration)
+        if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
+        run: python3 -m pip install -r specs/YU18-risk-integration/generation/runtime-overrides/eod-risk-bundles/requirements-container.txt
       - name: EOD source suite (integration)
         if: ${{ env.CI_RENDER_STATE == 'YU18-risk-integration' }}
         run: bash scripts/test-state-YU18-risk-integration.sh

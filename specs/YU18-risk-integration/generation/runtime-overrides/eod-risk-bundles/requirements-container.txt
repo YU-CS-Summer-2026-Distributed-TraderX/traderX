@@ -1,0 +1,2 @@
+# Only the opt-in RI-03 adapter needs the published Draft 2020-12 schema validator.
+jsonschema==4.26.0

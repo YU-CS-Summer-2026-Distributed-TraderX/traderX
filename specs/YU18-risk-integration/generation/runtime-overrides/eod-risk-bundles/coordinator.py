@@ -11,7 +11,7 @@ import uuid
 
 import bundle
 
-from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE, Deferred
+from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE, CONTAINER_PROFILE, Deferred, Uncertain
 
 
 def now():
@@ -105,7 +105,7 @@ class Coordinator:
         self.state = Path(state).absolute()
         self.adapter = adapter or MockAdapter()
         # New worker semantics require a new adapter implementation and profile version.
-        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE), 'unsupported adapter profile')
+        bundle.require(self.adapter.profile in (PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE, CONTAINER_PROFILE), 'unsupported adapter profile')
         self.db = None
         self.lock = None
 
@@ -212,7 +212,7 @@ class Coordinator:
             self.db.execute('UPDATE attempts SET status=?, ended_at=?, error=? WHERE attempt_id=?',
                             (status, now(), error, attempt['attempt_id']))
             self.db.execute('UPDATE jobs SET status=?, updated_at=?, error=? WHERE job_id=?',
-                            ('QUEUED' if status == 'INTERRUPTED' else 'FAILED', now(), error, job['job_id']))
+                            ('QUEUED' if status == 'INTERRUPTED' else status, now(), error, job['job_id']))
 
     def recover(self):
         recovered = []
@@ -242,6 +242,8 @@ class Coordinator:
             self.adapter.execute(self.state / 'inputs' / job['bundle_id'], self.state / attempt['result_path'])
             phase = 'RESULT_INVALID'
             self._finish(job, attempt)
+        except Uncertain as exc:
+            self._failed(job, attempt, f'SUBMISSION_UNCERTAIN: {exc}', 'UNCERTAIN')
         except Deferred as exc:
             with self.db:
                 self.db.execute('UPDATE jobs SET updated_at=?, error=? WHERE job_id=?',
@@ -267,6 +269,8 @@ class Coordinator:
         return {'recovered': recovered, 'processed': processed, **self.status()}
 
     def retry(self, job_id):
+        bundle.require(self.adapter.profile != CONTAINER_PROFILE,
+                       'container attempts require operator reconciliation; retry disabled')
         with self.db:
             cursor = self.db.execute("UPDATE jobs SET status='QUEUED', updated_at=? WHERE job_id=? AND status='FAILED'",
                                      (now(), job_id))
@@ -297,7 +301,7 @@ class Coordinator:
             job['usableForRisk'] = False
             job['attempts'] = [dict(r) for r in self.db.execute(
                 'SELECT * FROM attempts WHERE job_id=? ORDER BY started_at, attempt_id', (job['job_id'],))]
-            if job['status'] in ('MOCK_COMPLETE', 'W0_VALIDATED', 'SYNTHETIC_PRICING_VALIDATED'):
+            if job['status'] in ('MOCK_COMPLETE', 'W0_VALIDATED', 'SYNTHETIC_PRICING_VALIDATED', 'CONTAINER_PRICING_VALIDATED'):
                 try:
                     actual = self.adapter.validate_result(self.state / 'inputs' / job['bundle_id'],
                                                           self.state / job['result_path'])

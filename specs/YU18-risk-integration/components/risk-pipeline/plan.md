@@ -1,12 +1,14 @@
 # Risk pipeline plan
 
-Status: planned. Owner: unassigned.
+Owner: Codex RI-03. Status: review needed; local milestone implemented and tested.
 
-1. Inspect the actual current source and existing evidence.
-2. Expand spec and agree interfaces/dependencies with the coordinator.
-3. Implement in the assigned isolated checkout, preserving shared contracts.
-4. Run acceptance cases and deliver exact changed files, revision and evidence.
+1. Audit accepted base, image and producer/API/intake/UI contracts (done).
+2. Add separate container adapter/profile in YU18 eod-risk-bundles, preserving ancestor layers and old profiles. Add UNCERTAIN terminal hold and no-retry policy to existing coordinator.
+3. Reuse current result schema as a pinned snapshot; validate semantic bindings locally. Keep independent Decimal checks in proof driver only.
+4. Add read-only price summary to existing job status/Risk page; isolated server imports existing route implementation, with no cloud calls.
+5. Generate YU18 sequentially; run source/generated suites and fresh exporter proof. Exercise real container supported/refused/restart paths plus unchanged external red gate; capture actual UI.
+6. Deliver scoped commit(s), exact evidence and board READY_FOR_REVIEW; coordinator incorporates queue changes.
 
-Define artifact staging, job/workload/attempt identities, authentication, durable result storage, coverage validation, retry ownership, recovery and bounded concurrency. Keep independent reference calculations in acceptance tooling.
+Runtime ownership: YU18 is last-wins owner of eod-risk-bundles; no earlier layer of those Python paths. Console Risk page is root source. Current renderer already copies complete EOD component; no renderer change required. Matcher/gateway/read-model/api.ts remain Claude-owned.
 
-No work is dispatched by this plan; no new state branch is required.
+Evidence and reproduction: [RI-03 local container proof](../../../../docs/risk-integration/ri03-local-container.md). Broader distributed readiness remains open.

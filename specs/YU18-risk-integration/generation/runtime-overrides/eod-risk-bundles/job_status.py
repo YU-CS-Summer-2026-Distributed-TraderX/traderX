@@ -8,12 +8,13 @@ from pathlib import Path
 import sqlite3
 import bundle
 from coordinator import Coordinator, MockAdapter, now
-from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE
+from worker_protocol import PROFILE, HTTP_PROFILE, W0_PROFILE, PRICING_PROFILE, CONTAINER_PROFILE
 
 SCHEMA = 'traderx.eod-job-status.v1'
 
 
 PUBLIC_ERRORS = {
+    'SUBMISSION_UNCERTAIN': 'Submission outcome is uncertain. Automatic retry is disabled.',
     'INPUT_INVALID': 'Stored input validation failed.',
     'WORKER_FAILURE': 'The worker attempt failed.',
     'RESULT_INVALID': 'Result validation failed.',
@@ -64,6 +65,9 @@ def snapshot(state):
         elif profile == PRICING_PROFILE:
             from pricing_result import PricingFileAdapter
             adapter = PricingFileAdapter(state/'results')
+        elif profile == CONTAINER_PROFILE:
+            from container_adapter import ContainerAdapter
+            adapter = ContainerAdapter()  # Offline custody validation only.
         else:
             bundle.require(profile == PROFILE, 'unsupported coordinator profile')
         coordinator = Coordinator(state, adapter)
@@ -84,6 +88,16 @@ def snapshot(state):
                                == job['result_hash'], 'result changed during status read')
                 bundle.require(path.read_bytes() == data, 'coverage bytes changed during status read')
                 job['coverage'] = result_doc['coverage']
+                if profile == CONTAINER_PROFILE:
+                    job['pricingAvailable'] = True
+                    job['pricingScope'] = 'synthetic-export-container-assumed-curve'
+                    job['containerPricing'] = {
+                        'marketProvenance': 'assumed', 'assumedProfile': 'flat-3pct-v1',
+                        'positions': [{'signedFaceUsd': str(item['calculations']['npv']['signedFaceAmount']),
+                                       'npvUsd': str(item['calculations']['npv']['value'])}
+                                      for item in result_doc['items']],
+                        'unsupported': ['rateSensitivity', 'rateGamma', 'theta'],
+                        'portfolioRiskAvailable': False}
                 if profile == PRICING_PROFILE:
                     job['pricingAvailable'] = True
                     job['pricingScope'] = 'provisional-dated-synthetic-fixtures'

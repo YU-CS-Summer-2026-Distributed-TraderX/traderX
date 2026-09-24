@@ -87,6 +87,27 @@ describe('Risk tab (read-only)', () => {
     expect(text()).not.toMatch(/\b(worker|Alex|engine)\s+(is\s+)?(connected|live|online)\b/i);
   });
 
+  it('renders container custody prices and clears them for uncertainty or integrity failure', async () => {
+    const containerPricing = { marketProvenance: 'assumed', assumedProfile: 'flat-3pct-v1',
+      positions: [{ signedFaceUsd: '100000', npvUsd: '98507.14563826029' }],
+      unsupported: ['rateSensitivity', 'rateGamma', 'theta'], portfolioRiskAvailable: false };
+    replies['/eod/jobs'] = jobs(job('CONTAINER_PRICING_VALIDATED', { resultIntegrity: 'VERIFIED', containerPricing }));
+    replies['/risk/demo'] = { status: 503, body: { code: 'NOT_CONFIGURED' } };
+    const { f, text, el } = await render();
+    expect(text()).toContain('Container pricing validated');
+    expect(text()).toContain('98,507.15');
+    expect(text()).toContain('Portfolio VaR/ES unavailable');
+    expect(el.querySelector('[data-container-pricing]')).not.toBeNull();
+    replies['/eod/jobs'] = jobs(job('CONTAINER_PRICING_VALIDATED', { resultIntegrity: 'INVALID', containerPricing }));
+    await f.componentInstance.loadJobs();
+    expect(text()).not.toContain('98,507.15');
+    expect(el.querySelector('[data-container-pricing]')).toBeNull();
+    replies['/eod/jobs'] = jobs(job('UNCERTAIN'));
+    await f.componentInstance.loadJobs();
+    expect(text()).toContain('Automatic retry disabled');
+    expect(el.querySelector('[data-uncertain]')).not.toBeNull();
+  });
+
   it('shows separate bill and note comparisons with the note reconciliation and signed +1bp change', async () => {
     replies['/eod/jobs'] = jobs(); replies['/risk/demo'] = demo();
     const { text, el } = await render();

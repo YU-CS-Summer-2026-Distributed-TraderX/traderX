@@ -20,3 +20,16 @@ PRICING_PROFILE = {'adapter':'alex-pricing-local-provisional-v1',
                    'inputScope':'original-2025-06-02-bill-note-v2-terms-v1',
                    'calculations':['npv','accruedInterest','noteParallelBump'],
                    'marketInputs':'EXPLICIT_ASSUMED_PROFILE', 'usableForRisk':False}
+
+# Explicit opt-in: current accepted container; separate custody from historical profiles.
+CONTAINER_PROFILE = {
+    'adapter': 'alex-eod-container-ri03-v1',
+    'engineCommit': '992db307f40c1b19de19a0ae43bf653ede3a5bda',
+    'imageId': 'sha256:88ad80a618e51ecafaf0a0e6bd8e00f55bf661f2c3d3941ed39feae64cb93877',
+    'resultSchema': 'jaxrisk.eod-result.v1', 'assumedProfileId': 'flat-3pct-v1',
+    'inputScope': 'original-2025-06-02-exported-bill-v2', 'usableForRisk': False,
+}
+
+
+class Uncertain(RuntimeError):
+    """Submission may have executed; hold for operator reconciliation, never retry."""

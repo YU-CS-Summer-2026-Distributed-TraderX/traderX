@@ -11,6 +11,7 @@ import { TreasuryDemo } from './treasury-demo';
 export interface EodJob {
   job_id: string; bundle_id: string; status: string; clusterEpoch: string; valuationTime: string;
   cut: { sessionDate: string; consensusSequence: string; priceSnapshotVersion: string; cutSha256: string };
+  containerPricing?: { marketProvenance: string; assumedProfile: string; positions: { signedFaceUsd: string; npvUsd: string }[]; unsupported: string[]; portfolioRiskAvailable: false };
   error: string | null; integrityError?: string; resultIntegrity: string; currentCut: boolean;
   selectionAmbiguous: boolean; selectedSyntheticPricingResult?: boolean;
   profile: { adapter: string; engineCommit?: string; assumedProfileId?: string };
@@ -67,10 +68,18 @@ export const REVIEWED = { commit: 'bb9cf0e', at: '2026-09-16 16:53 UTC', pinned:
         <article class="job">
           <div class="head"><h3>{{ instrumentOf(job.bundle_id) }}</h3>
             <span class="pill" [class.good]="tone(job) === 'good'" [class.warn]="tone(job) === 'warn'" [class.bad]="tone(job) === 'bad'"
-                  data-status>{{ statusLabel(job.status) }}</span></div>
+                  data-status>{{ job.resultIntegrity === 'INVALID' ? 'Integrity invalid' : statusLabel(job.status) }}</span></div>
           <ol class="flow steps">
             @for (s of stages(job); track $index) { <li [class]="s.tone"><b>{{ s.state }}</b><span class="sub">{{ s.detail }}</span></li> }
           </ol>
+          @if (job.status === 'CONTAINER_PRICING_VALIDATED' && job.resultIntegrity === 'VERIFIED' && job.containerPricing; as pricing) {
+            <p class="sub">Container pricing · synthetic TraderX export · assumed flat 3% curve · business date {{ job.cut.sessionDate }}. Not usable for production risk.</p>
+            <table data-container-pricing><thead><tr><th>Signed face USD</th><th>NPV USD</th></tr></thead><tbody>
+              @for (position of pricing.positions; track $index) { <tr><td>{{ usd(position.signedFaceUsd) }}</td><td>{{ usd(position.npvUsd) }}</td></tr> }
+            </tbody></table>
+            <p class="sub">Unsupported: {{ pricing.unsupported.join(', ') }}. Portfolio VaR/ES unavailable.</p>
+          }
+          @if (job.status === 'UNCERTAIN') { <p class="banner warn" data-uncertain>Submission outcome uncertain. Automatic retry disabled; operator reconciliation required.</p> }
           @if (job.integrityError || job.error) { <p class="banner bad">This result could not be verified. Refresh to check again.</p> }
         </article>
       }
@@ -235,14 +244,14 @@ export class RiskPage implements OnInit {
   }
 
   statusLabel(status: string): string {
-    return ({ QUEUED: 'Queued', RUNNING: 'Awaiting result', FAILED: 'Failed', MOCK_COMPLETE: 'Mock transport only',
+    return ({ QUEUED: 'Queued', RUNNING: 'Awaiting result', FAILED: 'Failed', UNCERTAIN: 'Submission uncertain', CONTAINER_PRICING_VALIDATED: 'Container pricing validated', MOCK_COMPLETE: 'Mock transport only',
       W0_VALIDATED: 'Outcomes checked — no pricing', SYNTHETIC_PRICING_VALIDATED: 'Synthetic pricing validated' } as Record<string, string>)[status]
       ?? 'Status unavailable';
   }
 
   tone(job: EodJob): 'good' | 'warn' | 'bad' | '' {
     if (job.status === 'FAILED' || job.resultIntegrity === 'INVALID') return 'bad';
-    if (job.status === 'SYNTHETIC_PRICING_VALIDATED' && job.resultIntegrity === 'VERIFIED') return 'good';
+    if (['SYNTHETIC_PRICING_VALIDATED', 'CONTAINER_PRICING_VALIDATED'].includes(job.status) && job.resultIntegrity === 'VERIFIED') return 'good';
     return job.status === 'QUEUED' ? '' : 'warn';
   }
 
@@ -264,6 +273,8 @@ export class RiskPage implements OnInit {
     switch (job.status) {
       case 'QUEUED': return [bundle, { state: 'Not yet requested', detail: 'queued', tone: '' }, { state: 'Not started', detail: '—', tone: '' }];
       case 'RUNNING': return [bundle, { state: 'Awaiting result', detail: 'no result file yet', tone: 'warn' }, { state: 'Pending', detail: 'nothing to validate', tone: '' }];
+      case 'UNCERTAIN': return [bundle, { state: 'Submission uncertain', detail: 'May have executed', tone: 'warn' }, { state: 'Held', detail: 'Automatic retry disabled', tone: 'warn' }];
+      case 'CONTAINER_PRICING_VALIDATED': return [bundle, { state: 'Container completed', detail: 'Synthetic bill pricing', tone: 'good' }, { state: invalid ? 'Integrity invalid' : 'Intake validated', detail: 'Schema, identity, coverage and provenance', tone: invalid ? 'bad' : 'good' }];
       case 'FAILED': return [bundle, { state: 'Attempt failed', detail: 'Calculation did not complete', tone: 'bad' }, { state: 'Failed', detail: 'no accepted result', tone: 'bad' }];
       case 'MOCK_COMPLETE': return [bundle, { state: 'Mock transport', detail: 'Transport test only', tone: 'warn' },
         { state: invalid ? 'Integrity invalid' : 'Mock result', detail: 'unusable for risk', tone: invalid ? 'bad' : 'warn' }];

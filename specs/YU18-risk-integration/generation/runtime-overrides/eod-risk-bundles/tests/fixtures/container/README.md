@@ -1,0 +1,1 @@
+Synthetic bill HTTP response captured from accepted RI-02 image on 2026-09-23. Input: original TraderX exporter bill/v2; explicit flat-3pct-v1 assumed curve. This fixture is only for mutation and offline custody tests; actual container proof is separate. No real market data.
