@@ -15,6 +15,7 @@ import { createTreasuryDemo } from './treasury-demo.mjs';
 import http from 'node:http';
 import { readEodJobs } from './eod-jobs.mjs';
 import { readRiskDemo } from './risk-demo.mjs';
+import { isOperatorControl, OPERATOR_CONTROL_REFUSAL } from './operator-control.mjs';
 import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -1139,6 +1140,7 @@ const server = http.createServer(async (req, res) => {
   // outside every control here — it works against any service sharing the JWT secret, for its full
   // TTL, with nothing recording who asked. Refused for everyone, signed in or not: the console
   // authenticates on your behalf now, so there is no reason for a browser to hold one.
+  if (isOperatorControl(req.url)) return json(res, 403, OPERATOR_CONTROL_REFUSAL);
   if (p === '/trade-processor/auth/dev-token') {
     return json(res, 403, { code: 'mint_disabled',
       error: 'the console authenticates on your behalf; it does not issue tokens' });

@@ -8,7 +8,7 @@
 | [Risk pipeline](risk-pipeline/README.md) | Planned extension over existing coordinator | Explicit YU18-owned orchestration components |
 | [Recovery identity](recovery-identity/README.md) | Review needed: bounded receipt lineage | YU18 eod-risk-bundles; engine/SQL migration remains proposed |
 | [Demo acceptance](demo-acceptance/README.md) | Review needed; local live proof 2026-09-24 | Root scripts `scripts/ri07`, kind rig scripts `scripts/yu15`, console status presentation |
-
 | [Event recovery](event-recovery/README.md) | Implemented; local review pending | YU18 archive replay, trade-processor recovery service and additive SQL checkpoint |
+| [Managed-run UI](managed-run-ui/README.md) | Review needed; local fixture and real-transition proofs 2026-09-24 | `web-front-end-console` (standalone, not generated): blotter, Admin trade list, console proxies |
 
 Adding a directory does not activate generation. Shared files stay at the state parent. Follow [component rules](../../../docs/spec-kit/state-components.md).

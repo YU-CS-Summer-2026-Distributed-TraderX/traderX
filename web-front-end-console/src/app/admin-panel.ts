@@ -4,6 +4,7 @@ import { Api, BlotterTrade } from './api';
 import { HelpTip } from './help';
 import { Gated } from './gated';
 import { SecHead, SecPager, Section } from './section';
+import { Context, readActiveRunTrades } from './run-scope';
 
 interface TcaReport {
   tradeId: string; security: string; side: string; quantity: number;
@@ -33,10 +34,11 @@ interface ParentOrder {
     @if (!open()) {
     } @else {
       <label class="field acct">Account
-        <select [(ngModel)]="accountId" (ngModelChange)="poll()">
+        <select [(ngModel)]="accountId" (ngModelChange)="onAccount()">
           @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
         </select>
       </label>
+      <div class="runline" [class.warn]="!run().ok" data-testid="admin-run">{{ run().text }}</div>
       <sec-head [s]="section" label="Trades" />
       @if (section.open()) {
       <table>
@@ -47,7 +49,7 @@ interface ParentOrder {
               <td class="sub">{{ t.id }}</td><td>{{ t.security }}</td><td>{{ t.side }}</td>
               <td class="num">{{ t.quantity }}</td><td class="num">{{ t.price.toFixed(6) }}</td>
               <td>@if (t.state === 'Settled') { <span class="pill good">Settled</span> } @else { {{ t.state }} }</td>
-              <td>@if (t.state !== 'Settled' && !t.rejectionReason) {
+              <td>@if (t.state !== 'Settled' && !t.rejectionReason && run().ok) {
                 <button (click)="settle(t)">Force settle</button> <gated /> }</td>
               <td><button (click)="tca(t)">TCA</button></td>
             </tr>
@@ -61,7 +63,7 @@ interface ParentOrder {
                 <a (click)="tcaReport.set(null)">close</a>
               </td></tr>
             }
-          } @empty { <tr><td colspan="8" class="faint">no trades for this account</td></tr> }
+          } @empty { <tr><td colspan="8" class="faint">{{ run().ok ? 'no trades for this account' : 'trades not shown — read failed' }}</td></tr> }
         </tbody>
       </table>
       <sec-pager [s]="section" />
@@ -140,6 +142,8 @@ interface ParentOrder {
     .pos { color: var(--good); } .neg { color: var(--bad); }
     .recon { font-family: var(--mono); font-size: 12px; color: var(--muted); background: #f8f9fb;
              border-radius: 6px; padding: 8px; max-height: 200px; overflow: auto; }
+    .runline { font-size: 12.5px; padding: 4px 8px; margin: 4px 0; border-radius: 4px; background: #f5f7fa; }
+    .runline.warn { background: var(--bad-soft); color: var(--bad); }
     a { color: var(--faint); cursor: pointer; text-decoration: underline; margin-left: 8px; }
   `,
 })
@@ -149,6 +153,13 @@ export class AdminPanel implements OnInit, OnDestroy {
   cancelRef: number | null = null;
   readonly open = signal(true);
   readonly trades = signal<BlotterTrade[]>([]);
+  /** Which run the trade list is from; force-settle only while that is confirmed. */
+  readonly run = signal<{ ok: boolean; text: string }>({ ok: false, text: 'Active run: not read yet' });
+  private readonly ctx = new Context();
+  private pollSeq = 0;
+  private appliedSeq = 0;
+  private readonly pending = new Set<AbortController>();
+  private abortPending(): void { for (const ac of this.pending) ac.abort(); this.pending.clear(); }
   /** Same collapse-and-page behaviour as the blotter's sections, from the same class. */
   readonly section = new Section<BlotterTrade>(this.trades, t => t.id);
   readonly parents = signal<ParentOrder[]>([]);
@@ -164,21 +175,55 @@ export class AdminPanel implements OnInit, OnDestroy {
     this.poll();
     this.timer = setInterval(() => this.poll(), 5000);
   }
-  ngOnDestroy(): void { clearInterval(this.timer); }
+  ngOnDestroy(): void { clearInterval(this.timer); this.ctx.next(); this.abortPending(); }
+
+  onAccount(): void {
+    this.ctx.next();
+    this.abortPending();
+    this.trades.set([]); this.tcaReport.set(null);
+    this.run.set({ ok: false, text: 'Active run: not read yet' });
+    void this.poll();
+  }
 
   async poll(): Promise<void> {
-    const [r, p] = await Promise.all([
-      this.api.load<BlotterTrade[]>(`/position-service/trades/${Number(this.accountId)}`),
-      this.api.load<ParentOrder[]>('/algo/orders'),
-    ]);
-    // Newest-first from the service; head as-is (reversing dropped the NEWEST past 30). 200 rather
-    // than 30 now that the section pages — a page-4 row has to exist to be paged to.
-    if (r.status === 200 && Array.isArray(r.body)) this.trades.set(r.body.slice(0, 200));
-    if (p.status === 200 && Array.isArray(p.body)) { this.parents.set([...p.body].reverse()); this.algoDown.set(false); }
-    else if (p.status >= 500 || p.status === 0 || p.status === 502) { this.parents.set([]); this.algoDown.set(true); }
+    const stamp = this.ctx.current;
+    const seq = ++this.pollSeq;
+    const ac = new AbortController();
+    this.pending.add(ac);
+    const deadline = setTimeout(() => ac.abort(), 2500);
+    const unavailable = { status: 0, body: null };
+    const expired = new Promise<typeof unavailable>(resolve =>
+      ac.signal.addEventListener('abort', () => resolve(unavailable), { once: true }));
+    // Bound BOTH dependencies, including loaders that ignore abort. Never start another
+    // pointer/row request after expiry; late responses cannot update component state.
+    const load = <T>(url: string) => ac.signal.aborted ? Promise.resolve(unavailable)
+      : Promise.race([this.api.load<T>(url, { signal: ac.signal }), expired]);
+    try {
+      const [r, p] = await Promise.all([
+        readActiveRunTrades(u => load<unknown>(u), Number(this.accountId)),
+        load<ParentOrder[]>('/algo/orders'),
+      ]);
+      if (!this.ctx.isCurrent(stamp) || seq < this.appliedSeq) return;
+      this.appliedSeq = seq;
+      // Newest-first from the service; head as-is (reversing dropped the NEWEST past 30). 200 rather
+      // than 30 now that the section pages — a page-4 row has to exist to be paged to.
+      if (r.ok && !ac.signal.aborted) {
+        this.trades.set((r.rows as BlotterTrade[]).slice(0, 200));
+        this.run.set({ ok: true, text: `Active run: ${r.scope} (${r.managed ? 'selected pointer' : 'unmanaged backend'})` });
+      } else {
+        this.trades.set([]); this.tcaReport.set(null);
+        this.run.set({ ok: false, text: `Active run not confirmed — ${ac.signal.aborted ? 'read timed out after 2500 ms' : !r.ok ? r.error : 'read unavailable'}` });
+      }
+      if (p.status === 200 && Array.isArray(p.body)) { this.parents.set([...p.body].reverse()); this.algoDown.set(false); }
+      else if (p.status >= 500 || p.status === 0 || p.status === 502) { this.parents.set([]); this.algoDown.set(true); }
+    } finally {
+      clearTimeout(deadline);
+      this.pending.delete(ac);
+    }
   }
 
   async settle(t: BlotterTrade): Promise<void> {
+    if (!this.run().ok) return;
     const r = await this.api.load<void>(`/trade-processor/trades/${t.id}/settlement/force`, {
       method: 'POST',
     });

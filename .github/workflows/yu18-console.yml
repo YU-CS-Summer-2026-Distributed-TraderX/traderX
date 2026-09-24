@@ -23,7 +23,7 @@ jobs:
           cache-dependency-path: web-front-end-console/package-lock.json
       - run: npm ci --no-audit --no-fund
       - name: Node status and demo reader tests
-        run: node --test eod-jobs.test.mjs risk-demo.test.mjs treasury-demo.test.mjs
+        run: node --test eod-jobs.test.mjs risk-demo.test.mjs treasury-demo.test.mjs operator-control.test.mjs
       - name: Angular order types and Risk UI tests
         run: npm test -- --watch=false --browsers=ChromeHeadless
       - name: Production build

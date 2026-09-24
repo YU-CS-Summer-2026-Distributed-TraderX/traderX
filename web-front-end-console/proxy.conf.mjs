@@ -6,6 +6,7 @@
 //  - Proxies /nats-ws as a websocket for the live blotter feed.
 // Dev-rig convenience only; none of this exists in a real deployment.
 import { execFileSync, execSync, spawn } from 'node:child_process';
+import { isOperatorControl, OPERATOR_CONTROL_REFUSAL } from './operator-control.mjs';
 
 const CTX = process.env.RIG_CONTEXT ?? 'kind-traderx-yu12-cluster';
 const NS = process.env.RIG_NAMESPACE ?? 'traderx';
@@ -342,7 +343,17 @@ async function fixBypass(req, res) {
 
 // changeOrigin when remote: the rig routes by Host header, and without it every request arrives
 // announcing localhost:4200 and misses the ingress rule entirely.
-const plain = (ctx) => ({ context: [ctx], target, secure: false, changeOrigin: !!REMOTE });
+// Run selection/activation/recovery is operator-only (operator-control.mjs). Refused in a bypass on
+// every plain prefix, because this dev server ignores a function `context` (measured: it forwarded
+// POST /trade-processor/v2/projection-control/select upstream) but does honour `bypass`.
+function operatorControlBypass(req, res) {
+  if (!isOperatorControl(req.url)) return undefined;   // undefined = proxy as normal
+  res.statusCode = 403;
+  res.setHeader('Content-Type', 'application/json');
+  res.end(JSON.stringify(OPERATOR_CONTROL_REFUSAL));
+  return false;
+}
+const plain = (ctx) => ({ context: [ctx], target, secure: false, changeOrigin: !!REMOTE, bypass: operatorControlBypass });
 
 export default [
   plain('/order-matcher'),

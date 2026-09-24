@@ -8,6 +8,7 @@ import { PriceChip } from './price-chip';
 import type { PriceMark } from './api';
 import { SecHead, SecPager, Section } from './section';
 import { LIVE_STATUSES } from './order-types';
+import { ACTIVE_URL, ActiveScope, Context, LEGACY_SCOPE, REGISTRY_URL, Registry, View, readActive, readRegistry, scopesOf, topicsFor, urlsFor } from './run-scope';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
 // OCC option symbols and 1 for everything else (a bond's quantity is already USD face, so face ×
@@ -77,6 +78,27 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
       <span class="pill" [class.good]="live()" [class.warn]="!live()">{{ live() ? 'message bus · live' : 'polling' }}</span>
     </div>
     <div class="bar">
+      <label class="field run">Run
+        <select [ngModel]="viewKey()" (ngModelChange)="onView($event)" data-testid="run-select">
+          <option value="">Active run</option>
+          @if (registry(); as r) { @if (r.kind === 'managed') { @for (run of r.runs; track run.projection_scope) {
+            <option [value]="run.projection_scope">{{ run.projection_scope }} ({{ run.phase }}{{ run.cluster_epoch ? ' · ' + run.cluster_epoch : '' }}) · read-only</option>
+          } } }
+        </select>
+      </label>
+    </div>
+    @if (view().kind === 'history') {
+      <div class="runbanner hist" data-testid="run-banner">{{ runOf(viewKey())?.phase === 'ACTIVE' ? 'NAMED RUN (registry phase ACTIVE)' : 'HISTORICAL' }} · READ-ONLY — run <b>{{ viewKey() }}</b>
+        @if (runOf(viewKey()); as r) { · phase {{ r.phase }} · epoch {{ r.cluster_epoch ?? '—' }} · checkpoint {{ r.checkpoint_seq }} }
+        · no cancel, settle or other action targets these rows</div>
+    } @else {
+      <div class="runbanner" [class.warn]="!active().scope" data-testid="run-banner">
+        Active run: <b>{{ active().scope ?? 'not confirmed' }}</b> <span class="faint">({{ active().basis }})</span></div>
+    }
+    @if (state() === 'loading') { <div class="runbanner" data-testid="run-state">loading… actions disabled until the run and its rows are confirmed</div> }
+    @if (notice()) { <div class="runbanner warn" data-testid="run-notice">{{ notice() }}</div> }
+    @if (readError()) { <div class="runbanner bad" data-testid="run-error">{{ readError() }}</div> }
+    <div class="bar">
       <label class="field acct">Account
         <select [ngModel]="accountId()" (ngModelChange)="accountId.set($event); onAccount()">
           @for (a of api.accounts(); track a.id) { <option [value]="a.id">{{ a.displayName }} ({{ a.id }})</option> }
@@ -107,7 +129,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
               <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">
                 {{ p.upnl !== undefined ? fmt(p.upnl) : '—' }}</td>
             </tr>
-          } @empty { <tr><td colspan="6" class="faint">no positions</td></tr> }
+          } @empty { <tr><td colspan="6" class="faint">{{ emptyText('positions') }}</td></tr> }
         </tbody>
         @if (totals(); as t) {
           <tfoot><tr>
@@ -171,7 +193,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
                 </td>
               </tr>
             }
-          } @empty { <tr><td colspan="10" class="faint">no resting orders</td></tr> }
+          } @empty { <tr><td colspan="10" class="faint">{{ emptyText(showTerminal() ? 'orders' : 'resting orders') }}</td></tr> }
         </tbody>
       </table>
       <sec-pager [s]="openOrders" />
@@ -225,7 +247,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
                   <!-- No longer gated on holding a token: the console holds none, and hiding a
                        control the server merely refuses tells the operator it does not exist. It
                        renders, marked, and the server decides. -->
-                  @if (t.state !== 'Settled' && !t.rejectionReason) {
+                  @if (t.state !== 'Settled' && !t.rejectionReason && actionable()) {
                     <button (click)="settle(t); $event.stopPropagation()">Force settle</button> <gated />
                   }
                   <button (click)="tca(t); $event.stopPropagation()">TCA</button>
@@ -239,7 +261,7 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
                 @if (tcaText()) { <div class="tca">{{ tcaText() }}</div> }
               </td></tr>
             }
-          } @empty { <tr><td colspan="6" class="faint">no trades</td></tr> }
+          } @empty { <tr><td colspan="6" class="faint">{{ emptyText('trades') }}</td></tr> }
         </tbody>
       </table>
       <sec-pager [s]="trades" />
@@ -248,6 +270,11 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
   styles: `
     .bar { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 4px; }
     .acct { max-width: 300px; }
+    .run { max-width: 420px; }
+    .runbanner { font-size: 12.5px; padding: 4px 8px; margin: 2px 0 6px; border-radius: 4px; background: #f5f7fa; }
+    .runbanner.hist { background: #fff4d6; color: #6b4e00; font-weight: 600; }
+    .runbanner.warn { background: #fff4d6; }
+    .runbanner.bad { background: var(--bad-soft); color: var(--bad); }
     .find input { width: 190px; }
     .spacer { flex: 1; }
     .rowlink { cursor: pointer; }
@@ -293,6 +320,78 @@ export class BlotterPanel implements OnInit, OnDestroy {
   private timer: ReturnType<typeof setInterval> | undefined;
   private unsub: (() => void) | null = null;
 
+  // ---- run context (managed-run UI) ----
+  readonly view = signal<View>({ kind: 'active' });
+  readonly viewKey = computed(() => { const v = this.view(); return v.kind === 'history' ? v.scope : ''; });
+  readonly registry = signal<Registry | null>(null);
+  readonly active = signal<ActiveScope>({ scope: null, basis: 'not read yet' });
+  readonly notice = signal('');
+  readonly readError = signal('');
+  /** loading = nothing confirmed yet in this context; ok = last read confirmed; unavailable = refused. */
+  readonly state = signal<'loading' | 'ok' | 'unavailable'>('loading');
+  /** Row actions only on the active view, and only while its run and rows are confirmed. */
+  readonly actionable = computed(() => this.view().kind === 'active' && this.state() === 'ok');
+  /** Scope the bus subscription is on; undefined = none. */
+  private followed: string | undefined;
+  private readonly ctx = new Context();
+  /** Last confirmed active scope in this context; a different confirmed scope is a run change. */
+  private lastActive: string | null = null;
+  /** Overlapping polls (timer + bus) can return out of order; only the newest is applied. */
+  private pollSeq = 0;
+  private appliedSeq = 0;
+  /** Every poll's reads share one deadline; exceeding it aborts them and fails the view closed. */
+  readDeadlineMs = 2500;
+  private readonly pending = new Set<AbortController>();
+  /** Scope of the rows on screen: string = that run, null = unmanaged unversioned reads. */
+  private readScope: string | null | undefined;
+
+  runOf(scope: string) {
+    const r = this.registry();
+    return r?.kind === 'managed' ? r.runs.find(x => x.projection_scope === scope) : undefined;
+  }
+
+  emptyText(what: string): string {
+    if (this.state() === 'unavailable') return `${what} not shown — read failed`;
+    if (this.state() === 'loading') return 'loading…';
+    const v = this.view();
+    return v.kind === 'history' ? `no ${what} in run ${v.scope}` : `no ${what}`;
+  }
+
+  onView(key: string): void {
+    this.view.set(key ? { kind: 'history', scope: key } : { kind: 'active' });
+    this.notice.set('');
+    this.reset();
+  }
+
+  /** Any scope or account switch: new context, nothing from the old one survives or arrives. */
+  private reset(poll = true): void {
+    this.ctx.next();
+    this.abortPending();
+    this.clearRows();
+    this.findMsg.set(null); this.readError.set('');
+    this.lastActive = null; this.state.set('loading');
+    if (this.view().kind === 'active') this.active.set({ scope: null, basis: 'not read yet' });
+    if (poll) void this.poll();
+  }
+
+  private abortPending(): void { this.pending.forEach(a => a.abort()); this.pending.clear(); }
+
+  /** Everything derived from rows, plus the subscription: nothing survives a refused read. */
+  private clearRows(): void {
+    this.follow(null);
+    this.rawPositions.set([]); this.rawTrades.set([]); this.rawOpenOrders.set([]);
+    this.sourceOrders.set({}); this.sourceOrdersFor = null; this.readScope = undefined;
+    this.expanded.set({}); this.openId.set(null); this.hit.set(null); this.tcaText.set('');
+  }
+
+  /** The single refusal path (R2): clear rows, auxiliary state and subscription, say why. */
+  private failClosed(reason: string): void {
+    this.clearRows();
+    this.state.set('unavailable');
+    this.readError.set(reason);
+    if (this.view().kind === 'active') this.active.set({ scope: null, basis: reason });
+  }
+
   toggle(t: BlotterTrade): void {
     this.tcaText.set('');
     this.openId.set(this.openId() === t.id ? null : t.id);
@@ -328,8 +427,14 @@ export class BlotterPanel implements OnInit, OnDestroy {
   private async loadSourceOrders(): Promise<void> {
     const id = Number(this.accountId());
     if (this.sourceOrdersFor === id) return;
-    const r = await this.api.load<any[]>(`/trade-processor/accounts/${id}/orders?status=all`);
-    if (r.status !== 200 || !Array.isArray(r.body)) return;
+    const stamp = this.ctx.current;
+    // Same scope as the rows on screen, and only while they are confirmed.
+    if (this.state() !== 'ok' || this.readScope === undefined) return;
+    const scope = this.readScope;
+    const r = await this.api.load<any[]>(scope === null ? urlsFor({ kind: 'active' }, id, true).orders
+      : urlsFor({ kind: 'history', scope }, id, true).orders);
+    if (!this.ctx.isCurrent(stamp) || this.state() !== 'ok' || this.readScope !== scope
+      || r.status !== 200 || !Array.isArray(r.body)) return;
     const map: Record<string, string> = {};
     // '' rather than a missing key: asked and told nothing, versus never asked.
     for (const row of r.body) map[String(row.id ?? row.orderId ?? '')] = row.traceId ?? '';
@@ -338,6 +443,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
   }
 
   async settle(t: BlotterTrade): Promise<void> {
+    if (!this.actionable()) return; // historical or unconfirmed rows are read-only
     const r = await this.api.load<void>(`/trade-processor/trades/${t.id}/settlement/force`, {
       method: 'POST',
     });
@@ -348,6 +454,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
   /** Cancel takes the gateway's sibling /cancel route with the numeric ref — NOT
    *  /orders/{id}/cancel, which the gateway routes to its new-order handler. */
   async cancelOrder(o: OpenOrder): Promise<void> {
+    if (!this.cancellable(o)) return; // historical rows are read-only
     const ref = Number(o.orderId.includes('-') ? o.orderId.slice(o.orderId.lastIndexOf('-') + 1) : o.orderId);
     const r = await this.api.post<{ canceled?: boolean }>('/order-matcher/cancel', { orderRef: ref });
     this.api.log({
@@ -450,6 +557,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
   }
 
   cancellable(o: OpenOrder): boolean {
+    if (!this.actionable()) return false;
     return !o.status || LIVE_STATUSES.includes(o.status);
   }
 
@@ -587,40 +695,142 @@ export class BlotterPanel implements OnInit, OnDestroy {
     this.poll();
     this.timer = setInterval(() => this.poll(), 3000);
     this.api.watchPrices();
-    this.follow();
   }
-  ngOnDestroy(): void { clearInterval(this.timer); this.unsub?.(); }
+  ngOnDestroy(): void { clearInterval(this.timer); this.ctx.next(); this.abortPending(); this.follow(null); }
 
-  onAccount(): void {
-    this.sourceOrders.set({});
-    this.sourceOrdersFor = null;
-    this.poll();
-    this.follow();
+  onAccount(): void { this.notice.set(''); this.reset(); }
+
+  /**
+   * Subscribe one scope's subjects for this account; any message triggers a re-read. The callback
+   * is stamped: a message on a subject from a previous context cannot trigger a read (the read
+   * would be of the current context anyway, but it must not be caused by another run's event).
+   * `null` = the scope is unknown, so there is nothing truthful to subscribe to.
+   */
+  private follow(scope: string | null): void {
+    if (scope === (this.followed ?? undefined) && this.unsub) return;
+    this.unsub?.(); this.unsub = null; this.followed = undefined; this.live.set(false);
+    if (scope === null) return;
+    const stamp = this.ctx.current;
+    this.followed = scope;
+    this.unsub = this.api.busSubscribe(topicsFor(scope, Number(this.accountId())),
+      () => { if (this.ctx.isCurrent(stamp)) void this.poll(); },
+      up => { if (this.ctx.isCurrent(stamp)) this.live.set(up); });
   }
 
-  /** Subscribe this account's bus topics; any message triggers an immediate re-read. */
-  private follow(): void {
-    this.unsub?.();
-    this.unsub = this.api.busSubscribe(
-      [`/accounts/${Number(this.accountId())}/trades`, `/accounts/${Number(this.accountId())}/positions`],
-      () => this.poll(),
-      up => this.live.set(up));
-  }
-
+  /**
+   * One read of the current context (R1–R3).
+   *
+   * Managed active view: the server's pointer (`GET /v2/projections/active`) names the scope, the
+   * EXPLICIT scoped readers are read for that scope, then the pointer is read again; a different
+   * answer is a run change and nothing from this read is shown. No row or phase inference: if the
+   * pointer cannot be read, the view is unavailable. Unmanaged (registry 404) keeps the unversioned
+   * reads and legacy subjects. Every request shares one abortable deadline; a stale, superseded or
+   * timed-out reply cannot touch state, and every refusal goes through failClosed().
+   */
   async poll(): Promise<void> {
     const id = Number(this.accountId());
-    const [p, t, o] = await Promise.all([
-      this.api.load<Position[]>(`/position-service/positions/${id}`),
-      this.api.load<BlotterTrade[]>(`/position-service/trades/${id}`),
-      // The gateway serves no order snapshot (405 POST only); trade-processor's order read model
-      // does, keyed `id` rather than `orderId`.
-      // `?status=all` is a DIFFERENT QUESTION, not a wider filter: without it the controller
-      // returns only NEW and PARTIALLY_FILLED, so a rejected order is not missing from the read
-      // model — it was never asked for. Measured on the rig: account 42422 answers with 1 row by
-      // default and 4 with ?status=all, three of them REJECTED.
-      this.api.load<any[]>(`/trade-processor/accounts/${id}/orders${this.showTerminal() ? '?status=all' : ''}`),
-    ]);
-    if (p.status === 200 && Array.isArray(p.body)) this.rawPositions.set(p.body);
+    const stamp = this.ctx.current;
+    const seq = ++this.pollSeq;
+    const view = this.view();
+    const ac = new AbortController();
+    this.pending.add(ac);
+    const deadline = setTimeout(() => ac.abort(), this.readDeadlineMs);
+    // Raced against the deadline so a request that ignores abort still cannot hold the view open.
+    const expired = new Promise<{ status: number; body: null }>(r =>
+      ac.signal.addEventListener('abort', () => r({ status: 0, body: null }), { once: true }));
+    const get = <T>(url: string) => Promise.race([this.api.load<T>(url, { signal: ac.signal }), expired]);
+    // Superseded (older than an applied poll) or from a switched-away context: drop silently.
+    const live = () => {
+      if (!this.ctx.isCurrent(stamp) || seq < this.appliedSeq) return false;
+      this.appliedSeq = seq;
+      return true;
+    };
+    const timedOut = () => ac.signal.aborted && this.ctx.isCurrent(stamp);
+    try {
+      const [reg, act] = await Promise.all([
+        get<unknown>(REGISTRY_URL),
+        view.kind === 'active' ? get<unknown>(ACTIVE_URL) : Promise.resolve(null),
+      ]);
+      if (!live()) return;
+      if (timedOut()) return this.failClosed(`read timed out after ${this.readDeadlineMs} ms`);
+      const registry = readRegistry(reg.status, reg.body);
+      this.registry.set(registry);
+      if (registry.kind === 'unavailable') return this.failClosed(registry.error);
+      // `scope` = the run to read; null = unmanaged backend, read the unversioned routes.
+      let scope: string | null;
+      if (view.kind === 'history') {
+        if (registry.kind === 'unmanaged') return this.failClosed('this backend has no run registry; historical runs cannot be read');
+        scope = view.scope;
+      } else if (registry.kind === 'unmanaged') {
+        scope = null;
+      } else {
+        const a = readActive(act!.status, act!.body);
+        if (!a.ok) return this.failClosed(a.error);
+        if (!registry.runs.some(r => r.projection_scope === a.scope)) return this.failClosed(`active run ${a.scope} is not in the registry list`);
+        scope = a.scope;
+      }
+      if (view.kind === 'active' && scope !== null && this.lastActive !== null && scope !== this.lastActive) {
+        return this.runChanged(this.lastActive, scope);
+      }
+      const u = scope === null ? urlsFor({ kind: 'active' }, id, this.showTerminal())
+        : urlsFor({ kind: 'history', scope }, id, this.showTerminal());
+      const [p, t, o] = await Promise.all([
+        get<Position[]>(u.positions),
+        get<BlotterTrade[]>(u.trades),
+        // The gateway serves no order snapshot (405 POST only); trade-processor's order read model
+        // does, keyed `id` rather than `orderId`.
+        // `?status=all` is a DIFFERENT QUESTION, not a wider filter: without it the controller
+        // returns only NEW and PARTIALLY_FILLED, so a rejected order is not missing from the read
+        // model — it was never asked for. Measured on the rig: account 42422 answers with 1 row by
+        // default and 4 with ?status=all, three of them REJECTED.
+        get<any[]>(u.orders),
+      ]);
+      if (!live()) return;
+      if (timedOut()) return this.failClosed(`read timed out after ${this.readDeadlineMs} ms`);
+      const failed = ([['positions', p], ['trades', t], ['orders', o]] as const)
+        .filter(([, r]) => r.status !== 200 || !Array.isArray(r.body))
+        .map(([n, r]) => `${n} HTTP ${r.status}`);
+      if (failed.length) return this.failClosed(failed.join(' · '));
+      if (view.kind === 'active' && scope !== null) {
+        // Revalidate: the pointer must still name the scope these rows were read from.
+        const again = await get<unknown>(ACTIVE_URL);
+        if (!live()) return;
+        if (timedOut()) return this.failClosed(`read timed out after ${this.readDeadlineMs} ms`);
+        const a = readActive(again.status, again.body);
+        if (!a.ok) return this.failClosed(a.error);
+        if (a.scope !== scope) return this.runChanged(scope, a.scope);
+      }
+      // Every row must belong to the run that was read; anything else is refused whole.
+      const expected = scope ?? LEGACY_SCOPE;
+      const seen = scopesOf(p.body as unknown[], t.body as unknown[], o.body as unknown[]);
+      if ([...seen].some(x => x !== expected)) return this.failClosed(`refused: response contained rows outside run ${expected}`);
+      this.state.set('ok');
+      this.readError.set('');
+      if (view.kind === 'active') {
+        this.lastActive = scope;
+        this.active.set(scope === null
+          ? { scope: LEGACY_SCOPE, basis: 'unmanaged backend (no run registry)' }
+          : { scope, basis: 'selected pointer, GET /v2/projections/active' });
+      }
+      this.follow(expected);
+      this.readScope = scope;
+      this.applyRows(view, p.body as Position[], t.body as BlotterTrade[], o.body as any[]);
+    } finally {
+      clearTimeout(deadline);
+      this.pending.delete(ac);
+    }
+  }
+
+  /** The active pointer moved: announce, reset the context (drops every in-flight reply), re-read. */
+  private runChanged(from: string, to: string): void {
+    this.reset(false);
+    this.notice.set(`Active run changed: ${from} → ${to}. Rows reloaded from the new run.`);
+    void this.poll();
+  }
+
+  private applyRows(view: View, positions: Position[], trades: BlotterTrade[], orders: any[]): void {
+    const p = { body: positions }, t = { body: trades }, o = { body: orders };
+    this.rawPositions.set(p.body as Position[]);
     // The epoch arrives with the data and nowhere else — the submit path never learns it. Refs
     // restart at 1 on a fresh epoch, so this is what stops a surviving sessionStorage map from
     // answering epoch 2's order 7 with epoch 1's trace.
@@ -634,8 +844,8 @@ export class BlotterPanel implements OnInit, OnDestroy {
       ...(Array.isArray(o.body) ? o.body.map((r: any) => r?.id ?? r?.orderId) : []),
       ...(Array.isArray(t.body) ? t.body.map((r: any) => r?.sourceOrderId) : []),
     ]);
-    if (epoch !== null) this.api.noteEpoch(epoch);
-    if (o.status === 200 && Array.isArray(o.body)) {
+    if (epoch !== null && view.kind === 'active') this.api.noteEpoch(epoch);
+    if (Array.isArray(o.body)) {
       this.rawOpenOrders.set(o.body.map(row => ({
         orderId: String(row.id ?? row.orderId ?? ''),
         security: row.security, side: row.side,
@@ -660,6 +870,6 @@ export class BlotterPanel implements OnInit, OnDestroy {
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).
     // 200 rather than 30 since the section pages: a search for an older reference has to be able
     // to find it.
-    if (t.status === 200 && Array.isArray(t.body)) this.rawTrades.set(t.body.slice(0, 200));
+    if (Array.isArray(t.body)) this.rawTrades.set(t.body.slice(0, 200));
   }
 }
