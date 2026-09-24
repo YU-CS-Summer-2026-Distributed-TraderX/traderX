@@ -39,10 +39,12 @@
       }
       <button class="stop" (click)="session.stop('stopped from the header')">Stop</button>
     }
-    @if (rigUp() !== null) {
-      <span class="pill" [class.good]="rigUp()" [class.bad]="!rigUp()">
-        {{ rigUp() ? 'rig connected' : 'rig unreachable' }}
+    @if (rigStatus(); as st) {
+      <span class="pill" [class.good]="st === 200" [class.bad]="st !== 200">
+        {{ st === 200 ? 'gateway ready' : 'gateway not ready (HTTP ' + st + ')' }}
       </span>
+    } @else if (rigStatus() === 0) {
+      <span class="pill bad">rig unreachable</span>
     }
     <sign-in />
     <a class="site" [href]="siteUrl" target="_blank" rel="noopener" title="Project site on GitHub Pages">

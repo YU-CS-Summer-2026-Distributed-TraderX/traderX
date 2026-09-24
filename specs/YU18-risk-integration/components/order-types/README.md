@@ -227,3 +227,33 @@ Evidence: `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/i
 SC-OT35/NFR-OT06 remains user-deferred/unverified until GKE credits, not waived or passed.
 Four upstream API contract failures remain external blockers. No new latency campaign, live cluster,
 financial risk qualification, cloud, push, publish or deployment. Final coordinator incorporation remains pending.
+
+## Live cluster exercise (RI-07, 2026-09-24)
+
+This was the first live proof on a real 3-member kind cluster: a fresh render of `66baef75`,
+image `traderx/cluster-node:ri07-66baef75`, driven through the console server's `/order-matcher`
+proxy. Evidence is in `coordination/eod-integration/review-evidence/ri07-demo-acceptance-20260924/`.
+
+- **F1, blocking.** On the unmodified gateway every body with `orderType` returns HTTP 504
+  `no committed ack` in about 5–9 ms and is never sequenced; untyped orders return 200 and
+  invalid typed bodies return 422. Cause: `ClusterGatewayMain.orderBuffer` is sized
+  `INPUT_BYTES` (64), but the typed encode writes `ORDER_INSTRUCTION_BYTES` (96). A one-line fix
+  was proposed to the coordinator and not applied in this layer. No existing test submits a typed
+  order through the gateway's pipelined submit into a cluster.
+- **With a scratch-patched gateway only** (members unpatched), `scripts/ri07/order-types-live.py`
+  matched 30/30 cases at the effect end, twice. The cases cover the seven types, the eligible
+  TIFs, boundary and engine refusals, triggers, iceberg, peg reprice and suspension, cancel,
+  replace and DAY expiry. This is local-live evidence for the patched gateway, not for `66baef75`
+  as it stands.
+- **F3.** A trailing watermark ratchet emits no order update, so the read model's `stopprice`
+  (FR-OT33 "current level") stays at the last emitted level until the order's next event. It was
+  observed at 101.5 while the engine's level was 102, which the order confirmed when it triggered
+  at 102. The console label now says so; the egress question goes to the coordinator.
+- The console ticket's per-type TIF and field matrix matches FR-OT06; this was checked in the
+  browser against the live rig.
+
+Update, 2026-09-24 18:45Z: F1 is fixed in integration `9931b3e5` (Codex RI-06 lane,
+coordinator-integrated). The exercise was rerun on `e96bf28a`, which is that fix plus RI-07 with
+no local patch: 30/30 ordinary cases, twice, through the console path, and a typed LIMIT from a
+user accepted through the console. F3 still reproduces, so the exercise reports INCOMPLETE
+(exit 3). This is local-live evidence, not GKE, failover or latency evidence.

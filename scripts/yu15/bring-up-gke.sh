@@ -283,61 +283,17 @@ fi
 
 # ---- 4. PROVE IT, rather than report it -------------------------------------------------------
 # The check above can only say the ids no longer collide. Whether a trade actually reaches the read
-# model is a different claim, and it is the one that matters — so book a real cross and look for it.
-say "proving the path end to end"
-BEFORE="$(sql 'SELECT COUNT(*) FROM trades;')"
-# Two bugs lived in the four lines this replaces, and the second hid the first.
+# model is a different claim, and it is the one that matters -- so book a real cross and look for it.
 #
-# 1. `curl -sf` with NO `|| die`. A refused order is HTTP 422, so -f failed, and under `set -e` the
-#    script exited with curl's code 22 having printed NOTHING after "proving the path end to end".
-#    A proof that dies mutely is worse than no proof: the operator sees the last happy line and a
-#    non-zero exit nobody reads. Every call below keeps its body and names what it got.
-#
-# 2. A HARDCODED 200.00. Under ADR-051 a /seed sets the mark only while no trade has printed, and
-#    the collar band anchors on the security's FIRST LIMIT INTO THE BOOK — engine state, not the
-#    mark. So on any epoch where something already touched IBM's book, 200.00 is outside the band
-#    and the proof cannot pass however healthy the rig is. Measured 2026-08-20: IBM took 150.00 and
-#    refused 180/190/192.40/195/200/210 while every member was healthy and a leader was elected.
-#
-# The fix for both: try candidates until one is ACCEPTED, and treat "every candidate refused" as a
-# real failure with the reasons attached. A security whose book is untouched this epoch anchors its
-# own band on our limit, which is why a list beats a cleverer single guess.
-XPX=200.00
-XSEC=""
-# CANDIDATES MUST BE INSTRUMENTS THE PRICE FEED QUOTES. This list first read
-# `IBM MSFT AAPL ZTS GLD`, taken from the 533-name catalog, and ZTS is not one of the 44 names in
-# price-publisher's PRICE_TICKERS. On the one run where IBM/MSFT/AAPL were all collar-anchored the
-# proof crossed ZTS, which left a position in a security the EOD snapshot cannot price — and that
-# night's end-of-day HALTED every account holding it (`missing_or_flagged_closing_price`), marked
-# zero rows, and produced an empty risk extract.
-#
-# So this proof, whose whole job is to leave the rig usable, was quietly making the rig's end-of-day
-# unusable. Every name below is in PRICE_TICKERS; check any addition against it.
-for cand in IBM MSFT AAPL GLD SPY QQQ IWM VTI NVDA; do
-  for acct in 22214 42422; do
-    curl -sf -m 20 -X POST "http://${GW}:18110/seed" -H 'Content-Type: application/json' \
-      -d "{\"accountId\":${acct},\"tickers\":\"${cand}\",\"price\":${XPX}}" >/dev/null 2>&1 || true
-  done
-  probe="$(curl -s -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
-    -d "{\"accountId\":42422,\"ticker\":\"${cand}\",\"side\":\"Sell\",\"quantity\":1,\"limitPrice\":${XPX}}" 2>&1)"
-  case "${probe}" in
-    *'"kind":1'*) XSEC="${cand}"; break ;;
-    *) say "  ${cand} will not take a limit at ${XPX}: ${probe}" ;;
-  esac
-done
-[[ -n "${XSEC}" ]] || die "no candidate security accepted a limit at ${XPX} — the rig may be fine and the PRICE COLLAR simply anchored elsewhere, but this proof cannot conclude anything. Reasons are above."
-buy="$(curl -s -m 20 -X POST "http://${GW}:18110/orders" -H 'Content-Type: application/json' \
-  -d "{\"accountId\":22214,\"ticker\":\"${XSEC}\",\"side\":\"Buy\",\"quantity\":1,\"limitPrice\":${XPX}}" 2>&1)"
-case "${buy}" in
-  *'"kind":1'*) say "  crossed ${XSEC} at ${XPX}" ;;
-  *) die "the resting sell was accepted but the crossing buy was not: ${buy}" ;;
-esac
-for _ in $(seq 1 20); do
-  AFTER="$(sql 'SELECT COUNT(*) FROM trades;')"
-  [[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] && break
-  sleep 3
-done
-[[ "${AFTER:-0}" -gt "${BEFORE:-0}" ]] \
-  || die "a cross booked in the engine never reached the projection (${BEFORE} -> ${AFTER}). THIS IS THE WEDGE. Do not demo from this rig."
-say "verified: trades ${BEFORE} -> ${AFTER}, the read model is live"
+# RI-07 (2026-09-24): the cross is now ISOLATED. The proof this replaces sold 1 IBM @ 200 from 42422
+# into the LIVE book after /seed-ing IBM at 200. Reproduced on a disposable kind rig: the sell filled
+# 1 of a user's resting Buy 100 IBM @ 201, /seed moved IBM's reference 187.151 -> 200.000, and the
+# script still printed "crossed IBM at 200.00" although its own two legs never met (its buy was left
+# resting on the user's book). A book is per instrument, so a different ACCOUNT would not have helped.
+# scripts/ri07/startup-probe.sh mints its own never-offered instrument per run, refuses a non-empty
+# book, trades only between reserved probe accounts (880001/880002), leaves them flat, and fails if
+# any non-probe order or trade row changed. Exit 2 = refused before trading (rig state unknown).
+say "proving the path end to end (isolated probe instrument and accounts)"
+MATCHER_URL="http://${GW}:18110" CTX="${CTX}" NS="${NS}" bash "$(dirname "${BASH_SOURCE[0]}")/../ri07/startup-probe.sh" \
+  || die "the isolated startup probe did not pass (output above). If it reports the read model is not live, THIS IS THE WEDGE: do not demo from this rig."
 say "rig is up. https://yaakovseif.dev"

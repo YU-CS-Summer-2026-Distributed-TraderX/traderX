@@ -15,9 +15,11 @@ export class App implements OnInit, OnDestroy {
   /** The live session runs in a service, so its state belongs in the shell, not on one page. */
   readonly session = inject(SessionDriver);
   private timer: ReturnType<typeof setInterval> | undefined;
-  /** null = checking, true/false = edge proxy reachable. Panels hold last values on failure;
-   *  this chip is the single honest signal that the backend itself is gone. */
-  readonly rigUp = signal<boolean | null>(null);
+  /** null = checking; otherwise the HTTP status of the gateway's /ready through the edge proxy
+   *  (0 = nothing answered). It used to be `status > 0` on /health, so a 502/504 from a proxy with a
+   *  dead gateway read "rig connected" (RI-07). 200 means the gateway holds a cluster session --
+   *  not that the whole rig works; scripts/ri07/rig-ready.sh is the full-rig check. */
+  readonly rigStatus = signal<number | null>(null);
   /** The project's own github.io site — same URL the docusaurus build publishes to. */
   readonly siteUrl = 'https://YU-CS-Summer-2026-Distributed-TraderX.github.io/traderX/';
 
@@ -31,7 +33,7 @@ export class App implements OnInit, OnDestroy {
   ngOnDestroy(): void { clearInterval(this.timer); }
 
   private async check(): Promise<void> {
-    const r = await this.api.load<string>('/order-matcher/health');
-    this.rigUp.set(r.status > 0);
+    const r = await this.api.load<string>('/order-matcher/ready');
+    this.rigStatus.set(r.status);
   }
 }

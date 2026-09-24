@@ -13,7 +13,9 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib-replay-epoch.sh"
 # pointed at still declared :yu15. Two copies of "which build is this tier", disagreeing, silently.
 # cluster_manifest_dir warns loudly when it has to fall back to an ancestor's layer.
 KDIR="$(cluster_manifest_dir "${ROOT}")" || exit 1
-CLUSTER="traderx-yu12-cluster"
+# KIND_CLUSTER_NAME (same name as the generated 010 harness) lets a lane bring up its OWN disposable
+# tier beside a retained one; the default is the historical name, so nothing else changes.
+CLUSTER="${KIND_CLUSTER_NAME:-traderx-yu12-cluster}"
 CTX="kind-${CLUSTER}"
 # The manifests are the authority: whatever tag they declare is what kubectl will apply, so
 # defaulting to anything else would just be a fourth copy of the truth. YU15_CLUSTER_IMAGE stays
@@ -58,7 +60,7 @@ fi
 
 if ! kind get clusters | grep -qx "${CLUSTER}"; then
   echo "[kind] creating cluster ${CLUSTER}"
-  kind create cluster --config "${KDIR}/kind-cluster.yaml" --wait 120s
+  kind create cluster --name "${CLUSTER}" --config "${KDIR}/kind-cluster.yaml" --wait 120s
 fi
 
 # Every locally-built image the kustomization references, not just the cluster node.
@@ -72,14 +74,38 @@ fi
 #
 # Missing images are named and fatal here rather than surfacing ten minutes later as a rollout
 # timeout on a pod whose events you have to go read.
-IMAGES=(
-  "${IMAGE}"
-  "${YU15_TRADE_PROCESSOR_IMAGE:-traderx/trade-processor:yu15}"
-  "${YU15_POSITION_SERVICE_IMAGE:-traderx/position-service:yu15}"
-  "${YU15_PRICE_PUBLISHER_IMAGE:-traderx/price-publisher:yu15}"
-  "${YU15_ALGO_ENGINE_IMAGE:-traderx/execution-algo-engine:yu15}"
-  "${YU15_REFERENCE_DATA_IMAGE:-traderx/reference-data:yu15}"
-)
+# The load list is DERIVED FROM THE RENDER, after the same substitutions the apply makes. It used to
+# be a literal list of :yu15 tags (overridable per service) while the manifests declared other tags
+# (:yu17-taq, :yu17-jsrebind, :yu16, ...): the loaded images were never the ones the pods asked for,
+# and on a fresh cluster the declared ones ImagePullBackOff'd -- or, worse, an override loaded one
+# build while the pods ran whatever the node already had. Now the override IS the image that runs.
+#   YU15_{TRADE_PROCESSOR,POSITION_SERVICE,PRICE_PUBLISHER,ALGO_ENGINE,REFERENCE_DATA}_IMAGE
+# each replace the declared image of that repository in the render.
+render() { kubectl kustomize "${KDIR}"; echo "---"; cat "${KDIR}/gateway.yaml"; }
+declared_of() { # the image the render declares for a repository, e.g. traderx/trade-processor
+  render | sed -n "s|^ *image: *\(${1}:[^[:space:]]*\).*|\1|p" | sort -u | head -1
+}
+SUBS=()
+[[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]] && SUBS+=("${DECLARED}|${IMAGE}")
+for pair in trade-processor:YU15_TRADE_PROCESSOR_IMAGE position-service:YU15_POSITION_SERVICE_IMAGE \
+            price-publisher:YU15_PRICE_PUBLISHER_IMAGE execution-algo-engine:YU15_ALGO_ENGINE_IMAGE \
+            reference-data:YU15_REFERENCE_DATA_IMAGE; do
+  var="${pair#*:}"; want="${!var:-}"
+  [[ -n "${want}" ]] || continue
+  have="$(declared_of "traderx/${pair%%:*}")"
+  [[ -n "${have}" ]] || { echo "[fail] ${pair#*:} is set but the render declares no traderx/${pair%%:*} image"; exit 1; }
+  [[ "${have}" != "${want}" ]] && SUBS+=("${have}|${want}")
+done
+pin() { # a filter, so each apply keeps its own namespace handling: the kustomize render carries
+        # explicit namespaces, gateway.yaml carries none and needs -n traderx.
+  local args=() s
+  for s in "${SUBS[@]+"${SUBS[@]}"}"; do args+=(-e "s|${s%%|*}|${s#*|}|g"); done
+  if [[ ${#args[@]} -gt 0 ]]; then sed "${args[@]}"; else cat; fi
+}
+IMAGES=()
+while IFS= read -r img; do IMAGES+=("${img}"); done < <(
+  render | pin | sed -n 's|^ *image: *\(traderx/[^[:space:]]*\).*|\1|p' | sort -u)
+[[ ${#IMAGES[@]} -gt 0 ]] || { echo "[fail] the render references no traderx/* image"; exit 1; }
 missing=()
 for img in "${IMAGES[@]}"; do
   docker image inspect "${img}" >/dev/null 2>&1 || missing+=("${img}")
@@ -87,7 +113,8 @@ done
 if [[ ${#missing[@]} -gt 0 ]]; then
   echo "[fail] not in the local Docker daemon: ${missing[*]}"
   echo "[hint] cluster-node: bash scripts/yu15/build-cluster-image.sh"
-  echo "[hint] the Spring services: build from generated/code/target-generated/<svc> with its Dockerfile"
+  echo "[hint] the Spring services: YU15_SERVICE_TAG=<tag> bash scripts/yu15/build-service-images.sh <svc>,"
+  echo "       then name each with its YU15_*_IMAGE variable"
   exit 1
 fi
 for img in "${IMAGES[@]}"; do
@@ -114,10 +141,6 @@ kubectl --context "${CTX}" -n traderx apply -f "${DBCM}"
 # Render, substitute, apply — rather than `apply -k` — so that the named image reaches the
 # workloads and not just the nodes. When no override is in play DECLARED == IMAGE and the sed is a
 # no-op, so the normal path is byte-identical to what `apply -k` would have sent.
-pin() { # a filter, so each apply keeps its own namespace handling: the kustomize render carries
-        # explicit namespaces, gateway.yaml carries none and needs -n traderx.
-  if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then sed "s|${DECLARED}|${IMAGE}|g"; else cat; fi
-}
 
 if [[ -n "${DECLARED}" && "${IMAGE}" != "${DECLARED}" ]]; then
   echo "[apply] cluster kustomization, pinning ${DECLARED} -> ${IMAGE}"
@@ -149,8 +172,14 @@ done
 # safe: an unfetchable artifact or an unstampable epoch leaves the publisher on the synthetic walk
 # with no replayed orders, saying so on /health.taqReplay and /health.printReplay.
 K="kubectl --context ${CTX} -n traderx"
-fetch_replay_extract_secret
-fetch_print_sample_secret
+# RIG_OFFLINE=1 skips both bucket reads: a local-only rig (no cloud access by policy) takes the same
+# rule-1 path as a laptop without gcloud -- synthetic equities, no replayed order flow -- and says so.
+if [[ "${RIG_OFFLINE:-0}" == "1" ]]; then
+  echo "[offline] RIG_OFFLINE=1: replay extract and print sample NOT fetched; equities stay synthetic, no replayed order flow"
+else
+  fetch_replay_extract_secret
+  fetch_print_sample_secret
+fi
 stamp_replay_epoch
 
 kubectl --context "${CTX}" -n traderx get pods -o wide

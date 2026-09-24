@@ -136,7 +136,8 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
               <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td>
               <td class="sub">{{ o.orderType || '' }} {{ o.timeInForce || '' }}</td><td>{{ o.side }}</td>
               <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
-              <td class="num">{{ o.limitPrice }}</td>
+              <!-- 0 is "no limit" (MARKET, STOP, TRAILING_STOP), never a price: a limit of 0 is refused. -->
+              <td class="num">{{ o.limitPrice || '—' }}</td>
               <td>@if (showTerminal() || o.status === 'PENDING_TRIGGER' || o.status === 'SUSPENDED') {
                 <span class="pill" [class.bad]="o.status === 'REJECTED'">{{ o.status }}</span>
               }</td>
@@ -159,12 +160,12 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
                     <span>submitted</span><b>{{ o.createdAt || '—' }}</b>
                     <span>updated</span><b>{{ o.updatedAt || '—' }}</b>
                     @if (o.orderType) { <span>type</span><b>{{ o.orderType }} · {{ o.timeInForce }}</b> }
-                    @if (o.stopPrice) { <span>{{ o.orderType === 'TRAILING_STOP' ? 'stop level (now)' : 'stop' }}</span><b>{{ o.stopPrice }}{{ o.triggered ? ' · triggered' : '' }}</b> }
+                    @if (o.stopPrice) { <span>{{ stopLabel(o) }}</span><b>{{ o.stopPrice }}{{ o.triggered ? ' · triggered' : '' }}</b> }
                     @if (o.trailAmount || o.trailPercentBps) { <span>trail</span><b>{{ o.trailAmount ? o.trailAmount : o.trailPercentBps + ' bps' }}</b> }
                     @if (o.displayQuantity) { <span>display</span><b>{{ o.displayQuantity }} shown, rest hidden</b> }
                     @if (o.pegReference) { <span>peg (local book)</span><b>{{ o.pegReference }} {{ o.pegOffset }} ticks · {{ o.side === 'Buy' ? 'cap' : 'floor' }} {{ o.pegCap }}</b> }
                     @if (o.suspendReason) { <span>suspended</span><b>{{ o.suspendReason === 'RISK' ? 'refused re-reservation' : 'no reference' }}</b> }
-                    @if (o.reason) { <span>reason</span><b>{{ o.reason }}</b> }
+                    @if (o.reason) { <span>{{ reasonLabel(o) }}</span><b>{{ o.reason }}</b> }
                   </div>
                   <trace-view [traceId]="traceForOrder(o)" derivedFrom="order" />
                 </td>
@@ -434,6 +435,20 @@ export class BlotterPanel implements OnInit, OnDestroy {
   toggleTerminal(): void { this.showTerminal.update(v => !v); this.poll(); }
 
   /** Cancel is only offered where it can do something; the rest are terminal. */
+  /** A trailing stop's level moves on every favourable print WITHOUT an order update (RI-07 F3), so
+   *  the read model holds the level as of the order's last event, not the engine's level now. */
+  stopLabel(o: OpenOrder): string {
+    if (o.orderType !== 'TRAILING_STOP') return 'stop';
+    return o.triggered ? 'stop level at trigger' : 'stop level (at last update; ratchets are not reported)';
+  }
+
+  /** On a live order the read model's reason is the last REFUSED change (e.g. a rejected replace),
+   *  which left the order itself unchanged (FR-OT29). Only a terminal order's reason explains its end. */
+  reasonLabel(o: OpenOrder): string {
+    const live = ['NEW', 'PARTIALLY_FILLED', 'PENDING_TRIGGER', 'SUSPENDED', 'QUEUED'].includes(o.status ?? '');
+    return live ? 'last refused change' : 'reason';
+  }
+
   cancellable(o: OpenOrder): boolean {
     return !o.status || LIVE_STATUSES.includes(o.status);
   }
