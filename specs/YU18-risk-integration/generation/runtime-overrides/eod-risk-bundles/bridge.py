@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlsplit, unquote
 
 import bundle
+import receipt_scope
 from coordinator import load_json, private_directory
 
 
@@ -68,6 +69,7 @@ def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, sessio
     bundle.require(not any((p / '.git').exists() for p in (inbox.resolve(), *inbox.resolve().parents)),
                    'inbox must be outside a Git checkout')
     private_directory(inbox)
+    receipt_scope.bind(receipt.parent, inbox, epoch)
     output = inbox / manifest['bundleId']
     duplicate = output.exists()
     if duplicate:
