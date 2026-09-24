@@ -27,6 +27,7 @@ build/
 
 # Exclude package-lock to avoid company builds overriding standard locations
 package-lock.json
+!web-front-end-console/package-lock.json
 !website/package-lock.json
 !templates/**/package-lock.json
 # A runtime-override layer that changes a module's package.json must be able to ship the

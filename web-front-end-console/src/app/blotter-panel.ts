@@ -7,6 +7,7 @@ import { TraceView } from './trace-view';
 import { PriceChip } from './price-chip';
 import type { PriceMark } from './api';
 import { SecHead, SecPager, Section } from './section';
+import { LIVE_STATUSES } from './order-types';
 
 // The system's own convention, read off the risk-extract cut files: contractMultiplier is 100 for
 // OCC option symbols and 1 for everything else (a bond's quantity is already USD face, so face ×
@@ -27,6 +28,10 @@ interface OpenOrder {
    * else's aggressor, so a stranger's order cannot acquire the aggressor's trace.
    */
   traceId?: string;
+  // YU18 order types (FR-OT34): the read model's typed columns. Untyped rows read LIMIT/MARKET.
+  orderType?: string; timeInForce?: string; stopPrice?: number; displayQuantity?: number;
+  pegReference?: string; pegOffset?: number; pegCap?: number; trailAmount?: number;
+  trailPercentBps?: number; triggered?: boolean; suspendReason?: string; reason?: string;
 }
 
 interface PosRow extends Position {
@@ -122,18 +127,19 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
     </sec-head>
     @if (openOrders.open()) {
       <table>
-        <thead><tr><th></th><th>id</th><th>security</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th>
-          @if (showTerminal()) { <th>state</th> }<th></th></tr></thead>
+        <thead><tr><th></th><th>id</th><th>security</th><th>type</th><th>side</th><th class="num">qty</th><th class="num">remaining</th><th class="num">limit</th>
+          <th>state</th><th></th></tr></thead>
         <tbody>
           @for (o of openOrders.view(); track o.orderId) {
             <tr [class.hit]="hit() === o.orderId" class="click" (click)="toggleOrder(o.orderId)">
               <td class="arrow">{{ expanded()[o.orderId] ? '▾' : '▸' }}</td>
-              <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td><td>{{ o.side }}</td>
+              <td class="sub">{{ o.orderId }}</td><td>{{ o.security }}</td>
+              <td class="sub">{{ o.orderType || '' }} {{ o.timeInForce || '' }}</td><td>{{ o.side }}</td>
               <td class="num">{{ o.quantity }}</td><td class="num">{{ o.remainingQuantity }}</td>
               <td class="num">{{ o.limitPrice }}</td>
-              @if (showTerminal()) {
-                <td><span class="pill" [class.bad]="o.status === 'REJECTED'">{{ o.status }}</span></td>
-              }
+              <td>@if (showTerminal() || o.status === 'PENDING_TRIGGER' || o.status === 'SUSPENDED') {
+                <span class="pill" [class.bad]="o.status === 'REJECTED'">{{ o.status }}</span>
+              }</td>
               <!-- $event.stopPropagation: the row is now a toggle, and without this a cancel click
                    also expands the row it just cancelled. Cancel is offered only where it can do
                    something: a REJECTED or CANCELED order is terminal, and a button that always
@@ -145,19 +151,26 @@ const orderRefOf = (t: { sourceOrderId?: string | null }): number | null => {
             @if (expanded()[o.orderId]) {
               <tr class="detail">
                 <td></td>
-                <td colspan="7">
+                <td colspan="9">
                   <div class="kv">
                     <span>status</span><b>{{ o.status || '—' }}</b>
                     <span>filled</span><b>{{ o.quantity - o.remainingQuantity }} of {{ o.quantity }}</b>
                     <span>last fill</span><b>{{ o.lastFillQuantity ? (o.lastFillQuantity + ' @ ' + fmt(o.lastExecutionPrice || 0)) : 'none yet' }}</b>
                     <span>submitted</span><b>{{ o.createdAt || '—' }}</b>
                     <span>updated</span><b>{{ o.updatedAt || '—' }}</b>
+                    @if (o.orderType) { <span>type</span><b>{{ o.orderType }} · {{ o.timeInForce }}</b> }
+                    @if (o.stopPrice) { <span>{{ o.orderType === 'TRAILING_STOP' ? 'stop level (now)' : 'stop' }}</span><b>{{ o.stopPrice }}{{ o.triggered ? ' · triggered' : '' }}</b> }
+                    @if (o.trailAmount || o.trailPercentBps) { <span>trail</span><b>{{ o.trailAmount ? o.trailAmount : o.trailPercentBps + ' bps' }}</b> }
+                    @if (o.displayQuantity) { <span>display</span><b>{{ o.displayQuantity }} shown, rest hidden</b> }
+                    @if (o.pegReference) { <span>peg (local book)</span><b>{{ o.pegReference }} {{ o.pegOffset }} ticks · {{ o.side === 'Buy' ? 'cap' : 'floor' }} {{ o.pegCap }}</b> }
+                    @if (o.suspendReason) { <span>suspended</span><b>{{ o.suspendReason === 'RISK' ? 'refused re-reservation' : 'no reference' }}</b> }
+                    @if (o.reason) { <span>reason</span><b>{{ o.reason }}</b> }
                   </div>
                   <trace-view [traceId]="traceForOrder(o)" derivedFrom="order" />
                 </td>
               </tr>
             }
-          } @empty { <tr><td colspan="8" class="faint">no resting orders</td></tr> }
+          } @empty { <tr><td colspan="10" class="faint">no resting orders</td></tr> }
         </tbody>
       </table>
       <sec-pager [s]="openOrders" />
@@ -422,7 +435,7 @@ export class BlotterPanel implements OnInit, OnDestroy {
 
   /** Cancel is only offered where it can do something; the rest are terminal. */
   cancellable(o: OpenOrder): boolean {
-    return !o.status || o.status === 'NEW' || o.status === 'PARTIALLY_FILLED';
+    return !o.status || LIVE_STATUSES.includes(o.status);
   }
 
   /**
@@ -621,6 +634,12 @@ export class BlotterPanel implements OnInit, OnDestroy {
         // `remainingQuantity` and `lastExecutionPrice`. No lower-case arm, because there is no
         // longer anything to be uncertain about.
         traceId: row.traceId ?? undefined,
+        orderType: row.orderType ?? undefined, timeInForce: row.timeInForce ?? undefined,
+        stopPrice: row.stopPrice ?? undefined, displayQuantity: row.displayQuantity ?? undefined,
+        pegReference: row.pegReference ?? undefined, pegOffset: row.pegOffset ?? undefined,
+        pegCap: row.pegCap ?? undefined, trailAmount: row.trailAmount ?? undefined,
+        trailPercentBps: row.trailPercentBps ?? undefined, triggered: row.triggered ?? undefined,
+        suspendReason: row.suspendReason ?? undefined, reason: row.reason ?? undefined,
       })));
     }
     // The service returns newest-first; take the head as-is (reversing dropped the NEWEST past 30).

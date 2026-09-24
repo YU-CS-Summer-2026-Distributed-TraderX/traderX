@@ -76,6 +76,11 @@ jobs:
         # which any pipeline executed before 2026-07-28. Validated green on all three branches
         # locally before being enabled.
         run: bash scripts/ci/service-tests.sh
+      - name: Verify YU18 composition and typed-order execution
+        if: ${{ matrix.branch == 'YU18-risk-integration' }}
+        run: |
+          python3 -m unittest discover -s scripts/ci/tests -v
+          python3 scripts/ci/check-yu18-composition.py --junit
       - name: Assert every suite actually executed
         # A green build is not evidence a suite ran. Three defects in one week were the same shape:
         # the prune step that never ran for YU02-YU15, four validators that skipped every YU state

@@ -8,7 +8,12 @@ TARGET="${TRADERX_GENERATED_ROOT:-${ROOT}/generated}/code/target-generated"
 mkdir -p "${TARGET}/eod-risk-bundles" "${TARGET}/YU18-risk-integration/spec-source"
 tar -C "${PACK}/generation/runtime-overrides/eod-risk-bundles" --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "${TARGET}/eod-risk-bundles" -xf -
 tar -C "${PACK}" --exclude='runtime-overrides' --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "${TARGET}/YU18-risk-integration/spec-source" -xf -
-# YU18's additive exporter completion helper, producer override and in-process proof.
-tar -C "${PACK}/generation/runtime-overrides/order-matcher" -cf - . | tar -C "${TARGET}/order-matcher" -xf -
+# YU18's full-file overrides, last-wins over YU17: the exporter helper and producer override, and
+# the order-types component (engine, gateways, read model, orderbook DDL).
+for module in order-matcher trade-processor postgres-database-replacement kubernetes-runtime; do
+  if [[ -d "${PACK}/generation/runtime-overrides/${module}" ]]; then
+    tar -C "${PACK}/generation/runtime-overrides/${module}" -cf - . | tar -C "${TARGET}/${module}" -xf -
+  fi
+done
 cp "${PACK}/README.md" "${TARGET}/YU18-risk-integration/README.md"
 echo '[ok] rendered local EOD bundle component'

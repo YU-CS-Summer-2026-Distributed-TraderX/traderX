@@ -1,0 +1,41 @@
+name: YU18 console checks
+on:
+  push:
+    branches: [traderX-risk-integration]
+  pull_request:
+    branches: [traderX-risk-integration]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  console:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web-front-end-console
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-front-end-console/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Node status and demo reader tests
+        run: node --test eod-jobs.test.mjs risk-demo.test.mjs treasury-demo.test.mjs
+      - name: Angular order types and Risk UI tests
+        run: npm test -- --watch=false --browsers=ChromeHeadless
+      - name: Production build
+        run: npm run build
+      - name: Build current console image locally
+        run: docker build --platform linux/amd64 -t traderx-console:ci .
+      - name: Build and smoke installed risk status runtime
+        working-directory: .
+        run: python3 scripts/ci/status-runtime-smoke.py --console-image traderx-console:ci --evidence "${{ runner.temp }}/status-runtime"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: status-runtime-evidence
+          path: ${{ runner.temp }}/status-runtime
+          if-no-files-found: warn

@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { PriceChip } from './price-chip';
 import { Api, OrderResult, OtcContract, nextClientOrderId, parseOcc, traceIdFor } from './api';
 import { HelpTip } from './help';
+import { ORDER_TYPES, OrderType, REASON_HINT, TIFS_FOR, Tif, TypedTicket, defaultTif, trailHint, typedBody, validateTicket } from './order-types';
 
 type Cls = 'Equity' | 'Option' | 'Treasury' | 'Corporate' | 'Swap' | 'Swaption';
 
@@ -131,7 +132,7 @@ const PRESETS: Preset[] = [
             </select>
           </label>
           @if (execMode === 'Direct') {
-            <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+            <ng-container *ngTemplateOutlet="orderShape"></ng-container>
           } @else {
             <div class="derived">Parent order — the algo engine slices it into child orders on a
               {{ execMode }} schedule, each child through the same consensus path.
@@ -153,7 +154,7 @@ const PRESETS: Preset[] = [
           } @else if (occSymbol()) { <div class="derived bad">not a valid OCC symbol</div> }
           <label class="field">Side <select [(ngModel)]="side" name="side"><option>Buy</option><option>Sell</option></select></label>
           <label class="field">Contracts <input type="number" [(ngModel)]="quantity" name="qty" min="1"></label>
-          <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+          <ng-container *ngTemplateOutlet="orderShape"></ng-container>
         }
         @case ('Treasury') { <ng-container *ngTemplateOutlet="bond"></ng-container> }
         @case ('Corporate') { <ng-container *ngTemplateOutlet="bond"></ng-container> }
@@ -174,6 +175,55 @@ const PRESETS: Preset[] = [
         <div class="banner" [class.good]="r.ok" [class.bad]="!r.ok">{{ r.text }}</div>
       }
     </form>
+
+    <!-- YU18 order types (FR-OT32). "Untyped limit" is today's ticket, sent exactly as before
+         (limitPrice 0 still means market). A typed order sends only its own fields. -->
+    <ng-template #orderShape>
+      <label class="field">
+        <span class="lbl">Order type
+          <help-tip text="Untyped is the ticket as it always was: a limit at the price you enter, or a market order at 0. The typed orders are sequenced with their type and time in force, and anything the venue cannot honour is refused rather than quietly turned into something else. PEGGED tracks THIS venue's own book, never a consolidated NBBO. A STOP or TRAILING_STOP is reserved at its stop level and re-checked when it triggers; it then executes as a market order, which can fill beyond the stop in a gap." />
+        </span>
+        <select [(ngModel)]="orderType" (ngModelChange)="onTypeChange()" name="otype">
+          <option value="">Untyped limit (as before)</option>
+          @for (o of orderTypes; track o) { <option [value]="o">{{ o === 'PEGGED' ? 'PEGGED (local book)' : o }}</option> }
+        </select>
+      </label>
+      @if (!orderType) {
+        <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+      } @else {
+        <label class="field">Time in force
+          <select [(ngModel)]="tif" name="tif">
+            @for (x of tifsFor(); track x) { <option [value]="x">{{ x }}</option> }
+          </select>
+        </label>
+        @if (orderType === 'STOP' || orderType === 'STOP_LIMIT') {
+          <label class="field">Stop price <input type="number" [(ngModel)]="stopPrice" name="stop" step="0.01"></label>
+        }
+        @if (orderType === 'LIMIT' || orderType === 'STOP_LIMIT' || orderType === 'ICEBERG') {
+          <label class="field">Limit price <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+        }
+        @if (orderType === 'ICEBERG') {
+          <label class="field">Display quantity <input type="number" [(ngModel)]="displayQuantity" name="dq" min="1"></label>
+        }
+        @if (orderType === 'PEGGED') {
+          <label class="field">Reference
+            <select [(ngModel)]="pegReference" name="pegref"><option>PRIMARY</option><option>MIDPOINT</option></select>
+          </label>
+          <label class="field">Offset (ticks; buy ≤ 0, sell ≥ 0) <input type="number" [(ngModel)]="pegOffset" name="pegoff" step="1"></label>
+          <label class="field">{{ side === 'Buy' ? 'Cap (never above)' : 'Floor (never below)' }}
+            <input type="number" [(ngModel)]="limitPrice" name="px" step="0.01"></label>
+        }
+        @if (orderType === 'TRAILING_STOP') {
+          <label class="field">Trail
+            <select [(ngModel)]="trailMode" name="trailmode"><option value="amount">amount</option><option value="bps">basis points</option></select>
+          </label>
+          <label class="field">{{ trailMode === 'amount' ? 'Trail amount' : 'Trail (bps, 1–5000)' }}
+            <input type="number" [(ngModel)]="trailValue" name="trail" [step]="trailMode === 'amount' ? 0.01 : 1"></label>
+        }
+        @if (typedError(); as err) { <div class="derived bad">{{ err }}</div> }
+        @else if (typedHint(); as h) { <div class="derived">{{ h }}</div> }
+      }
+    </ng-template>
 
     <ng-template #bond>
       <label class="field">Instrument
@@ -273,6 +323,52 @@ export class TicketPanel {
   expiryDate = '';
   exerciseStyle = 'European';
   conventions = CONVENTIONS[0];
+  // YU18 order types (FR-OT32). '' = the untyped ticket, unchanged.
+  readonly orderTypes = ORDER_TYPES;
+  orderType: OrderType | '' = '';
+  tif: Tif = 'GTC';
+  stopPrice = 0;
+  displayQuantity = 0;
+  pegReference: 'PRIMARY' | 'MIDPOINT' = 'PRIMARY';
+  pegOffset = 0;
+  trailMode: 'amount' | 'bps' = 'amount';
+  trailValue = 0;
+
+  tifsFor(): Tif[] {
+    return this.orderType ? TIFS_FOR[this.orderType] : [];
+  }
+
+  onTypeChange(): void {
+    if (this.orderType && !TIFS_FOR[this.orderType].includes(this.tif)) {
+      this.tif = defaultTif(this.orderType);
+    }
+  }
+
+  private ticket(): TypedTicket | null {
+    if (!this.orderType) return null;
+    const t = this.orderType;
+    return {
+      orderType: t, timeInForce: this.tif, side: this.side as 'Buy' | 'Sell', quantity: Number(this.quantity),
+      limitPrice: ['LIMIT', 'STOP_LIMIT', 'ICEBERG', 'PEGGED'].includes(t) ? Number(this.limitPrice) : undefined,
+      stopPrice: t === 'STOP' || t === 'STOP_LIMIT' ? Number(this.stopPrice) : undefined,
+      displayQuantity: t === 'ICEBERG' ? Number(this.displayQuantity) : undefined,
+      pegReference: t === 'PEGGED' ? this.pegReference : undefined,
+      pegOffset: t === 'PEGGED' ? Number(this.pegOffset) : undefined,
+      trailAmount: t === 'TRAILING_STOP' && this.trailMode === 'amount' ? Number(this.trailValue) : undefined,
+      trailPercentBps: t === 'TRAILING_STOP' && this.trailMode === 'bps' ? Number(this.trailValue) : undefined,
+    };
+  }
+
+  /** The gateway's own 422 text, before the request is sent (FR-OT41 UI parity). */
+  typedError(): string {
+    const t = this.ticket();
+    return t ? validateTicket(t) : '';
+  }
+
+  typedHint(): string {
+    const t = this.ticket();
+    return t ? trailHint(t, this.livePrice()?.price) : '';
+  }
 
   readonly equities = computed(() =>
     this.api.instruments().filter(i => i.securityType === 'Equity' || i.securityType === 'Fund'));
@@ -402,16 +498,26 @@ export class TicketPanel {
       } else {
         const ticker = this.currentTicker();
         const clientOrderId = nextClientOrderId();
-        const r = await this.api.post<OrderResult>('/order-matcher/orders', {
-          accountId: Number(this.accountId), ticker, side: this.side,
-          quantity: this.quantity, limitPrice: this.limitPrice, clientOrderId,
-        });
+        const typed = this.ticket();
+        if (typed) {
+          const err = validateTicket(typed);
+          if (err) { this.last.set({ ok: false, text: err }); return; }
+        }
+        // Untyped: the body is byte-for-byte what it always was (FR-OT32).
+        const body = typed
+          ? { accountId: Number(this.accountId), ticker, clientOrderId, ...typedBody(typed) }
+          : { accountId: Number(this.accountId), ticker, side: this.side,
+              quantity: this.quantity, limitPrice: this.limitPrice, clientOrderId };
+        const r = await this.api.post<OrderResult>('/order-matcher/orders', body);
         const ok = r.status === 200;
-        this.last.set({ ok, text: ok ? `orderRef ${r.body?.orderRef} accepted`
-          : r.body?.reason ? `REJECTED: ${r.body.reason}` : r.body?.error ?? `HTTP ${r.status}` });
+        const why = r.body?.reason ? `${r.body.reason}${REASON_HINT[r.body.reason] ? ' — ' + REASON_HINT[r.body.reason] : ''}` : '';
+        this.last.set({ ok: ok && !r.body?.reason, text: ok
+          ? (r.body?.reason ? `orderRef ${r.body?.orderRef} ${r.body.kind === 5 ? 'CANCELED' : ''}: ${why}` : `orderRef ${r.body?.orderRef} accepted`)
+          : r.body?.reason ? `REJECTED: ${why}` : r.body?.error ?? `HTTP ${r.status}` });
+        const shape = typed ? `${typed.orderType} ${typed.timeInForce}` : `@ ${this.limitPrice}`;
         this.api.log({
           kind: 'order', ok, reason: r.body?.reason,
-          summary: `${this.side} ${this.quantity} ${ticker} @ ${this.limitPrice} → ${this.last()!.text}`,
+          summary: `${this.side} ${this.quantity} ${ticker} ${shape} → ${this.last()!.text}`,
           orderRef: r.body?.orderRef, clientOrderId,
           traceId: traceIdFor(clientOrderId, r.body?.orderRef),
         });

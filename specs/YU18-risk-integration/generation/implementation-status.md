@@ -315,3 +315,15 @@ front-matter, readiness and coverage checks passed. Regenerated the owner compon
 YU18 renderer; no Java/exporter code changed, so Java tests were not repeated. No cloud work.
 The maintained reply is docs/risk-integration/eod-response-to-alex-v3.md. It covers rounding,
 signed face, identity timing, fresh-attempt retry identity and publication/lookup recovery.
+
+## Order types (RI-01), 2026-09-24
+
+The order-types component (`components/order-types`) is implemented locally on
+`claude/order-types`. It is not merged, not deployed and not proven on any cluster.
+
+- **Scope:** all seven types (MARKET, LIMIT, STOP, STOP_LIMIT, ICEBERG, PEGGED against the local
+  book, TRAILING_STOP) with DAY/GTC/IOC/FOK, across the engine, SBE template 9, snapshot format 11,
+  REST, FIX, the read model and DDL, and the console.
+- **Approved policy:** OPEN-D5, stop-price reservation with trigger recheck.
+- **Evidence:** the component README's Verification section.
+- **Review corrections:** I1–I4 were fixed in c41e508b.
