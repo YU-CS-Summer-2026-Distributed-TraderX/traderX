@@ -121,7 +121,16 @@ class RunIdentityConsensusTest {
         assertClusterStateEquality(follower,leader);
         var recon=new ClusterRecon(tempDir.resolve("node-"+leader).toFile(),tempDir.resolve("aeron-"+leader).toString(),descriptor.epoch(),100,100,100);
         recon.runDescriptor(descriptor);
-        var replay=recon.projectionEvents();
+        var replay=recon.projectionEvents(true);
+        var bounded=new ClusterRecon(tempDir.resolve("node-"+leader).toFile(),tempDir.resolve("aeron-"+leader).toString(),descriptor.epoch(),100,100,1);
+        bounded.runDescriptor(descriptor);
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->bounded.projectionEvents(true));
+        var absent=tempDir.resolve("missing-history");java.nio.file.Files.createDirectories(absent.resolve("cluster"));
+        try(var empty=new io.aeron.cluster.RecordingLog(absent.resolve("cluster").toFile(),true)) {}
+        var missing=new ClusterRecon(absent.toFile(),tempDir.resolve("aeron-"+leader).toString(),descriptor.epoch(),100,100,100);
+        missing.runDescriptor(descriptor);
+        var refused=org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,()->missing.projectionEvents(true));
+        assertTrue(refused.getMessage().contains("GENESIS_MISSING"));
         var mapper=new com.fasterxml.jackson.databind.ObjectMapper();var wire=mapper.valueToTree(replay);
         assertEquals(descriptor.hash(),wire.path("descriptorHash").asText());
         assertEquals(4,wire.path("shadowTradeCounter").asLong());

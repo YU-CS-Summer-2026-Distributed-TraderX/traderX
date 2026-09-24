@@ -50,7 +50,10 @@ public class OrderController {
   @GetMapping("/v2/projections/{scope}/accounts/{accountId}/orders")
   public ResponseEntity<List<OrderRow>> scopedOrders(@PathVariable String scope,
       @PathVariable Integer accountId,@RequestParam(name="status",required=false) String status) {
-    runRegistry.scope(scope);
+    try {runRegistry.scope(scope);}
+    catch(IllegalArgumentException ex) {
+      throw new org.springframework.web.server.ResponseStatusException(org.springframework.http.HttpStatus.NOT_FOUND,"unknown projection scope");
+    }
     return ResponseEntity.ok("all".equalsIgnoreCase(status)
         ? orderRepository.findByProjectionScopeAndAccountId(scope,accountId)
         : orderRepository.findByProjectionScopeAndAccountIdAndStatusIn(scope,accountId,OPEN_STATUSES));

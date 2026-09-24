@@ -231,6 +231,10 @@ final class ClusterRecon {
      * the same number and needs no second parameter.
      */
     synchronized java.util.Map<String,Object> projectionEvents() {
+        return projectionEvents(false);
+    }
+
+    synchronized java.util.Map<String,Object> projectionEvents(boolean strict) {
         if(runDescriptor==null) {throw new IllegalStateException("RUN_REPLAY_IDENTITY_REQUIRED");}
         var mapper=new com.fasterxml.jackson.databind.ObjectMapper();
         java.util.List<com.fasterxml.jackson.databind.JsonNode> events=new java.util.ArrayList<>();
@@ -250,7 +254,7 @@ final class ClusterRecon {
                     events.add(mapper.createObjectNode().put("type",envelope.path("type").asText()).set("payload",envelope.get("payload")));
                 } catch(java.io.IOException ex) {throw new IllegalStateException("RUN_REPLAY_SERIALIZATION",ex);}
             }
-        },null,applied);
+        },null,applied,strict);
         return java.util.Map.of("descriptorHash",runDescriptor.hash(),"projectionScope",runDescriptor.projectionScope(),
             "events",events,"replayedMessages",applied[0],"replayedAppliedSeq",applied[1],"shadowTradeCounter",trades);
     }
@@ -323,6 +327,11 @@ final class ClusterRecon {
      */
     private long replay(final ReplaySink sink, final ContractSink contractSink,
                         final long[] counters) {
+        return replay(sink, contractSink, counters, false);
+    }
+
+    private long replay(final ReplaySink sink, final ContractSink contractSink,
+                        final long[] counters, final boolean strict) {
         final MatchingEngineClusteredService shadow = new MatchingEngineClusteredService();
         shadow.runDescriptor(runDescriptor);
         shadow.initEngine();
@@ -335,7 +344,7 @@ final class ClusterRecon {
         final SessionMessageHeaderDecoder session = new SessionMessageHeaderDecoder();
         final long[] applied = counters;
 
-        final FragmentHandler handler = (buffer, offset, length, ignored) -> {
+        final FragmentHandler rawHandler = (buffer, offset, length, ignored) -> {
             header.wrap(buffer, offset);
             if (header.schemaId() != SessionMessageHeaderDecoder.SCHEMA_ID
                 || header.templateId() != SessionMessageHeaderDecoder.TEMPLATE_ID) {
@@ -348,6 +357,15 @@ final class ClusterRecon {
                 buffer, offset + SESSION_HEADER_LENGTH, length - SESSION_HEADER_LENGTH,
                 contractSink);
             applied[0]++;
+        };
+
+        // Image.poll reports callback exceptions to its error handler and can keep going.
+        // Retain the failure explicitly; an incomplete replay must never become a witness.
+        final RuntimeException[] replayFailure = {null};
+        final FragmentHandler handler = (buffer, offset, length, headerValue) -> {
+            if (replayFailure[0] != null) return;
+            try { rawHandler.onFragment(buffer, offset, length, headerValue); }
+            catch (RuntimeException failure) { replayFailure[0] = failure; }
         };
 
         try (Aeron aeron = Aeron.connect(new Aeron.Context().aeronDirectoryName(aeronDir));
@@ -367,14 +385,24 @@ final class ClusterRecon {
                 }
             }
             terms.sort(Comparator.comparingLong(e -> e.termBaseLogPosition));
+            if (strict && (terms.isEmpty() || terms.get(0).termBaseLogPosition != 0)) {
+                throw new IllegalStateException("RECOVERY_ARCHIVE_GENESIS_MISSING");
+            }
+            long previousEnd = 0;
             for (int i = 0; i < terms.size(); i++) {
                 final RecordingLog.Entry term = terms.get(i);
                 final long[] bounds = recordingBounds(archive, term.recordingId);
                 final long from = Math.max(term.termBaseLogPosition, bounds[0]);
                 final long to = i + 1 < terms.size()
                     ? Math.min(terms.get(i + 1).termBaseLogPosition, bounds[1]) : bounds[1];
+                if (strict && (from != previousEnd || bounds[0] > term.termBaseLogPosition
+                    || to < from || (i + 1 < terms.size() && to != terms.get(i + 1).termBaseLogPosition))) {
+                    throw new IllegalStateException("RECOVERY_ARCHIVE_DISCONTINUITY: term=" + term.leadershipTermId);
+                }
+                previousEnd = to;
                 if (to > from) {
                     replayRange(aeron, archive, term.recordingId, from, to - from, handler);
+                    if (replayFailure[0] != null) throw replayFailure[0];
                 }
             }
         }

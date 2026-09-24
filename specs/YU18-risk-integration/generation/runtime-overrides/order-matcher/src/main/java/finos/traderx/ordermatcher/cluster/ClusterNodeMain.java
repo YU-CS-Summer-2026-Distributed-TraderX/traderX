@@ -604,6 +604,25 @@ public final class ClusterNodeMain {
                 return null;
             };
 
+        server.createContext("/recon/recovery-events", exchange -> guarded.apply(exchange,()->{
+            var descriptor=service.runDescriptor();
+            long before=service.appliedSeq();
+            int phase=service.runPhase();
+            if(descriptor==null || !"epoch-v1".equals(descriptor.scheme()) || (phase!=2 && phase!=3)) {
+                throw new IllegalStateException("RECOVERY_MANAGED_ACTIVE_OR_FROZEN_REQUIRED");
+            }
+            var result=new java.util.HashMap<String,Object>(recon.projectionEvents(true));
+            if(service.appliedSeq()!=before || service.runPhase()!=phase
+                || ((Number)result.get("replayedAppliedSeq")).longValue()!=before
+                || ((Number)result.get("shadowTradeCounter")).longValue()!=service.engine().tradeCounter()) {
+                throw new IllegalStateException("RECOVERY_UNSTABLE_OR_INCOMPLETE_BOUNDARY: retry at a quiet boundary");
+            }
+            result.put("completeSequence",before);
+            result.put("runPhase",phase);
+            result.put("frozenSequence",service.frozenRunSequence());
+            return result;
+        }));
+
         server.createContext("/recon/projection-events", exchange -> guarded.apply(exchange,()->{
             if(service.runDescriptor()==null || service.runPhase()!=3 || service.frozenRunSequence()<=0) {
                 throw new IllegalStateException("RUN_MUST_BE_FROZEN_FOR_PROJECTION_VERIFICATION");

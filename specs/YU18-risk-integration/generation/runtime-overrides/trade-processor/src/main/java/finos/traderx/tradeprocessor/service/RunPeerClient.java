@@ -7,4 +7,5 @@ public interface RunPeerClient {
     JsonNode status(String endpoint);
     void control(String endpoint,String descriptorHash,String operation);
     JsonNode projectionEvents(String endpoint);
+    default JsonNode recoveryEvents(String endpoint) { throw new IllegalStateException("RECOVERY_PEER_UNSUPPORTED"); }
 }

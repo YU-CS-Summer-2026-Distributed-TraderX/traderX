@@ -157,6 +157,12 @@ public class TradeService {
    * untouched) without poisoning the rest of the batch.
    */
   public List<TradeBookingResult> processTrades(List<TradeOrder> orders) {
+    return processTrades(orders,false);
+  }
+  List<TradeBookingResult> processRecoveredTrades(List<TradeOrder> orders) {
+    return processTrades(orders,true);
+  }
+  private List<TradeBookingResult> processTrades(List<TradeOrder> orders, boolean recovery) {
     Map<String, InstrumentMetadata> metadataBySecurity = new HashMap<>();
     for (TradeOrder order : orders) {
       if (isBondKey(order.getSecurity()) && !metadataBySecurity.containsKey(order.getSecurity())) {
@@ -221,7 +227,7 @@ public class TradeService {
       positionRepository.saveAll(positionsByKey.values());
 
       for (TradeBookingResult result : results) {
-        if (rejectedResults.contains(result)) {
+        if (recovery || rejectedResults.contains(result)) {
           publishTradeOnly(result.getTrade().getAccountId(), result);
         } else {
           publish(result.getTrade().getAccountId(), result);
@@ -391,6 +397,35 @@ public class TradeService {
       if (projectionWriteLock != null) { projectionWriteLock.acquire(); }
       return body.get();
     });
+  }
+
+  /** Recovery-only derived projection rebuild. Caller owns the write lock and outer transaction.
+   * Existing immutable trade rows are never saved or relabelled here. */
+  void rebuildRecoveredPositions(String scope, List<TradeOrder> source) {
+    Map<String,Position> rebuilt=new java.util.LinkedHashMap<>();
+    for(TradeOrder order:source) {
+      Trade retained=tradeRepository.findById(order.getId()).orElseThrow();
+      requireSameTrade(retained,order);
+      if(retained.getState()==TradeState.Rejected) {
+        throw new IllegalStateException("RECOVERY_REJECTED_BOOKING_REQUIRES_REVIEW: "+order.getId());
+      }
+      String key=order.getAccountId()+":"+order.getSecurity();
+      Position p=rebuilt.computeIfAbsent(key,ignored->newFlatPosition(order));
+      Math.addExact(p.getQuantity(), Math.multiplyExact(order.getQuantity(),order.getSide()==TradeSide.Buy?1:-1));
+      bookTrade(order,p);
+      p.setUpdated(retained.getUpdated());
+    }
+    for(Position p:rebuilt.values()) {
+      Position old=findPosition(scope,p.getAccountId(),p.getSecurity());
+      if(old==null || !Objects.equals(old.getQuantity(),p.getQuantity())
+          || old.getAverageCostBasis()==null || old.getAverageCostBasis().compareTo(p.getAverageCostBasis())!=0) {
+        positionRepository.save(p);
+      }
+      afterCommit(()->{
+        try {positionPublisher.publish(projectionTopic(scope,p.getAccountId(),"positions"),p);}
+        catch(PubSubException ex) {log.error("Recovery position notification failed",ex);}
+      });
+    }
   }
 
   /** Adds {@code days} business days (Mon-Fri) to {@code from}, skipping weekends. */

@@ -19,6 +19,13 @@ public final class ScopedProjectionController {
  @GetMapping public List<Map<String,Object>> scopes() {
   return jdbc.queryForList("SELECT projection_scope,cluster_epoch,event_id_scheme,descriptor_hash,phase,checkpoint_seq FROM projection_runs ORDER BY projection_scope");
  }
+ @GetMapping("/active") public Map<String,String> active() {
+  // One SQL statement binds the pointer to a registered scope; phase is not selection.
+  var scopes=jdbc.queryForList("SELECT r.projection_scope FROM projection_active a JOIN projection_runs r "
+      +"ON r.projection_scope=a.projection_scope WHERE a.singleton_id=1",String.class);
+  if(scopes.size()!=1) {throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,"active projection scope unavailable");}
+  return Map.of("projectionScope",scopes.get(0));
+ }
  private void requireScope(String scope) {
   Integer count=jdbc.queryForObject("SELECT count(*) FROM projection_runs WHERE projection_scope=?",Integer.class,scope);
   if (count==null || count!=1) {throw new ResponseStatusException(HttpStatus.NOT_FOUND,"unknown projection scope");}

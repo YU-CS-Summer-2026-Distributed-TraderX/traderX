@@ -13,7 +13,8 @@ import org.springframework.stereotype.Component;
 @Component
 public final class LocalRunPeerClient implements RunPeerClient {
     private final String token,authorization;
-    private final ObjectMapper mapper=new ObjectMapper();
+    private final ObjectMapper mapper=new ObjectMapper().enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+        .enable(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS);
     private final HttpClient http=HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(3)).build();
     public LocalRunPeerClient(@Value("${RISK_CONTROL_TOKEN:dev-risk-control}") String token,
                               @Value("${auth.jwt.secret:dev-jwt-shared-secret}") String secret) {
@@ -31,6 +32,15 @@ public final class LocalRunPeerClient implements RunPeerClient {
                 .header("Authorization",authorization).header("X-Risk-Control-Token",token)
                 .header("X-Risk-Operator","local-run-migration");
             if(body==null) b.GET();else b.header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)));
+            if (path.equals("/recon/recovery-events")) {
+                var response=http.send(b.build(),HttpResponse.BodyHandlers.ofInputStream());
+                try(var input=response.body()) {
+                    if(response.statusCode()!=200) throw new IllegalStateException("RECOVERY_PEER_REFUSED: HTTP "+response.statusCode());
+                    byte[] bytes=input.readNBytes(16*1024*1024+1);
+                    if(bytes.length>16*1024*1024) throw new IllegalStateException("RECOVERY_RESPONSE_LIMIT_EXCEEDED");
+                    return mapper.readTree(bytes);
+                }
+            }
             var response=http.send(b.build(),HttpResponse.BodyHandlers.ofString());
             if(response.statusCode()!=200) throw new IllegalStateException("RUN_PEER_REFUSED: HTTP "+response.statusCode());
             return mapper.readTree(response.body());
@@ -41,5 +51,6 @@ public final class LocalRunPeerClient implements RunPeerClient {
     public void control(String endpoint,String hash,String operation) {
         request(endpoint,"/run/control",mapper.createObjectNode().put("descriptorHash",hash).put("operation",operation));
     }
+    public JsonNode recoveryEvents(String endpoint) {return request(endpoint,"/recon/recovery-events",null);}
     public JsonNode projectionEvents(String endpoint) {return request(endpoint,"/recon/projection-events",null);}
 }
