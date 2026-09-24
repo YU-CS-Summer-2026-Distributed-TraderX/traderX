@@ -137,7 +137,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Must match reference-data's jetstream-control-feed-publisher.ts (STREAM TRADERX_CONTROL_SECURITY).
     private static final String CONTROL_FEED_SUBJECT =
         env("CONTROL_FEED_SUBJECT", "traderx.control.security.deltas");
-    private final UnsafeBuffer orderBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
+    private final UnsafeBuffer orderBuffer = new UnsafeBuffer(new byte[
+        Math.max(AeronReplicationCodec.INPUT_BYTES, AeronReplicationCodec.ORDER_INSTRUCTION_BYTES)]);
     private final UnsafeBuffer symbolBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.SYMBOL_BYTES]);
     private final Map<String, Integer> idByTicker = new HashMap<>();
     // Tasks that touch the cluster client; run ONLY on the owner thread.
