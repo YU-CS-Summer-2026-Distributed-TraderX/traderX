@@ -47,6 +47,8 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
 
   @Autowired
   private OrderRepository orderRepository;
+  @Autowired
+  private finos.traderx.tradeprocessor.service.OrderProjectionService projectionService;
 
   @Override
   public void afterPropertiesSet() throws Exception {
@@ -89,7 +91,10 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
   /** Package-private so the rejection signal is unit-testable with a throwing repository. */
   void persist(OrderUpdate update) {
     try {
-      orderRepository.save(preserveTraceId(toRow(update)));
+      if (projectionService!=null) {projectionService.persist(update);}
+      else if ("legacy-unknown".equals(update.getProjectionScope())) {
+        orderRepository.save(preserveTraceId(toRow(update))); // Standalone legacy test seam.
+      } else {throw new IllegalStateException("managed order requires projection service");}
     } catch (Exception x) {
       long n = rejected.incrementAndGet();
       log.warn("orderbook write rejected for order {} (rejected={}): {}",
@@ -97,9 +102,12 @@ public class OrderFeedHandler extends NatsJSONSubscriber<OrderUpdate> implements
     }
   }
 
-  static OrderRow toRow(OrderUpdate u) {
+  public static OrderRow toRow(OrderUpdate u) {
     OrderRow row = new OrderRow();
     row.setId(u.getId());
+    row.setProjectionScope(u.getProjectionScope());row.setClusterEpoch(u.getClusterEpoch());
+    row.setEventIdScheme(u.getEventIdScheme());row.setRunDescriptorHash(u.getRunDescriptorHash());
+    row.setConsensusSequence(u.getConsensusSequence());row.setOutputOrdinal(u.getOutputOrdinal());
     row.setAccountId(u.getAccountId());
     row.setSecurity(u.getSecurity());
     row.setSide(u.getSide());

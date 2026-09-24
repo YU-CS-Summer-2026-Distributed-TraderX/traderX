@@ -230,6 +230,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     // Owner-thread-only ack scratch (set by the egress listener between poll calls). Order-lifecycle
     // acks no longer use a single slot — they complete the pending their echoed request id names
     // (see onEgress / Inflight).
+    private RunDescriptor runDescriptor;
+    private long[] lastRunAck;
     private long[] lastTradeAck;   // {kind, riskReason} — market-trade (/trades) committed decision
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long[] lastSwapAck;    // YU17 {contractId, booked, riskReason, clientOrderKey}
@@ -316,6 +318,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     }
 
     private void run() throws Exception {
+        final String descriptorPath = env("RUN_DESCRIPTOR_PATH", "");
+        if (!descriptorPath.isBlank()) {runDescriptor=RunDescriptor.read(java.nio.file.Path.of(descriptorPath));}
         ingressEndpoints = env("GATEWAY_INGRESS_ENDPOINTS", "0=localhost:21802");
         endpointEntries = ingressEndpoints.split(",");
         aeronDir = env("GATEWAY_AERON_DIR", "/dev/shm/aeron-gateway");
@@ -349,6 +353,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         server.createContext("/replace", this::handleReplace);
         server.createContext("/trades", this::handleTrade);
         server.createContext("/session", this::handleSession);
+        server.createContext("/run/control", this::handleRunControl);
+        server.createContext("/run/status", this::handleRunStatus);
         server.createContext("/sandbox/reset", this::handleSandboxReset);
         server.createContext("/swaps", this::handleSwapBook);
         server.createContext("/swaptions", this::handleSwaptionBook);
@@ -706,6 +712,9 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // gateway client's.
             lastSwapAck = new long[] { buffer.getLong(offset), buffer.getInt(offset + 8),
                 buffer.getByte(offset + 22), buffer.getLong(offset + 13) };
+        } else if (kind == MatchingEngineClusteredService.KIND_RUN_CONTROL) {
+            lastRunAck=new long[]{buffer.getLong(offset),buffer.getInt(offset+8),
+                buffer.getLong(offset+13),buffer.getByte(offset+21)};
         } else if (kind == MatchingEngineClusteredService.KIND_SESSION_PHASE) {
             // YU17 (ADR-069 §1.2). Its OWN kind and its OWN request id at 13 — never bytes 24..31.
             // The OPEN apply emits every released order's lifecycle acks in the same apply, and
@@ -1685,6 +1694,101 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * <p>Credentials are the risk-control pair every other control route on this gateway uses, so
      * this adds no new secret and no new trust path.
      */
+    /** All configured members must report the same descriptor and admission phase. */
+    private void handleRunStatus(final HttpExchange exchange) {
+        if (!"GET".equals(exchange.getRequestMethod())) {respond(exchange,405,"{}");return;}
+        if(runDescriptor==null) {respond(exchange,409,"{\"error\":\"RUN_DESCRIPTOR_NOT_CONFIGURED\"}");return;}
+        try {
+            var mapper=new ObjectMapper();var members=mapper.createArrayNode();
+            int phase=-1;long frozen=-1;
+            int port=Integer.parseInt(env("GATEWAY_MEMBER_HEALTH_PORT","8080"));
+            for(String entry:endpointEntries) {
+                String hostPort=entry.substring(entry.indexOf('=')+1);
+                String host=hostPort.substring(0,hostPort.lastIndexOf(':'));
+                var request=HttpRequest.newBuilder(URI.create("http://"+host+":"+port+"/health"))
+                    .timeout(Duration.ofSeconds(3)).GET().build();
+                var response=readModelClient.send(request,HttpResponse.BodyHandlers.ofString());
+                if(response.statusCode()!=200) {throw new IllegalStateException("member unavailable");}
+                JsonNode member=mapper.readTree(response.body());
+                if(!member.path("started").asBoolean() || member.path("runProtocol").asInt()!=1
+                    || !runDescriptor.hash().equals(member.path("runDescriptorHash").asText())
+                    || !runDescriptor.projectionScope().equals(member.path("projectionScope").asText())) {
+                    throw new IllegalStateException("member descriptor disagreement");
+                }
+                int nextPhase=member.path("runPhase").asInt(-1);
+                long nextFrozen=member.path("frozenRunSequence").asLong(-1);
+                if(nextPhase<0 || nextFrozen<0 || (phase>=0 && (phase!=nextPhase || frozen!=nextFrozen))) {
+                    throw new IllegalStateException("member phase disagreement");
+                }
+                phase=nextPhase;frozen=nextFrozen;members.add(member);
+            }
+            if(members.isEmpty()) {throw new IllegalStateException("no members");}
+            var result=mapper.createObjectNode();result.put("descriptorHash",runDescriptor.hash());
+            result.put("projectionScope",runDescriptor.projectionScope());result.put("clusterEpoch",runDescriptor.epoch());
+            result.put("eventIdScheme",runDescriptor.scheme());result.put("runPhase",phase);
+            result.put("frozenRunSequence",frozen);result.set("members",members);
+            respond(exchange,200,mapper.writeValueAsString(result));
+        } catch(Exception ex) {respond(exchange,503,"{\"error\":\"RUN_MEMBERS_NOT_IN_AGREEMENT\"}");}
+    }
+
+    /** The operator-facing admission route requires the SQL workflow's durable selection witness. */
+    private boolean projectionSelected(String token,String operator) throws Exception {
+        return projectionSelected(env("RUN_PROJECTION_CONTROL_URL",""),token,operator);
+    }
+
+    boolean projectionSelected(String endpoint,String token,String operator) throws Exception {
+        if(endpoint.isBlank()) return false;
+        URI base=URI.create(endpoint);
+        if(!"http".equals(base.getScheme()) || !java.util.Set.of("localhost","127.0.0.1","[::1]").contains(base.getHost())
+            || base.getUserInfo()!=null || base.getQuery()!=null || base.getFragment()!=null
+            || !(base.getPath().isEmpty() || "/".equals(base.getPath()))) return false;
+        var request=HttpRequest.newBuilder(base.resolve("/v2/projection-control/activation/"+runDescriptor.hash()))
+            .timeout(Duration.ofSeconds(5)).header("X-Risk-Control-Token",token).header("X-Risk-Operator",operator).GET().build();
+        var response=readModelClient.send(request,HttpResponse.BodyHandlers.ofString());
+        if(response.statusCode()!=200) return false;
+        var result=new ObjectMapper().readTree(response.body());
+        return runDescriptor.hash().equals(result.path("descriptor_hash").asText())
+            && runDescriptor.projectionScope().equals(result.path("new_scope").asText())
+            && result.path("witness_hash").asText().matches("[0-9a-f]{64}")
+            && java.util.Set.of("SELECTED","COMPLETE").contains(result.path("phase").asText());
+    }
+
+    /** Explicit operator control; identity is configured before the gateway admits controls. */
+    private void handleRunControl(final HttpExchange exchange) {
+        try {
+            if (!"POST".equals(exchange.getRequestMethod())) {respond(exchange,405,"{\"error\":\"POST only\"}");return;}
+            String token=exchange.getRequestHeaders().getFirst("X-Risk-Control-Token");
+            String operator=exchange.getRequestHeaders().getFirst("X-Risk-Operator");
+            if (!riskControlToken.equals(token) || operator==null || operator.isBlank()) {
+                respond(exchange,401,"{\"error\":\"invalid risk-control credentials\"}");return;
+            }
+            if (runDescriptor==null) {respond(exchange,409,"{\"error\":\"RUN_DESCRIPTOR_NOT_CONFIGURED\"}");return;}
+            byte[] raw=exchange.getRequestBody().readNBytes(4097);
+            if(raw.length>4096) {respond(exchange,413,"{}");return;}
+            JsonNode body=new ObjectMapper().readTree(raw);
+            if (!runDescriptor.hash().equals(body.path("descriptorHash").asText())) {
+                respond(exchange,409,"{\"error\":\"RUN_DESCRIPTOR_MISMATCH\"}");return;
+            }
+            int operation=switch(body.path("operation").asText()) {case "declare" -> 1;case "activate" -> 2;case "freeze" -> 3;default -> 0;};
+            if(operation==0) {respond(exchange,400,"{\"error\":\"RUN_OPERATION_INVALID\"}");return;}
+            if(operation==2 && runDescriptor.managedIds() && !projectionSelected(token,operator)) {
+                respond(exchange,409,"{\"error\":\"RUN_ACTIVATION_NOT_VERIFIED\"}");return;
+            }
+            long requestId=clientOrderKey("run-control-"+System.nanoTime());
+            long[] ack=onOwner(()->{
+                runDescriptor.control(event,(byte)operation);
+                codec.encodeInput(orderBuffer,0,event,requestId,0,0);
+                lastRunAck=null;
+                if(!offerAndAwait(orderBuffer,AeronReplicationCodec.INPUT_BYTES,
+                    ()->lastRunAck!=null && lastRunAck[2]==requestId)) {return null;}
+                return lastRunAck;
+            });
+            if(ack==null) {respond(exchange,504,"{\"error\":\"no committed decision; retry same operation\"}");return;}
+            respond(exchange,ack[3]==0?200:409,"{\"sequence\":"+ack[0]+",\"runPhase\":"+ack[1]
+                +",\"descriptorHash\":\""+runDescriptor.hash()+"\",\"outcome\":"+ack[3]+"}");
+        } catch(Exception ex) {respond(exchange,503,"{\"error\":\"RUN_CONTROL_UNAVAILABLE\"}");}
+    }
+
     private void handleSandboxReset(final HttpExchange exchange) {
         try {
             if (!sandboxResetEnabled) {

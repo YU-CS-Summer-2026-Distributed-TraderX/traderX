@@ -29,6 +29,8 @@ public class OrderController {
       List.of("NEW", "PARTIALLY_FILLED", "QUEUED", "PENDING_TRIGGER", "SUSPENDED");
 
   private final OrderRepository orderRepository;
+  @org.springframework.beans.factory.annotation.Autowired
+  private finos.traderx.tradeprocessor.service.RunRegistry runRegistry;
 
   public OrderController(OrderRepository orderRepository) {
     this.orderRepository = orderRepository;
@@ -38,9 +40,19 @@ public class OrderController {
   public ResponseEntity<List<OrderRow>> ordersForAccount(
       @PathVariable Integer accountId,
       @RequestParam(name = "status", required = false) String status) {
+    if (runRegistry!=null) {return scopedOrders(runRegistry.activeScope(),accountId,status);}
     List<OrderRow> orders = "all".equalsIgnoreCase(status)
         ? orderRepository.findByAccountId(accountId)
         : orderRepository.findByAccountIdAndStatusIn(accountId, OPEN_STATUSES);
     return ResponseEntity.ok(orders);
+  }
+
+  @GetMapping("/v2/projections/{scope}/accounts/{accountId}/orders")
+  public ResponseEntity<List<OrderRow>> scopedOrders(@PathVariable String scope,
+      @PathVariable Integer accountId,@RequestParam(name="status",required=false) String status) {
+    runRegistry.scope(scope);
+    return ResponseEntity.ok("all".equalsIgnoreCase(status)
+        ? orderRepository.findByProjectionScopeAndAccountId(scope,accountId)
+        : orderRepository.findByProjectionScopeAndAccountIdAndStatusIn(scope,accountId,OPEN_STATUSES));
   }
 }

@@ -172,15 +172,15 @@ class SwapBookingTest {
     }
 
     @Test
-    void aSnapshotFromThisBuildDeclaresFormatTen() {
+    void aSnapshotFromThisBuildDeclaresFormatTwelve() {
         final List<byte[]> records = snapshotRecords(enabledAccounts());
         final UnsafeBuffer header = new UnsafeBuffer(records.get(0));
         assertEquals(MatchingEngineClusteredService.T_HEADER, header.getInt(0));
         // YU18 (order types, FR-OT35) moved the writer to format 11: typed order state rides its
         // own records, and formats 9 and 10 still restore (as untyped orders), so MIN_READABLE
         // stays 9 below — the same "adds, never re-reads" rule format 10 followed.
-        assertEquals(11, header.getInt(4),
-            "format 11 (YU18): the snapshot may carry the sandbox reset marker and typed order state");
+        assertEquals(12, header.getInt(4),
+            "format 12 (RI-06): immutable run identity and admission phase join existing state");
         // Literals on BOTH sides, never the constants they pin.
         //
         // MIN_READABLE DELIBERATELY DOES NOT RISE HERE, and that is a departure from every raise

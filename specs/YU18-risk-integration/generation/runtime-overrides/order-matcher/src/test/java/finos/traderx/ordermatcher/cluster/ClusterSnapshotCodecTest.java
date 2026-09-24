@@ -492,6 +492,11 @@ class ClusterSnapshotCodecTest {
         orderTypes.putLong(28, limits[1]);
         orderTypes.putLong(36, limits[2]);
         target.onSnapshotRecord(orderTypes, 0);
+        // Format 12 requires an explicit unconfigured-legacy identity marker.
+        final UnsafeBuffer identity = new UnsafeBuffer(new byte[60]);
+        identity.putInt(0, MatchingEngineClusteredService.T_RUN_IDENTITY);
+        identity.putLong(44, 2);
+        target.onSnapshotRecord(identity, 0);
     }
 
     private void feedHeader(final MatchingEngineClusteredService target, final long nextRef,

@@ -24,7 +24,7 @@ public class OrderRow implements Serializable {
   private static final long serialVersionUID = 1L;
 
   @Id
-  @Column(length = 32, name = "orderid")
+  @Column(length = 50, name = "orderid")
   private String id;
 
   @Column(name = "accountid")
@@ -316,4 +316,34 @@ public class OrderRow implements Serializable {
   public void setReason(String reason) {
     this.reason = reason;
   }
+
+  // RI-06: missing legacy metadata stays explicitly unattributed.
+  @jakarta.persistence.Column(name="PROJECTIONSCOPE", length=64)
+  private String projectionScope = "legacy-unknown";
+  public String getProjectionScope() { return projectionScope; }
+  public void setProjectionScope(String value) { this.projectionScope = value; }
+  @jakarta.persistence.Column(name="CLUSTEREPOCH", length=255)
+  private String clusterEpoch = null;
+  public String getClusterEpoch() { return clusterEpoch; }
+  public void setClusterEpoch(String value) { this.clusterEpoch = value; }
+  @jakarta.persistence.Column(name="EVENTIDSCHEME", length=16)
+  private String eventIdScheme = null;
+  public String getEventIdScheme() { return eventIdScheme; }
+  public void setEventIdScheme(String value) { this.eventIdScheme = value; }
+  @jakarta.persistence.Column(name="RUNDESCRIPTORHASH", length=64)
+  private String runDescriptorHash = null;
+  public String getRunDescriptorHash() { return runDescriptorHash; }
+  public void setRunDescriptorHash(String value) { this.runDescriptorHash = value; }
+  @jakarta.persistence.Column(name="CONSENSUSSEQUENCE")
+  private Long consensusSequence = null;
+  public Long getConsensusSequence() { return consensusSequence; }
+  public void setConsensusSequence(Long value) { this.consensusSequence = value; }
+  @jakarta.persistence.Column(name="OUTPUTORDINAL")
+  private Integer outputOrdinal;
+  public Integer getOutputOrdinal() { return outputOrdinal; }
+  public void setOutputOrdinal(Integer value) { outputOrdinal=value; }
+  @jakarta.persistence.Column(name="EVENTDIGEST", length=64)
+  private String eventDigest;
+  public String getEventDigest() { return eventDigest; }
+  public void setEventDigest(String value) { eventDigest=value; }
 }

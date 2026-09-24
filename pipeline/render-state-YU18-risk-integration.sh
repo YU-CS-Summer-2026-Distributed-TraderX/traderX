@@ -10,8 +10,9 @@ tar -C "${PACK}/generation/runtime-overrides/eod-risk-bundles" --exclude='__pyca
 tar -C "${PACK}" --exclude='runtime-overrides' --exclude='__pycache__' --exclude='*.pyc' -cf - . | tar -C "${TARGET}/YU18-risk-integration/spec-source" -xf -
 # YU18's full-file overrides, last-wins over YU17: the exporter helper and producer override, and
 # the order-types component (engine, gateways, read model, orderbook DDL).
-for module in order-matcher trade-processor postgres-database-replacement kubernetes-runtime; do
+for module in recovery-identity order-matcher trade-processor position-service postgres-database-replacement kubernetes-runtime; do
   if [[ -d "${PACK}/generation/runtime-overrides/${module}" ]]; then
+    mkdir -p "${TARGET}/${module}"
     tar -C "${PACK}/generation/runtime-overrides/${module}" -cf - . | tar -C "${TARGET}/${module}" -xf -
   fi
 done

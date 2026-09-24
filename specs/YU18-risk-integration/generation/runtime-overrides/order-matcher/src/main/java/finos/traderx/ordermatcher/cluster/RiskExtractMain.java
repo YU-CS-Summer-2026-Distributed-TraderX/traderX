@@ -346,6 +346,7 @@ public final class RiskExtractMain {
             try {
                 final long[] first = mark(sessionDate, version);
                 final String cut = awaitCut(cutSub, first[0]);
+                final RunDescriptor runIdentity=RiskExtractReady.descriptorForCut(cut,env("RUN_DESCRIPTOR_PATH",""));
 
                 final Map<String, RiskExtractCsv.Mark> marks = loadMarks(sessionDate, version);
                 final Map<Integer, RiskExtractCsv.Counterparty> accounts = loadCounterparties();
@@ -369,7 +370,7 @@ public final class RiskExtractMain {
                     cut, extract, contracts);
 
                 final String payload = RiskExtractReady.payload(stamp, witness[0],
-                    extract, contracts, uris[0], uris[1]);
+                    extract, contracts, uris[0], uris[1],runIdentity);
                 // Optional local durable handoff, written only after both artifacts exist.
                 final String receiptRoot = env("RISK_EXTRACT_READY_DIRECTORY", "");
                 if (!receiptRoot.isEmpty()) {

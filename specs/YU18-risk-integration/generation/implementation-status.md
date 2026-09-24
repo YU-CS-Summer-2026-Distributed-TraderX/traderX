@@ -327,3 +327,13 @@ The order-types component (`components/order-types`) is implemented locally on
 - **Approved policy:** OPEN-D5, stop-price reservation with trigger recheck.
 - **Evidence:** the component README's Verification section.
 - **Review corrections:** I1–I4 were fixed in c41e508b.
+
+## RI-06 local migration extension (2026-09-24)
+
+The earlier bounded receipt delivery is extended by persisted run descriptors, evidence-based legacy adoption, snapshot format 12, scoped SQL/reads/checkpoints/notifications, consistent managed publishers/reconciliation, receipt v2 and a durable local freeze/verify/fresh-activation workflow. See [run migration](../../../docs/risk-integration/run-migration.md) and the recovery component tasks for final evidence status. All behavior is owned by YU18 full-file overrides; earlier states are unchanged. No retained/cloud activation, managed console rollout, automatic NATS repair or financial validation has occurred.
+
+Final local RI-06 verification: 174-file generated parity; full core 568 passes/6 existing skips plus five allocation gates; focused identity 10; trade unit 98; position unit 11; real MariaDB 14; source/generated EOD 167 each and tools 15 each. Review evidence is in the coordinator board ri06-migration-20260924 directory. The core consensus and SQL fault-injection proofs are separate; no end-to-end deployed migration claim.
+
+### RI-06 review correction M1/M2
+
+M1 globally reserves the order epoch namespace across legacy-v0 and epoch-v1, with SQL-collation-aware pre-prepare checks and a retryable version-2 schema upgrade that refuses existing conflicts without rewriting history. Real MariaDB namespace/persistence tests19/19 and affected unit tests98/98 pass. M2 adds an explicitly invoked generated `recovery-identity/test-live-migration.sh`: actual old/new single-member Aeron runs and gateways connect to real NATS and the Spring/MariaDB controller. The live test passes1/1, including premature activation refusal, lost committed freeze reply/retry, first fresh IDs and unchanged old history. This supersedes the earlier gap for connected local activation; the separate three-member snapshot/tail proof remains unchanged. Coordinator correction review is pending.

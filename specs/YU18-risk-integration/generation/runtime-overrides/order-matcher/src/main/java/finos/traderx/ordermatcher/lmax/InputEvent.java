@@ -173,6 +173,8 @@ public final class InputEvent {
      * {@code clientOrderKey} = the issuer's correlation id, echoed by the ack.
      */
     public static final byte TYPE_BUSINESS_DAY = 17;
+    /** RI-06 cold-path run declaration/activation/freeze; full descriptor hash in generic slots. */
+    public static final byte TYPE_RUN_CONTROL = 18;
     public static final byte BUSINESS_DAY_START = 0;
     public static final byte BUSINESS_DAY_END = 1;
 

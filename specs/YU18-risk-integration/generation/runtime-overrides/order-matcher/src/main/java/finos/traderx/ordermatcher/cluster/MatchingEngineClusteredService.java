@@ -219,7 +219,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // book-append order, T_ORDER_TYPES (the business date and the consensus limits), per-security
     // T_OT_SECURITY (trade reference and peg reference), and a 17-column T_QUEUED_ORDER. Formats 9
     // and 10 still restore: every order comes back untyped, hasTraded false, businessDate 0.
-    static final int SNAPSHOT_FORMAT = 11;
+    static final int SNAPSHOT_FORMAT = 12;
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -276,6 +276,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     static final int T_OT_SECURITY = 18;
     /** YU18 format 11: {businessDate, dayOpen, pendingCapacity, pegCapacity, roundLimit}. Always written. */
     static final int T_ORDER_TYPES = 19;
+    static final int T_RUN_IDENTITY = 20;
 
     /** {orderRef, accountId, securityId, side, qty, limitPx, clientOrderKey, eventTimeMillis} --
      *  the complete replicated content of a queued ORDER_NEW. {@code seq}, {@code ingressNanos} and
@@ -471,6 +472,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  unique across OutputEvent and this class (OrderTypesBoundaryTest audits it): the gateway
      *  routes by kind alone, so a shared value silently steals another command's ack. */
     public static final byte KIND_BUSINESS_DAY = 105;
+    public static final byte KIND_RUN_CONTROL = 106;
 
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
@@ -663,6 +665,18 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private long applyTraceKey;
     // Leader-side cluster-egress → NATS /trades bridge (YU12): only started when TRADE_BRIDGE_NATS_URL
     // is set, so default behaviour is unchanged. Null on every member until then.
+    private RunDescriptor runDescriptor;
+    private int runPhase = 2; // 0 unbound, 1 declared, 2 active, 3 permanently frozen.
+    private long frozenRunSequence;
+    private int outputOrdinal;
+    public void runDescriptor(RunDescriptor descriptor) {
+        if (engine!=null) {throw new IllegalStateException("descriptor must be installed before engine init");}
+        this.runDescriptor=descriptor;
+        this.runPhase=descriptor!=null && descriptor.managedIds() ? 0 : 2;
+    }
+    public RunDescriptor runDescriptor() {return runDescriptor;}
+    public int runPhase() {return runPhase;}
+    public long frozenRunSequence() {return frozenRunSequence;}
     private TradeNatsPublisher tradeBridge;
     // Leader-side order-lifecycle → NATS /orders bridge (YU13): the order-state sibling of the trade
     // bridge, gated on the same env so default behaviour is unchanged. Null on every member until then.
@@ -693,12 +707,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final String bridgeUrl = System.getenv("TRADE_BRIDGE_NATS_URL");
         if (bridgeUrl != null && !bridgeUrl.isBlank()) {
             // Epoch-qualified order ids so the read-model key never collides across incarnations
-            // (brief 05 item 0). Same value on every member via the manifest; bumped with a DB wipe.
+            // (brief 05 item 0). Managed runs use the persisted descriptor; legacy keeps its configured prefix.
             final String epoch = System.getenv("CLUSTER_EPOCH");
-            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, 1 << 16);
+            tradeBridge = new TradeNatsPublisher(bridgeUrl, "/trades", epoch, runDescriptor, 1 << 16);
             tradeBridge.start();
             orderBridge = new OrderNatsPublisher(bridgeUrl, "/orders",
-                epoch == null || epoch.isBlank() ? "1" : epoch, 1 << 16);
+                epoch == null || epoch.isBlank() ? "1" : epoch, runDescriptor, 1 << 16);
             orderBridge.start();
         }
         final String extractUrl = System.getenv("RISK_EXTRACT_NATS_URL");
@@ -713,7 +727,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // back up the read model.
         final String tapDir = System.getenv("KDB_TAP_DIR");
         if (tapDir != null && !tapDir.isBlank()) {
-            final String tapEpoch = System.getenv("CLUSTER_EPOCH");
+            final String tapEpoch = runDescriptor == null ? System.getenv("CLUSTER_EPOCH") : runDescriptor.epoch();
             // Same identity ClusterNodeMain uses, and unique per pod either way: the capture files
             // from all three members have to be loadable side by side in one directory.
             String member = System.getenv("CLUSTER_MEMBER_ID");
@@ -767,7 +781,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         this.snapshotHeaderSeen = false;
         this.recordTypesSeen = 0;
         this.restoredQueueDepth = -1L;
-        this.phase = PHASE_OPEN;   // decision (a): a fresh epoch, and a member that restores nothing, is OPEN
+        this.phase = runDescriptor!=null && runDescriptor.managedIds() ? PHASE_CLOSED : PHASE_OPEN;
+        // Managed fresh runs require sequenced declaration and activation before trading.
         this.queuedOrders.clear();
         this.queuedByClientKey.clear();
         java.util.Arrays.fill(tickerById, null);
@@ -789,7 +804,8 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                                  final DirectBuffer buffer, final int offset, final int length,
                                  final Header header) {
         final int templateId = codec.templateIdOf(buffer, offset, length);
-        if (templateId == 7) { // SymbolRegisterMessage
+        if (templateId == 7) {
+            if (runDescriptor!=null && (runPhase==0 || runPhase==3)) {return;} // SymbolRegisterMessage
             onSymbolRegister(session, buffer, offset, length);
             return;
         }
@@ -810,6 +826,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // id (0 from any producer that names none). Captured HERE because the sequencer overwrites
         // event.seq with ++appliedSeq below; echoed into bytes 24..31 of every ack this apply emits.
         applyRequestId = event.seq;
+        outputOrdinal=0;
+        if (event.type == InputEvent.TYPE_RUN_CONTROL) {onRunControl(session);return;}
+        if (runDescriptor!=null && runPhase!=2 && (runPhase==0 || runPhase==3
+            || event.type==InputEvent.TYPE_ORDER_NEW || event.type==InputEvent.TYPE_ORDER_CANCEL
+            || event.type==InputEvent.TYPE_ORDER_REPLACE || event.type==InputEvent.TYPE_FORCE_FILL
+            || event.type==InputEvent.TYPE_TRADE_NEW || event.type==InputEvent.TYPE_SWAP_BOOK
+            || event.type==InputEvent.TYPE_SWAPTION_BOOK || event.type==InputEvent.TYPE_SANDBOX_RESET
+            || (event.type==InputEvent.TYPE_SESSION_CONTROL && event.side!=PHASE_CLOSED))) {
+            rejectRunInput(session);return;
+        }
         if (event.type == InputEvent.TYPE_FX_RATE) {
             // YU17 FX-rate fix: sequenced like every command, applied here, never handed to the
             // engine — the rate is credit-gate state, not an instrument. See onFxRate.
@@ -1213,6 +1239,38 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         ackBuffer.putByte(23, (byte) 0);
         ackBuffer.putLong(24, 0L);
         offerEgress(session);
+    }
+
+    private void onRunControl(final ClientSession session) {
+        final long request=applyRequestId;
+        if (runDescriptor==null || !runDescriptor.matches(event)) {
+            throw new IllegalStateException("RUN_LOG_DESCRIPTOR_MISMATCH: stop; do not mint or rewrite identity");
+        }
+        final byte operation=event.side;
+        int outcome=0;
+        if (operation==1) {if (runPhase==0) {runPhase=1;}}
+        else if (operation==2) {
+            if (runPhase==1) {runPhase=2;phase=PHASE_OPEN;} else if (runPhase!=2) {outcome=1;}
+        } else if (operation==3) {
+            if (runPhase==2) {runPhase=3;phase=PHASE_CLOSED;frozenRunSequence=appliedSeq+1;}
+            else if (runPhase!=3) {outcome=1;}
+        } else {outcome=1;}
+        ++appliedSeq;
+        ackBuffer.putLong(0,appliedSeq);ackBuffer.putInt(8,runPhase);
+        ackBuffer.putByte(12,KIND_RUN_CONTROL);ackBuffer.putLong(13,request);
+        ackBuffer.putByte(21,(byte)outcome);ackBuffer.putByte(22,(byte)0);ackBuffer.putByte(23,(byte)0);
+        ackBuffer.putLong(24,0);offerEgress(session);
+    }
+
+    private void rejectRunInput(final ClientSession session) {
+        // Admission barrier: no ID allocation, book mutation, or projection event.
+        ackBuffer.putLong(0,appliedSeq);ackBuffer.putInt(8,0);
+        ackBuffer.putByte(12,event.type==InputEvent.TYPE_TRADE_NEW
+            ? OutputEvent.KIND_TRADE_REJECTED : OutputEvent.KIND_ORDER_REJECTED);
+        ackBuffer.putLong(13,0);ackBuffer.putByte(21,(byte)0);
+        ackBuffer.putByte(22,(byte)RiskReason.MARKET_CLOSED.ordinal());
+        ackBuffer.putByte(23,event.type==InputEvent.TYPE_TRADE_NEW?(byte)1:(byte)0);
+        ackBuffer.putLong(24,applyRequestId);offerEgress(session);
     }
 
     private void onSessionControl(final ClientSession session, final long timestamp) {
@@ -1644,9 +1702,15 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // per-trade OTC contracts. Two artifacts are rendered downstream from these same bytes and
         // therefore share a sequence, a session date and a cutSha256 by construction rather than by
         // the producer being careful.
-        final String cut = RiskExtractCut.render(appliedSeq, codec.extractSessionDateEpochDay(),
+        String cut = RiskExtractCut.render(appliedSeq, codec.extractSessionDateEpochDay(),
             codec.extractPriceVersion(), positions, engine.priceTuples(),
             tickerById, risk::contractMultiplier, contracts);
+        if(runDescriptor!=null && runDescriptor.managedIds()) {
+            int newline=cut.indexOf('\n');
+            cut=cut.substring(0,newline)+" runDescriptorHash="+runDescriptor.hash()
+                +" projectionScope="+runDescriptor.projectionScope()+" eventIdScheme="+runDescriptor.scheme()
+                +cut.substring(newline);
+        }
         lastExtractCutSeq = appliedSeq;
         lastExtractCutSha = RiskExtractCut.sha256(cut);
         // Stamped on every member so a cross-member diff needs nothing but the pod logs. Only a
@@ -1877,6 +1941,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 writeTuple(writer, T_ORDER, orderTuple);
             }
         }
+        writeTuple(writer, T_RUN_IDENTITY, new long[] {runDescriptor==null?0:1,
+            runDescriptor==null?0:runDescriptor.word(0), runDescriptor==null?0:runDescriptor.word(1),
+            runDescriptor==null?0:runDescriptor.word(2), runDescriptor==null?0:runDescriptor.word(3),
+            runPhase, frozenRunSequence});
         snapshotBuffer.putInt(0, T_END);
         writer.write(snapshotBuffer, 0, 4);
     }
@@ -1891,6 +1959,9 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         // YU17 format 8: remember WHICH record types the stream actually carried, so finishLoad can
         // refuse a stream that terminated cleanly with whole types missing (see
         // REQUIRED_RECORD_TYPES). Restore-side only — nothing about the written format changes.
+        if (type==T_RUN_IDENTITY && (recordTypesSeen & (1<<T_RUN_IDENTITY))!=0) {
+            throw new IllegalStateException("RUN_SNAPSHOT_DUPLICATE_IDENTITY");
+        }
         if (type > 0 && type < 32) {
             recordTypesSeen |= 1 << type;
         }
@@ -2145,6 +2216,30 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 }
                 engine.bootstrapBusinessDay((int) buffer.getLong(offset + 4), buffer.getLong(offset + 12) != 0L);
             }
+            case T_RUN_IDENTITY -> {
+                long present=buffer.getLong(offset+4);
+                if (present!=0 && present!=1) {throw new IllegalStateException("RUN_SNAPSHOT_INVALID");}
+                if (present==1) {
+                    if (runDescriptor==null) {throw new IllegalStateException("RUN_SNAPSHOT_REQUIRES_DESCRIPTOR");}
+                    for (int i=0;i<4;i++) {
+                        if (buffer.getLong(offset+12+8*i)!=runDescriptor.word(i)) {
+                            throw new IllegalStateException("RUN_SNAPSHOT_DESCRIPTOR_MISMATCH");
+                        }
+                    }
+                } else if (runDescriptor!=null && runDescriptor.managedIds()) {
+                    throw new IllegalStateException("RUN_V1_CANNOT_ADOPT_LEGACY_SNAPSHOT");
+                }
+                if(present==0) for(int i=0;i<4;i++) {
+                    if(buffer.getLong(offset+12+8*i)!=0) throw new IllegalStateException("RUN_SNAPSHOT_UNBOUND_HASH");
+                }
+                long phaseValue=buffer.getLong(offset+44), frozen=buffer.getLong(offset+52);
+                if ((present==0 && (phaseValue!=2 || frozen!=0))
+                    || phaseValue<0 || phaseValue>3 || frozen<0 || frozen>appliedSeq
+                    || (phaseValue==3 && frozen==0) || (phaseValue!=3 && frozen!=0)) {
+                    throw new IllegalStateException("RUN_SNAPSHOT_PHASE_INVALID");
+                }
+                runPhase=(int)phaseValue;frozenRunSequence=frozen;
+            }
             case T_END -> {
                 finishLoad();
                 return true;
@@ -2196,6 +2291,12 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             throw new IllegalStateException("snapshot incomplete: format 11 without T_ORDER_TYPES");
         }
         engine.verifyRestoredOrderTypes();   // invariant I-S and iceberg conservation
+        if (restoredFormat>=12 && (recordTypesSeen & (1<<T_RUN_IDENTITY))==0) {
+            throw new IllegalStateException("snapshot incomplete: missing run identity");
+        }
+        if (restoredFormat<12 && runDescriptor!=null && runDescriptor.managedIds()) {
+            throw new IllegalStateException("RUN_V1_CANNOT_ADOPT_LEGACY_SNAPSHOT");
+        }
         lastLoadedNextOrderRef = nextOrderRef;
     }
 
@@ -2238,6 +2339,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         final long cursor = outputRing.getCursor();
         for (long seq = outputConsumed.get() + 1; seq <= cursor; seq++) {
             final OutputEvent out = outputRing.get(seq);
+            final int ordinal=outputOrdinal++;
             // OTEL-01 follow-up: remember the ack the GATEWAY will treat as this order's outcome, so
             // both tiers escalate a reject off the same byte. The rule is copied from the gateway's
             // egress filter deliberately — first direct (non-resting) order-lifecycle output wins,
@@ -2262,7 +2364,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             if (out.kind == OutputEvent.KIND_TRADE_BOOKED && role == Cluster.Role.LEADER
                 && tradeBridge != null) {
                 tradeBridge.offer(out.tradeSeq, out.accountId, tickerById[out.securityId],
-                    out.side, out.tradeQty, out.tradePx, out.orderRef);
+                    out.side, out.tradeQty, out.tradePx, out.orderRef, out.inputSeq);
             }
             // Leader-side order bridge: every order-state transition → NATS /orders → read model →
             // orderbook projection → REST enumeration. Same leader-only, non-blocking discipline as
@@ -2277,7 +2379,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
                 // renders convincing spans for the wrong order — the worse half of the wrong-id-
                 // space error this codebase has already paid for twice.
                 orderBridge.offer(out, tickerById[out.securityId],
-                    (out.flags & OutputEvent.FLAG_RESTING_UPDATE) != 0 ? 0L : applyTraceKey);
+                    (out.flags & OutputEvent.FLAG_RESTING_UPDATE) != 0 ? 0L : applyTraceKey, ordinal);
             }
             // Analytical capture (brief 06), same leader-only non-blocking discipline, separate
             // queue. Deliberately in the same drain loop rather than a new emission point: the tap

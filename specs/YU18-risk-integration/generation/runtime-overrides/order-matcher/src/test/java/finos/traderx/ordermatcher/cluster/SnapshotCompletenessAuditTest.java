@@ -72,11 +72,12 @@ class SnapshotCompletenessAuditTest {
                 MatchingEngineClusteredService.T_ORDER_EXT,
                 MatchingEngineClusteredService.T_OT_SECURITY,
                 MatchingEngineClusteredService.T_ORDER_TYPES,
+                MatchingEngineClusteredService.T_RUN_IDENTITY,
                 MatchingEngineClusteredService.T_END }) {
             assertTrue(types.contains(required),
                 "record type " + required + " is absent from the rich fixture; types seen: " + types);
         }
-        assertEquals(18, types.size(),
+        assertEquals(19, types.size(),
             "a record type exists that this audit does not produce — extend the fixture rather than"
                 + " this number, or the round trips below stop covering it. Types seen: " + types);
     }

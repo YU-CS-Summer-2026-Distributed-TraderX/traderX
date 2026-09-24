@@ -11,10 +11,14 @@ import java.nio.file.attribute.PosixFilePermissions;
 final class RiskExtractReady {
     static String payload(RiskExtractCsv.Stamp stamp, long witness, String positions,
                           String contracts, String positionsUri, String contractsUri) {
+        return payload(stamp,witness,positions,contracts,positionsUri,contractsUri,null);
+    }
+    static String payload(RiskExtractCsv.Stamp stamp,long witness,String positions,String contracts,
+                          String positionsUri,String contractsUri,RunDescriptor descriptor) {
         if (witness != Math.addExact(stamp.consensusSequence(), 1)) {
             throw new IllegalArgumentException("extract is not quiescent");
         }
-        return new JSONObject()
+        JSONObject result = new JSONObject()
             .put("schema", RiskExtractCsv.SCHEMA).put("uri", positionsUri)
             .put("consensusSequence", stamp.consensusSequence())
             .put("sessionDate", stamp.sessionDate().toString())
@@ -24,7 +28,41 @@ final class RiskExtractReady {
             .put("quiesceWitnessSequence", witness).put("contractsSchema", SwapContractCsv.SCHEMA)
             .put("contractsUri", contractsUri)
             .put("contracts", contracts.lines().filter(l -> !l.startsWith("#")).count() - 1)
-            .put("contractsSha256", RiskExtractCut.sha256(contracts)).toString();
+            .put("contractsSha256", RiskExtractCut.sha256(contracts));
+        if(descriptor!=null) {
+            if(!positionsUri.endsWith(".csv")) {throw new IllegalArgumentException("RUN_CUT_URI_UNAVAILABLE");}
+            result.put("receiptSchema","traderx.risk-extract.ready.v2");
+            result.put("cutUri",positionsUri.substring(0,positionsUri.length()-4)+".cut");
+            result.put("platformIdentity",new JSONObject().put("runDescriptorSha256",descriptor.hash())
+                .put("epoch",descriptor.epoch()).put("eventIdScheme",descriptor.scheme())
+                .put("projectionScope",descriptor.projectionScope()).put("storageLineage",descriptor.storageLineage()));
+        }
+        return result.toString();
+    }
+
+    /** The descriptor hash is part of the consensus cut bytes, hence of the CSV cut hash. */
+    static RunDescriptor descriptorForCut(String cut,String configuredPath) throws Exception {
+        String head=cut.substring(0,cut.indexOf('\n'));
+        java.util.Map<String,String> fields=new java.util.HashMap<>();
+        for(String token:head.split(" ")) {
+            int eq=token.indexOf('=');if(eq>0) {
+                if(fields.put(token.substring(0,eq),token.substring(eq+1))!=null) {
+                    throw new IllegalArgumentException("RUN_CUT_DUPLICATE_FIELD");
+                }
+            }
+        }
+        String hash=fields.get("runDescriptorHash");
+        RunDescriptor descriptor=configuredPath==null || configuredPath.isBlank()?null:RunDescriptor.read(Path.of(configuredPath));
+        if(hash==null) {
+            if(descriptor!=null && descriptor.managedIds()) {throw new IllegalArgumentException("RUN_CUT_IDENTITY_MISSING");}
+            return null; // explicitly attributed legacy receipt path remains unchanged
+        }
+        if(descriptor==null || !descriptor.managedIds() || !hash.equals(descriptor.hash())
+            || !descriptor.projectionScope().equals(fields.get("projectionScope"))
+            || !descriptor.scheme().equals(fields.get("eventIdScheme"))) {
+            throw new IllegalArgumentException("RUN_CUT_DESCRIPTOR_MISMATCH");
+        }
+        return descriptor;
     }
 
     static Path publish(Path directory, RiskExtractCsv.Stamp stamp, String payload) throws IOException {

@@ -36,6 +36,8 @@ final class OrderNatsPublisher {
      *  Package-private so the encode() seam is unit-testable without a NATS server. */
     static final class Rec {
         long orderRef;
+        long consensusSequence;
+        int outputOrdinal;
         int accountId;
         String security;
         byte side;
@@ -70,6 +72,7 @@ final class OrderNatsPublisher {
     private final String url;
     private final String subject;
     private final String epoch;
+    private final RunDescriptor descriptor;
     private final OneToOneConcurrentArrayQueue<Rec> queue;
     private final AtomicLong published = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
@@ -78,9 +81,14 @@ final class OrderNatsPublisher {
     private volatile Connection nats;
 
     OrderNatsPublisher(final String url, final String subject, final String epoch, final int capacity) {
+        this(url,subject,epoch,null,capacity);
+    }
+    OrderNatsPublisher(final String url, final String subject, final String epoch,
+                      final RunDescriptor descriptor, final int capacity) {
+        this.descriptor=descriptor;
         this.url = url;
         this.subject = subject;
-        this.epoch = epoch;
+        this.epoch = descriptor==null ? epoch : descriptor.epoch();
         this.queue = new OneToOneConcurrentArrayQueue<>(capacity);
     }
 
@@ -135,11 +143,16 @@ final class OrderNatsPublisher {
 
     /** YU18: the full order update, typed fields and reason included. Same threading contract. */
     void offer(final finos.traderx.ordermatcher.lmax.OutputEvent o, final String security, final long traceKey) {
+        offer(o,security,traceKey,0);
+    }
+    void offer(final finos.traderx.ordermatcher.lmax.OutputEvent o, final String security,
+               final long traceKey,final int ordinal) {
         if (security == null) {
             return;
         }
         final Rec r = new Rec();
         r.orderRef = o.orderRef;
+        r.consensusSequence=o.inputSeq;r.outputOrdinal=ordinal;
         r.accountId = o.accountId;
         r.security = security;
         r.side = o.side;
@@ -172,6 +185,14 @@ final class OrderNatsPublisher {
                     + " (read model will miss order updates until it drains)");
             }
         }
+    }
+
+    /** Cold replay verifier uses the identical packing and serializer as live publication. */
+    static byte[] projectionEvent(finos.traderx.ordermatcher.lmax.OutputEvent out,String ticker,RunDescriptor descriptor,int ordinal) {
+        if(ticker==null || descriptor==null) {throw new IllegalArgumentException("RUN_REPLAY_IDENTITY_REQUIRED");}
+        var publisher=new OrderNatsPublisher("", "/orders",descriptor.epoch(),descriptor,2);
+        publisher.offer(out,ticker,0,ordinal);
+        return publisher.encode(new StringBuilder(1024),publisher.queue.poll());
     }
 
     private void run() {
@@ -280,6 +301,10 @@ final class OrderNatsPublisher {
             if (r.sessionDate != 0) {
                 sb.append(",\"sessionDate\":").append(r.sessionDate);
             }
+        }
+        if (descriptor!=null && descriptor.managedIds()) {
+            sb.append(descriptor.eventFields(r.consensusSequence));
+            sb.append(",\"outputOrdinal\":").append(r.outputOrdinal);
         }
         sb.append("}}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);

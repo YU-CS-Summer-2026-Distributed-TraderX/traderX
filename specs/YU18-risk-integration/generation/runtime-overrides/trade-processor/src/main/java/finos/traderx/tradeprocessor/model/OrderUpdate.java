@@ -10,7 +10,7 @@ import java.math.BigDecimal;
  * {@code OrderFeedHandler}; unknown fields are ignored so the wire format can grow.
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
-public class OrderUpdate {
+public class OrderUpdate implements ScopedEvent {
 
   private String id;
   private Integer accountId;
@@ -260,4 +260,24 @@ public class OrderUpdate {
     return "OrderUpdate{id=" + id + ", account=" + accountId + ", security=" + security
         + ", status=" + status + ", remaining=" + remainingQuantity + "}";
   }
+
+  // RI-06: missing legacy metadata stays explicitly unattributed.
+  private String projectionScope = "legacy-unknown";
+  public String getProjectionScope() { return projectionScope; }
+  public void setProjectionScope(String value) { this.projectionScope = value; }
+  private String clusterEpoch = null;
+  public String getClusterEpoch() { return clusterEpoch; }
+  public void setClusterEpoch(String value) { this.clusterEpoch = value; }
+  private String eventIdScheme = null;
+  public String getEventIdScheme() { return eventIdScheme; }
+  public void setEventIdScheme(String value) { this.eventIdScheme = value; }
+  private String runDescriptorHash = null;
+  public String getRunDescriptorHash() { return runDescriptorHash; }
+  public void setRunDescriptorHash(String value) { this.runDescriptorHash = value; }
+  private Long consensusSequence = null;
+  public Long getConsensusSequence() { return consensusSequence; }
+  public void setConsensusSequence(Long value) { this.consensusSequence = value; }
+  private Integer outputOrdinal;
+  public Integer getOutputOrdinal() { return outputOrdinal; }
+  public void setOutputOrdinal(Integer value) { outputOrdinal=value; }
 }

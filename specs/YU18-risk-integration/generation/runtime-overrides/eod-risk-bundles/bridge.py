@@ -4,12 +4,13 @@ import argparse
 import csv
 from datetime import date
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit, unquote
 
 import bundle
 import receipt_scope
-from coordinator import load_json, private_directory
+from coordinator import load_json, private_directory, decode_json
 
 
 def integer(value, field):
@@ -34,11 +35,33 @@ def artifact(uri, root):
     return path.read_bytes()
 
 
-def validate_event(event, payloads, session_date):
+def validate_event(event, payloads, session_date, cut=None):
     bundle.require(isinstance(event, dict), 'receipt must be an object')
     fields = {'schema', 'uri', 'consensusSequence', 'sessionDate', 'priceSnapshotVersion', 'rows',
               'sha256', 'cutSha256', 'quiesceWitnessSequence', 'contractsSchema', 'contractsUri',
               'contracts', 'contractsSha256'}
+    if 'receiptSchema' in event:
+        bundle.require(event['receiptSchema'] == 'traderx.risk-extract.ready.v2', 'unsupported receipt schema')
+        fields |= {'receiptSchema', 'platformIdentity', 'cutUri'}
+        identity = event.get('platformIdentity')
+        bundle.require(isinstance(identity, dict) and set(identity) == {'epoch', 'eventIdScheme', 'projectionScope', 'storageLineage', 'runDescriptorSha256'}, 'invalid platform identity')
+        bundle.require(identity['eventIdScheme'] == 'epoch-v1', 'unsupported platform event scheme')
+        for key, pattern in [('epoch', r'[a-z0-9_]{1,25}'), ('projectionScope', r'[a-z0-9_-]{1,64}'),
+                             ('storageLineage', r'[a-z0-9_-]{1,64}'), ('runDescriptorSha256', r'[0-9a-f]{64}')]:
+            bundle.require(isinstance(identity[key], str) and re.fullmatch(pattern, identity[key]), 'invalid platform identity: ' + key)
+        bundle.require(identity['projectionScope'] != 'legacy-unknown', 'managed scope cannot be legacy unknown')
+        bundle.require(cut is not None and bundle.digest(cut) == event['cutSha256'], 'managed receipt source cut hash mismatch')
+        head = cut.decode('ascii').splitlines()[0]
+        tokens = [token.split('=', 1) for token in head.split(' ') if '=' in token]
+        cut_fields = dict(tokens)
+        bundle.require(len(tokens) == len(cut_fields), 'duplicate source cut field')
+        bundle.require(head.startswith('#cut ') and cut_fields.get('schema') == '3'
+                       and cut_fields.get('seq') == str(integer(event['consensusSequence'], 'consensusSequence'))
+                       and cut_fields.get('priceVersion') == str(integer(event['priceSnapshotVersion'], 'priceSnapshotVersion'))
+                       and cut_fields.get('sessionDateEpochDay') == str((date.fromisoformat(session_date) - date(1970, 1, 1)).days), 'source cut stamp mismatch')
+        bundle.require(cut_fields.get('runDescriptorHash') == identity['runDescriptorSha256']
+                       and cut_fields.get('projectionScope') == identity['projectionScope']
+                       and cut_fields.get('eventIdScheme') == identity['eventIdScheme'], 'source cut platform identity mismatch')
     bundle.require(set(event) == fields, 'unexpected or missing receipt fields')
     bundle.require(event['sessionDate'] == session_date, 'receipt is for a different business date')
     sequence = integer(event['consensusSequence'], 'consensusSequence')
@@ -58,13 +81,25 @@ def validate_event(event, payloads, session_date):
         bundle.require(all(metadata[key] == value for key, value in expected.items()), 'receipt cut mismatch')
 
 
-def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, session_date):
+def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, session_date, run_descriptor=None):
     receipt, artifact_root, inbox = Path(receipt), Path(artifact_root), Path(inbox)
     bundle.require(receipt.is_file() and not receipt.is_symlink(), 'invalid receipt file')
     event = load_json(receipt)
     payloads = {'positions': artifact(event['uri'], artifact_root),
                 'contracts': artifact(event['contractsUri'], artifact_root)}
-    validate_event(event, payloads, session_date)
+    cut = artifact(event['cutUri'], artifact_root) if 'receiptSchema' in event else None
+    validate_event(event, payloads, session_date, cut)
+    if 'platformIdentity' in event:
+        identity = event['platformIdentity']
+        bundle.require(run_descriptor is not None, 'managed receipt requires --run-descriptor')
+        descriptor_path = Path(run_descriptor)
+        bundle.require(descriptor_path.is_file() and not descriptor_path.is_symlink(), 'invalid run descriptor file')
+        raw = descriptor_path.read_bytes()
+        bundle.require(bundle.digest(raw) == identity['runDescriptorSha256'], 'run descriptor hash mismatch')
+        descriptor = decode_json(raw)
+        bundle.require(isinstance(descriptor, dict) and set(descriptor) == {'schema', 'epoch', 'eventIdScheme', 'storageLineage', 'projectionScope', 'adoptionEvidenceSha256'}
+                       and descriptor['schema'] == 'traderx.run.v1' and descriptor['adoptionEvidenceSha256'] is None, 'invalid managed run descriptor')
+        bundle.require(epoch == identity['epoch'] and all(descriptor[k] == identity[k] for k in ('epoch', 'eventIdScheme', 'projectionScope', 'storageLineage')), 'platform epoch or lineage mismatch')
     manifest = bundle.manifest_for(payloads, epoch, valuation_time, origin)
     bundle.require(not any((p / '.git').exists() for p in (inbox.resolve(), *inbox.resolve().parents)),
                    'inbox must be outside a Git checkout')
@@ -81,7 +116,7 @@ def package(receipt, artifact_root, inbox, epoch, valuation_time, origin, sessio
     return {'bundleId': manifest['bundleId'], 'path': str(output), 'duplicate': duplicate}
 
 
-def scan(receipts, artifact_root, inbox, epoch, valuation_time, origin, session_date):
+def scan(receipts, artifact_root, inbox, epoch, valuation_time, origin, session_date, run_descriptor=None):
     root = Path(receipts)
     bundle.require(root.is_dir() and not root.is_symlink(), 'receipt directory does not exist or is a symlink')
     date.fromisoformat(session_date)
@@ -97,7 +132,7 @@ def scan(receipts, artifact_root, inbox, epoch, valuation_time, origin, session_
             if event_date.isoformat() != session_date:
                 result['skippedOtherDates'].append(str(path))
                 continue
-            result['packaged'].append(package(path, artifact_root, inbox, epoch, valuation_time, origin, session_date))
+            result['packaged'].append(package(path, artifact_root, inbox, epoch, valuation_time, origin, session_date, run_descriptor))
         except (ValueError, OSError, KeyError, TypeError, csv.Error) as exc:
             result['invalid'].append({'receipt': str(path), 'reason': str(exc)})
     return result
@@ -109,10 +144,11 @@ def main():
     for flag in ('receipts', 'artifact-root', 'inbox', 'epoch', 'valuation-time', 'session-date'):
         parser.add_argument('--' + flag, required=True)
     parser.add_argument('--origin', choices=('synthetic', 'export'), required=True)
+    parser.add_argument("--run-descriptor")
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        result = scan(args.receipts, args.artifact_root, args.inbox, args.epoch, args.valuation_time, args.origin, args.session_date)
+        result = scan(args.receipts, args.artifact_root, args.inbox, args.epoch, args.valuation_time, args.origin, args.session_date, args.run_descriptor)
         print(json.dumps(result, indent=2))
         return int(bool(result['invalid']))
     except (ValueError, OSError, KeyError, TypeError, csv.Error) as exc:

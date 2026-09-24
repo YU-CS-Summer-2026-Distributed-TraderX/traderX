@@ -2,6 +2,8 @@
 
 Updated: 2026-09-24. Owner: Codex RI-06, `codex/recovery-identity`, base `66baef7556943b4eff8c9d62b770824eaab5ccc6`. Source/configuration audit only unless explicitly marked tested. This is not an authorization to reset any rig.
 
+The tables below preserve the **pre-migration baseline** and original proposal. Current implemented behavior and operator workflow are in [Local run identity and projection migration](run-migration.md). Claims such as "unimplemented" and snapshot format 11 below describe that baseline, not the current migration overrides. Final verification remains recorded in the component tasks.
+
 ## Existing authorities and persistence
 
 | Domain | Operative source and identity | Persistence / consequence |

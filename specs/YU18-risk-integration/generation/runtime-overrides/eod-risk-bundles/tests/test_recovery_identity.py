@@ -191,3 +191,78 @@ except ValueError as e:
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class ManagedReceiptTests(unittest.TestCase):
+    setUp = test_bridge.BridgeTests.setUp
+    write = test_bridge.BridgeTests.write
+
+    def managed(self):
+        from datetime import date
+        descriptor = dict(schema='traderx.run.v1', epoch='fresh', eventIdScheme='epoch-v1',
+                          projectionScope='scope-fresh', storageLineage='storage-fresh', adoptionEvidenceSha256=None)
+        self.descriptor = self.root / 'run.json'
+        self.descriptor.write_bytes(bundle.encoded(descriptor))
+        identity = {k: descriptor[k] for k in ('epoch', 'eventIdScheme', 'projectionScope', 'storageLineage')}
+        identity['runDescriptorSha256'] = bundle.digest(self.descriptor.read_bytes())
+        cut = self.root / 'source.cut'
+        day = (date(2025, 6, 2) - date(1970, 1, 1)).days
+        cut.write_text(f"#cut schema=3 seq=42 sessionDateEpochDay={day} priceVersion=1 runDescriptorHash={identity['runDescriptorSha256']} projectionScope=scope-fresh eventIdScheme=epoch-v1\n")
+        cut_hash = bundle.digest(cut.read_bytes())
+        for path in (self.positions, self.contracts):
+            path.write_bytes(path.read_bytes().replace(b'a'*64, cut_hash.encode()))
+        self.event.update(receiptSchema='traderx.risk-extract.ready.v2', platformIdentity=identity,
+                          cutUri=cut.as_uri(), cutSha256=cut_hash,
+                          sha256=bundle.digest(self.positions.read_bytes()), contractsSha256=bundle.digest(self.contracts.read_bytes()))
+        self.write(self.event)
+
+    def package(self, epoch='fresh', descriptor=True):
+        return bridge.package(self.receipt, self.root, self.inbox, epoch, '2025-06-02T20:00:00Z',
+                              'synthetic', '2025-06-02', self.descriptor if descriptor else None)
+
+    def test_pinned_platform_receipt_packages_and_replays_identically(self):
+        self.managed()
+        first = self.package()
+        self.assertFalse(first['duplicate'])
+        self.assertTrue(self.package()['duplicate'])
+        with self.assertRaisesRegex(ValueError, 'epoch or lineage'):
+            self.package('another')
+        self.assertEqual(len(list(self.inbox.glob('*/manifest.json'))), 1)
+
+    def test_managed_receipt_requires_expected_descriptor_before_custody_binding(self):
+        self.managed()
+        with self.assertRaisesRegex(ValueError, 'requires --run-descriptor'):
+            self.package(descriptor=False)
+        self.assertFalse(self.inbox.exists())
+
+    def test_wrong_descriptor_refuses_before_custody_binding(self):
+        self.managed()
+        self.descriptor.write_bytes(self.descriptor.read_bytes().replace(b'fresh', b'other'))
+        with self.assertRaisesRegex(ValueError, 'descriptor hash mismatch'):
+            self.package()
+        self.assertFalse(self.inbox.exists())
+
+    def test_source_cut_identity_cannot_be_relabelled(self):
+        self.managed()
+        self.event['platformIdentity']['projectionScope'] = 'another-scope'
+        self.write(self.event)
+        with self.assertRaisesRegex(ValueError, 'source cut platform identity mismatch'):
+            self.package()
+        self.assertFalse(self.inbox.exists())
+
+    def test_missing_cut_is_not_a_verified_platform_receipt(self):
+        self.managed()
+        (self.root / 'source.cut').unlink()
+        with self.assertRaisesRegex(ValueError, 'missing artifact'):
+            self.package()
+        self.assertFalse(self.inbox.exists())
+
+    def test_cut_from_another_sequence_is_refused_even_with_matching_file_hash(self):
+        self.managed()
+        cut = self.root / 'source.cut'
+        cut.write_bytes(cut.read_bytes().replace(b'seq=42 ', b'seq=43 '))
+        self.event['cutSha256'] = bundle.digest(cut.read_bytes())
+        self.write(self.event)
+        with self.assertRaisesRegex(ValueError, 'source cut stamp mismatch'):
+            self.package()
+        self.assertFalse(self.inbox.exists())

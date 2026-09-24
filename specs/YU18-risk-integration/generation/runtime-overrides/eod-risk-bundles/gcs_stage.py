@@ -97,6 +97,8 @@ def stage(output, prefix, max_bytes, *, receipt=None, archive_positions=None, st
         event = decode_json(files['source-receipt.json'])
         bundle.require(isinstance(event, dict), 'receipt must be an object')
         uris = {'positions': event['uri'], 'contracts': event['contractsUri']}
+        if 'receiptSchema' in event:
+            uris['cut'] = event['cutUri']
         evidence = 'PRODUCER_RECEIPT_VERIFIED'
     else:
         base, _, name, _ = object_uri(archive_positions, prefix)
@@ -111,9 +113,11 @@ def stage(output, prefix, max_bytes, *, receipt=None, archive_positions=None, st
     payloads = {kind: files[f'{kind}.csv'] for kind in ('positions', 'contracts')}
     parsed = bundle.read_pair(payloads)
     if receipt:
-        bridge.validate_event(event, payloads, event['sessionDate'])
+        bridge.validate_event(event, payloads, event['sessionDate'], files.get('source.cut'))
         local_event = dict(event, uri=(output / 'positions.csv').as_uri(),
                            contractsUri=(output / 'contracts.csv').as_uri())
+        if 'receiptSchema' in event:
+            local_event['cutUri'] = (output / 'source.cut').as_uri()
         files['local.ready.json'] = bundle.encoded(local_event)
     else:
         metadata = parsed['positions'][0]
