@@ -1,6 +1,6 @@
 # RI-08 local integration and CI gates
 
-2026-09-24. Owner: Codex integration/CI lane (`codex/integration-ci`). Review needed.
+2026-09-24. Owner: Codex integration/CI lane (`codex/integration-ci`). Reviewed and locally integrated.
 Combined implementation: integration `3244f7eb` plus order-types `53bc3bec`, merge `5705d3f6`.
 This delivery is local CI/container qualification. Hosted execution and deployment/rollback remain unverified.
 
@@ -102,5 +102,8 @@ this lane did not rerun the proposed-contract suite or call it green.
 Neither `/portfolio/price` simulation behavior nor full risk readiness is qualified by the EOD
 pipeline or packaging smoke. Broader profiles, distributed recovery, authentication and deployment/
 rollback remain outside this local milestone. Retained kind containers, dirty integration checkout
-and external engine files are preserved. Coordinator review/incorporation is next; no automatic
-push, publish, deployment or follow-on lane.
+and external engine files are preserved. Coordinator reviewed and integrated the delivery at `61b4c45e`. All 400 evidence hashes
+matched; five CI gate control tests and the component validator independently passed.
+All 57 incorporated files matched the reviewed delivery, preserving 11 existing dirty/untracked
+files and the empty index. Full lane suites were reviewed rather than rerun unchanged.
+No push, publication, deployment or automatic follow-on lane.
