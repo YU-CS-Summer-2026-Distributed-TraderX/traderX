@@ -8,5 +8,5 @@
 3. Make readiness a function check with negative controls, run twice. Done.
 4. Write one maintained guide, with labels and known blockers first. Done.
 5. Review R1–R3 corrected. Section 4 was rerun on the integrated F1 fix (done, 2026-09-24).
-6. Next: re-judge F3 once its owner decides; a second person follows the guide (RI-07's
-   definition of done).
+6. F3 fixed and re-judged (2026-09-24): 31/31, exit 0, twice.
+7. Next: a second person follows the guide (RI-07's definition of done).

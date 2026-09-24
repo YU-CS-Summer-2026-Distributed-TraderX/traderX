@@ -246,9 +246,8 @@ def scenario():
     deadline = time.time() + 10
     while o1 and o0 and o1["stopprice"] == o0["stopprice"] and time.time() < deadline:
         time.sleep(0.5); o1 = row(trail)
-    case("read model shows the CURRENT trailing level after the 104 print (FR-OT33 column)", "FR-OT19/33",
-         o1 and o0 and float(o1["stopprice"]) > float(o0["stopprice"]), {"before": o0, "after": o1},
-         known_gap="RI07-F3: a watermark ratchet emits no order update, so stopprice stays at the last emitted level")
+    case("read model shows the CURRENT trailing level after the 104 print (FR-OT33 column; F3 fixed)", "FR-OT19/33",
+         o1 and o0 and float(o0["stopprice"]) == 101.5 and float(o1["stopprice"]) == 102.0, {"before": o0, "after": o1})
     # a print at or below the stop triggers it: BUYER sells 1 into THIRD's 99.5 bid (time priority over BUYER's own peg)
     order(BUYER, "Sell", 1, orderType="LIMIT", timeInForce="IOC", limitPrice=99.5)
     o = row(trail, {"FILLED", "CANCELED", "REJECTED"})

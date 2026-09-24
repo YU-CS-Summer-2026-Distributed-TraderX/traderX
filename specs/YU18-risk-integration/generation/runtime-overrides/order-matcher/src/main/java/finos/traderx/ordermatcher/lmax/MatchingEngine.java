@@ -907,7 +907,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             applyMatchFill(a, fillQty, levelPx, e, unsolicited, book);
             // YU18 (FR-OT09/10): each fill is one qualifying print, in execution order. Latching
             // only queues; the queue drains after this aggressor finishes (FR-OT12).
-            recordPrint(a.securityId, levelPx);
+            recordPrint(a.securityId, levelPx, e);
             opp = buy ? book.bestAskSlot() : book.bestBidSlot();
         }
         autoFillSuccess++;
@@ -1804,11 +1804,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      * One qualifying print. Walks the security's pending store in admission order, so orders
      * latched by the same print enter the queue in admission order regardless of side (FR-OT11).
      * A trailing stop is tested against its CURRENT level first and its watermark updated only if
-     * it did not latch (FR-OT19). Allocation-free; O(pending in this security).
+     * it did not latch (FR-OT19). A ratchet that moves the stop LEVEL is published (F3, below).
+     * Allocation-free; O(pending in this security).
      */
     // ponytail: linear scan of the security's pending list per print; a price-indexed trigger
     // ladder if pending counts per security ever grow large.
-    private void recordPrint(int s, long px) {
+    private void recordPrint(int s, long px, InputEvent e) {
         lastTradePx[s] = px;
         hasTraded[s] = true;
         RestingOrder o = pendHead[s];
@@ -1818,13 +1819,21 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 unlinkStore(o);
                 triggerQueue[qTail++] = o;   // capacity pendingCapacity + 1: cannot overflow
             } else if (o.orderType == OrderTypes.TRAILING_STOP) {
-                updateWatermark(o, px);
+                updateWatermark(o, px, e);
             }
             o = next;
         }
     }
 
-    private void updateWatermark(RestingOrder o, long px) {
+    /**
+     * F3 (RI-07): when the ratchet moves the stop LEVEL, publish it. FR-OT33 makes the read model's
+     * stopprice the order's CURRENT level; without this update it kept the level of the order's
+     * last event (seen live: 101.5 shown while the engine held 102). The order is never the input
+     * being applied, so the update is FLAG_RESTING_UPDATE (the gateway must not count it as this
+     * command's answer), like a peg reprice. A watermark move that leaves the grid-rounded level
+     * unchanged publishes nothing. Output only: no state beyond what this method already set.
+     */
+    private void updateWatermark(RestingOrder o, long px, InputEvent e) {
         final boolean sell = o.side == InputEvent.SIDE_SELL;
         if (sell ? px <= o.watermark : px >= o.watermark) {
             return;
@@ -1833,7 +1842,12 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             booksBySecurity[o.securityId].tickTicks());
         if (stop > 0L) {   // a sell stop only rises and a buy stop only falls; -1 is unreachable
             o.watermark = px;
-            o.stopPx = stop;
+            if (stop != o.stopPx) {
+                o.stopPx = stop;
+                o.updatedAtMillis = e.eventTimeMillis;
+                out.emitOrderUpdate(o, e.seq, OutputEvent.FLAG_RESTING_UPDATE, true,
+                    lastPxBySecurity[o.securityId], e.ingressNanos);
+            }
         }
     }
 

@@ -257,3 +257,29 @@ coordinator-integrated). The exercise was rerun on `e96bf28a`, which is that fix
 no local patch: 30/30 ordinary cases, twice, through the console path, and a typed LIMIT from a
 user accepted through the console. F3 still reproduces, so the exercise reports INCOMPLETE
 (exit 3). This is local-live evidence, not GKE, failover or latency evidence.
+
+## F3 fixed: trailing-stop ratchet publication (2026-09-24)
+
+Branch `claude/f3-trailing-stop`, based on integration `72870ca9`; not yet integrated. When a
+print moves a pending trailing stop's level, `MatchingEngine.updateWatermark` now emits an
+unsolicited order update (FLAG_RESTING_UPDATE, as peg reprices do) carrying the new level, and
+stamps the updated time from the sequenced event time. A watermark move that leaves the rounded
+level unchanged emits nothing. FR-OT19 now specifies this. The read-model code is unchanged; it
+already mapped stopPrice from every update and orders them by (consensusSequence, outputOrdinal).
+
+Validation:
+- Source: TrailingStopRatchetEgressTest (5) and TrailingStopRatchetReplayTest (2) cover buy/sell,
+  amount/bps, no-emission cases, full-log replay, and snapshot plus tail with identical egress
+  bytes and digest. They fail 6 of 7 without the fix and pass 7 of 7 with it. Full matcher suite:
+  589 tests, 0 failures (6 existing skips), with all 13 tasks executed, including the five
+  allocation gates and both Epsilon no-GC gates.
+- Real DB: TrailingStopProjectionIT on MariaDB with the RI-06 migration, 2/2 (two ratchets in one
+  command, a redelivered ratchet cannot rewind, legacy arrival order). Trade-processor unit
+  tests: 98/98.
+- Local-live: on a disposable 3-member kind rig, the acceptance exercise matched 31/31 with
+  VERDICT PASS (exit 0), twice. A live buy trail published 102, 99, 97.5 and then 96; the
+  already-open console blotter updated to "stop level (current) 96" without a reload.
+
+Deployment note: this changes the output stream (and output ordinals) of commands that ratchet.
+Roll it only with a fresh epoch, never into a mixed-version cluster. No latency, GKE or failover
+claim.

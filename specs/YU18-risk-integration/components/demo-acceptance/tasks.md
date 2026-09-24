@@ -8,6 +8,6 @@
 - [x] T6 Local trade-to-risk wrapper with profile refusal and mechanism (FR-DA06)
 - [x] T7 Console badge and blotter labels (FR-DA07)
 - [x] T8 Re-run T5 on a build with F1 fixed in the owner layer: 30/30 twice on `e96bf28a` (exit 3 while F3 is open)
-- [ ] T9 Re-judge the F3 known gap after an order-update-on-ratchet decision (blocked: RI-01)
+- [x] T9 F3 fixed on `claude/f3-trailing-stop`: the exercise judges the ratchet as an ordinary case; 31/31, exit 0, twice, on a disposable rig
 - [x] T11 Review corrections R1 (known gaps never acceptance), R2 (failed or malformed reads abort), R3 (complete-row digest, enforced queries, ownership before upsert), with negative controls
 - [ ] T10 Second-person reproduction from the guide with named evidence

@@ -435,11 +435,11 @@ export class BlotterPanel implements OnInit, OnDestroy {
   toggleTerminal(): void { this.showTerminal.update(v => !v); this.poll(); }
 
   /** Cancel is only offered where it can do something; the rest are terminal. */
-  /** A trailing stop's level moves on every favourable print WITHOUT an order update (RI-07 F3), so
-   *  the read model holds the level as of the order's last event, not the engine's level now. */
+  /** A trailing stop's level: the engine publishes an update each time a print moves it (F3 fixed),
+   *  so an untriggered row carries the current level; a triggered one keeps its level at trigger. */
   stopLabel(o: OpenOrder): string {
     if (o.orderType !== 'TRAILING_STOP') return 'stop';
-    return o.triggered ? 'stop level at trigger' : 'stop level (at last update; ratchets are not reported)';
+    return o.triggered ? 'stop level at trigger' : 'stop level (current)';
   }
 
   /** On a live order the read model's reason is the last REFUSED change (e.g. a rejected replace),

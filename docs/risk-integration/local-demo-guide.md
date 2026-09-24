@@ -15,11 +15,12 @@ Nothing here is financial validation; `usableForRisk` stays `false` throughout.
 | ID | What | Effect | Owner |
 |---|---|---|---|
 | F1 | FIXED in integration `9931b3e5`. Builds before it encode typed orders (96 bytes) into a 64-byte buffer. | On an older build every order with `orderType` returns 504 `no committed ack` and is never sequenced. | Fixed by the RI-06 lane, integrated by the coordinator |
-| F3 | A trailing stop's watermark ratchet emits no order update. | The blotter shows the stop level from the order's last event. The console now labels it that way. | RI-01; proposal to the coordinator |
+| F3 | FIXED on `claude/f3-trailing-stop` (pending integration). Before it a trailing stop's ratchet emitted no order update. | On an older build the blotter kept the level from the order's last event. | Claude F3 lane |
+| C1 | At integration `72870ca9` the YU18 schema ConfigMap is invalid YAML: RI-06 SQL sits outside any block. | `start-cluster-kind.sh` stops at "[apply] database schema configmap". | RI-06 owner (board 20260924T200611Z) |
 | O1 | Trades booked while trade-processor is down are not replayed when it returns. | Read-model rows are lost for that window (4 of 4 in the repro). | RI-06 |
 | O2 | `orderbook.orderid` is `1-<ref>` but `trades.sourceorderid` is `0-<ref>`. | Joins between the two tables on order id miss. | RI-06 |
 
-Build from `9931b3e5` or later. Section 4 exits 3 (INCOMPLETE, not acceptance) while F3 is open.
+Build from a commit with both the F1 and F3 fixes, and with C1 fixed, for section 4 to exit 0.
 
 ## Prerequisites
 
@@ -110,11 +111,11 @@ between the check and the first order, is detected afterwards, not prevented.
 BUSINESS_DATE=$(date +%F) CONSOLE_URL=http://localhost:28090 python3 scripts/ri07/order-types-live.py evidence.json
 ```
 
-This runs 30 ordinary cases plus 1 known-gap case, all through the console's `/order-matcher`
-proxy. Exit codes:
+This runs 31 cases, all through the console's `/order-matcher` proxy. With F3 fixed the trailing
+read-model case is ordinary; no known gap remains. Exit codes:
 
-- 0: every case matched, the known-gap case included. This is the only acceptance.
-- 3: INCOMPLETE. The ordinary cases matched but F3 still reproduces. This is today's result.
+- 0: every case matched. This is the only acceptance, and it is the result on the F3 branch.
+- 3: INCOMPLETE. The ordinary cases matched but a named known gap still reproduces (none today).
 - 1: a mismatch, or a failed or malformed read. The run aborts and draws no verdict.
 - 2: a precondition refused the run. Each case is judged at the read model and member `/bbo`, never by the HTTP answer alone.
 It covers:

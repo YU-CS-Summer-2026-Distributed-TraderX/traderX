@@ -446,6 +446,12 @@ Risk facts this design depends on (S):
   - On each qualifying print P, the engine **first** tests the trigger against the current stop
     level and latches if crossed (FR-OT10). **Only if it did not latch** does it update the
     watermark with P and recompute the stop.
+  - **Publication (F3, 2026-09-24).** When that recomputation changes the stop level, the engine
+    emits an order update for the pending order carrying the new level, flagged as a resting
+    update (never the command's direct answer), and sets the order's updated time to the command's
+    sequenced event time. A watermark move that leaves the grid-rounded level unchanged emits
+    nothing. This keeps FR-OT33's `stopprice` equal to the CURRENT level. It changes the output
+    stream of commands that ratchet, so it is never rolled into a mixed-version cluster.
   - The watermark, trail and stop level are in the snapshot.
   - Overflow and non-positive stops are covered by FR-OT41.
 
