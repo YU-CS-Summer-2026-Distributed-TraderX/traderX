@@ -428,6 +428,54 @@ public class TradeService {
     }
   }
 
+  /** Automatic catch-up: recompute each affected {@code account:security} key from ALL retained
+   * trades of the scope - including live deliveries newer than the verified boundary - in
+   * authoritative order (consensus sequence, then engine trade sequence). An inserted interior
+   * fill therefore never leaves a cost basis computed in arrival order, and a newer live trade is
+   * never dropped by rebuilding from the verified prefix alone. Caller holds lock + transaction. */
+  void rebuildRetainedPositions(String scope, java.util.Collection<String> keys, Map<String, Object[]> before) {
+    for (String key : keys) {
+      int colon = key.indexOf(':');
+      Integer account = Integer.valueOf(key.substring(0, colon));
+      String security = key.substring(colon + 1);
+      List<Trade> retained = new ArrayList<>(tradeRepository.findByProjectionScopeAndAccountId(scope, account));
+      retained.removeIf(t -> !security.equals(t.getSecurity()));
+      retained.sort(java.util.Comparator.comparing(Trade::getConsensusSequence)
+          .thenComparingLong(t -> Long.parseLong(t.getId().substring(t.getId().lastIndexOf('-', t.getId().length() - 3) + 1, t.getId().length() - 2))));
+      Position p = null;
+      for (Trade t : retained) {
+        if (t.getState() == TradeState.Rejected) {
+          throw new IllegalStateException("RECOVERY_REJECTED_BOOKING_REQUIRES_REVIEW: " + t.getId());
+        }
+        TradeOrder order = new TradeOrder(t.getId(), t.getAccountId(), t.getSecurity(), t.getSide(), t.getQuantity());
+        order.setPrice(t.getPrice());
+        order.setProjectionScope(scope);
+        if (p == null) { p = newFlatPosition(order); }
+        bookTrade(order, p);
+        p.setUpdated(t.getUpdated());
+      }
+      if (p == null) { continue; }
+      Position current = findPosition(scope, account, security);
+      final Position rebuilt = p;
+      if (differs(current == null ? null : new Object[] {current.getQuantity(), current.getAverageCostBasis()}, p)) {
+        positionRepository.save(p);
+      }
+      // Notify relative to the PRE-page state: recovered trades are inserted with trade-only
+      // notifications, so the post-insertion row can already equal the final value (review R2).
+      if (differs(before.get(key), p)) {
+        afterCommit(() -> {
+          try { positionPublisher.publish(projectionTopic(scope, rebuilt.getAccountId(), "positions"), rebuilt); }
+          catch (PubSubException ex) { log.error("Automatic recovery position notification failed", ex); }
+        });
+      }
+    }
+  }
+
+  private static boolean differs(Object[] prior, Position p) {
+    return prior == null || !Objects.equals(prior[0], p.getQuantity())
+        || prior[1] == null || ((BigDecimal) prior[1]).compareTo(p.getAverageCostBasis()) != 0;
+  }
+
   /** Adds {@code days} business days (Mon-Fri) to {@code from}, skipping weekends. */
   static Date plusBusinessDays(Date from, int days) {
     LocalDate date = Instant.ofEpochMilli(from.getTime()).atZone(ZoneOffset.UTC).toLocalDate();

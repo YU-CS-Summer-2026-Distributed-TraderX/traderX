@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 public interface OrderRepository extends JpaRepository<OrderRow, String> {
   List<OrderRow> findByAccountId(Integer accountId);
   List<OrderRow> findByProjectionScope(String scope);
+  List<OrderRow> findByProjectionScopeAndConsensusSequenceBetween(String scope,Long from,Long to);
 
   List<OrderRow> findByAccountIdAndStatusIn(Integer accountId, Collection<String> statuses);
 

@@ -107,36 +107,11 @@ public final class EventRecoveryService {
                 retainedQuantity.merge(t.getAccountId()+":"+t.getSecurity(),
                     Math.multiplyExact(t.getQuantity().longValue(),t.getSide()==TradeSide.Buy?1L:-1L),Math::addExact);
             }
-            var timestampPrecision=jdbc.queryForList("SELECT LOWER(COLUMN_NAME) AS name,DATETIME_PRECISION AS precision_value "
-                +"FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND LOWER(TABLE_NAME)='orderbook' "
-                +"AND LOWER(COLUMN_NAME) IN ('createdat','updatedat')");
-            Map<String,Integer> precision=new HashMap<>();
-            for(var column:timestampPrecision) {
-                require(column.get("precision_value") instanceof Number,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
-                int value=((Number)column.get("precision_value")).intValue();
-                require(value>=0 && value<=6,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
-                precision.put(column.get("name").toString(),value);
-            }
-            require(precision.size()==2,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
+            Map<String,Integer> precision=orderTimestampPrecision(jdbc);
             for(OrderRow o:orders.findByProjectionScope(scope)) {
                 Map<String,OrderUpdate> history=orderHistory.get(o.getId());
                 OrderUpdate original=history==null?null:history.get(o.getConsensusSequence()+":"+o.getOutputOrdinal());
-                require(original!=null && Objects.equals(o.getEventDigest(),OrderProjectionService.digest(original)),
-                    "RECOVERY_ORDER_HISTORY_CONFLICT_OR_AHEAD: "+o.getId());
-                var a=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(o);
-                var expected=finos.traderx.tradeprocessor.OrderFeedHandler.toRow(original);
-                // The shipped schema retains seconds; other supported installations may retain
-                // fractional seconds. Compare the exact SQL representation, not lost wire bits.
-                // CAST uses the same connection/session conversion as persistence, including its
-                // fractional rounding mode. The full wire timestamps remain bound by eventDigest.
-                jdbc.query("SELECT CAST(? AS DATETIME("+precision.get("createdat")+")), "
-                    +"CAST(? AS DATETIME("+precision.get("updatedat")+"))",rs -> {
-                        expected.setCreatedAt(rs.getTimestamp(1));expected.setUpdatedAt(rs.getTimestamp(2));
-                    },expected.getCreatedAt()==null?null:new java.sql.Timestamp(expected.getCreatedAt().getTime()),
-                      expected.getUpdatedAt()==null?null:new java.sql.Timestamp(expected.getUpdatedAt().getTime()));
-                var b=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(expected);
-                for(String f:List.of("traceId","eventDigest")) {a.remove(f);b.remove(f);}
-                require(a.equals(b),"RECOVERY_RETAINED_ORDER_ROW_CONFLICT: "+o.getId());
+                requireRetainedOrderMatches(jdbc,mapper,precision,o,original);
             }
             // Missing transport events cannot explain a difference between a retained position
             // and the trades ALREADY booked in the same atomic projection transactions.
@@ -175,6 +150,41 @@ public final class EventRecoveryService {
                 scope,run.get("descriptor_hash"),boundary,digest,events.size());
             return Map.of("projectionScope",scope,"completeSequence",boundary,"witnessHash",digest,"eventCount",events.size());
         });
+    }
+    static Map<String,Integer> orderTimestampPrecision(JdbcTemplate jdbc) {
+        var timestampPrecision=jdbc.queryForList("SELECT LOWER(COLUMN_NAME) AS name,DATETIME_PRECISION AS precision_value "
+            +"FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND LOWER(TABLE_NAME)='orderbook' "
+            +"AND LOWER(COLUMN_NAME) IN ('createdat','updatedat')");
+        Map<String,Integer> precision=new HashMap<>();
+        for(var column:timestampPrecision) {
+            require(column.get("precision_value") instanceof Number,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
+            int value=((Number)column.get("precision_value")).intValue();
+            require(value>=0 && value<=6,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
+            precision.put(column.get("name").toString(),value);
+        }
+        require(precision.size()==2,"RECOVERY_ORDER_TIMESTAMP_SCHEMA");
+        return precision;
+    }
+    /** Shared by explicit and automatic recovery: the retained row must be exactly the SQL
+     * representation of the source event at its (sequence, ordinal) position. */
+    static void requireRetainedOrderMatches(JdbcTemplate jdbc,ObjectMapper mapper,Map<String,Integer> precision,
+                                            OrderRow o,OrderUpdate original) {
+        require(original!=null && Objects.equals(o.getEventDigest(),OrderProjectionService.digest(original)),
+            "RECOVERY_ORDER_HISTORY_CONFLICT_OR_AHEAD: "+o.getId());
+        var a=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(o);
+        var expected=finos.traderx.tradeprocessor.OrderFeedHandler.toRow(original);
+        // The shipped schema retains seconds; other supported installations may retain
+        // fractional seconds. Compare the exact SQL representation, not lost wire bits.
+        // CAST uses the same connection/session conversion as persistence, including its
+        // fractional rounding mode. The full wire timestamps remain bound by eventDigest.
+        jdbc.query("SELECT CAST(? AS DATETIME("+precision.get("createdat")+")), "
+            +"CAST(? AS DATETIME("+precision.get("updatedat")+"))",rs -> {
+                expected.setCreatedAt(rs.getTimestamp(1));expected.setUpdatedAt(rs.getTimestamp(2));
+            },expected.getCreatedAt()==null?null:new java.sql.Timestamp(expected.getCreatedAt().getTime()),
+              expected.getUpdatedAt()==null?null:new java.sql.Timestamp(expected.getUpdatedAt().getTime()));
+        var b=(com.fasterxml.jackson.databind.node.ObjectNode)mapper.valueToTree(expected);
+        for(String f:List.of("traceId","eventDigest")) {a.remove(f);b.remove(f);}
+        require(a.equals(b),"RECOVERY_RETAINED_ORDER_ROW_CONFLICT: "+o.getId());
     }
     private static String hash(String bytes) {
         try{return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes.getBytes(StandardCharsets.UTF_8)));}

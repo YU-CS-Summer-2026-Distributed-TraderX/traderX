@@ -2,6 +2,8 @@
 
 RI06 O1, 2026-09-24. Operator-triggered managed-run catch-up from retained Aeron history. No retained installation has been activated. See the [component specification](../../specs/YU18-risk-integration/components/event-recovery/spec.md).
 
+Automatic catch-up (2026-09-25) is a separate opt-in worker built on the same archive authority; see [automatic projection catch-up](automatic-projection-recovery.md). This operator endpoint is unchanged.
+
 ## Why replay is required
 
 The actual baseline stopped the Spring consumer, matched trades, and restarted against the same disposable MariaDB. SQL retained four of six expected trade legs, four of six orders, and buy quantity 40 instead of 60. Core NATS does not replay missed publication. A durable subscription alone would not prove that every engine event reached the publisher.

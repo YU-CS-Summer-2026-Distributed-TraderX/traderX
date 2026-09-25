@@ -11,6 +11,7 @@ public interface TradeRepository extends JpaRepository<Trade, String> {
   List<Trade> findByAccountId(Integer id);
   List<Trade> findByProjectionScope(String scope);
   List<Trade> findByProjectionScopeAndAccountId(String scope,Integer id);
+  List<Trade> findByProjectionScopeAndConsensusSequenceBetween(String scope,Long from,Long to);
 
   // YU05 (post-trade-compliance, FR-PTC02): SettlementService's T+N sweep target set.
   List<Trade> findByStateAndSettlementDateLessThanEqual(TradeState state, Date settlementDate);

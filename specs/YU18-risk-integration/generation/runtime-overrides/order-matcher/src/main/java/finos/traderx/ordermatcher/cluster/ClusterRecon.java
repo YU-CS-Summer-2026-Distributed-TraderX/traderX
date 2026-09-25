@@ -259,6 +259,133 @@ final class ClusterRecon {
             "events",events,"replayedMessages",applied[0],"replayedAppliedSeq",applied[1],"shadowTradeCounter",trades);
     }
 
+    /** Genesis of the automatic catch-up output chain; see {@link #chain}. */
+    static final String CATCHUP_GENESIS = "0".repeat(64);
+
+    /** d' = SHA-256(d + "\n" + wire), hex. Binds every published projection event in log order. */
+    static String chain(final String digest, final String wire) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                .digest((digest + "\n" + wire).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (final java.security.NoSuchAlgorithmException ex) {
+            throw new IllegalStateException(ex);
+        }
+    }
+
+    /**
+     * The chained form of one projection event: its type and the EXACT payload bytes of the
+     * production wire. The NATS envelope is excluded because the trade envelope's "date" is the
+     * publish wall clock, so two replays of the same committed log would otherwise disagree.
+     */
+    static String canonicalEvent(final String type, final String wire) {
+        final int at = wire.indexOf(",\"payload\":");
+        if (at < 0 || !wire.endsWith("}}") || !wire.contains("\"type\":\"" + type + "\"")) {
+            throw new IllegalStateException("RECOVERY_WIRE_SHAPE_UNEXPECTED");
+        }
+        return "{\"type\":\"" + type + "\",\"payload\":" + wire.substring(at + 11, wire.length() - 1) + "}";
+    }
+
+    /**
+     * Automatic catch-up page. {@code boundary} is the live member's applied sequence captured
+     * BEFORE the replay, so it is committed; outputs after it are ignored while the log grows.
+     * Returns production wire bytes of every projection event with afterSeq < inputSeq <= throughSeq,
+     * whole commands only; throughSeq also covers commands with no output. The chain digest
+     * through afterSeq lets the caller prove its cursor names the same history.
+     * ponytail: replay is still genesis-to-boundary (shadow has no checkpoint); only the page is
+     * bounded. Upgrade path: a shadow-engine checkpoint per cursor.
+     */
+    synchronized java.util.Map<String,Object> catchupPage(final long afterSeq, final int maxEvents,
+                                                          final long boundary) {
+        if (runDescriptor == null) {
+            throw new IllegalStateException("RUN_REPLAY_IDENTITY_REQUIRED");
+        }
+        final List<String> page = new ArrayList<>();
+        final List<String> command = new ArrayList<>();
+        final long[] commandSeq = {-1};
+        final long[] input = {-1};
+        final int[] ordinal = {0};
+        final long[] through = {-1};
+        final String[] digest = {CATCHUP_GENESIS};
+        final String[] afterDigest = {null};
+        final Runnable flush = () -> {
+            if (command.isEmpty() || through[0] >= 0) {
+                command.clear();
+                return;
+            }
+            if (page.size() + command.size() > maxEvents) {
+                if (page.isEmpty()) {
+                    throw new IllegalStateException("RECOVERY_COMMAND_EXCEEDS_PAGE: seq=" + commandSeq[0]);
+                }
+                through[0] = commandSeq[0] - 1;
+            } else {
+                for (final String wire : command) {
+                    digest[0] = chain(digest[0], wire);
+                    page.add(wire);
+                }
+            }
+            command.clear();
+        };
+        final long[] applied = {0, 0};
+        replay((out, ticker) -> {
+            if (input[0] != out.inputSeq) {
+                input[0] = out.inputSeq;
+                ordinal[0] = 0;
+            }
+            final int index = ordinal[0]++;
+            final byte[] wire;
+            final String type;
+            if (out.kind == OutputEvent.KIND_TRADE_BOOKED) {
+                wire = TradeNatsPublisher.projectionEvent(out, ticker, runDescriptor);
+                type = "TradeOrder";
+            } else if (OutputEvent.isOrderLifecycleKind(out.kind) && out.orderRef > 0) {
+                wire = OrderNatsPublisher.projectionEvent(out, ticker, runDescriptor, index);
+                type = "OrderUpdate";
+            } else {
+                return;
+            }
+            final long seq = out.inputSeq;
+            if (seq > boundary) {
+                return;
+            }
+            final String text = canonicalEvent(type, new String(wire, java.nio.charset.StandardCharsets.UTF_8));
+            if (seq <= afterSeq) {
+                digest[0] = chain(digest[0], text);
+                return;
+            }
+            if (afterDigest[0] == null) {
+                afterDigest[0] = digest[0];
+            }
+            if (seq != commandSeq[0]) {
+                flush.run();
+                commandSeq[0] = seq;
+            }
+            if (through[0] < 0) {
+                command.add(text);
+            }
+        }, null, applied, true);
+        flush.run();
+        if (applied[1] < boundary) {
+            throw new IllegalStateException("RECOVERY_ARCHIVE_BEHIND_BOUNDARY: replayed=" + applied[1]
+                + " boundary=" + boundary);
+        }
+        if (afterDigest[0] == null) {
+            afterDigest[0] = digest[0];
+        }
+        final long throughSeq = through[0] >= 0 ? through[0] : boundary;
+        final java.util.Map<String,Object> result = new java.util.LinkedHashMap<>();
+        result.put("protocol", 1);
+        result.put("descriptorHash", runDescriptor.hash());
+        result.put("projectionScope", runDescriptor.projectionScope());
+        result.put("afterSeq", afterSeq);
+        result.put("afterDigest", afterDigest[0]);
+        result.put("throughSeq", throughSeq);
+        result.put("throughDigest", digest[0]);
+        result.put("boundarySeq", boundary);
+        result.put("complete", throughSeq == boundary);
+        result.put("events", page);
+        return result;
+    }
+
     synchronized List<AuditRow> regulatoryReport(final long fromSeq, final long toSeq) {
         final List<AuditRow> rows = new ArrayList<>();
         replay((out, ticker) -> {

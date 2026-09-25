@@ -32,10 +32,14 @@ public final class LocalRunPeerClient implements RunPeerClient {
                 .header("Authorization",authorization).header("X-Risk-Control-Token",token)
                 .header("X-Risk-Operator","local-run-migration");
             if(body==null) b.GET();else b.header("Content-Type","application/json").POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(body)));
-            if (path.equals("/recon/recovery-events")) {
+            if (path.startsWith("/recon/recovery-events") || path.startsWith("/recon/catchup-events")) {
                 var response=http.send(b.build(),HttpResponse.BodyHandlers.ofInputStream());
                 try(var input=response.body()) {
-                    if(response.statusCode()!=200) throw new IllegalStateException("RECOVERY_PEER_REFUSED: HTTP "+response.statusCode());
+                    if(response.statusCode()!=200) {
+                        // Name the member's refusal (bounded) so a BLOCKED reason is diagnosable.
+                        String detail=new String(input.readNBytes(512),java.nio.charset.StandardCharsets.UTF_8);
+                        throw new IllegalStateException("RECOVERY_PEER_REFUSED: HTTP "+response.statusCode()+" "+detail);
+                    }
                     byte[] bytes=input.readNBytes(16*1024*1024+1);
                     if(bytes.length>16*1024*1024) throw new IllegalStateException("RECOVERY_RESPONSE_LIMIT_EXCEEDED");
                     return mapper.readTree(bytes);
@@ -52,5 +56,8 @@ public final class LocalRunPeerClient implements RunPeerClient {
         request(endpoint,"/run/control",mapper.createObjectNode().put("descriptorHash",hash).put("operation",operation));
     }
     public JsonNode recoveryEvents(String endpoint) {return request(endpoint,"/recon/recovery-events",null);}
+    public JsonNode catchupEvents(String endpoint,long afterSeq,int maxEvents) {
+        return request(endpoint,"/recon/catchup-events?afterSeq="+afterSeq+"&maxEvents="+maxEvents,null);
+    }
     public JsonNode projectionEvents(String endpoint) {return request(endpoint,"/recon/projection-events",null);}
 }

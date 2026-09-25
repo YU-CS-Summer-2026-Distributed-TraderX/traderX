@@ -623,6 +623,26 @@ public final class ClusterNodeMain {
             return result;
         }));
 
+        // Automatic projection catch-up: bounded, whole-command page after a verified cursor. The
+        // boundary is this member's applied (committed) sequence; trading continues during replay.
+        server.createContext("/recon/catchup-events", exchange -> guarded.apply(exchange,()->{
+            var descriptor=service.runDescriptor();
+            int phase=service.runPhase();
+            if(descriptor==null || !"epoch-v1".equals(descriptor.scheme()) || (phase!=2 && phase!=3)) {
+                throw new IllegalStateException("RECOVERY_MANAGED_ACTIVE_OR_FROZEN_REQUIRED");
+            }
+            long after=longParam(exchange,"afterSeq",-1);
+            long max=longParam(exchange,"maxEvents",-1);
+            long boundary=service.appliedSeq();
+            if(after<0 || max<1 || max>100000) throw new IllegalStateException("RECOVERY_PAGE_REQUEST_INVALID");
+            if(after>boundary) throw new IllegalStateException("RECOVERY_CURSOR_AHEAD_OF_SOURCE: after="+after+" boundary="+boundary);
+            if(after==boundary) { // nothing new was committed: no replay, and nothing is claimed verified
+                return java.util.Map.of("protocol",1,"descriptorHash",descriptor.hash(),"projectionScope",descriptor.projectionScope(),
+                    "afterSeq",after,"boundarySeq",boundary,"idle",true);
+            }
+            return recon.catchupPage(after,(int)max,boundary);
+        }));
+
         server.createContext("/recon/projection-events", exchange -> guarded.apply(exchange,()->{
             if(service.runDescriptor()==null || service.runPhase()!=3 || service.frozenRunSequence()<=0) {
                 throw new IllegalStateException("RUN_MUST_BE_FROZEN_FOR_PROJECTION_VERIFICATION");
