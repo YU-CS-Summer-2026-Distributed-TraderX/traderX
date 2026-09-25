@@ -4,6 +4,7 @@ import { Router, RouterLink } from '@angular/router';
 import { PriceChip } from '../../../web-front-end-console/src/app/price-chip';
 import { HelpTip } from '../../../web-front-end-console/src/app/help';
 import { ORDER_TYPES, OrderType, TIFS_FOR, Tif, TypedTicket, defaultTif, validateTicket, trailHint } from '../../../web-front-end-console/src/app/order-types';
+import { RiskPage as ConnectedRiskPage } from '../../../web-front-end-console/src/app/risk-page';
 import riskFixture from '../../../web-front-end-console/test-fixtures/risk-demo-synthetic.json';
 import { AssetClass, INSTRUMENTS, FixtureInstrument } from './fixtures';
 import { Desk, Freshness, fmtPrice, fmtQty, fmtUsd, reasonText } from './desk';
@@ -16,13 +17,14 @@ const inst = (k: string) => INSTRUMENTS.find(i => i.key === k)!;
   selector: 'fresh',
   template: `
     @switch (f().kind) {
-      @case ('live') { <span class="fresh live" title="Received {{ age() }} ago">simulated · {{ age() }}</span> }
+      @case ('live') { <span class="fresh live" title="Received {{ age() }} ago">{{ desk.connected ? 'received' : 'simulated' }} · {{ age() }}</span> }
       @case ('stale') { <span class="fresh stale" title="No update for {{ age() }}">stale · {{ age() }} old</span> }
       @default { <span class="fresh none">no price</span> }
     }
   `,
 })
 export class Fresh {
+  readonly desk = inject(Desk);
   readonly f = input.required<Freshness>();
   readonly age = computed(() => {
     const f = this.f();
@@ -38,7 +40,7 @@ export class Fresh {
     @switch (desk.readState()) {
       @case ('loading') { <p class="state" role="status" data-state="loading">Loading {{ what() }}…</p> }
       @case ('unavailable') {
-        <p class="banner bad" role="alert" data-state="unavailable">Could not load {{ what() }}: the position service did not answer.
+        <p class="banner bad" role="alert" data-state="unavailable">Could not load {{ what() }}: {{ desk.error() || 'the service did not answer' }}
           Nothing older is shown in their place. <button type="button" (click)="desk.reload()">Try again</button></p>
       }
       @case ('refused') { <p class="banner bad" role="alert" data-state="refused">You are not permitted to view this account.</p> }
@@ -60,9 +62,9 @@ export class ReadGate {
 <div class="page-head"><div><p class="eyebrow">YOUR DESK</p><h1>Trading overview</h1></div><span class="spacer"></span><a class="btn-primary btnlink" routerLink="/desk/orders">New order</a></div>
 <read-gate what="account data">
   <div class="tiles">
-    <a class="tile" routerLink="/desk/orders"><span>Working orders</span><b>{{ desk.workingOrders().length }}</b><span>{{ desk.runView().kind === 'history' ? 'No historical order fixture' : 'Selected account' }}</span></a>
+    <a class="tile" routerLink="/desk/orders"><span>Working orders</span><b>{{ desk.workingOrders().length }}</b><span>{{ desk.runView().kind === 'history' ? 'Read-only run' : 'Selected account' }}</span></a>
     <a class="tile" routerLink="/desk/positions"><span>Open positions</span><b>{{ desk.positionRows().length }}</b><span>Selected account and run</span></a>
-    <a class="tile" routerLink="/desk/positions"><span>Executions</span><b>{{ desk.accountTrades().length }}</b><span>Fixture records</span></a>
+    <a class="tile" routerLink="/desk/positions"><span>Executions</span><b>{{ desk.accountTrades().length }}</b><span>Recorded executions</span></a>
     <a class="tile risk-tile" routerLink="/desk/risk"><span>Portfolio risk</span><b>Unavailable</b><span>No account-bound result</span></a>
   </div>
   <div class="desk-overview">
@@ -74,8 +76,8 @@ export class ReadGate {
         </tbody></table>
       </section>
       <section class="card" aria-labelledby="wl-h"><div class="card-head"><h2 id="wl-h">Your watchlist</h2><span class="spacer"></span><a routerLink="/desk/markets">Browse markets →</a></div>
-        <table><thead><tr><th>Instrument</th><th class="num">Reference price</th><th>Unit</th><th>Fixture source</th><th>Update age</th></tr></thead><tbody>
-          @for (k of session.prefs().watchlist; track k) { <tr><td><b>{{ k }}</b></td><td class="num">{{ desk.marks()[k] ? price(k) : '—' }}</td><td>{{ inst(k).unit }}</td><td><price-chip [source]="inst(k).source" /></td><td><fresh [f]="desk.freshness(k)" /></td></tr> }
+        <table><thead><tr><th>Instrument</th><th class="num">Reference price</th><th>Unit</th><th>Source</th><th>Update age</th></tr></thead><tbody>
+          @for (k of session.prefs().watchlist; track k) { <tr><td><b>{{ k }}</b></td><td class="num">{{ desk.marks()[k] ? price(k) : '—' }}</td><td>{{ inst(k).unit }}</td><td><price-chip [source]="desk.connected ? desk.api.prices()[k]?.source : inst(k).source" /></td><td><fresh [f]="desk.freshness(k)" /></td></tr> }
           @empty { <tr><td colspan="5">Add instruments on Markets.</td></tr> }
         </tbody></table>
       </section>
@@ -97,23 +99,23 @@ export class ReadGate {
 export class OverviewPage {
   readonly desk = inject(Desk);
   readonly session = inject(Session);
-  readonly inst = inst;
+  readonly inst = (key:string)=>this.desk.instrument(key);
   readonly fillsToday = computed(() => this.desk.accountTrades().filter(t => t.bookedAt.startsWith('2026-09-25')).length);
   readonly notLive = computed(() => this.session.prefs().watchlist.filter(k => this.desk.freshness(k).kind !== 'live').length);
-  price(k: string): string { return fmtPrice(this.desk.marks()[k].price, inst(k)); }
+  price(k: string): string { return fmtPrice(this.desk.marks()[k].price, this.desk.instrument(k)); }
 }
 
 // ================================= Markets =================================
 
 @Component({
   selector: 'markets-page',
-  imports: [RouterLink, PriceChip, Fresh, HelpTip],
+  imports: [RouterLink, PriceChip, Fresh, HelpTip, FormsModule],
   template: `
 <div class="page-head"><h1>Markets</h1>
   <help-tip text="Prices come from several sources that are not interchangeable: replayed tape, a published reference curve, a model, a simulation, or yesterday's close carried forward. The chip says which; the age says how old it is." /></div>
 <div class="cols-markets">
   <section class="card" aria-labelledby="inst-h">
-    <div class="card-head"><h2 id="inst-h">Instruments</h2><span class="spacer"></span>
+    <div class="card-head"><h2 id="inst-h">Instruments</h2><input aria-label="Find instrument" placeholder="Find instrument" [ngModel]="search()" (ngModelChange)="search.set($event)"><span class="spacer"></span>
       <div class="seg" role="group" aria-label="Asset class">
         @for (c of classes; track c) { <button type="button" [class.on]="cls() === c" [attr.aria-pressed]="cls() === c" (click)="cls.set(c)">{{ c }}</button> }
       </div>
@@ -129,7 +131,7 @@ export class OverviewPage {
             <td><button type="button" class="linkish" (click)="selected.set(i.key)">{{ i.key }}</button><span class="faint gap">{{ i.name }}</span></td>
             <td class="num">{{ desk.marks()[i.key] ? price(i) : '—' }}</td>
             <td class="faint">{{ i.unit }}</td>
-            <td><price-chip [source]="i.source" /></td>
+            <td><price-chip [source]="desk.connected ? desk.api.prices()[i.key]?.source : i.source" /></td>
             <td><fresh [f]="desk.freshness(i.key)" /></td>
           </tr>
         }
@@ -144,7 +146,7 @@ export class OverviewPage {
       <dl class="kv">
         <dt>Class</dt><dd>{{ d.cls }}</dd>
         <dt>Last</dt><dd>{{ desk.marks()[d.key] ? price(d) : 'no price' }} <span class="faint">{{ d.unit }}</span></dd>
-        <dt>Source</dt><dd><price-chip [source]="d.source" /> <span class="faint">{{ sourceWords(d) }}</span></dd>
+        <dt>Source</dt><dd><price-chip [source]="desk.connected ? desk.api.prices()[d.key]?.source : d.source" /> <span class="faint">{{ sourceWords(d) }}</span></dd>
         <dt>Age</dt><dd><fresh [f]="desk.freshness(d.key)" /></dd>
         <dt>Quantity in</dt><dd>{{ d.qtyUnit }}@if (d.multiplier !== 1) { · multiplier {{ d.multiplier }} }</dd>
         @if (d.terms) { <dt>Terms</dt><dd>{{ d.terms }}</dd> }
@@ -159,10 +161,11 @@ export class MarketsPage {
   readonly desk = inject(Desk);
   readonly session = inject(Session);
   readonly classes: ('All' | AssetClass)[] = ['All', 'Equity', 'Option', 'Treasury', 'Corporate'];
+  readonly search = signal('');
   readonly cls = signal<'All' | AssetClass>('All');
   readonly selected = signal('IBM');
-  readonly list = computed(() => INSTRUMENTS.filter(i => this.cls() === 'All' || i.cls === this.cls()));
-  readonly detail = computed(() => inst(this.selected()));
+  readonly list = computed(() => this.desk.instrumentList().filter(i => (this.cls() === 'All' || i.cls === this.cls()) && (i.key+' '+i.name).toLowerCase().includes(this.search().toLowerCase())));
+  readonly detail = computed(() => this.desk.instrument(this.selected()));
   watching(k: string): boolean { return this.session.prefs().watchlist.includes(k); }
   toggleWatch(k: string): void {
     const w = this.session.prefs().watchlist;
@@ -184,7 +187,7 @@ export class MarketsPage {
   imports: [FormsModule, PriceChip, Fresh, HelpTip],
   template: `
 <div class="page-head"><h1>Orders</h1><span class="spacer"></span><span class="state">{{ desk.runView().kind === 'history' ? 'Previous run · read only' : 'Active run' }}</span></div>
-@if (desk.runView().kind === 'history') { <p class="banner warn">Previous run selected. No historical order fixture is available; current orders are hidden.</p> }
+@if (desk.runView().kind === 'history') { <p class="banner warn">Previous run selected. Order actions are disabled.</p> }
 <div class="cols">
   <section class="card ticket" aria-labelledby="tk-h">
     <div class="card-head"><h2 id="tk-h">New order</h2>
@@ -193,7 +196,7 @@ export class MarketsPage {
       @for (p of products; track p) { <button type="button" [class.on]="product() === p" [attr.aria-pressed]="product() === p" (click)="setProduct(p)">{{ p }}</button> }
     </div>
     @if (product() === 'Swap' || product() === 'Swaption') {
-      <p class="state">Swap and swaption tickets carry contract terms and no price. They keep today's form unchanged; this prototype places them here without rebuilding them.</p>
+      <a href="http://127.0.0.1:4321" target="_blank" rel="noopener">Open Demo console ↗</a><p class="state">Swap and swaption tickets are available in Demo console. Use its contract form to enter dates, notional and conventions.</p>
     } @else {
       <form (ngSubmit)="submit()" aria-describedby="tk-check">
         <label class="field">Instrument
@@ -253,7 +256,8 @@ export class MarketsPage {
         <p id="tk-check" class="check" [class.bad]="!!problem()" aria-live="polite" data-testid="tk-check">
           {{ problem() ? 'Cannot send yet: ' + problem() + '.' : 'Ready to send.' }}</p>
         <button class="btn-primary" type="submit" [disabled]="!!problem()" data-testid="tk-submit">Submit order</button>
-        <p class="faint">Prototype: the order goes to an in-memory fixture desk in this tab and is never sent.</p>
+        @if (desk.connected && desk.freshness(key()).kind !== 'live') { <p class="banner warn">The displayed price is stale or missing. Your explicit limit is sent to the venue for validation.</p> }
+        <p class="faint">{{ desk.connected ? 'Orders are sent to the local rig. An acceptance is not a fill; check the order and execution records.' : 'Prototype: orders remain in memory.' }}</p>
         @if (result(); as r) { <p class="banner" [class.good]="r.ok" [class.bad]="!r.ok" role="status" data-testid="tk-result">{{ r.text }}</p> }
       </form>
     }
@@ -267,6 +271,8 @@ export class MarketsPage {
           <button type="button" [class.on]="filterAll()" [attr.aria-pressed]="filterAll()" (click)="setFilter('all')" data-testid="all-states">All states</button>
         </div>
       </div>
+      @if(desk.readState()!=='ready') { <p class="banner warn">{{ desk.readState()==='loading' ? 'Loading orders…' : desk.error() || 'Orders are unavailable.' }}</p> } @else {
+      @if(desk.connected && !desk.canChangeExisting()) { <p class="state">This rig has no confirmed run identity. Existing orders are read-only here.</p> }
       <table data-testid="orders">
         <thead><tr><th scope="col">Ref</th><th scope="col">Time</th><th scope="col">Instrument</th><th scope="col">Side</th>
           <th scope="col" class="num">Filled / qty</th><th scope="col">Type</th><th scope="col" class="num">Price</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
@@ -280,7 +286,7 @@ export class MarketsPage {
               <td><span class="st" [class]="o.status">{{ statusWords(o.status) }}</span>
                 @if (o.reason) { <div class="faint">{{ reasonText(o.reason) }}</div> }</td>
               <td class="acts">
-                @if (live(o.status) && desk.runView().kind === 'active' && desk.readState() === 'ready') {
+                @if (desk.canChangeExisting() && live(o.status) && desk.runView().kind === 'active' && desk.readState() === 'ready') {
                   @if (o.orderType === 'LIMIT' || o.orderType === 'UNTYPED') { <button type="button" (click)="startEdit(o.ref, o.quantity, o.limitPrice)" [attr.aria-label]="'Change order ' + o.ref">Change</button> }
                   <button type="button" (click)="desk.cancel(o.ref)" [attr.aria-label]="'Cancel order ' + o.ref">Cancel</button>
                 }
@@ -297,7 +303,7 @@ export class MarketsPage {
             }
           } @empty { <tr><td colspan="9" class="faint">{{ filterAll() ? 'No orders on this account.' : 'No working orders on this account.' }}</td></tr> }
         </tbody>
-      </table>
+      </table> }
     </section>
     <section class="card" aria-labelledby="ac-h">
       <div class="card-head"><h2 id="ac-h">This session</h2></div>
@@ -316,6 +322,7 @@ export class OrdersPage {
   readonly types = ORDER_TYPES;
   readonly i = input<string>();                                   // ?i=KEY from Markets › Trade
 
+  readonly busy = signal(false);
   readonly product = signal<(typeof this.products)[number]>('Equity');
   readonly key = signal('IBM');
   readonly side = signal<'Buy' | 'Sell'>('Buy');
@@ -336,8 +343,8 @@ export class OrdersPage {
   readonly editing = signal<number | null>(null);
   readonly editQty = signal(0); readonly editPx = signal<number | undefined>(undefined); readonly editErr = signal('');
 
-  readonly current = computed(() => inst(this.key()));
-  readonly productList = computed(() => INSTRUMENTS.filter(i => i.cls === this.product()));
+  readonly current = computed(() => this.desk.instrument(this.key()));
+  readonly productList = computed(() => this.desk.instrumentList().filter(i => i.cls === this.product()));
   readonly tifs = computed(() => TIFS_FOR[this.type()]);
   readonly filterAll = computed(() => this.session.prefs().orderFilter === 'all');
   readonly shown = computed(() => this.filterAll() ? this.desk.accountOrders() : this.desk.workingOrders());
@@ -349,31 +356,34 @@ export class OrdersPage {
     trailAmount: num(this.trail()), trailPercentBps: num(this.trailBps()),
   }));
   readonly problem = computed(() => {
+    if (!this.desk.instrumentList().some(i=>i.key===this.key() && i.cls===this.product())) return 'Choose an instrument in this product. Other tickets are available in Demo console.';
+    if (this.busy() || this.desk.actionBusy()) return 'sending…';
     if (this.desk.runView().kind === 'history') return 'previous runs are read-only';
     if (this.desk.readState() !== 'ready') return 'account data is not available';
-    if (this.desk.freshness(this.key()).kind !== 'live') return 'a fresh fixture price is required';
+    if (this.desk.connected && !this.desk.typedOrdersEnabled && (this.type()!=='LIMIT' || this.tif()!=='GTC')) return 'Typed-order support is not verified on this rig. Use Limit / GTC.';
+    if ((!this.desk.connected || this.type()!=='LIMIT') && this.desk.freshness(this.key()).kind !== 'live') return 'a recent price update is required';
     if (this.exec() !== 'Direct' && this.current().cls === 'Equity') return Number(this.qty()) > 0 ? '' : 'quantity must be positive';
     return plain(validateTicket(this.ticket()) || trailHint(this.ticket(), this.desk.marks()[this.key()]?.price));
   });
   readonly estimate = computed(() => {
     const m = this.desk.marks()[this.key()];
     const q = Number(this.qty());
-    return m && q > 0 ? fmtUsd(q * m.price * this.current().multiplier) : '';
+    return m && this.desk.freshness(this.key()).kind==='live' && q > 0 ? fmtUsd(q * m.price * this.current().multiplier) : '';
   });
 
   constructor() {
     effect(() => { this.session.generation(); this.desk.runView(); untracked(() => this.clearTicket()); });
     queueMicrotask(() => {
       const k = this.i();
-      const found = k && INSTRUMENTS.find(x => x.key === k);
+      const found = k && this.desk.instrumentList().find(x => x.key === k);
       if (found) { this.product.set(found.cls); this.key.set(found.key); }
     });
   }
 
   setProduct(p: (typeof this.products)[number]): void {
     this.product.set(p); this.clearTicket();
-    const first = INSTRUMENTS.find(i => i.cls === p);
-    if (first) this.key.set(first.key);
+    const first = this.desk.instrumentList().find(i => i.cls === p);
+    this.key.set(first?.key ?? '');
     if (p !== 'Equity') this.exec.set('Direct');
   }
   clearTicket(): void {
@@ -399,8 +409,17 @@ export class OrdersPage {
   live(s: string): boolean { return ['NEW', 'PARTIALLY_FILLED', 'PENDING_TRIGGER', 'SUSPENDED'].includes(s); }
   setFilter(f: 'working' | 'all'): void { this.session.updatePrefs({ orderFilter: f }); }
 
-  submit(): void {
+  async submit(): Promise<void> {
     if (this.problem()) return;
+    if (this.desk.connected) {
+      const generation=this.session.generation(), view=this.desk.runView(); this.busy.set(true);
+      try {
+        const r=this.exec()!=='Direct' && this.current().cls==='Equity'
+          ? await this.desk.rigAction('/algo/orders',{accountId:this.session.account(),security:this.key(),side:this.side(),quantity:Number(this.qty()),algoType:this.exec(),durationSeconds:Number(this.dur()),bucketSeconds:Number(this.bucket())},'parentOrderId')
+          : await this.desk.submitRig(this.key(),this.ticket());
+        if(generation===this.session.generation() && view===this.desk.runView()) this.result.set(r);
+      } finally {this.busy.set(false);} return;
+    }
     if (this.exec() !== 'Direct' && this.current().cls === 'Equity') {
       this.result.set(this.desk.submitAlgo(this.key(), this.side(), Number(this.qty()), this.exec() as 'TWAP' | 'VWAP', Number(this.dur()), Number(this.bucket())));
       return;
@@ -408,7 +427,12 @@ export class OrdersPage {
     this.result.set(this.desk.submit(this.key(), this.ticket()));
   }
   startEdit(ref: number, q: number, px: number | undefined): void { this.editing.set(ref); this.editQty.set(q); this.editPx.set(px); this.editErr.set(''); }
-  saveEdit(ref: number): void {
+  async saveEdit(ref: number): Promise<void> {
+    if(this.desk.connected) {
+      if(this.busy()) return;
+      this.busy.set(true);
+      try {const r=await this.desk.replaceRig(ref,Number(this.editQty()),num(this.editPx()));this.editErr.set(r.ok?'':r.text);if(r.ok)this.editing.set(null);} finally {this.busy.set(false);} return;
+    }
     const err = this.desk.replace(ref, Number(this.editQty()), num(this.editPx()));
     this.editErr.set(err);
     if (!err) this.editing.set(null);
@@ -448,7 +472,7 @@ const num = (v: unknown): number | undefined => v === undefined || v === null ||
             <td class="num">{{ fmtQty(p.quantity) }} <span class="faint">{{ p.inst.qtyUnit }}</span></td>
             <td class="num">{{ fmtPrice(p.avgCost, p.inst) }}</td>
             <td class="num">{{ p.mark ? fmtPrice(p.mark.price, p.inst) : '—' }}</td>
-            <td><price-chip [source]="p.inst.source" /> <fresh [f]="p.fresh" /></td>
+            <td><price-chip [source]="desk.connected ? desk.api.prices()[p.key]?.source : p.inst.source" /> <fresh [f]="p.fresh" /></td>
             <td class="num">{{ p.value !== undefined ? fmtUsd(p.value) : '—' }}</td>
             <td class="num" [class.pos]="(p.upnl ?? 0) > 0" [class.neg]="(p.upnl ?? 0) < 0">{{ p.upnl !== undefined ? fmtUsd(p.upnl) : '—' }}</td>
           </tr>
@@ -484,7 +508,7 @@ const num = (v: unknown): number | undefined => v === undefined || v === null ||
 })
 export class PositionsPage {
   readonly desk = inject(Desk);
-  readonly inst = inst; readonly fmtQty = fmtQty; readonly fmtPrice = fmtPrice; readonly fmtUsd = fmtUsd;
+  readonly inst = (key:string)=>this.desk.instrument(key); readonly fmtQty = fmtQty; readonly fmtPrice = fmtPrice; readonly fmtUsd = fmtUsd;
   readonly viewKey = computed(() => { const v = this.desk.runView(); return v.kind === 'history' ? v.scope : ''; });
   readonly totals = computed(() => {
     const rows = this.desk.positionRows();
@@ -507,14 +531,14 @@ const CALCS: [string, string][] = [['npv', 'Present value (NPV)'], ['accruedInte
 
 @Component({
   selector: 'risk-page',
-  imports: [HelpTip, ReadGate],
+  imports: [ConnectedRiskPage,HelpTip, ReadGate],
   template: `
 <div class="page-head"><h1>Risk</h1><span class="spacer"></span><span class="state">Read only</span></div>
 <p class="banner warn"><b>No portfolio risk result is available.</b> Reference examples below do not value your holdings.</p>
 <read-gate what="portfolio inputs">
 <div class="risk-summary">
 <section class="card"><div class="card-head"><h2>{{ desk.accountName() }}</h2></div>
-<p class="state">Selected account and run · synthetic holdings</p>
+<p class="state">Selected account and run</p>
 <table><thead><tr><th>Instrument</th><th class="num">Signed quantity</th><th>Result</th></tr></thead><tbody>
 @for(p of desk.positionRows();track p.key){<tr><td>{{p.key}}</td><td class="num">{{p.quantity}} {{p.inst.qtyUnit}}</td><td>No connected result</td></tr>}
 @empty {<tr><td colspan="3">No holdings in this view.</td></tr>}
@@ -523,7 +547,7 @@ const CALCS: [string, string][] = [['npv', 'Present value (NPV)'], ['accruedInte
 <table><thead><tr><th>Measure</th><th>Availability</th></tr></thead><tbody><tr><td>NPV and accrued interest</td><td>No account-bound result</td></tr><tr><td>Sensitivities</td><td>No connected result</td></tr><tr><td>VaR / expected shortfall</td><td>Unavailable</td></tr></tbody></table>
 <p class="state">A result must match the account, run, valuation date and inputs before it is displayed here.</p></section>
 </div></read-gate>
-<details class="reference-examples"><summary>Reference examples · synthetic Treasury bill and note</summary>
+@if (desk.connected) { <details class="reference-examples" open><summary>Rig integration · jobs and Treasury demo</summary><p class="state">These results carry their own portfolio and cut identity; they are not the valuation of the account selected above.</p><risk-page /></details> } @else { <details class="reference-examples"><summary>Reference examples · synthetic Treasury bill and note</summary>
 <p class="banner warn" role="note"><b>Synthetic pricing results.</b> Assumed flat 3% curve, business date {{ fx.businessDate }}. Not usable for production risk.
   Portfolio VaR/ES is not available.</p>
 @if (desk.scenario() === 'refused') {
@@ -573,7 +597,7 @@ const CALCS: [string, string][] = [['npv', 'Present value (NPV)'], ['accruedInte
     </table>
   </section>
 }
-</details>
+</details> }
   `,
 })
 export class RiskPage {

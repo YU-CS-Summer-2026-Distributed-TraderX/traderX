@@ -12,4 +12,6 @@
 | [Automatic projection recovery](automatic-projection-recovery/README.md) | Implemented; local review pending | YU18 member catch-up page, trade-processor fenced worker, additive SQL cursor; disposable profile only |
 | [Managed-run UI](managed-run-ui/README.md) | Review needed; local fixture and real-transition proofs 2026-09-24 | `web-front-end-console` (standalone, not generated): blotter, Admin trade list, console proxies |
 
+| [Combined trader workspace](trader-workspace-combined/README.md) | Connected local UI; production auth and remaining migration open | Standalone combined desk and existing console API/server |
+
 Adding a directory does not activate generation. Shared files stay at the state parent. Follow [component rules](../../../docs/spec-kit/state-components.md).

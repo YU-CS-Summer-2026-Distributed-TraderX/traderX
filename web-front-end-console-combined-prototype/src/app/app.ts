@@ -1,3 +1,5 @@
+import { FormsModule } from '@angular/forms';
+import { SignIn } from '../../../web-front-end-console/src/app/sign-in';
 import { Component, HostListener, computed, effect, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
@@ -9,7 +11,7 @@ import { Desk } from './desk';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, RouterLink, RouterLinkActive],
+  imports: [RouterOutlet, RouterLink, RouterLinkActive, SignIn, FormsModule],
   template: `
 <a class="skip" href="#main">Skip to content</a>
 @if (session.user()) {
@@ -29,7 +31,7 @@ import { Desk } from './desk';
         }
       </nav>
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="fixtureLabel">synthetic data</span>
+      <span class="pill fixture" [title]="fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
       <div class="pop-host">
         <button type="button" class="user" (click)="toggle('user')" [attr.aria-expanded]="open() === 'user'"
                 aria-haspopup="true" data-testid="user-menu">{{ u.name }} ▾</button>
@@ -57,28 +59,29 @@ import { Desk } from './desk';
             @for (f of menu(); track f.id) {
               <a [routerLink]="['/', ws() === 'admin' ? 'admin' : 'desk', 'tools', f.id]" (click)="open.set(null)">
                 <b>{{ f.title }}</b><span>{{ f.purpose }}</span>
-                @if (f.built !== 'fixture') { <em>{{ f.built === 'proposed' ? 'proposed' : 'placed, not rebuilt' }}</em> }
+                @if (f.built !== 'fixture') { <em [hidden]="desk.connected">{{ f.built === 'proposed' ? 'proposed' : 'placed, not rebuilt' }}</em> }
               </a>
             }
+            <a class="demo-console" href="http://127.0.0.1:4321" target="_blank" rel="noopener"><b>Demo console ↗</b><span>Open the original console</span></a>
           </nav>
         }
       </div>
     } @else {
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="fixtureLabel">synthetic data</span>
+      <span class="pill fixture" [title]="fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
     }
   </div>
   <div class="context-bar">
     @if (ws() === 'trader') {
-      <label>Account <select aria-label="Account" [value]="session.account() ?? ''" (change)="pickAccount($any($event.target).value)" data-testid="account">
+      <label>Account <select aria-label="Account" [ngModel]="session.account()" (ngModelChange)="pickAccount($event)" data-testid="account">
         @for (a of myAccounts(); track a.id) { <option [value]="a.id">{{ a.name }} ({{ a.id }})</option> }
       </select></label>
       <label>Run <select aria-label="Run" [value]="runScope()" (change)="pickRun($any($event.target).value)" data-testid="run-select">
-        <option value="">Active · 25 Sep 2026</option>
-        @for (r of desk.runs.slice(1); track r.projection_scope) { <option [value]="r.projection_scope">Previous run · read only</option> }
+        <option value="">Active {{ desk.connected ? desk.runLabel() : '· 25 Sep 2026' }}</option>
+        @for (r of desk.connected ? desk.runs : desk.runs.slice(1); track r.projection_scope) { <option [value]="r.projection_scope">{{ r.projection_scope }} · read only</option> }
       </select></label>
-    } @else { <b>Admin workspace</b><span>Shared services and controls</span> }
-    <span class="spacer"></span><span class="context-note">Local prototype · no service connections</span>
+    } @else { <b>Admin workspace</b><sign-in /><span>Shared services and controls</span> }
+    <span class="spacer"></span><span class="context-note">{{ desk.connected ? 'Local rig · demo profiles, not authentication' : 'Local prototype · no service connections' }}</span>
   </div>
 </header>
 }
@@ -108,12 +111,13 @@ export class App {
     filter(e => e instanceof NavigationEnd), map(e => (e as NavigationEnd).urlAfterRedirects)), { initialValue: '' });
   readonly ws = computed<Workspace>(() => this.url().startsWith('/admin') ? 'admin' : 'trader');
   readonly tabs = computed(() => this.ws() === 'admin' ? ADMIN_TABS : TRADER_TABS);
-  readonly menu = computed(() => menuFor(this.ws()));
+  readonly menu = computed(() => menuFor(this.ws()).filter(f=>!['legacy','legacy-admin','data'].includes(f.id)));
   readonly canAdmin = computed(() => canUse(this.session.user(), 'admin'));
   readonly home = computed(() => this.ws() === 'admin' ? '/admin' : '/desk');
-  readonly myAccounts = computed(() => ACCOUNTS.filter(a => this.session.user()?.accounts.includes(a.id)));
+  readonly myAccounts = computed(() => this.desk.accounts().filter(a => this.session.user()?.accounts.includes(a.id)));
 
   constructor() {
+    if(this.desk.connected) void this.desk.api.checkAuth();
     // Remember the last tab per workspace, per user.
     effect(() => {
       const m = /^\/(desk|admin)\/([a-z-]+)/.exec(this.url());
@@ -147,6 +151,7 @@ export class App {
 
   signOut(): void {
     this.open.set(null);
+    if(this.desk.connected) void this.desk.api.logout();
     this.session.signOut();
     this.router.navigateByUrl('/login');
   }
@@ -161,22 +166,22 @@ export class App {
     <p class="eyebrow">TRADER WORKSPACE</p>
     <h1>A clear view<br>of your trading day.</h1>
     <p>Markets, orders, positions and risk.<br>One account context across your desk.</p>
-    <div class="login-note"><b>Design preview</b><p>Fixture identities demonstrate navigation and private preferences. They are not authentication.</p></div>
+    <div class="login-note"><b>Local trading desk</b><p>These local demo profiles choose workspace preferences. They are not authentication. Orders are sent to the local rig.</p></div>
   </section>
   <section class="card login-card" aria-labelledby="login-h">
-    <h2 id="login-h">Open a fixture workspace</h2>
+    <h2 id="login-h">Open your workspace</h2>
     <p class="state">Choose a profile to explore. No password is required or collected.</p>
     @if (session.expired()) { <p class="banner bad" role="alert" data-testid="expired">Your session ended. Sign in again to continue.</p> }
     <ul class="users">
       @for (u of users; track u.id) {
         <li><button class="identity" type="button" (click)="go(u.id)" [attr.data-testid]="'login-' + u.id">
           <span class="avatar">{{ u.name.split(' ')[0][0] }}{{ u.name.split(' ')[1][0] }}</span>
-          <span><b>{{ u.name }}</b><small>{{ u.roles.includes('admin') ? 'Trader + administrator' : u.accounts.length + ' authorized fixture accounts' }}</small></span>
+          <span><b>{{ u.name }}</b><small>{{ u.roles.includes('admin') ? 'Trader + administrator' : 'Local trader profile' }}</small></span>
           <span class="arrow" aria-hidden="true">→</span>
         </button></li>
       }
     </ul>
-    <p class="state">Watchlists and filters are saved separately for each fixture user.</p>
+    <p class="state">Watchlists and filters are saved separately for each demo profile.</p>
   </section>
 </div>
   `,

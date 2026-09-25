@@ -9,3 +9,13 @@
 - [ ] User review of combined candidate.
 - [ ] Production authentication, API integration, complete feature parity and migration verification.
 - [ ] Separately authorized deployment.
+
+## Local connection
+
+- [x] Match selected Desk suffix and place Demo console last in More.
+- [x] Connect account/instrument/price/order/position/trade reads and existing risk/admin panels.
+- [x] Connect order/algo gateway writes without automatic retries; fence context and run identity.
+- [x] Verify WebSocket disconnect handling and local-only launch mode.
+- [x] Run connected unit tests and existing isolated live startup proof.
+- [ ] Initialize real demo-account admission and upgrade the retained older rig before advanced-order acceptance.
+- [ ] Complete secondary-tool and OTC ticket migration from Demo console.

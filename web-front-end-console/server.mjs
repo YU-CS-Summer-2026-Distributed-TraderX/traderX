@@ -793,7 +793,9 @@ function eodChain(req, res, url) {
     out.extract = { state: 'unreadable', detail: 'could not read the risk-extract volume' };
   }
 
-  try {
+  if(process.env.LOCAL_ONLY === '1') {
+    out.published={state:'not-configured',detail:'Cloud archive reads are disabled for this local session.'};
+  } else try {
     const listed = execSync(`gcloud storage ls -r '${BUCKET}/**' 2>/dev/null || true`,
       { shell: '/bin/sh', timeout: 30000 }).toString();
     const files = listed.split('\n').map(s => s.trim()).filter(s => s.includes(date) && !s.endsWith(':') && !s.endsWith('/'));
@@ -1085,6 +1087,7 @@ function proxyToEdge(req, res, rewrite) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   const p = url.pathname;
+  if (process.env.LOCAL_ONLY === '1' && p.startsWith('/gcs/')) return json(res, 503, {error:'Cloud archive reads are disabled for this local session.'});
   if (p.startsWith('/gcs/')) return gcsBypass(req, res, url);
   if (p.startsWith('/kdbtap')) return kdbBypass(req, res);
   if (p.startsWith('/extracts')) return extractBypass(req, res);
@@ -1267,17 +1270,23 @@ const server = http.createServer(async (req, res) => {
 
 // WebSocket upgrade (the blotter's NATS feed) — proxied raw to the edge proxy.
 server.on('upgrade', (req, socket, head) => {
+  // A browser disconnect must close this tunnel, not crash the console process.
+  socket.on('error', () => socket.destroy());
   const up = http.request({ host: EDGE_HOST, port: Number(EDGE_PORT), path: req.url, method: 'GET',
     headers: req.headers });
   up.on('upgrade', (r, upSock, upHead) => {
     socket.write(`HTTP/1.1 101 Switching Protocols\r\n` +
       Object.entries(r.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n') + '\r\n\r\n');
-    if (upHead?.length) socket.unshift(upHead);
+    upSock.on('error', () => { upSock.destroy(); socket.destroy(); });
+    socket.on('close', () => upSock.destroy());
+    upSock.on('close', () => socket.destroy());
+    if (upHead?.length) socket.write(upHead);
+    if (head?.length) upSock.write(head);
     upSock.pipe(socket).pipe(upSock);
   });
   up.on('error', () => socket.destroy());
-  if (head?.length) up.write(head);
+  up.on('response', () => { up.destroy(); socket.destroy(); });
   up.end();
 });
 
-server.listen(PORT, () => console.log(`[console] :${PORT} static=${ROOT} edge=${EDGE} fix=${FIX_HOST}:${FIX_PORT}`));
+server.listen(PORT, process.env.HOST, () => console.log(`[console] :${PORT} static=${ROOT} edge=${EDGE} fix=${FIX_HOST}:${FIX_PORT}`));

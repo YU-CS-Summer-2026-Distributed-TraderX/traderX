@@ -1,4 +1,5 @@
-import { Injectable, computed, signal } from '@angular/core';
+import { CONNECTED_RIG } from './rig';
+import { Injectable, computed, signal, inject } from '@angular/core';
 import { FixtureUser, Role, USERS } from './fixtures';
 
 /**
@@ -77,9 +78,14 @@ const safe = <T>(f: () => T, fallback: T): T => { try { return f(); } catch { re
 
 @Injectable({ providedIn: 'root' })
 export class Session {
+  readonly connected = inject(CONNECTED_RIG);
   private readonly record = signal<SessionRecord | null>(
     readSession(safe(() => localStorage.getItem(SESSION_KEY), null), Date.now()));
-  readonly user = computed(() => userById(this.record()?.userId));
+  readonly user = computed(() => {
+    const u=userById(this.record()?.userId);
+    if(!u || !this.connected) return u;
+    return {...u,accounts:u.id==='trader.b'?[52355]:u.id==='ops.admin'?[10031,11413,17017,22214,42422,44044,52355,62654]:[22214,42422,17017]};
+  });
   readonly expired = signal(false);
   readonly workspace = signal<Workspace>('trader');
   readonly prefs = signal<Preferences>(DEFAULT_PREFS);

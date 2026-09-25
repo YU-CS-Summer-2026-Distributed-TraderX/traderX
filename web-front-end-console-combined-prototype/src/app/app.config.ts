@@ -1,3 +1,5 @@
+import { CONNECTED_RIG } from './rig';
+import { SystemPage, EodPage, AccountsPage, AdminPage, GrafanaPage } from '../../../web-front-end-console/src/app/pages';
 import { ApplicationConfig, inject, provideBrowserGlobalErrorListeners, provideZoneChangeDetection } from '@angular/core';
 import { CanActivateFn, Router, Routes, provideRouter, withComponentInputBinding } from '@angular/router';
 import { LoginPage } from './app';
@@ -32,11 +34,11 @@ export const routes: Routes = [
   ] },
   { path: 'admin', canActivate: [admin], children: [
     { path: '', pathMatch: 'full', canActivate: [lastTab('admin')], children: [] },
-    { path: 'operations', component: OperationsPage, title: 'End of day · TraderX Admin' },
-    { path: 'health', component: HealthPage, title: 'Health · TraderX Admin' },
-    { path: 'accounts', component: AccountsAdminPage, title: 'Accounts · TraderX Admin' },
-    { path: 'controls', component: ControlsPage, title: 'Controls · TraderX Admin' },
-    { path: 'observability', component: MonitoringPage, title: 'Monitoring · TraderX Admin' },
+    { path: 'operations', component: EodPage, title: 'End of day · TraderX Admin' },
+    { path: 'health', component: SystemPage, title: 'Health · TraderX Admin' },
+    { path: 'accounts', component: AccountsPage, title: 'Accounts · TraderX Admin' },
+    { path: 'controls', component: AdminPage, title: 'Controls · TraderX Admin' },
+    { path: 'observability', component: GrafanaPage, title: 'Monitoring · TraderX Admin' },
     { path: 'tools/:id', component: ToolPage, title: 'Tools · TraderX Admin' },
   ] },
   { path: '**', redirectTo: 'desk' },
@@ -44,6 +46,7 @@ export const routes: Routes = [
 
 export const appConfig: ApplicationConfig = {
   providers: [
+    {provide:CONNECTED_RIG,useValue:true},
     provideBrowserGlobalErrorListeners(),
     provideZoneChangeDetection({ eventCoalescing: true }),
     provideRouter(routes, withComponentInputBinding()),

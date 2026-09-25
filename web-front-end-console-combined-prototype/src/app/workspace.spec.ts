@@ -184,4 +184,13 @@ describe('combined ticket context', () => {
     ticket.limit.set(180); session.selectAccount(42422); TestBed.tick(); tick(300);
     expect(ticket.limit()).toBeUndefined(); discardPeriodicTasks();
   }));
+  it('does not carry an equity into an empty product catalog', fakeAsync(() => {
+    const session=TestBed.inject(Session);session.signIn('trader.a');
+    const ticket=TestBed.runInInjectionContext(()=>new OrdersPage());TestBed.tick();tick(300);
+    spyOn(ticket.desk,'instrumentList').and.returnValue([]);
+    ticket.setProduct('Option');ticket.limit.set(5);
+    expect(ticket.key()).toBe('');expect(ticket.problem()).toContain('Choose an instrument');
+    discardPeriodicTasks();
+  }));
+
 });

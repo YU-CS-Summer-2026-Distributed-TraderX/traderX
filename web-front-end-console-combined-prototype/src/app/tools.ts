@@ -12,7 +12,9 @@ import { Session } from './session';
 @if (f(); as f) {
   <div class="page-head"><h1>{{ f.title }}</h1></div>
   <p class="sub">{{ f.purpose }} <span class="faint">Today: {{ f.from }}.</span></p>
-  @switch (f.id) {
+  @if (desk.connected && !['settings','recovery'].includes(f.id)) {
+    <section class="card"><p>This tool is available in the connected Demo console.</p><a [href]="demoPath(f.id)" target="_blank" rel="noopener">Open {{ f.title }} ↗</a></section>
+  } @else { @switch (f.id) {
     @case ('algos') {
       <section class="card"><div class="card-head"><h2>Algo parents on this account</h2></div>
         <table>
@@ -61,7 +63,7 @@ import { Session } from './session';
             <tr><td>{{ r.projection_scope }}</td><td>{{ r.phase.toLowerCase() }}</td><td>{{ r.cluster_epoch }}</td><td class="num">{{ r.checkpoint_seq }}</td></tr>
           }</tbody>
         </table>
-        <p class="faint">The active pointer is set by the server. This page never changes it.</p>
+        <p class="state">{{ desk.runLabel() }}</p><p class="faint">The active pointer is set by the server. This page never changes it.</p>
       </section>
     }
     @default {
@@ -73,12 +75,16 @@ import { Session } from './session';
       </section>
     }
   }
-} @else {
+} } @else {
   <section class="card"><p class="banner bad" role="alert">No tool called "{{ id() }}".</p></section>
 }
   `,
 })
 export class ToolPage {
+  demoPath(id:string):string {
+    const paths:Record<string,string>={algos:'admin',tca:'',replay:'replay',corpus:'corpus',sandbox:'sandbox',fix:'fix',presets:'','sandbox-admin':'sandbox'};
+    return 'http://127.0.0.1:4321/'+(paths[id]??'');
+  }
   readonly desk = inject(Desk);
   readonly session = inject(Session);
   readonly id = input.required<string>();

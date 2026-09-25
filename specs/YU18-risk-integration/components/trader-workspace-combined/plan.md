@@ -1,5 +1,7 @@
-# Implementation plan
+# Plan
 
-Implemented as a separate Angular entrypoint derived from Claude’s candidate, with Codex visual hierarchy and context semantics. Source files in the new prototype are operative; no inherited runtime override or generated application was edited.
+Selected design is implemented in a separate Angular entrypoint and connected through the existing console API server. The original console remains available at port 4321 from More. No financial or engine logic is duplicated.
 
-Next: user design review, complete feature migration inventory, agree server authentication/account authorization and API adapter boundaries, then implement connected flows with integration tests. Deployment is separately authorized. Keep original console available throughout migration.
+Current delivery uses local retained kind services, explicit run-scoped projection contracts with a labelled legacy fallback, gateway commands and NATS prices. Cloud archives are disabled. Runtime owner is the standalone console source, not a generated override.
+
+Next: initialize the retained rig's account admission under an explicit operator workflow; deploy current compatible service versions with a recovery plan before enabling advanced order types; complete trader authentication/account authorization and remaining per-tool migration. Cloud rollout is separately authorized.
