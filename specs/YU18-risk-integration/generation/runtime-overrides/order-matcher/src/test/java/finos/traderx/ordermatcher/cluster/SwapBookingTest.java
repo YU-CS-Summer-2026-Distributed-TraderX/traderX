@@ -179,8 +179,8 @@ class SwapBookingTest {
         // YU18 (order types, FR-OT35) moved the writer to format 11: typed order state rides its
         // own records, and formats 9 and 10 still restore (as untyped orders), so MIN_READABLE
         // stays 9 below — the same "adds, never re-reads" rule format 10 followed.
-        assertEquals(12, header.getInt(4),
-            "format 12 (RI-06): immutable run identity and admission phase join existing state");
+        assertEquals(13, header.getInt(4),
+            "format 13 (RI-12): account self-match groups join existing state");
         // Literals on BOTH sides, never the constants they pin.
         //
         // MIN_READABLE DELIBERATELY DOES NOT RISE HERE, and that is a departure from every raise

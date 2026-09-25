@@ -22,6 +22,15 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
       if(admin&&!checkAdmin(body.adminPassword))return {status:401,body:{error:'Incorrect admin password.'}};
       const key='user:'+name.toLowerCase();
       if(!Object.hasOwn(users,key)){users[key]={name,accounts:[],requests:{}};save();}
+      // Migrate existing demo workspaces before opening a trading session. The stable group is
+      // their first account ID, persisted independently of future account-list changes.
+      const u=users[key];
+      if(u.accounts.length){
+        u.selfMatchGroup??=u.accounts[0];save();
+        try {for(const accountId of u.accounts)if(!await enableAccount(accountId,u.selfMatchGroup))
+          return {status:503,body:{error:'Account protection is unavailable. Workspace was not opened.'}};
+        }catch{return {status:503,body:{error:'Account protection is unavailable. Workspace was not opened.'}};}
+      }
       const token=randomBytes(32).toString('hex'),record={key,admin,expires:now()+8*3600000};
       // Replace the session presented by this browser. An admin login never persists on the user.
       for(const [t,v]of sessions)if(v===s)sessions.delete(t);
@@ -44,15 +53,15 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
         let r;
         try{r=await upstream('/account-service/account/',{method:'POST',body:{displayName:name}});}catch{return {status:u.requests[key].status,body:u.requests[key].body};}
         if(r.status!==200||!Number.isSafeInteger(r.body?.id)||r.body.id<=0)return {status:u.requests[key].status,body:u.requests[key].body};
-        const id=r.body.id;u.accounts.push(id);save();
-        let enabled=false;try{enabled=await enableAccount(id);}catch{}
+        const id=r.body.id;u.accounts.push(id);u.selfMatchGroup??=id;save();
+        let enabled=false;try{enabled=await enableAccount(id,u.selfMatchGroup);}catch{}
         const result={status:201,body:{user:view(s),account:r.body,enabled,error:enabled?null:'Account created. Engine admission failed; use Retry admission.'}};
         u.requests[key]={...result,displayName:name};save();return result;
       });queue=run.catch(()=>{});return run;
     }
     if(path==='/desk-api/accounts/admit' && req.method==='POST') {
       if(!users[s.key].accounts.includes(body.accountId))return {status:403,body:{error:'This account does not belong to this workspace.'}};
-      let enabled=false;try{enabled=await enableAccount(body.accountId);}catch{}
+      let enabled=false;try{enabled=await enableAccount(body.accountId,users[s.key].selfMatchGroup);}catch{}
       return {status:enabled?200:503,body:{enabled,error:enabled?null:'Engine admission is unavailable. Try again when the rig is ready.'}};
     }
     return {status:404,body:{error:'Unknown desk endpoint.'}};

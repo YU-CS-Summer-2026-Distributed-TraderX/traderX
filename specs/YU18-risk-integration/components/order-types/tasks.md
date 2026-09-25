@@ -24,3 +24,13 @@ Status: implemented locally, READY_FOR_REVIEW. Backlog: RI-01. Single delivery.
 2026-09-24 combined integration: source/generated correctness, recovery, read-model/DDL,
 console and RI-03 coexistence verified in `codex/integration-ci`; see component README.
 SC-OT35/NFR-OT06 deferred/unverified by user until GKE credits. Coordinator incorporation pending.
+
+
+## RI-12 cross-account self-match prevention
+
+- [x] Define shared ownership groups, legacy group-zero behavior and operator reassignment semantics.
+- [x] Enforce groups in matching and FOK preflight; preserve cancel-oldest risk release.
+- [x] Sequence group configuration and persist it in versioned snapshots; retain it on sandbox reset.
+- [x] Bind local workspace accounts to a stable persisted group before admission; fail login closed on setup failure.
+- [x] Source/generated tests for all seven order types, replacement, FOK and snapshot-plus-tail recovery.
+- [ ] Complete local cluster upgrade and behavior/restart proof; record evidence before closing RI-12.

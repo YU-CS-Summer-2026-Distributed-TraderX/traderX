@@ -389,6 +389,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
             }
             // Versioned control events (FR-IMRG11 / ADR-020): applied in the same global sequence
             // as commands and prices, so replay reproduces every original decision.
+            case InputEvent.TYPE_SELF_MATCH_GROUP -> {
+                controlEvents++;
+                if (risk != null) risk.putSelfMatchGroup(e.accountId, e.limitPx);
+            }
             case InputEvent.TYPE_ACCOUNT_CONTROL -> { controlEvents++; onAccountControl(e); }
             case InputEvent.TYPE_SECURITY_CONTROL -> { controlEvents++; onSecurityControl(e); }
             case InputEvent.TYPE_POLICY_CONTROL -> { controlEvents++; onPolicyControl(e); }
@@ -888,14 +892,14 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 break;
             }
             final RestingOrder r = book.headAt(restingSide, opp);
-            // Self-trade prevention, cancel-oldest (ADR-057). One int compare against replicated
-            // state on the apply thread, so every member and every replay reaches it identically.
+            // Self-match prevention, cancel-oldest (ADR-057, RI-12): identical accounts or
+            // shared ownership groups in replicated state, identical on every member and replay.
             // Cancel-oldest is not a preference: cross() re-reads headAt each iteration, so a
             // policy that SKIPS a self order without removing it returns the same order forever
             // and the apply loop never terminates — on all three members and on replay. Removing
             // the head is what lets the loop advance, and it is also the only policy that lets the
             // aggressor reach genuine counterparties queued BEHIND its own stale quote.
-            if (r.accountId == a.accountId) {
+            if (sameSelfMatchGroup(r.accountId, a.accountId)) {
                 preventSelfTrade(r, e, book);
                 opp = buy ? book.bestAskSlot() : book.bestBidSlot();
                 continue;
@@ -1006,13 +1010,8 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
      */
     private void preventSelfTrade(RestingOrder r, InputEvent e, LimitBook book) {
         selfTradesPrevented++;
-        // ADR-072: the operator-only half. STP is decidable here BECAUSE the guard at the call site
-        // (`r.accountId == a.accountId`) only reaches this method when the resting order and the
-        // aggressor are the SAME account — so there is no "which side counts" question to get
-        // wrong, unlike a trade leg, where the two sides can be different writers and both are
-        // counted separately. PER-PROCESS, matching selfTradesPrevented, which is a plain field
-        // and is in neither the snapshot writer nor the reader; see the persistence rule above the
-        // twins in ClusterNodeMain before adding another.
+        // Classify the canceled resting order, including cross-account group matches (RI-12).
+        // These per-process counters are not replicated or snapshotted authoritative state.
         if (InputEvent.isReplayFlow(r.accountId)) {
             externalSelfTradesPrevented++;
         }
@@ -1598,7 +1597,7 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
                 break;
             }
             for (RestingOrder r = book.headAt(restingSide, slot); r != null; r = r.bookNext) {
-                if (r.accountId != a.accountId) {
+                if (!sameSelfMatchGroup(r.accountId, a.accountId)) {
                     need -= r.remaining;
                 }
             }
@@ -2602,6 +2601,10 @@ public final class MatchingEngine implements EventHandler<InputEvent> {
     // ----- control events (in-memory-risk-gateway, FR-IMRG11 / ADR-020) ---------------------
     // Payload slots are type-discriminated (see InputEvent javadoc): side = boolean, priceTicks =
     // control version, qty/limitPx = policy limit payload. Applied on the BLP thread only.
+
+    private boolean sameSelfMatchGroup(int first, int second) {
+        return first == second || (risk != null && risk.sameSelfMatchGroup(first, second));
+    }
 
     private void onAccountControl(InputEvent e) {
         if (risk != null) {

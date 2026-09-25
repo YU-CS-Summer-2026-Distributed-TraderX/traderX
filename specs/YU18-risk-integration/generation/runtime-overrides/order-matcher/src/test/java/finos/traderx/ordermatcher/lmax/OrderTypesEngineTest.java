@@ -1036,4 +1036,68 @@ class OrderTypesEngineTest {
             assertFalse(e.typed.triggered, "slot " + (seq & 1));
         }
     }
+
+    void group(int account, long group) {
+        InputEvent e=ev(InputEvent.TYPE_SELF_MATCH_GROUP);e.accountId=account;e.limitPx=group;apply(e);
+    }
+
+    @Test void ri12_crossAccountCancelOldestReleasesRiskAndReachesOtherOwners() {
+        newEngine();trade(p(100));group(A,55);group(B,55);
+        int own=iceberg(A,SELL,10,2,p(101));int other=order(C,SELL,3,p(101));
+        int buy=order(B,BUY,3,p(101));
+        assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+        assertEquals(RiskReason.SELF_TRADE_PREVENTED.ordinal(),last(own).reason());
+        assertEquals(0,risk.reservedNotional(A));
+        assertEquals(RestingOrder.STATUS_FILLED,status(buy));assertEquals(RestingOrder.STATUS_FILLED,status(other));
+    }
+
+    @Test void ri12_fokExcludesSameGroupWithoutMutatingBookOnFailure() {
+        newEngine();trade(p(100));group(A,55);group(B,55);
+        int own=order(A,SELL,10,p(101));long held=risk.reservedNotional(A);
+        int buy=limitTif(B,BUY,10,p(101),OrderTypes.FOK);
+        assertEquals(RestingOrder.STATUS_CANCELED,status(buy));assertEquals(RestingOrder.STATUS_NEW,status(own));
+        assertEquals(held,risk.reservedNotional(A));
+        order(C,SELL,10,p(101));buy=limitTif(B,BUY,10,p(101),OrderTypes.FOK);
+        assertEquals(RestingOrder.STATUS_FILLED,status(buy));assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+    }
+
+    @Test void ri12_groupChangesApplyToRestingOrdersAndAdmissionDoesNotEraseThem() {
+        newEngine();trade(p(100));int own=order(A,SELL,10,p(101));
+        group(A,55);group(B,55);accountControl(A,false);accountControl(A,true);
+        int buy=order(B,BUY,10,p(101));
+        assertEquals(RestingOrder.STATUS_CANCELED,status(own));assertEquals(RestingOrder.STATUS_NEW,status(buy));
+        group(A,56);order(A,SELL,10,p(101));assertEquals(RestingOrder.STATUS_FILLED,status(buy));
+    }
+
+    @Test void ri12_triggeredStopStopLimitAndTrailingUseGroupProtection() {
+        for(int type=0;type<3;type++) {
+            newEngine();trade(p(100));group(A,55);group(B,55);
+            int pending=type==0?stop(B,BUY,2,p(102)):type==1?stopLimit(B,BUY,2,p(102),p(104)):
+                trailing(B,BUY,2,OrderTypes.TRAIL_AMOUNT,p(2));
+            int own=order(A,SELL,2,p(103));int other=order(C,SELL,2,p(104));
+            trade(p(102));
+            assertEquals(RestingOrder.STATUS_CANCELED,status(own),"type "+type);
+            assertEquals(RestingOrder.STATUS_FILLED,status(pending),"type "+type);
+            assertEquals(RestingOrder.STATUS_FILLED,status(other));assertEquals(0,risk.reservedNotional(A));
+        }
+    }
+
+    @Test void ri12_marketAndReplacementRespectGroup() {
+        newEngine();trade(p(100));group(A,55);group(B,55);
+        int own=order(A,SELL,2,p(101));
+        typed(B,BUY,2,OrderTypes.MARKET,OrderTypes.IOC,0,0,0,(byte)0,0,(byte)0,0,0);
+        assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+        own=order(A,SELL,2,p(101));int buy=limitTif(B,BUY,2,p(99),OrderTypes.GTC);
+        replace(buy,2,p(101),0,0,0,(byte)0,0,OrderTypes.LIMIT);
+        assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+    }
+
+    @Test void ri12_midpointPegCrossRespectsGroup() {
+        newEngine();trade(p(100));group(A,55);group(B,55);
+        order(C,BUY,1,p(100));order(D,SELL,1,p(100.02));
+        int own=peg(A,BUY,2,OrderTypes.PEG_MIDPOINT,0,p(101));
+        peg(B,SELL,1,OrderTypes.PEG_MIDPOINT,0,p(99));
+        assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+        assertEquals(RiskReason.SELF_TRADE_PREVENTED.ordinal(),last(own).reason());
+    }
 }

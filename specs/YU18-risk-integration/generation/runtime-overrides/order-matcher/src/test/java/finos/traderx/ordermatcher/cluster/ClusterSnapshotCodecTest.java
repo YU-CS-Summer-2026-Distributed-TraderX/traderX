@@ -43,6 +43,49 @@ class ClusterSnapshotCodecTest {
     private final UnsafeBuffer ingressBuffer = new UnsafeBuffer(new byte[AeronReplicationCodec.INPUT_BYTES]);
     private long timestamp = 1_000_000_000_000L;
 
+
+    @Test void selfMatchGroupSurvivesSnapshotAndSequencedTail() {
+        final MatchingEngineClusteredService source=newLiveService();
+        InputEvent g=new InputEvent();g.type=InputEvent.TYPE_SELF_MATCH_GROUP;g.accountId=ACCOUNT;g.limitPx=42;apply(source,g);
+        MatchingEngineClusteredService recovered=restore(source);
+        assertEquals(42,recovered.risk().selfMatchGroup(ACCOUNT));
+        g.accountId=ACCOUNT_TAKER;apply(source,g);apply(recovered,g);
+        InputEvent cross=newOrder(InputEvent.SIDE_SELL,100*PX,0L);cross.accountId=ACCOUNT_TAKER;
+        apply(source,cross);apply(recovered,cross);
+        assertEquals(0,source.risk().reservedNotional(ACCOUNT));
+        assertEquals(0,recovered.risk().reservedNotional(ACCOUNT));
+        assertEquals(source.engine().openOrderTuples().size(),recovered.engine().openOrderTuples().size());
+        MatchingEngineClusteredService second=restore(recovered);
+        assertEquals(42,second.risk().selfMatchGroup(ACCOUNT_TAKER));
+    }
+
+    @Test void legacySnapshotAccountsRestoreWithoutInventingSharedOwnership() {
+        MatchingEngineClusteredService source=newLiveService(),target=newRestoreTarget();
+        source.writeSnapshot((b,o,n)->{
+            byte[] record=new byte[n];b.getBytes(o,record);UnsafeBuffer r=new UnsafeBuffer(record);
+            if(r.getInt(0)==MatchingEngineClusteredService.T_HEADER)r.putInt(4,12);
+            if(r.getInt(0)==MatchingEngineClusteredService.T_ACCOUNT)record=java.util.Arrays.copyOf(record,28);
+            target.onSnapshotRecord(new UnsafeBuffer(record),0);
+        });
+        assertEquals(0,target.risk().selfMatchGroup(ACCOUNT));
+        assertTrue(!target.risk().sameSelfMatchGroup(ACCOUNT,ACCOUNT_TAKER));
+        InputEvent cross=newOrder(InputEvent.SIDE_SELL,100*PX,0L);cross.accountId=ACCOUNT_TAKER;apply(target,cross);
+        assertTrue(target.risk().reservedNotional(ACCOUNT)<source.risk().reservedNotional(ACCOUNT));
+    }
+
+    @Test void truncatedGroupAccountRecordIsRejected() {
+        MatchingEngineClusteredService source=newLiveService(),target=newRestoreTarget();
+        List<byte[]> records=new ArrayList<>();source.writeSnapshot((b,o,n)->{byte[] x=new byte[n];b.getBytes(o,x);records.add(x);});
+        for(byte[] record:records){
+            if(new UnsafeBuffer(record).getInt(0)==MatchingEngineClusteredService.T_ACCOUNT){
+                byte[] shortRecord=java.util.Arrays.copyOf(record,28);
+                assertThrows(IllegalStateException.class,()->target.onSnapshotRecord(new UnsafeBuffer(shortRecord),0));return;
+            }
+            target.onSnapshotRecord(new UnsafeBuffer(record),0);
+        }
+        throw new AssertionError("no account record");
+    }
+
     // ----- round-trip ------------------------------------------------------------------------
 
     @Test

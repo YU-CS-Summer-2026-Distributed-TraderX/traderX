@@ -219,7 +219,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     // book-append order, T_ORDER_TYPES (the business date and the consensus limits), per-security
     // T_OT_SECURITY (trade reference and peg reference), and a 17-column T_QUEUED_ORDER. Formats 9
     // and 10 still restore: every order comes back untyped, hasTraded false, businessDate 0.
-    static final int SNAPSHOT_FORMAT = 12;
+    static final int SNAPSHOT_FORMAT = 13; // account tuples append self-match group
     /**
      * Oldest format this build can still restore. <b>3 -> 8 (YU17 format-8 mint): the first raise
      * ever.</b>
@@ -1150,6 +1150,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
         risk.bootstrapPolicy(policy);
         for (final long[] a : accounts) {
             risk.bootstrapAccount((int) a[0], a[1] != 0, a[2]);
+            if (a[3] != 0) risk.putSelfMatchGroup((int) a[0], a[3]);
         }
         for (final long[] sec : securities) {
             risk.bootstrapSecurity((int) sec[0], sec[1] != 0, sec[2] != 0, sec[3], sec[4]);
@@ -1952,6 +1953,10 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     /** Apply one snapshot record; returns true on the END record. Fails closed on unknown or
      *  out-of-order records and on any identifier at or beyond the restored generator. */
     boolean onSnapshotRecord(final DirectBuffer buffer, final int offset) {
+        return onSnapshotRecord(buffer, offset, buffer.capacity() - offset);
+    }
+
+    boolean onSnapshotRecord(final DirectBuffer buffer, final int offset, final int length) {
         final int type = buffer.getInt(offset);
         if (!snapshotHeaderSeen && type != T_HEADER) {
             throw new IllegalStateException("snapshot corrupt: first record type " + type + ", want header");
@@ -2010,10 +2015,16 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             case T_POLICY -> risk.bootstrapPolicy(new long[] {
                 buffer.getLong(offset + 4), buffer.getLong(offset + 12),
                 buffer.getLong(offset + 20), buffer.getLong(offset + 28) });
-            case T_ACCOUNT -> risk.bootstrapAccount(
-                (int) buffer.getLong(offset + 4),
-                buffer.getLong(offset + 12) != 0,
-                buffer.getLong(offset + 20));
+            case T_ACCOUNT -> {
+                if (length != (restoredFormat >= 13 ? 36 : 28)) {
+                    throw new IllegalStateException("snapshot invalid account tuple width");
+                }
+                final int account = (int) buffer.getLong(offset + 4);
+                final long group = restoredFormat >= 13 ? buffer.getLong(offset + 28) : 0;
+                if (group < 0) throw new IllegalStateException("snapshot invalid self-match group");
+                risk.bootstrapAccount(account, buffer.getLong(offset + 12) != 0, buffer.getLong(offset + 20));
+                if (group != 0) risk.putSelfMatchGroup(account, group);
+            }
             case T_SECURITY -> {
                 final int securityId = (int) buffer.getLong(offset + 4);
                 final long multiplier = buffer.getLong(offset + 44);
@@ -2303,7 +2314,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
     private void loadSnapshot(final Image snapshotImage) {
         final boolean[] done = { false };
         final FragmentHandler handler = (buffer, offset, length, header) ->
-            done[0] = onSnapshotRecord(buffer, offset);
+            done[0] = onSnapshotRecord(buffer, offset, length);
         while (!done[0]) {
             final int fragments = snapshotImage.poll(handler, 16);
             if (fragments == 0) {

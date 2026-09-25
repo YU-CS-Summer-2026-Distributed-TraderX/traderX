@@ -175,6 +175,8 @@ public final class InputEvent {
     public static final byte TYPE_BUSINESS_DAY = 17;
     /** RI-06 cold-path run declaration/activation/freeze; full descriptor hash in generic slots. */
     public static final byte TYPE_RUN_CONTROL = 18;
+    /** Sequenced group assignment: accountId, limitPx=positive group ID. Does not change admission. */
+    public static final byte TYPE_SELF_MATCH_GROUP = 19;
     public static final byte BUSINESS_DAY_START = 0;
     public static final byte BUSINESS_DAY_END = 1;
 

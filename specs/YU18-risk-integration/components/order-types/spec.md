@@ -1151,3 +1151,14 @@ conversion. Fractions that round to integral quantities or valid six-decimal pri
 are still refused on /orders and /replace, with nothing sequenced. Exact integral exponent
 notation and prices with insignificant trailing zeros remain valid. Untyped Jackson node types
 and conversion behavior stay unchanged. FIX validates original numeric tag text.
+
+
+## RI-12 — Cross-account self-match prevention (2026-09-25)
+
+Accounts may carry a positive, stable self-match group ID. Matching compares identical account IDs OR equal nonzero groups. Group zero preserves legacy account-only behavior; zero never groups unrelated legacy accounts. The shared cross path retains cancel-oldest with SELF_TRADE_PREVENTED and releases the canceled order's reservation. FOK preflight excludes same-group liquidity. Triggers, iceberg replenishment, peg repricing and replacement use these same paths.
+
+The authenticated operator POST /risk/control/self-match-group accepts positive integer accountId and groupId and sequences TYPE_SELF_MATCH_GROUP (19), limitPx=groupId. It assigns membership only, never enables an account. Ordinary admission commands preserve membership. Operator reassignment applies at its log position to existing and future orders; it does not retroactively undo fills or trigger matching by itself. No public order field can override membership. Group removal is not supported. Operator configuration must map actual beneficial ownership, not merely a trader managing unrelated accounts.
+
+Snapshot format13 appends group to each account tuple. Formats9–12 restore group zero; format13 requires the wider tuple and rejects negative groups. Full log replay carries group assignments; sandbox reset preserves them with account configuration. All members must be upgraded together before new group events; older binaries cannot safely interpret the new command. Downgrade after new events/snapshots is unsupported.
+
+The local username demo persists selfMatchGroup using the workspace's first allocated account ID. New accounts get this group before engine admission; login migrates existing owned accounts before opening a session and fails closed if assignment fails. This is a demo ownership mapping, not verified production identity or tenant authorization. Existing unrelated seeded accounts are not silently combined.

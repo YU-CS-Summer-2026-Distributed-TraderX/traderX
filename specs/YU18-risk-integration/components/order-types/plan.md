@@ -53,3 +53,6 @@ Constraints:
 - Ancestor states are unchanged. There is no new state branch. Nothing is pushed.
 
 2026-09-24 Codex takeover: original-decimal REST correction implemented and generated-tested (56 focused tests, five allocation gates). Raw HTTP test failed before and passed after. SC-OT35 remains open; no integration or live proof claimed. See component README and shared ri01-codex-precision-20260924 evidence.
+
+
+RI-12 implementation: YU18 overrides BlpRiskState to add a preallocated group array indexed by its existing account table. InputEvent type19 carries operator assignments through the existing SBE input envelope. The shared matching predicate and FOK feasibility predicate consult this authoritative state. Snapshot format13 extends account records; old formats load explicit group zero. The console demo persists a workspace group and configures it before admission. The current local rig upgrade must stop all engine members before switching binaries, preserve PVCs, and upgrade gateway/feed/extract consumers together. No GKE rollout is included.

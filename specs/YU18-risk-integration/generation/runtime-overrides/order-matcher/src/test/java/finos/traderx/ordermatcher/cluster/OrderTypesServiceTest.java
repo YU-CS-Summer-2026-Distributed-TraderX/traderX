@@ -385,6 +385,10 @@ class OrderTypesServiceTest {
                 || type == MatchingEngineClusteredService.T_ORDER_EXT) {
                 continue;   // a format-10 writer never wrote these
             }
+            if (type == MatchingEngineClusteredService.T_ACCOUNT) {
+                f10.add(Arrays.copyOf(r, 28)); // format 10 predates the group column
+                continue;
+            }
             if (type == MatchingEngineClusteredService.T_QUEUED_ORDER) {
                 f10.add(Arrays.copyOf(r, 4 + 8 * MatchingEngineClusteredService.LEGACY_QUEUED_TUPLE_LENGTH));
                 continue;

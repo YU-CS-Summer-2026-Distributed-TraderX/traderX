@@ -2287,7 +2287,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * state is already carried in the snapshot as {@code T_POLICY}/{@code T_ACCOUNT}/{@code
      * T_SECURITY}. {@code /seed} has been sequencing two of these four through consensus since
      * YU12. All that was missing on this tier was an operator-facing way to send them, so this
-     * adds routes and nothing else: no schema change, no new template, no snapshot format bump.
+     * uses the existing input envelope. RI-12 additionally sequences group assignments;
+     * account group state is persisted by snapshot format 13.
      *
      * <p>Because they are ordinary sequenced commands, a control change lands at a definite
      * consensus position and every member applies it in the same order relative to the orders
@@ -2465,6 +2466,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // so every member applies the same number -- never read per-member, which would diverge.
             final long version = System.currentTimeMillis();
             final String instrument = instrumentOf(body).trim();
+            if ("self-match-group".equals(action)
+                && (!body.path("accountId").isIntegralNumber() || !body.path("accountId").canConvertToInt()
+                    || body.path("accountId").asInt() <= 0
+                    || !body.path("groupId").isIntegralNumber() || !body.path("groupId").canConvertToLong()
+                    || body.path("groupId").asLong() <= 0)) {
+                respond(exchange, 400, "{\"error\":\"positive integer accountId and groupId required\"}");
+                return;
+            }
+
 
             // YU17 FX-rate fix: POST /risk/control/fxrate {"currency":"EUR","rate":1.0842} — USD
             // per one unit. Validated HERE, before sequencing (boundary-owns-semantics, FR-CDM16):
@@ -2514,6 +2524,15 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         // null in the JSON should mean -- the proof sends nulls for both.
                         event.qty = body.path("maxPositionQuantity").asInt(0);
                         event.limitPx = body.path("maxConcentrationNotionalTicks").asLong(0L);
+                    }
+                    case "self-match-group" -> {
+                        event.type = InputEvent.TYPE_SELF_MATCH_GROUP;
+                        event.accountId = body.path("accountId").asInt();
+                        event.securityId = 0;
+                        event.limitPx = body.path("groupId").asLong();
+                        event.side = 0;
+                        event.orderRef = 0;
+                        event.setControlVersion(version);
                     }
                     case "fxrate" -> {
                         event.type = InputEvent.TYPE_FX_RATE;
