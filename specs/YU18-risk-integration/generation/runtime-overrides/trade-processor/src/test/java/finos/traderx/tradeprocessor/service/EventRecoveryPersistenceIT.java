@@ -124,6 +124,50 @@ class EventRecoveryPersistenceIT {
     assertEquals("FILLED",orders.findById("fresh-1").orElseThrow().getStatus());
     var all=jdbc.queryForList("SELECT * FROM trades ORDER BY id");var checkpoint=run();assertEquals(checkpoint,run());assertEquals(all,jdbc.queryForList("SELECT * FROM trades ORDER BY id"));
   }
+  @Test void generatedConfigMapOrderRowRoundTripAndConflictControls() throws Exception {
+    String initial=GeneratedDatabaseManifestTest.scripts().get("001-initialSchema.sql");
+    var create=java.util.regex.Pattern.compile("CREATE TABLE orderbook \\(.*?\\);",java.util.regex.Pattern.DOTALL).matcher(initial);
+    assertTrue(create.find());
+    jdbc.execute("DROP TABLE orderbook");jdbc.execute(create.group());
+    try(var connection=jdbc.getDataSource().getConnection()) {
+      org.springframework.jdbc.datasource.init.ScriptUtils.executeSqlScript(connection,
+        new org.springframework.core.io.FileSystemResource("../postgres-database-replacement/mariadb-migrations/ri06.sql"));
+    }
+    service().processTrade(trade(2,4,"200"));orderService().persist(order(5,0));
+    var a=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.valueToTree(orders.findById("fresh-1").orElseThrow());
+    var b=(com.fasterxml.jackson.databind.node.ObjectNode)JSON.valueToTree(finos.traderx.tradeprocessor.OrderFeedHandler.toRow(order(5,0)));
+    a.fieldNames().forEachRemaining(f->{if(!java.util.Objects.equals(a.get(f),b.get(f)))System.out.println("GENERATED_ROW_DIFF "+f+" retained="+a.get(f)+" source="+b.get(f));});
+    var retained=jdbc.queryForList("SELECT * FROM orderbook");
+    assertNotNull(run());assertEquals(retained,jdbc.queryForList("SELECT * FROM orderbook"));
+    var state=retainedState();assertNotNull(run());assertEquals(state,retainedState());
+    // Even a wire-only subsecond alteration cannot hide behind seconds storage: digest binds it.
+    ((com.fasterxml.jackson.databind.node.ObjectNode)witness.path("events").get(3).path("payload")).put("updatedAt",1006);
+    refusesWithoutMutation("RECOVERY_ORDER_HISTORY_CONFLICT_OR_AHEAD");
+    ((com.fasterxml.jackson.databind.node.ObjectNode)witness.path("events").get(3).path("payload")).put("updatedAt",1005);
+    for(String mutation:List.of("createdat=DATE_ADD(createdat,INTERVAL 1 SECOND)","updatedat=DATE_ADD(updatedat,INTERVAL 1 SECOND)","quantity=999","rundescriptorhash='wrong'")) {
+      jdbc.update("UPDATE orderbook SET "+mutation+" WHERE orderid='fresh-1'");
+      refusesWithoutMutation("RECOVERY_RETAINED_ORDER_ROW_CONFLICT");
+      jdbc.update("DELETE FROM orderbook WHERE orderid='fresh-1'");orderService().persist(order(5,0));
+    }
+  }
+  @org.junit.jupiter.params.ParameterizedTest
+  @org.junit.jupiter.params.provider.ValueSource(ints={0,3,6})
+  void retainedOrderComparisonHonorsActualSqlTimestampPrecision(int precision) {
+    jdbc.execute("ALTER TABLE orderbook MODIFY createdat DATETIME("+precision+"), MODIFY updatedat DATETIME("+precision+")");
+    try {
+      service().processTrade(trade(2,4,"200")); orderService().persist(order(5,0));
+      var retained=jdbc.queryForList("SELECT * FROM orderbook");
+      assertNotNull(run());
+      assertEquals(retained,jdbc.queryForList("SELECT * FROM orderbook"));
+      assertEquals(2,trades.count());
+      var state=retainedState(); assertNotNull(run()); assertEquals(state,retainedState());
+      // A stored timestamp difference that SQL CAN represent is a real conflict.
+      jdbc.update("UPDATE orderbook SET updatedat=DATE_ADD(updatedat, INTERVAL "+(precision==0?1000000:1000)+" MICROSECOND)");
+      refusesWithoutMutation("RECOVERY_RETAINED_ORDER_ROW_CONFLICT");
+    } finally {
+      jdbc.execute("ALTER TABLE orderbook MODIFY createdat DATETIME(6), MODIFY updatedat DATETIME(6)");
+    }
+  }
   @Test void checkpointFailureRollsBackEveryProjectionAndNotificationThenRetrySucceeds() {
     jdbc.execute("CREATE TRIGGER o1_fail_checkpoint BEFORE INSERT ON projection_recovery FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected checkpoint failure'");
     try {assertThrows(RuntimeException.class,this::run);}finally{jdbc.execute("DROP TRIGGER o1_fail_checkpoint");}

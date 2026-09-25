@@ -17,3 +17,20 @@ Acceptance: actual consumer disconnect and restart loses NATS projections before
 - FR-ER08: Add read-only GET /v2/projections/active returning the actual selected registered scope as {"projectionScope":"..."}; missing/dangling pointer503; preserve registry list shape. Unknown scoped orders404; known-empty200[].
 
 SC-ER-R1: Real MariaDB pre-fix repro records17/basis999 overwritten to20/basis150 plus checkpoint. Post-fix controls require unchanged SQL state and zero notifications on quantity, missing-position, initial-basis and source-order provenance refusals. SC-ER-R2: real MariaDB pointer switches with two ACTIVE registry rows, missing/dangling pointer refusal and unchanged list shape; MockMvc verifies mapped HTTP contracts.
+
+## SQL timestamp precision contract (2026-09-25)
+
+Order event digests bind the complete archive event, including millisecond wire timestamps.
+Retained order fields must equal the event's SQL representation: createdAt/updatedAt are cast
+using the actual orderbook column datetime precision and the persistence connection's conversion
+rules. The generated ConfigMap stores DATETIME seconds; a legitimate round-trip loses subsecond
+bits. Fractional-precision installations retain those bits as declared. No timestamp is ignored:
+a difference representable in the declared SQL type refuses, as do altered economics, provenance,
+or event digest. Missing/unsupported precision metadata refuses. This requires no schema migration
+and does not rewrite retained rows or recover precision that the schema never stored.
+
+The initial unchanged combined live proof refused a legitimate retained order. A regression using
+the actual generated ConfigMap order-table DDL isolates updatedAt 1005 -> 1000 ms; exact digest
+comparison remains intact. Precision 0/3/6, repeated catch-up/checkpoint stability and genuine stored
+timestamp/economic/provenance corruption are separate controls. Final execution results are recorded
+in the combined acceptance report; this paragraph defines the contract, not a pass claim.

@@ -63,3 +63,5 @@ Finding: on a database initialised from the generated ConfigMap, `verify` refuse
 - The 2.5 s per-poll deadline is deliberate (review R3: a read that cannot complete in time fails closed). A backend that is merely slow shows as unavailable until a read completes in time.
 
 Coordinator review correction R4 (2026-09-24): Admin trade and algo requests share an abort-raced 2.5-second deadline; a hung dependency cannot keep stale trades actionable. Account changes and destruction abort pending requests; late responses remain fenced. Three actual AdminPanel tests with abort-ignoring mock transport cover the timeout, late-response/newer-poll and lifecycle cases. Integrated-source Angular125/125, node15/15 and production build passed. Earlier disposable browser/transition proofs are supplied lane evidence, not rerun for this small correction.
+
+Combined recovery + managed UI acceptance (2026-09-25): see [reproducible local proof](managed-recovery-acceptance.md) for the corrected generated-schema runtime, real managed-to-managed transition, unchanged initial failure and bounded claims.

@@ -26,3 +26,13 @@ Original c057ac31 delivery regressions: 100 generated trade-processor unit tests
 - [x] Final generated negative controls, reader tests and live outage regression; correction evidence/commit.
 
 Final R1 official generated execution:102 trade-processor unit tests,13 recovery SQL controls,11 position-service unit tests,3 real-SQL reader controls pass. Complete live launcher passes both original outage reproduction and managed consumer/NATS recovery. All189 runtime files match official generation;four required gates plus component validator pass. Evidence: coordination/eod-integration/review-evidence/ri06-o1-r1-20260924 (counts.json, before.xml, final-tests, final-launcher, parity.json, SHA256SUMS). Original immutable evidence remains separate. Correction commit/READY_FOR_REVIEW recorded on the board; no integration acceptance implied. Reader verification uses real SQL with MockMvc servlet transport, not a browser or deployed service claim.
+
+## Combined acceptance timestamp correction (2026-09-25)
+
+- [x] Preserve unchanged integrated real-service refusal and reproduce with actual generated ConfigMap DDL.
+- [x] Compare all fields; isolate lost timestamp precision, retaining full event-digest binding.
+- [x] Add exact SQL-precision comparison and corruption/refusal controls without migration or retained-row rewrite.
+- [x] Exercise real consumer outage, operator archive catch-up, duplicate/checkpoint stability and managed UI transition together.
+- [ ] Coordinator review/integration of this owned-branch correction; no retained rollout is authorized.
+
+See [combined acceptance](../../../../docs/risk-integration/managed-recovery-acceptance.md) and its immutable delivery evidence for final counts and limits.

@@ -60,3 +60,20 @@ For individual runs, from generated `order-matcher`, compile with Java 21 and ex
 These commands run from generated `trade-processor`. `TESTCONTAINERS_RYUK_DISABLED=true` avoids an unrelated cleanup listener; fixtures close their own containers. Reserve named containers `traderx-o1-live-sql`, `traderx-o1-live-nats`, `traderx-o1-controls-sql`, and ports 24800–24890 / 25800–25890. Run sequentially, never against an existing rig. SQL is capped at 512 MiB, NATS at 128 MiB, child matcher/gateway heaps at 384 MiB each. The archive regression `RunIdentityConsensusTest` uses its existing separate 22800 range and disposable three-member fixture.
 
 Validation status and immutable evidence references are recorded in component tasks and the delivery post. Source-authored tests execute on generated services; this is not a separate ungenerated service build or hosted CI run.
+
+## SQL timestamp precision contract (2026-09-25)
+
+Order event digests bind the complete archive event, including millisecond wire timestamps.
+Retained order fields must equal the event's SQL representation: createdAt/updatedAt are cast
+using the actual orderbook column datetime precision and the persistence connection's conversion
+rules. The generated ConfigMap stores DATETIME seconds; a legitimate round-trip loses subsecond
+bits. Fractional-precision installations retain those bits as declared. No timestamp is ignored:
+a difference representable in the declared SQL type refuses, as do altered economics, provenance,
+or event digest. Missing/unsupported precision metadata refuses. This requires no schema migration
+and does not rewrite retained rows or recover precision that the schema never stored.
+
+The initial unchanged combined live proof refused a legitimate retained order. A regression using
+the actual generated ConfigMap order-table DDL isolates updatedAt 1005 -> 1000 ms; exact digest
+comparison remains intact. Precision 0/3/6, repeated catch-up/checkpoint stability and genuine stored
+timestamp/economic/provenance corruption are separate controls. Final execution results are recorded
+in the combined acceptance report; this paragraph defines the contract, not a pass claim.
