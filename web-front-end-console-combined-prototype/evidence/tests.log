@@ -1,0 +1,49 @@
+
+> web-front-end-console-combined-prototype@0.0.0 test
+> ng test --watch=false --browsers=ChromeHeadless
+
+Node.js version v25.8.1 detected.
+Odd numbered Node.js versions will not enter LTS status and should not be used for production. For more information, please see https://nodejs.org/en/about/previous-releases/.
+❯ Building...
+✔ Building...
+Initial chunk files        | Names                   |  Raw size
+chunk-PFTOWG7G.js          | -                       |   2.37 MB | 
+polyfills.js               | polyfills               |   1.04 MB | 
+spec-app-workspace.spec.js | spec-app-workspace.spec | 567.90 kB | 
+jasmine-cleanup-1.js       | jasmine-cleanup-1       |  67.27 kB | 
+test_main.js               | test_main               |  21.52 kB | 
+styles.css                 | styles                  |  18.78 kB | 
+chunk-EVSPGG2W.js          | -                       |   1.64 kB | 
+jasmine-cleanup-0.js       | jasmine-cleanup-0       | 582 bytes | 
+
+                           | Initial total           |   4.09 MB
+
+Application bundle generation complete. [0.819 seconds] - 2026-09-25T17:03:26.052Z
+
+25 09 2026 13:03:26.098:INFO [karma-server]: Karma v6.4.4 server started at http://localhost:9876/
+25 09 2026 13:03:26.099:INFO [launcher]: Launching browsers ChromeHeadless with concurrency unlimited
+25 09 2026 13:03:26.102:INFO [launcher]: Starting browser ChromeHeadless
+25 09 2026 13:03:27.690:INFO [Chrome Headless 154.0.0.0 (Mac OS 10.15.7)]: Connected on socket EpXp2C98tnd8uQuvAAAA with id 439753
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 0 of 20 SUCCESS (0 secs / 0 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 1 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 2 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 3 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 4 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 5 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 6 of 20 SUCCESS (0 secs / 0.001 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 7 of 20 SUCCESS (0 secs / 0.002 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 8 of 20 SUCCESS (0 secs / 0.002 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 9 of 20 SUCCESS (0 secs / 0.009 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 10 of 20 SUCCESS (0 secs / 0.011 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 11 of 20 SUCCESS (0 secs / 0.012 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 12 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 13 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 14 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 15 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 16 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 17 of 20 SUCCESS (0 secs / 0.013 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 18 of 20 SUCCESS (0 secs / 0.014 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 19 of 20 SUCCESS (0 secs / 0.015 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 20 of 20 SUCCESS (0 secs / 0.015 secs)
+Chrome Headless 154.0.0.0 (Mac OS 10.15.7): Executed 20 of 20 SUCCESS (0.019 secs / 0.015 secs)
+TOTAL: 20 SUCCESS

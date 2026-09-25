@@ -1,0 +1,19 @@
+
+> web-front-end-console-combined-prototype@0.0.0 build
+> ng build
+
+Node.js version v25.8.1 detected.
+Odd numbered Node.js versions will not enter LTS status and should not be used for production. For more information, please see https://nodejs.org/en/about/previous-releases/.
+❯ Building...
+✔ Building...
+Initial chunk files   | Names         |  Raw size | Estimated transfer size
+main-UBHHHZAJ.js      | main          | 381.57 kB |                99.64 kB
+polyfills-TOCSLJ22.js | polyfills     |  34.59 kB |                11.33 kB
+styles-56UENV5T.css   | styles        |  14.55 kB |                 3.43 kB
+
+                      | Initial total | 430.70 kB |               114.40 kB
+
+Application bundle generation complete. [1.533 seconds] - 2026-09-25T17:03:24.334Z
+
+Output location: /Users/yaakov/dev/lmax/traderX-ui-combined/web-front-end-console-combined-prototype/dist/web-front-end-console-combined-prototype
+
