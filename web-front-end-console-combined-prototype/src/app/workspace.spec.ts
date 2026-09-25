@@ -226,7 +226,11 @@ describe('gateway order capabilities',()=>{
    t.setType('MARKET');t.qty.set(2);t.desk.marks.set({IBM:{price:180,dir:0,receivedAt:t.desk.now()}});
    const send=spyOn(t.desk,'submit').and.returnValue({ok:true,text:'Order accepted'});
    t.submit();tick();expect(t.qty()).toBeUndefined();expect(t.result()?.text).toBe('Order accepted');
-   t.submit();tick();expect(send).toHaveBeenCalledTimes(1);discardPeriodicTasks();
+   expect(t.problem()).toBe(t.quantityPrompt);
+   t.submit();tick();expect(send).toHaveBeenCalledTimes(1);
+   t.qty.set(1.5);expect(t.problem()).toBe('quantity must be a whole number');
+   t.qty.set(3);expect(t.problem()).toBe('');expect(t.result()?.text).toBe('Order accepted');
+   discardPeriodicTasks();
   }));
   it('guards an in-flight send, preserves refused drafts, and clears accepted prices',fakeAsync(()=>{
    TestBed.inject(Session).signIn('trader.a');const t=TestBed.runInInjectionContext(()=>new OrdersPage());TestBed.tick();tick(300);

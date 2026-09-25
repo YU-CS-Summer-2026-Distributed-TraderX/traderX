@@ -268,8 +268,8 @@ export class MarketsPage {
           }
           @if (estimate(); as e) { <p class="faint">Estimated value {{ e }} at the current price.</p> }
         }
-        <p id="tk-check" class="check" [class.bad]="!!problem()" aria-live="polite" data-testid="tk-check">
-          {{ problem() ? 'Cannot send yet: ' + problem() + '.' : 'Ready to send.' }}</p>
+        <p id="tk-check" class="check" [class.bad]="!!problem() && problem() !== quantityPrompt" aria-live="polite" data-testid="tk-check">
+          {{ problem() === quantityPrompt ? quantityPrompt : problem() ? 'Cannot send yet: ' + problem() + '.' : 'Ready to send.' }}</p>
         <button class="btn-primary" type="submit" [disabled]="!!problem()" data-testid="tk-submit">Submit order</button>
         @if (desk.connected && desk.freshness(key()).kind !== 'live') { <p class="banner warn">The displayed price is stale or missing. Your explicit limit is sent to the venue for validation.</p> }
         <p class="faint">{{ desk.connected ? 'Orders are sent to the local rig. An acceptance is not a fill; check the order and execution records.' : 'Prototype: orders remain in memory.' }}</p>
@@ -370,6 +370,7 @@ export class OrdersPage {
     pegReference: this.type() === 'PEGGED' ? this.peg() : undefined, pegOffset: this.type() === 'PEGGED' ? Number(this.pegOffset()) : undefined,
     trailAmount: num(this.trail()), trailPercentBps: num(this.trailBps()),
   }));
+  readonly quantityPrompt = 'Enter a quantity for your next order.';
   readonly problem = computed(() => {
     if (!this.desk.instrumentList().some(i=>i.key===this.key() && i.cls===this.product())) return 'Choose an instrument in this product. Other tickets are available in Demo console.';
     if (this.busy() || this.desk.actionBusy()) return 'sending…';
@@ -377,6 +378,7 @@ export class OrdersPage {
     if (this.desk.readState() !== 'ready') return 'account data is not available';
     if (this.desk.connected && !this.desk.typedOrdersEnabled() && (this.type()!=='LIMIT' || this.tif()!=='GTC')) return 'Typed-order support is not verified on this rig. Use Limit / GTC.';
     if ((!this.desk.connected || this.type()!=='LIMIT') && this.desk.freshness(this.key()).kind !== 'live') return 'a recent price update is required';
+    if (num(this.qty()) === undefined) return this.quantityPrompt;
     if (this.exec() !== 'Direct' && this.current().cls === 'Equity') return Number(this.qty()) > 0 ? '' : 'quantity must be positive';
     return plain(validateTicket(this.ticket()) || trailHint(this.ticket(), this.desk.marks()[this.key()]?.price));
   });
