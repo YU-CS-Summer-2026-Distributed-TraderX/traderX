@@ -31,3 +31,5 @@ Evidence: eight additional run-boundary tests in rig.spec.ts (29 Angular tests t
 Username-only selection remains a local demo, not production trader authentication. Membership controls new account creation and admission; the original demo APIs are not tenant-isolated. Non-limit order acceptance requires upgrading the currently running YU17 engine. Existing-account admission repair and any destructive local reset await explicit approval.
 
 - FR-CUI-15: The desk reads gateway `GET /capabilities` schema1 and enables typed orders only when the gateway advertises all seven required types. An unavailable, malformed or older capability response leaves typed orders disabled. This metadata describes the current gateway binary; deployment verification must separately prove all members use the same compatible build.
+
+FR-CUI-16: After confirmed order or algo acceptance, clear quantity and price/trigger/display/trailing inputs while retaining the acceptance receipt and instrument context. Block repeat submission while pending and after clearing. Refused or uncertain outcomes retain the draft and are never automatically retried.

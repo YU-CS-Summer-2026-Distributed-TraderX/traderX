@@ -341,7 +341,7 @@ export class OrdersPage {
   readonly product = signal<(typeof this.products)[number]>('Equity');
   readonly key = signal('IBM');
   readonly side = signal<'Buy' | 'Sell'>('Buy');
-  readonly qty = signal(100);
+  readonly qty = signal<number | undefined>(100);
   readonly exec = signal<'Direct' | 'TWAP' | 'VWAP'>('Direct');
   readonly dur = signal(60); readonly bucket = signal(10);
   readonly type = signal<OrderType>('LIMIT');
@@ -426,6 +426,13 @@ export class OrdersPage {
   live(s: string): boolean { return ['NEW', 'PARTIALLY_FILLED', 'PENDING_TRIGGER', 'SUSPENDED'].includes(s); }
   setFilter(f: 'working' | 'all'): void { this.session.updatePrefs({ orderFilter: f }); }
 
+  private finishSubmission(r: {ok:boolean; text:string}): void {
+    if (r.ok) {
+      this.clearTicket();
+      this.qty.set(undefined);
+    }
+    this.result.set(r);
+  }
   async submit(): Promise<void> {
     if (this.problem()) return;
     if (this.desk.connected) {
@@ -434,14 +441,14 @@ export class OrdersPage {
         const r=this.exec()!=='Direct' && this.current().cls==='Equity'
           ? await this.desk.rigAction('/algo/orders',{accountId:this.session.account(),security:this.key(),side:this.side(),quantity:Number(this.qty()),algoType:this.exec(),durationSeconds:Number(this.dur()),bucketSeconds:Number(this.bucket())},'parentOrderId')
           : await this.desk.submitRig(this.key(),this.ticket());
-        if(generation===this.session.generation() && view===this.desk.runView()) this.result.set(r);
+        if(generation===this.session.generation() && view===this.desk.runView()) this.finishSubmission(r);
       } finally {this.busy.set(false);} return;
     }
     if (this.exec() !== 'Direct' && this.current().cls === 'Equity') {
-      this.result.set(this.desk.submitAlgo(this.key(), this.side(), Number(this.qty()), this.exec() as 'TWAP' | 'VWAP', Number(this.dur()), Number(this.bucket())));
+      this.finishSubmission(this.desk.submitAlgo(this.key(), this.side(), Number(this.qty()), this.exec() as 'TWAP' | 'VWAP', Number(this.dur()), Number(this.bucket())));
       return;
     }
-    this.result.set(this.desk.submit(this.key(), this.ticket()));
+    this.finishSubmission(this.desk.submit(this.key(), this.ticket()));
   }
   startEdit(ref: number, q: number, px: number | undefined): void { this.editing.set(ref); this.editQty.set(q); this.editPx.set(px); this.editErr.set(''); }
   async saveEdit(ref: number): Promise<void> {

@@ -218,3 +218,24 @@ describe('gateway order capabilities',()=>{
   load.and.resolveTo({status:200,body:{schemaVersion:1,typedOrders:true,orderTypes:['LIMIT']}});await d.refreshCapabilities();expect(d.typedOrdersEnabled()).toBeFalse();
  });
 });
+
+ describe('accepted ticket reset',()=>{
+  beforeEach(()=>{localStorage.clear();sessionStorage.clear();TestBed.configureTestingModule({});});
+  it('clears accepted market quantity and prevents a second submit',fakeAsync(()=>{
+   TestBed.inject(Session).signIn('trader.a');const t=TestBed.runInInjectionContext(()=>new OrdersPage());TestBed.tick();tick(300);
+   t.setType('MARKET');t.qty.set(2);t.desk.marks.set({IBM:{price:180,dir:0,receivedAt:t.desk.now()}});
+   const send=spyOn(t.desk,'submit').and.returnValue({ok:true,text:'Order accepted'});
+   t.submit();tick();expect(t.qty()).toBeUndefined();expect(t.result()?.text).toBe('Order accepted');
+   t.submit();tick();expect(send).toHaveBeenCalledTimes(1);discardPeriodicTasks();
+  }));
+  it('guards an in-flight send, preserves refused drafts, and clears accepted prices',fakeAsync(()=>{
+   TestBed.inject(Session).signIn('trader.a');const t=TestBed.runInInjectionContext(()=>new OrdersPage());TestBed.tick();tick(300);
+   const instruments=t.desk.instrumentList();spyOn(t.desk,'instrumentList').and.returnValue(instruments);
+   Object.defineProperty(t.desk,'connected',{value:true});t.desk.readState.set('ready');t.desk.typedOrdersEnabled.set(true);t.limit.set(180);t.qty.set(2);
+   let resolve!:(r:{ok:boolean;text:string})=>void;
+   const send=spyOn(t.desk,'submitRig').and.callFake(()=>new Promise(r=>resolve=r));
+   t.submit();t.submit();expect(send).toHaveBeenCalledTimes(1);
+   resolve({ok:false,text:'Outcome unknown'});tick();expect(t.qty()).toBe(2);expect(t.limit()).toBe(180);
+   t.submit();resolve({ok:true,text:'Order accepted'});tick();expect(t.qty()).toBeUndefined();expect(t.limit()).toBeUndefined();expect(t.result()?.ok).toBeTrue();discardPeriodicTasks();
+  }));
+ });
