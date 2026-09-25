@@ -27,7 +27,7 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
       const u=users[key];
       if(u.accounts.length){
         u.selfMatchGroup??=u.accounts[0];save();
-        try {for(const accountId of u.accounts)if(!await enableAccount(accountId,u.selfMatchGroup))
+        try {for(const accountId of u.accounts)if(!await enableAccount(accountId,u.selfMatchGroup,false))
           return {status:503,body:{error:'Account protection is unavailable. Workspace was not opened.'}};
         }catch{return {status:503,body:{error:'Account protection is unavailable. Workspace was not opened.'}};}
       }

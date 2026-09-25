@@ -33,4 +33,4 @@ SC-OT35/NFR-OT06 deferred/unverified by user until GKE credits. Coordinator inco
 - [x] Sequence group configuration and persist it in versioned snapshots; retain it on sandbox reset.
 - [x] Bind local workspace accounts to a stable persisted group before admission; fail login closed on setup failure.
 - [x] Source/generated tests for all seven order types, replacement, FOK and snapshot-plus-tail recovery.
-- [ ] Complete local cluster upgrade and behavior/restart proof; record evidence before closing RI-12.
+- [x] Local cluster upgraded with PVCs retained; same-group prevention and other-group fill verified, including automatic Desk grouping and snapshot/leader-restart recovery. Evidence: coordination/eod-integration/review-evidence/ri12-self-match-groups/.

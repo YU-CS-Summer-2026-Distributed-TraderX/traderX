@@ -60,3 +60,12 @@ Use **+ Add account** beside the account selector. The server creates a SQL acco
 **Price at market** fills the limit field from a fresh mark. It keeps the chosen order type; it does not guarantee execution at that price. Click Markets column headings to sort; click again to reverse.
 
 Run `node --test test-desk-session.mjs test-server.mjs` for server/profile checks. The current local YU18 rig advertises typed orders and has the approved existing accounts enabled. Account definitions and engine admission remain separate; a future reset must restore both.
+
+
+## Cross-account self-match protection
+
+All accounts created in one local workspace share a stable self-match group. The engine cancels the older resting order rather than matching two accounts in that group; the order history reports SELF_TRADE_PREVENTED. Different groups can trade. FOK orders exclude same-group liquidity. Protection applies to direct API orders as well as the Desk.
+
+Login configures existing workspace accounts and waits for a committed group acknowledgement before opening the session. It does not re-enable an operator-disabled account. New account creation sets its group before admission. The group lives in cluster snapshots/log replay and in the local workspace membership file. Existing unrelated seed accounts remain separate unless an operator explicitly groups them.
+
+This local mapping treats a workspace as an owner for demonstrations. Public usernames are not verified beneficial ownership or production authentication. An operator can group accounts across workspaces through the authenticated /risk/control/self-match-group endpoint. Group assignments are positive integers and apply in log order to existing and future orders; ordinary account admission does not clear them.

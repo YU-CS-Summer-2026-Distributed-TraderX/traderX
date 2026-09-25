@@ -73,6 +73,14 @@ class ClusterSnapshotCodecTest {
         assertTrue(target.risk().reservedNotional(ACCOUNT)<source.risk().reservedNotional(ACCOUNT));
     }
 
+    @Test void sandboxResetRetainsGroupConfiguration() {
+        MatchingEngineClusteredService service=newLiveService();
+        InputEvent g=new InputEvent();g.type=InputEvent.TYPE_SELF_MATCH_GROUP;g.accountId=ACCOUNT;g.limitPx=42;apply(service,g);
+        InputEvent reset=new InputEvent();reset.type=InputEvent.TYPE_SANDBOX_RESET;apply(service,reset);
+        assertEquals(42,service.risk().selfMatchGroup(ACCOUNT));
+        assertEquals(42,restore(service).risk().selfMatchGroup(ACCOUNT));
+    }
+
     @Test void truncatedGroupAccountRecordIsRejected() {
         MatchingEngineClusteredService source=newLiveService(),target=newRestoreTarget();
         List<byte[]> records=new ArrayList<>();source.writeSnapshot((b,o,n)->{byte[] x=new byte[n];b.getBytes(o,x);records.add(x);});

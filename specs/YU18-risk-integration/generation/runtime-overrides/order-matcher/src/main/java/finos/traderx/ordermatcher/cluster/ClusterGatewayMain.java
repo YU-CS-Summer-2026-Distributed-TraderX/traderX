@@ -236,6 +236,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
     private long[] lastSymbolAck;  // {appliedSeq, symbolId, requestId}
     private long[] lastSwapAck;    // YU17 {contractId, booked, riskReason, clientOrderKey}
     private long[] lastSessionAck; // YU17 {appliedSeq, phase, requestId}
+    private long[] lastSelfMatchGroupAck;
     private long[] lastBusinessDayAck; // YU18 {appliedSeq, outcome, requestId}
     private long[] lastResetAck;   // ADR-073 {appliedSeq, clearedOrders, requestId, contracts, queued}
     private long nextSymbolRequestId = 1;
@@ -730,6 +731,8 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             // the ratcheting-offset bug that wedged this gateway once already.
             lastSessionAck = new long[] {
                 buffer.getLong(offset), buffer.getInt(offset + 8), buffer.getLong(offset + 13) };
+        } else if (kind == MatchingEngineClusteredService.KIND_SELF_MATCH_GROUP) {
+            lastSelfMatchGroupAck = new long[] {buffer.getLong(offset), buffer.getInt(offset+8), buffer.getLong(offset+13)};
         } else if (kind == MatchingEngineClusteredService.KIND_BUSINESS_DAY) {
             // YU18 (FR-OT37): own kind, own id at 13, exactly like the phase ack above.
             lastBusinessDayAck = new long[] {
@@ -2476,6 +2479,26 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
             }
 
 
+            if ("self-match-group".equals(action)) {
+                final long requestId = clientOrderKey("group-" + System.nanoTime());
+                final long[] ack = onOwner(() -> {
+                    event.type = InputEvent.TYPE_SELF_MATCH_GROUP;
+                    event.accountId = body.path("accountId").asInt();
+                    event.securityId = 0;event.orderRef = 0;event.qty = 0;event.side = 0;
+                    event.limitPx = body.path("groupId").asLong();
+                    event.setClientOrderKey(requestId);event.clearOrderInstruction();
+                    codec.encodeInput(orderBuffer, 0, event, 0, 0, 0);
+                    lastSelfMatchGroupAck = null;
+                    if (!offerAndAwait(orderBuffer, AeronReplicationCodec.INPUT_BYTES,
+                        () -> lastSelfMatchGroupAck != null && lastSelfMatchGroupAck[2] == requestId)) return null;
+                    return lastSelfMatchGroupAck;
+                });
+                if (ack == null) respond(exchange, 504, "{\"error\":\"group outcome unknown; no committed acknowledgement\"}");
+                else if (ack[1] != 0) respond(exchange, 422, "{\"error\":\"group assignment refused\"}");
+                else respond(exchange, 200, "{\"outcome\":\"APPLIED\",\"sequence\":" + ack[0] + "}");
+                return;
+            }
+
             // YU17 FX-rate fix: POST /risk/control/fxrate {"currency":"EUR","rate":1.0842} — USD
             // per one unit. Validated HERE, before sequencing (boundary-owns-semantics, FR-CDM16):
             // an unknown currency or non-positive rate must never become a committed log entry the
@@ -2524,15 +2547,6 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                         // null in the JSON should mean -- the proof sends nulls for both.
                         event.qty = body.path("maxPositionQuantity").asInt(0);
                         event.limitPx = body.path("maxConcentrationNotionalTicks").asLong(0L);
-                    }
-                    case "self-match-group" -> {
-                        event.type = InputEvent.TYPE_SELF_MATCH_GROUP;
-                        event.accountId = body.path("accountId").asInt();
-                        event.securityId = 0;
-                        event.limitPx = body.path("groupId").asLong();
-                        event.side = 0;
-                        event.orderRef = 0;
-                        event.setControlVersion(version);
                     }
                     case "fxrate" -> {
                         event.type = InputEvent.TYPE_FX_RATE;

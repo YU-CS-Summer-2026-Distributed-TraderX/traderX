@@ -1093,11 +1093,12 @@ const deskSessions = createDeskSessions({
     const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json'},body:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
     return {status:r.status,body:await r.json()};
   },
-  enableAccount: async (accountId,groupId) => {
+  enableAccount: async (accountId,groupId,admit=true) => {
     if(!process.env.DESK_RISK_CONTROL_TOKEN)return false;
     if(!Number.isSafeInteger(groupId)||groupId<=0)return false;
     const grouped=await fetch(`http://${EDGE}/order-matcher/risk/control/self-match-group`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-owner-group'},body:JSON.stringify({accountId,groupId}),signal:AbortSignal.timeout(10000)});
-    if(!grouped.ok)return false;
+    if(!grouped.ok || (await grouped.json()).outcome!=='APPLIED')return false;
+    if(!admit)return true; // Login configures protection without re-enabling an operator-disabled account.
     const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
     return r.ok;
   }

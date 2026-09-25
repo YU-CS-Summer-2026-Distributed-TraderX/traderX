@@ -473,6 +473,7 @@ public final class MatchingEngineClusteredService implements ClusteredService {
      *  routes by kind alone, so a shared value silently steals another command's ack. */
     public static final byte KIND_BUSINESS_DAY = 105;
     public static final byte KIND_RUN_CONTROL = 106;
+    public static final byte KIND_SELF_MATCH_GROUP = 107;
 
     // long appliedSeq, int orderRef, byte kind, long tradeSeq at 13..20, then three class bytes:
     //  21 restingClass — 1 = counterparty resting-order update, 0 = direct response (FR-LOB07);
@@ -847,6 +848,19 @@ public final class MatchingEngineClusteredService implements ClusteredService {
             // env-gated apply would let one member refuse what its peers applied, which is
             // divergence wearing a safety check's clothes. The gateway decides whether to issue.
             onSandboxReset(session, timestamp);
+            return;
+        }
+        if (event.type == InputEvent.TYPE_SELF_MATCH_GROUP) {
+            event.seq = ++appliedSeq;
+            final boolean valid = event.accountId > 0 && event.limitPx > 0;
+            if (valid) engine.onEvent(event, appliedSeq, true);
+            ackBuffer.putLong(0, appliedSeq);
+            ackBuffer.putInt(8, valid ? 0 : 1);
+            ackBuffer.putByte(12, KIND_SELF_MATCH_GROUP);
+            ackBuffer.putLong(13, event.clientOrderKey());
+            ackBuffer.putByte(21, (byte) 0);ackBuffer.putByte(22, (byte) 0);ackBuffer.putByte(23, (byte) 0);
+            ackBuffer.putLong(24, 0L);
+            offerEgress(session);
             return;
         }
         if (event.type == InputEvent.TYPE_BUSINESS_DAY) {

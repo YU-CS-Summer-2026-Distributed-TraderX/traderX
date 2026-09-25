@@ -1100,4 +1100,14 @@ class OrderTypesEngineTest {
         assertEquals(RestingOrder.STATUS_CANCELED,status(own));
         assertEquals(RiskReason.SELF_TRADE_PREVENTED.ordinal(),last(own).reason());
     }
+
+    @Test void ri12_partialFillThenGroupCancellationReleasesOnlyRemainingReservation() {
+        newEngine();trade(p(100));group(A,55);group(B,55);
+        int own=order(A,SELL,10,p(101));order(C,BUY,2,p(101));
+        assertEquals(RestingOrder.STATUS_PARTIALLY_FILLED,status(own));
+        long executed=risk.accountTuples().stream().filter(a->a[0]==A).findFirst().orElseThrow()[2];
+        order(B,BUY,8,p(101));assertEquals(RestingOrder.STATUS_CANCELED,status(own));
+        assertEquals(0,risk.reservedNotional(A));
+        assertEquals(executed,risk.accountTuples().stream().filter(a->a[0]==A).findFirst().orElseThrow()[2]);
+    }
 }

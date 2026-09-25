@@ -46,11 +46,11 @@ test('logout and expiry refuse writes',async()=>{
 
 test('accounts in one workspace share a persistent group; another workspace gets another group',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'desk-groups-'));let next=65000;const calls=[];
- const opts={file:join(dir,'users.json'),checkAdmin:()=>false,upstream:async()=>({status:200,body:{id:next++}}),enableAccount:async(a,g)=>{calls.push([a,g]);return true;}};
+ const opts={file:join(dir,'users.json'),checkAdmin:()=>false,upstream:async()=>({status:200,body:{id:next++}}),enableAccount:async(a,g,admit=true)=>{calls.push([a,g,admit]);return true;}};
  try{const s=createDeskSessions(opts),a=await login(s,'Alice'),b=await login(s,'Bob');
  for(const [cookie,key] of [[a.cookie,id],[a.cookie,id+'a'],[b.cookie,id]])await s.handle(req('POST',cookie),'/desk-api/accounts',{displayName:'Test',requestId:key});
- assert.deepEqual(calls,[[65000,65000],[65001,65000],[65002,65002]]);
- calls.length=0;await login(createDeskSessions(opts),'Alice');assert.deepEqual(calls,[[65000,65000],[65001,65000]]);
+ assert.deepEqual(calls,[[65000,65000,true],[65001,65000,true],[65002,65002,true]]);
+ calls.length=0;await login(createDeskSessions(opts),'Alice');assert.deepEqual(calls,[[65000,65000,false],[65001,65000,false]]);
  opts.enableAccount=async()=>false;assert.equal((await login(createDeskSessions(opts),'Alice')).status,503);
  }finally{rmSync(dir,{recursive:true});}
 });
