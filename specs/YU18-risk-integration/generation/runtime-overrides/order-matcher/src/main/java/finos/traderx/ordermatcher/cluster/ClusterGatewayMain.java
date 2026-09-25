@@ -342,6 +342,13 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
         // owner-queue future (up to ~12s each); with only 8 threads the readiness probe starved
         // behind them and k8s pulled the gateway out of the Service mid-bench.
         server.setExecutor(Executors.newFixedThreadPool(64));
+        server.createContext("/capabilities", exchange -> {
+            if (!"GET".equals(exchange.getRequestMethod())) {
+                respond(exchange, 405, "{}");
+                return;
+            }
+            respond(exchange, 200, "{\"schemaVersion\":1,\"typedOrders\":true,\"orderTypes\":[\"MARKET\",\"LIMIT\",\"STOP\",\"STOP_LIMIT\",\"ICEBERG\",\"PEGGED\",\"TRAILING_STOP\"]}");
+        });
         server.createContext("/orders/batch", this::handleBatch);
         server.createContext("/orders", this::handleOrder);
         // Deliberately NOT /orders/cancel. HttpServer routes by longest prefix, so during a rolling

@@ -29,3 +29,5 @@ Evidence: eight additional run-boundary tests in rig.spec.ts (29 Angular tests t
 - FR-CUI-14: Every Markets table column sorts on click and reverses on a second click. Numeric values sort numerically, missing values remain last, and aria-sort reports direction.
 
 Username-only selection remains a local demo, not production trader authentication. Membership controls new account creation and admission; the original demo APIs are not tenant-isolated. Non-limit order acceptance requires upgrading the currently running YU17 engine. Existing-account admission repair and any destructive local reset await explicit approval.
+
+- FR-CUI-15: The desk reads gateway `GET /capabilities` schema1 and enables typed orders only when the gateway advertises all seven required types. An unavailable, malformed or older capability response leaves typed orders disabled. This metadata describes the current gateway binary; deployment verification must separately prove all members use the same compatible build.

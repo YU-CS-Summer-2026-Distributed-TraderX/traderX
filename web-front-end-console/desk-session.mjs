@@ -31,7 +31,7 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
     if(!s)return {status:401,body:{error:'Sign in to your workspace.'}};
     if(path==='/desk-api/accounts' && req.method==='POST') {
       const name=String(body.displayName??'').trim(),key=body.requestId;
-      if(!name||name.length>80||typeof key!=='string'||!/^[a-zA-Z0-9-]{16,64}$/.test(key))return {status:400,body:{error:'An account name (up to 80 characters) and request ID are required.'}};
+      if(!name||name.length>50||typeof key!=='string'||!/^[a-zA-Z0-9-]{16,64}$/.test(key))return {status:400,body:{error:'An account name (up to 50 characters) and request ID are required.'}};
       // Serialize creation and persist intent before sending. Retrying a timed-out create must not
       // silently allocate a second SQL account. A partial admission can be retried by its own id.
       const run=queue.then(async()=>{

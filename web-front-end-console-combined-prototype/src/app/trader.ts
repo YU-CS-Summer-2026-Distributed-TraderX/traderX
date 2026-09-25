@@ -375,7 +375,7 @@ export class OrdersPage {
     if (this.busy() || this.desk.actionBusy()) return 'sending…';
     if (this.desk.runView().kind === 'history') return 'previous runs are read-only';
     if (this.desk.readState() !== 'ready') return 'account data is not available';
-    if (this.desk.connected && !this.desk.typedOrdersEnabled && (this.type()!=='LIMIT' || this.tif()!=='GTC')) return 'Typed-order support is not verified on this rig. Use Limit / GTC.';
+    if (this.desk.connected && !this.desk.typedOrdersEnabled() && (this.type()!=='LIMIT' || this.tif()!=='GTC')) return 'Typed-order support is not verified on this rig. Use Limit / GTC.';
     if ((!this.desk.connected || this.type()!=='LIMIT') && this.desk.freshness(this.key()).kind !== 'live') return 'a recent price update is required';
     if (this.exec() !== 'Direct' && this.current().cls === 'Equity') return Number(this.qty()) > 0 ? '' : 'quantity must be positive';
     return plain(validateTicket(this.ticket()) || trailHint(this.ticket(), this.desk.marks()[this.key()]?.price));

@@ -207,3 +207,14 @@ describe('market controls',()=>{
   m.desk.marks.set({IBM:{price:9,dir:0,receivedAt:0},AAPL:{price:100,dir:0,receivedAt:0}});m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['IBM','AAPL']);m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['AAPL','IBM']);discardPeriodicTasks();
  }));
 });
+
+describe('gateway order capabilities',()=>{
+ beforeEach(()=>{localStorage.clear();sessionStorage.clear();TestBed.configureTestingModule({});});
+ it('enables typed submission only when the gateway advertises every required type',async()=>{
+  const d=TestBed.inject(Desk);const load=spyOn(d.api,'load');
+  load.and.resolveTo({status:200,body:{schemaVersion:1,typedOrders:true,orderTypes:['MARKET','LIMIT','STOP','STOP_LIMIT','ICEBERG','PEGGED','TRAILING_STOP']}});
+  await d.refreshCapabilities();expect(d.typedOrdersEnabled()).toBeTrue();
+  load.and.resolveTo({status:404,body:null});await d.refreshCapabilities();expect(d.typedOrdersEnabled()).toBeFalse();
+  load.and.resolveTo({status:200,body:{schemaVersion:1,typedOrders:true,orderTypes:['LIMIT']}});await d.refreshCapabilities();expect(d.typedOrdersEnabled()).toBeFalse();
+ });
+});

@@ -33,23 +33,23 @@ The inline ticket submits to the existing gateway and algo endpoints. Responses 
 
 Risk uses the existing integration/job panels under their own portfolio/cut identity, separate from the selected account's unavailable portfolio valuation. Admin pages reuse existing live console panels. Secondary tools and swap/swaption tickets link to their existing Demo console flows while their dedicated migration remains open.
 
-## Current rig limitations
+## Current local rig
 
-The retained local rig tested on 2026-09-25 predates the run registry. Typed-order capability is not verified: the new ticket enables only Limit/GTC using the legacy wire contract. Existing-order changes are disabled without a confirmed run identity, to avoid acting on retained rows from another run. Cancelled fill quantity is shown as unknown when the legacy projection cannot establish it.
+On 2026-09-25 the user authorized replacing the old YU17 demo state and enabling eight existing demo accounts. The local namespace and persistence were recreated, saved account definitions restored, and current generated YU18 services built with image tag `desk-yu18-20260925`. All three cluster members use the same build. The inherited startup scripts were run with explicit current-image overrides; do not reapply unmodified historical YU17 manifests over this rig.
 
-A one-share IBM test on account 22214 returned UNKNOWN_ACCOUNT and persisted as REJECTED; it was not a fill. The account directory remains present while engine admission must be initialized separately. The isolated startup proof succeeded with four probe trade legs, flat probe accounts and unchanged non-probe rows. No account control or existing book was reset here.
+The gateway advertises all seven order types through `/capabilities`. The Desk enables typed submissions only after validating that response. All 31 live order-type cases passed, including SQL effects and book observations. The eight approved accounts accepted Market/IOC checks with no fills; synthetic test trades remain on dedicated verification accounts. Business date 2026-09-25 is open. Prices run in offline synthetic mode.
 
-The profile picker is a local workspace selector, not authentication or account authorization. Existing operator sign-in and server restrictions remain. Production trader authentication, full feature migration, current-engine deployment and cloud rollout remain separate work.
+Run identity remains legacy/unmanaged. Existing-order mutations in the Desk remain disabled without confirmed managed scope. Production authentication, tenant isolation, complete feature migration and cloud rollout remain separate work.
 
 ## Verification
 
-- Angular build passes (initial bundle exceeds its existing 500 kB warning budget; no threshold changed).
-- 29 Angular tests cover existing workspace behavior and connected run/account boundaries.
-- `node --test test-server.mjs` passes the real WebSocket-reset survival and local cloud-read refusal check.
-- Existing isolated startup probe: PASS, four persisted legs, no foreign legs, flat, non-probe rows unchanged.
-- Browser: streamed prices, retained holdings, account selector, gateway refusal/order history, Desk lockup and last More item inspected; original Demo console loaded.
+- 32 Angular tests and 6 Node session/server tests pass.
+- Angular production build passes with the existing 500 kB bundle-budget warning.
+- Full local rig readiness: 16 checks pass, including persisted startup probe and tracing.
+- Seven order types: 31 live cases pass on isolated verification accounts.
+- Browser: Market/IOC accepted as reference 36; SQL records it as CANCELED without a fill, as expected for an empty IBM book.
 
-The 20-test fixture-only baseline and screenshots in evidence/ describe the earlier design candidate. Current runtime evidence is in `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/combined-desk-rig/` and remains outside tracked UI sources.
+Current runtime evidence is in `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/desk-yu18-rig/`, outside tracked UI sources. The fixture-only screenshots in evidence/ describe the earlier design candidate.
 
 ## Username workspaces and accounts
 
@@ -59,4 +59,4 @@ Use **+ Add account** beside the account selector. The server creates a SQL acco
 
 **Price at market** fills the limit field from a fresh mark. It keeps the chosen order type; it does not guarantee execution at that price. Click Markets column headings to sort; click again to reverse.
 
-Run `node --test test-desk-session.mjs test-server.mjs` for server/profile checks. The connected YU17 rig still cannot implement the YU18 typed orders; replacing it and repairing existing admission are separate operator actions pending user approval.
+Run `node --test test-desk-session.mjs test-server.mjs` for server/profile checks. The current local YU18 rig advertises typed orders and has the approved existing accounts enabled. Account definitions and engine admission remain separate; a future reset must restore both.

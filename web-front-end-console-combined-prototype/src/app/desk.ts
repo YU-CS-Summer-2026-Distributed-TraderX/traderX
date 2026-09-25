@@ -89,7 +89,7 @@ export class Desk {
   private pollSequence = 0;
   private appliedPoll = 0;
   readonly actionBusy = signal(false);
-  readonly typedOrdersEnabled = false;
+  readonly typedOrdersEnabled = signal(false);
   readonly canChangeExisting = computed(()=>!this.connected || this.activeScope()!==null);
   private confirmed = false;
 
@@ -123,6 +123,8 @@ export class Desk {
     if (!this.connected) setInterval(() => this.tick(), 2000);
     else {
       this.api.watchPrices();
+      void this.refreshCapabilities();
+      setInterval(()=>void this.refreshCapabilities(),15000);
       effect(()=>{
         const prices=this.api.prices();
         untracked(()=>this.marks.update(old=>Object.fromEntries(Object.entries(prices).map(([key,p])=>[key,{...p,receivedAt:old[key] && this.lastPrices[key]===p ? old[key].receivedAt : Date.now()}]))));
@@ -345,11 +347,16 @@ export class Desk {
     return {ok,text};
     } finally {this.actionBusy.set(false);}
   }
+  async refreshCapabilities():Promise<void> {
+    try {const r=await this.api.load<any>('/order-matcher/capabilities',{signal:AbortSignal.timeout(4000)});
+      this.typedOrdersEnabled.set(r.status===200 && r.body?.schemaVersion===1 && r.body?.typedOrders===true && Array.isArray(r.body?.orderTypes) && ['MARKET','LIMIT','STOP','STOP_LIMIT','ICEBERG','PEGGED','TRAILING_STOP'].every(t=>r.body?.orderTypes?.includes(t)));
+    }catch{this.typedOrdersEnabled.set(false);}
+  }
   refreshDirectory():void {this.directoryAt=0;this.reload();}
   submitRig(key:string,t:TypedTicket) {
-    if(!this.typedOrdersEnabled && (t.orderType!=='LIMIT' || t.timeInForce!=='GTC')) return Promise.resolve({ok:false,text:'This legacy rig has not advertised typed-order support. Use Limit / GTC or update the rig.'});
+    if(!this.typedOrdersEnabled() && (t.orderType!=='LIMIT' || t.timeInForce!=='GTC')) return Promise.resolve({ok:false,text:'This legacy rig has not advertised typed-order support. Use Limit / GTC or update the rig.'});
     const invalid=validateTicket(t);if(invalid) return Promise.resolve({ok:false,text:invalid});
-    return this.rigAction('/order-matcher/orders',{accountId:this.session.account(),ticker:key,clientOrderId:nextClientOrderId(),...(!this.typedOrdersEnabled ? {side:t.side,quantity:t.quantity,limitPrice:t.limitPrice} : typedBody(t))});
+    return this.rigAction('/order-matcher/orders',{accountId:this.session.account(),ticker:key,clientOrderId:nextClientOrderId(),...(!this.typedOrdersEnabled() ? {side:t.side,quantity:t.quantity,limitPrice:t.limitPrice} : typedBody(t))});
   }
   replaceRig(ref:number,quantity:number,limitPrice:number|undefined) {
     if(!this.canChangeExisting()) return Promise.resolve({ok:false,text:'Run identity is not confirmed; existing orders cannot be changed here.'});

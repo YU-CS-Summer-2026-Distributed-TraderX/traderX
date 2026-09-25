@@ -91,7 +91,7 @@ import { Desk } from './desk';
 @if(showAccountForm() && session.user()) {
   <section class="card account-create" aria-label="Add trading account">
     <h2>Add trading account</h2><form (ngSubmit)="createAccount()">
-      <label class="field">Account name<input name="accountName" [(ngModel)]="accountName" maxlength="80" data-testid="account-name"></label>
+      <label class="field">Account name<input name="accountName" [(ngModel)]="accountName" maxlength="50" data-testid="account-name"></label>
       <button class="btn-primary" [disabled]="accountBusy() || !accountName.trim()" data-testid="create-account">{{accountBusy()?'Creating…':'Create account'}}</button>
       <button type="button" (click)="showAccountForm.set(false)">Close</button>
     </form>

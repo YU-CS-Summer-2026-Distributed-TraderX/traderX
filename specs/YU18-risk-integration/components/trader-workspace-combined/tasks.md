@@ -17,7 +17,7 @@
 - [x] Connect order/algo gateway writes without automatic retries; fence context and run identity.
 - [x] Verify WebSocket disconnect handling and local-only launch mode.
 - [x] Run connected unit tests and existing isolated live startup proof.
-- [ ] Initialize real demo-account admission and upgrade the retained older rig before advanced-order acceptance.
+- [x] Replace the old local rig with current YU18 and initialize approved demo-account admission.
 - [ ] Complete secondary-tool and OTC ticket migration from Demo console.
 
 ## Workspace usability
@@ -26,5 +26,5 @@
 - [x] New SQL account creation, owned-account admission and partial-failure retry.
 - [x] Fresh-price autofill and clickable sortable Markets columns.
 - [x] Browser verification against local SQL and gateway.
-- [ ] Existing demo-account admission repair: approval pending.
-- [ ] All seven types exercised on upgraded rig: reset/recovery decision pending.
+- [x] Existing demo-account admission: eight user-approved accounts verified through submitted orders.
+- [x] All seven types exercised on fresh YU18: 31 live cases passed; 32 Angular and 6 server tests passed.
