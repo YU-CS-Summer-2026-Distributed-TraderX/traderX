@@ -300,7 +300,7 @@ export class Desk {
     const token=reset?this.ctx.next():this.ctx.current;
     const account=this.session.account(); const view=this.runView();
     if(reset) { this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('loading');this.confirmed=false;this.runLabel.set('not confirmed'); }
-    if(account===null || !this.session.check()) return;
+    if(account===null || !this.session.check()) {this.error.set('Add a trading account to start.');this.readState.set('unavailable');return;}
     this.polling=true;
     const controller=new AbortController(); const deadline=setTimeout(()=>controller.abort(),8000);
     try {
@@ -345,6 +345,7 @@ export class Desk {
     return {ok,text};
     } finally {this.actionBusy.set(false);}
   }
+  refreshDirectory():void {this.directoryAt=0;this.reload();}
   submitRig(key:string,t:TypedTicket) {
     if(!this.typedOrdersEnabled && (t.orderType!=='LIMIT' || t.timeInForce!=='GTC')) return Promise.resolve({ok:false,text:'This legacy rig has not advertised typed-order support. Use Limit / GTC or update the rig.'});
     const invalid=validateTicket(t);if(invalid) return Promise.resolve({ok:false,text:invalid});

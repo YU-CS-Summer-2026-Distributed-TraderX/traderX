@@ -9,12 +9,14 @@ import { AccountsAdminPage, ControlsPage, HealthPage, MonitoringPage, Operations
 import { ToolPage } from './tools';
 
 // UI guards only. They decide what to render; the server must refuse the same requests (plan.md).
-const signedIn: CanActivateFn = (_r, state) =>
-  inject(Session).check() || inject(Router).createUrlTree(['/login'], { queryParams: { next: state.url } });
-const admin: CanActivateFn = (_r, state) => {
-  const s = inject(Session);
-  if (!s.check()) return inject(Router).createUrlTree(['/login'], { queryParams: { next: state.url } });
-  return canUse(s.user(), 'admin') || inject(Router).createUrlTree(['/desk/overview']);
+const signedIn: CanActivateFn = async (_r, state) => {
+ const s=inject(Session),r=inject(Router);if(s.connected)await s.restore();return s.check() || r.createUrlTree(['/login'], { queryParams: { next: state.url } });
+};
+const admin: CanActivateFn = async (_r, state) => {
+  const s = inject(Session), router=inject(Router);
+  if(s.connected)await s.restore();
+  if (!s.check()) return router.createUrlTree(['/login'], { queryParams: { next: state.url } });
+  return canUse(s.user(), 'admin') || router.createUrlTree(['/desk/overview']);
 };
 const lastTab = (ws: 'trader' | 'admin'): CanActivateFn => () => {
   const p = inject(Session).prefs();

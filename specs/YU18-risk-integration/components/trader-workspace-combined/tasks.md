@@ -19,3 +19,12 @@
 - [x] Run connected unit tests and existing isolated live startup proof.
 - [ ] Initialize real demo-account admission and upgrade the retained older rig before advanced-order acceptance.
 - [ ] Complete secondary-tool and OTC ticket migration from Demo console.
+
+## Workspace usability
+
+- [x] Server-checked optional admin login and persisted username workspaces.
+- [x] New SQL account creation, owned-account admission and partial-failure retry.
+- [x] Fresh-price autofill and clickable sortable Markets columns.
+- [x] Browser verification against local SQL and gateway.
+- [ ] Existing demo-account admission repair: approval pending.
+- [ ] All seven types exercised on upgraded rig: reset/recovery decision pending.

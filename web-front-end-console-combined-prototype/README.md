@@ -50,3 +50,13 @@ The profile picker is a local workspace selector, not authentication or account 
 - Browser: streamed prices, retained holdings, account selector, gateway refusal/order history, Desk lockup and last More item inspected; original Demo console loaded.
 
 The 20-test fixture-only baseline and screenshots in evidence/ describe the earlier design candidate. Current runtime evidence is in `/Users/yaakov/dev/lmax/coordination/eod-integration/review-evidence/combined-desk-rig/` and remains outside tracked UI sources.
+
+## Username workspaces and accounts
+
+Enter a username on the login page to open/create a local demo workspace. Supply the optional admin password for administrator features in this session. Password verification uses the existing server scrypt hash from `~/.config/traderx/desk-local.env` (`ADMIN_PASSWORD_HASH`), never client code. This machine's configured password was supplied by the user; it is not tracked. The launcher reads that config and stores workspace membership in `~/.local/share/traderx/desk-users.json`, outside Git. Server restart signs sessions out but preserves memberships. This local single-process profile must not be used as production authentication or replicated account storage.
+
+Use **+ Add account** beside the account selector. The server creates a SQL account, records ownership, then submits engine admission. A failed admission can be retried for that account; an ambiguous SQL creation is not repeated automatically. Existing accounts are not silently enabled by the launcher. Username-only selection is public within this local demo; original APIs are not tenant-isolated.
+
+**Price at market** fills the limit field from a fresh mark. It keeps the chosen order type; it does not guarantee execution at that price. Click Markets column headings to sort; click again to reverse.
+
+Run `node --test test-desk-session.mjs test-server.mjs` for server/profile checks. The connected YU17 rig still cannot implement the YU18 typed orders; replacing it and repairing existing admission are separate operator actions pending user approval.

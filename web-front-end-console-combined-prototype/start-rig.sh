@@ -12,6 +12,13 @@ export STATIC_ROOT="$ROOT/web-front-end-console/dist/web-front-end-console/brows
 # Existing console server uses its own service credential; never expose it in the browser or logs.
 AUTH_MASTER_SECRET="$(kubectl -n traderx get secret auth-secrets -o jsonpath='{.data.dev-token-master-secret}' | base64 --decode)"
 export AUTH_MASTER_SECRET
+# Local-only profile store and server password hash live outside the checkout.
+CONFIG="${DESK_CONFIG_FILE:-$HOME/.config/traderx/desk-local.env}"
+if [[ -f "$CONFIG" ]]; then set -a; source "$CONFIG"; set +a; fi
+export DESK_USERS_FILE="${DESK_USERS_FILE:-$HOME/.local/share/traderx/desk-users.json}"
+DESK_RISK_CONTROL_TOKEN="$(kubectl -n traderx get deploy cluster-gateway -o json | python3 -c 'import sys,json; e=json.load(sys.stdin)["spec"]["template"]["spec"]["containers"][0].get("env",[]); print(next((x.get("value","") for x in e if x["name"]=="RISK_CONTROL_TOKEN"),""))')"
+DESK_RISK_CONTROL_TOKEN="${DESK_RISK_CONTROL_TOKEN:-dev-risk-control}"
+export DESK_RISK_CONTROL_TOKEN
 PF_PID=''
 API_PID=''
 cleanup() { [[ -z "$PF_PID" ]] || kill "$PF_PID" 2>/dev/null || true; [[ -z "$API_PID" ]] || kill "$API_PID" 2>/dev/null || true; }

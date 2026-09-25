@@ -1,3 +1,4 @@
+import { createDeskSessions } from './desk-session.mjs';
 import { createTreasuryDemo } from './treasury-demo.mjs';
 // In-cluster server for the TraderX console.
 //
@@ -1084,9 +1085,43 @@ function proxyToEdge(req, res, rewrite) {
   req.pipe(up);
 }
 
+// Local desk stores membership outside the source checkout. The existing operator guard remains.
+const deskSessions = createDeskSessions({
+  file: process.env.DESK_USERS_FILE,
+  checkAdmin: password => checkPassword(ADMIN_USER,password),
+  upstream: async (url,options) => {
+    const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json'},body:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
+    return {status:r.status,body:await r.json()};
+  },
+  enableAccount: async accountId => {
+    if(!process.env.DESK_RISK_CONTROL_TOKEN)return false;
+    const r=await fetch(`http://${EDGE}/order-matcher/risk/control/account`,{method:'POST',headers:{'Content-Type':'application/json','X-Risk-Control-Token':process.env.DESK_RISK_CONTROL_TOKEN,'X-Risk-Operator':'local-desk-account-create'},body:JSON.stringify({accountId,enabled:true}),signal:AbortSignal.timeout(10000)});
+    return r.ok;
+  }
+});
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', 'http://x');
   const p = url.pathname;
+  if(p.startsWith('/desk-api/')) {
+    if(process.env.LOCAL_ONLY!=='1')return json(res,404,{error:'Local desk profiles are not enabled.'});
+    res.setHeader('Cache-Control','no-store');
+    // Same-origin browser writes only; non-browser callers may omit Origin.
+    const origin=req.headers.origin;
+    try{if(origin && new URL(origin).host!==req.headers.host)return json(res,403,{error:'Cross-origin request refused.'});}catch{return json(res,403,{error:'Invalid origin.'});}
+    try {
+      const body=req.method==='POST'?JSON.parse(await readBody(req)):{};
+      const r=await deskSessions.handle(req,p,body);
+      if(r.cookie) {
+        const cookies=[r.cookie];
+        if(p==='/desk-api/login'||p==='/desk-api/logout')cookies.push(r.admin
+          ? `${COOKIE}=${encodeURIComponent(issueToken(ADMIN_USER))}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`
+          : `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+        res.setHeader('Set-Cookie',cookies);
+      }
+      return json(res,r.status,r.body);
+    }catch{return json(res,400,{error:'The request could not be completed. Check the workspace before retrying.'});}
+  }
   if (process.env.LOCAL_ONLY === '1' && p.startsWith('/gcs/')) return json(res, 503, {error:'Cloud archive reads are disabled for this local session.'});
   if (p.startsWith('/gcs/')) return gcsBypass(req, res, url);
   if (p.startsWith('/kdbtap')) return kdbBypass(req, res);

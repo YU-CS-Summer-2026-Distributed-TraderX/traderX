@@ -2,18 +2,10 @@ import { CONNECTED_RIG } from './rig';
 import { Injectable, computed, signal, inject } from '@angular/core';
 import { FixtureUser, Role, USERS } from './fixtures';
 
-/**
- * PROTOTYPE SESSION — NOT SECURITY.
- *
- * Signing in here picks a fixture user in the browser. No password is checked and nothing is
- * enforced: anyone with devtools can become anyone. It exists so the design's session behaviour
- * (sign-in, sign-out, expiry, switching workspace, several tabs) can be reviewed. The real design,
- * with the rules on the server, is in components/trader-workspace-claude/plan.md.
- *
- * Two kinds of state, kept apart on purpose:
- *  - the SESSION (who is signed in) is shared by every tab of this browser, as a cookie would be;
- *  - the WORKSPACE (tabs, watchlist, saved filters, selected account) is scoped to one identity,
- *    and the selected account additionally to one browser tab.
+/** Local demo usernames use a server session and persisted account membership.
+ * Admin capability is password checked by the server. Username-only trader selection is not
+ * production authentication. Fixture sessions below are used only by disconnected tests.
+ * Preferences are per identity, and the selected account is also per browser tab.
  */
 
 export type Workspace = 'trader' | 'admin';
@@ -79,12 +71,13 @@ const safe = <T>(f: () => T, fallback: T): T => { try { return f(); } catch { re
 @Injectable({ providedIn: 'root' })
 export class Session {
   readonly connected = inject(CONNECTED_RIG);
+  private readonly serverUser = signal<FixtureUser | undefined>(undefined);
+  readonly restoring = signal(false);
+  private sessionRequest=0;
   private readonly record = signal<SessionRecord | null>(
     readSession(safe(() => localStorage.getItem(SESSION_KEY), null), Date.now()));
   readonly user = computed(() => {
-    const u=userById(this.record()?.userId);
-    if(!u || !this.connected) return u;
-    return {...u,accounts:u.id==='trader.b'?[52355]:u.id==='ops.admin'?[10031,11413,17017,22214,42422,44044,52355,62654]:[22214,42422,17017]};
+    return this.connected ? this.serverUser() : userById(this.record()?.userId);
   });
   readonly expired = signal(false);
   readonly workspace = signal<Workspace>('trader');
@@ -95,15 +88,33 @@ export class Session {
 
   constructor() {
     this.loadWorkspace();
+    if(this.connected) void this.restore();
     // Another tab signed in, out, or as someone else: this tab follows, and never keeps showing
     // the previous identity's data. The browser fires `storage` only in the OTHER tabs.
     window.addEventListener('storage', e => {
       if (e.key !== SESSION_KEY) return;
+      if(this.connected){void this.restore();return;}
       const next = readSession(e.newValue, Date.now());
       if (next?.userId !== this.record()?.userId) { this.record.set(next); this.loadWorkspace(); }
     });
   }
 
+  async restore(): Promise<void> {
+    const request=++this.sessionRequest;this.restoring.set(true);
+    try { const r=await fetch('/desk-api/session',{signal:AbortSignal.timeout(5000)});const u=r.ok?await r.json():undefined;if(request!==this.sessionRequest)return;if(JSON.stringify(u)!==JSON.stringify(this.serverUser())){this.serverUser.set(u);this.loadWorkspace();} }
+    catch {if(request===this.sessionRequest){this.serverUser.set(undefined);this.loadWorkspace();}}
+    finally {if(request===this.sessionRequest)this.restoring.set(false);}
+  }
+  async login(username:string,adminPassword:string): Promise<string> {
+    const request=++this.sessionRequest;this.restoring.set(false);
+    try {
+      const r=await fetch('/desk-api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,adminPassword}),signal:AbortSignal.timeout(10000)});
+      const body=await r.json();if(request!==this.sessionRequest)return 'Session changed. Sign in again.';if(!r.ok)return body.error??'Sign-in failed.';
+      this.serverUser.set(body);this.expired.set(false);this.workspace.set('trader');this.loadWorkspace();
+      localStorage.setItem(SESSION_KEY,JSON.stringify({updated:Date.now()}));return '';
+    }catch{return 'The local desk server is unavailable.';}
+  }
+  setServerUser(user:FixtureUser):void {this.serverUser.set(user);this.loadWorkspace();}
   signIn(userId: string): void {
     const now = Date.now();
     const rec: SessionRecord = { userId, issuedAt: now, expiresAt: now + SESSION_TTL_MS };
@@ -114,7 +125,9 @@ export class Session {
     this.loadWorkspace();
   }
 
-  signOut(): void {
+  async signOut(): Promise<void> {
+    ++this.sessionRequest;this.restoring.set(false);
+    if(this.connected){await fetch('/desk-api/logout',{method:'POST',signal:AbortSignal.timeout(5000)});this.serverUser.set(undefined);}
     safe(() => localStorage.removeItem(SESSION_KEY), undefined);
     this.record.set(null);
     this.loadWorkspace();
@@ -128,6 +141,7 @@ export class Session {
 
   /** True if the session is still valid; otherwise ends it (a real client learns this from a 401). */
   check(): boolean {
+    if(this.connected)return !!this.serverUser();
     const r = this.record();
     if (r && r.expiresAt > Date.now()) return true;
     if (r) this.expireNow();

@@ -200,3 +200,6 @@ td { padding:11px 10px; }
 header .brand .wordmark { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif; font-size:13.3px; font-weight:400; padding-left:0; border-left:0; margin-left:-4px; letter-spacing:-.005em; }
 header .brand .tx { width:auto; height:30px; }
 .menu .demo-console { border-top:1px solid var(--border); margin-top:8px; padding-top:14px; }
+
+.sort-heading {border:0;background:transparent;color:inherit;font:inherit;padding:0;cursor:pointer;text-align:inherit}
+.account-create {max-width:560px;margin:16px auto}

@@ -121,8 +121,7 @@ export class OverviewPage {
       </div>
     </div>
     <table>
-      <thead><tr><th scope="col"><span class="sr">Watch</span></th><th scope="col">Instrument</th><th scope="col" class="num">Last</th>
-        <th scope="col">Unit</th><th scope="col">Source</th><th scope="col">Age</th></tr></thead>
+      <thead><tr>@for(c of columns;track c.key){<th scope="col" [attr.aria-sort]="sortKey()===c.key?(ascending()?'ascending':'descending'):'none'"><button type="button" class="sort-heading" (click)="sort(c.key)">{{c.label}} {{sortKey()===c.key?(ascending()?'↑':'↓'):''}}</button></th>}</tr></thead>
       <tbody>
         @for (i of list(); track i.key) {
           <tr [class.hit]="selected() === i.key">
@@ -164,7 +163,23 @@ export class MarketsPage {
   readonly search = signal('');
   readonly cls = signal<'All' | AssetClass>('All');
   readonly selected = signal('IBM');
-  readonly list = computed(() => this.desk.instrumentList().filter(i => (this.cls() === 'All' || i.cls === this.cls()) && (i.key+' '+i.name).toLowerCase().includes(this.search().toLowerCase())));
+  readonly columns=[{key:'watch',label:'Watch'},{key:'instrument',label:'Instrument'},{key:'last',label:'Last'},{key:'unit',label:'Unit'},{key:'source',label:'Source'},{key:'age',label:'Age'}];
+  readonly sortKey=signal('instrument');readonly ascending=signal(true);
+  sort(key:string):void{if(this.sortKey()===key)this.ascending.update(x=>!x);else{this.sortKey.set(key);this.ascending.set(true);}}
+  private value(i:FixtureInstrument):string|number|null{
+    switch(this.sortKey()){
+      case 'watch':return this.watching(i.key)?1:0;
+      case 'last':return this.desk.marks()[i.key]?.price??null;
+      case 'unit':return i.unit;
+      case 'source':return this.desk.connected?this.desk.api.prices()[i.key]?.source??null:i.source;
+      case 'age':return this.desk.marks()[i.key]?this.desk.now()-this.desk.marks()[i.key].receivedAt:null;
+      default:return i.key;
+    }
+  }
+  readonly list = computed(() => this.desk.instrumentList().filter(i => (this.cls() === 'All' || i.cls === this.cls()) && (i.key+' '+i.name).toLowerCase().includes(this.search().toLowerCase())).sort((a,b)=>{
+    const av=this.value(a),bv=this.value(b);if(av===null)return bv===null?a.key.localeCompare(b.key):1;if(bv===null)return -1;
+    const n=typeof av==='number'&&typeof bv==='number'?av-bv:String(av).localeCompare(String(bv));return n?(this.ascending()?n:-n):a.key.localeCompare(b.key);
+  }));
   readonly detail = computed(() => this.desk.instrument(this.selected()));
   watching(k: string): boolean { return this.session.prefs().watchlist.includes(k); }
   toggleWatch(k: string): void {
@@ -236,7 +251,7 @@ export class MarketsPage {
                 @for (t of tifs(); track t) { <option [value]="t">{{ t }}</option> }
               </select></label>
           </div>
-          @if (uses('limitPrice')) { <label class="field"><span>Limit price <span class="faint">({{ current().unit }})</span></span><input name="lp" type="number" step="any" [ngModel]="limit()" (ngModelChange)="limit.set($event)" data-testid="tk-limit"></label> }
+          @if (uses('limitPrice')) { <label class="field"><span>Limit price <span class="faint">({{ current().unit }})</span> <button type="button" (click)="priceAtMarket()" [disabled]="!canPriceAtMarket()" data-testid="price-at-market">Price at market</button></span><input name="lp" type="number" step="any" [ngModel]="limit()" (ngModelChange)="limit.set($event)" data-testid="tk-limit"></label> }
           @if (uses('stopPrice')) { <label class="field">Stop price<input name="sp" type="number" step="any" [ngModel]="stop()" (ngModelChange)="stop.set($event)"></label> }
           @if (uses('displayQuantity')) { <label class="field">Shown quantity<input name="dq" type="number" [ngModel]="display()" (ngModelChange)="display.set($event)"></label> }
           @if (type() === 'PEGGED') {
@@ -392,6 +407,8 @@ export class OrdersPage {
     this.qty.set(100); this.result.set(null); this.editing.set(null); this.editErr.set('');
   }
   setInstrument(k: string): void { this.clearTicket(); this.key.set(k); }
+  canPriceAtMarket():boolean {const p=this.desk.marks()[this.key()]?.price;return Number.isFinite(p)&&p>0&&this.desk.freshness(this.key()).kind==='live';}
+  priceAtMarket():void {if(this.canPriceAtMarket())this.limit.set(Number(this.desk.marks()[this.key()].price.toFixed(6)));}
   setType(t: OrderType): void { this.type.set(t); this.tif.set(defaultTif(t)); }
   uses(field: 'limitPrice' | 'stopPrice' | 'displayQuantity'): boolean {
     const t = this.type();

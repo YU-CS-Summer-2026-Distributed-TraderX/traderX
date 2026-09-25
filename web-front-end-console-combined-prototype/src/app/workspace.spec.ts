@@ -3,7 +3,7 @@ import { ADMIN_TABS, FEATURES, TRADER_TABS } from './features';
 import { INSTRUMENTS, USERS } from './fixtures';
 import { STALE_AFTER_MS, avgAfterFill, crosses, freshnessOf, valueOf } from './desk';
 import { SESSION_KEY, Session, accountKey, canUse, chooseAccount, prefsKey, readPrefs, readSession, userById } from './session';
-import { plain, OrdersPage } from './trader';
+import { plain, OrdersPage, MarketsPage } from './trader';
 import { Desk } from './desk';
 
 const A = userById('trader.a')!;
@@ -193,4 +193,17 @@ describe('combined ticket context', () => {
     discardPeriodicTasks();
   }));
 
+});
+
+describe('market controls',()=>{
+ beforeEach(()=>{localStorage.clear();sessionStorage.clear();TestBed.configureTestingModule({});});
+ it('copies only a fresh price and preserves the selected order type',fakeAsync(()=>{
+  TestBed.inject(Session).signIn('trader.a');const t=TestBed.runInInjectionContext(()=>new OrdersPage());TestBed.tick();tick(300);
+  t.setType('ICEBERG');t.desk.marks.set({IBM:{price:123.456789,dir:0,receivedAt:t.desk.now()}});t.priceAtMarket();expect(t.limit()).toBe(123.456789);expect(t.type()).toBe('ICEBERG');
+  t.desk.marks.set({IBM:{price:120,dir:0,receivedAt:t.desk.now()-60000}});t.priceAtMarket();expect(t.limit()).toBe(123.456789);expect(t.canPriceAtMarket()).toBeFalse();discardPeriodicTasks();
+ }));
+ it('sorts prices numerically, reverses direction, and keeps missing prices last',fakeAsync(()=>{
+  TestBed.inject(Session).signIn('trader.a');const m=TestBed.runInInjectionContext(()=>new MarketsPage());TestBed.tick();tick(300);
+  m.desk.marks.set({IBM:{price:9,dir:0,receivedAt:0},AAPL:{price:100,dir:0,receivedAt:0}});m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['IBM','AAPL']);m.sort('last');expect(m.list().slice(0,2).map(i=>i.key)).toEqual(['AAPL','IBM']);discardPeriodicTasks();
+ }));
 });

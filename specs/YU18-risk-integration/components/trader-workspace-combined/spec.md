@@ -19,3 +19,13 @@ Future production requirements: server authentication and authorization, two-use
 - FR-CUI-10: Serve local processes on loopback, maintain the edge forward, preserve operator authorization and block cloud archive reads in the local profile. A WebSocket reset must not terminate the shared server.
 
 Evidence: eight additional run-boundary tests in rig.spec.ts (29 Angular tests total), test-server.mjs real socket regression, local startup probe and browser observations. Run-registry 404 is the only legacy fallback. The current older rig lacks confirmed run identity; changes to existing orders and unverified advanced order types remain disabled. Local profile roles are presentation controls, not authentication.
+
+
+## Local workspace accounts — 2026-09-25
+
+- FR-CUI-11: Username entry opens or creates a persistent local workspace. A new workspace starts with no trading accounts. Admin password is optional, verified on the server, and grants only the current session's admin role. Never bundle the password or its hash in client code. Existing operator mutation guards remain enforced.
+- FR-CUI-12: Add account creates a SQL account using its sequence allocator, then admits that account through the gateway account-control API. Persist membership outside the checkout. Report partial admission and offer a retry for that owned account. Do not automatically repeat an ambiguous SQL create.
+- FR-CUI-13: Price at market copies the current fresh mark into the limit-price field without changing order type. Stale/missing prices cannot autofill. This button is not a market order or a fill guarantee.
+- FR-CUI-14: Every Markets table column sorts on click and reverses on a second click. Numeric values sort numerically, missing values remain last, and aria-sort reports direction.
+
+Username-only selection remains a local demo, not production trader authentication. Membership controls new account creation and admission; the original demo APIs are not tenant-isolated. Non-limit order acceptance requires upgrading the currently running YU17 engine. Existing-account admission repair and any destructive local reset await explicit approval.

@@ -31,7 +31,7 @@ import { Desk } from './desk';
         }
       </nav>
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
+      <span class="pill fixture" [title]="desk.connected ? 'Connected to local services' : fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
       <div class="pop-host">
         <button type="button" class="user" (click)="toggle('user')" [attr.aria-expanded]="open() === 'user'"
                 aria-haspopup="true" data-testid="user-menu">{{ u.name }} ▾</button>
@@ -68,7 +68,7 @@ import { Desk } from './desk';
       </div>
     } @else {
       <span class="spacer"></span>
-      <span class="pill fixture" [title]="fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
+      <span class="pill fixture" [title]="desk.connected ? 'Connected to local services' : fixtureLabel">{{ desk.connected ? 'Local rig' : 'synthetic data' }}</span>
     }
   </div>
   <div class="context-bar">
@@ -76,16 +76,29 @@ import { Desk } from './desk';
       <label>Account <select aria-label="Account" [ngModel]="session.account()" (ngModelChange)="pickAccount($event)" data-testid="account">
         @for (a of myAccounts(); track a.id) { <option [value]="a.id">{{ a.name }} ({{ a.id }})</option> }
       </select></label>
+      <button type="button" (click)="showAccountForm.set(!showAccountForm())" data-testid="add-account">+ Add account</button>
       <label>Run <select aria-label="Run" [value]="runScope()" (change)="pickRun($any($event.target).value)" data-testid="run-select">
         <option value="">Active {{ desk.connected ? desk.runLabel() : '· 25 Sep 2026' }}</option>
         @for (r of desk.connected ? desk.runs : desk.runs.slice(1); track r.projection_scope) { <option [value]="r.projection_scope">{{ r.projection_scope }} · read only</option> }
       </select></label>
     } @else { <b>Admin workspace</b><sign-in /><span>Shared services and controls</span> }
-    <span class="spacer"></span><span class="context-note">{{ desk.connected ? 'Local rig · demo profiles, not authentication' : 'Local prototype · no service connections' }}</span>
+    <span class="spacer"></span><span class="context-note">{{ desk.connected ? 'Local demo workspace' : 'Local prototype · no service connections' }}</span>
   </div>
 </header>
 }
 
+@if(session.connected && session.user() && !session.user()?.accounts?.length && !showAccountForm()){<p class="banner">Welcome. Select <b>+ Add account</b> to create your first trading account.</p>}
+@if(showAccountForm() && session.user()) {
+  <section class="card account-create" aria-label="Add trading account">
+    <h2>Add trading account</h2><form (ngSubmit)="createAccount()">
+      <label class="field">Account name<input name="accountName" [(ngModel)]="accountName" maxlength="80" data-testid="account-name"></label>
+      <button class="btn-primary" [disabled]="accountBusy() || !accountName.trim()" data-testid="create-account">{{accountBusy()?'Creating…':'Create account'}}</button>
+      <button type="button" (click)="showAccountForm.set(false)">Close</button>
+    </form>
+    @if(accountMessage()){<p role="status">{{accountMessage()}}</p>}
+    @if(admitId()){<button (click)="retryAdmission()" [disabled]="accountBusy()">Retry admission</button>}
+  </section>
+}
 <main id="main" tabindex="-1" [class.login-main]="!session.user()"><router-outlet /></main>
 
 @if (session.user()) {
@@ -114,6 +127,24 @@ export class App {
   readonly menu = computed(() => menuFor(this.ws()).filter(f=>!['legacy','legacy-admin','data'].includes(f.id)));
   readonly canAdmin = computed(() => canUse(this.session.user(), 'admin'));
   readonly home = computed(() => this.ws() === 'admin' ? '/admin' : '/desk');
+  readonly showAccountForm=signal(false);accountName='';readonly accountBusy=signal(false);readonly accountMessage=signal('');readonly admitId=signal<number|null>(null);
+  async createAccount():Promise<void>{
+    if(this.accountBusy())return;this.accountBusy.set(true);this.accountMessage.set('');
+    const userId=this.session.user()?.id;
+    try {
+      const r=await fetch('/desk-api/accounts',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({displayName:this.accountName,requestId:crypto.randomUUID()}),signal:AbortSignal.timeout(25000)});
+      const b=await r.json();if(userId!==this.session.user()?.id)return;
+      if(!r.ok){this.accountMessage.set(b.error??'Account creation failed.');return;}
+      this.session.setServerUser(b.user);this.session.selectAccount(b.account.id);this.desk.refreshDirectory();this.accountName='';
+      this.admitId.set(b.enabled?null:b.account.id);this.accountMessage.set(b.enabled?`Account ${b.account.id} created and admitted for trading.`:b.error);
+    }catch{this.accountMessage.set('Outcome unknown. Check the account directory before creating another account.');}
+    finally{this.accountBusy.set(false);}
+  }
+  async retryAdmission():Promise<void>{
+    this.accountBusy.set(true);
+    try{const r=await fetch('/desk-api/accounts/admit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({accountId:this.admitId()}),signal:AbortSignal.timeout(12000)});const b=await r.json();this.accountMessage.set(b.enabled?'Account admitted for trading.':b.error);if(b.enabled)this.admitId.set(null);}
+    catch{this.accountMessage.set('Admission could not be confirmed.');}finally{this.accountBusy.set(false);}
+  }
   readonly myAccounts = computed(() => this.desk.accounts().filter(a => this.session.user()?.accounts.includes(a.id)));
 
   constructor() {
@@ -127,7 +158,7 @@ export class App {
     });
     // Signed out anywhere (this tab, another tab, or expiry): leave the workspace at once.
     effect(() => {
-      if (!this.session.user() && this.url() && !this.url().startsWith('/login')) this.router.navigateByUrl('/login');
+      if (!this.session.restoring() && !this.session.user() && this.url() && !this.url().startsWith('/login')) this.router.navigateByUrl('/login');
     });
   }
 
@@ -149,16 +180,16 @@ export class App {
     this.router.navigate(ws === 'admin' ? ['/admin', p.lastAdminTab] : ['/desk', p.lastTraderTab]);
   }
 
-  signOut(): void {
+  async signOut(): Promise<void> {
     this.open.set(null);
-    if(this.desk.connected) void this.desk.api.logout();
-    this.session.signOut();
-    this.router.navigateByUrl('/login');
+    try {await this.session.signOut();if(this.desk.connected)await this.desk.api.checkAuth();this.router.navigateByUrl('/login');}
+    catch {this.accountMessage.set('Sign-out could not reach the server. Try again.');this.showAccountForm.set(true);}
   }
 }
 
 @Component({
   selector: 'login-page',
+  imports:[FormsModule],
   template: `
 <div class="login-layout">
   <section class="login-intro">
@@ -166,22 +197,23 @@ export class App {
     <p class="eyebrow">TRADER WORKSPACE</p>
     <h1>A clear view<br>of your trading day.</h1>
     <p>Markets, orders, positions and risk.<br>One account context across your desk.</p>
-    <div class="login-note"><b>Local trading desk</b><p>These local demo profiles choose workspace preferences. They are not authentication. Orders are sent to the local rig.</p></div>
+    <div class="login-note"><b>Local trading desk</b><p>Sign in with a username to open or create a workspace. Trading accounts and orders use the local rig.</p></div>
   </section>
   <section class="card login-card" aria-labelledby="login-h">
     <h2 id="login-h">Open your workspace</h2>
-    <p class="state">Choose a profile to explore. No password is required or collected.</p>
-    @if (session.expired()) { <p class="banner bad" role="alert" data-testid="expired">Your session ended. Sign in again to continue.</p> }
-    <ul class="users">
-      @for (u of users; track u.id) {
-        <li><button class="identity" type="button" (click)="go(u.id)" [attr.data-testid]="'login-' + u.id">
-          <span class="avatar">{{ u.name.split(' ')[0][0] }}{{ u.name.split(' ')[1][0] }}</span>
-          <span><b>{{ u.name }}</b><small>{{ u.roles.includes('admin') ? 'Trader + administrator' : 'Local trader profile' }}</small></span>
-          <span class="arrow" aria-hidden="true">→</span>
-        </button></li>
-      }
-    </ul>
-    <p class="state">Watchlists and filters are saved separately for each demo profile.</p>
+    @if(session.connected) {
+      <form (ngSubmit)="login()">
+        <label class="field">Username<input name="username" autocomplete="username" maxlength="48" [(ngModel)]="username" required data-testid="username"></label>
+        <label class="field">Admin password <span class="faint">(optional)</span><input name="adminPassword" type="password" autocomplete="current-password" [(ngModel)]="adminPassword" data-testid="admin-password"></label>
+        <p class="state">New here? Enter a username to create your workspace. Add trading accounts after signing in.</p>
+        <button class="btn-primary" type="submit" [disabled]="busy || !username.trim()" data-testid="login-submit">{{busy?'Opening…':'Open workspace'}}</button>
+        @if(error){<p role="alert" class="banner bad">{{error}}</p>}
+        <p class="faint">Local demo: usernames are not private credentials. Admin features require the admin password.</p>
+      </form>
+    } @else {
+      <ul class="users">@for(u of users;track u.id){<li><button class="identity" (click)="go(u.id)" [attr.data-testid]="'login-'+u.id">{{u.name}}</button></li>}</ul>
+    }
+
   </section>
 </div>
   `,
@@ -192,6 +224,11 @@ export class LoginPage {
   private route = inject(ActivatedRoute);
   readonly users = USERS;
 
+  username='';adminPassword='';busy=false;error='';
+  async login():Promise<void>{
+    if(this.busy)return;this.busy=true;this.error=await this.session.login(this.username,this.adminPassword);this.adminPassword='';this.busy=false;
+    if(!this.error)this.router.navigateByUrl('/desk/overview');
+  }
   go(id: string): void {
     this.session.signIn(id);
     const next = this.route.snapshot.queryParamMap.get('next');
