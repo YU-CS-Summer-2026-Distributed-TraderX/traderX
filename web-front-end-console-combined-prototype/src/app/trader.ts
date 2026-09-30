@@ -287,7 +287,7 @@ export class MarketsPage {
         </div>
       </div>
       @if(desk.readState()!=='ready') { <p class="banner warn">{{ desk.readState()==='loading' ? 'Loading orders…' : desk.error() || 'Orders are unavailable.' }}</p> } @else {
-      @if(desk.connected && !desk.canChangeExisting()) { <p class="state">This rig has no confirmed run identity. Existing orders are read-only here.</p> }
+      @if(desk.connected && desk.runView().kind==='active' && !desk.canChangeExisting()) { <p class="state">An active managed run is required to change existing orders.</p> }
       <table data-testid="orders">
         <thead><tr><th scope="col">Ref</th><th scope="col">Time</th><th scope="col">Instrument</th><th scope="col">Side</th>
           <th scope="col" class="num">Filled / qty</th><th scope="col">Type</th><th scope="col" class="num">Price</th><th scope="col">Status</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
@@ -389,7 +389,7 @@ export class OrdersPage {
   });
 
   constructor() {
-    effect(() => { this.session.generation(); this.desk.runView(); untracked(() => this.clearTicket()); });
+    effect(() => { this.session.generation(); this.desk.runView(); this.desk.runRevision(); untracked(() => this.clearTicket()); });
     queueMicrotask(() => {
       const k = this.i();
       const found = k && this.desk.instrumentList().find(x => x.key === k);

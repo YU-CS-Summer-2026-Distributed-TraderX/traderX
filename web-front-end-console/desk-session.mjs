@@ -1,3 +1,4 @@
+import {deskOrderAction} from './desk-orders.mjs';
 // Local demo identities: usernames are public selectors, not trader authentication.
 // Admin capability is granted by a server password check and an HttpOnly session cookie.
 import {randomBytes} from 'node:crypto';
@@ -64,7 +65,8 @@ export function createDeskSessions({file,checkAdmin,upstream,enableAccount,now=D
       let enabled=false;try{enabled=await enableAccount(body.accountId,users[s.key].selfMatchGroup);}catch{}
       return {status:enabled?200:503,body:{enabled,error:enabled?null:'Engine admission is unavailable. Try again when the rig is ready.'}};
     }
+    if(path.startsWith('/desk-api/orders/') && req.method==='POST') return deskOrderAction(upstream,users[s.key].accounts,path.slice('/desk-api/orders/'.length),body);
     return {status:404,body:{error:'Unknown desk endpoint.'}};
   }
-  return {handle,session};
+  return {handle,session, owns:(req,account)=>{const s=session(req);return !!s && users[s.key].accounts.includes(account);}};
 }

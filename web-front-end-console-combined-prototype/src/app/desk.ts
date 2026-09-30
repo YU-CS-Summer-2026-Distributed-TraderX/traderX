@@ -1,7 +1,7 @@
 import { Api, nextClientOrderId, parseOcc, PriceMark } from '../../../web-front-end-console/src/app/api';
 import { typedBody } from '../../../web-front-end-console/src/app/order-types';
 import { ACTIVE_URL, readActive } from '../../../web-front-end-console/src/app/run-scope';
-import { CONNECTED_RIG, readRigAccount } from './rig';
+import { CONNECTED_RIG, readRigAccount, bounded } from './rig';
 import { Injectable, computed, effect, inject, signal, untracked } from '@angular/core';
 import { TypedTicket, validateTicket, REASON_HINT, LIVE_STATUSES } from '../../../web-front-end-console/src/app/order-types';
 import { Context } from '../../../web-front-end-console/src/app/run-scope';
@@ -77,6 +77,8 @@ export class Desk {
   readonly error = signal('');
   readonly activeScope = signal<string|null>(null);
   readonly runLabel = signal('not confirmed');
+  readonly runRevision = signal(0);
+  private lastScope: string|null=null;
   readonly directory = signal<FixtureInstrument[]>([]);
   readonly instrumentList = computed(()=>this.connected ? this.directory() : INSTRUMENTS);
   readonly accounts = computed(()=>this.connected ? this.api.accounts().map(a=>({id:a.id,name:a.displayName})) : ACCOUNTS);
@@ -87,10 +89,10 @@ export class Desk {
   private directoryAt = 0;
   private lastPrices: Record<string,PriceMark> = {};
   private pollSequence = 0;
-  private appliedPoll = 0;
   readonly actionBusy = signal(false);
   readonly typedOrdersEnabled = signal(false);
-  readonly canChangeExisting = computed(()=>!this.connected || this.activeScope()!==null);
+  readonly canChangeExisting = computed(()=>!this.connected || (this.activeScope()!==null && this.runView().kind==='active' && this.readState()==='ready' && this.runRows().some(r=>r.projection_scope===this.activeScope() && r.phase==='ACTIVE' && !!r.descriptor_hash)));
+  private readController?: AbortController;
   private confirmed = false;
 
 
@@ -301,45 +303,48 @@ export class Desk {
     const seq=++this.pollSequence;
     const token=reset?this.ctx.next():this.ctx.current;
     const account=this.session.account(); const view=this.runView();
-    if(reset) { this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('loading');this.confirmed=false;this.runLabel.set('not confirmed'); }
-    if(account===null || !this.session.check()) {this.error.set('Add a trading account to start.');this.readState.set('unavailable');return;}
-    this.polling=true;
-    const controller=new AbortController(); const deadline=setTimeout(()=>controller.abort(),8000);
+    if(reset) { this.readController?.abort();this.activeScope.set(null); this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('loading');this.confirmed=false;this.runLabel.set('not confirmed'); }
+    if(account===null || !this.session.check()) {this.polling=false;this.error.set('Add a trading account to start.');this.readState.set('unavailable');return;}
+    this.polling=true;this.confirmed=false;this.readState.set('loading');
+    const controller=new AbortController();this.readController=controller; const load=<T>(url:string)=>bounded(this.api.load<T>(url,{signal:controller.signal}),controller.signal); const deadline=setTimeout(()=>controller.abort(),8000);
     try {
       if(Date.now()-this.directoryAt>60000) {
-      const [ar,ir]=await Promise.all([this.api.load<any[]>('/account-service/account/',{signal:controller.signal}),this.api.load<any[]>('/reference-data/instruments',{signal:controller.signal})]);
-      if(!this.ctx.isCurrent(token)) return;
+      const [ar,ir]=await Promise.all([load<any[]>('/account-service/account/'),load<any[]>('/reference-data/instruments')]);
+      if(!this.ctx.isCurrent(token) || seq!==this.pollSequence) return;
       if(ar.status!==200 || !Array.isArray(ar.body) || ir.status!==200 || !Array.isArray(ir.body)) throw Error('Account or instrument directory is unavailable.');
       this.api.accounts.set(ar.body);this.api.instruments.set(ir.body);this.directoryAt=Date.now();
       }
       this.loadDirectory();
       if(!this.accounts().some(a=>a.id===account)) throw Error('Selected account is not on this rig.');
-      const data=await readRigAccount(url=>this.api.load(url,{signal:controller.signal}),account,view);
-      if(!this.ctx.isCurrent(token)) return;
-      if(seq<this.appliedPoll) return;
-      this.appliedPoll=seq;
+      const data=await readRigAccount(url=>load(url),account,view);
+      if(!this.ctx.isCurrent(token) || seq!==this.pollSequence) return;
+      if(data.scope!==this.lastScope) {this.lastScope=data.scope;this.runRevision.update(n=>n+1);}
       this.runRows.set(data.runs);this.activeScope.set(data.scope);this.runLabel.set(data.scope??'legacy run');
       this.positions.set(data.positions.map(p=>({account,key:p.security,quantity:Number(p.quantity),avgCost:Number(p.averageCostBasis)})));
       this.trades.set(data.trades.map(t=>({account,id:String(t.id),key:t.security,side:t.side,quantity:Number(t.quantity),price:Number(t.price),state:t.state,sourceOrder:t.sourceOrderId,bookedAt:String(t.created??t.updated??'')})));
       this.orders.set(data.orders.map(o=>({account,ref:Number(String(o.id??o.orderId).split('-').pop()),key:o.security,side:o.side,quantity:Number(o.quantity),filled:o.status==='REJECTED'?0:o.status==='CANCELED'?Number.NaN:Number(o.quantity)-Number(o.remainingQuantity),orderType:o.orderType??'LIMIT',tif:o.timeInForce??'GTC',limitPrice:o.limitPrice,stopPrice:o.stopPrice,status:o.status,createdAt:o.createdAt??'',updatedAt:o.updatedAt??'',reason:o.reason})));
       this.error.set('');this.readState.set('ready');this.confirmed=true;
     } catch(e) {
-      if(this.ctx.isCurrent(token) && seq>=this.appliedPoll) {this.appliedPoll=seq;this.error.set(String(e instanceof Error?e.message:e));this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('unavailable');this.confirmed=false;}
-    } finally {clearTimeout(deadline);this.polling=false;}
+      if(this.ctx.isCurrent(token) && seq===this.pollSequence) {this.error.set(String(e instanceof Error?e.message:e));this.orders.set([]);this.positions.set([]);this.trades.set([]);this.readState.set('unavailable');this.activeScope.set(null);this.confirmed=false;}
+    } finally {clearTimeout(deadline);if(seq===this.pollSequence)this.polling=false;}
   }
 
   async rigAction(url:string,body:unknown,expected:'orderRef'|'canceled'|'replaced'|'parentOrderId'='orderRef'): Promise<{ok:boolean;text:string}> {
     if(this.actionBusy()) return {ok:false,text:'A request is already in progress.'};
     this.actionBusy.set(true);
     try {
-    const generation=this.session.generation(); const token=this.ctx.current; const scope=this.activeScope();
+    const generation=this.session.generation(); const token=this.ctx.current; const scope=this.activeScope(); const account=this.session.account();
     if(!this.connected || !this.confirmed || this.runView().kind!=='active' || !this.session.check()) return {ok:false,text:'Active account data is required before sending.'};
     if(scope!==null) {
       const r=await this.api.load(ACTIVE_URL,{signal:AbortSignal.timeout(5000)}),a=readActive(r.status,r.body);
       if(!a.ok || a.scope!==scope) {this.reload();return {ok:false,text:'Active run changed or could not be confirmed. Nothing sent.'};}
     }
     if(generation!==this.session.generation() || !this.ctx.isCurrent(token) || this.runView().kind!=='active') return {ok:false,text:'Context changed. Nothing sent.'};
-    const r=await this.api.load<any>(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(12000)});
+    const orderAction=['/order-matcher/orders','/order-matcher/cancel','/order-matcher/replace'].includes(url);
+    if(orderAction && scope===null) return {ok:false,text:'Managed run identity is required. Nothing sent.'};
+    const target=orderAction?'/desk-api/orders/'+url.split('/').pop():url;
+    const payload=orderAction?{...(body as object),accountId:account,projectionScope:scope}:body;
+    const r=await this.api.load<any>(target,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(12000)});
     const ok=r.status>=200 && r.status<300 && !!r.body?.[expected] && !r.body?.reason;
     const text=ok ? `${expected==='orderRef'?'Order accepted':expected==='parentOrderId'?'Algo parent accepted':expected==='canceled'?'Order cancelled':'Order changed'}${r.body?.orderRef?' · '+r.body.orderRef:''}.`
       : r.status===0 || r.status>=500 ? 'Outcome unknown. Check orders before submitting again; this request will not be retried.' : r.body?.reason || r.body?.error || `Request refused (HTTP ${r.status}).`;
@@ -361,8 +366,8 @@ export class Desk {
   replaceRig(ref:number,quantity:number,limitPrice:number|undefined) {
     if(!this.canChangeExisting()) return Promise.resolve({ok:false,text:'Run identity is not confirmed; existing orders cannot be changed here.'});
     const o=this.accountOrders().find(x=>x.ref===ref);
-    if(!o || !LIVE_STATUSES.includes(o.status) || quantity<=o.filled || !Number.isSafeInteger(quantity) || !limitPrice || limitPrice<=0) return Promise.resolve({ok:false,text:'A working order, valid quantity and positive limit price are required.'});
-    return this.rigAction('/order-matcher/replace',{orderRef:ref,quantity,limitPrice},'replaced');
+    if(!o || o.orderType!=='LIMIT' || !LIVE_STATUSES.includes(o.status) || quantity<=o.filled || !Number.isSafeInteger(quantity) || !limitPrice || limitPrice<=0) return Promise.resolve({ok:false,text:'A working order, valid quantity and positive limit price are required.'});
+    return this.rigAction('/order-matcher/replace',{orderRef:ref,quantity,limitPrice,clientOrderId:nextClientOrderId()},'replaced');
   }
 
   private fill(o: FixtureOrder, price: number): void {

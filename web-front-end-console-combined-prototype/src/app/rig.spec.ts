@@ -32,3 +32,12 @@ describe('connected desk run boundary',()=>{
     await expectAsync(readRigAccount(async u=>u.includes('/trades')?{status:503,body:[]}:good(u),22214,{kind:'active'})).toBeRejectedWithError(/trades/);
   });
 });
+
+describe('bounded account transport',()=>{
+  it('rejects on timeout even if transport ignores abort and resolves late',async()=>{
+    const {bounded}=await import('./rig');const c=new AbortController();let finish!:(v:number)=>void;
+    const p=bounded(new Promise<number>(r=>finish=r),c.signal);
+    c.abort();await expectAsync(p).toBeRejectedWithError(/timed out/);finish(42);
+    await expectAsync(p).toBeRejected();
+  });
+});

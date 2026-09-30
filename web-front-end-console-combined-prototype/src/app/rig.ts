@@ -30,3 +30,13 @@ export async function readRigAccount(load: Loader, account: number, view: View) 
   if ([...scopesOf(positions.body as unknown[],trades.body as unknown[],orders.body as unknown[])].some(s=>s!==expected)) throw Error('Response contains rows from another run.');
   return {scope, runs:registry.kind==='managed'?registry.runs:[], positions:positions.body as any[],trades:trades.body as any[],orders:orders.body as any[]};
 }
+
+/** Fence even transports that ignore AbortSignal. */
+export function bounded<T>(pending: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve,reject)=>{
+    const abort=()=>reject(Error('Account read timed out or context changed.'));
+    if(signal.aborted) {abort();return;}
+    signal.addEventListener('abort',abort,{once:true});
+    pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+  });
+}

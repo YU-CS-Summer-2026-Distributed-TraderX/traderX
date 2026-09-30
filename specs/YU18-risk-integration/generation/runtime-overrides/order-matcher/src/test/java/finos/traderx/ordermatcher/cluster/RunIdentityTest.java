@@ -57,6 +57,28 @@ class RunIdentityTest {
    body.set(valid);status.set(409);assertFalse(gateway.projectionSelected(endpoint,"token","test"));
   } finally {server.stop(0);}
  }
+ @Test void receivingGatewayRefusesStaleIdentityBeforeEveryOrderHandler() throws Exception {
+  var gateway=new ClusterGatewayMain();var d=descriptor("desk");
+  var field=ClusterGatewayMain.class.getDeclaredField("runDescriptor");field.setAccessible(true);field.set(gateway,d);
+  var server=com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1",0),0);
+  for(String name:List.of("Order","Cancel","Replace")) {
+   var method=ClusterGatewayMain.class.getDeclaredMethod("handle"+name,com.sun.net.httpserver.HttpExchange.class);method.setAccessible(true);
+   server.createContext("/"+name,e->{try{method.invoke(gateway,e);}catch(Exception ex){throw new RuntimeException(ex);}});
+  }
+  server.start();
+  try {
+   var client=java.net.http.HttpClient.newHttpClient();
+   for(String name:List.of("Order","Cancel","Replace")) for(String identity:List.of(
+    "\"expectedDescriptorHash\":\"stale\",\"expectedProjectionScope\":\"scope-desk\"",
+    "\"expectedDescriptorHash\":\""+d.hash()+"\",\"expectedProjectionScope\":\"old\"",
+    "\"expectedProjectionScope\":\"scope-desk\"")) {
+     var request=java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:"+server.getAddress().getPort()+"/"+name))
+      .POST(java.net.http.HttpRequest.BodyPublishers.ofString("{"+identity+",\"orderRef\":7,\"quantity\":10,\"limitPrice\":100}" )).build();
+     var response=client.send(request,java.net.http.HttpResponse.BodyHandlers.ofString());
+     assertEquals(409,response.statusCode());assertTrue(response.body().contains("RUN_IDENTITY_MISMATCH"));
+   }
+  } finally {server.stop(0);}
+ }
  @Test void descriptorMustAlreadyBindStorageAndConfiguredIdentityMustMatch() throws Exception {
   descriptor("old");descriptor("fresh");Path store=Files.createDirectory(root.resolve("store"));
   assertThrows(IllegalStateException.class,()->RunDescriptor.load(store,root.resolve("old.json").toString(),"old"));

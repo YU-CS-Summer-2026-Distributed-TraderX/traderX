@@ -33,3 +33,39 @@ Username-only selection remains a local demo, not production trader authenticati
 - FR-CUI-15: The desk reads gateway `GET /capabilities` schema1 and enables typed orders only when the gateway advertises all seven required types. An unavailable, malformed or older capability response leaves typed orders disabled. This metadata describes the current gateway binary; deployment verification must separately prove all members use the same compatible build.
 
 FR-CUI-16: After confirmed order or algo acceptance, clear quantity and price/trigger/display/trailing inputs while retaining the acceptance receipt and instrument context. Block repeat submission while pending and after clearing. Refused or uncertain outcomes retain the draft and are never automatically retried.
+
+## Managed order management — 2026-09-30
+
+This section supersedes the earlier connected-delivery limitation for **managed** local rigs.
+Unmanaged retained rigs remain read-only for order mutations through the Desk. Username selection
+is still a demo identity and does not establish production authentication or beneficial ownership.
+
+- FR-CUI-17: Route direct Desk submit/cancel/replace through the server workspace session. Require
+  owned account, explicit selected projection scope, registered ACTIVE descriptor, and matching
+  active gateway descriptor/scope/phase. Before existing-order mutation, read the selected account's
+  scoped order and match its full epoch-qualified ID, scope and live status. Never authorize by the
+  numeric order reference alone. Repeat the selected-pointer read before dispatch.
+- FR-CUI-18: Carry expected descriptor hash and scope on gateway order commands. The receiving
+  gateway checks both against its immutable configured descriptor before dispatch. A mismatched
+  route or newly selected run cannot reuse an old reference. Existing consensus admission remains
+  authoritative: a frozen run cannot accept a command after transition freeze. No new core wire or
+  snapshot format is introduced.
+- FR-CUI-19: Preserve all seven typed submission payloads and client idempotency keys. The inline
+  replacement editor changes LIMIT total quantity and limit price only; total quantity must exceed
+  filled quantity. Other live types retain cancellation. No automatic retry follows an uncertain
+  mutation result. Server reads can refuse safely before sending; transport failure after sending
+  remains an unknown outcome.
+- FR-CUI-20: Clear account rows and disable actions when a finite read deadline expires, including
+  transports that ignore cancellation. Account/run changes fence late reads and preflight replies;
+  a newly observed run clears the ticket/editor. Historical views are read-only even if their scope
+  happens to equal the current pointer. Polling reconciles orders, trades and positions after restart
+  and accepted archive catch-up, without implementing another recovery algorithm.
+- FR-CUI-21: In local mode, non-admin raw proxy order mutations (including legacy and per-gateway
+  aliases) cannot bypass the workspace route. Account projection reads require owned membership.
+  Existing password-checked Demo console operator access is retained. Direct backend/internal Aeron
+  access, production authentication, secondary tools and arbitrary NATS subscription authorization
+  remain outside this local Desk order-management contract.
+
+Managed configuration uses the existing RI-06 offline provisioning, durable transition and recovery
+contracts. Merely attaching a descriptor to a retained unmanaged rig is not supported. No retained
+rig activation or data migration is part of this implementation.

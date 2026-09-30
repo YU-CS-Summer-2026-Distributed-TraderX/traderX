@@ -1,3 +1,4 @@
+import {deskProxyTarget} from './desk-orders.mjs';
 import { createDeskSessions } from './desk-session.mjs';
 import { createTreasuryDemo } from './treasury-demo.mjs';
 // In-cluster server for the TraderX console.
@@ -1090,7 +1091,7 @@ const deskSessions = createDeskSessions({
   file: process.env.DESK_USERS_FILE,
   checkAdmin: password => checkPassword(ADMIN_USER,password),
   upstream: async (url,options) => {
-    const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json'},body:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
+    const r=await fetch(`http://${EDGE}${url}`,{method:options.method,headers:{'Content-Type':'application/json',...(INTERNAL_JWT?{'Authorization':`Bearer ${INTERNAL_JWT}`}:{})},body:options.body===undefined?undefined:JSON.stringify(options.body),signal:AbortSignal.timeout(10000)});
     return {status:r.status,body:await r.json()};
   },
   enableAccount: async (accountId,groupId,admit=true) => {
@@ -1125,6 +1126,14 @@ const server = http.createServer(async (req, res) => {
       }
       return json(res,r.status,r.body);
     }catch{return json(res,400,{error:'The request could not be completed. Check the workspace before retrying.'});}
+  }
+  // Local workspace requests must use the account/run checked order path. The existing
+  // Demo console remains an operator surface behind its separately checked admin session.
+  if(process.env.LOCAL_ONLY==='1' && !readToken(req)) {
+    const target=deskProxyTarget(req.url);
+    if(target.invalid)return json(res,400,{error:'Invalid path.'});
+    if(req.method!=='GET' && target.mutation)return json(res,403,{error:'Use the workspace order endpoint.'});
+    if(target.account!==null && !deskSessions.owns(req,target.account))return json(res,403,{error:'This account does not belong to this workspace.'});
   }
   if (process.env.LOCAL_ONLY === '1' && p.startsWith('/gcs/')) return json(res, 503, {error:'Cloud archive reads are disabled for this local session.'});
   if (p.startsWith('/gcs/')) return gcsBypass(req, res, url);

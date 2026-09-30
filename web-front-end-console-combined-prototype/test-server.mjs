@@ -32,6 +32,11 @@ test('console survives a reset WebSocket and blocks cloud reads in local mode',a
     await new Promise(r=>setTimeout(r,50));
     assert.equal(child.exitCode,null,output);
     assert.equal((await fetch(`http://127.0.0.1:${port}/healthz`)).status,200);
+    for(const path of ['/order-matcher/cancel','/legacy/order-matcher/replace','/gw/0/cancel','/order-matcher/orders/batch','/legacy/order-matcher/%63ancel']) {
+      const r=await fetch(`http://127.0.0.1:${port}${path}`,{method:'POST',body:'{}'});assert.equal(r.status,403,path);
+    }
+    for(const path of ['/position-service/positions/11','/trade-processor/v2/projections/run-a/accounts/11/orders?status=all','/legacy/position-service/trades/11'])
+      assert.equal((await fetch(`http://127.0.0.1:${port}${path}`)).status,403,path);
     const denied=await fetch(`http://127.0.0.1:${port}/gcs/list`);
     assert.equal(denied.status,503);assert.match((await denied.json()).error,/disabled/);
   } finally {child.kill();edge.closeAllConnections();edge.close();}

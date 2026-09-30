@@ -1324,6 +1324,16 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
      * {@code HttpServer} routes by longest prefix, so a replica rolled forward before its peers
      * would hand /orders/replace to /orders and book the replace body as a NEW order.
      */
+    /** Optional precondition used by the Desk; checked by the actual receiving gateway. */
+    private boolean checkExpectedRun(HttpExchange exchange, JsonNode body) throws java.io.IOException {
+        if (!body.has("expectedDescriptorHash") && !body.has("expectedProjectionScope")) return true;
+        if (runDescriptor != null
+            && runDescriptor.hash().equals(body.path("expectedDescriptorHash").asText())
+            && runDescriptor.projectionScope().equals(body.path("expectedProjectionScope").asText())) return true;
+        respond(exchange, 409, "{\"error\":\"RUN_IDENTITY_MISMATCH\"}");
+        return false;
+    }
+
     private void handleReplace(final HttpExchange exchange) {
         try {
             if (!"POST".equals(exchange.getRequestMethod())) {
@@ -1331,6 +1341,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = readOrderBody(exchange.getRequestBody());
+            if (!checkExpectedRun(exchange, body)) return;
             final boolean typedReplace = body.has("orderType");
             if (!body.hasNonNull("orderRef") || !body.hasNonNull("quantity")
                 || (!typedReplace && !body.hasNonNull("limitPrice"))) {
@@ -1381,6 +1392,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = JSON.readTree(exchange.getRequestBody());
+            if (!checkExpectedRun(exchange, body)) return;
             if (!body.hasNonNull("orderRef")) {
                 respond(exchange, 400, "{\"error\":\"orderRef required\"}");
                 return;
@@ -1424,6 +1436,7 @@ public final class ClusterGatewayMain implements OrderSubmitter, OrderStatusSour
                 return;
             }
             final JsonNode body = readOrderBody(exchange.getRequestBody());
+            if (!checkExpectedRun(exchange, body)) return;
             final String ticker = body.hasNonNull("securityId")
                 ? "#" + body.get("securityId").asInt() : instrumentOf(body);
             final char side = "Sell".equalsIgnoreCase(body.path("side").asText("Buy")) ? 'S' : 'B';
